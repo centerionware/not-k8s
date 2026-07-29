@@ -304,7 +304,33 @@ With `cri`, they run for real on containerd.
 
 Samples idle CPU% and RSS of the k3s control plane and `nodelet` so you can compare
 against stock k3s (~30–50% of a core, ~15% RAM). The win should show up on the node
-side.
+side — `measure.sh` only tells you *that* k3s-server itself is still using CPU/RAM,
+not *why*.
+
+### 4. Diagnose k3s-server itself
+
+`nodelet` and `bootstrap-test.sh` only ever touched the node-agent side (the
+kubelet replacement) — k3s-server (apiserver + scheduler + controller-manager
++ kine, its embedded sqlite datastore, all bundled into one process) has
+never been profiled or trimmed. If it's still using significant idle CPU/RAM,
+this collects the evidence needed to find out what, instead of guessing:
+
+```bash
+sudo ./deploy/diagnose-control-plane.sh        # 30s sample by default
+sudo ./deploy/diagnose-control-plane.sh 60     # or pick your own sample length
+```
+
+Pulls real Go pprof CPU/heap profiles from each embedded component (via
+`kubectl get --raw /debug/pprof/...` for the apiserver, and client-cert auth
+against the controller-manager/scheduler secure ports), a goroutine dump, an
+`strace -c` syscall summary (this is what catches kine's SQLite polling — a
+known, documented source of both idle CPU *and* flash writes on single-node
+k3s, and directly relevant to this project's flash-wear goal), and
+workqueue/request metrics. Every section is independent and degrades
+gracefully if a tool or file isn't present (e.g. no `go` installed, or a k3s
+version with a different TLS directory layout) rather than aborting the rest.
+Prints a single pasteable `SUMMARY.txt` plus a full tarball for anything that
+needs a deeper look.
 
 ---
 
