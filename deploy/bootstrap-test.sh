@@ -144,7 +144,7 @@ for arg in "$@"; do
     esac
 done
 
-mkdir -p "$WORK_DIR" "$TOOLCHAIN_DIR" "$SRC_DIR" "$LOG_DIR"
+mkdir -p "$WORK_DIR" "$TOOLCHAIN_DIR" "$TOOLCHAIN_DIR/bin" "$SRC_DIR" "$LOG_DIR"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==> WARNING:\033[0m %s\n' "$*" >&2; }
@@ -726,7 +726,7 @@ ensure_container_runtime() {
     if command -v containerd &>/dev/null && command -v runc &>/dev/null; then
         log "containerd + runc already present."
     else
-        pkg_install "containerd/runc" "containerd runc" "containerd runc" "containerd runc" "containerd runc" "containerd runc" "containerd runc"
+        pkg_install "containerd/runc" "containerd runc" "containerd runc" "containerd runc" "containerd runc" "containerd runc" "containerd runc" || true
         { command -v containerd &>/dev/null && command -v runc &>/dev/null; } \
             || fetch_containerd_runc_prebuilt \
             || build_containerd_runc_from_source
@@ -817,7 +817,7 @@ ensure_cni_base_plugins() {
 }
 
 ensure_flannel_binaries() {
-    command -v flanneld &>/dev/null || pkg_install "flannel" "flannel" "flannel" "flannel" "flannel" "flannel" "flannel"
+    command -v flanneld &>/dev/null || pkg_install "flannel" "flannel" "flannel" "flannel" "flannel" "flannel" "flannel" || true
 
     local goarch; goarch="$(cni_go_arch_map)"
     if ! command -v flanneld &>/dev/null && [[ -n "$goarch" ]]; then
@@ -903,6 +903,11 @@ EOF
 
 start_flanneld() {
     pgrep -x flanneld &>/dev/null && return 0
+    # set -u makes a bare $KUBECONFIG reference itself fatal when the
+    # variable was never exported (e.g. --skip-control-plane, or --with-cri
+    # running before setup_control_plane gets to export it) — default it the
+    # same way run_and_verify() does before testing/using it.
+    local KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
     [[ -f "$KUBECONFIG" ]] || die "flanneld needs a KUBECONFIG (control plane must be up first)."
     mkdir -p /run/flannel
     log "Starting flanneld (kube subnet manager, backend=vxlan, ip-family=$IP_FAMILY)..."
@@ -955,7 +960,7 @@ networking per Pod spec."
 ensure_nft() {
     [[ "$WITH_CRI" -eq 1 && "$CNI_PLUGIN" != "none" ]] || return 0
     command -v nft &>/dev/null && return 0
-    pkg_install "nftables" "nftables" "nftables" "nftables" "nftables" "nftables" "nftables"
+    pkg_install "nftables" "nftables" "nftables" "nftables" "nftables" "nftables" "nftables" || true
     command -v nft &>/dev/null \
         || warn "Could not get nftables — ClusterIP/NodePort routing will be unavailable. \
 nodelet detects this and skips the Service proxy; direct pod-IP traffic is unaffected."
