@@ -5,13 +5,21 @@
 #   This proves the full control loop end-to-end: apiserver -> scheduler ->
 #   nodelet watch -> status update -> kubectl shows Running.
 #
-# With the `cri` runtime (NODELET_RUNTIME=cri):
-#   Pods run for real via containerd.  You can curl the nginx service.
+# With the `cri` runtime (NODELET_RUNTIME=cri) and a CNI plugin installed
+# (deploy/bootstrap-test.sh --with-cri installs flannel by default):
+#   Pods run for real via containerd and get real pod IPs from the flannel
+#   overlay. `kubectl exec` into one pod and curl the other's pod IP directly
+#   to prove it: that's the CNI working.
+#
+# The Service below is ClusterIP, but there's no kube-proxy in this stack yet
+# (kube-proxy is part of the kubelet/agent we deliberately don't run) — so the
+# ClusterIP itself won't route traffic. Curling pod IPs directly works today;
+# ClusterIP/Service routing is on the roadmap (see README).
 #
 # Usage:
 #   kubectl apply -f deploy/demo-nginx.yaml
-#   kubectl get pods -w          # watch pods go Pending -> Running
-#   kubectl get svc demo-nginx   # see the ClusterIP (CRI runtime only for real traffic)
+#   kubectl get pods -o wide -w  # watch pods go Pending -> Running, see real pod IPs
+#   kubectl get svc demo-nginx   # ClusterIP is allocated but not yet routable (no kube-proxy)
 #
 # Note: The scheduler will automatically place pods on the nodelet node since
 # it's the only node in the cluster (k3s runs with --disable-agent, so there

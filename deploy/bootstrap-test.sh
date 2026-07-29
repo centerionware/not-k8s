@@ -27,8 +27,19 @@
 # Usage:
 #   ./deploy/bootstrap-test.sh                  # mock runtime, k3s control plane, demo pod
 #   ./deploy/bootstrap-test.sh --with-cri       # also build+use the real containerd/CRI runtime
+#   ./deploy/bootstrap-test.sh --with-cri --cni=none   # real containers, hostNetwork-only (old behavior)
 #   ./deploy/bootstrap-test.sh --skip-control-plane
 #   ./deploy/bootstrap-test.sh --cleanup        # tear down everything this script started
+#
+# CNI: real (non-hostNetwork) pods need a CNI plugin to get their own IP —
+# without one, RunPodSandbox works but nothing can reach a pod except by
+# sharing the host's network namespace, which defeats most of the point of
+# using Kubernetes. --with-cri defaults to installing flannel (--cni=flannel):
+# it's the lightest widely-used CNI (a single small daemon + the standard
+# bridge/host-local CNI plugins, no separate datastore — it reads/writes pod
+# CIDR allocations straight from Node objects via the "kube" subnet manager).
+# --cni is a dispatch point for other plugins later; today only flannel and
+# none are implemented.
 #
 set -euo pipefail
 
@@ -48,6 +59,7 @@ WITH_CRI=0
 SKIP_CONTROL_PLANE=0
 DO_CLEANUP=0
 FORCE_SOURCE_BUILD=0
+CNI_PLUGIN=flannel
 
 for arg in "$@"; do
     case "$arg" in
@@ -55,6 +67,7 @@ for arg in "$@"; do
         --skip-control-plane) SKIP_CONTROL_PLANE=1 ;;
         --cleanup) DO_CLEANUP=1 ;;
         --force-source-build) FORCE_SOURCE_BUILD=1 ;;
+        --cni=*) CNI_PLUGIN="${arg#--cni=}" ;;
         -h|--help)
             grep '^#' "$0" | sed -e 's/^# \{0,1\}//' -e '1,3d'
             exit 0
@@ -79,6 +92,8 @@ die()  { printf '\033[1;31m==> FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 if [[ "$DO_CLEANUP" -eq 1 ]]; then
     log "Stopping nodelet (if running via this script's pidfile)..."
     [[ -f "$WORK_DIR/nodelet.pid" ]] && kill "$(cat "$WORK_DIR/nodelet.pid")" 2>/dev/null || true
+    log "Stopping flanneld (if this script started it)..."
+    [[ -f "$WORK_DIR/flanneld.pid" ]] && kill "$(cat "$WORK_DIR/flanneld.pid")" 2>/dev/null || true
     log "Stopping containerd (if this script started it)..."
     [[ -f "$WORK_DIR/containerd.pid" ]] && kill "$(cat "$WORK_DIR/containerd.pid")" 2>/dev/null || true
     if command -v k3s-uninstall.sh &>/dev/null; then
@@ -616,6 +631,169 @@ ensure_container_runtime() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────
+# CNI networking — real pod IPs instead of hostNetwork-only.
+# ─────────────────────────────────────────────────────────────────────────
+# containerd's own CRI plugin invokes CNI on RunPodSandbox for any pod that
+# isn't hostNetwork (nodelet already only forces hostNetwork when the Pod
+# spec asks for it — see crates/nodelet/src/runtime/cri.rs). What's missing
+# without this section: the CNI plugin binaries, and a network config file
+# telling containerd which plugin to invoke and how. Node PodCIDR allocation
+# itself needs no changes here — k3s's controller-manager runs
+# --allocate-node-cidrs unconditionally, precisely so `--flannel-backend=none`
+# (which setup-control-plane.sh already passes) can be paired with a
+# self-managed CNI. That's exactly this setup.
+
+CNI_BIN_DIR=/opt/cni/bin
+CNI_CONF_DIR=/etc/cni/net.d
+
+cni_go_arch_map() {   # arch names used by containernetworking/plugins and flannel-io/cni-plugin releases
+    case "$ARCH" in
+        x86_64)  echo amd64 ;;
+        aarch64) echo arm64 ;;
+        armv7l)  echo arm ;;
+        ppc64le) echo ppc64le ;;
+        s390x)   echo s390x ;;
+        riscv64) echo riscv64 ;;
+        *)       echo "" ;;
+    esac
+}
+
+# Standard plugins (bridge, host-local, loopback, portmap, ...) that flannel
+# (and most other CNIs) delegate to for the actual veth/bridge/IPAM work.
+ensure_cni_base_plugins() {
+    [[ -x "$CNI_BIN_DIR/bridge" && -x "$CNI_BIN_DIR/host-local" ]] && return 0
+    mkdir -p "$CNI_BIN_DIR"
+
+    if pkg_install "CNI plugins" "containernetworking-plugins" "containernetworking-plugins" \
+            "cni-plugins" "cni-plugins" "containernetworking-plugins" "containernetworking-plugins" \
+       && { [[ -x /usr/lib/cni/bridge ]] || [[ -x /usr/libexec/cni/bridge ]]; }; then
+        # Distro packages install to their own dir; point ours at it.
+        local distro_cni_dir; distro_cni_dir="$(dirname "$(command -v bridge 2>/dev/null || echo /usr/lib/cni/bridge)")"
+        CNI_BIN_DIR="$distro_cni_dir"
+        log "Using distro CNI plugins in $CNI_BIN_DIR"
+        return 0
+    fi
+
+    local goarch; goarch="$(cni_go_arch_map)"
+    if [[ -n "$goarch" ]]; then
+        local ver=1.5.1
+        log "Fetching official containernetworking/plugins release for linux-$goarch..."
+        if fetch "https://github.com/containernetworking/plugins/releases/download/v$ver/cni-plugins-linux-$goarch-v$ver.tgz" "$SRC_DIR/cni-plugins.tgz"; then
+            tar xzf "$SRC_DIR/cni-plugins.tgz" -C "$CNI_BIN_DIR"
+            [[ -x "$CNI_BIN_DIR/bridge" ]] && { log "CNI base plugins ready in $CNI_BIN_DIR"; return 0; }
+        fi
+    fi
+
+    log "No prebuilt CNI plugins for $ARCH — building from source (needs Go)."
+    ensure_go
+    command -v git &>/dev/null || pkg_install git git git git git git git || true
+    cd "$SRC_DIR"
+    [[ -d plugins ]] || git clone --depth 1 --branch v1.5.1 https://github.com/containernetworking/plugins.git
+    ( cd plugins && ./build_linux.sh )
+    cp plugins/bin/* "$CNI_BIN_DIR/"
+    [[ -x "$CNI_BIN_DIR/bridge" ]] || die "CNI base plugin source build did not produce usable binaries."
+}
+
+ensure_flannel_binaries() {
+    command -v flanneld &>/dev/null || pkg_install "flannel" "flannel" "flannel" "flannel" "flannel" "flannel" "flannel"
+
+    local goarch; goarch="$(cni_go_arch_map)"
+    if ! command -v flanneld &>/dev/null && [[ -n "$goarch" ]]; then
+        local ver=0.25.6
+        log "Fetching official flannel release for linux-$goarch..."
+        fetch "https://github.com/flannel-io/flannel/releases/download/v$ver/flanneld-$goarch" "$TOOLCHAIN_DIR/bin/flanneld" \
+            && chmod +x "$TOOLCHAIN_DIR/bin/flanneld" || true
+    fi
+    if ! command -v flanneld &>/dev/null; then
+        log "No prebuilt flanneld for $ARCH — building from source (needs Go)."
+        ensure_go
+        command -v git &>/dev/null || pkg_install git git git git git git git || true
+        cd "$SRC_DIR"
+        [[ -d flannel ]] || git clone --depth 1 --branch v0.25.6 https://github.com/flannel-io/flannel.git
+        ( cd flannel && make dist/flanneld )
+        install -m 0755 flannel/dist/flanneld "$TOOLCHAIN_DIR/bin/flanneld"
+    fi
+    command -v flanneld &>/dev/null || die "Could not obtain a flanneld binary for $ARCH."
+
+    # The CNI-side flannel plugin (reads /run/flannel/subnet.env, delegates to bridge).
+    if [[ ! -x "$CNI_BIN_DIR/flannel" ]]; then
+        if [[ -n "$goarch" ]]; then
+            fetch "https://github.com/flannel-io/cni-plugin/releases/download/v1.6.0-flannel1/flannel-$goarch" "$CNI_BIN_DIR/flannel" \
+                && chmod +x "$CNI_BIN_DIR/flannel" || true
+        fi
+        if [[ ! -x "$CNI_BIN_DIR/flannel" ]]; then
+            ensure_go
+            cd "$SRC_DIR"
+            [[ -d cni-plugin ]] || git clone --depth 1 --branch v1.6.0-flannel1 https://github.com/flannel-io/cni-plugin.git
+            ( cd cni-plugin && ./build.sh )
+            install -m 0755 "cni-plugin/dist/flannel-$goarch" "$CNI_BIN_DIR/flannel"
+        fi
+    fi
+    [[ -x "$CNI_BIN_DIR/flannel" ]] || die "Could not obtain the flannel CNI plugin binary for $ARCH."
+}
+
+write_flannel_cni_conf() {
+    mkdir -p "$CNI_CONF_DIR"
+    [[ -f "$CNI_CONF_DIR/10-flannel.conflist" ]] && return 0
+    cat > "$CNI_CONF_DIR/10-flannel.conflist" <<EOF
+{
+  "name": "not-k8s-flannel",
+  "cniVersion": "1.0.0",
+  "plugins": [
+    {
+      "type": "flannel",
+      "delegate": { "hairpinMode": true, "isDefaultGateway": true }
+    },
+    {
+      "type": "portmap",
+      "capabilities": { "portMappings": true }
+    }
+  ]
+}
+EOF
+}
+
+start_flanneld() {
+    pgrep -x flanneld &>/dev/null && return 0
+    [[ -f "$KUBECONFIG" ]] || die "flanneld needs a KUBECONFIG (control plane must be up first)."
+    mkdir -p /run/flannel
+    log "Starting flanneld (kube subnet manager, backend=vxlan)..."
+    KUBECONFIG="$KUBECONFIG" NODE_NAME="${NODELET_NODE_NAME:-$(hostname)}" \
+        nohup flanneld --kube-subnet-mgr --ip-masq \
+        >"$LOG_DIR/flanneld.log" 2>&1 &
+    echo $! > "$WORK_DIR/flanneld.pid"
+    for _ in $(seq 1 30); do
+        [[ -f /run/flannel/subnet.env ]] && break
+        sleep 1
+    done
+    [[ -f /run/flannel/subnet.env ]] || warn "flanneld hasn't written /run/flannel/subnet.env yet — it may still be waiting on this Node's PodCIDR. Check $LOG_DIR/flanneld.log."
+}
+
+ensure_cni() {
+    [[ "$WITH_CRI" -eq 1 ]] || return 0
+    case "$CNI_PLUGIN" in
+        none)
+            log "CNI disabled (--cni=none) — pods will need hostNetwork: true to be reachable."
+            return 0
+            ;;
+        flannel)
+            ensure_cni_base_plugins
+            ensure_flannel_binaries
+            write_flannel_cni_conf
+            start_flanneld
+            ;;
+        *)
+            die "Unknown --cni='$CNI_PLUGIN'. Only 'flannel' and 'none' are implemented today. \
+Adding another CNI (calico, cilium, ...) means: drop its plugin binaries in \
+$CNI_BIN_DIR, write its config into $CNI_CONF_DIR, and start whatever daemon \
+it needs — containerd and nodelet don't need to change, since containerd's \
+CRI plugin drives CNI generically and nodelet only decides host-vs-pod \
+networking per Pod spec."
+            ;;
+    esac
+}
+
+# ─────────────────────────────────────────────────────────────────────────
 # Build nodelet
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -680,4 +858,5 @@ ensure_rust
 setup_control_plane
 build_nodelet
 ensure_container_runtime
+ensure_cni
 run_and_verify

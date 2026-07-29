@@ -109,6 +109,41 @@ armv7/armv6, i686, riscv64gc, ppc64le, s390x, loongarch64). k3s's own release
 binaries only cover amd64/arm64/armhf/s390x — on anything else the script
 skips control-plane setup and tells you so rather than guessing.
 
+## Pod networking (CNI)
+
+Host-network-only defeats a lot of the point of using Kubernetes, so
+`--with-cri` wires up real CNI networking by default (`--cni=flannel`;
+`--cni=none` restores the old hostNetwork-only behavior).
+
+How it fits together, with no changes needed to k3s or nodelet's core loop:
+- `nodelet` already only forces `hostNetwork` when a Pod asks for it
+  (`crates/nodelet/src/runtime/cri.rs`) — any other pod is left for containerd
+  to run through its normal CRI-driven CNI path.
+- containerd's CRI plugin is the thing that actually invokes CNI plugins on
+  `RunPodSandbox`; it just needs plugin binaries in `/opt/cni/bin` and a
+  network config in `/etc/cni/net.d`, which `bootstrap-test.sh` installs.
+- Per-node pod subnet allocation needs no new code on the control-plane side:
+  k3s's controller-manager runs `--allocate-node-cidrs` regardless of
+  `--flannel-backend`, which is exactly what lets `--flannel-backend=none`
+  (already the flag `setup-control-plane.sh` uses) be paired with any
+  self-managed CNI — flannel included.
+- `bootstrap-test.sh` installs the standard CNI plugins
+  (bridge/host-local/portmap/...), flannel's daemon (`flanneld`) and its CNI
+  plugin, writes `/etc/cni/net.d/10-flannel.conflist`, and runs `flanneld
+  --kube-subnet-mgr` — flannel's own IPAM backend that reads/writes per-node
+  subnet leases straight from Node objects, no separate etcd needed.
+
+Flannel was picked because it's the lightest widely-deployed option (one
+small daemon, no extra datastore) — a reasonable "start here" for a
+resource-constrained node. `--cni` is a real dispatch point, not just a
+flannel flag: adding another plugin (Calico, Cilium, ...) means installing
+its binaries/config and starting its daemon in `ensure_cni()` — containerd
+and nodelet don't care which CNI is in use.
+
+What's still missing: **Services (ClusterIP) need kube-proxy**, which is part
+of the kubelet/agent this project deliberately doesn't run. Direct pod-to-pod
+traffic by pod IP works today; Service routing is on the roadmap.
+
 ## Run it (single device, offline)
 
 ### 1. Bring up the stripped control plane (no kubelet)
@@ -184,8 +219,11 @@ sudo ./target/debug/examples/cri_smoke \
 ```
 
 Notes from validation:
-- The test pod uses **hostNetwork** so no CNI is required (the runtime sets the
-  sandbox network namespace to `NODE`; `nodelet` honors `pod.spec.hostNetwork`).
+- This smoke test's pod uses **hostNetwork** so it needs no CNI or apiserver at
+  all (it drives the CRI runtime directly). Real deployments don't have this
+  restriction: `nodelet` only forces hostNetwork when a Pod spec asks for it —
+  any other pod goes through containerd's normal CNI path and gets a real pod
+  IP. See [Pod networking (CNI)](#pod-networking-cni) below.
 - **Event-driven status has two sources, tried in order:** the CRI-standard
   `GetContainerEvents` stream (containerd ≥ 1.7, CRI-O), and — when that's
   unimplemented — containerd's own **`Events/Subscribe`** firehose (present in

@@ -67,10 +67,13 @@ fi
 #       Network-policy controller is not needed without a real CNI.
 #
 #   --flannel-backend=none
-#       Don't install Flannel.  Networking is either handled by the CRI runtime
-#       on the node side, or not needed at all (mock runtime).  For a real
-#       single-node setup the host network is sufficient; for multi-node the
-#       mesh layer (Tailscale/Netbird) will carry pod traffic.
+#       Don't run k3s's own embedded flannel controller — that code path lives
+#       in the agent/kubelet we're not running anyway. This is k3s's documented
+#       way to bring your own CNI: node PodCIDR allocation on the
+#       controller-manager (--allocate-node-cidrs) stays on regardless of this
+#       flag, so an externally-run flannel (see deploy/bootstrap-test.sh
+#       --with-cri, which installs and starts it) can still read/assign
+#       per-node subnets from Node objects via the "kube" subnet manager.
 #
 #   --kube-controller-manager-arg=node-monitor-period=10s
 #       How often the controller-manager checks node health via the Lease.
