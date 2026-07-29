@@ -28,8 +28,18 @@
 #   ./deploy/bootstrap-test.sh                  # mock runtime, k3s control plane, demo pod
 #   ./deploy/bootstrap-test.sh --with-cri       # also build+use the real containerd/CRI runtime
 #   ./deploy/bootstrap-test.sh --with-cri --cni=none   # real containers, hostNetwork-only (old behavior)
+#   ./deploy/bootstrap-test.sh --with-cri --ip-family=ipv4     # force v4-only
+#   ./deploy/bootstrap-test.sh --with-cri --lb-method=round-robin
 #   ./deploy/bootstrap-test.sh --skip-control-plane
 #   ./deploy/bootstrap-test.sh --cleanup        # tear down everything this script started
+#
+# --ip-family: auto (default) | ipv4 | ipv6 | dual. auto detects what the
+# node actually has (both stacks -> dual, one stack -> that one) and uses the
+# same result for k3s's --cluster-cidr/--service-cidr, flannel, and nodelet's
+# Service proxy, so all three agree. --lb-method: random (default; matches
+# how kube-proxy iptables mode behaves) | round-robin | source-hash (sticky
+# per client IP — also used automatically for any Service that sets
+# `sessionAffinity: ClientIP`, regardless of this default).
 #
 # CNI: real (non-hostNetwork) pods need a CNI plugin to get their own IP —
 # without one, RunPodSandbox works but nothing can reach a pod except by
@@ -67,6 +77,8 @@ SKIP_CONTROL_PLANE=0
 DO_CLEANUP=0
 FORCE_SOURCE_BUILD=0
 CNI_PLUGIN=flannel
+IP_FAMILY=auto
+LB_METHOD=random
 
 for arg in "$@"; do
     case "$arg" in
@@ -75,6 +87,8 @@ for arg in "$@"; do
         --cleanup) DO_CLEANUP=1 ;;
         --force-source-build) FORCE_SOURCE_BUILD=1 ;;
         --cni=*) CNI_PLUGIN="${arg#--cni=}" ;;
+        --ip-family=*) IP_FAMILY="${arg#--ip-family=}" ;;
+        --lb-method=*) LB_METHOD="${arg#--lb-method=}" ;;
         -h|--help)
             grep '^#' "$0" | sed -e 's/^# \{0,1\}//' -e '1,3d'
             exit 0
@@ -170,6 +184,59 @@ if [[ "$IS_ROOT" -eq 0 && "$SKIP_CONTROL_PLANE" -eq 0 ]]; then
 fi
 
 log "OS=$OS  arch=$ARCH_RAW (normalized: $ARCH)  pkg_mgr=$PKG_MGR  root=$IS_ROOT"
+
+# ─────────────────────────────────────────────────────────────────────────
+# IP family resolution — decided once, here, and handed to every consumer
+# (k3s's --cluster-cidr/--service-cidr, flannel's net-conf, and nodelet's
+# NODELET_IP_FAMILY) so they can't disagree with each other. auto detection
+# mirrors nodelet's own (a real socket bind in each family, not /proc
+# parsing, since that's the actual thing that matters and is consistent
+# across every distro).
+# ─────────────────────────────────────────────────────────────────────────
+
+detect_ipv4() { python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SOCK_DGRAM).bind(("0.0.0.0", 0))' 2>/dev/null; }
+detect_ipv6() { python3 -c 'import socket; socket.socket(socket.AF_INET6, socket.SOCK_DGRAM).bind(("::", 0))' 2>/dev/null; }
+
+case "$IP_FAMILY" in
+    auto)
+        if command -v python3 &>/dev/null; then
+            v4=0; v6=0
+            detect_ipv4 && v4=1
+            detect_ipv6 && v6=1
+        else
+            # No python3 to run a real bind test — fall back to the
+            # conventional /proc signal. v4 is assumed (near-universal).
+            v4=1
+            v6=0
+            [[ -f /proc/net/if_inet6 ]] && [[ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" == "0" ]] && v6=1
+        fi
+        if [[ "$v4" -eq 1 && "$v6" -eq 1 ]]; then IP_FAMILY=dual
+        elif [[ "$v6" -eq 1 ]]; then IP_FAMILY=ipv6
+        else IP_FAMILY=ipv4
+        fi
+        ;;
+    ipv4|ipv6|dual) ;;
+    *) die "Unknown --ip-family='$IP_FAMILY' (want 'auto', 'ipv4', 'ipv6', or 'dual')." ;;
+esac
+log "IP family: $IP_FAMILY"
+
+# CIDRs match Rancher's own documented k3s dual-stack example, so anyone
+# comparing against upstream k3s docs sees familiar numbers.
+IPV4_CLUSTER_CIDR="10.42.0.0/16"
+IPV4_SERVICE_CIDR="10.43.0.0/16"
+IPV6_CLUSTER_CIDR="fd00:42::/48"
+IPV6_SERVICE_CIDR="fd00:43::/112"
+case "$IP_FAMILY" in
+    ipv4) CLUSTER_CIDR="$IPV4_CLUSTER_CIDR"; SERVICE_CIDR="$IPV4_SERVICE_CIDR" ;;
+    ipv6) CLUSTER_CIDR="$IPV6_CLUSTER_CIDR"; SERVICE_CIDR="$IPV6_SERVICE_CIDR" ;;
+    dual) CLUSTER_CIDR="$IPV4_CLUSTER_CIDR,$IPV6_CLUSTER_CIDR"; SERVICE_CIDR="$IPV4_SERVICE_CIDR,$IPV6_SERVICE_CIDR" ;;
+esac
+export NOTK8S_CLUSTER_CIDR="$CLUSTER_CIDR" NOTK8S_SERVICE_CIDR="$SERVICE_CIDR"
+
+case "$LB_METHOD" in
+    random|round-robin|source-hash) ;;
+    *) die "Unknown --lb-method='$LB_METHOD' (want 'random', 'round-robin', or 'source-hash')." ;;
+esac
 
 # pkg_install <logical-name> <apt-pkg> <dnf-pkg> <pacman-pkg> <apk-pkg> <zypper-pkg> <xbps-pkg>
 # Best-effort: returns 0 on apparent success, 1 if no package manager could be used.
@@ -762,13 +829,41 @@ write_flannel_cni_conf() {
 EOF
 }
 
+# flanneld's kube-subnet-mgr mode works with zero config file for plain
+# IPv4 (it derives everything from --cluster-cidr via the Node's PodCIDR).
+# IPv6/dual-stack needs an explicit net-conf.json telling it to also handle
+# a v6 network — this is flannel's own documented dual-stack config shape.
+# NOTE: verified as real, parseable JSON and matched against flannel's
+# published dual-stack docs, but the actual vxlan-over-IPv6 dataplane this
+# produces was not exercised end-to-end here (no dual-stack hardware /
+# CAP_NET_ADMIN in the environment this was built in) — treat IPv6/dual mode
+# as less battle-tested than the IPv4 path, which was.
+write_flannel_net_conf() {
+    [[ "$IP_FAMILY" == "ipv4" ]] && return 0
+    mkdir -p /etc/kube-flannel
+    local v4_net="" v6_net=""
+    [[ "$IP_FAMILY" == "dual" || "$IP_FAMILY" == "ipv4" ]] && v4_net="$IPV4_CLUSTER_CIDR"
+    [[ "$IP_FAMILY" == "dual" || "$IP_FAMILY" == "ipv6" ]] && v6_net="$IPV6_CLUSTER_CIDR"
+    cat > /etc/kube-flannel/net-conf.json <<EOF
+{
+  "Network": "${v4_net:-$IPV4_CLUSTER_CIDR}",
+  "EnableIPv4": $( [[ -n "$v4_net" ]] && echo true || echo false ),
+  "EnableIPv6": $( [[ -n "$v6_net" ]] && echo true || echo false ),
+  "IPv6Network": "${v6_net:-::/0}",
+  "Backend": { "Type": "vxlan" }
+}
+EOF
+}
+
 start_flanneld() {
     pgrep -x flanneld &>/dev/null && return 0
     [[ -f "$KUBECONFIG" ]] || die "flanneld needs a KUBECONFIG (control plane must be up first)."
     mkdir -p /run/flannel
-    log "Starting flanneld (kube subnet manager, backend=vxlan)..."
+    log "Starting flanneld (kube subnet manager, backend=vxlan, ip-family=$IP_FAMILY)..."
+    local net_conf_args=()
+    [[ -f /etc/kube-flannel/net-conf.json ]] && net_conf_args=(--net-config-path=/etc/kube-flannel/net-conf.json)
     KUBECONFIG="$KUBECONFIG" NODE_NAME="${NODELET_NODE_NAME:-$(hostname)}" \
-        nohup flanneld --kube-subnet-mgr --ip-masq \
+        nohup flanneld --kube-subnet-mgr --ip-masq "${net_conf_args[@]}" \
         >"$LOG_DIR/flanneld.log" 2>&1 &
     echo $! > "$WORK_DIR/flanneld.pid"
     for _ in $(seq 1 30); do
@@ -789,6 +884,7 @@ ensure_cni() {
             ensure_cni_base_plugins
             ensure_flannel_binaries
             write_flannel_cni_conf
+            write_flannel_net_conf
             start_flanneld
             ;;
         *)
@@ -863,6 +959,8 @@ run_and_verify() {
 
     export NODELET_RUNTIME="mock"
     [[ "$WITH_CRI" -eq 1 ]] && NODELET_RUNTIME="cri"
+    export NODELET_IP_FAMILY="$IP_FAMILY"
+    export NODELET_LB_METHOD="$LB_METHOD"
 
     log "Starting nodelet (runtime=$NODELET_RUNTIME) in the background..."
     nohup "$SCRIPT_DIR/run-nodelet.sh" >"$LOG_DIR/nodelet.log" 2>&1 &

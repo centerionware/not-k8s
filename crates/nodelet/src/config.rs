@@ -16,6 +16,25 @@ pub enum RuntimeKind {
     Cri,
 }
 
+/// Which address family(ies) the Service proxy (`svc.rs`) programs rules
+/// for. Defaults to whatever the node actually has: both stacks if both
+/// work, otherwise whichever one does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IpFamily {
+    V4,
+    V6,
+    Dual,
+}
+
+/// Load-balancing algorithm for Services without `sessionAffinity: ClientIP`
+/// set (that field always forces source-hash — see `svc.rs::lb_expr`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LbMethod {
+    Random,
+    RoundRobin,
+    SourceHash,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub node_name: String,
@@ -34,6 +53,8 @@ pub struct Config {
     /// on for the `cri` runtime (where pods have real IPs worth routing to)
     /// and off for `mock` (nothing real to route to).
     pub service_proxy: bool,
+    pub ip_family: IpFamily,
+    pub lb_method: LbMethod,
 }
 
 impl Config {
@@ -81,6 +102,23 @@ impl Config {
             Err(_) => matches!(runtime, RuntimeKind::Cri),
         };
 
+        let ip_family = match std::env::var("NODELET_IP_FAMILY").as_deref() {
+            Ok("ipv4") => IpFamily::V4,
+            Ok("ipv6") => IpFamily::V6,
+            Ok("dual") => IpFamily::Dual,
+            Ok("auto") | Err(_) => detect_ip_family(),
+            Ok(other) => anyhow::bail!("unknown NODELET_IP_FAMILY '{other}' (want 'auto', 'ipv4', 'ipv6', or 'dual')"),
+        };
+
+        let lb_method = match std::env::var("NODELET_LB_METHOD").as_deref() {
+            Ok("random") | Err(_) => LbMethod::Random,
+            Ok("round-robin") => LbMethod::RoundRobin,
+            Ok("source-hash") => LbMethod::SourceHash,
+            Ok(other) => anyhow::bail!(
+                "unknown NODELET_LB_METHOD '{other}' (want 'random', 'round-robin', or 'source-hash')"
+            ),
+        };
+
         Ok(Self {
             node_name,
             runtime,
@@ -92,6 +130,8 @@ impl Config {
             max_pods,
             labels,
             service_proxy,
+            ip_family,
+            lb_method,
         })
     }
 }
@@ -114,6 +154,21 @@ fn detect_hostname() -> String {
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("HOSTNAME").ok())
         .unwrap_or_else(|| "nodelet".to_string())
+}
+
+/// Binding a socket in each family is a direct, distro-agnostic test of
+/// "can this process actually use this stack" — more reliable than parsing
+/// `/proc/sys/net/ipv6/...`, which varies by how IPv6 was disabled (kernel
+/// cmdline, sysctl, or just never configured).
+fn detect_ip_family() -> IpFamily {
+    let v4 = std::net::UdpSocket::bind("0.0.0.0:0").is_ok();
+    let v6 = std::net::UdpSocket::bind("[::]:0").is_ok();
+    match (v4, v6) {
+        (true, true) => IpFamily::Dual,
+        (true, false) => IpFamily::V4,
+        (false, true) => IpFamily::V6,
+        (false, false) => IpFamily::V4, // shouldn't happen; fall back to the common case
+    }
 }
 
 fn detect_cpu_cores() -> u64 {

@@ -50,7 +50,10 @@ async fn main() -> Result<()> {
     // isn't usable — pods and direct pod-IP traffic work either way.
     if cfg.service_proxy {
         let svc_client = client.clone();
-        tokio::spawn(async move { nodelet::svc::ServiceProxy::new(svc_client).run().await });
+        let (ip_family, lb_method) = (cfg.ip_family, cfg.lb_method);
+        tokio::spawn(async move {
+            nodelet::svc::ServiceProxy::new(svc_client, ip_family, lb_method).run().await
+        });
     }
 
     // The pod control loop. watcher() self-heals on watch errors; we only loop if

@@ -83,6 +83,18 @@ fi
 #   --write-kubeconfig-mode=0644
 #       Make the kubeconfig world-readable so non-root users can export it.
 #       Acceptable on a single-user edge device.
+#
+#   --cluster-cidr / --service-cidr
+#       Comma-separated v4,v6 pairs turn on dual-stack Service/Pod IP
+#       allocation (this is what --allocate-node-cidrs, which stays on
+#       regardless of --flannel-backend, actually allocates from). Defaults
+#       below are IPv4-only; deploy/bootstrap-test.sh overrides both via
+#       NOTK8S_CLUSTER_CIDR/NOTK8S_SERVICE_CIDR once it's resolved
+#       --ip-family, so this script and nodelet's Service proxy always agree
+#       on the same mode.
+
+CLUSTER_CIDR="${NOTK8S_CLUSTER_CIDR:-10.42.0.0/16}"
+SERVICE_CIDR="${NOTK8S_SERVICE_CIDR:-10.43.0.0/16}"
 
 export INSTALL_K3S_EXEC="server \
     --disable-agent \
@@ -93,6 +105,8 @@ export INSTALL_K3S_EXEC="server \
     --disable-cloud-controller \
     --disable-network-policy \
     --flannel-backend=none \
+    --cluster-cidr=$CLUSTER_CIDR \
+    --service-cidr=$SERVICE_CIDR \
     --kube-controller-manager-arg=node-monitor-period=10s \
     --write-kubeconfig-mode=0644"
 

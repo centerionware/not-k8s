@@ -13,6 +13,15 @@ lean, event-driven Rust binary** — because that's where the idle CPU/RAM actua
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full rationale.
 
+## Quick start
+
+One command, on any Linux box, any architecture — installs everything (see
+[Try it in one command](#try-it-in-one-command) below for what that means):
+
+```bash
+git clone https://github.com/centerionware/not-k8s && cd not-k8s && ./deploy/bootstrap-test.sh --with-cri
+```
+
 ---
 
 ## Why
@@ -98,6 +107,8 @@ via a from-scratch Go toolchain bootstrap) and starts containerd itself.
 ```bash
 ./deploy/bootstrap-test.sh                     # installs everything, mock runtime
 ./deploy/bootstrap-test.sh --with-cri          # + containerd/runc, real containers
+./deploy/bootstrap-test.sh --with-cri --ip-family=ipv4      # force v4-only (default: auto)
+./deploy/bootstrap-test.sh --with-cri --lb-method=round-robin  # default: random
 ./deploy/bootstrap-test.sh --skip-control-plane  # bring your own KUBECONFIG, no root needed
 ./deploy/bootstrap-test.sh --cleanup           # tear down everything it started
 ```
@@ -140,18 +151,53 @@ flannel flag: adding another plugin (Calico, Cilium, ...) means installing
 its binaries/config and starting its daemon in `ensure_cni()` — containerd
 and nodelet don't care which CNI is in use.
 
+### IPv4 / IPv6 / dual-stack
+
+`--ip-family` controls which address families k3s, flannel, and nodelet's
+Service proxy all use — the same value is handed to all three so they can't
+disagree:
+
+| Value | Behavior |
+|---|---|
+| `auto` (default) | Detect what the node actually has: both stacks work → `dual`; only one does → that one. Detection is a real socket bind in each family (`0.0.0.0:0` / `[::]:0`), not `/proc` parsing. |
+| `ipv4` | v4 only — the original, most battle-tested path. |
+| `ipv6` | v6 only. |
+| `dual` | Both. `--cluster-cidr`/`--service-cidr` become comma-separated v4,v6 pairs (`10.42.0.0/16,fd00:42::/48` and `10.43.0.0/16,fd00:43::/112` — the same values Rancher's own k3s dual-stack docs use), and flannel gets a `net-conf.json` with `EnableIPv6`. |
+
+The nftables side (`crates/nodelet/src/svc.rs`) uses a single `inet`-family
+table that mixes `ip`/`ip6` matches directly, and resolves backends from
+`EndpointSlice` (not the legacy `Endpoints` API) specifically because
+dual-stack Services get separate slices per address family — the legacy API
+only ever mirrors one family, which would silently break v6 backends.
+
+**Honesty note:** the nftables rule generation for all three IP-family modes
+is verified against a real `nft -c` parse for every load-balancing method ×
+backend count combination (see `cargo test`, which requires root/CAP_NET_ADMIN
+to actually run the check). What isn't independently verified is the
+IPv6/dual-stack **vxlan dataplane** flannel sets up — that needs real
+dual-stack network hardware/CAP_NET_ADMIN this project wasn't built against.
+Treat `--ip-family=ipv6`/`dual` as less battle-tested than the IPv4 path.
+
 ## Services (ClusterIP / NodePort), no kube-proxy
 
 Getting pods real IPs is only half the story — Services route through a
 virtual ClusterIP that no interface ever owns, which is normally kube-proxy's
 job. Rather than run kube-proxy (part of the kubelet/agent this project
 deliberately doesn't run), `nodelet` does that job itself:
-`crates/nodelet/src/svc.rs` watches Services + Endpoints the same
+`crates/nodelet/src/svc.rs` watches Services + EndpointSlices the same
 event-driven way `pods.rs` watches Pods, and programs an nftables table
-(`not_k8s_svc`) with the current ClusterIP/NodePort → backend mappings,
-load-balanced across ready endpoints. No separate process, no periodic
-resync — the whole ruleset is rebuilt atomically only when a Service or
-Endpoints object actually changes.
+(`not_k8s_svc`) with the current ClusterIP/NodePort → backend mappings. No
+separate process, no periodic resync — the whole ruleset is rebuilt
+atomically only when a Service or EndpointSlice actually changes.
+
+**Load balancing** — the common algorithms that are actually feasible with
+stateless nftables (no per-connection counters like ipvs's least-conn):
+
+| Method | nft mechanism | When |
+|---|---|---|
+| `random` (default) | `numgen random mod N` | `NODELET_LB_METHOD=random`, or unset |
+| `round-robin` | `numgen inc mod N` (deterministic counter) | `NODELET_LB_METHOD=round-robin` |
+| `source-hash` | `jhash ip[6] saddr mod N` (sticky per client IP) | `NODELET_LB_METHOD=source-hash`, **or automatically** whenever a Service sets the real Kubernetes field `sessionAffinity: ClientIP`, regardless of the configured default |
 
 This needs `nft` on the node and bridged pod traffic to reach the host's
 netfilter tables (`br_netfilter`) — both handled by
@@ -159,9 +205,6 @@ netfilter tables (`br_netfilter`) — both handled by
 detects that, logs it once, and simply skips Service routing; direct pod-IP
 traffic is unaffected either way. `NODELET_SERVICE_PROXY=false` opts out
 explicitly (it's on by default whenever `NODELET_RUNTIME=cri`).
-
-Known limits: IPv4 only, and load balancing is `numgen random` (no
-session affinity yet).
 
 ## Run it (single device, offline)
 
@@ -266,6 +309,8 @@ Notes from validation:
 | `NODELET_MAX_PODS` | `110` | Pod capacity. |
 | `NODELET_LABELS` | — | Extra node labels, `k=v,k=v`. |
 | `NODELET_SERVICE_PROXY` | `true` if `cri`, else `false` | Program ClusterIP/NodePort nftables rules (see [Services](#services-clusterip--nodeport-no-kube-proxy)). |
+| `NODELET_IP_FAMILY` | `auto` | `auto`, `ipv4`, `ipv6`, or `dual` — see [IPv4 / IPv6 / dual-stack](#ipv4--ipv6--dual-stack). |
+| `NODELET_LB_METHOD` | `random` | `random`, `round-robin`, or `source-hash` — see [Services](#services-clusterip--nodeport-no-kube-proxy). |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---
