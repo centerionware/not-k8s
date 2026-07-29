@@ -31,7 +31,21 @@
 #   ./deploy/bootstrap-test.sh --with-cri --ip-family=ipv4     # force v4-only
 #   ./deploy/bootstrap-test.sh --with-cri --lb-method=round-robin
 #   ./deploy/bootstrap-test.sh --skip-control-plane
+#   ./deploy/bootstrap-test.sh --keep-build-tools   # skip the end-of-run toolchain cleanup (faster re-runs)
 #   ./deploy/bootstrap-test.sh --cleanup        # tear down everything this script started
+#
+# Footprint: this is meant to end with only nodelet's binary and whatever it
+# needs *running* left behind on the device — not a permanently-installed
+# Rust/C/Go toolchain. Once the build finishes (and, if --with-cri pulled in
+# Go to build containerd/runc/CNI plugins/flannel from source, once that's
+# done too), the script uninstalls every build-only package IT installed
+# fresh — never something that was already on the system — deletes all
+# download/build scratch, and wipes the entire `target/` build cache after
+# copying the final binary to `bin/nodelet` (the stable path `run-nodelet.sh`
+# looks for). Runtime pieces (containerd, runc, flanneld, the CNI plugins,
+# nftables, k3s) are never touched by this — the cluster still needs them
+# running. Pass --keep-build-tools to skip this and leave everything in
+# place, e.g. while iterating on the script itself.
 #
 # --ip-family: auto (default) | ipv4 | ipv6 | dual. auto detects what the
 # node actually has (both stacks -> dual, one stack -> that one) and uses the
@@ -79,6 +93,7 @@ FORCE_SOURCE_BUILD=0
 CNI_PLUGIN=flannel
 IP_FAMILY=auto
 LB_METHOD=random
+KEEP_BUILD_TOOLS=0
 
 for arg in "$@"; do
     case "$arg" in
@@ -89,6 +104,7 @@ for arg in "$@"; do
         --cni=*) CNI_PLUGIN="${arg#--cni=}" ;;
         --ip-family=*) IP_FAMILY="${arg#--ip-family=}" ;;
         --lb-method=*) LB_METHOD="${arg#--lb-method=}" ;;
+        --keep-build-tools) KEEP_BUILD_TOOLS=1 ;;
         -h|--help)
             grep '^#' "$0" | sed -e 's/^# \{0,1\}//' -e '1,3d'
             exit 0
@@ -107,30 +123,15 @@ warn() { printf '\033[1;33m==> WARNING:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m==> FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ─────────────────────────────────────────────────────────────────────────
-# Cleanup mode
-# ─────────────────────────────────────────────────────────────────────────
-
-if [[ "$DO_CLEANUP" -eq 1 ]]; then
-    log "Stopping nodelet (if running via this script's pidfile)..."
-    [[ -f "$WORK_DIR/nodelet.pid" ]] && kill "$(cat "$WORK_DIR/nodelet.pid")" 2>/dev/null || true
-    log "Removing the Service-proxy nftables table (if present)..."
-    command -v nft &>/dev/null && nft delete table ip not_k8s_svc 2>/dev/null || true
-    log "Stopping flanneld (if this script started it)..."
-    [[ -f "$WORK_DIR/flanneld.pid" ]] && kill "$(cat "$WORK_DIR/flanneld.pid")" 2>/dev/null || true
-    log "Stopping containerd (if this script started it)..."
-    [[ -f "$WORK_DIR/containerd.pid" ]] && kill "$(cat "$WORK_DIR/containerd.pid")" 2>/dev/null || true
-    if command -v k3s-uninstall.sh &>/dev/null; then
-        log "Uninstalling k3s..."
-        sudo k3s-uninstall.sh || true
-    fi
-    log "Removing $WORK_DIR (downloaded toolchains, build dirs, logs)..."
-    rm -rf "$WORK_DIR"
-    log "Cleanup done. 'cargo clean' if you also want target/ gone."
-    exit 0
-fi
-
-# ─────────────────────────────────────────────────────────────────────────
 # OS / arch / package-manager detection
+# ─────────────────────────────────────────────────────────────────────────
+#
+# --cleanup is handled by full_cleanup(), defined further down and invoked
+# from the Main section — not as an early exit here — because it needs
+# $PKG_MGR/$SUDO (detected below) and uninstall_tracked_build_packages()
+# (defined alongside the other build functions) to remove exactly the
+# build-only packages this script installed, the same as the automatic
+# end-of-run cleanup a normal install does.
 # ─────────────────────────────────────────────────────────────────────────
 
 OS="$(uname -s)"
@@ -240,23 +241,32 @@ esac
 
 # pkg_install <logical-name> <apt-pkg> <dnf-pkg> <pacman-pkg> <apk-pkg> <zypper-pkg> <xbps-pkg>
 # Best-effort: returns 0 on apparent success, 1 if no package manager could be used.
+# Every successful install is appended to $WORK_DIR/pkg_installs.log as
+# "<pkgmgr>|<logical-name>|<packages>" — this is what makes the end-of-run
+# footprint cleanup possible: only packages *this script* actually installed
+# get recorded, so cleanup can uninstall exactly those and leave anything
+# that was already on the system untouched. Never logs failures.
 pkg_install() {
     local name="$1" apt="$2" dnf="$3" pacman="$4" apk="$5" zypper="$6" xbps="$7"
     [[ "$FORCE_SOURCE_BUILD" -eq 1 ]] && return 1
     log "Trying to install '$name' via $PKG_MGR..."
+    local pkgs="" ok=1
     case "$PKG_MGR" in
         apt)
+            pkgs="$apt"
             $SUDO apt-get update -qq -y >>"$LOG_DIR/pkg.log" 2>&1 || true
-            $SUDO apt-get install -qq -y $apt >>"$LOG_DIR/pkg.log" 2>&1
+            $SUDO apt-get install -qq -y $apt >>"$LOG_DIR/pkg.log" 2>&1 && ok=0 || ok=1
             ;;
-        dnf)    $SUDO dnf install -y -q $dnf >>"$LOG_DIR/pkg.log" 2>&1 ;;
-        yum)    $SUDO yum install -y -q $dnf >>"$LOG_DIR/pkg.log" 2>&1 ;;
-        pacman) $SUDO pacman -Sy --noconfirm --needed $pacman >>"$LOG_DIR/pkg.log" 2>&1 ;;
-        apk)    $SUDO apk add --no-cache $apk >>"$LOG_DIR/pkg.log" 2>&1 ;;
-        zypper) $SUDO zypper --non-interactive install $zypper >>"$LOG_DIR/pkg.log" 2>&1 ;;
-        xbps)   $SUDO xbps-install -Sy $xbps >>"$LOG_DIR/pkg.log" 2>&1 ;;
+        dnf)    pkgs="$dnf";    $SUDO dnf install -y -q $dnf >>"$LOG_DIR/pkg.log" 2>&1 && ok=0 || ok=1 ;;
+        yum)    pkgs="$dnf";    $SUDO yum install -y -q $dnf >>"$LOG_DIR/pkg.log" 2>&1 && ok=0 || ok=1 ;;
+        pacman) pkgs="$pacman"; $SUDO pacman -Sy --noconfirm --needed $pacman >>"$LOG_DIR/pkg.log" 2>&1 && ok=0 || ok=1 ;;
+        apk)    pkgs="$apk";    $SUDO apk add --no-cache $apk >>"$LOG_DIR/pkg.log" 2>&1 && ok=0 || ok=1 ;;
+        zypper) pkgs="$zypper"; $SUDO zypper --non-interactive install $zypper >>"$LOG_DIR/pkg.log" 2>&1 && ok=0 || ok=1 ;;
+        xbps)   pkgs="$xbps";   $SUDO xbps-install -Sy $xbps >>"$LOG_DIR/pkg.log" 2>&1 && ok=0 || ok=1 ;;
         *)      return 1 ;;
     esac
+    [[ "$ok" -eq 0 ]] && echo "$PKG_MGR|$name|$pkgs" >> "$WORK_DIR/pkg_installs.log"
+    return "$ok"
 }
 
 fetch() { # fetch <url> <output-path>
@@ -391,8 +401,13 @@ RUSTUP_TARGET_MAP() {
 # fairly recent toolchain. Debian bookworm ships rustc 1.63 from 2022, which
 # can't even parse a v4 lockfile. So: any cargo older than this is treated
 # as "not found" and we fall through to rustup instead of failing later
-# with a confusing lockfile/MSRV error.
-MIN_CARGO_MINOR=78
+# with a confusing lockfile/MSRV error. This number is the actual MSRV of
+# the exact dependency versions pinned in Cargo.lock (kube 4.0.0 / tonic
+# 0.14.6 currently require rustc 1.88) — bump it if `cargo build` ever
+# fails with "rustc X is not supported by the following packages" even
+# though this check passed; that means a dependency bump raised the MSRV
+# past what this constant knows about.
+MIN_CARGO_MINOR=88
 
 cargo_is_new_enough() {
     command -v cargo &>/dev/null || return 1
@@ -942,7 +957,13 @@ build_nodelet() {
     log "Building nodelet (cargo build --release ${features[*]:-})..."
     cargo build --release "${features[@]}"
     [[ -x "$REPO_ROOT/target/release/nodelet" ]] || die "Build finished but binary not found."
-    log "nodelet built: $REPO_ROOT/target/release/nodelet"
+
+    # Copy out to a stable path before the end-of-run cleanup wipes target/
+    # (the whole cargo build cache — deps, incremental, fingerprints — none
+    # of which is needed once the binary exists).
+    mkdir -p "$REPO_ROOT/bin"
+    install -m 0755 "$REPO_ROOT/target/release/nodelet" "$REPO_ROOT/bin/nodelet"
+    log "nodelet built: $REPO_ROOT/bin/nodelet"
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -986,8 +1007,109 @@ run_and_verify() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────
+# Footprint cleanup — everything past this point is about disk, not
+# functionality. Only *build-only* tools are in scope (see the usage
+# header): rustc/cargo, the C/C++ toolchain, protoc, Go, and git if this
+# script installed it fresh purely to `git clone` one of the above.
+# Runtime pieces the cluster keeps needing (containerd, runc, flanneld, CNI
+# plugins, nftables, k3s) are never touched here.
+# ─────────────────────────────────────────────────────────────────────────
+
+# Must match the `name` argument nodelet's build-only pkg_install call sites
+# use, so cleanup only ever removes packages installed for compiling things,
+# never packages a *running* cluster still depends on.
+BUILD_ONLY_PKG_NAMES=" C toolchain C++ compiler rust protoc go git "
+
+uninstall_tracked_build_packages() {
+    [[ -f "$WORK_DIR/pkg_installs.log" ]] || return 0
+    local removed_any=0
+    while IFS='|' read -r mgr pkg_name pkgs; do
+        case "$BUILD_ONLY_PKG_NAMES" in
+            *" $pkg_name "*) ;;
+            *) continue ;; # a runtime package we must leave installed
+        esac
+        [[ -z "$pkgs" ]] && continue
+        log "Removing build-only package(s) this script installed: $pkgs (via $mgr)"
+        case "$mgr" in
+            apt)    $SUDO apt-get remove -y -qq $pkgs >>"$LOG_DIR/pkg.log" 2>&1 ;;
+            dnf)    $SUDO dnf remove -y -q $pkgs >>"$LOG_DIR/pkg.log" 2>&1 ;;
+            yum)    $SUDO yum remove -y -q $pkgs >>"$LOG_DIR/pkg.log" 2>&1 ;;
+            pacman) $SUDO pacman -Rns --noconfirm $pkgs >>"$LOG_DIR/pkg.log" 2>&1 ;;
+            apk)    $SUDO apk del $pkgs >>"$LOG_DIR/pkg.log" 2>&1 ;;
+            zypper) $SUDO zypper --non-interactive remove $pkgs >>"$LOG_DIR/pkg.log" 2>&1 ;;
+            xbps)   $SUDO xbps-remove -Ry $pkgs >>"$LOG_DIR/pkg.log" 2>&1 ;;
+        esac || warn "Failed to remove '$pkgs' via $mgr — leaving it installed (see $LOG_DIR/pkg.log)."
+        removed_any=1
+    done < "$WORK_DIR/pkg_installs.log"
+    if [[ "$removed_any" -eq 1 && "$PKG_MGR" == "apt" ]]; then
+        $SUDO apt-get autoremove -y -qq >>"$LOG_DIR/pkg.log" 2>&1 || true
+    fi
+    rm -f "$WORK_DIR/pkg_installs.log"
+}
+
+cleanup_build_footprint() {
+    [[ "$KEEP_BUILD_TOOLS" -eq 1 ]] && { log "Skipping build-toolchain cleanup (--keep-build-tools)."; return 0; }
+    log "Cleaning up build toolchain (keeping the built binary + whatever the cluster needs running)..."
+
+    # All download/build scratch — tarballs, extracted sources, git clones
+    # of gcc/binutils/go/protobuf/containerd/runc/plugins/flannel/cni-plugin.
+    # None of it is needed once the binaries it produced exist elsewhere.
+    rm -rf "$SRC_DIR"
+
+    # Self-contained build toolchains under .bootstrap/ — always ours,
+    # always safe, regardless of whether they came from rustup, a musl.cc
+    # static download, or a from-source build.
+    rm -rf "$TOOLCHAIN_DIR/rustup" "$TOOLCHAIN_DIR/cargo" "$TOOLCHAIN_DIR/go" \
+           "$TOOLCHAIN_DIR/gcc-src-build" "$TOOLCHAIN_DIR/protoc-dist" "$TOOLCHAIN_DIR/protoc-src-build"
+    rm -rf "$TOOLCHAIN_DIR"/*-cross 2>/dev/null
+    # $TOOLCHAIN_DIR/bin is mixed: build-only (cc/gcc/g++/protoc/go) sits
+    # next to runtime binaries (runc/containerd/flanneld) — remove only the
+    # named build-only entries, never glob the whole directory.
+    rm -f "$TOOLCHAIN_DIR/bin"/{cc,gcc,g++,protoc,go}
+
+    # cargo's build cache (deps, incremental, fingerprints) — the only
+    # thing worth keeping was already copied to bin/nodelet.
+    rm -rf "$REPO_ROOT/target"
+
+    # Build-only *system* packages this run installed fresh (never anything
+    # that pre-existed, and never containerd/runc/CNI/flannel/nftables).
+    uninstall_tracked_build_packages
+
+    log "Footprint cleanup done. $(du -sh "$REPO_ROOT/bin/nodelet" 2>/dev/null | cut -f1) binary at $REPO_ROOT/bin/nodelet is what's left of the build."
+}
+
+# Full teardown for --cleanup: stop everything this script started running,
+# uninstall k3s and every build-only package it installed (a normal run
+# already did this at the end automatically unless --keep-build-tools was
+# used — this covers that case too), and remove every trace under
+# $WORK_DIR/bin/target.
+full_cleanup() {
+    log "Stopping nodelet (if running via this script's pidfile)..."
+    [[ -f "$WORK_DIR/nodelet.pid" ]] && kill "$(cat "$WORK_DIR/nodelet.pid")" 2>/dev/null || true
+    log "Removing the Service-proxy nftables table (if present)..."
+    command -v nft &>/dev/null && nft delete table inet not_k8s_svc 2>/dev/null || true
+    log "Stopping flanneld (if this script started it)..."
+    [[ -f "$WORK_DIR/flanneld.pid" ]] && kill "$(cat "$WORK_DIR/flanneld.pid")" 2>/dev/null || true
+    log "Stopping containerd (if this script started it)..."
+    [[ -f "$WORK_DIR/containerd.pid" ]] && kill "$(cat "$WORK_DIR/containerd.pid")" 2>/dev/null || true
+    if command -v k3s-uninstall.sh &>/dev/null; then
+        log "Uninstalling k3s..."
+        $SUDO k3s-uninstall.sh || true
+    fi
+    uninstall_tracked_build_packages
+    log "Removing $WORK_DIR, $REPO_ROOT/bin, and $REPO_ROOT/target..."
+    rm -rf "$WORK_DIR" "$REPO_ROOT/bin" "$REPO_ROOT/target"
+    log "Cleanup done."
+}
+
+# ─────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────
+
+if [[ "$DO_CLEANUP" -eq 1 ]]; then
+    full_cleanup
+    exit 0
+fi
 
 log "not-k8s bootstrap-test: isolated single-script deployment"
 ensure_c_toolchain
@@ -999,3 +1121,4 @@ ensure_cni
 ensure_nft
 enable_bridge_netfilter
 run_and_verify
+cleanup_build_footprint

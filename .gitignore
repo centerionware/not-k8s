@@ -3,6 +3,10 @@
 **/*.rs.bk
 *.pdb
 
+# bootstrap-test.sh's minimal-footprint output: the built nodelet binary,
+# copied out of target/ before target/ gets deleted to save disk.
+/bin/
+
 # Bootstrap script's downloaded toolchains / build scratch / logs
 /.bootstrap/
 

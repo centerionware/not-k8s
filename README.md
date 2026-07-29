@@ -64,7 +64,10 @@ in the architecture doc).
 
 ## Build
 
-Requires a Rust toolchain (stable). The default build needs **no** extra system
+Requires a Rust toolchain (stable, and new enough — check `Cargo.lock` for
+the pinned `kube`/`tonic` versions' actual MSRV if `cargo build` fails with
+"rustc X is not supported by the following packages"; distro-packaged Rust
+is frequently too old). The default build needs **no** extra system
 packages; the `cri` feature needs `protoc` at build time.
 
 ```bash
@@ -104,12 +107,25 @@ agent, and applies the demo pod. With `--with-cri` it also installs
 containerd + runc (package manager -> official prebuilt -> built from source
 via a from-scratch Go toolchain bootstrap) and starts containerd itself.
 
+**Minimal footprint by default:** the point of this project is not wearing
+out an embedded device's flash or leaving a permanent toolchain installed on
+it. Once the build (and any from-source containerd/runc/CNI/flannel builds)
+finishes, the script copies the binary to `bin/nodelet`, deletes `target/`
+(the whole cargo build cache), deletes every download/git-clone/source
+directory it used, and uninstalls every build-only package (`rustc`/`cargo`,
+the C/C++ toolchain, `protoc`, `go`, `git` if it wasn't already there) —
+**only** ones this run installed fresh, never something that pre-existed,
+and never runtime pieces the cluster keeps needing (containerd, runc,
+flanneld, CNI plugins, nftables, k3s). Pass `--keep-build-tools` to skip
+this, e.g. while iterating on the script itself.
+
 ```bash
 ./deploy/bootstrap-test.sh                     # installs everything, mock runtime
 ./deploy/bootstrap-test.sh --with-cri          # + containerd/runc, real containers
 ./deploy/bootstrap-test.sh --with-cri --ip-family=ipv4      # force v4-only (default: auto)
 ./deploy/bootstrap-test.sh --with-cri --lb-method=round-robin  # default: random
 ./deploy/bootstrap-test.sh --skip-control-plane  # bring your own KUBECONFIG, no root needed
+./deploy/bootstrap-test.sh --keep-build-tools  # skip the end-of-run toolchain cleanup
 ./deploy/bootstrap-test.sh --cleanup           # tear down everything it started
 ```
 
