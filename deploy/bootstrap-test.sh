@@ -24,6 +24,12 @@
 # points at the only real alternative (mrustc) instead of pretending to
 # solve it.
 #
+# nodelet itself is installed as a real, persistent, auto-restarting service
+# (systemd, or OpenRC if that's what this system has — k3s's own installer
+# doesn't support anything else, so nothing running k3s should lack both),
+# the same treatment k3s already gets — not just started in the foreground
+# and left to die with this script's terminal.
+#
 # Usage:
 #   ./deploy/bootstrap-test.sh                  # mock runtime, k3s control plane, demo pod
 #   ./deploy/bootstrap-test.sh --with-cri       # also build+use the real containerd/CRI runtime
@@ -1006,6 +1012,128 @@ build_nodelet() {
 # Run it
 # ─────────────────────────────────────────────────────────────────────────
 
+NODELET_UNIT_SYSTEMD=/etc/systemd/system/nodelet.service
+NODELET_UNIT_OPENRC=/etc/init.d/nodelet
+NODELET_SUPERVISOR_SCRIPT="$WORK_DIR/nodelet-supervisor.sh"
+
+# Installs nodelet as a real, persistent, auto-restarting service — this
+# replaces an earlier version of this script that only `nohup`'d nodelet
+# tied to the invoking shell, which died with the terminal, a reboot, or any
+# crash, with nothing to bring it back. k3s itself already gets exactly this
+# treatment (a real service); there was no reason nodelet shouldn't too.
+#
+# Three tiers, matching what's actually available:
+#   1. systemd (Restart=always, enabled on boot) — the common case.
+#   2. OpenRC (supervise-daemon, respawn, added to the default runlevel) —
+#      the only other init system k3s's own installer supports, so nothing
+#      running k3s at all should lack both this and systemd.
+#   3. Neither: a self-restarting background loop, persisted across reboots
+#      via a cron @reboot entry if cron exists. Not equivalent to a real
+#      service — surfaced with a clear warning, not silently accepted as
+#      good enough — but still means a crash recovers on its own instead of
+#      needing a human to notice and restart it by hand.
+install_nodelet_service() {
+    if command -v systemctl &>/dev/null; then
+        install_nodelet_service_systemd
+    elif command -v rc-service &>/dev/null && command -v rc-update &>/dev/null; then
+        install_nodelet_service_openrc
+    else
+        install_nodelet_service_fallback
+    fi
+}
+
+nodelet_env_lines() { # $1 = "export VAR=value" (shell) or "Environment=VAR=value" (systemd)
+    local style="$1" out=""
+    for kv in "KUBECONFIG=$KUBECONFIG" "NODELET_RUNTIME=$NODELET_RUNTIME" \
+              "NODELET_IP_FAMILY=$IP_FAMILY" "NODELET_LB_METHOD=$LB_METHOD"; do
+        [[ "$style" == "systemd" ]] && out+="Environment=$kv"$'\n' || out+="export $kv"$'\n'
+    done
+    if [[ -n "${NODELET_CRI_ENDPOINT:-}" ]]; then
+        [[ "$style" == "systemd" ]] && out+="Environment=NODELET_CRI_ENDPOINT=$NODELET_CRI_ENDPOINT"$'\n' \
+            || out+="export NODELET_CRI_ENDPOINT=$NODELET_CRI_ENDPOINT"$'\n'
+    fi
+    printf '%s' "$out"
+}
+
+install_nodelet_service_systemd() {
+    log "Installing nodelet as a systemd service (Restart=always, enabled on boot)..."
+    cat > "$NODELET_UNIT_SYSTEMD" <<EOF
+[Unit]
+Description=nodelet — not-k8s node agent (kubelet replacement)
+Documentation=https://github.com/centerionware/not-k8s
+After=k3s.service network-online.target
+Wants=k3s.service network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$REPO_ROOT
+ExecStart=$SCRIPT_DIR/run-nodelet.sh
+Restart=always
+RestartSec=5s
+$(nodelet_env_lines systemd)
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now nodelet.service
+    sleep 3
+    systemctl is-active --quiet nodelet.service \
+        || warn "nodelet.service didn't come up cleanly — check: journalctl -u nodelet -n 50"
+}
+
+install_nodelet_service_openrc() {
+    log "Installing nodelet as an OpenRC service (supervised, auto-restart, added to boot)..."
+    cat > "$NODELET_UNIT_OPENRC" <<EOF
+#!/sbin/openrc-run
+description="nodelet — not-k8s node agent (kubelet replacement)"
+
+$(nodelet_env_lines shell)
+supervisor="supervise-daemon"
+command="$SCRIPT_DIR/run-nodelet.sh"
+respawn_max=0
+respawn_delay=5
+
+depend() {
+    need net
+    after k3s
+}
+EOF
+    chmod +x "$NODELET_UNIT_OPENRC"
+    rc-update add nodelet default 2>/dev/null || true
+    rc-service nodelet start
+    sleep 3
+    rc-service nodelet status 2>&1 | grep -qi started \
+        || warn "nodelet OpenRC service didn't come up cleanly — check: rc-service nodelet status"
+}
+
+install_nodelet_service_fallback() {
+    warn "No systemd or OpenRC on this system (k3s's own installer only supports those two, so \
+this is unusual for a box running k3s) — falling back to a self-restarting background loop. \
+This recovers from a crash but is NOT a real service; set up this system's actual init/service \
+manager to run '$SCRIPT_DIR/run-nodelet.sh' persistently when you can."
+    cat > "$NODELET_SUPERVISOR_SCRIPT" <<EOF
+#!/usr/bin/env bash
+$(nodelet_env_lines shell)
+while true; do
+    "$SCRIPT_DIR/run-nodelet.sh"
+    sleep 5
+done
+EOF
+    chmod +x "$NODELET_SUPERVISOR_SCRIPT"
+    nohup "$NODELET_SUPERVISOR_SCRIPT" >"$LOG_DIR/nodelet.log" 2>&1 &
+    echo $! > "$WORK_DIR/nodelet.pid"
+    sleep 3
+
+    if command -v crontab &>/dev/null; then
+        ( crontab -l 2>/dev/null | grep -vF "$NODELET_SUPERVISOR_SCRIPT"
+          echo "@reboot $NODELET_SUPERVISOR_SCRIPT >>$LOG_DIR/nodelet.log 2>&1 &" ) | crontab - \
+            && log "Added a cron @reboot entry, so nodelet also restarts after a reboot." \
+            || warn "Couldn't add a cron @reboot entry — nodelet will NOT survive a reboot on this system."
+    else
+        warn "No cron either — nodelet will NOT survive a reboot on this system."
+    fi
+}
+
 run_and_verify() {
     export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
     if [[ ! -f "$KUBECONFIG" ]]; then
@@ -1019,10 +1147,8 @@ run_and_verify() {
     export NODELET_IP_FAMILY="$IP_FAMILY"
     export NODELET_LB_METHOD="$LB_METHOD"
 
-    log "Starting nodelet (runtime=$NODELET_RUNTIME) in the background..."
-    nohup "$SCRIPT_DIR/run-nodelet.sh" >"$LOG_DIR/nodelet.log" 2>&1 &
-    echo $! > "$WORK_DIR/nodelet.pid"
-    sleep 3
+    log "Starting nodelet (runtime=$NODELET_RUNTIME)..."
+    install_nodelet_service
 
     log "Waiting for the node to register..."
     for i in $(seq 1 20); do
@@ -1031,14 +1157,14 @@ run_and_verify() {
         fi
         sleep 2
     done
-    kubectl get nodes -o wide || warn "kubectl get nodes failed — check $LOG_DIR/nodelet.log"
+    kubectl get nodes -o wide || warn "kubectl get nodes failed — check: journalctl -u nodelet -n 50 (or $LOG_DIR/nodelet.log if systemd isn't available)"
 
     log "Applying demo pod..."
     kubectl apply -f "$REPO_ROOT/deploy/demo-pod.yaml"
     sleep 3
     kubectl get pods -o wide
 
-    log "Done. Tail logs with: tail -f $LOG_DIR/nodelet.log"
+    log "Done. Logs: journalctl -u nodelet -f"
     log "Tear everything down with: $0 --cleanup"
 }
 
@@ -1139,7 +1265,12 @@ cleanup_build_footprint() {
 }
 
 stop_running_components() {
-    log "Stopping nodelet (if running via this script's pidfile)..."
+    log "Stopping nodelet..."
+    command -v systemctl &>/dev/null && systemctl stop nodelet.service 2>/dev/null
+    command -v rc-service &>/dev/null && rc-service nodelet stop 2>/dev/null
+    # The fallback supervisor loop's own pid doesn't cascade to whatever
+    # run-nodelet.sh child it's currently mid-restart-cycle with.
+    pkill -f "$SCRIPT_DIR/run-nodelet.sh" 2>/dev/null
     [[ -f "$WORK_DIR/nodelet.pid" ]] && kill "$(cat "$WORK_DIR/nodelet.pid")" 2>/dev/null || true
     log "Removing the Service-proxy nftables table (if present)..."
     command -v nft &>/dev/null && nft delete table inet not_k8s_svc 2>/dev/null || true
@@ -1156,8 +1287,30 @@ stop_running_components() {
 # $WORK_DIR/bin/target. Runtime packages (containerd/runc/nftables/CNI
 # plugins/flannel) and k3s's own config/data are left in place, so the next
 # run doesn't have to reinstall them — use --uninstall to remove those too.
+# Undoes install_nodelet_service() — nodelet is entirely this project's own
+# thing (unlike containerd/runc/CNI/flannel, which other software might
+# also depend on), so it gets the same treatment as k3s itself: removed by
+# --cleanup, not held back for "next run" the way shared runtime infra is.
+remove_nodelet_service() {
+    if command -v systemctl &>/dev/null; then
+        systemctl disable --now nodelet.service 2>/dev/null || true
+        rm -f "$NODELET_UNIT_SYSTEMD"
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+    if command -v rc-update &>/dev/null; then
+        rc-service nodelet stop 2>/dev/null || true
+        rc-update del nodelet default 2>/dev/null || true
+        rm -f "$NODELET_UNIT_OPENRC"
+    fi
+    if command -v crontab &>/dev/null; then
+        ( crontab -l 2>/dev/null | grep -vF "$NODELET_SUPERVISOR_SCRIPT" ) | crontab - 2>/dev/null || true
+    fi
+    rm -f "$NODELET_SUPERVISOR_SCRIPT"
+}
+
 full_cleanup() {
     stop_running_components
+    remove_nodelet_service
     if command -v k3s-uninstall.sh &>/dev/null; then
         log "Uninstalling k3s..."
         $SUDO k3s-uninstall.sh || true
@@ -1231,6 +1384,7 @@ full_uninstall() {
     fi
 
     stop_running_components
+    remove_nodelet_service
     # stop_running_components only kills what *this invocation's* pidfiles
     # know about. Ownership here is decided by package/binary provenance
     # instead (we_own_containerd/we_own_cni above, or unconditionally under

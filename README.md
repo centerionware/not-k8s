@@ -102,10 +102,20 @@ packages and the k3s service), detects your package manager and arch, gets a
 C toolchain and a Rust toolchain new enough to build this workspace (falling
 back through official prebuilt releases, then a static cross toolchain, then
 building gcc from source if truly nothing else is available), builds
-`nodelet`, installs and starts the stripped k3s control plane, starts the
-agent, and applies the demo pod. With `--with-cri` it also installs
-containerd + runc (package manager -> official prebuilt -> built from source
-via a from-scratch Go toolchain bootstrap) and starts containerd itself.
+`nodelet`, installs and starts the stripped k3s control plane, and applies
+the demo pod. With `--with-cri` it also installs containerd + runc (package
+manager -> official prebuilt -> built from source via a from-scratch Go
+toolchain bootstrap) and starts containerd itself.
+
+`nodelet` itself is installed as a real, persistent service — the same
+treatment k3s already gets — not just started in the foreground and left to
+die with the terminal: a systemd service (`Restart=always`, enabled on boot)
+if systemd is present, an OpenRC service (`supervise-daemon`, added to the
+default runlevel) if not — k3s's own installer only supports those two init
+systems, so nothing actually running k3s should lack both. If neither is
+present, a self-restarting background loop plus a cron `@reboot` entry
+(best-effort — not a substitute for a real service, and it says so when it
+falls back to this).
 
 **Minimal footprint by default:** the point of this project is not wearing
 out an embedded device's flash or leaving a permanent toolchain installed on
