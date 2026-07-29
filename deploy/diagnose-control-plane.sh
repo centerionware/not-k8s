@@ -106,6 +106,26 @@ flags are NOT in effect) ==="
     } > "$OUT_DIR/00b-disable-flags-sanity-check.txt" 2>&1
 fi
 
+# ── Is nodelet actually running? ─────────────────────────────────────────
+# A NotReady node / pods stuck Pending forever points at nodelet, not
+# k3s-server's CPU/RAM — a different problem than what this script exists
+# to diagnose, but worth surfacing plainly instead of leaving it implicit
+# in a NotReady status buried in the section above.
+{
+    echo "=== nodelet process ==="
+    pgrep -af nodelet 2>&1 || echo "no nodelet process found"
+} > "$OUT_DIR/00c-nodelet-status.txt" 2>&1
+
+# ── journalctl: the actual error behind any retry-looping controller ────
+# workqueue_retries_total climbing in lockstep with workqueue_adds_total
+# (checked below) says *that* a controller is stuck failing and retrying,
+# not *why*. The real error is only in the log.
+if command -v journalctl &>/dev/null; then
+    journalctl -u k3s --no-pager -n 500 2>&1 \
+        | grep -iE 'openapi|aggregat|error|failed' \
+        > "$OUT_DIR/00d-journal-errors.txt" || true
+fi
+
 # ── Per-thread CPU snapshot ─────────────────────────────────────────────
 
 log "Sampling per-thread CPU (3 snapshots, 2s apart)..."
@@ -117,20 +137,28 @@ log "Sampling per-thread CPU (3 snapshots, 2s apart)..."
     done
 } > "$OUT_DIR/01-top-threads.txt" 2>&1
 
+# Real pprof profiles are gzip data (magic bytes 1f 8b) — the one check
+# that reliably tells a genuine profile apart from an error page/JSON body
+# without needing to know the specific failure mode in advance.
+is_gzip() {
+    local size=0
+    [[ -f "$1" ]] && size=$(stat -c%s "$1" 2>/dev/null || echo 0)
+    [[ "$size" -ge 2 ]] || return 1
+    [[ "$(head -c2 "$1" | od -An -tx1 | tr -d ' ')" == "1f8b" ]]
+}
+
 # A captured "profile" that's actually an auth error, a 404, or profiling
 # being disabled still writes *a* file — go tool pprof just fails on it
 # later with an opaque "unrecognized profile format", which doesn't say
-# why. Real pprof profiles are gzip data (magic bytes 1f 8b); anything else
-# gets its size, HTTP status (where known), and response body/stderr dumped
-# into <name>-diagnosis.txt so a failure is self-explanatory in SUMMARY.txt
-# without a second round trip just to read an error message.
+# why. If it's not real gzip'd profile data, dump its size, stderr, and
+# response body (short for an error page) into <name>-diagnosis.txt instead
+# of ever handing it to go tool pprof, so a failure is self-explanatory in
+# SUMMARY.txt without a second round trip just to read an error message.
 diagnose_pprof_capture() {
     local file="$1" name="$2" errfile="$3"
+    is_gzip "$file" && return 0
     local size=0
     [[ -f "$file" ]] && size=$(stat -c%s "$file" 2>/dev/null || echo 0)
-    local magic=""
-    [[ "$size" -ge 2 ]] && magic="$(head -c2 "$file" | od -An -tx1 | tr -d ' ')"
-    [[ "$magic" == "1f8b" ]] && return 0
 
     {
         echo "$name: did not produce a valid pprof profile (size: ${size} bytes)."
@@ -208,6 +236,10 @@ fi
 if command -v go &>/dev/null; then
     for f in "$OUT_DIR"/*.pprof; do
         [[ -s "$f" ]] || continue
+        # Already known bad (diagnose_pprof_capture wrote a diagnosis for
+        # it) — don't hand it to go tool pprof just to get its opaque
+        # "unrecognized profile format" instead of the real reason.
+        is_gzip "$f" || continue
         name="$(basename "$f" .pprof)"
         log "Rendering $name..."
         go tool pprof -top -nodecount=25 "$f" > "$OUT_DIR/$name-top.txt" 2>&1
@@ -261,15 +293,29 @@ extract_top_metrics() {
     local raw="$1" out="$2"
     [[ -s "$raw" ]] || return 0
     grep -E '^(apiserver_request_total|workqueue_adds_total|workqueue_depth) ' "$raw" 2>/dev/null \
-        | sort -k2 -n -r | head -30 > "$out"
+        | sort -k2 -n -r 2>/dev/null | head -30 > "$out"
     if [[ ! -s "$out" ]]; then
         { echo "(expected metric names not found; showing any workqueue/request metrics present instead)"
-          grep -E '^(workqueue_|apiserver_request)' "$raw" 2>/dev/null | sort -k2 -n -r | head -30
+          grep -E '^(workqueue_|apiserver_request)' "$raw" 2>/dev/null | sort -k2 -n -r 2>/dev/null | head -30
         } > "$out"
     fi
 }
 extract_top_metrics "$OUT_DIR/apiserver-metrics.raw" "$OUT_DIR/apiserver-metrics-top.txt"
 extract_top_metrics "$OUT_DIR/cm-metrics.raw" "$OUT_DIR/cm-metrics-top.txt"
+
+# workqueue_retries_total climbing at close to the same rate as
+# workqueue_adds_total means a controller is failing and re-queuing almost
+# every single attempt — a stuck fail-loop, not idle housekeeping, and the
+# single most actionable signal this script can surface. Its own section
+# so it isn't buried under the (much more numerous) apiserver_request_*
+# watch-duration entries in the generic metrics dump above.
+extract_retry_loops() {
+    local raw="$1" out="$2"
+    [[ -s "$raw" ]] || return 0
+    grep -E '^workqueue_retries_total\{' "$raw" 2>/dev/null | sort -k2 -n -r 2>/dev/null | head -20 > "$out"
+}
+extract_retry_loops "$OUT_DIR/apiserver-metrics.raw" "$OUT_DIR/apiserver-retries.txt"
+extract_retry_loops "$OUT_DIR/cm-metrics.raw" "$OUT_DIR/cm-retries.txt"
 
 # ── Pull it together into one pasteable summary ─────────────────────────
 
@@ -287,6 +333,9 @@ SUMMARY="$OUT_DIR/SUMMARY.txt"
     else
         echo "(not captured — no kubectl/KUBECONFIG)"
     fi
+    echo
+    echo "--- is nodelet running? (NotReady node / stuck Pending pods point here, not at k3s-server) ---"
+    cat "$OUT_DIR/00c-nodelet-status.txt" 2>/dev/null
     echo
     echo "--- apiserver CPU profile: top 25 functions ---"
     if [[ -f "$OUT_DIR/apiserver-cpu-top.txt" ]]; then
@@ -324,6 +373,20 @@ SUMMARY="$OUT_DIR/SUMMARY.txt"
     echo
     echo "--- sqlite/kine activity (before vs. after) ---"
     cat "$OUT_DIR/03-sqlite-activity.txt" 2>/dev/null
+    echo
+    echo "--- retry loops: workqueue_retries_total close to workqueue_adds_total means a ---"
+    echo "--- controller is stuck failing and re-queuing continuously, not idling ---"
+    echo "(apiserver)"
+    cat "$OUT_DIR/apiserver-retries.txt" 2>/dev/null
+    echo "(controller-manager)"
+    cat "$OUT_DIR/cm-retries.txt" 2>/dev/null
+    echo
+    echo "--- journal errors near 'openapi'/'aggregat'/'error'/'failed' (last 500 lines) ---"
+    if [[ -s "$OUT_DIR/00d-journal-errors.txt" ]]; then
+        tail -60 "$OUT_DIR/00d-journal-errors.txt"
+    else
+        echo "(none found, or journalctl unavailable)"
+    fi
     echo
     echo "--- apiserver: busiest request/workqueue metrics ---"
     cat "$OUT_DIR/apiserver-metrics-top.txt" 2>/dev/null
