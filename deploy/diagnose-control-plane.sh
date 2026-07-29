@@ -119,11 +119,35 @@ fi
 # ── journalctl: the actual error behind any retry-looping controller ────
 # workqueue_retries_total climbing in lockstep with workqueue_adds_total
 # (checked below) says *that* a controller is stuck failing and retrying,
-# not *why*. The real error is only in the log.
+# not *why*. The real error is only in the log. Two windows: the last 500
+# lines (usually startup on a quiet box — still useful) and a live window
+# covering the actual sample period, since "retries" climbing with zero
+# recent ERROR lines is itself the signal that it's a resync, not a failure.
 if command -v journalctl &>/dev/null; then
     journalctl -u k3s --no-pager -n 500 2>&1 \
         | grep -iE 'openapi|aggregat|error|failed' \
         > "$OUT_DIR/00d-journal-errors.txt" || true
+    journalctl -u k3s --no-pager --since "${DURATION} seconds ago" 2>&1 \
+        > "$OUT_DIR/00e-journal-live-window.txt" || true
+fi
+
+# ── Is a CRD actually churning? (feeds the openapi v3 aggregation queue) ─
+# apiserver_request_body_size_bytes_sum showing customresourcedefinitions
+# update traffic means *something* periodically writes to a CRD — every
+# such write is exactly what re-triggers the OpenAPI v3 aggregation
+# controller's queue for that CRD's schema. Sampling resourceVersion twice
+# confirms whether that's actually happening right now.
+if command -v kubectl &>/dev/null && [[ -f "$KUBECONFIG" ]]; then
+    {
+        echo "=== CustomResourceDefinitions (resourceVersion sampled twice, 5s apart) ==="
+        KUBECONFIG="$KUBECONFIG" kubectl get crd -o custom-columns='NAME:.metadata.name,RESOURCEVERSION:.metadata.resourceVersion,GENERATION:.metadata.generation' 2>&1
+        sleep 5
+        echo "--- 5s later ---"
+        KUBECONFIG="$KUBECONFIG" kubectl get crd -o custom-columns='NAME:.metadata.name,RESOURCEVERSION:.metadata.resourceVersion,GENERATION:.metadata.generation' 2>&1
+        echo
+        echo "=== APIServices (aggregated API groups — separate contributor to the same controller) ==="
+        KUBECONFIG="$KUBECONFIG" kubectl get apiservices 2>&1
+    } > "$OUT_DIR/00f-crd-churn.txt" 2>&1
 fi
 
 # ── Per-thread CPU snapshot ─────────────────────────────────────────────
@@ -386,6 +410,21 @@ SUMMARY="$OUT_DIR/SUMMARY.txt"
         tail -60 "$OUT_DIR/00d-journal-errors.txt"
     else
         echo "(none found, or journalctl unavailable)"
+    fi
+    echo
+    echo "--- live journal window covering this sample's ${DURATION}s (retries climbing with NO ---"
+    echo "--- corresponding log lines here means it's a resync, not a failure) ---"
+    if [[ -s "$OUT_DIR/00e-journal-live-window.txt" ]]; then
+        cat "$OUT_DIR/00e-journal-live-window.txt"
+    else
+        echo "(empty — no log activity during the sample window at all)"
+    fi
+    echo
+    echo "--- is a CRD actually churning? (each write re-triggers the openapi v3 aggregation queue) ---"
+    if [[ -f "$OUT_DIR/00f-crd-churn.txt" ]]; then
+        cat "$OUT_DIR/00f-crd-churn.txt"
+    else
+        echo "(not captured — no kubectl/KUBECONFIG)"
     fi
     echo
     echo "--- apiserver: busiest request/workqueue metrics ---"
