@@ -79,6 +79,8 @@ die()  { printf '\033[1;31m==> FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 if [[ "$DO_CLEANUP" -eq 1 ]]; then
     log "Stopping nodelet (if running via this script's pidfile)..."
     [[ -f "$WORK_DIR/nodelet.pid" ]] && kill "$(cat "$WORK_DIR/nodelet.pid")" 2>/dev/null || true
+    log "Stopping containerd (if this script started it)..."
+    [[ -f "$WORK_DIR/containerd.pid" ]] && kill "$(cat "$WORK_DIR/containerd.pid")" 2>/dev/null || true
     if command -v k3s-uninstall.sh &>/dev/null; then
         log "Uninstalling k3s..."
         sudo k3s-uninstall.sh || true
@@ -127,6 +129,20 @@ IS_ROOT=0
 SUDO=""
 if [[ "$IS_ROOT" -eq 0 ]]; then
     command -v sudo &>/dev/null && SUDO="sudo"
+fi
+
+# This is meant to be a single command that installs *everything*: system
+# packages, the k3s control plane, containerd/runc when --with-cri is used.
+# All of that needs root. Rather than making the user remember to type sudo,
+# re-exec ourselves under sudo once, up front. --skip-control-plane is the
+# one mode that doesn't need root (build + run nodelet against a KUBECONFIG
+# you already have), so it's exempt.
+if [[ "$IS_ROOT" -eq 0 && "$SKIP_CONTROL_PLANE" -eq 0 ]]; then
+    if [[ -n "$SUDO" ]]; then
+        exec sudo -E "$0" "$@"
+    else
+        die "Root is required to install system packages and the k3s control plane, and no 'sudo' is available. Re-run as root, or pass --skip-control-plane to only build/run nodelet against a KUBECONFIG you already have."
+    fi
 fi
 
 log "OS=$OS  arch=$ARCH_RAW (normalized: $ARCH)  pkg_mgr=$PKG_MGR  root=$IS_ROOT"
@@ -416,10 +432,187 @@ setup_control_plane() {
     if command -v k3s &>/dev/null && systemctl is-active --quiet k3s 2>/dev/null; then
         log "k3s already installed and running."
     else
-        [[ "$IS_ROOT" -eq 1 ]] || die "Setting up the k3s control plane needs root. Re-run with sudo, or pass --skip-control-plane if you already have a KUBECONFIG."
         "$SCRIPT_DIR/setup-control-plane.sh"
     fi
     export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+}
+
+# ─────────────────────────────────────────────────────────────────────────
+# Go — only needed to build containerd/runc from source (--with-cri on an
+# arch with no prebuilt containerd/runc release). Same tiering as everything
+# else: package manager -> official prebuilt -> from-source bootstrap.
+# ─────────────────────────────────────────────────────────────────────────
+
+GO_VERSION=1.22.6
+
+go_arch_map() {
+    case "$ARCH" in
+        x86_64)   echo amd64 ;;
+        aarch64)  echo arm64 ;;
+        armv7l)   echo armv6l ;;
+        armv6l)   echo armv6l ;;
+        i686)     echo 386 ;;
+        riscv64)  echo riscv64 ;;
+        ppc64le)  echo ppc64le ;;
+        s390x)    echo s390x ;;
+        loongarch64) echo loong64 ;;
+        *)        echo "" ;;
+    esac
+}
+
+go_is_new_enough() {
+    command -v go &>/dev/null || return 1
+    local minor; minor="$(go version | sed -n 's/.*go1\.\([0-9]\+\).*/\1/p')"
+    [[ "$minor" =~ ^[0-9]+$ ]] || return 1
+    (( minor >= 21 ))
+}
+
+ensure_go() {
+    if go_is_new_enough; then
+        log "Go present and new enough: $(go version)"
+        return 0
+    fi
+    command -v go &>/dev/null && warn "Found $(go version) but containerd/runc need >=1.21 — looking for a newer one."
+
+    pkg_install "go" "golang-go" "golang" "go" "go" "go" "go" \
+        && go_is_new_enough && { log "Go installed via $PKG_MGR: $(go version)"; return 0; }
+
+    local goarch; goarch="$(go_arch_map)"
+    if [[ -n "$goarch" ]]; then
+        log "Fetching official Go $GO_VERSION release for linux-$goarch..."
+        local tarball="go$GO_VERSION.linux-$goarch.tar.gz"
+        if fetch "https://go.dev/dl/$tarball" "$SRC_DIR/$tarball"; then
+            rm -rf "$TOOLCHAIN_DIR/go"
+            tar xzf "$SRC_DIR/$tarball" -C "$TOOLCHAIN_DIR"
+            ln -sf "$TOOLCHAIN_DIR/go/bin/go" "$TOOLCHAIN_DIR/bin/go"
+            go_is_new_enough && { log "Go ready: $(go version)"; return 0; }
+        fi
+    fi
+
+    build_go_from_source
+}
+
+# Go's own documented from-source bootstrap: Go 1.4 (the last C-implemented
+# release) builds with just a C compiler; that becomes GOROOT_BOOTSTRAP for
+# an intermediate Go version, because Go >=1.21 refuses to bootstrap from
+# anything older than Go 1.20; that intermediate Go then builds the final
+# target version. Slow (three full Go builds) but has no binary dependency
+# beyond a C compiler.
+build_go_from_source() {
+    log "No prebuilt Go for $ARCH — bootstrapping Go from source (three stages, slow)."
+    command -v cc &>/dev/null || die "Need a C compiler to bootstrap Go and none is available."
+
+    cd "$SRC_DIR"
+    if [[ ! -x go-bootstrap-c/bin/go ]]; then
+        fetch "https://dl.google.com/go/go1.4-bootstrap-20171003.tar.gz" go1.4-bootstrap.tar.gz
+        rm -rf go-bootstrap-c; mkdir go-bootstrap-c
+        tar xzf go1.4-bootstrap.tar.gz -C go-bootstrap-c --strip-components=1
+        ( cd go-bootstrap-c/src && CGO_ENABLED=0 ./make.bash )
+    fi
+
+    local MID_VER=1.20.14
+    if [[ ! -x "go-$MID_VER/bin/go" ]]; then
+        fetch "https://go.dev/dl/go$MID_VER.src.tar.gz" "go$MID_VER.src.tar.gz"
+        rm -rf "go-$MID_VER"; mkdir "go-$MID_VER"
+        tar xzf "go$MID_VER.src.tar.gz" -C "go-$MID_VER" --strip-components=1
+        ( export GOROOT_BOOTSTRAP="$SRC_DIR/go-bootstrap-c"; cd "go-$MID_VER/src" && ./make.bash )
+    fi
+
+    if [[ ! -x "go-$GO_VERSION/bin/go" ]]; then
+        fetch "https://go.dev/dl/go$GO_VERSION.src.tar.gz" "go$GO_VERSION.src.tar.gz"
+        rm -rf "go-$GO_VERSION"; mkdir "go-$GO_VERSION"
+        tar xzf "go$GO_VERSION.src.tar.gz" -C "go-$GO_VERSION" --strip-components=1
+        ( export GOROOT_BOOTSTRAP="$SRC_DIR/go-$MID_VER"; cd "go-$GO_VERSION/src" && ./make.bash )
+    fi
+
+    ln -sf "$SRC_DIR/go-$GO_VERSION/bin/go" "$TOOLCHAIN_DIR/bin/go"
+    go_is_new_enough || die "Go source bootstrap finished but 'go' is still not usable."
+    log "Go built from source: $(go version)"
+}
+
+# ─────────────────────────────────────────────────────────────────────────
+# containerd + runc — only for --with-cri (the mock runtime needs neither).
+# ─────────────────────────────────────────────────────────────────────────
+
+fetch_containerd_runc_prebuilt() {
+    local c_arch="" r_arch=""
+    case "$ARCH" in
+        x86_64)  c_arch=amd64;  r_arch=amd64  ;;
+        aarch64) c_arch=arm64;  r_arch=arm64  ;;
+        armv7l)                 r_arch=armhf  ;;
+        ppc64le) c_arch=ppc64le; r_arch=ppc64le ;;
+        s390x)   c_arch=s390x;  r_arch=s390x  ;;
+        riscv64)                r_arch=riscv64 ;;
+    esac
+
+    if [[ -n "$c_arch" ]] && ! command -v containerd &>/dev/null; then
+        local cver=1.7.23
+        log "Fetching official containerd release for linux-$c_arch..."
+        fetch "https://github.com/containerd/containerd/releases/download/v$cver/containerd-$cver-linux-$c_arch.tar.gz" "$SRC_DIR/containerd.tar.gz" \
+            && tar xzf "$SRC_DIR/containerd.tar.gz" -C "$TOOLCHAIN_DIR" || true
+    fi
+    if [[ -n "$r_arch" ]] && ! command -v runc &>/dev/null; then
+        local rver=1.1.14
+        log "Fetching official runc release for linux-$r_arch..."
+        fetch "https://github.com/opencontainers/runc/releases/download/v$rver/runc.$r_arch" "$TOOLCHAIN_DIR/bin/runc" \
+            && chmod +x "$TOOLCHAIN_DIR/bin/runc" || true
+    fi
+    command -v containerd &>/dev/null && command -v runc &>/dev/null
+}
+
+build_containerd_runc_from_source() {
+    log "No prebuilt containerd/runc for $ARCH — building both from source (needs Go)."
+    ensure_go
+    command -v git &>/dev/null || pkg_install git git git git git git git || true
+    command -v git &>/dev/null || die "Need git to fetch containerd/runc source and couldn't get it."
+
+    if ! command -v runc &>/dev/null; then
+        cd "$SRC_DIR"
+        [[ -d runc ]] || git clone --depth 1 --branch v1.1.14 https://github.com/opencontainers/runc.git
+        ( cd runc && make )
+        install -m 0755 runc/runc "$TOOLCHAIN_DIR/bin/runc"
+    fi
+    if ! command -v containerd &>/dev/null; then
+        cd "$SRC_DIR"
+        [[ -d containerd ]] || git clone --depth 1 --branch v1.7.23 https://github.com/containerd/containerd.git
+        ( cd containerd && make )
+        install -m 0755 containerd/bin/containerd "$TOOLCHAIN_DIR/bin/containerd"
+        [[ -f containerd/bin/containerd-shim-runc-v2 ]] && install -m 0755 containerd/bin/containerd-shim-runc-v2 "$TOOLCHAIN_DIR/bin/"
+    fi
+    command -v containerd &>/dev/null && command -v runc &>/dev/null \
+        || die "containerd/runc source build did not produce usable binaries."
+}
+
+ensure_container_runtime() {
+    [[ "$WITH_CRI" -eq 1 ]] || return 0
+
+    if command -v containerd &>/dev/null && command -v runc &>/dev/null; then
+        log "containerd + runc already present."
+    else
+        pkg_install "containerd/runc" "containerd runc" "containerd runc" "containerd runc" "containerd runc" "containerd runc" "containerd runc"
+        { command -v containerd &>/dev/null && command -v runc &>/dev/null; } \
+            || fetch_containerd_runc_prebuilt \
+            || build_containerd_runc_from_source
+    fi
+
+    mkdir -p /etc/containerd
+    [[ -f /etc/containerd/config.toml ]] || containerd config default > /etc/containerd/config.toml
+    if grep -qE '(docker|containerd|kubepods)' /proc/1/cgroup 2>/dev/null; then
+        log "Nested container environment detected — using the native snapshotter (overlayfs can't mount here)."
+        sed -i 's/snapshotter = "overlayfs"/snapshotter = "native"/' /etc/containerd/config.toml
+    fi
+
+    if ! pgrep -x containerd &>/dev/null; then
+        log "Starting containerd in the background..."
+        nohup containerd >"$LOG_DIR/containerd.log" 2>&1 &
+        echo $! > "$WORK_DIR/containerd.pid"
+        for _ in $(seq 1 15); do
+            [[ -S /run/containerd/containerd.sock ]] && break
+            sleep 1
+        done
+        [[ -S /run/containerd/containerd.sock ]] || die "containerd did not create its socket — check $LOG_DIR/containerd.log"
+    fi
+    export NODELET_CRI_ENDPOINT="unix:///run/containerd/containerd.sock"
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -486,4 +679,5 @@ ensure_c_toolchain
 ensure_rust
 setup_control_plane
 build_nodelet
+ensure_container_runtime
 run_and_verify

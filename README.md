@@ -82,18 +82,23 @@ Both invocations should end in `Finished ... target(s)`.
 
 ## Try it in one command
 
-`deploy/bootstrap-test.sh` is a single, self-contained script that deploys and
-smoke-tests the whole stack on any Linux box, regardless of distro or CPU
-architecture: it detects your package manager and arch, gets a C toolchain
-and a Rust toolchain new enough to build this workspace (falling back through
-official prebuilt releases, then a static cross toolchain, then building gcc
-from source if truly nothing else is available), builds `nodelet`, brings up
-the stripped k3s control plane, starts the agent, and applies the demo pod.
+`deploy/bootstrap-test.sh` is a single, self-contained script that installs
+and smoke-tests the *entire* stack on any Linux box, regardless of distro or
+CPU architecture — one command, nothing to install by hand first. It
+re-execs itself under `sudo` automatically (root is needed to install system
+packages and the k3s service), detects your package manager and arch, gets a
+C toolchain and a Rust toolchain new enough to build this workspace (falling
+back through official prebuilt releases, then a static cross toolchain, then
+building gcc from source if truly nothing else is available), builds
+`nodelet`, installs and starts the stripped k3s control plane, starts the
+agent, and applies the demo pod. With `--with-cri` it also installs
+containerd + runc (package manager -> official prebuilt -> built from source
+via a from-scratch Go toolchain bootstrap) and starts containerd itself.
 
 ```bash
-sudo ./deploy/bootstrap-test.sh                # mock runtime (no container engine needed)
-sudo ./deploy/bootstrap-test.sh --with-cri     # build+use the real containerd/CRI runtime
-./deploy/bootstrap-test.sh --skip-control-plane  # bring your own KUBECONFIG
+./deploy/bootstrap-test.sh                     # installs everything, mock runtime
+./deploy/bootstrap-test.sh --with-cri          # + containerd/runc, real containers
+./deploy/bootstrap-test.sh --skip-control-plane  # bring your own KUBECONFIG, no root needed
 ./deploy/bootstrap-test.sh --cleanup           # tear down everything it started
 ```
 
