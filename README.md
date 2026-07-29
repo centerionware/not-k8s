@@ -131,6 +131,7 @@ leave a half-installed toolchain behind with no way back.
 ./deploy/bootstrap-test.sh --keep-build-tools  # skip the end-of-run toolchain cleanup
 ./deploy/bootstrap-test.sh --cleanup           # stop the deployment, keep runtime pkgs/k3s for next time
 ./deploy/bootstrap-test.sh --uninstall         # full teardown: also k3s, containerd/runc, CNI/flannel, nftables
+./deploy/bootstrap-test.sh --uninstall --force # same, but by name — for a machine an older/untracked run left dirty
 ```
 
 `--cleanup` vs `--uninstall`: `--cleanup` stops what a run started (nodelet,
@@ -146,6 +147,22 @@ package installs are (nothing recorded as installed by this run means
 nothing gets removed), plus a check for the case where a stray process from
 an earlier, unrelated run of this script is still alive with no matching
 pidfile.
+
+That ownership tracking only exists for runs of the current version of this
+script — it can't know what an *older* version installed, since the tracking
+(`pkg_installs.log`) didn't always exist. If a machine was left dirty by a
+run from before this flag existed, plain `--uninstall` will correctly find
+nothing it recognizes and do nothing useful. `--uninstall --force` is for
+exactly that: it skips every ownership check and removes k3s, containerd/
+runc, CNI plugins, flannel, and nftables **by name**, whether or not this
+exact script installed them. Verified for real: installed cargo/rustc/
+containerd/runc/nftables/git with no tracking log present at all (simulating
+that "old version, dirty machine" case) — plain `--uninstall` correctly left
+all of it in place, `--uninstall --force` removed all of it. This is real
+fallout, not just a stronger default — it can remove packages/config you set
+up yourself outside this project if they happen to share these names (in
+testing this, it also removed the sandbox's own `git`). Use it when you know
+the machine's state is this project's mess to clean up, not a shared box.
 
 Rust itself has no from-source bootstrap path (every rustc needs an existing
 rustc to build it); the script uses rustup's official prebuilt toolchains,

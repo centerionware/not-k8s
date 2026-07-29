@@ -34,6 +34,7 @@
 #   ./deploy/bootstrap-test.sh --keep-build-tools   # skip the end-of-run toolchain cleanup (faster re-runs)
 #   ./deploy/bootstrap-test.sh --cleanup        # stop the deployment + build-tool cleanup (keeps runtime pkgs/k3s for next time)
 #   ./deploy/bootstrap-test.sh --uninstall      # full teardown: also k3s, containerd/runc, CNI/flannel, nftables
+#   ./deploy/bootstrap-test.sh --uninstall --force  # same, but by name — ignores tracking entirely
 #
 # Footprint: this is meant to end with only nodelet's binary and whatever it
 # needs *running* left behind on the device — not a permanently-installed
@@ -57,6 +58,18 @@
 # only for what it actually installed. If containerd/runc or the CNI/flannel
 # setup predate this script (e.g. you already had Docker's containerd), they
 # and their state/data are left completely untouched.
+#
+# --force (only meaningful with --uninstall): the ownership tracking
+# --uninstall relies on (pkg_installs.log, the flannel CNI plugin binary's
+# presence) only exists for runs of *this* version of the script. If an
+# older version left a machine dirty — no tracking log at all, e.g. before
+# this flag existed — plain --uninstall will correctly conclude it owns
+# nothing and do nothing useful. --force skips every ownership check and
+# removes k3s, containerd/runc, CNI plugins, flannel, and nftables by name,
+# whether or not this exact script installed them. This is real fallout, not
+# a preference: it can remove packages/config you set up yourself outside
+# this project if they happen to share these names — use it when you know
+# the machine's state is this project's mess to clean up, not a shared box.
 #
 # --ip-family: auto (default) | ipv4 | ipv6 | dual. auto detects what the
 # node actually has (both stacks -> dual, one stack -> that one) and uses the
@@ -101,6 +114,7 @@ WITH_CRI=0
 SKIP_CONTROL_PLANE=0
 DO_CLEANUP=0
 DO_UNINSTALL=0
+FORCE_UNINSTALL=0
 FORCE_SOURCE_BUILD=0
 CNI_PLUGIN=flannel
 IP_FAMILY=auto
@@ -113,6 +127,7 @@ for arg in "$@"; do
         --skip-control-plane) SKIP_CONTROL_PLANE=1 ;;
         --cleanup) DO_CLEANUP=1 ;;
         --uninstall) DO_UNINSTALL=1 ;;
+        --force) FORCE_UNINSTALL=1 ;;
         --force-source-build) FORCE_SOURCE_BUILD=1 ;;
         --cni=*) CNI_PLUGIN="${arg#--cni=}" ;;
         --ip-family=*) IP_FAMILY="${arg#--ip-family=}" ;;
@@ -134,6 +149,9 @@ mkdir -p "$WORK_DIR" "$TOOLCHAIN_DIR" "$SRC_DIR" "$LOG_DIR"
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==> WARNING:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m==> FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
+
+[[ "$FORCE_UNINSTALL" -eq 1 && "$DO_UNINSTALL" -ne 1 ]] \
+    && die "--force only means something alongside --uninstall (it makes --uninstall remove everything by name, not just what this script tracked installing)."
 
 # ─────────────────────────────────────────────────────────────────────────
 # OS / arch / package-manager detection
@@ -1156,20 +1174,63 @@ full_cleanup() {
 # on the "flannel" CNI plugin binary specifically — nothing else installs a
 # file with that name into /opt/cni/bin, so its presence reliably means this
 # script's ensure_cni() wrote the whole CNI/flannel setup being removed.
+# --force's package sweep: the same logical-name -> per-manager-package-name
+# mapping every pkg_install call site above already uses, duplicated here
+# (not derived from pkg_installs.log) specifically *because* --force exists
+# for when that log doesn't have the answer — e.g. a run from before this
+# tracking existed, or from a machine this session never touched. Matched
+# by name and removed unconditionally; a package that isn't installed is a
+# harmless no-op for every package manager here.
+force_remove_known_packages() {
+    log "--force: removing every package this project could ever install, by name — not just what a tracking log says, since that log may not exist for whatever installed things here."
+    local entries=(
+        "C toolchain|build-essential|gcc make|base-devel|build-base|gcc make|base-devel"
+        "C++ compiler|g++|gcc-c++|base-devel|g++|gcc-c++|base-devel"
+        "rust|cargo rustc|cargo rustc|rust|cargo|cargo rustc|rust"
+        "protoc|protobuf-compiler|protobuf-compiler|protobuf|protobuf|protobuf-devel|protobuf"
+        "go|golang-go|golang|go|go|go|go"
+        "containerd/runc|containerd runc|containerd runc|containerd runc|containerd runc|containerd runc|containerd runc"
+        "CNI plugins|containernetworking-plugins|containernetworking-plugins|cni-plugins|cni-plugins|containernetworking-plugins|containernetworking-plugins"
+        "flannel|flannel|flannel|flannel|flannel|flannel|flannel"
+        "nftables|nftables|nftables|nftables|nftables|nftables|nftables"
+        "git|git|git|git|git|git|git"
+    )
+    local col
+    case "$PKG_MGR" in
+        apt) col=2 ;; dnf) col=3 ;; pacman) col=4 ;; apk) col=5 ;; zypper) col=6 ;; xbps) col=7 ;;
+        *) warn "Unrecognized package manager — can't force-remove system packages by name, only files/dirs/processes."; return 0 ;;
+    esac
+    local entry pkgs
+    for entry in "${entries[@]}"; do
+        pkgs="$(cut -d'|' -f"$col" <<<"$entry")"
+        [[ -z "$pkgs" ]] && continue
+        log "Force-removing (if present): $pkgs"
+        remove_pkgs_via_mgr "$PKG_MGR" "$pkgs" || true
+    done
+    [[ "$PKG_MGR" == "apt" ]] && { $SUDO apt-get autoremove -y -qq >>"$LOG_DIR/pkg.log" 2>&1 || true; }
+    rm -f "$WORK_DIR/pkg_installs.log"
+}
+
 full_uninstall() {
     log "Full uninstall: k3s, containerd/runc, CNI plugins, flannel, nftables — everything this script ever installed."
 
     local we_own_containerd=0 we_own_cni=0
-    { [[ -e "$TOOLCHAIN_DIR/bin/containerd" ]] || { [[ -f "$WORK_DIR/pkg_installs.log" ]] && grep -q '|containerd/runc|' "$WORK_DIR/pkg_installs.log"; }; } \
-        && we_own_containerd=1
-    [[ -e "$CNI_BIN_DIR/flannel" ]] && we_own_cni=1
+    if [[ "$FORCE_UNINSTALL" -eq 1 ]]; then
+        log "--force: treating containerd/runc and any CNI/flannel setup found as ours to remove, regardless of who installed them."
+        we_own_containerd=1
+        we_own_cni=1
+    else
+        { [[ -e "$TOOLCHAIN_DIR/bin/containerd" ]] || { [[ -f "$WORK_DIR/pkg_installs.log" ]] && grep -q '|containerd/runc|' "$WORK_DIR/pkg_installs.log"; }; } \
+            && we_own_containerd=1
+        [[ -e "$CNI_BIN_DIR/flannel" ]] && we_own_cni=1
+    fi
 
     stop_running_components
     # stop_running_components only kills what *this invocation's* pidfiles
     # know about. Ownership here is decided by package/binary provenance
-    # instead (we_own_containerd/we_own_cni above), which also covers a
-    # containerd/flanneld left running from an earlier, unrelated run of
-    # this script — pidfile-less but still ours to stop before removing it.
+    # instead (we_own_containerd/we_own_cni above, or unconditionally under
+    # --force), which also covers a containerd/flanneld left running from an
+    # earlier, unrelated (or untracked) run of this script.
     [[ "$we_own_containerd" -eq 1 ]] && { $SUDO pkill -x containerd 2>/dev/null || true; }
     [[ "$we_own_cni" -eq 1 ]] && { $SUDO pkill -x flanneld 2>/dev/null || true; }
     sleep 1
@@ -1177,12 +1238,19 @@ full_uninstall() {
     if command -v k3s-uninstall.sh &>/dev/null; then
         log "Uninstalling k3s..."
         $SUDO k3s-uninstall.sh || true
+    elif [[ "$FORCE_UNINSTALL" -eq 1 ]]; then
+        log "--force: no k3s-uninstall.sh found — removing k3s manually (service, binary, symlinks)..."
+        $SUDO systemctl stop k3s 2>/dev/null || true
+        $SUDO systemctl disable k3s 2>/dev/null || true
+        $SUDO pkill -x k3s 2>/dev/null || true
+        $SUDO rm -f /etc/systemd/system/k3s.service \
+            /usr/local/bin/k3s /usr/local/bin/kubectl /usr/local/bin/crictl /usr/local/bin/ctr
     fi
     log "Removing leftover k3s config/data (if any)..."
     $SUDO rm -rf /etc/rancher /var/lib/rancher
 
     if [[ "$we_own_containerd" -eq 1 ]]; then
-        log "Removing containerd/runc state and binaries (this script installed them)..."
+        log "Removing containerd/runc state and binaries..."
         $SUDO rm -rf /etc/containerd /run/containerd /var/lib/containerd
         rm -f "$TOOLCHAIN_DIR/bin"/{containerd,containerd-shim-runc-v2,ctr,runc}
     else
@@ -1190,14 +1258,18 @@ full_uninstall() {
     fi
 
     if [[ "$we_own_cni" -eq 1 ]]; then
-        log "Removing CNI plugins, flannel, and their config (this script installed them)..."
+        log "Removing CNI plugins, flannel, and their config..."
         $SUDO rm -rf "$CNI_BIN_DIR" "$CNI_CONF_DIR" /etc/kube-flannel /run/flannel
         rm -f "$TOOLCHAIN_DIR/bin/flanneld"
     else
-        log "No CNI/flannel setup owned by this script found — nothing to remove there."
+        log "No CNI/flannel setup found — nothing to remove there."
     fi
 
-    uninstall_all_tracked_packages
+    if [[ "$FORCE_UNINSTALL" -eq 1 ]]; then
+        force_remove_known_packages
+    else
+        uninstall_all_tracked_packages
+    fi
     log "Removing $WORK_DIR, $REPO_ROOT/bin, and $REPO_ROOT/target..."
     rm -rf "$WORK_DIR" "$REPO_ROOT/bin" "$REPO_ROOT/target"
     log "Full uninstall done — the system should be back to (close to) how it was before this script ran."
