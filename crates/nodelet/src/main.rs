@@ -46,6 +46,13 @@ async fn main() -> Result<()> {
     // Cheap, frequent liveness (Lease) decoupled from infrequent full status push.
     tokio::spawn(heartbeat_loop(client.clone(), cfg.clone()));
 
+    // ClusterIP/NodePort routing (nftables). No-op if disabled or if `nft`
+    // isn't usable — pods and direct pod-IP traffic work either way.
+    if cfg.service_proxy {
+        let svc_client = client.clone();
+        tokio::spawn(async move { nodelet::svc::ServiceProxy::new(svc_client).run().await });
+    }
+
     // The pod control loop. watcher() self-heals on watch errors; we only loop if
     // the stream fully terminates.
     let mut controller = pods::PodController::new(client, runtime, cfg.node_name.clone());

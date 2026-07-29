@@ -30,6 +30,10 @@ pub struct Config {
     pub memory_bytes: u64,
     pub max_pods: u64,
     pub labels: BTreeMap<String, String>,
+    /// Program ClusterIP/NodePort nftables rules (see `svc.rs`). Defaults to
+    /// on for the `cri` runtime (where pods have real IPs worth routing to)
+    /// and off for `mock` (nothing real to route to).
+    pub service_proxy: bool,
 }
 
 impl Config {
@@ -70,6 +74,13 @@ impl Config {
             }
         }
 
+        let service_proxy = match std::env::var("NODELET_SERVICE_PROXY").as_deref() {
+            Ok("true") => true,
+            Ok("false") => false,
+            Ok(other) => anyhow::bail!("unknown NODELET_SERVICE_PROXY '{other}' (want 'true' or 'false')"),
+            Err(_) => matches!(runtime, RuntimeKind::Cri),
+        };
+
         Ok(Self {
             node_name,
             runtime,
@@ -80,6 +91,7 @@ impl Config {
             memory_bytes,
             max_pods,
             labels,
+            service_proxy,
         })
     }
 }

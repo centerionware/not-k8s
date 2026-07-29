@@ -297,9 +297,11 @@ The following are explicitly **not** goals for the current phase of not-k8s:
 - **Server-side apply.**  Client-side apply (`kubectl apply`) works via the
   stock apiserver.  SSA field management is supported by the apiserver itself;
   nodelet doesn't need to do anything special.
-- **kube-proxy / Service networking.**  With mock runtime, there's no real
-  networking.  With CRI runtime, basic container networking works via containerd's
-  CNI integration.  No iptables rule management.
+- ~~**kube-proxy / Service networking.**~~ Implemented: `nodelet` watches
+  Services/Endpoints and programs ClusterIP/NodePort routing itself via
+  nftables (`crates/nodelet/src/svc.rs`) — no separate kube-proxy process.
+  With mock runtime there's still no real networking at all (nothing to
+  route to). See the README's "Services (ClusterIP / NodePort)" section.
 - **Mesh federation sync agent.**  Future work: devices federate to an upstream
   cluster over Tailscale/Netbird, syncing selected resources bidirectionally.
   This is a separate component, not part of the current architecture.

@@ -7,3 +7,4 @@ pub mod config;
 pub mod node;
 pub mod pods;
 pub mod runtime;
+pub mod svc;

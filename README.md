@@ -140,9 +140,28 @@ flannel flag: adding another plugin (Calico, Cilium, ...) means installing
 its binaries/config and starting its daemon in `ensure_cni()` — containerd
 and nodelet don't care which CNI is in use.
 
-What's still missing: **Services (ClusterIP) need kube-proxy**, which is part
-of the kubelet/agent this project deliberately doesn't run. Direct pod-to-pod
-traffic by pod IP works today; Service routing is on the roadmap.
+## Services (ClusterIP / NodePort), no kube-proxy
+
+Getting pods real IPs is only half the story — Services route through a
+virtual ClusterIP that no interface ever owns, which is normally kube-proxy's
+job. Rather than run kube-proxy (part of the kubelet/agent this project
+deliberately doesn't run), `nodelet` does that job itself:
+`crates/nodelet/src/svc.rs` watches Services + Endpoints the same
+event-driven way `pods.rs` watches Pods, and programs an nftables table
+(`not_k8s_svc`) with the current ClusterIP/NodePort → backend mappings,
+load-balanced across ready endpoints. No separate process, no periodic
+resync — the whole ruleset is rebuilt atomically only when a Service or
+Endpoints object actually changes.
+
+This needs `nft` on the node and bridged pod traffic to reach the host's
+netfilter tables (`br_netfilter`) — both handled by
+`deploy/bootstrap-test.sh --with-cri`. If `nft` isn't available, `nodelet`
+detects that, logs it once, and simply skips Service routing; direct pod-IP
+traffic is unaffected either way. `NODELET_SERVICE_PROXY=false` opts out
+explicitly (it's on by default whenever `NODELET_RUNTIME=cri`).
+
+Known limits: IPv4 only, and load balancing is `numgen random` (no
+session affinity yet).
 
 ## Run it (single device, offline)
 
@@ -246,6 +265,7 @@ Notes from validation:
 | `NODELET_MEMORY_BYTES` | detected | Advertised memory capacity (bytes). |
 | `NODELET_MAX_PODS` | `110` | Pod capacity. |
 | `NODELET_LABELS` | — | Extra node labels, `k=v,k=v`. |
+| `NODELET_SERVICE_PROXY` | `true` if `cri`, else `false` | Program ClusterIP/NodePort nftables rules (see [Services](#services-clusterip--nodeport-no-kube-proxy)). |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---

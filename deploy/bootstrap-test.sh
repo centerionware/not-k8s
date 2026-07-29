@@ -41,6 +41,13 @@
 # --cni is a dispatch point for other plugins later; today only flannel and
 # none are implemented.
 #
+# Services (ClusterIP/NodePort) need more than a pod IP — kube-proxy's job of
+# turning a virtual ClusterIP into a real backend has to happen somewhere.
+# nodelet does it itself with nftables (crates/nodelet/src/svc.rs, watches
+# Services+Endpoints, no separate process). This script just makes sure `nft`
+# is installed and that bridged pod traffic reaches the host's netfilter
+# tables (br_netfilter) so the DNAT rules actually see it.
+#
 set -euo pipefail
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -92,6 +99,8 @@ die()  { printf '\033[1;31m==> FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 if [[ "$DO_CLEANUP" -eq 1 ]]; then
     log "Stopping nodelet (if running via this script's pidfile)..."
     [[ -f "$WORK_DIR/nodelet.pid" ]] && kill "$(cat "$WORK_DIR/nodelet.pid")" 2>/dev/null || true
+    log "Removing the Service-proxy nftables table (if present)..."
+    command -v nft &>/dev/null && nft delete table ip not_k8s_svc 2>/dev/null || true
     log "Stopping flanneld (if this script started it)..."
     [[ -f "$WORK_DIR/flanneld.pid" ]] && kill "$(cat "$WORK_DIR/flanneld.pid")" 2>/dev/null || true
     log "Stopping containerd (if this script started it)..."
@@ -794,6 +803,36 @@ networking per Pod spec."
 }
 
 # ─────────────────────────────────────────────────────────────────────────
+# Service proxy (ClusterIP/NodePort) deps — nodelet itself watches Services/
+# Endpoints and programs the rules (crates/nodelet/src/svc.rs); this just
+# makes sure `nft` exists and that bridged pod traffic actually reaches the
+# host's netfilter tables (br_netfilter), since without that a pod calling a
+# ClusterIP never hits the DNAT rule at all.
+# ─────────────────────────────────────────────────────────────────────────
+
+ensure_nft() {
+    [[ "$WITH_CRI" -eq 1 && "$CNI_PLUGIN" != "none" ]] || return 0
+    command -v nft &>/dev/null && return 0
+    pkg_install "nftables" "nftables" "nftables" "nftables" "nftables" "nftables" "nftables"
+    command -v nft &>/dev/null \
+        || warn "Could not get nftables — ClusterIP/NodePort routing will be unavailable. \
+nodelet detects this and skips the Service proxy; direct pod-IP traffic is unaffected."
+}
+
+enable_bridge_netfilter() {
+    [[ "$WITH_CRI" -eq 1 && "$CNI_PLUGIN" != "none" ]] || return 0
+    modprobe br_netfilter 2>/dev/null || true
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+    if [[ -f /proc/sys/net/bridge/bridge-nf-call-iptables ]]; then
+        sysctl -w net.bridge.bridge-nf-call-iptables=1 >/dev/null 2>&1 || true
+    else
+        warn "net.bridge.bridge-nf-call-iptables isn't present (br_netfilter didn't load — common in \
+nested/unprivileged containers) — pods calling a ClusterIP may not be DNAT'd. Traffic \
+originated by the host itself still works."
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────
 # Build nodelet
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -859,4 +898,6 @@ setup_control_plane
 build_nodelet
 ensure_container_runtime
 ensure_cni
+ensure_nft
+enable_bridge_netfilter
 run_and_verify
