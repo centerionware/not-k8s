@@ -117,7 +117,10 @@ the C/C++ toolchain, `protoc`, `go`, `git` if it wasn't already there) —
 **only** ones this run installed fresh, never something that pre-existed,
 and never runtime pieces the cluster keeps needing (containerd, runc,
 flanneld, CNI plugins, nftables, k3s). Pass `--keep-build-tools` to skip
-this, e.g. while iterating on the script itself.
+this, e.g. while iterating on the script itself. If a run fails partway —
+a version gate going stale again, a network blip mid-download — this same
+cleanup runs automatically on the way out, so a failed attempt doesn't
+leave a half-installed toolchain behind with no way back.
 
 ```bash
 ./deploy/bootstrap-test.sh                     # installs everything, mock runtime
@@ -126,8 +129,23 @@ this, e.g. while iterating on the script itself.
 ./deploy/bootstrap-test.sh --with-cri --lb-method=round-robin  # default: random
 ./deploy/bootstrap-test.sh --skip-control-plane  # bring your own KUBECONFIG, no root needed
 ./deploy/bootstrap-test.sh --keep-build-tools  # skip the end-of-run toolchain cleanup
-./deploy/bootstrap-test.sh --cleanup           # tear down everything it started
+./deploy/bootstrap-test.sh --cleanup           # stop the deployment, keep runtime pkgs/k3s for next time
+./deploy/bootstrap-test.sh --uninstall         # full teardown: also k3s, containerd/runc, CNI/flannel, nftables
 ```
+
+`--cleanup` vs `--uninstall`: `--cleanup` stops what a run started (nodelet,
+flanneld, containerd, the nft Service table) and removes this script's own
+scratch — enough to start clean, but leaves runtime packages and k3s
+installed so the next run is fast. `--uninstall` is the full teardown: k3s's
+own data/config, containerd/runc's state and binaries, and all CNI/flannel
+config/binaries too — but, same rule as everywhere else in this script, only
+for what it actually installed. If containerd/runc or the CNI/flannel setup
+predate this script (e.g. Docker's containerd was already there), they and
+their state are left completely untouched — this is checked the same way
+package installs are (nothing recorded as installed by this run means
+nothing gets removed), plus a check for the case where a stray process from
+an earlier, unrelated run of this script is still alive with no matching
+pidfile.
 
 Rust itself has no from-source bootstrap path (every rustc needs an existing
 rustc to build it); the script uses rustup's official prebuilt toolchains,
