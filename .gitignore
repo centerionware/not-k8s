@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Bootstrap script's downloaded toolchains / build scratch / logs
+/.bootstrap/
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Prebuilt binaries — this project always builds from source, never ships blobs
+*.tar.gz
+*.tgz
+*.zip
+/deploy/*.bin

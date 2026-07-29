@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# setup-control-plane.sh — Install and start a stripped k3s control plane (NO agent/kubelet).
+#
+# This gives us a real Kubernetes apiserver + scheduler + controller-manager + kine/sqlite
+# datastore — the full kubectl/CRD API surface — without the heavy kubelet, containerd,
+# or any optional add-ons.  The "nodelet" binary replaces the kubelet on the node side.
+#
+# Usage:
+#   sudo ./setup-control-plane.sh          # install + start k3s control-plane-only
+#   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+#   kubectl get nodes                       # empty until nodelet registers
+#
+set -euo pipefail
+
+# ── Preflight checks ────────────────────────────────────────────────────────
+
+if [[ $EUID -ne 0 ]]; then
+    echo "ERROR: This script must be run as root (or with sudo)." >&2
+    echo "       k3s installs systemd units and writes to /etc/rancher/." >&2
+    exit 1
+fi
+
+ARCH="$(uname -m)"
+case "$ARCH" in
+    x86_64|aarch64|arm64|armv7l) ;;  # supported by k3s
+    *)
+        echo "ERROR: Unsupported architecture: $ARCH" >&2
+        echo "       k3s supports x86_64, aarch64, and armv7l." >&2
+        exit 1
+        ;;
+esac
+
+echo "==> Architecture: $ARCH"
+echo "==> Setting up stripped k3s control plane (apiserver + scheduler + controller-manager only)"
+echo ""
+
+# ── Install k3s if missing ──────────────────────────────────────────────────
+
+if command -v k3s &>/dev/null; then
+    echo "==> k3s binary already present: $(k3s --version)"
+else
+    echo "==> Installing k3s via official installer..."
+    curl -sfL https://get.k3s.io | sh -s - "" # args come from INSTALL_K3S_EXEC below
+fi
+
+# ── Configure and (re)start k3s with agent disabled ─────────────────────────
+#
+# Key flags explained:
+#
+#   --disable-agent
+#       THE critical flag.  Tells k3s NOT to start its built-in kubelet or
+#       containerd.  This is the entire point: the heavy node agent is replaced
+#       by our lean Rust "nodelet" binary.  Without this flag, k3s runs a full
+#       kubelet (~120 MB RSS, PLEG polling, cAdvisor, etc.) that we don't want.
+#
+#   --disable traefik
+#   --disable servicelb
+#   --disable local-storage
+#   --disable metrics-server
+#       Turn off all bundled add-on controllers.  They're not needed on a
+#       single-device edge deployment and each wastes memory + watch traffic.
+#
+#   --disable-cloud-controller
+#       No cloud provider integration — we're an edge device.
+#
+#   --disable-network-policy
+#       Network-policy controller is not needed without a real CNI.
+#
+#   --flannel-backend=none
+#       Don't install Flannel.  Networking is either handled by the CRI runtime
+#       on the node side, or not needed at all (mock runtime).  For a real
+#       single-node setup the host network is sufficient; for multi-node the
+#       mesh layer (Tailscale/Netbird) will carry pod traffic.
+#
+#   --kube-controller-manager-arg=node-monitor-period=10s
+#       How often the controller-manager checks node health via the Lease.
+#       10s is a sane default that matches nodelet's heartbeat interval.
+#       (Stock k8s is 5s; we're slightly relaxed for lower idle CPU.)
+#
+#   --write-kubeconfig-mode=0644
+#       Make the kubeconfig world-readable so non-root users can export it.
+#       Acceptable on a single-user edge device.
+
+export INSTALL_K3S_EXEC="server \
+    --disable-agent \
+    --disable traefik \
+    --disable servicelb \
+    --disable local-storage \
+    --disable metrics-server \
+    --disable-cloud-controller \
+    --disable-network-policy \
+    --flannel-backend=none \
+    --kube-controller-manager-arg=node-monitor-period=10s \
+    --write-kubeconfig-mode=0644"
+
+echo "==> Starting k3s with INSTALL_K3S_EXEC:"
+echo "    $INSTALL_K3S_EXEC"
+echo ""
+
+# If k3s was already installed, we still need to ensure the service is running
+# with the correct flags.  The installer script handles both fresh install and
+# reconfiguration when INSTALL_K3S_EXEC is set.
+curl -sfL https://get.k3s.io | sh -
+
+# ── Wait for the apiserver to become reachable ───────────────────────────────
+
+echo ""
+echo "==> Waiting for k3s apiserver to become ready..."
+
+KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+MAX_WAIT=60
+WAITED=0
+until k3s kubectl --kubeconfig="$KUBECONFIG" get --raw /readyz &>/dev/null; do
+    if (( WAITED >= MAX_WAIT )); then
+        echo "ERROR: apiserver not ready after ${MAX_WAIT}s.  Check: journalctl -u k3s" >&2
+        exit 1
+    fi
+    sleep 2
+    WAITED=$((WAITED + 2))
+    echo "    ... waited ${WAITED}s"
+done
+
+echo "==> apiserver is ready (waited ${WAITED}s)."
+echo ""
+
+# ── Print kubeconfig info ────────────────────────────────────────────────────
+
+echo "==> Kubeconfig written to: $KUBECONFIG"
+echo ""
+echo "    Run this in your shell (or add to ~/.bashrc):"
+echo ""
+echo "        export KUBECONFIG=$KUBECONFIG"
+echo ""
+
+# Verify: there should be NO nodes yet (the agent is disabled).
+NODE_COUNT=$(k3s kubectl --kubeconfig="$KUBECONFIG" get nodes --no-headers 2>/dev/null | wc -l)
+if (( NODE_COUNT == 0 )); then
+    echo "==> Verified: 0 nodes registered (expected — no agent running)."
+else
+    echo "==> Warning: $NODE_COUNT node(s) already registered.  If a previous k3s"
+    echo "    agent is still running, stop it: systemctl stop k3s-agent"
+fi
+
+# ── Next steps ───────────────────────────────────────────────────────────────
+
+echo ""
+echo "==> Next steps:"
+echo ""
+echo "  1. Build nodelet (if not already built):"
+echo "       cd /workspace/not-k8s"
+echo "       cargo build --release                    # mock runtime (no containerd needed)"
+echo "       # or: cargo build --release --features cri  # real containerd runtime"
+echo ""
+echo "  2. Run nodelet:"
+echo "       export KUBECONFIG=$KUBECONFIG"
+echo "       ./deploy/run-nodelet.sh"
+echo ""
+echo "  3. Verify the node registered:"
+echo "       kubectl get nodes"
+echo ""
+echo "  4. Deploy a test workload:"
+echo "       kubectl apply -f deploy/demo-pod.yaml"
+echo "       kubectl get pods -w"
+echo ""
+echo "==> Done.  Control plane is running (apiserver + scheduler + controller-manager)."
+echo "    No kubelet, no containerd, no add-ons.  Lean and clean."

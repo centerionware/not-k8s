@@ -1,0 +1,68 @@
+# demo-nginx.yaml — A minimal nginx Deployment + Service for testing not-k8s.
+#
+# With the `mock` runtime (NODELET_RUNTIME=mock, the default):
+#   Pods will report Running without any real containers being started.
+#   This proves the full control loop end-to-end: apiserver -> scheduler ->
+#   nodelet watch -> status update -> kubectl shows Running.
+#
+# With the `cri` runtime (NODELET_RUNTIME=cri):
+#   Pods run for real via containerd.  You can curl the nginx service.
+#
+# Usage:
+#   kubectl apply -f deploy/demo-nginx.yaml
+#   kubectl get pods -w          # watch pods go Pending -> Running
+#   kubectl get svc demo-nginx   # see the ClusterIP (CRI runtime only for real traffic)
+#
+# Note: The scheduler will automatically place pods on the nodelet node since
+# it's the only node in the cluster (k3s runs with --disable-agent, so there
+# is no k3s-managed node).  No nodeSelector or special tolerations are needed.
+# If you later add real k3s agent nodes alongside nodelet, add a nodeSelector:
+#
+#   nodeSelector:
+#     not-k8s.io/nodelet: "true"
+#
+# and ensure nodelet registers with that label (NODELET_LABELS=not-k8s.io/nodelet=true).
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-nginx
+  labels:
+    app: demo-nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo-nginx
+  template:
+    metadata:
+      labels:
+        app: demo-nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-nginx
+spec:
+  selector:
+    app: demo-nginx
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP

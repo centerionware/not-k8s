@@ -1,0 +1,37 @@
+# demo-pod.yaml — Simplest possible smoke test: a single bare Pod.
+#
+# This is the fastest way to verify that nodelet is working:
+#   1. The apiserver accepts the Pod.
+#   2. The scheduler binds it to the nodelet node (the only node).
+#   3. nodelet sees the binding via its watch, "runs" it (mock: no-op, cri: real container).
+#   4. nodelet updates the Pod status to Running.
+#   5. kubectl shows Running.
+#
+# Usage:
+#   kubectl apply -f deploy/demo-pod.yaml
+#   kubectl get pod smoke-test -w        # watch: Pending -> Running
+#   kubectl describe pod smoke-test      # inspect events and status
+#   kubectl delete pod smoke-test        # cleanup
+#
+# With mock runtime: the pod reports Running but no real container exists.
+# With cri runtime:  a real busybox container runs `sleep 3600`.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: smoke-test
+  labels:
+    app: smoke-test
+    purpose: not-k8s-demo
+spec:
+  containers:
+    - name: busybox
+      image: busybox:latest
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: "10m"
+          memory: "8Mi"
+        limits:
+          cpu: "50m"
+          memory: "16Mi"

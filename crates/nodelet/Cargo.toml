@@ -1,0 +1,50 @@
+[package]
+name = "nodelet"
+description = "A lean, event-driven Kubernetes node agent for single-device / edge use"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "nodelet"
+path = "src/main.rs"
+
+[[example]]
+name = "cri_smoke"
+required-features = ["cri"]
+
+[features]
+default = []
+# Enable the real containerd/CRI runtime (requires protoc at build time).
+cri = ["dep:tonic", "dep:prost", "dep:prost-types", "dep:tonic-prost", "dep:tonic-prost-build", "dep:tower", "dep:hyper-util"]
+
+[dependencies]
+tokio = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+
+tonic = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+prost-types = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
+
+[build-dependencies]
+tonic-prost-build = { version = "0.14", optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "allow" }
+
+[package.metadata.cri]
+# build.rs only compiles protos when the `cri` feature is active
