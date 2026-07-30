@@ -35,6 +35,8 @@ fn running_status() -> RuntimeStatus {
             container_id: Some("abc123".to_string()),
             restart_count: 0,
         }],
+        init_containers: Vec::new(),
+        initialized: true,
     }
 }
 
@@ -52,6 +54,8 @@ fn pending_status() -> RuntimeStatus {
             container_id: None,
             restart_count: 0,
         }],
+        init_containers: Vec::new(),
+        initialized: true,
     }
 }
 
@@ -278,6 +282,69 @@ fn restart_count_mirrors_the_runtime_status() {
 fn zero_restarts_reports_zero() {
     let status = bps("10.0.0.1", &running_status(), None);
     assert_eq!(status.container_statuses.as_ref().unwrap()[0].restart_count, 0);
+}
+
+#[test]
+fn initialized_condition_mirrors_runtime_status_by_default_true() {
+    // No init containers -> initialized: true (set by every RuntimeStatus
+    // constructor for a pod with none) -> Initialized condition True.
+    let status = bps("10.0.0.1", &running_status(), None);
+    let initialized = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Initialized").unwrap();
+    assert_eq!(initialized.status, "True");
+}
+
+#[test]
+fn initialized_false_while_waiting_on_init_containers() {
+    let mut waiting = pending_status();
+    waiting.initialized = false;
+    waiting.message = Some("waiting for init containers to complete".to_string());
+    let status = bps("10.0.0.1", &waiting, None);
+    let initialized = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Initialized").unwrap();
+    assert_eq!(initialized.status, "False");
+}
+
+#[test]
+fn init_container_statuses_is_none_when_there_are_no_init_containers() {
+    let status = bps("10.0.0.1", &running_status(), None);
+    assert!(status.init_container_statuses.is_none());
+}
+
+#[test]
+fn init_container_statuses_reflects_runtime_init_containers() {
+    let mut rt = pending_status();
+    rt.init_containers = vec![ContainerRuntimeStatus {
+        name: "setup".to_string(),
+        image: "alpine".to_string(),
+        ready: false,
+        running: true,
+        container_id: Some("init-1".to_string()),
+        restart_count: 0,
+    }];
+    let status = bps("10.0.0.1", &rt, None);
+    let init_statuses = status.init_container_statuses.unwrap();
+    assert_eq!(init_statuses.len(), 1);
+    assert_eq!(init_statuses[0].name, "setup");
+    assert!(init_statuses[0].state.as_ref().unwrap().running.is_some());
+}
+
+#[test]
+fn completed_init_container_reports_waiting_podinitializing_not_running() {
+    // A "not running" init container in the snapshot is either not-yet-
+    // created or already exited — either way it must not claim to be
+    // ContainerRunning.
+    let mut rt = pending_status();
+    rt.init_containers = vec![ContainerRuntimeStatus {
+        name: "setup".to_string(),
+        image: "alpine".to_string(),
+        ready: false,
+        running: false,
+        container_id: None,
+        restart_count: 0,
+    }];
+    let status = bps("10.0.0.1", &rt, None);
+    let init_statuses = status.init_container_statuses.unwrap();
+    let waiting = init_statuses[0].state.as_ref().unwrap().waiting.as_ref().unwrap();
+    assert_eq!(waiting.reason.as_deref(), Some("PodInitializing"));
 }
 
 #[test]

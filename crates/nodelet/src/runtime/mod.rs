@@ -62,6 +62,16 @@ pub struct RuntimeStatus {
     pub started_at: Option<Timestamp>,
     pub pod_ip: Option<String>,
     pub containers: Vec<ContainerRuntimeStatus>,
+    /// Status of `spec.initContainers`, in manifest order — reported
+    /// separately so `PodStatus.initContainerStatuses` can be populated
+    /// (kubectl's `Init:N/M` display and `kubectl describe` both read this,
+    /// not `containerStatuses`). Empty for runtimes/pods with none.
+    pub init_containers: Vec<ContainerRuntimeStatus>,
+    /// Whether every init container has completed (or there are none) —
+    /// drives `PodStatus`'s `Initialized` condition. `true` for runtimes/
+    /// pods with no init-container concept (mock; any pod mid-app-startup
+    /// with no init containers declared).
+    pub initialized: bool,
 }
 
 /// `namespace/name` key identifying a pod.

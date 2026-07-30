@@ -57,6 +57,8 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
                        DNS, private registry auth.
   proto/cri.proto      Upstream CRI v1 protobuf (vendored).
 deploy/                Control-plane setup, launcher, measurement, demo manifests.
+  test-e2e.sh          Functional tests against a live cluster — see "Testing" below.
+  lib/test/            Its harness/kubectl helpers + one case file per feature area.
 docs/ARCHITECTURE.md   Design, trade-offs, roadmap.
 ```
 
@@ -444,6 +446,53 @@ Notes from validation:
   container id back to a pod via labels. Validated against containerd 1.6.20: the
   smoke test confirms task events arrive and resolve to the right pod. So there is
   **no per-second polling on any supported containerd**.
+
+## Testing
+
+Two layers, and they're not substitutes for each other:
+
+- **`cargo test [--features cri]`** — pure logic in isolation: decision
+  matrices (restart/init-container/eviction-QoS-ranking), parsers (Quantity,
+  dockerconfigjson, DNS config), translation tables (securityContext →
+  `LinuxContainerSecurityContext`, resources → `LinuxContainerResources`).
+  No cluster needed; runs anywhere, including this repo's CI.
+- **`deploy/test-e2e.sh`** — functional tests against a real, already-running
+  not-k8s deployment (stripped k3s + nodelet with `NODELET_RUNTIME=cri`):
+  does `kubectl apply` a manifest actually converge to what it should on a
+  *live* apiserver + real containerd, not just "does the code that would
+  handle it look right in isolation." Set up a cluster first
+  (`deploy/bootstrap-source.sh --with-cri`), export `KUBECONFIG`, then:
+
+  ```bash
+  ./deploy/test-e2e.sh                # run everything
+  ./deploy/test-e2e.sh --only=probes  # only test function names containing "probes"
+  ./deploy/test-e2e.sh --keep         # leave the test namespace for inspection
+  ```
+
+  **Must run on the same node as nodelet.** `kubectl exec`/`kubectl logs`
+  aren't implemented yet (no streaming server — see `docs/GAP_CLOSURE.md`),
+  so several checks (resource limits, securityContext, hostAliases, DNS
+  config, log rotation) instead read files a container wrote into a shared
+  `emptyDir`, or — for ConfigMap/Secret/downwardAPI/projected volumes —
+  read nodelet's own materialized volume directly off the host filesystem
+  at `/var/lib/nodelet/pods/<uid>/volumes/<name>/...`. That's not a
+  workaround bolted onto the tests; it's the same path the container itself
+  has bind-mounted, so it's exactly what's inside the container.
+
+  A handful of tests need extra setup and skip cleanly without it:
+  `TEST_STATIC_POD_PATH` (static pods — nodelet must be running with a
+  matching `NODELET_STATIC_POD_PATH`) and `TEST_LOG_MAX_SIZE_BYTES` (log
+  rotation — nodelet must be running with a small
+  `NODELET_CONTAINER_LOG_MAX_SIZE_BYTES` so a test can actually fill it).
+  Node-pressure eviction and orphaned-sandbox GC are documented as manual
+  procedures instead of automated tests — both need either exhausting a
+  real resource or stopping nodelet out from under a pod, neither of which
+  this suite does to a host you're relying on.
+
+  `deploy/lib/test/cases/unimplemented.sh` asserts `kubectl exec`/`kubectl
+  logs` still *don't* work — on purpose: the moment someone lands the
+  streaming server without updating that file, this suite starts failing
+  loudly instead of silently staying wrong.
 
 ## Configuration (environment variables)
 

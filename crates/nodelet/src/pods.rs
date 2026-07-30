@@ -371,6 +371,29 @@ fn build_pod_status(
 
     let all_ready = running && container_statuses.iter().all(|c| c.ready);
 
+    let init_container_statuses: Vec<ContainerStatus> = rt
+        .init_containers
+        .iter()
+        .map(|c| ContainerStatus {
+            name: c.name.clone(),
+            image: c.image.clone(),
+            image_id: String::new(),
+            ready: c.running,
+            restart_count: c.restart_count as i32,
+            started: Some(c.running),
+            container_id: c.container_id.clone(),
+            state: Some(if c.running {
+                ContainerState { running: Some(ContainerStateRunning { started_at: None }), ..Default::default() }
+            } else {
+                ContainerState {
+                    waiting: Some(ContainerStateWaiting { reason: Some("PodInitializing".to_string()), message: None }),
+                    ..Default::default()
+                }
+            }),
+            ..Default::default()
+        })
+        .collect();
+
     let pod_ips = rt
         .pod_ip
         .as_ref()
@@ -379,12 +402,13 @@ fn build_pod_status(
     PodStatus {
         phase: Some(rt.phase.as_str().to_string()),
         conditions: Some(vec![
-            cond("Initialized", true),
+            cond("Initialized", rt.initialized),
             cond("PodScheduled", true),
             cond("ContainersReady", all_ready),
             cond("Ready", all_ready),
         ]),
         container_statuses: Some(container_statuses),
+        init_container_statuses: (!init_container_statuses.is_empty()).then_some(init_container_statuses),
         host_ip: Some(host_ip.to_string()),
         pod_ip: rt.pod_ip.clone(),
         pod_ips,

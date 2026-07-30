@@ -1894,7 +1894,35 @@ impl CriRuntime {
             started_at,
             pod_ip: self.pod_ip(sandbox_id).await,
             containers: crs,
+            init_containers: self.build_init_container_statuses(sandbox_id).await.unwrap_or_default(),
+            initialized: true,
         })
+    }
+
+    /// `ContainerRuntimeStatus` for every init-labeled container in the
+    /// sandbox — the counterpart to the main loop in `build_status()`
+    /// above, kept separate because init containers are excluded from that
+    /// one (their exit is expected and terminal, not something `all_exited`
+    /// should key the *pod's* phase off).
+    async fn build_init_container_statuses(&self, sandbox_id: &str) -> Result<Vec<ContainerRuntimeStatus>> {
+        let running_v = ContainerState::ContainerRunning as i32;
+        let containers = self.list_pod_containers(sandbox_id).await?;
+        Ok(containers
+            .into_iter()
+            .filter(|c| c.labels.contains_key(CTR_INIT_LABEL))
+            .map(|c| {
+                let running = c.state == running_v;
+                let name = c.metadata.as_ref().map(|m| m.name.clone()).unwrap_or_default();
+                ContainerRuntimeStatus {
+                    restart_count: self.restart_count(sandbox_id, &name),
+                    name,
+                    image: c.image.as_ref().map(|i| i.image.clone()).unwrap_or_default(),
+                    ready: running,
+                    running,
+                    container_id: Some(c.id.clone()),
+                }
+            })
+            .collect())
     }
 }
 
@@ -1974,6 +2002,8 @@ impl PodRuntime for CriRuntime {
                         started_at: None,
                         pod_ip: None,
                         containers: Vec::new(),
+                        init_containers: self.build_init_container_statuses(&sandbox_id).await.unwrap_or_default(),
+                        initialized: false,
                     });
                 }
                 InitProgress::Failed(reason) => {
@@ -1983,6 +2013,8 @@ impl PodRuntime for CriRuntime {
                         started_at: None,
                         pod_ip: None,
                         containers: Vec::new(),
+                        init_containers: self.build_init_container_statuses(&sandbox_id).await.unwrap_or_default(),
+                        initialized: false,
                     });
                 }
                 InitProgress::AllComplete => {}

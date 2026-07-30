@@ -91,6 +91,47 @@ listener and is a project of its own). Closed, each with unit tests:
 260 tests passing with `--features cri` (up from 215 at the start of this
 round), 125 with the default (mock-only) build.
 
+## Round 5: live-cluster e2e test suite + initContainerStatuses fix (2026-07-30, same day)
+
+User asked for two things: keep writing Rust tests for whatever's testable
+that way, and — for what genuinely isn't (this is a live-container-runtime
+project; a lot of correctness can only really be proven against a real
+apiserver + real containerd) — a bash integration-test suite, structured
+like `deploy/bootstrap-source.sh`'s `lib/*.sh` module pattern, that the user
+runs manually against a real k3s deployment.
+
+- **Found and fixed while building the suite**: `PodStatus.initContainerStatuses`
+  and the `Initialized` condition were never populated at all —
+  `kubectl describe`'s `Init:N/M` display had nothing to read, and
+  `Initialized` always reported `True` even while genuinely waiting on init
+  containers. New `RuntimeStatus.init_containers`/`.initialized` fields,
+  threaded through `mock.rs`/`cri.rs`/`pods.rs`, with new unit tests.
+- **`deploy/test-e2e.sh` + `deploy/lib/test/`**: a harness (register/run/
+  assert, PASS/FAIL/SKIP reporting), kubectl wait/get helpers, and one case
+  file per feature area, covering nearly everything from rounds 1–4 against
+  a real cluster — pod lifecycle, init container ordering (structural, not
+  just status-string), crash-restart + restart counts, exit-code-aware
+  `Never` phase, all three probe types (including a real `httpGet` against
+  a real pod IP), postStart/preStop hooks, termination grace period,
+  ConfigMap/Secret/downwardAPI/projected volumes, real `serviceAccountToken`
+  minting, hostAliases, fsGroup, `runAsUser`/`readOnlyRootFilesystem`,
+  custom DNS config, **resource limits actually enforced in the container's
+  own cgroup v2 files** (not just translated correctly in isolation), node
+  status/pressure conditions, image GC, static pods + mirror pods, log
+  rotation, and — deliberately — active assertions that `kubectl exec`/
+  `kubectl logs` still *don't* work, so this suite fails loudly instead of
+  going silently stale the moment someone lands the streaming server.
+- The key trick making most of this possible without `kubectl exec`/`logs`:
+  single-node architecture means the test script runs on the same host as
+  nodelet, so a container's self-check output written into a shared
+  `emptyDir` — or nodelet's own materialized ConfigMap/Secret/downwardAPI/
+  projected volume — is directly readable off the host filesystem at the
+  exact path bind-mounted into the container.
+- Deliberately **not** automated (documented as manual procedures instead):
+  node-pressure eviction and orphaned-sandbox GC, since exercising either
+  needs exhausting a real resource or stopping nodelet out from under a pod
+  — not something to do automatically to a host/service someone's relying on.
+
 ## Round 4: PID pressure, log rotation, static/mirror pods, serviceAccountToken (2026-07-30, same day)
 
 User said "you pick the path... let's get this finished" — picked verifiable,
