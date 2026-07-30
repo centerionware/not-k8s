@@ -304,3 +304,11 @@ fn key_parts(pod: &Pod) -> Option<(String, String)> {
     let name = pod.metadata.name.clone()?;
     Some((ns, name))
 }
+
+// Small, isolated test files — one behavior area each.
+#[cfg(test)]
+#[path = "pods_tests/build_pod_status.rs"]
+mod tests_build_pod_status;
+#[cfg(test)]
+#[path = "pods_tests/key_parts.rs"]
+mod tests_key_parts;

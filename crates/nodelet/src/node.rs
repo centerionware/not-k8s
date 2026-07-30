@@ -11,7 +11,7 @@ use anyhow::Result;
 use k8s_openapi::jiff::Timestamp;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::api::core::v1::{
-    Node, NodeAddress, NodeCondition, NodeSpec, NodeStatus, NodeSystemInfo,
+    Node, NodeAddress, NodeCondition, NodeSpec, NodeStatus, NodeSystemInfo, Taint,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta, Time};
@@ -188,6 +188,16 @@ pub async fn register(client: &Client, cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Pure part of clear_cloudprovider_taint(): does `taints` contain `key`,
+/// and what's left if it's removed. Pulled out so the "which taint is
+/// removed, which are kept" logic is unit-testable independent of the
+/// apiserver retry loop around it.
+fn taints_without(taints: &[Taint], key: &str) -> (Vec<Taint>, bool) {
+    let has_it = taints.iter().any(|t| t.key == key);
+    let kept = taints.iter().filter(|t| t.key != key).cloned().collect();
+    (kept, has_it)
+}
+
 async fn clear_cloudprovider_taint(client: Client, node_name: String) {
     let api: Api<Node> = Api::all(client);
     for _ in 0..10 {
@@ -196,7 +206,10 @@ async fn clear_cloudprovider_taint(client: Client, node_name: String) {
             Err(_) => return, // node gone or apiserver hiccup; next registration will retry
         };
         let taints = node.spec.as_ref().and_then(|s| s.taints.as_ref());
-        let has_it = taints.is_some_and(|t| t.iter().any(|t| t.key == CLOUDPROVIDER_TAINT_KEY));
+        let (kept, has_it) = match taints {
+            Some(t) => taints_without(t, CLOUDPROVIDER_TAINT_KEY),
+            None => (Vec::new(), false),
+        };
         if !has_it {
             // Not there (yet) — could be genuinely absent, or the
             // controller-manager just hasn't gotten to it. Keep retrying
@@ -205,12 +218,6 @@ async fn clear_cloudprovider_taint(client: Client, node_name: String) {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             continue;
         }
-        let kept: Vec<_> = taints
-            .unwrap()
-            .iter()
-            .filter(|t| t.key != CLOUDPROVIDER_TAINT_KEY)
-            .cloned()
-            .collect();
         let patch = serde_json::json!({ "spec": { "taints": kept } });
         if let Err(e) = api.patch(&node_name, &PatchParams::default(), &Patch::Merge(&patch)).await {
             tracing::warn!(node = %node_name, error = ?e, "failed to clear cloudprovider-uninitialized taint");
@@ -227,6 +234,26 @@ pub async fn push_status(client: &Client, cfg: &Config, ready: bool) -> Result<(
     api.patch_status(&cfg.node_name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
     Ok(())
 }
+
+// Small, isolated test files — one behavior area each.
+#[cfg(test)]
+#[path = "node_tests/taint_filter.rs"]
+mod tests_taint_filter;
+#[cfg(test)]
+#[path = "node_tests/capacity_map.rs"]
+mod tests_capacity_map;
+#[cfg(test)]
+#[path = "node_tests/node_labels.rs"]
+mod tests_node_labels;
+#[cfg(test)]
+#[path = "node_tests/conditions.rs"]
+mod tests_conditions;
+#[cfg(test)]
+#[path = "node_tests/read_trim.rs"]
+mod tests_read_trim;
+#[cfg(test)]
+#[path = "node_tests/build_node.rs"]
+mod tests_build_node;
 
 /// Renew the node Lease (the cheap, frequent liveness signal).
 pub async fn renew_lease(client: &Client, cfg: &Config) -> Result<()> {

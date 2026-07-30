@@ -101,6 +101,78 @@ fn pod_id(pod: &Pod) -> PodId {
     PodId { namespace, name, uid, host_network }
 }
 
+/// What ensure_container() should do about an already-existing container
+/// with the target name, given its CRI state and the pod's restartPolicy.
+/// Pulled out as a pure decision (see restart_decision()) specifically so
+/// the restart-on-exit fix (crates the whole coredns pile-up traced back
+/// to) has a unit-testable matrix instead of only being verifiable by
+/// hand against a real cluster.
+#[derive(Debug, PartialEq, Eq)]
+enum RestartDecision {
+    /// Already running — leave it alone.
+    AlreadyRunning,
+    /// Not running, but restartPolicy: Never means it's done for good —
+    /// leave it alone (Job-style one-shot semantics).
+    LeaveTerminated,
+    /// Not running and this pod is allowed to restart — remove the stale
+    /// container and create a fresh one.
+    NeedsRestart,
+}
+
+fn restart_decision(existing_state: Option<i32>, running_state: i32, restart_policy: &str) -> RestartDecision {
+    match existing_state {
+        None => RestartDecision::NeedsRestart, // no existing container at all — same code path as a genuine restart
+        Some(s) if s == running_state => RestartDecision::AlreadyRunning,
+        Some(_) if restart_policy == "Never" => RestartDecision::LeaveTerminated,
+        Some(_) => RestartDecision::NeedsRestart,
+    }
+}
+
+/// Pod-level phase from container CRI states + restartPolicy. See the
+/// long comment on build_status()'s call site for why restartPolicy has to
+/// factor in here — reporting Succeeded for a restartPolicy: Always pod
+/// whose container merely exited is the bug that drove unbounded coredns
+/// pod creation (Kubernetes' ReplicaSet controller treats Succeeded/Failed
+/// pods as permanently inactive and replaces them).
+fn compute_phase(any_running: bool, all_exited: bool, restart_policy: &str) -> Phase {
+    if any_running {
+        Phase::Running
+    } else if all_exited && restart_policy == "Never" {
+        Phase::Succeeded
+    } else {
+        Phase::Pending
+    }
+}
+
+/// Build CRI `Mount` entries for a container's volumeMounts against the
+/// pod's already-resolved volume name -> host directory map (see
+/// resolve_volumes()). A mount naming a volume that isn't in the map
+/// (unsupported volume type, or the ConfigMap/Secret fetch failed) is
+/// silently dropped — pulled out as a pure function specifically to make
+/// that behavior, and subPath/readOnly handling, unit-testable without a
+/// real CRI socket.
+fn build_mounts(
+    volume_mounts: &[k8s_openapi::api::core::v1::VolumeMount],
+    volumes: &HashMap<String, PathBuf>,
+) -> Vec<Mount> {
+    volume_mounts
+        .iter()
+        .filter_map(|vm| {
+            let host_dir = volumes.get(&vm.name)?;
+            let host_path = match &vm.sub_path {
+                Some(sub) => host_dir.join(sub),
+                None => host_dir.clone(),
+            };
+            Some(Mount {
+                container_path: vm.mount_path.clone(),
+                host_path: host_path.to_string_lossy().into_owned(),
+                readonly: vm.read_only.unwrap_or(false),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
 /// Write a ConfigMap/Secret's keys out as individual files under `dir`
 /// (creating it if needed) — text values from `.data`/`.stringData`, binary
 /// values from `.binaryData`/`.data` (Secret's `.data` is base64 in the wire
@@ -294,20 +366,20 @@ impl CriRuntime {
             .iter()
             .find(|c| c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false));
 
-        match existing_ctr {
-            Some(c) if c.state == running_v => return Ok(()),
-            Some(_) if restart_policy == "Never" => return Ok(()),
-            Some(c) => {
+        match restart_decision(existing_ctr.map(|c| c.state), running_v, restart_policy) {
+            RestartDecision::AlreadyRunning | RestartDecision::LeaveTerminated => return Ok(()),
+            RestartDecision::NeedsRestart => {
                 // Not running and this pod is allowed to restart — clear the
-                // stale container out so the create-below gets a fresh one.
-                // Best-effort: if it's already gone by the time we ask, or
-                // CRI won't remove it for some other reason, fall through
-                // and let CreateContainer surface any real problem instead
-                // of masking it here.
-                let mut rt = self.rt.clone();
-                let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
+                // stale container out (if there was one) so the create-below
+                // gets a fresh one. Best-effort: if it's already gone by the
+                // time we ask, or CRI won't remove it for some other reason,
+                // fall through and let CreateContainer surface any real
+                // problem instead of masking it here.
+                if let Some(c) = existing_ctr {
+                    let mut rt = self.rt.clone();
+                    let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
+                }
             }
-            None => {}
         }
 
         let image = container.image.clone().unwrap_or_default();
@@ -323,33 +395,7 @@ impl CriRuntime {
         .await
         .context("pulling image")?;
 
-        // Resolve this container's volumeMounts against the pod's already-
-        // materialized volumes (see resolve_volumes()). A mount naming a
-        // volume we couldn't resolve (unsupported type, or the ConfigMap/
-        // Secret fetch failed) is dropped rather than pointing CRI at a
-        // nonexistent host path — the container starts without it and
-        // whatever needs that file fails loudly, same as it would with no
-        // volume support at all, instead of a CRI-level RunContainer error
-        // that's harder to connect back to "which mount was the problem."
-        let mounts: Vec<Mount> = container
-            .volume_mounts
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .filter_map(|vm| {
-                let host_dir = volumes.get(&vm.name)?;
-                let host_path = match &vm.sub_path {
-                    Some(sub) => host_dir.join(sub),
-                    None => host_dir.clone(),
-                };
-                Some(Mount {
-                    container_path: vm.mount_path.clone(),
-                    host_path: host_path.to_string_lossy().into_owned(),
-                    readonly: vm.read_only.unwrap_or(false),
-                    ..Default::default()
-                })
-            })
-            .collect();
+        let mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes);
 
         let mut rt = self.rt.clone();
         let config = ContainerConfig {
@@ -438,13 +484,7 @@ impl CriRuntime {
         // ensure_container() above just restarted it — so report Pending
         // rather than Succeeded: never hand the ReplicaSet controller a
         // terminal phase for a pod that's still supposed to be alive.
-        let phase = if any_running {
-            Phase::Running
-        } else if all_exited && restart_policy == "Never" {
-            Phase::Succeeded
-        } else {
-            Phase::Pending
-        };
+        let phase = compute_phase(any_running, all_exited, restart_policy);
 
         let started_at = (earliest_created != i64::MAX && earliest_created > 0)
             .then(|| Timestamp::from_nanosecond(earliest_created as i128).ok())
@@ -670,6 +710,33 @@ async fn containerd_events_loop(channel: Channel, tx: UnboundedSender<String>) {
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
+
+// Small, isolated test files — one behavior area each — under cri_tests/.
+// `#[path]` keeps them in their own files while still being submodules of
+// this one, so they can see its private items (compute_phase,
+// restart_decision, build_mounts, write_volume_dir, pod_id, the label/
+// sandbox_config builders) without anything needing to be made `pub`.
+#[cfg(test)]
+#[path = "cri_tests/phase.rs"]
+mod tests_phase;
+#[cfg(test)]
+#[path = "cri_tests/restart_decision.rs"]
+mod tests_restart_decision;
+#[cfg(test)]
+#[path = "cri_tests/mounts.rs"]
+mod tests_mounts;
+#[cfg(test)]
+#[path = "cri_tests/write_volume_dir.rs"]
+mod tests_write_volume_dir;
+#[cfg(test)]
+#[path = "cri_tests/pod_id.rs"]
+mod tests_pod_id;
+#[cfg(test)]
+#[path = "cri_tests/labels.rs"]
+mod tests_labels;
+#[cfg(test)]
+#[path = "cri_tests/sandbox_config.rs"]
+mod tests_sandbox_config;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

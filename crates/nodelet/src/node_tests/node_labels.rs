@@ -1,0 +1,62 @@
+//! node_labels(): the label set every Node object gets, including
+//! user-supplied labels from NODELET_NODE_LABELS.
+use super::*;
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+fn cfg(labels: BTreeMap<String, String>) -> Config {
+    Config {
+        node_name: "debian".to_string(),
+        runtime: crate::config::RuntimeKind::Mock,
+        cri_endpoint: String::new(),
+        heartbeat: Duration::from_secs(10),
+        status_interval: Duration::from_secs(60),
+        cpu_cores: 1,
+        memory_bytes: 1,
+        max_pods: 1,
+        labels,
+        service_proxy: false,
+        ip_family: crate::config::IpFamily::V4,
+        lb_method: crate::config::LbMethod::Random,
+    }
+}
+
+#[test]
+fn includes_hostname_from_node_name() {
+    let l = node_labels(&cfg(BTreeMap::new()));
+    assert_eq!(l.get("kubernetes.io/hostname"), Some(&"debian".to_string()));
+}
+
+#[test]
+fn includes_os_and_arch() {
+    let l = node_labels(&cfg(BTreeMap::new()));
+    assert_eq!(l.get("kubernetes.io/os"), Some(&std::env::consts::OS.to_string()));
+    assert_eq!(l.get("kubernetes.io/arch"), Some(&std::env::consts::ARCH.to_string()));
+}
+
+#[test]
+fn marks_itself_as_nodelet_managed() {
+    let l = node_labels(&cfg(BTreeMap::new()));
+    assert_eq!(l.get("nodelet.dev/managed"), Some(&"true".to_string()));
+    assert_eq!(l.get("node.kubernetes.io/instance-type"), Some(&"nodelet".to_string()));
+}
+
+#[test]
+fn user_supplied_labels_are_merged_in() {
+    let mut extra = BTreeMap::new();
+    extra.insert("region".to_string(), "edge-1".to_string());
+    let l = node_labels(&cfg(extra));
+    assert_eq!(l.get("region"), Some(&"edge-1".to_string()));
+    // Built-in labels are still present alongside the custom one.
+    assert!(l.contains_key("nodelet.dev/managed"));
+}
+
+#[test]
+fn user_supplied_label_can_override_a_builtin_key() {
+    // Whether this is desirable is arguable, but it must be deterministic
+    // (last-write-wins from cfg.labels), not silently dropped either way.
+    let mut extra = BTreeMap::new();
+    extra.insert("nodelet.dev/managed".to_string(), "false".to_string());
+    let l = node_labels(&cfg(extra));
+    assert_eq!(l.get("nodelet.dev/managed"), Some(&"false".to_string()));
+}
