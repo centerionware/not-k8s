@@ -919,8 +919,17 @@ start_flanneld() {
     log "Starting flanneld (kube subnet manager, backend=vxlan, ip-family=$IP_FAMILY)..."
     local net_conf_args=()
     [[ -f /etc/kube-flannel/net-conf.json ]] && net_conf_args=(--net-config-path=/etc/kube-flannel/net-conf.json)
-    KUBECONFIG="$KUBECONFIG" NODE_NAME="${NODELET_NODE_NAME:-$(hostname)}" \
-        nohup flanneld --kube-subnet-mgr --ip-masq "${net_conf_args[@]}" \
+    # flanneld does NOT read the KUBECONFIG env var — its own flag-parsing
+    # code (not generic client-go behavior) only looks at an explicit
+    # --kubeconfig flag or --master; with neither set it skips straight to
+    # in-cluster config, which only works when actually running as a pod.
+    # Confirmed for real: without --kubeconfig here, flanneld's own log
+    # said so outright ("Neither --kubeconfig nor --master was specified.
+    # Using the inClusterConfig") and then failed outright (no
+    # KUBERNETES_SERVICE_HOST in this environment either, since nothing here
+    # runs as a pod).
+    NODE_NAME="${NODELET_NODE_NAME:-$(hostname)}" \
+        nohup flanneld --kube-subnet-mgr --ip-masq --kubeconfig="$KUBECONFIG" "${net_conf_args[@]}" \
         >"$LOG_DIR/flanneld.log" 2>&1 &
     echo $! > "$WORK_DIR/flanneld.pid"
     # Deliberately not waiting for /run/flannel/subnet.env here: flanneld's
