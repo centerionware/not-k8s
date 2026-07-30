@@ -1061,13 +1061,16 @@ start_flanneld() {
     [[ -f /etc/kube-flannel/net-conf.json ]] && net_conf_args=(--net-config-path=/etc/kube-flannel/net-conf.json)
     # flanneld does NOT read the KUBECONFIG env var — its own flag-parsing
     # code (not generic client-go behavior) only looks at an explicit
-    # --kubeconfig flag or --master; with neither set it skips straight to
+    # kubeconfig flag or --master; with neither set it skips straight to
     # in-cluster config, which only works when actually running as a pod.
-    # Confirmed for real: without --kubeconfig here, flanneld's own log
-    # said so outright ("Neither --kubeconfig nor --master was specified.
-    # Using the inClusterConfig") and then failed outright (no
-    # KUBERNETES_SERVICE_HOST in this environment either, since nothing here
-    # runs as a pod).
+    # The flag is -kubeconfig-file, NOT -kubeconfig: confirmed against this
+    # flannel build's actual -h usage output ("-kubeconfig-file string
+    # kubeconfig file location") after --kubeconfig itself failed with
+    # "flag provided but not defined: -kubeconfig" — the earlier fix was
+    # built off a client-go warning message's wording ("Neither --kubeconfig
+    # nor --master was specified"), which turned out not to match this
+    # binary's actual registered flag name. The usage dump is the authority
+    # here, not a log message's phrasing.
     # Absolute path, not the bare command: systemd/OpenRC services get a
     # fresh, minimal PATH that doesn't include wherever this script's own
     # PATH additions put a fetched/built binary ($TOOLCHAIN_DIR/bin) — a
@@ -1076,7 +1079,7 @@ start_flanneld() {
     # actually runs it. Confirmed for real: exactly this failure, in
     # journalctl -u flanneld, on the first version of this fix.
     local flanneld_bin; flanneld_bin="$(command -v flanneld)"
-    local exec_cmd="$flanneld_bin --kube-subnet-mgr --ip-masq --kubeconfig=$KUBECONFIG ${net_conf_args[*]}"
+    local exec_cmd="$flanneld_bin --kube-subnet-mgr --ip-masq --kubeconfig-file=$KUBECONFIG ${net_conf_args[*]}"
     local node_name="${NODELET_NODE_NAME:-$(hostname)}"
     install_supervised_service flanneld "flanneld — CNI overlay network daemon for not-k8s" \
         "$exec_cmd" "k3s.service" "NODE_NAME=$node_name"
