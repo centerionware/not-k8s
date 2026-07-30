@@ -115,6 +115,19 @@ uninstall_k3s() {
 # tracking existed, or from a machine this session never touched. Matched
 # by name and removed unconditionally; a package that isn't installed is a
 # harmless no-op for every package manager here.
+#
+# Deliberately excludes git, even though pkg_install is called for it (see
+# the various "command -v git || pkg_install git ..." call sites above):
+# git is a fundamental, near-universal system tool almost certainly already
+# on any real machine for reasons that have nothing to do with this
+# project, and this project only ever needs it transiently to `git clone`
+# a build dependency's source. Force-removing it by name unconditionally is
+# real, disproportionate collateral damage compared to everything else in
+# this list, which is genuinely specific to this project. The tracked path
+# (uninstall_all_tracked_packages, via pkg_installs.log) already removes it
+# correctly and safely when this script actually did install it fresh —
+# pkg_install is only ever called for git when `command -v git` already
+# failed, so a pre-existing git is never logged as ours in the first place.
 force_remove_known_packages() {
     log "--force: removing every package this project could ever install, by name — not just what a tracking log says, since that log may not exist for whatever installed things here."
     local entries=(
@@ -127,7 +140,6 @@ force_remove_known_packages() {
         "CNI plugins|containernetworking-plugins|containernetworking-plugins|cni-plugins|cni-plugins|containernetworking-plugins|containernetworking-plugins"
         "flannel|flannel|flannel|flannel|flannel|flannel|flannel"
         "nftables|nftables|nftables|nftables|nftables|nftables|nftables"
-        "git|git|git|git|git|git|git"
     )
     local col
     case "$PKG_MGR" in
