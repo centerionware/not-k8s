@@ -28,23 +28,26 @@ sudo k3s kubectl describe pod -n kube-system "$POD"
 # "connection refused"s against a containerd that was never running.
 CRICTL="crictl --runtime-endpoint unix:///run/containerd/containerd.sock"
 
-echo "=== crictl ps -a, unfiltered (crictl's --name filter came back empty even for a container the apiserver confirms is running — listing everything instead) ==="
+echo "=== crictl ps -a, unfiltered ==="
 sudo $CRICTL ps -a
 
-# The apiserver's own record of the current container ID is authoritative —
-# ask it directly instead of trusting crictl's own listing/filtering, which
-# didn't find a container by name that definitely exists.
-CID="$(sudo k3s kubectl get pod -n kube-system "$POD" -o jsonpath='{.status.containerStatuses[0].containerID}' 2>/dev/null | sed 's#^containerd://##')"
-echo "=== container ID per the apiserver: ${CID:-<none>} ==="
+# crictl inspect/logs on the apiserver's on-record container ID kept
+# "not found"ing — the container is apparently crashing and getting
+# removed (nodelet's restart-on-exit logic, working as designed now) faster
+# than a multi-step kubectl+crictl round trip can catch up with it. Read the
+# log FILE directly instead: sandbox_config() in cri.rs sets a real
+# kubelet-style log_directory (/var/log/pods/<ns>_<name>_<uid>/), and that
+# file persists on disk regardless of whether the container that wrote it
+# still exists in containerd. This sidesteps the race entirely.
+UID_="$(sudo k3s kubectl get pod -n kube-system "$POD" -o jsonpath='{.metadata.uid}' 2>/dev/null)"
+LOGDIR="/var/log/pods/kube-system_${POD}_${UID_}"
+echo "=== log directory: $LOGDIR ==="
+sudo ls -la "$LOGDIR" 2>&1
+echo "=== coredns container log file (persists across restarts) ==="
+sudo find "$LOGDIR" -name 'coredns*.log' -exec sh -c 'echo "--- {} ---"; tail -150 "{}"' \; 2>&1
 
-if [[ -n "$CID" ]]; then
-    echo "--- crictl inspect $CID (reason/exitCode/message/state) ---"
-    sudo $CRICTL inspect "$CID" 2>&1 | grep -B1 -A5 '"reason"\|"exitCode"\|"message"\|"state"'
-    echo "--- crictl logs $CID ---"
-    sudo $CRICTL logs "$CID" 2>&1 | tail -100
-else
-    echo "apiserver has no containerID on record for this pod right now"
-fi
+echo "=== also checking for older pod UIDs under /var/log/pods (in case this pod has already been recreated since) ==="
+sudo find /var/log/pods -maxdepth 1 -iname '*coredns*' 2>&1
 
 echo "=== done ==="
 echo "Full output saved to: $OUT"
