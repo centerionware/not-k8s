@@ -96,7 +96,8 @@ impl PodController {
         match self.runtime.ensure_pod(&pod).await {
             Ok(status) => {
                 debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured");
-                if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status).await {
+                let prev = pod.status.as_ref();
+                if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev).await {
                     warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status");
                 }
             }
@@ -136,7 +137,8 @@ impl PodController {
             match runtime.ensure_pod(&pod).await {
                 Ok(status) => {
                     debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured (retry)");
-                    if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status).await {
+                    let prev = pod.status.as_ref();
+                    if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev).await {
                         warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status (retry)");
                     }
                 }
@@ -169,8 +171,8 @@ impl PodController {
         // Only write if the pod still exists in the apiserver.
         let api: Api<Pod> = Api::namespaced(self.client.clone(), ns);
         match api.get_opt(name).await {
-            Ok(Some(_)) => {
-                if let Err(e) = write_status(&self.client, &self.host_ip, ns, name, &status).await {
+            Ok(Some(p)) => {
+                if let Err(e) = write_status(&self.client, &self.host_ip, ns, name, &status, p.status.as_ref()).await {
                     warn!(pod = %key, error = ?e, "failed to write pod status");
                 } else {
                     debug!(pod = %key, phase = status.phase.as_str(), "status updated (event-driven)");
@@ -184,21 +186,48 @@ impl PodController {
 
 /// Free functions (not PodController methods) so schedule_retry()'s
 /// detached, 'static spawned task can call them without borrowing `self`.
-async fn write_status(client: &Client, host_ip: &str, ns: &str, name: &str, rt: &RuntimeStatus) -> Result<()> {
+async fn write_status(
+    client: &Client,
+    host_ip: &str,
+    ns: &str,
+    name: &str,
+    rt: &RuntimeStatus,
+    prev: Option<&PodStatus>,
+) -> Result<()> {
     let api: Api<Pod> = Api::namespaced(client.clone(), ns);
-    let status = build_pod_status(host_ip, rt);
+    let status = build_pod_status(host_ip, rt, prev);
     let patch = serde_json::json!({ "status": status });
     api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
     Ok(())
 }
 
-fn build_pod_status(host_ip: &str, rt: &RuntimeStatus) -> PodStatus {
+/// `prev` is the pod's previously-stored status (straight from the watch
+/// event / a fresh get), used only to carry `last_transition_time` forward
+/// for conditions whose status hasn't actually changed. Stamping every
+/// condition with `now()` on every call — the previous behavior — made every
+/// patch_status a real diff, which bumps resourceVersion, which the
+/// apiserver delivers back to nodelet's own field-selected watch as a fresh
+/// Apply event, which re-triggers reconcile(), which calls write_status()
+/// again: an unbounded self-feedback loop hammering both the CRI runtime and
+/// the apiserver for every pod, forever, regardless of whether anything
+/// real changed. Preserving unchanged timestamps makes an unchanged status
+/// patch a true no-op (identical to the stored object), so the apiserver
+/// doesn't bump resourceVersion and the loop breaks.
+fn build_pod_status(host_ip: &str, rt: &RuntimeStatus, prev: Option<&PodStatus>) -> PodStatus {
     let running = rt.phase == Phase::Running;
-    let cond = |type_: &str, ok: bool| PodCondition {
-        type_: type_.to_string(),
-        status: if ok { "True" } else { "False" }.to_string(),
-        last_transition_time: Some(Time(k8s_openapi::jiff::Timestamp::now())),
-        ..Default::default()
+    let prev_time = |type_: &str, status: &str| -> Option<Time> {
+        prev?
+            .conditions
+            .as_ref()?
+            .iter()
+            .find(|c| c.type_ == type_ && c.status == status)
+            .and_then(|c| c.last_transition_time.clone())
+    };
+    let cond = |type_: &str, ok: bool| {
+        let status = if ok { "True" } else { "False" }.to_string();
+        let last_transition_time = prev_time(type_, &status)
+            .or_else(|| Some(Time(k8s_openapi::jiff::Timestamp::now())));
+        PodCondition { type_: type_.to_string(), status, last_transition_time, ..Default::default() }
     };
 
     let container_statuses = rt
