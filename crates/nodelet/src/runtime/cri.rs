@@ -248,7 +248,7 @@ fn volume_source_type(v: &Volume) -> &'static str {
         "iscsi"
     } else if v.photon_persistent_disk.is_some() {
         "photonPersistentDisk"
-    } else if v.portworx.is_some() {
+    } else if v.portworx_volume.is_some() {
         "portworx"
     } else if v.quobyte.is_some() {
         "quobyte"
