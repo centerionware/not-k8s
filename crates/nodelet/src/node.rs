@@ -11,7 +11,8 @@ use anyhow::Result;
 use k8s_openapi::jiff::Timestamp;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::api::core::v1::{
-    Node, NodeAddress, NodeCondition, NodeSpec, NodeStatus, NodeSystemInfo, Taint,
+    DaemonEndpoint, Node, NodeAddress, NodeCondition, NodeDaemonEndpoints, NodeSpec, NodeStatus,
+    NodeSystemInfo, Taint,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta, Time};
@@ -183,6 +184,13 @@ fn build_status(cfg: &Config, ready: bool) -> NodeStatus {
             NodeAddress { type_: "InternalIP".to_string(), address: detect_internal_ip() },
             NodeAddress { type_: "Hostname".to_string(), address: cfg.node_name.clone() },
         ]),
+        // The apiserver reads this to know where to proxy kubectl exec/
+        // logs/attach/port-forward requests — without it, those requests
+        // have no route to this node's server at all, regardless of
+        // whether the server itself is running.
+        daemon_endpoints: cfg.server_enabled.then(|| NodeDaemonEndpoints {
+            kubelet_endpoint: Some(DaemonEndpoint { port: cfg.server_port as i32 }),
+        }),
         ..Default::default()
     }
 }

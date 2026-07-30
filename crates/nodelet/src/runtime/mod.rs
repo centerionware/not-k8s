@@ -134,4 +134,57 @@ pub trait PodRuntime: Send + Sync {
         let _ = (max_size_bytes, max_files);
         Ok(())
     }
+
+    /// Absolute path to a container's log file on this node, or `None` if
+    /// the container doesn't exist. Backs the kubelet-style HTTP(S)
+    /// server's `/containerLogs` endpoint (`server::logs`, `cri` feature
+    /// only). Default: unsupported (mock writes no real log file).
+    async fn container_log_path(&self, namespace: &str, name: &str, container: &str) -> anyhow::Result<Option<String>> {
+        let _ = (namespace, name, container);
+        Ok(None)
+    }
+
+    /// Ask the runtime for a one-shot streaming URL to exec a command in a
+    /// container — CRI's model: the runtime (containerd) runs its own tiny
+    /// streaming server and hands back a URL for *this* exec session;
+    /// nodelet's HTTP(S) server proxies the client's connection to it
+    /// rather than implementing the SPDY/WebSocket exec protocol itself
+    /// (see `server::exec`). Default: unsupported (mock has no real
+    /// container to exec into).
+    async fn exec_url(
+        &self,
+        namespace: &str,
+        name: &str,
+        container: &str,
+        cmd: &[String],
+        stdin: bool,
+        stdout: bool,
+        stderr: bool,
+        tty: bool,
+    ) -> anyhow::Result<String> {
+        let _ = (namespace, name, container, cmd, stdin, stdout, stderr, tty);
+        anyhow::bail!("exec is not supported by this runtime")
+    }
+
+    /// Same idea as `exec_url`, for attaching to a container's already-running
+    /// process 1 instead of starting a new command.
+    async fn attach_url(
+        &self,
+        namespace: &str,
+        name: &str,
+        container: &str,
+        stdin: bool,
+        stdout: bool,
+        stderr: bool,
+        tty: bool,
+    ) -> anyhow::Result<String> {
+        let _ = (namespace, name, container, stdin, stdout, stderr, tty);
+        anyhow::bail!("attach is not supported by this runtime")
+    }
+
+    /// Same idea again, for forwarding TCP ports into a pod's network namespace.
+    async fn port_forward_url(&self, namespace: &str, name: &str) -> anyhow::Result<String> {
+        let _ = (namespace, name);
+        anyhow::bail!("port-forward is not supported by this runtime")
+    }
 }

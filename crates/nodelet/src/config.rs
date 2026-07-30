@@ -99,6 +99,15 @@ pub struct Config {
     pub static_pod_path: Option<String>,
     /// How often the static pod manifest directory is rescanned.
     pub static_pod_sync_interval: Duration,
+    /// Whether the kubelet-style HTTP(S) server (`server.rs`, `cri`
+    /// feature only — containerLogs/exec/attach/portForward) runs at all.
+    /// On by default when built with `--features cri`, same as every
+    /// other CRI-only background loop.
+    pub server_enabled: bool,
+    /// Real kubelet's default port (10250) for the same server.
+    pub server_port: u16,
+    /// Where the server's self-signed TLS cert/key are generated/cached.
+    pub server_cert_dir: String,
 }
 
 impl Config {
@@ -180,6 +189,16 @@ impl Config {
         let log_rotate_interval = Duration::from_secs(env_u64("NODELET_LOG_ROTATE_INTERVAL_SECS", 10)?);
         let static_pod_path = std::env::var("NODELET_STATIC_POD_PATH").ok().filter(|s| !s.is_empty());
         let static_pod_sync_interval = Duration::from_secs(env_u64("NODELET_STATIC_POD_SYNC_SECS", 20)?);
+
+        let server_enabled = match std::env::var("NODELET_SERVER_ENABLED").as_deref() {
+            Ok("true") => true,
+            Ok("false") => false,
+            Ok(other) => anyhow::bail!("unknown NODELET_SERVER_ENABLED '{other}' (want 'true' or 'false')"),
+            Err(_) => matches!(runtime, RuntimeKind::Cri),
+        };
+        let server_port = env_u64("NODELET_SERVER_PORT", 10250)? as u16;
+        let server_cert_dir =
+            std::env::var("NODELET_SERVER_CERT_DIR").unwrap_or_else(|_| "/var/lib/nodelet/pki".to_string());
         let gc_interval = Duration::from_secs(env_u64("NODELET_GC_INTERVAL_SECS", 300)?);
 
         let cluster_dns: Vec<String> = std::env::var("NODELET_CLUSTER_DNS")
@@ -212,6 +231,9 @@ impl Config {
             log_rotate_interval,
             static_pod_path,
             static_pod_sync_interval,
+            server_enabled,
+            server_port,
+            server_cert_dir,
             gc_interval,
             cluster_dns,
             cluster_domain,

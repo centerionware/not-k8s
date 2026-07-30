@@ -17,7 +17,13 @@ required-features = ["cri"]
 [features]
 default = []
 # Enable the real containerd/CRI runtime (requires protoc at build time).
-cri = ["dep:tonic", "dep:prost", "dep:prost-types", "dep:tonic-prost", "dep:tonic-prost-build", "dep:tower", "dep:hyper-util", "dep:http"]
+# Also gates the kubelet-style HTTP(S) server (server.rs: containerLogs/exec/
+# attach/portForward) — it's meaningless without real containers to log/exec into.
+cri = [
+    "dep:tonic", "dep:prost", "dep:prost-types", "dep:tonic-prost", "dep:tonic-prost-build",
+    "dep:tower", "dep:hyper-util", "dep:http", "dep:hyper", "dep:http-body-util", "dep:rcgen",
+    "dep:percent-encoding", "dep:tokio-stream", "dep:tokio-rustls",
+]
 
 [dependencies]
 tokio = { workspace = true }
@@ -26,6 +32,7 @@ rustls = { workspace = true }
 k8s-openapi = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = "0.9"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -35,15 +42,20 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 libc = "0.2"
 base64 = "0.22"
-serde_yaml = "0.9"
 
 tonic = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
 tonic-prost = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
-hyper-util = { workspace = true, optional = true }
+hyper-util = { workspace = true, features = ["tokio", "server", "server-auto", "server-graceful"], optional = true }
 http = { version = "1", optional = true }
+hyper = { version = "1", features = ["server", "http1"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+rcgen = { version = "0.13", optional = true }
+percent-encoding = { version = "2", optional = true }
+tokio-stream = { version = "0.1", optional = true }
+tokio-rustls = { version = "0.26", optional = true }
 
 [build-dependencies]
 tonic-prost-build = { version = "0.14", optional = true }

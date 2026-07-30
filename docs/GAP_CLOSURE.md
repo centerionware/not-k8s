@@ -91,6 +91,47 @@ listener and is a project of its own). Closed, each with unit tests:
 260 tests passing with `--features cri` (up from 215 at the start of this
 round), 125 with the default (mock-only) build.
 
+## Round 6: the kubelet HTTP(S) server — exec/logs/attach/port-forward (2026-07-30, same day)
+
+User said "finish closing the gaps" — this was the one deliberately deferred
+in round 4 as needing its own dedicated pass ("a project of its own: TLS,
+auth, the whole listener"). Built it:
+
+- `crates/nodelet/src/server/` (new, `cri`-feature-gated): `tls.rs`
+  (self-signed cert via `rcgen`, cached as DER), `auth.rs` (bearer token
+  via `TokenReview`), `routes.rs` (path/query parsing + dispatch), `logs.rs`
+  (`kubectl logs`, including `-f`), `exec.rs` (`kubectl exec`/`attach`/
+  `port-forward`, proxied to the CRI runtime's own streaming server rather
+  than reimplementing SPDY/WebSocket).
+- New `PodRuntime` trait methods (`container_log_path`, `exec_url`,
+  `attach_url`, `port_forward_url`) implemented in `cri.rs` against CRI's
+  `ContainerStatus`/`Exec`/`Attach`/`PortForward` RPCs.
+- `Node.status.daemonEndpoints.kubeletEndpoint.port` — never set before;
+  without it the apiserver has nowhere to proxy exec/logs requests to
+  regardless of whether a server exists.
+- New dependencies (all `cri`-gated): `rcgen`, `hyper`+`hyper-util` server
+  features, `http-body-util`, `tokio-rustls`, `percent-encoding`,
+  `tokio-stream`.
+- Everything logic-based has real unit tests: CRI log-line parsing/
+  reassembly, path/query routing, bearer token extraction, and (genuinely
+  integration, not mocked) TLS cert generation/caching/permissions against
+  the real filesystem. 345 tests passing with `--features cri` (up from
+  302), 155 mock-only.
+- **Honest confidence note**: the connection-splicing proxy in `exec.rs`
+  (dial the CRI-returned URL, replay the client's upgrade request, mirror
+  the response, `copy_bidirectional` the two upgraded connections) was
+  written as carefully as reasoning allows but never observed completing a
+  real SPDY/WebSocket handshake — this sandbox has no live cluster to test
+  against. `deploy/lib/test/cases/streaming.sh` exists specifically to
+  prove or disprove this the first time it runs for real; treat `kubectl
+  exec` as the most likely thing in this round to need a live-cluster fix.
+  `kubectl logs` (no protocol upgrade involved, just an HTTP response body)
+  carries much higher confidence.
+- Still explicitly out: `/stats/summary` (no usage-stats collector),
+  client-cert auth (bearer token only), real `SubjectAccessReview`
+  authorization (currently `AlwaysAllow` once a token authenticates,
+  matching kubelet's own historical default).
+
 ## Round 5: live-cluster e2e test suite + initContainerStatuses fix (2026-07-30, same day)
 
 User asked for two things: keep writing Rust tests for whatever's testable
@@ -219,11 +260,14 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Static pod manifest directory watching** (`NODELET_STATIC_POD_PATH`, disabled by default like real kubelet's optional `staticPodPath`) — `static_pods::run()` scans, hashes to detect changes, and drives the same `PodRuntime` normal pods use (so resource limits/securityContext/volumes/probes all apply identically)
 - ✅ **Mirror pod creation/reconciliation** — a read-only Pod object per static pod (`kubernetes.io/config.mirror`/`kubernetes.io/config.source: file` annotations, matching real kubelet's markers), deleted when the manifest disappears. Simplified vs. real kubelet: no exact hash-based drift-detection annotation value (nodelet's own file-content hash serves the same "did it change" purpose internally, just isn't exposed as that specific annotation).
 
-### kubelet HTTP(S) server (entirely absent — nodelet has no listening server at all)
-- ❌ **Streaming exec/attach/port-forward** — `kubectl exec`/`kubectl attach`/`kubectl port-forward` have no server to talk to
-- ❌ **`kubectl logs`** — depends on the same server serving container logs
-- ❌ TLS serving certificate (cert-dir, self-signed or CSR-issued) + client cert / bearer token authentication + webhook authorization for that server
-- ❌ **`/stats/summary`** (and `/metrics/resource`, `/metrics/cadvisor`) — the API metrics-server scrapes for `kubectl top node/pod`. Explicitly called out as future work in the prior pass; now in scope.
+### kubelet HTTP(S) server (`crates/nodelet/src/server/`, `cri` feature only)
+- ✅ **`kubectl logs`** (`server::logs`) — parses containerd's CRI log file format back into raw output, with `follow`/`tailLines`/`sinceTime`/`timestamps`/`previous` query params. `follow` mode polls the file for growth rather than using inotify (matches the poll-based style everywhere else in nodelet — probes.rs, gc.rs).
+- ✅ **Streaming exec/attach/port-forward** (`server::exec`) — CRI's actual model here: `Exec`/`Attach`/`PortForward` RPCs return a one-shot URL to the *runtime's own* streaming server (containerd runs one internally, typically on `127.0.0.1:<random-port>` — unreachable to a remote kubectl client directly). nodelet doesn't implement the SPDY/WebSocket protocol itself; it dials that URL, replays the client's upgrade request, mirrors the response, and once both sides upgrade, splices the two raw connections together (`tokio::io::copy_bidirectional`) — the same "proxy" pattern real kubelet uses. **This is the piece with the least confidence without a live cluster**: the request/response replay and connection splicing were written as carefully as reasoning allows, but an actual SPDY/WebSocket handshake end-to-end was never observed — `deploy/lib/test/cases/streaming.sh` exists specifically to prove (or disprove) this for real.
+- ✅ TLS serving certificate — self-signed, generated on first start via `rcgen` and cached as raw DER under `NODELET_SERVER_CERT_DIR` (persists across restarts so a client that already trusts it doesn't get invalidated). Not yet: CSR-based issuance against a real cluster CA.
+- ✅ Bearer token authentication via `TokenReview` (the same mechanism real kubelet's `--authentication-token-webhook` uses). Authorization is deliberately `AlwaysAllow` once a token authenticates — matches real kubelet's own historical default (`--authorization-mode=AlwaysAllow`), not a from-scratch `SubjectAccessReview` implementation. No anonymous access (real kubelet has historically defaulted to allowing it; nodelet doesn't).
+- ✅ `Node.status.daemonEndpoints.kubeletEndpoint.port` now advertised (was never set before — without it the apiserver has no route to proxy exec/logs/attach/port-forward requests to at all, regardless of whether a server is listening).
+- ❌ **`/stats/summary`** (and `/metrics/resource`, `/metrics/cadvisor`) — the API metrics-server scrapes for `kubectl top node/pod`. Still the biggest single remaining gap; would also make eviction ranking usage-based instead of request-based (see eviction.rs's own note on this).
+- ❌ Client certificate authentication (bearer token only)
 
 ### Node shutdown
 - ❌ Graceful node shutdown (systemd inhibitor lock, priority-ordered pod eviction on `shutdown -h now`)
@@ -266,13 +310,15 @@ higher-value/correctness-critical than others:
       hostAliases, fsGroup, node-pressure eviction
 - [x] Round 4: real PID pressure, container log rotation, static/mirror
       pods, serviceAccountToken minting via TokenRequest
+- [x] Round 5: live-cluster e2e bash test suite (deploy/test-e2e.sh) +
+      initContainerStatuses/Initialized condition fix
+- [x] Round 6: kubelet HTTP(S) server — kubectl logs/exec/attach/
+      port-forward, TLS, TokenReview auth, daemonEndpoints advertisement.
+      **Needs live-cluster validation** — see streaming.sh and this round's
+      confidence note above, especially for kubectl exec.
 - [ ] Everything else in the responsibility list above — biggest remaining
-      single items, roughly in order of likely value: `/stats/summary` +
-      real per-pod usage stats (would also make eviction ranking usage-based
-      instead of request-based), the streaming exec/logs/attach/port-forward
-      HTTP(S) server (needs TLS + auth + a whole new listener — large enough
-      to be its own project, and needs a live cluster to validate against,
-      which this environment doesn't have), PVC/CSI, ephemeral containers,
-      RuntimeClass, graceful node shutdown, cgroup driver/QoS hierarchy/node
-      allocatable enforcement, CPU/Memory/Topology managers, device plugins.
-      Ask before starting the next round.
+      single items: `/stats/summary` + real per-pod usage stats (would also
+      make eviction ranking usage-based instead of request-based), PVC/CSI,
+      ephemeral containers, RuntimeClass, graceful node shutdown, cgroup
+      driver/QoS hierarchy/node allocatable enforcement, CPU/Memory/
+      Topology managers, device plugins. Ask before starting the next round.

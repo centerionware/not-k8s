@@ -51,6 +51,7 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
   src/gc.rs            Orphaned-sandbox + unreferenced-image garbage collection.
   src/eviction.rs      Node-pressure eviction: QoS-ranked pod selection.
   src/static_pods.rs   Static pod manifest directory + mirror pod reconciliation.
+  src/server/          kubelet-style HTTP(S) server: logs/exec/attach/port-forward (feature `cri`).
   src/runtime/mock.rs  In-memory runtime: reports pods Running, zero engine overhead.
   src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`): pod/init
                        container lifecycle, resource limits, securityContext,
@@ -86,13 +87,15 @@ counts, projected volumes (including a real, apiserver-signed
 `serviceAccountToken` via the TokenRequest API) + downwardAPI volumes,
 `hostAliases`, `fsGroup`, container log rotation, node-pressure eviction
 (evicts one BestEffort/Burstable pod at a time when any pressure condition
-is active), and **static pods + mirror pods**
-(`NODELET_STATIC_POD_PATH`, disabled by default). Still missing, see
-`docs/GAP_CLOSURE.md` for the full list: `kubectl exec/logs/attach/
-port-forward` (no HTTP(S) server exists yet — this is large enough to be its
-own project, and needs a live cluster to validate against), `kubectl top`
-(`/stats/summary` — would also make eviction ranking usage-based instead of
-request-based), PVC/CSI, ephemeral containers, RuntimeClass, and more.
+is active), **static pods + mirror pods**
+(`NODELET_STATIC_POD_PATH`, disabled by default), and now `kubectl logs`/
+`kubectl exec`/`attach`/`port-forward` via a real kubelet-style HTTP(S)
+server (`crates/nodelet/src/server/`, TLS + `TokenReview` auth) — **the
+piece least validated without a live cluster**, see the "Testing" section
+below and `docs/GAP_CLOSURE.md`'s round 6 notes. Still missing: `kubectl
+top` (`/stats/summary` — would also make eviction ranking usage-based
+instead of request-based), PVC/CSI, ephemeral containers, RuntimeClass, and
+more — full list in `docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -470,14 +473,24 @@ Two layers, and they're not substitutes for each other:
   ```
 
   **Must run on the same node as nodelet.** `kubectl exec`/`kubectl logs`
-  aren't implemented yet (no streaming server — see `docs/GAP_CLOSURE.md`),
-  so several checks (resource limits, securityContext, hostAliases, DNS
-  config, log rotation) instead read files a container wrote into a shared
-  `emptyDir`, or — for ConfigMap/Secret/downwardAPI/projected volumes —
-  read nodelet's own materialized volume directly off the host filesystem
-  at `/var/lib/nodelet/pods/<uid>/volumes/<name>/...`. That's not a
+  now work for real (`crates/nodelet/src/server/`, `deploy/lib/test/cases/
+  streaming.sh`) — but several other checks (resource limits,
+  securityContext, hostAliases, DNS config, log rotation) still read files
+  a container wrote into a shared `emptyDir` instead, or — for ConfigMap/
+  Secret/downwardAPI/projected volumes — read nodelet's own materialized
+  volume directly off the host filesystem at
+  `/var/lib/nodelet/pods/<uid>/volumes/<name>/...`. That's not a
   workaround bolted onto the tests; it's the same path the container itself
-  has bind-mounted, so it's exactly what's inside the container.
+  has bind-mounted, so it's exactly what's inside the container, and it's
+  useful independent of `kubectl exec` for checking state that only
+  changes because of something nodelet itself did on the host side.
+
+  **`streaming.sh`'s `kubectl exec` test is the one to watch first** when
+  you run this: `server/exec.rs`'s connection-splicing proxy was written
+  without ever observing a real SPDY/WebSocket handshake (no live cluster
+  in the environment that built it) — see `docs/GAP_CLOSURE.md`'s round 6
+  notes. `kubectl logs` carries much higher confidence (no protocol
+  upgrade involved).
 
   A handful of tests need extra setup and skip cleanly without it:
   `TEST_STATIC_POD_PATH` (static pods — nodelet must be running with a
@@ -489,10 +502,10 @@ Two layers, and they're not substitutes for each other:
   real resource or stopping nodelet out from under a pod, neither of which
   this suite does to a host you're relying on.
 
-  `deploy/lib/test/cases/unimplemented.sh` asserts `kubectl exec`/`kubectl
-  logs` still *don't* work — on purpose: the moment someone lands the
-  streaming server without updating that file, this suite starts failing
-  loudly instead of silently staying wrong.
+  `deploy/lib/test/cases/unimplemented.sh` still documents what's genuinely
+  missing (`/stats/summary`) the same active-assertion way — so this suite
+  starts failing loudly the moment that changes too, instead of silently
+  staying wrong.
 
 ## Configuration (environment variables)
 
@@ -523,6 +536,9 @@ Two layers, and they're not substitutes for each other:
 | `NODELET_CONTAINER_LOG_MAX_FILES` | `5` | Rotated log files kept per container (including the active one). |
 | `NODELET_STATIC_POD_PATH` | (none) | Directory of static Pod manifests to run on this node; unset disables static pods entirely. |
 | `NODELET_STATIC_POD_SYNC_SECS` | `20` | How often the static pod manifest directory is rescanned. |
+| `NODELET_SERVER_ENABLED` | `true` if `cri`, else `false` | Run the kubelet-style HTTP(S) server (`kubectl logs`/`exec`/`attach`/`port-forward`). |
+| `NODELET_SERVER_PORT` | `10250` | Port for that server (real kubelet's default). |
+| `NODELET_SERVER_CERT_DIR` | `/var/lib/nodelet/pki` | Where its self-signed TLS cert/key are generated/cached. |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---

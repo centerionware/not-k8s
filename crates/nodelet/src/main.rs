@@ -76,6 +76,11 @@ async fn main() -> Result<()> {
     // Static pods: no-op unless NODELET_STATIC_POD_PATH is set.
     tokio::spawn(nodelet::static_pods::run(client.clone(), runtime.clone(), cfg.clone()));
 
+    // kubelet-style HTTP(S) server: containerLogs/exec/attach/portForward.
+    // No-op unless NODELET_SERVER_ENABLED (defaults on for the cri runtime).
+    #[cfg(feature = "cri")]
+    tokio::spawn(nodelet::server::run(client.clone(), runtime.clone(), cfg.clone()));
+
     // ClusterIP/NodePort routing (nftables). No-op if disabled or if `nft`
     // isn't usable — pods and direct pod-IP traffic work either way.
     if cfg.service_proxy {

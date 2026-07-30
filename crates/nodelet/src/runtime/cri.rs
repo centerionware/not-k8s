@@ -58,6 +58,7 @@ use v1::{
     PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest, Mount, RemoveContainerRequest,
     RemoveImageRequest, RemovePodSandboxRequest, RunPodSandboxRequest, StartContainerRequest,
     StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest, ReopenContainerLogRequest,
+    ExecRequest, AttachRequest, PortForwardRequest,
     security_profile::ProfileType, SecurityProfile,
 };
 
@@ -2158,6 +2159,83 @@ impl PodRuntime for CriRuntime {
             }
         }
         Ok(())
+    }
+
+    async fn container_log_path(&self, namespace: &str, name: &str, container: &str) -> Result<Option<String>> {
+        let Some((sandbox_id, _)) = self.find_sandbox(namespace, name).await? else { return Ok(None) };
+        let Some(container_id) = self.find_container_id(&sandbox_id, container).await? else { return Ok(None) };
+        let mut rt = self.rt.clone();
+        let status = rt
+            .container_status(ContainerStatusRequest { container_id, verbose: false })
+            .await
+            .context("ContainerStatus")?
+            .into_inner()
+            .status;
+        Ok(status.map(|s| s.log_path).filter(|p| !p.is_empty()))
+    }
+
+    async fn exec_url(
+        &self,
+        namespace: &str,
+        name: &str,
+        container: &str,
+        cmd: &[String],
+        stdin: bool,
+        stdout: bool,
+        stderr: bool,
+        tty: bool,
+    ) -> Result<String> {
+        let Some((sandbox_id, _)) = self.find_sandbox(namespace, name).await? else {
+            anyhow::bail!("pod {namespace}/{name} not found")
+        };
+        let Some(container_id) = self.find_container_id(&sandbox_id, container).await? else {
+            anyhow::bail!("container {container} not found in pod {namespace}/{name}")
+        };
+        let mut rt = self.rt.clone();
+        let resp = rt
+            .exec(ExecRequest { container_id, cmd: cmd.to_vec(), tty, stdin, stdout, stderr })
+            .await
+            .context("Exec")?
+            .into_inner();
+        Ok(resp.url)
+    }
+
+    async fn attach_url(
+        &self,
+        namespace: &str,
+        name: &str,
+        container: &str,
+        stdin: bool,
+        stdout: bool,
+        stderr: bool,
+        tty: bool,
+    ) -> Result<String> {
+        let Some((sandbox_id, _)) = self.find_sandbox(namespace, name).await? else {
+            anyhow::bail!("pod {namespace}/{name} not found")
+        };
+        let Some(container_id) = self.find_container_id(&sandbox_id, container).await? else {
+            anyhow::bail!("container {container} not found in pod {namespace}/{name}")
+        };
+        let mut rt = self.rt.clone();
+        let resp = rt
+            .attach(AttachRequest { container_id, stdin, tty, stdout, stderr })
+            .await
+            .context("Attach")?
+            .into_inner();
+        Ok(resp.url)
+    }
+
+    async fn port_forward_url(&self, namespace: &str, name: &str) -> Result<String> {
+        let Some((sandbox_id, _)) = self.find_sandbox(namespace, name).await? else {
+            anyhow::bail!("pod {namespace}/{name} not found")
+        };
+        let mut rt = self.rt.clone();
+        let resp = rt
+            .port_forward(PortForwardRequest { pod_sandbox_id: sandbox_id, port: Vec::new() })
+            .await
+            .context("PortForward")?
+            .into_inner();
+        Ok(resp.url)
     }
 }
 
