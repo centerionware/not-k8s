@@ -342,6 +342,38 @@ version with a different TLS directory layout) rather than aborting the rest.
 Prints a single pasteable `SUMMARY.txt` plus a full tarball for anything that
 needs a deeper look.
 
+### 5. Profile nodelet
+
+Capture a low-overhead CPU profile from the running nodelet without restarting
+it:
+
+```bash
+sudo ./deploy/profile-nodelet.sh --duration 60
+```
+
+The script writes a timestamped directory under `/tmp` containing `perf.data`,
+a symbolized `perf-report.txt` when Linux `perf` is available, per-thread CPU
+snapshots, and the nodelet journal for the same window. If `perf` is blocked or
+not installed, it falls back to a syscall summary with `strace`.
+
+For Rust function names, build a separate optimized binary with DWARF symbols:
+
+```bash
+cargo build --profile profiling --features cri
+```
+
+Run that binary as the process being sampled, for example:
+
+```bash
+NODELET_BIN="$PWD/target/profiling/nodelet" NODELET_RUNTIME=cri \
+  ./deploy/run-nodelet.sh
+```
+
+The normal `--release` profile remains stripped for deployment. The console
+summary is exclusive/self time, so a function that spends CPU in its children
+does not get credited for that child work; the complete reports remain in the
+output directory for call-chain inspection.
+
 ---
 
 ## Validate against containerd
