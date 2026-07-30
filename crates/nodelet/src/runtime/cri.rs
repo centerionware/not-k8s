@@ -15,10 +15,10 @@
 use super::{ContainerRuntimeStatus, Phase, PodRuntime, RuntimeStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret, Volume};
+use k8s_openapi::api::core::v1::{ConfigMap, EnvFromSource, EnvVarSource, Pod, Secret, Service, Volume};
 use k8s_openapi::jiff::Timestamp;
-use kube::Api;
-use std::collections::HashMap;
+use kube::api::{Api, ListParams};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -265,6 +265,144 @@ fn volume_source_type(v: &Volume) -> &'static str {
     }
 }
 
+/// Convert a Service or port name to the form used by Kubernetes' legacy
+/// service-environment mechanism (`my-api` -> `MY_API`).
+fn env_name_component(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .collect()
+}
+
+/// Add the Service discovery variables kubelet normally injects into every
+/// container. In particular, client-go's in-cluster configuration requires
+/// `KUBERNETES_SERVICE_HOST` and `KUBERNETES_SERVICE_PORT`.
+///
+/// Services in the Pod's namespace are included, as are Services in the
+/// default namespace. The latter makes the cluster's `kubernetes` Service
+/// discoverable from system namespaces such as `kube-system`.
+fn service_env_vars(services: &[Service], pod_namespace: &str) -> BTreeMap<String, Vec<u8>> {
+    let mut values = BTreeMap::new();
+
+    // Add default-namespace Services first so a same-named Service in the
+    // Pod's own namespace takes precedence below.
+    for service in services.iter().filter(|s| {
+        s.metadata.namespace.as_deref().unwrap_or("default") == "default" && pod_namespace != "default"
+    }) {
+        add_service_env_vars(&mut values, service);
+    }
+    for service in services.iter().filter(|s| {
+        s.metadata.namespace.as_deref().unwrap_or("default") == pod_namespace
+    }) {
+        add_service_env_vars(&mut values, service);
+    }
+
+    values
+}
+
+fn add_service_env_vars(values: &mut BTreeMap<String, Vec<u8>>, service: &Service) {
+    let Some(name) = service.metadata.name.as_deref().filter(|n| !n.is_empty()) else {
+        return;
+    };
+    let Some(spec) = service.spec.as_ref() else { return };
+    if spec.type_.as_deref() == Some("ExternalName") {
+        return;
+    }
+    let Some(cluster_ip) = spec.cluster_ip.as_deref().filter(|ip| !ip.is_empty() && *ip != "None") else {
+        return;
+    };
+
+    let prefix = env_name_component(name);
+    put_env(values, format!("{prefix}_SERVICE_HOST"), cluster_ip.as_bytes().to_vec());
+
+    for (index, port) in spec.ports.as_deref().unwrap_or(&[]).iter().enumerate() {
+        let port_value = port.port.to_string();
+        if index == 0 {
+            put_env(values, format!("{prefix}_SERVICE_PORT"), port_value.as_bytes().to_vec());
+        }
+        if let Some(port_name) = port.name.as_deref().filter(|n| !n.is_empty()) {
+            put_env(
+                values,
+                format!("{prefix}_SERVICE_PORT_{}", env_name_component(port_name)),
+                port_value.as_bytes().to_vec(),
+            );
+        }
+
+        // The legacy *_PORT_* variables are still emitted by kubelet and are
+        // used by some images even when *_SERVICE_* is not.
+        let protocol = port.protocol.as_deref().unwrap_or("TCP");
+        let protocol_lower = protocol.to_ascii_lowercase();
+        let protocol_upper = protocol.to_ascii_uppercase();
+        let uri_host = if cluster_ip.contains(':') {
+            format!("[{cluster_ip}]")
+        } else {
+            cluster_ip.to_string()
+        };
+        let uri = format!("{protocol_lower}://{uri_host}:{port_value}");
+        put_env(values, format!("{prefix}_PORT"), uri.as_bytes().to_vec());
+        let port_prefix = format!("{prefix}_PORT_{}_{}", port.port, protocol_upper);
+        put_env(values, port_prefix.clone(), uri.as_bytes().to_vec());
+        put_env(values, format!("{port_prefix}_PROTO"), protocol_lower.as_bytes().to_vec());
+        put_env(values, format!("{port_prefix}_PORT"), port_value.as_bytes().to_vec());
+        put_env(values, format!("{port_prefix}_ADDR"), cluster_ip.as_bytes().to_vec());
+    }
+}
+
+fn put_env(values: &mut BTreeMap<String, Vec<u8>>, key: String, value: Vec<u8>) {
+    values.insert(key, value);
+}
+
+/// Resolve a downward-API fieldRef from the Pod object supplied by the API
+/// server.
+fn pod_field_value(pod: &Pod, field_path: &str) -> Option<String> {
+    match field_path {
+        "metadata.name" => pod.metadata.name.clone(),
+        "metadata.namespace" => pod.metadata.namespace.clone(),
+        "metadata.uid" => pod.metadata.uid.clone(),
+        "spec.nodeName" => pod.spec.as_ref()?.node_name.clone(),
+        "spec.serviceAccountName" => Some(
+            pod.spec
+                .as_ref()?
+                .service_account_name
+                .clone()
+                .unwrap_or_else(|| "default".to_string()),
+        ),
+        "status.hostIP" => pod.status.as_ref()?.host_ip.clone(),
+        "status.podIP" => pod.status.as_ref()?.pod_ip.clone(),
+        "status.podIPs" => pod
+            .status
+            .as_ref()?
+            .pod_ips
+            .as_ref()?
+            .first()
+            .map(|ip| ip.ip.clone()),
+        _ => {
+            if let Some(key) = field_path
+                .strip_prefix("metadata.labels[")
+                .and_then(|s| s.strip_suffix(']'))
+            {
+                return pod
+                    .metadata
+                    .labels
+                    .as_ref()?
+                    .get(key.trim_matches(|c| c == '\'' || c == '"'))
+                    .cloned();
+            }
+            if let Some(key) = field_path
+                .strip_prefix("metadata.annotations[")
+                .and_then(|s| s.strip_suffix(']'))
+            {
+                return pod
+                    .metadata
+                    .annotations
+                    .as_ref()?
+                    .get(key.trim_matches(|c| c == '\'' || c == '"'))
+                    .cloned();
+            }
+            None
+        }
+    }
+}
+
 /// Write a ConfigMap/Secret's keys out as individual files under `dir`
 /// (creating it if needed) — text values from `.data`/`.stringData`, binary
 /// values from `.binaryData`/`.data` (Secret's `.data` is base64 in the wire
@@ -399,6 +537,118 @@ impl CriRuntime {
         out
     }
 
+    async fn resolve_service_env(&self, namespace: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+        let api: Api<Service> = Api::all(self.client.clone());
+        let services = api.list(&ListParams::default()).await.context("listing Services")?;
+        Ok(service_env_vars(&services.items, namespace))
+    }
+
+    async fn resolve_env_from(&self, source: &EnvFromSource, namespace: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+        let mut values = BTreeMap::new();
+        let prefix = source.prefix.clone().unwrap_or_default();
+
+        if let Some(reference) = &source.config_map_ref {
+            let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), namespace);
+            let config_map = match api.get(&reference.name).await {
+                Ok(obj) => obj,
+                Err(_) if reference.optional.unwrap_or(false) => return Ok(values),
+                Err(e) => return Err(e).with_context(|| format!("fetching ConfigMap {} for envFrom", reference.name)),
+            };
+            for (key, value) in config_map.data.unwrap_or_default() {
+                values.insert(format!("{prefix}{key}"), value.into_bytes());
+            }
+        }
+
+        if let Some(reference) = &source.secret_ref {
+            let api: Api<Secret> = Api::namespaced(self.client.clone(), namespace);
+            let secret = match api.get(&reference.name).await {
+                Ok(obj) => obj,
+                Err(_) if reference.optional.unwrap_or(false) => return Ok(values),
+                Err(e) => return Err(e).with_context(|| format!("fetching Secret {} for envFrom", reference.name)),
+            };
+            for (key, value) in secret.data.unwrap_or_default() {
+                values.insert(format!("{prefix}{key}"), value.0);
+            }
+        }
+
+        Ok(values)
+    }
+
+    async fn resolve_env_var_source(
+        &self,
+        source: &EnvVarSource,
+        pod: &Pod,
+        id: &PodId,
+    ) -> Result<Option<Vec<u8>>> {
+        if let Some(reference) = &source.config_map_key_ref {
+            let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &id.namespace);
+            let config_map = match api.get(&reference.name).await {
+                Ok(obj) => obj,
+                Err(_) if reference.optional.unwrap_or(false) => return Ok(None),
+                Err(e) => return Err(e).with_context(|| format!("fetching ConfigMap {} for env", reference.name)),
+            };
+            return match config_map.data.unwrap_or_default().remove(&reference.key) {
+                Some(value) => Ok(Some(value.into_bytes())),
+                None if reference.optional.unwrap_or(false) => Ok(None),
+                None => anyhow::bail!("ConfigMap {} has no key {}", reference.name, reference.key),
+            };
+        }
+
+        if let Some(reference) = &source.secret_key_ref {
+            let api: Api<Secret> = Api::namespaced(self.client.clone(), &id.namespace);
+            let secret = match api.get(&reference.name).await {
+                Ok(obj) => obj,
+                Err(_) if reference.optional.unwrap_or(false) => return Ok(None),
+                Err(e) => return Err(e).with_context(|| format!("fetching Secret {} for env", reference.name)),
+            };
+            return match secret.data.unwrap_or_default().remove(&reference.key) {
+                Some(value) => Ok(Some(value.0)),
+                None if reference.optional.unwrap_or(false) => Ok(None),
+                None => anyhow::bail!("Secret {} has no key {}", reference.name, reference.key),
+            };
+        }
+
+        if let Some(reference) = &source.field_ref {
+            let value = pod_field_value(pod, &reference.field_path)
+                .with_context(|| format!("unsupported or unavailable fieldRef {}", reference.field_path))?;
+            return Ok(Some(value.into_bytes()));
+        }
+
+        if source.resource_field_ref.is_some() {
+            anyhow::bail!("resourceFieldRef is not supported yet");
+        }
+
+        Ok(None)
+    }
+
+    async fn resolve_container_env(
+        &self,
+        pod: &Pod,
+        id: &PodId,
+        container: &k8s_openapi::api::core::v1::Container,
+        service_env: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<Vec<KeyValue>> {
+        let mut values = service_env.clone();
+
+        for source in container.env_from.as_deref().unwrap_or(&[]) {
+            for (key, value) in self.resolve_env_from(source, &id.namespace).await? {
+                put_env(&mut values, key, value);
+            }
+        }
+
+        for env in container.env.as_deref().unwrap_or(&[]) {
+            if let Some(source) = &env.value_from {
+                if let Some(value) = self.resolve_env_var_source(source, pod, id).await? {
+                    values.insert(env.name.clone(), value);
+                }
+            } else {
+                values.insert(env.name.clone(), env.value.clone().unwrap_or_default().into_bytes());
+            }
+        }
+
+        Ok(values.into_iter().map(|(key, value)| KeyValue { key, value }).collect())
+    }
+
     /// Look up our sandbox for a pod by namespace+name. These labels are always
     /// set (from real values), so this is the stable key — unlike `pod.uid`,
     /// which the agent does not have at status/teardown time.
@@ -470,6 +720,7 @@ impl CriRuntime {
         container: &k8s_openapi::api::core::v1::Container,
         restart_policy: &str,
         volumes: &HashMap<String, PathBuf>,
+        envs: &[KeyValue],
     ) -> Result<()> {
         let running_v = ContainerState::ContainerRunning as i32;
         let existing = self.list_pod_containers(sandbox_id).await?;
@@ -515,16 +766,7 @@ impl CriRuntime {
             command: container.command.clone().unwrap_or_default(),
             args: container.args.clone().unwrap_or_default(),
             working_dir: container.working_dir.clone().unwrap_or_default(),
-            envs: container
-                .env
-                .as_deref()
-                .unwrap_or(&[])
-                .iter()
-                .map(|e| KeyValue {
-                    key: e.name.clone(),
-                    value: e.value.clone().unwrap_or_default().into_bytes(),
-                })
-                .collect(),
+            envs: envs.to_vec(),
             mounts,
             labels: container_labels(id, &container.name),
             log_path: format!("{}_{}.log", container.name, 0),
@@ -646,9 +888,17 @@ impl PodRuntime for CriRuntime {
         self.restart_policies.lock().unwrap().insert(sandbox_id.clone(), restart_policy.clone());
 
         let volumes = self.resolve_volumes(pod, &id).await;
+        let service_env = if pod.spec.as_ref().and_then(|s| s.enable_service_links) == Some(false) {
+            BTreeMap::new()
+        } else {
+            self.resolve_service_env(&id.namespace)
+                .await
+                .context("resolving Service environment")?
+        };
         if let Some(spec) = pod.spec.as_ref() {
             for c in &spec.containers {
-                self.ensure_container(&sandbox_id, &id, c, &restart_policy, &volumes).await?;
+                let envs = self.resolve_container_env(pod, &id, c, &service_env).await?;
+                self.ensure_container(&sandbox_id, &id, c, &restart_policy, &volumes, &envs).await?;
             }
         }
 
@@ -857,6 +1107,9 @@ mod tests_mounts;
 #[cfg(test)]
 #[path = "cri_tests/volume_type.rs"]
 mod tests_volume_type;
+#[cfg(test)]
+#[path = "cri_tests/service_env.rs"]
+mod tests_service_env;
 #[cfg(test)]
 #[path = "cri_tests/write_volume_dir.rs"]
 mod tests_write_volume_dir;
