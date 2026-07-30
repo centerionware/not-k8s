@@ -91,6 +91,34 @@ listener and is a project of its own). Closed, each with unit tests:
 260 tests passing with `--features cri` (up from 215 at the start of this
 round), 125 with the default (mock-only) build.
 
+## Round 7: /stats/summary, RuntimeClass, usage-based eviction (2026-07-30, same day)
+
+Continued closing gaps ("continue" — no further scoping given). Picked
+these three because they compound: `/stats/summary` needed real per-pod
+usage data anyway, and once that existed, feeding it back into eviction's
+ranking (previously request-based only, explicitly flagged as a
+simplification in round 3) was a small, self-contained follow-on rather
+than a new investigation.
+
+- **`/stats/summary`** — discovered CRI already solves the hard part:
+  `ListPodSandboxStats` returns real per-pod *and* per-container CPU/memory
+  usage in one call, with the runtime (containerd) handling cgroup-path/
+  driver differences internally. No cgroup file reading needed at all.
+- **Eviction ranking now usage-based** — `eviction.rs`'s tie-break within a
+  QoS class uses the same CRI stats when available, falling back to
+  requested memory per-pod otherwise (mock runtime, or a too-new pod CRI
+  hasn't measured yet).
+- **RuntimeClass** — `spec.runtimeClassName` now resolves to CRI's
+  `runtime_handler` (was hardcoded empty/default before), so gVisor/Kata/
+  etc. selection actually works.
+
+353 tests passing with `--features cri` (up from 345), 157 mock-only.
+`deploy/lib/test/cases/stats.sh` and `runtime_class.sh` added for live
+validation — the RuntimeClass test only proves the *lookup and wiring*
+using whatever handler this containerd already knows about (commonly
+`runc`), since alternative-runtime binaries aren't something this suite
+can assume are installed.
+
 ## Round 6: the kubelet HTTP(S) server — exec/logs/attach/port-forward (2026-07-30, same day)
 
 User said "finish closing the gaps" — this was the one deliberately deferred
@@ -230,7 +258,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
 - ❌ Pod-level `sysctls`
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
-- ❌ RuntimeClass (gVisor/Kata/etc. runtime selection + pod overhead accounting)
+- 🟡 **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. Not yet: `Overhead.podFixed` accounting (nodelet doesn't do pod-level cgroups at all yet, so there's nowhere for pod overhead to plug into) — a missing/invalid RuntimeClass also isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
 
 ### Networking
 - ✅ **DNS config** — `dnsPolicy`/`dnsConfig` → CRI `PodSandboxConfig.dns_config` (`dns_config_for()`), via new `NODELET_CLUSTER_DNS`/`NODELET_CLUSTER_DOMAIN`
@@ -253,7 +281,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Node-pressure eviction
 - ✅ MemoryPressure/DiskPressure *conditions* reflect real reads
-- 🟡 **Eviction** — `eviction_loop()` now acts on real pressure: ranks eligible pods by QoS class (`eviction.rs`'s `qos_class()`/`pick_eviction_candidate()` — BestEffort before Burstable, Guaranteed and `system-*-critical` pods never evicted), evicts one per check. Simplified vs. real kubelet: no soft-threshold grace period (hard-style immediate action only), and ranking within a QoS class uses *requested* memory as a proxy, not live usage — there's no per-pod cgroup stats collector yet (the `/stats/summary` gap below).
+- 🟡 **Eviction** — `eviction_loop()` now acts on real pressure: ranks eligible pods by QoS class (`eviction.rs`'s `qos_class()`/`pick_eviction_candidate()` — BestEffort before Burstable, Guaranteed and `system-*-critical` pods never evicted), evicts one per check. Ranking within a QoS class now uses **real memory usage** from CRI's `ListPodSandboxStats` (the same source `/stats/summary` uses) when known, falling back to requested memory otherwise (`eviction_weight()`). Still simplified vs. real kubelet: no soft-threshold grace period (hard-style immediate action only).
 - ✅ PID pressure — real `/proc/sys/kernel/pid_max` + a `/proc` scan (`read_pid_info()`/`pid_pressure()`), same fail-open pattern as memory/disk
 
 ### Static pods & mirror pods
@@ -266,7 +294,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ TLS serving certificate — self-signed, generated on first start via `rcgen` and cached as raw DER under `NODELET_SERVER_CERT_DIR` (persists across restarts so a client that already trusts it doesn't get invalidated). Not yet: CSR-based issuance against a real cluster CA.
 - ✅ Bearer token authentication via `TokenReview` (the same mechanism real kubelet's `--authentication-token-webhook` uses). Authorization is deliberately `AlwaysAllow` once a token authenticates — matches real kubelet's own historical default (`--authorization-mode=AlwaysAllow`), not a from-scratch `SubjectAccessReview` implementation. No anonymous access (real kubelet has historically defaulted to allowing it; nodelet doesn't).
 - ✅ `Node.status.daemonEndpoints.kubeletEndpoint.port` now advertised (was never set before — without it the apiserver has no route to proxy exec/logs/attach/port-forward requests to at all, regardless of whether a server is listening).
-- ❌ **`/stats/summary`** (and `/metrics/resource`, `/metrics/cadvisor`) — the API metrics-server scrapes for `kubectl top node/pod`. Still the biggest single remaining gap; would also make eviction ranking usage-based instead of request-based (see eviction.rs's own note on this).
+- ✅ **`/stats/summary`** (`server::stats`) — built from CRI's `ListPodSandboxStats` (one call gets per-pod *and* per-container CPU/memory usage, no cgroup-path guessing needed). Real caveat, not a nodelet limitation: `kubectl top` itself needs metrics-server (or another `metrics.k8s.io` implementation) deployed and configured to scrape this — implementing the endpoint is necessary but not sufficient for `kubectl top` on its own. Node-level CPU usage isn't populated (CRI's stats are per-pod, not whole-node; only memory comes from `/proc/meminfo`). Not yet: `/metrics/resource`, `/metrics/cadvisor` (the Prometheus-format alternatives).
 - ❌ Client certificate authentication (bearer token only)
 
 ### Node shutdown
@@ -316,9 +344,9 @@ higher-value/correctness-critical than others:
       port-forward, TLS, TokenReview auth, daemonEndpoints advertisement.
       **Needs live-cluster validation** — see streaming.sh and this round's
       confidence note above, especially for kubectl exec.
+- [x] Round 7: `/stats/summary`, usage-based eviction ranking, RuntimeClass
 - [ ] Everything else in the responsibility list above — biggest remaining
-      single items: `/stats/summary` + real per-pod usage stats (would also
-      make eviction ranking usage-based instead of request-based), PVC/CSI,
-      ephemeral containers, RuntimeClass, graceful node shutdown, cgroup
-      driver/QoS hierarchy/node allocatable enforcement, CPU/Memory/
-      Topology managers, device plugins. Ask before starting the next round.
+      single items: PVC/CSI, ephemeral containers, graceful node shutdown,
+      cgroup driver/QoS hierarchy/node allocatable enforcement, CPU/Memory/
+      Topology managers, device plugins, RuntimeClass `Overhead` accounting,
+      `/metrics/resource`/`/metrics/cadvisor`. Ask before starting the next round.

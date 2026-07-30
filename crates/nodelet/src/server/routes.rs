@@ -3,7 +3,7 @@
 //! {pod}/{container}`, `/exec/{ns}/{pod}/{container}`, etc.) since that's
 //! what the apiserver's kubelet proxy sends unmodified.
 
-use super::{auth, exec, logs, text_response, BoxedBody, ServerState};
+use super::{auth, exec, logs, stats, text_response, BoxedBody, ServerState};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use std::convert::Infallible;
@@ -16,6 +16,7 @@ pub enum Route {
     Exec { namespace: String, pod: String, container: String },
     Attach { namespace: String, pod: String, container: String },
     PortForward { namespace: String, pod: String },
+    StatsSummary,
     NotFound,
 }
 
@@ -34,6 +35,7 @@ pub fn parse_route(path: &str) -> Route {
             Route::Attach { namespace: ns.to_string(), pod: pod.to_string(), container: container.to_string() }
         }
         ["portForward", ns, pod] => Route::PortForward { namespace: ns.to_string(), pod: pod.to_string() },
+        ["stats", "summary"] => Route::StatsSummary,
         _ => Route::NotFound,
     }
 }
@@ -109,6 +111,7 @@ pub async fn handle(
             exec::handle_attach(state, req, &namespace, &pod, &container, &parse_query(&query)).await
         }
         Route::PortForward { namespace, pod } => exec::handle_port_forward(state, req, &namespace, &pod).await,
+        Route::StatsSummary => stats::handle_stats_summary(&state).await,
         Route::NotFound => unreachable!("handled above"),
     };
     Ok(response)

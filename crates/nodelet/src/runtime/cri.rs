@@ -19,6 +19,7 @@ use k8s_openapi::api::core::v1::{
     ConfigMap, Container, EnvFromSource, EnvVarSource, LifecycleHandler, Pod, PodSecurityContext,
     ResourceRequirements, Secret, SecurityContext, Service, Volume,
 };
+use k8s_openapi::api::node::v1::RuntimeClass;
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use k8s_openapi::jiff::Timestamp;
@@ -58,7 +59,7 @@ use v1::{
     PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest, Mount, RemoveContainerRequest,
     RemoveImageRequest, RemovePodSandboxRequest, RunPodSandboxRequest, StartContainerRequest,
     StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest, ReopenContainerLogRequest,
-    ExecRequest, AttachRequest, PortForwardRequest,
+    ExecRequest, AttachRequest, PortForwardRequest, ListPodSandboxStatsRequest,
     security_profile::ProfileType, SecurityProfile,
 };
 
@@ -1377,15 +1378,37 @@ impl CriRuntime {
             .map(|c| c.id))
     }
 
-    async fn run_sandbox(&self, id: &PodId, dns: Option<DnsConfig>) -> Result<String> {
+    async fn run_sandbox(&self, id: &PodId, dns: Option<DnsConfig>, runtime_handler: String) -> Result<String> {
         let mut rt = self.rt.clone();
         let mut config = sandbox_config(id);
         config.dns_config = dns;
         let resp = rt
-            .run_pod_sandbox(RunPodSandboxRequest { config: Some(config), runtime_handler: String::new() })
+            .run_pod_sandbox(RunPodSandboxRequest { config: Some(config), runtime_handler })
             .await?
             .into_inner();
         Ok(resp.pod_sandbox_id)
+    }
+
+    /// Resolve `spec.runtimeClassName` to a CRI runtime handler name (e.g.
+    /// `gvisor`, `kata`) via the cluster-scoped `RuntimeClass` object. Empty
+    /// string (CRI's "use the default handler") if unset, the referenced
+    /// RuntimeClass doesn't exist, or the lookup fails — a missing
+    /// RuntimeClass should really block scheduling (real k8s validates this
+    /// at admission), but nodelet doesn't implement that admission check,
+    /// so falling back to the default runtime is safer than refusing to run
+    /// the pod at all over a lookup it can't itself enforce.
+    async fn resolve_runtime_handler(&self, pod: &Pod) -> String {
+        let Some(class_name) = pod.spec.as_ref().and_then(|s| s.runtime_class_name.as_deref()) else {
+            return String::new();
+        };
+        let api: Api<RuntimeClass> = Api::all(self.client.clone());
+        match api.get(class_name).await {
+            Ok(rc) => rc.handler,
+            Err(e) => {
+                warn!(runtime_class = %class_name, error = ?e, "failed to resolve RuntimeClass; using the default runtime handler");
+                String::new()
+            }
+        }
     }
 
     // Restart-on-exit: without this, a container that crashes (any reason —
@@ -1934,6 +1957,7 @@ impl PodRuntime for CriRuntime {
         let found = self.find_sandbox(&id.namespace, &id.name).await?;
         let ready_state = v1::PodSandboxState::SandboxReady as i32;
         let dns = dns_config_for(pod, &self.cluster_dns, &self.cluster_domain);
+        let runtime_handler = self.resolve_runtime_handler(pod).await;
         let sandbox_id = match sandbox_reuse_decision(found.as_ref().map(|(_, s)| *s), ready_state) {
             SandboxDecision::Reuse => found.unwrap().0,
             SandboxDecision::RecreateStale => {
@@ -1948,9 +1972,9 @@ impl PodRuntime for CriRuntime {
                 let _ = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
                 self.restart_policies.lock().unwrap().remove(&stale_id);
                 self.clear_restart_counts(&stale_id);
-                self.run_sandbox(&id, dns).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, dns, runtime_handler).await.context("RunPodSandbox")?
             }
-            SandboxDecision::CreateFresh => self.run_sandbox(&id, dns).await.context("RunPodSandbox")?,
+            SandboxDecision::CreateFresh => self.run_sandbox(&id, dns, runtime_handler).await.context("RunPodSandbox")?,
         };
 
         let restart_policy = pod
@@ -2237,6 +2261,62 @@ impl PodRuntime for CriRuntime {
             .into_inner();
         Ok(resp.url)
     }
+
+    async fn pod_usage_stats(&self) -> Result<Vec<super::PodUsage>> {
+        let mut rt = self.rt.clone();
+        let stats = rt
+            .list_pod_sandbox_stats(ListPodSandboxStatsRequest { filter: None })
+            .await
+            .context("ListPodSandboxStats")?
+            .into_inner()
+            .stats;
+        Ok(stats.iter().filter_map(pod_usage_from_sandbox_stats).collect())
+    }
+}
+
+fn u64_value(v: &Option<v1::UInt64Value>) -> Option<u64> {
+    v.as_ref().map(|v| v.value)
+}
+
+fn usage_stats_from_cpu_memory(cpu: Option<&v1::CpuUsage>, memory: Option<&v1::MemoryUsage>) -> super::UsageStats {
+    super::UsageStats {
+        cpu_usage_nano_cores: cpu.and_then(|c| u64_value(&c.usage_nano_cores)),
+        cpu_usage_core_nano_seconds: cpu.and_then(|c| u64_value(&c.usage_core_nano_seconds)),
+        memory_working_set_bytes: memory.and_then(|m| u64_value(&m.working_set_bytes)),
+        memory_usage_bytes: memory.and_then(|m| u64_value(&m.usage_bytes)),
+        memory_rss_bytes: memory.and_then(|m| u64_value(&m.rss_bytes)),
+        memory_available_bytes: memory.and_then(|m| u64_value(&m.available_bytes)),
+    }
+}
+
+/// Convert one CRI `PodSandboxStats` into nodelet's runtime-agnostic
+/// `PodUsage`. `None` if the sandbox has no identifying metadata or no
+/// Linux stats attached (Windows stats, or a sandbox CRI hasn't measured
+/// yet) — nothing meaningful to report either way.
+fn pod_usage_from_sandbox_stats(stats: &v1::PodSandboxStats) -> Option<super::PodUsage> {
+    let attrs = stats.attributes.as_ref()?;
+    let metadata = attrs.metadata.as_ref()?;
+    let linux = stats.linux.as_ref()?;
+
+    let containers = linux
+        .containers
+        .iter()
+        .filter_map(|c| {
+            let name = c.attributes.as_ref()?.metadata.as_ref()?.name.clone();
+            Some(super::ContainerUsage {
+                name,
+                stats: usage_stats_from_cpu_memory(c.cpu.as_ref(), c.memory.as_ref()),
+            })
+        })
+        .collect();
+
+    Some(super::PodUsage {
+        namespace: metadata.namespace.clone(),
+        name: metadata.name.clone(),
+        uid: metadata.uid.clone(),
+        pod: usage_stats_from_cpu_memory(linux.cpu.as_ref(), linux.memory.as_ref()),
+        containers,
+    })
 }
 
 fn sandbox_labels(id: &PodId) -> HashMap<String, String> {

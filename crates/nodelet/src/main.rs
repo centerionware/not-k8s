@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
     // Node-pressure eviction: re-checks real MemoryPressure/DiskPressure
     // (see metrics.rs) on its own short interval and reclaims resources by
     // evicting one eligible pod at a time when either is active.
-    tokio::spawn(eviction_loop(client.clone(), cfg.clone()));
+    tokio::spawn(eviction_loop(client.clone(), runtime.clone(), cfg.clone()));
 
     // Container log rotation — a no-op on the mock runtime, see
     // PodRuntime::rotate_logs()'s default.
@@ -171,9 +171,10 @@ async fn gc_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: Config
 /// MemoryPressure or DiskPressure is active, evict exactly one eligible pod
 /// (see `nodelet::eviction`) — never a mass cull; the next tick re-measures
 /// and decides again, same as real kubelet's eviction manager.
-async fn eviction_loop(client: kube::Client, cfg: Config) {
+async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
     use k8s_openapi::api::core::v1::Pod;
     use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams};
+    use std::collections::HashMap;
 
     loop {
         tokio::time::sleep(cfg.eviction_check_interval).await;
@@ -205,7 +206,21 @@ async fn eviction_loop(client: kube::Client, cfg: Config) {
             }
         };
 
-        let Some(victim) = nodelet::eviction::pick_eviction_candidate(&pods) else {
+        // Real usage, keyed by pod UID, for eviction.rs's ranking — falls
+        // back to requested memory per-pod if this comes back empty (mock
+        // runtime, or a CRI error listing stats).
+        let usage_bytes_by_uid: HashMap<String, u64> = match runtime.pod_usage_stats().await {
+            Ok(stats) => stats
+                .into_iter()
+                .filter_map(|u| u.pod.memory_working_set_bytes.or(u.pod.memory_usage_bytes).map(|bytes| (u.uid, bytes)))
+                .collect(),
+            Err(e) => {
+                warn!(error = ?e, "eviction: failed to fetch usage stats; ranking by requested memory only this cycle");
+                HashMap::new()
+            }
+        };
+
+        let Some(victim) = nodelet::eviction::pick_eviction_candidate(&pods, &usage_bytes_by_uid) else {
             continue; // under pressure, but nothing eligible to evict
         };
         let (Some(ns), Some(name)) = (victim.metadata.namespace.as_deref(), victim.metadata.name.as_deref()) else {

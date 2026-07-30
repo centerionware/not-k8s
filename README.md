@@ -88,14 +88,17 @@ counts, projected volumes (including a real, apiserver-signed
 `hostAliases`, `fsGroup`, container log rotation, node-pressure eviction
 (evicts one BestEffort/Burstable pod at a time when any pressure condition
 is active), **static pods + mirror pods**
-(`NODELET_STATIC_POD_PATH`, disabled by default), and now `kubectl logs`/
-`kubectl exec`/`attach`/`port-forward` via a real kubelet-style HTTP(S)
-server (`crates/nodelet/src/server/`, TLS + `TokenReview` auth) — **the
-piece least validated without a live cluster**, see the "Testing" section
-below and `docs/GAP_CLOSURE.md`'s round 6 notes. Still missing: `kubectl
-top` (`/stats/summary` — would also make eviction ranking usage-based
-instead of request-based), PVC/CSI, ephemeral containers, RuntimeClass, and
-more — full list in `docs/GAP_CLOSURE.md`.
+(`NODELET_STATIC_POD_PATH`, disabled by default), `kubectl logs`/`kubectl
+exec`/`attach`/`port-forward` via a real kubelet-style HTTP(S) server
+(`crates/nodelet/src/server/`, TLS + `TokenReview` auth) — **the piece
+least validated without a live cluster**, see the "Testing" section below
+and `docs/GAP_CLOSURE.md`'s round 6 notes — `/stats/summary` (built from
+CRI's own per-pod/per-container usage stats; `kubectl top` also needs
+metrics-server deployed separately to actually scrape it), eviction now
+ranked by real memory usage instead of just requests, and `RuntimeClass`
+(`spec.runtimeClassName` reaches CRI's `runtime_handler` for gVisor/Kata/
+etc.). Still missing: PVC/CSI, ephemeral containers, graceful node
+shutdown, and more — full list in `docs/GAP_CLOSURE.md`.
 
 ---
 

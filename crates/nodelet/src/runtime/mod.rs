@@ -187,4 +187,40 @@ pub trait PodRuntime: Send + Sync {
         let _ = (namespace, name);
         anyhow::bail!("port-forward is not supported by this runtime")
     }
+
+    /// Live CPU/memory usage for every pod this runtime knows about — backs
+    /// the `/stats/summary` endpoint (`server::stats`, `cri` feature only).
+    /// Default: empty (mock has no real containers to measure).
+    async fn pod_usage_stats(&self) -> anyhow::Result<Vec<PodUsage>> {
+        Ok(Vec::new())
+    }
+}
+
+/// CPU/memory usage numbers in the same shape CRI's `CpuUsage`/`MemoryUsage`
+/// report them — kept as nodelet's own type (not the generated CRI proto
+/// type) so this is usable from the trait without a `cri`-feature bound on
+/// the trait itself.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UsageStats {
+    pub cpu_usage_nano_cores: Option<u64>,
+    pub cpu_usage_core_nano_seconds: Option<u64>,
+    pub memory_working_set_bytes: Option<u64>,
+    pub memory_usage_bytes: Option<u64>,
+    pub memory_rss_bytes: Option<u64>,
+    pub memory_available_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ContainerUsage {
+    pub name: String,
+    pub stats: UsageStats,
+}
+
+#[derive(Clone, Debug)]
+pub struct PodUsage {
+    pub namespace: String,
+    pub name: String,
+    pub uid: String,
+    pub pod: UsageStats,
+    pub containers: Vec<ContainerUsage>,
 }

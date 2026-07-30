@@ -5,21 +5,22 @@
 //! of that, not the full thing (see docs/GAP_CLOSURE.md for what's
 //! simplified).
 //!
-//! Deliberately conservative, since this can only rank by what's actually
-//! knowable from the Pod spec (no live per-pod cgroup usage stats exist yet
-//! — that's the `/stats/summary` gap, tracked separately):
+//! Deliberately conservative:
 //!   - Only `BestEffort`/`Burstable` pods are ever evicted; `Guaranteed`
 //!     pods and anything with a `system-node-critical`/
 //!     `system-cluster-critical` priority class are never touched.
 //!   - Within the eligible pods, `BestEffort` goes before `Burstable`
 //!     (matches real kubelet's QoS-based ranking), and ties are broken by
-//!     requested memory (a proxy for "biggest consumer" — the closest
-//!     approximation available without real usage stats).
+//!     real memory usage (from CRI's `ListPodSandboxStats`, the same source
+//!     `server::stats`'s `/stats/summary` uses) when known, falling back to
+//!     *requested* memory for any pod without live stats yet (e.g. the mock
+//!     runtime, or a pod too new for CRI to have measured).
 //!   - One pod is evicted per check, not a mass cull — the next tick
 //!     re-measures pressure and decides again.
 
 use k8s_openapi::api::core::v1::{Container, Pod, ResourceRequirements};
 use std::cmp::Reverse;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum QosClass {
@@ -132,12 +133,28 @@ pub fn is_critical(pod: &Pod) -> bool {
 /// pods present — real kubelet would still evict Guaranteed under severe
 /// enough pressure; this stays conservative given the ranking is
 /// request-based, not usage-based).
-pub fn pick_eviction_candidate(pods: &[Pod]) -> Option<&Pod> {
+/// Rank by real memory usage when it's known (keyed by pod UID — see
+/// `main.rs::eviction_loop`, which populates this from
+/// `PodRuntime::pod_usage_stats()`), falling back to *requested* memory for
+/// any pod not in the map (the mock runtime never populates it at all, and
+/// even on `cri` a pod's stats can lag its apiserver object briefly). Real
+/// usage is the more accurate signal — a pod that requested little but is
+/// actually the node's biggest consumer should be evictable ahead of one
+/// that merely asked for more.
+fn eviction_weight(pod: &Pod, usage_bytes_by_uid: &HashMap<String, u64>) -> u64 {
+    pod.metadata
+        .uid
+        .as_deref()
+        .and_then(|uid| usage_bytes_by_uid.get(uid).copied())
+        .unwrap_or_else(|| requested_memory_bytes(pod))
+}
+
+pub fn pick_eviction_candidate<'a>(pods: &'a [Pod], usage_bytes_by_uid: &HashMap<String, u64>) -> Option<&'a Pod> {
     pods.iter()
         .filter(|p| {
             p.metadata.deletion_timestamp.is_none() && !is_critical(p) && qos_class(p) != QosClass::Guaranteed
         })
-        .min_by_key(|p| (qos_class(p), Reverse(requested_memory_bytes(p))))
+        .min_by_key(|p| (qos_class(p), Reverse(eviction_weight(p, usage_bytes_by_uid))))
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ pub mod auth;
 pub mod exec;
 pub mod logs;
 pub mod routes;
+pub mod stats;
 pub mod tls;
 
 use crate::config::Config;
@@ -107,10 +108,17 @@ pub type BoxedBody = http_body_util::combinators::BoxBody<hyper::body::Bytes, Bo
 /// anything that isn't the happy path (auth failure, pod/container not
 /// found, upstream CRI error, ...).
 pub(crate) fn text_response(status: hyper::StatusCode, msg: impl Into<String>) -> hyper::Response<BoxedBody> {
-    use http_body_util::{BodyExt, Full};
     hyper::Response::builder()
         .status(status)
         .header("Content-Type", "text/plain")
-        .body(Full::new(hyper::body::Bytes::from(msg.into())).map_err(|never: std::convert::Infallible| match never {}).boxed())
+        .body(body_from_bytes(msg.into().into_bytes()))
         .unwrap()
+}
+
+/// Wrap a fully-materialized byte buffer as a `BoxedBody` — the common case
+/// for every handler that isn't streaming (`logs::handle_container_logs`'s
+/// `follow` mode is the one exception).
+pub(crate) fn body_from_bytes(bytes: Vec<u8>) -> BoxedBody {
+    use http_body_util::{BodyExt, Full};
+    Full::new(hyper::body::Bytes::from(bytes)).map_err(|never: std::convert::Infallible| match never {}).boxed()
 }
