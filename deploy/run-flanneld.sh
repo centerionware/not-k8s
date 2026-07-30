@@ -15,7 +15,7 @@
 # the file went missing — confirmed for real: this is exactly the failure
 # mode a live test machine hit after a reboot.
 #
-# Env vars (all provided by bootstrap-test.sh's systemd/OpenRC unit):
+# Env vars (all provided by bootstrap-source.sh's systemd/OpenRC unit):
 #   FLANNELD_BIN          absolute path to the flanneld binary (required —
 #                         service managers give this script a minimal PATH,
 #                         so `command -v flanneld` can't be trusted here)

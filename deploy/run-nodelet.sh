@@ -17,10 +17,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# bootstrap-test.sh copies the built binary to bin/nodelet and then wipes
+# bootstrap-source.sh copies the built binary to bin/nodelet and then wipes
 # target/ entirely to minimize on-disk footprint, so that's the first place
 # to look; target/release/nodelet is still checked for a plain `cargo build`
-# dev workflow that never went through bootstrap-test.sh's cleanup.
+# dev workflow that never went through bootstrap-source.sh's cleanup.
 if [[ -n "${NODELET_BIN:-}" ]]; then
     : # explicit override, use as-is
 elif [[ -x "${REPO_ROOT}/bin/nodelet" ]]; then

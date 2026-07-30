@@ -71,7 +71,7 @@ fi
 #       in the agent/kubelet we're not running anyway. This is k3s's documented
 #       way to bring your own CNI: node PodCIDR allocation on the
 #       controller-manager (--allocate-node-cidrs) stays on regardless of this
-#       flag, so an externally-run flannel (see deploy/bootstrap-test.sh
+#       flag, so an externally-run flannel (see deploy/bootstrap-source.sh
 #       --with-cri, which installs and starts it) can still read/assign
 #       per-node subnets from Node objects via the "kube" subnet manager.
 #
@@ -88,7 +88,7 @@ fi
 #       Comma-separated v4,v6 pairs turn on dual-stack Service/Pod IP
 #       allocation (this is what --allocate-node-cidrs, which stays on
 #       regardless of --flannel-backend, actually allocates from). Defaults
-#       below are IPv4-only; deploy/bootstrap-test.sh overrides both via
+#       below are IPv4-only; deploy/bootstrap-source.sh overrides both via
 #       NOTK8S_CLUSTER_CIDR/NOTK8S_SERVICE_CIDR once it's resolved
 #       --ip-family, so this script and nodelet's Service proxy always agree
 #       on the same mode.

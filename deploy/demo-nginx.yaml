@@ -6,7 +6,7 @@
 #   nodelet watch -> status update -> kubectl shows Running.
 #
 # With the `cri` runtime (NODELET_RUNTIME=cri) and a CNI plugin installed
-# (deploy/bootstrap-test.sh --with-cri installs flannel by default):
+# (deploy/bootstrap-source.sh --with-cri installs flannel by default):
 #   Pods run for real via containerd and get real pod IPs from the flannel
 #   overlay.
 #

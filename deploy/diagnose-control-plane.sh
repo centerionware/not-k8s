@@ -2,7 +2,7 @@
 # diagnose-control-plane.sh — find out what inside k3s-server is actually
 # burning CPU/RAM at idle, on a real running deployment.
 #
-# nodelet and bootstrap-test.sh only ever touched the node-agent side (the
+# nodelet and bootstrap-source.sh only ever touched the node-agent side (the
 # kubelet replacement). k3s-server itself — apiserver + scheduler +
 # controller-manager + kine (its embedded sqlite datastore), all bundled
 # into one process — has never been profiled or trimmed. This script

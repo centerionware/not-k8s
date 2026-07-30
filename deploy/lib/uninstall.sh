@@ -1,0 +1,197 @@
+# lib/uninstall.sh — --cleanup and --uninstall.
+#
+# --cleanup stops what a run started (nodelet, flanneld, containerd, the
+# nft Service table) and removes k3s + this script's own scratch — enough
+# to start clean, but keeps runtime packages installed so the next run is
+# fast. --uninstall goes further: k3s's data/config, containerd/runc's
+# state and binaries, and all CNI/flannel config/binaries too — but, same
+# rule as everywhere else, only for what it actually installed. --force
+# (only meaningful with --uninstall) skips ownership tracking entirely and
+# removes everything by name — see force_remove_known_packages() below and
+# the --force block comment in bootstrap-source.sh's usage header.
+#
+# IMPORTANT set -e note: every command in this file that stops something
+# already-stopped, or kills something already-dead, is wrapped in `|| true`
+# or an `if` condition — never a bare statement. Under `set -e`, a bare
+# failing command (e.g. `pkill` finding nothing to kill, `systemctl stop`
+# on a unit that's already stopped or was never installed) kills the whole
+# script immediately, silently skipping everything after it in the same
+# function. Confirmed for real: an earlier version of stop_running_components()
+# had `pkill -f "$SCRIPT_DIR/run-nodelet.sh" 2>/dev/null` with no `|| true`
+# right after `systemctl stop nodelet.service` — once systemctl had already
+# stopped the process, pkill found nothing, exited 1, and --uninstall died
+# right there without ever reaching the k3s-uninstall.sh call below. The fix
+# here is structural, not just adding `|| true` in the one spot that broke:
+# service stop+remove is now handled once each, by remove_nodelet_service()
+# and remove_supervised_service() (both already `|| true`-guarded — see
+# nodelet-service.sh / service-mgr.sh), instead of being duplicated here
+# with its own separate, easy-to-forget guarding.
+
+stop_service_proxy_nft() {
+    log "Removing the Service-proxy nftables table (if present)..."
+    command -v nft &>/dev/null && { nft delete table inet not_k8s_svc 2>/dev/null || true; }
+}
+
+# Stops+removes everything a run started: nodelet, the Service-proxy nft
+# table, flanneld, and containerd (only the last if this script started it
+# itself rather than using an existing distro-packaged containerd.service).
+stop_running_components() {
+    remove_nodelet_service
+    stop_service_proxy_nft
+    log "Stopping flanneld..."
+    remove_supervised_service flanneld
+    log "Stopping containerd (if this script started it)..."
+    if [[ ! -f /etc/systemd/system/containerd.service ]]; then
+        remove_supervised_service containerd
+    fi
+    [[ -f "$WORK_DIR/containerd.pid" ]] && { kill "$(cat "$WORK_DIR/containerd.pid")" 2>/dev/null || true; }
+}
+
+# Full teardown for --cleanup: stop everything this script started running,
+# uninstall k3s and every build-only package it installed (a normal run
+# already did this at the end automatically unless --keep-build-tools was
+# used — this covers that case too), and remove every trace under
+# $WORK_DIR/bin/target. Runtime packages (containerd/runc/nftables/CNI
+# plugins/flannel) and k3s's own config/data are left in place, so the next
+# run doesn't have to reinstall them — use --uninstall to remove those too.
+full_cleanup() {
+    stop_running_components
+    uninstall_k3s
+    uninstall_tracked_build_packages
+    log "Removing $WORK_DIR, $REPO_ROOT/bin, and $REPO_ROOT/target..."
+    rm -rf "$WORK_DIR" "$REPO_ROOT/bin" "$REPO_ROOT/target"
+    log "Cleanup done. Runtime packages (containerd/runc/nftables/CNI plugins/flannel) were left installed for next time — pass --uninstall for a full teardown."
+}
+
+# k3s ships k3s-uninstall.sh to /usr/local/bin by its own installer. Check
+# both PATH and the literal well-known path directly: PATH lookup can, in
+# principle, miss it under a restrictive sudoers secure_path even though
+# the file is right there (this is the one step of --uninstall with no
+# fallback if it's silently skipped — worth being redundant about finding
+# it rather than trusting PATH alone).
+uninstall_k3s() {
+    local uninstaller=""
+    if command -v k3s-uninstall.sh &>/dev/null; then
+        uninstaller="$(command -v k3s-uninstall.sh)"
+    elif [[ -x /usr/local/bin/k3s-uninstall.sh ]]; then
+        uninstaller=/usr/local/bin/k3s-uninstall.sh
+    fi
+    if [[ -n "$uninstaller" ]]; then
+        log "Uninstalling k3s via $uninstaller..."
+        $SUDO "$uninstaller" || true
+        return 0
+    fi
+    if [[ "$FORCE_UNINSTALL" -eq 1 ]]; then
+        log "--force: no k3s-uninstall.sh found — removing k3s manually (service, binary, symlinks)..."
+        $SUDO systemctl stop k3s 2>/dev/null || true
+        $SUDO systemctl disable k3s 2>/dev/null || true
+        $SUDO pkill -x k3s 2>/dev/null || true
+        $SUDO rm -f /etc/systemd/system/k3s.service \
+            /usr/local/bin/k3s /usr/local/bin/kubectl /usr/local/bin/crictl /usr/local/bin/ctr
+    else
+        log "No k3s-uninstall.sh found — k3s doesn't appear to be installed (or predates this script)."
+    fi
+}
+
+# --force's package sweep: the same logical-name -> per-manager-package-name
+# mapping every pkg_install call site above already uses, duplicated here
+# (not derived from pkg_installs.log) specifically *because* --force exists
+# for when that log doesn't have the answer — e.g. a run from before this
+# tracking existed, or from a machine this session never touched. Matched
+# by name and removed unconditionally; a package that isn't installed is a
+# harmless no-op for every package manager here.
+force_remove_known_packages() {
+    log "--force: removing every package this project could ever install, by name — not just what a tracking log says, since that log may not exist for whatever installed things here."
+    local entries=(
+        "C toolchain|build-essential|gcc make|base-devel|build-base|gcc make|base-devel"
+        "C++ compiler|g++|gcc-c++|base-devel|g++|gcc-c++|base-devel"
+        "rust|cargo rustc|cargo rustc|rust|cargo|cargo rustc|rust"
+        "protoc|protobuf-compiler|protobuf-compiler|protobuf|protobuf|protobuf-devel|protobuf"
+        "go|golang-go|golang|go|go|go|go"
+        "containerd/runc|containerd runc|containerd runc|containerd runc|containerd runc|containerd runc|containerd runc"
+        "CNI plugins|containernetworking-plugins|containernetworking-plugins|cni-plugins|cni-plugins|containernetworking-plugins|containernetworking-plugins"
+        "flannel|flannel|flannel|flannel|flannel|flannel|flannel"
+        "nftables|nftables|nftables|nftables|nftables|nftables|nftables"
+        "git|git|git|git|git|git|git"
+    )
+    local col
+    case "$PKG_MGR" in
+        apt) col=2 ;; dnf) col=3 ;; pacman) col=4 ;; apk) col=5 ;; zypper) col=6 ;; xbps) col=7 ;;
+        *) warn "Unrecognized package manager — can't force-remove system packages by name, only files/dirs/processes."; return 0 ;;
+    esac
+    local entry pkgs
+    for entry in "${entries[@]}"; do
+        pkgs="$(cut -d'|' -f"$col" <<<"$entry")"
+        [[ -z "$pkgs" ]] && continue
+        log "Force-removing (if present): $pkgs"
+        remove_pkgs_via_mgr "$PKG_MGR" "$pkgs" || true
+    done
+    [[ "$PKG_MGR" == "apt" ]] && { $SUDO apt-get autoremove -y -qq >>"$LOG_DIR/pkg.log" 2>&1 || true; }
+    rm -f "$WORK_DIR/pkg_installs.log"
+}
+
+# --uninstall: the nuclear option. Everything --cleanup does, plus k3s's own
+# data/config, containerd/runc's state and binaries, and all CNI/flannel
+# config and binaries — but only for pieces this script actually installed.
+# containerd/runc get the same "was it already here" check pkg tracking gives
+# packages: if $TOOLCHAIN_DIR/bin/containerd exists or "containerd/runc" was
+# logged as installed, this script put it there and its state is fair game;
+# otherwise it predates this script (e.g. Docker's containerd) and is left
+# completely alone, config/data included. CNI/flannel use the same idea, keyed
+# on the "flannel" CNI plugin binary specifically — nothing else installs a
+# file with that name into /opt/cni/bin, so its presence reliably means this
+# script's ensure_cni() wrote the whole CNI/flannel setup being removed.
+full_uninstall() {
+    log "Full uninstall: k3s, containerd/runc, CNI plugins, flannel, nftables — everything this script ever installed."
+
+    local we_own_containerd=0 we_own_cni=0
+    if [[ "$FORCE_UNINSTALL" -eq 1 ]]; then
+        log "--force: treating containerd/runc and any CNI/flannel setup found as ours to remove, regardless of who installed them."
+        we_own_containerd=1
+        we_own_cni=1
+    else
+        { [[ -e "$TOOLCHAIN_DIR/bin/containerd" ]] || { [[ -f "$WORK_DIR/pkg_installs.log" ]] && grep -q '|containerd/runc|' "$WORK_DIR/pkg_installs.log"; }; } \
+            && we_own_containerd=1
+        [[ -e "$CNI_BIN_DIR/flannel" ]] && we_own_cni=1
+    fi
+
+    stop_running_components
+    # stop_running_components already stopped/removed whatever *this
+    # invocation's* service tier knows about. Ownership here is decided by
+    # package/binary provenance instead (we_own_containerd/we_own_cni above,
+    # or unconditionally under --force), which also covers a containerd
+    # left running from an earlier, unrelated (or untracked) run of this
+    # script that stop_running_components has no record of.
+    [[ "$we_own_containerd" -eq 1 ]] && { $SUDO pkill -x containerd 2>/dev/null || true; }
+    [[ "$we_own_cni" -eq 1 ]] && { $SUDO pkill -x flanneld 2>/dev/null || true; }
+    sleep 1
+
+    uninstall_k3s
+    log "Removing leftover k3s config/data (if any)..."
+    $SUDO rm -rf /etc/rancher /var/lib/rancher
+
+    if [[ "$we_own_containerd" -eq 1 ]]; then
+        log "Removing containerd/runc state and binaries..."
+        $SUDO rm -rf /etc/containerd /run/containerd /var/lib/containerd
+        rm -f "$TOOLCHAIN_DIR/bin"/{containerd,containerd-shim-runc-v2,ctr,runc}
+    else
+        log "containerd/runc predate this script — leaving them and their state untouched."
+    fi
+
+    if [[ "$we_own_cni" -eq 1 ]]; then
+        log "Removing CNI plugins, flannel, and their config..."
+        $SUDO rm -rf "$CNI_BIN_DIR" "$CNI_CONF_DIR" /etc/kube-flannel /run/flannel
+        rm -f "$TOOLCHAIN_DIR/bin/flanneld"
+    else
+        log "No CNI/flannel setup found — nothing to remove there."
+    fi
+
+    if [[ "$FORCE_UNINSTALL" -eq 1 ]]; then
+        force_remove_known_packages
+    else
+        uninstall_all_tracked_packages
+    fi
+    log "Removing $WORK_DIR, $REPO_ROOT/bin, and $REPO_ROOT/target..."
+    rm -rf "$WORK_DIR" "$REPO_ROOT/bin" "$REPO_ROOT/target"
+    log "Full uninstall done — the system should be back to (close to) how it was before this script ran."
+}

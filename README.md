@@ -19,7 +19,7 @@ One command, on any Linux box, any architecture — installs everything (see
 [Try it in one command](#try-it-in-one-command) below for what that means):
 
 ```bash
-git clone https://github.com/centerionware/not-k8s && cd not-k8s && ./deploy/bootstrap-test.sh --with-cri
+git clone https://github.com/centerionware/not-k8s && cd not-k8s && ./deploy/bootstrap-source.sh --with-cri
 ```
 
 ---
@@ -94,7 +94,7 @@ Both invocations should end in `Finished ... target(s)`.
 
 ## Try it in one command
 
-`deploy/bootstrap-test.sh` is a single, self-contained script that installs
+`deploy/bootstrap-source.sh` is a single, self-contained script that installs
 and smoke-tests the *entire* stack on any Linux box, regardless of distro or
 CPU architecture — one command, nothing to install by hand first. It
 re-execs itself under `sudo` automatically (root is needed to install system
@@ -133,15 +133,15 @@ cleanup runs automatically on the way out, so a failed attempt doesn't
 leave a half-installed toolchain behind with no way back.
 
 ```bash
-./deploy/bootstrap-test.sh                     # installs everything, mock runtime
-./deploy/bootstrap-test.sh --with-cri          # + containerd/runc, real containers
-./deploy/bootstrap-test.sh --with-cri --ip-family=ipv4      # force v4-only (default: auto)
-./deploy/bootstrap-test.sh --with-cri --lb-method=round-robin  # default: random
-./deploy/bootstrap-test.sh --skip-control-plane  # bring your own KUBECONFIG, no root needed
-./deploy/bootstrap-test.sh --keep-build-tools  # skip the end-of-run toolchain cleanup
-./deploy/bootstrap-test.sh --cleanup           # stop the deployment, keep runtime pkgs/k3s for next time
-./deploy/bootstrap-test.sh --uninstall         # full teardown: also k3s, containerd/runc, CNI/flannel, nftables
-./deploy/bootstrap-test.sh --uninstall --force # same, but by name — for a machine an older/untracked run left dirty
+./deploy/bootstrap-source.sh                     # installs everything, mock runtime
+./deploy/bootstrap-source.sh --with-cri          # + containerd/runc, real containers
+./deploy/bootstrap-source.sh --with-cri --ip-family=ipv4      # force v4-only (default: auto)
+./deploy/bootstrap-source.sh --with-cri --lb-method=round-robin  # default: random
+./deploy/bootstrap-source.sh --skip-control-plane  # bring your own KUBECONFIG, no root needed
+./deploy/bootstrap-source.sh --keep-build-tools  # skip the end-of-run toolchain cleanup
+./deploy/bootstrap-source.sh --cleanup           # stop the deployment, keep runtime pkgs/k3s for next time
+./deploy/bootstrap-source.sh --uninstall         # full teardown: also k3s, containerd/runc, CNI/flannel, nftables
+./deploy/bootstrap-source.sh --uninstall --force # same, but by name — for a machine an older/untracked run left dirty
 ```
 
 `--cleanup` vs `--uninstall`: `--cleanup` stops what a run started (nodelet,
@@ -193,13 +193,13 @@ How it fits together, with no changes needed to k3s or nodelet's core loop:
   to run through its normal CRI-driven CNI path.
 - containerd's CRI plugin is the thing that actually invokes CNI plugins on
   `RunPodSandbox`; it just needs plugin binaries in `/opt/cni/bin` and a
-  network config in `/etc/cni/net.d`, which `bootstrap-test.sh` installs.
+  network config in `/etc/cni/net.d`, which `bootstrap-source.sh` installs.
 - Per-node pod subnet allocation needs no new code on the control-plane side:
   k3s's controller-manager runs `--allocate-node-cidrs` regardless of
   `--flannel-backend`, which is exactly what lets `--flannel-backend=none`
   (already the flag `setup-control-plane.sh` uses) be paired with any
   self-managed CNI — flannel included.
-- `bootstrap-test.sh` installs the standard CNI plugins
+- `bootstrap-source.sh` installs the standard CNI plugins
   (bridge/host-local/portmap/...), flannel's daemon (`flanneld`) and its CNI
   plugin, writes `/etc/cni/net.d/10-flannel.conflist`, and runs `flanneld
   --kube-subnet-mgr` — flannel's own IPAM backend that reads/writes per-node
@@ -262,7 +262,7 @@ stateless nftables (no per-connection counters like ipvs's least-conn):
 
 This needs `nft` on the node and bridged pod traffic to reach the host's
 netfilter tables (`br_netfilter`) — both handled by
-`deploy/bootstrap-test.sh --with-cri`. If `nft` isn't available, `nodelet`
+`deploy/bootstrap-source.sh --with-cri`. If `nft` isn't available, `nodelet`
 detects that, logs it once, and simply skips Service routing; direct pod-IP
 traffic is unaffected either way. `NODELET_SERVICE_PROXY=false` opts out
 explicitly (it's on by default whenever `NODELET_RUNTIME=cri`).
@@ -319,7 +319,7 @@ not *why*.
 
 ### 4. Diagnose k3s-server itself
 
-`nodelet` and `bootstrap-test.sh` only ever touched the node-agent side (the
+`nodelet` and `bootstrap-source.sh` only ever touched the node-agent side (the
 kubelet replacement) — k3s-server (apiserver + scheduler + controller-manager
 + kine, its embedded sqlite datastore, all bundled into one process) has
 never been profiled or trimmed. If it's still using significant idle CPU/RAM,
