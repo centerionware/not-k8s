@@ -1066,7 +1066,20 @@ EOF
 # CAP_NET_ADMIN in the environment this was built in) — treat IPv6/dual mode
 # as less battle-tested than the IPv4 path, which was.
 write_flannel_net_conf() {
-    [[ "$IP_FAMILY" == "ipv4" ]] && return 0
+    if [[ "$IP_FAMILY" == "ipv4" ]]; then
+        # No custom config needed for plain v4 — flanneld's own default is
+        # v4-only. But an earlier run (e.g. before the IPv6 auto-detection
+        # false-positive was fixed) may have left a dual/v6 net-conf.json
+        # behind, and start_flanneld() passes --net-config-path whenever
+        # that file exists, regardless of which run wrote it — remove it,
+        # don't just skip writing a new one, or flanneld picks up the stale
+        # config and fails trying to set up IPv6 on an ipv4-only IP_FAMILY.
+        # Confirmed for real: exactly this happened after the route-based
+        # IPv6 detection fix corrected auto to "ipv4", while the old
+        # dual-stack net-conf.json from before that fix was still on disk.
+        rm -f /etc/kube-flannel/net-conf.json
+        return 0
+    fi
     mkdir -p /etc/kube-flannel
     local v4_net="" v6_net=""
     [[ "$IP_FAMILY" == "dual" || "$IP_FAMILY" == "ipv4" ]] && v4_net="$IPV4_CLUSTER_CIDR"
