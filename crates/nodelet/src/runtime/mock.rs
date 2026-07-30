@@ -133,3 +133,37 @@ impl PodRuntime for MockRuntime {
         self.inner.rx.lock().unwrap().take()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pod() -> Pod {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": "smoke-test", "namespace": "default"},
+            "spec": {"containers": [{"name": "app", "image": "busybox"}]}
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn repeated_ensure_does_not_schedule_duplicate_runtime_events() {
+        let runtime = MockRuntime::new();
+        let mut events = runtime.take_event_rx().expect("mock runtime event receiver");
+        let pod = pod();
+
+        runtime.ensure_pod(&pod).await.unwrap();
+        runtime.ensure_pod(&pod).await.unwrap();
+
+        let first = tokio::time::timeout(Duration::from_secs(1), events.recv())
+            .await
+            .expect("startup event should arrive")
+            .expect("event channel should remain open");
+        assert_eq!(first, "default/smoke-test");
+
+        let second = tokio::time::timeout(Duration::from_millis(75), events.recv()).await;
+        assert!(second.is_err(), "an unchanged ensure must not create a second runtime event");
+    }
+}

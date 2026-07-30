@@ -1108,6 +1108,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "http",
  "hyper-util",
  "k8s-openapi",
  "kube",

@@ -6,6 +6,11 @@
 //! forward, and a genuinely changed one must get a new one.
 use super::*;
 use crate::runtime::{ContainerRuntimeStatus, Phase, RuntimeStatus};
+use http::{Request, Response};
+use kube::client::Body;
+use std::convert::Infallible;
+use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
+use tower::service_fn;
 
 fn running_status() -> RuntimeStatus {
     RuntimeStatus {
@@ -72,6 +77,90 @@ fn unchanged_condition_preserves_prior_timestamp() {
     let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
     assert_eq!(ready.status, "True"); // still running -> still True
     assert_eq!(ready.last_transition_time, Some(old_time));
+}
+
+#[test]
+fn full_status_payload_is_stable_on_an_unchanged_reconcile() {
+    // A condition timestamp is only one possible source of churn. Compare the
+    // complete serialized status that write_status() sends: if this changes on
+    // an unchanged runtime state, every watch Apply can become another PATCH.
+    let runtime = running_status();
+    let first = build_pod_status("10.0.0.1", &runtime, None);
+    let second = build_pod_status("10.0.0.1", &runtime, Some(&first));
+
+    assert_eq!(
+        serde_json::to_value(&first).unwrap(),
+        serde_json::to_value(&second).unwrap(),
+        "unchanged runtime state must produce a byte-equivalent status payload"
+    );
+}
+
+fn counting_client(patches: Arc<AtomicUsize>) -> Client {
+    let response = Arc::new(
+        serde_json::to_vec(&serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": "app", "namespace": "default"}
+        }))
+        .unwrap(),
+    );
+    let service = service_fn(move |request: Request<Body>| {
+        let patches = patches.clone();
+        let response = response.clone();
+        async move {
+            if request.method() == http::Method::PATCH && request.uri().path().ends_with("/status") {
+                patches.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok::<_, Infallible>(Response::new(Body::from(response.as_ref().clone())))
+        }
+    });
+    Client::new(service, "default")
+}
+
+#[tokio::test]
+async fn unchanged_status_skips_the_http_patch() {
+    let patches = Arc::new(AtomicUsize::new(0));
+    let client = counting_client(patches.clone());
+    let runtime = running_status();
+    let previous = build_pod_status("10.0.0.1", &runtime, None);
+
+    write_status(&client, "10.0.0.1", "default", "app", &runtime, Some(&previous))
+        .await
+        .unwrap();
+
+    assert_eq!(patches.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn server_owned_status_fields_do_not_force_a_patch() {
+    let runtime = running_status();
+    let mut previous = build_pod_status("10.0.0.1", &runtime, None);
+    // The apiserver fills this field, but nodelet deliberately does not own
+    // it. A server-owned field must not make every later reconcile look dirty.
+    previous.qos_class = Some("Burstable".to_string());
+    let desired = build_pod_status("10.0.0.1", &runtime, Some(&previous));
+
+    assert!(!status_patch_changes(Some(&previous), &desired));
+}
+
+#[tokio::test]
+async fn changed_status_still_sends_the_http_patch() {
+    let patches = Arc::new(AtomicUsize::new(0));
+    let client = counting_client(patches.clone());
+    let previous = build_pod_status("10.0.0.1", &pending_status(), None);
+
+    write_status(
+        &client,
+        "10.0.0.1",
+        "default",
+        "app",
+        &running_status(),
+        Some(&previous),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(patches.load(Ordering::Relaxed), 1);
 }
 
 #[test]

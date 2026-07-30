@@ -21,6 +21,7 @@ use kube::api::{Patch, PatchParams};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client};
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -196,9 +197,38 @@ async fn write_status(
 ) -> Result<()> {
     let api: Api<Pod> = Api::namespaced(client.clone(), ns);
     let status = build_pod_status(host_ip, rt, prev);
+    if !status_patch_changes(prev, &status) {
+        debug!(pod = %format!("{ns}/{name}"), "skipped unchanged pod status patch");
+        return Ok(());
+    }
     let patch = serde_json::json!({ "status": status });
     api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
     Ok(())
+}
+
+/// Return whether merging `desired` into the stored PodStatus would change
+/// anything. `patch_status()` uses JSON Merge Patch: object fields merge
+/// recursively, arrays replace as a whole, and null deletes a field. Checking
+/// this before the HTTP call matters because an identical PATCH can still
+/// produce a new resourceVersion and feed the same Pod back into our watch.
+fn status_patch_changes(prev: Option<&PodStatus>, desired: &PodStatus) -> bool {
+    let Some(prev) = prev else { return true };
+    let prev = serde_json::to_value(prev).expect("PodStatus must serialize");
+    let desired = serde_json::to_value(desired).expect("PodStatus must serialize");
+    merge_patch_changes(Some(&prev), &desired)
+}
+
+fn merge_patch_changes(current: Option<&Value>, patch: &Value) -> bool {
+    match patch {
+        Value::Object(patch) => {
+            let current = current.and_then(Value::as_object);
+            patch.iter().any(|(key, value)| match value {
+                Value::Null => current.and_then(|obj| obj.get(key)).is_some(),
+                value => merge_patch_changes(current.and_then(|obj| obj.get(key)), value),
+            })
+        }
+        value => current != Some(value),
+    }
 }
 
 /// `prev` is the pod's previously-stored status (straight from the watch
@@ -312,3 +342,6 @@ mod tests_build_pod_status;
 #[cfg(test)]
 #[path = "pods_tests/key_parts.rs"]
 mod tests_key_parts;
+#[cfg(test)]
+#[path = "pods_tests/event_loop.rs"]
+mod tests_event_loop;
