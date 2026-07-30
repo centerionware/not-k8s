@@ -923,11 +923,31 @@ start_flanneld() {
         nohup flanneld --kube-subnet-mgr --ip-masq "${net_conf_args[@]}" \
         >"$LOG_DIR/flanneld.log" 2>&1 &
     echo $! > "$WORK_DIR/flanneld.pid"
+    # Deliberately not waiting for /run/flannel/subnet.env here: flanneld's
+    # kube subnet manager can't get one until a Node object exists *with an
+    # allocated PodCIDR* — which needs nodelet to have registered the node
+    # first, and nodelet doesn't start until run_and_verify(), later in
+    # main(). Checking this early would be structurally premature on every
+    # single run, not just occasionally — see wait_for_flannel_subnet(),
+    # called after nodelet's own node-registration wait succeeds instead.
+}
+
+# Called from run_and_verify() only after the node has actually registered
+# (so a PodCIDR has had a chance to be allocated) — this is the point where
+# flanneld having no subnet.env yet is an actual problem worth a warning,
+# not just normal startup ordering.
+wait_for_flannel_subnet() {
+    [[ "$WITH_CRI" -eq 1 && "$CNI_PLUGIN" == "flannel" ]] || return 0
+    [[ -f /run/flannel/subnet.env ]] && return 0
+    log "Waiting for flanneld to pick up this node's PodCIDR..."
     for _ in $(seq 1 30); do
-        [[ -f /run/flannel/subnet.env ]] && break
+        [[ -f /run/flannel/subnet.env ]] && { log "flannel subnet ready: $(grep FLANNEL_SUBNET /run/flannel/subnet.env 2>/dev/null)"; return 0; }
         sleep 1
     done
-    [[ -f /run/flannel/subnet.env ]] || warn "flanneld hasn't written /run/flannel/subnet.env yet — it may still be waiting on this Node's PodCIDR. Check $LOG_DIR/flanneld.log."
+    warn "flanneld still hasn't written /run/flannel/subnet.env after the node registered — \
+that's an actual problem now, not just startup ordering. Check $LOG_DIR/flanneld.log and \
+'kubectl get node -o jsonpath={.items[0].spec.podCIDR}' (empty means the controller-manager \
+hasn't allocated one — check its --allocate-node-cidrs/--cluster-cidr flags)."
 }
 
 ensure_cni() {
@@ -1158,6 +1178,8 @@ run_and_verify() {
         sleep 2
     done
     kubectl get nodes -o wide || warn "kubectl get nodes failed — check: journalctl -u nodelet -n 50 (or $LOG_DIR/nodelet.log if systemd isn't available)"
+
+    wait_for_flannel_subnet
 
     log "Applying demo pod..."
     kubectl apply -f "$REPO_ROOT/deploy/demo-pod.yaml"

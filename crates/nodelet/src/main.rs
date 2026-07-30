@@ -15,6 +15,18 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // rustls 0.23 stopped silently picking a default CryptoProvider — with
+    // more than one call site able to reach for one lazily (kube's client
+    // here, plus whatever CRI's tonic pulls in under --features cri), it
+    // needs installing explicitly exactly once, before anything opens a TLS
+    // connection. Without this, kube::Client::try_default() panics on
+    // *every* startup — this crashed nodelet unconditionally in practice,
+    // just invisibly, since nothing was watching it restart until it ran as
+    // a real service instead of a bare backgrounded process.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("installing default rustls CryptoProvider (should only fail if called twice)");
+
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(fmt::layer().with_target(false))

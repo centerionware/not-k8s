@@ -29,6 +29,7 @@ prost-types = "0.14"
 tonic-prost = "0.14"
 tower = { version = "0.5", features = ["util"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+rustls = { version = "0.23", features = ["ring"] }
 
 [profile.release]
 opt-level = "z"

@@ -22,6 +22,7 @@ cri = ["dep:tonic", "dep:prost", "dep:prost-types", "dep:tonic-prost", "dep:toni
 [dependencies]
 tokio = { workspace = true }
 kube = { workspace = true }
+rustls = { workspace = true }
 k8s-openapi = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
