@@ -726,6 +726,121 @@ build_containerd_runc_from_source() {
         || die "containerd/runc source build did not produce usable binaries."
 }
 
+# Generic persistent-service installer: systemd (Restart=always, enabled on
+# boot) -> OpenRC (supervise-daemon, respawn, added to boot) -> a
+# self-restarting background loop + cron @reboot as a last resort, clearly
+# logged as not a real service rather than silently accepted as good enough.
+# Learned the hard way: nodelet was originally just `nohup`'d here too, which
+# meant it silently died on any crash/reboot/terminal-close with nothing to
+# bring it back — the same bug class applies to anything else this script
+# starts and runs long-term (flanneld, and containerd when we start it
+# ourselves rather than using its own package's service).
+#
+# $1 name, $2 description, $3 exec command (a single string — run through
+# `sh -c` in every tier so it doesn't need re-parsing per init system),
+# $4 extra After=/depend() unit name or "" for none, $@ (from $5) KEY=VALUE
+# environment pairs (zero or more).
+install_supervised_service() {
+    local name="$1" desc="$2" exec_cmd="$3" after="$4"
+    shift 4
+    local envs=("$@") env_systemd="" env_shell="" kv
+    for kv in "${envs[@]}"; do
+        env_systemd+="Environment=$kv"$'\n'
+        env_shell+="export $kv"$'\n'
+    done
+
+    if command -v systemctl &>/dev/null; then
+        log "Installing $name as a systemd service (Restart=always, enabled on boot)..."
+        cat > "/etc/systemd/system/$name.service" <<EOF
+[Unit]
+Description=$desc
+After=network-online.target${after:+ $after}
+Wants=network-online.target${after:+ $after}
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c '$exec_cmd'
+Restart=always
+RestartSec=5s
+$env_systemd
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        systemctl enable --now "$name.service"
+        sleep 2
+        systemctl is-active --quiet "$name.service" \
+            || warn "$name.service didn't come up cleanly — check: journalctl -u $name -n 50"
+    elif command -v rc-service &>/dev/null && command -v rc-update &>/dev/null; then
+        log "Installing $name as an OpenRC service (supervised, auto-restart, added to boot)..."
+        cat > "/etc/init.d/$name" <<EOF
+#!/sbin/openrc-run
+description="$desc"
+
+$env_shell
+supervisor="supervise-daemon"
+command="/bin/sh"
+command_args="-c '$exec_cmd'"
+respawn_max=0
+respawn_delay=5
+
+depend() {
+    need net
+$( [[ -n "$after" ]] && echo "    after ${after%.service}" )
+}
+EOF
+        chmod +x "/etc/init.d/$name"
+        rc-update add "$name" default 2>/dev/null || true
+        rc-service "$name" start
+        sleep 2
+        rc-service "$name" status 2>&1 | grep -qi started \
+            || warn "$name OpenRC service didn't come up cleanly — check: rc-service $name status"
+    else
+        warn "No systemd or OpenRC on this system — falling back to a self-restarting background loop \
+for $name. Not a real service; set up this system's actual init/service manager to run \
+'$exec_cmd' persistently when you can."
+        local supervisor="$WORK_DIR/$name-supervisor.sh"
+        cat > "$supervisor" <<EOF
+#!/usr/bin/env bash
+$env_shell
+while true; do
+    $exec_cmd
+    sleep 5
+done
+EOF
+        chmod +x "$supervisor"
+        nohup "$supervisor" >"$LOG_DIR/$name.log" 2>&1 &
+        echo $! > "$WORK_DIR/$name.pid"
+        sleep 2
+        if command -v crontab &>/dev/null; then
+            ( crontab -l 2>/dev/null | grep -vF "$supervisor"
+              echo "@reboot $supervisor >>$LOG_DIR/$name.log 2>&1 &" ) | crontab - \
+                && log "Added a cron @reboot entry, so $name also restarts after a reboot." \
+                || warn "Couldn't add a cron @reboot entry — $name will NOT survive a reboot on this system."
+        else
+            warn "No cron either — $name will NOT survive a reboot on this system."
+        fi
+    fi
+}
+
+# Undoes install_supervised_service() for a given name — stops/disables/
+# removes whichever tier was used, best-effort across all three since we
+# don't track which one a given machine got.
+remove_supervised_service() {
+    local name="$1"
+    command -v systemctl &>/dev/null && { systemctl disable --now "$name.service" 2>/dev/null || true; rm -f "/etc/systemd/system/$name.service"; systemctl daemon-reload 2>/dev/null || true; }
+    if command -v rc-update &>/dev/null; then
+        rc-service "$name" stop 2>/dev/null || true
+        rc-update del "$name" default 2>/dev/null || true
+        rm -f "/etc/init.d/$name"
+    fi
+    if command -v crontab &>/dev/null; then
+        ( crontab -l 2>/dev/null | grep -vF "$WORK_DIR/$name-supervisor.sh" ) | crontab - 2>/dev/null || true
+    fi
+    pkill -f "$WORK_DIR/$name-supervisor.sh" 2>/dev/null || true
+    rm -f "$WORK_DIR/$name-supervisor.sh"
+}
+
 ensure_container_runtime() {
     [[ "$WITH_CRI" -eq 1 ]] || return 0
 
@@ -746,14 +861,26 @@ ensure_container_runtime() {
     fi
 
     if ! pgrep -x containerd &>/dev/null; then
-        log "Starting containerd in the background..."
-        nohup containerd >"$LOG_DIR/containerd.log" 2>&1 &
-        echo $! > "$WORK_DIR/containerd.pid"
+        # If containerd came from a distro package, it almost certainly
+        # already shipped its own containerd.service — use that (just not
+        # enabled/started yet) instead of writing a generic one over it,
+        # since the packaged unit is likely better-tuned (cgroup delegation,
+        # OOM score, etc.) than anything worth generating here.
+        if command -v systemctl &>/dev/null && systemctl list-unit-files containerd.service &>/dev/null; then
+            log "containerd has an existing systemd unit — enabling and starting it..."
+            systemctl enable --now containerd.service
+            sleep 2
+            systemctl is-active --quiet containerd.service \
+                || die "containerd.service didn't come up — check: journalctl -u containerd -n 50"
+        else
+            install_supervised_service containerd "containerd container runtime (installed by not-k8s)" \
+                "containerd" ""
+        fi
         for _ in $(seq 1 15); do
             [[ -S /run/containerd/containerd.sock ]] && break
             sleep 1
         done
-        [[ -S /run/containerd/containerd.sock ]] || die "containerd did not create its socket — check $LOG_DIR/containerd.log"
+        [[ -S /run/containerd/containerd.sock ]] || die "containerd did not create its socket — check $LOG_DIR/containerd.log (or journalctl -u containerd)"
     fi
     export NODELET_CRI_ENDPOINT="unix:///run/containerd/containerd.sock"
 }
@@ -928,10 +1055,10 @@ start_flanneld() {
     # Using the inClusterConfig") and then failed outright (no
     # KUBERNETES_SERVICE_HOST in this environment either, since nothing here
     # runs as a pod).
-    NODE_NAME="${NODELET_NODE_NAME:-$(hostname)}" \
-        nohup flanneld --kube-subnet-mgr --ip-masq --kubeconfig="$KUBECONFIG" "${net_conf_args[@]}" \
-        >"$LOG_DIR/flanneld.log" 2>&1 &
-    echo $! > "$WORK_DIR/flanneld.pid"
+    local exec_cmd="flanneld --kube-subnet-mgr --ip-masq --kubeconfig=$KUBECONFIG ${net_conf_args[*]}"
+    local node_name="${NODELET_NODE_NAME:-$(hostname)}"
+    install_supervised_service flanneld "flanneld — CNI overlay network daemon for not-k8s" \
+        "$exec_cmd" "k3s.service" "NODE_NAME=$node_name"
     # Deliberately not waiting for /run/flannel/subnet.env here: flanneld's
     # kube subnet manager can't get one until a Node object exists *with an
     # allocated PodCIDR* — which needs nodelet to have registered the node
@@ -1305,9 +1432,14 @@ stop_running_components() {
     [[ -f "$WORK_DIR/nodelet.pid" ]] && kill "$(cat "$WORK_DIR/nodelet.pid")" 2>/dev/null || true
     log "Removing the Service-proxy nftables table (if present)..."
     command -v nft &>/dev/null && nft delete table inet not_k8s_svc 2>/dev/null || true
-    log "Stopping flanneld (if this script started it)..."
+    log "Stopping flanneld..."
+    command -v systemctl &>/dev/null && systemctl stop flanneld.service 2>/dev/null
+    command -v rc-service &>/dev/null && rc-service flanneld stop 2>/dev/null
+    pkill -f "flanneld --kube-subnet-mgr" 2>/dev/null
     [[ -f "$WORK_DIR/flanneld.pid" ]] && kill "$(cat "$WORK_DIR/flanneld.pid")" 2>/dev/null || true
     log "Stopping containerd (if this script started it)..."
+    command -v systemctl &>/dev/null && [[ -f /etc/systemd/system/containerd.service ]] && systemctl stop containerd.service 2>/dev/null
+    command -v rc-service &>/dev/null && rc-service containerd stop 2>/dev/null
     [[ -f "$WORK_DIR/containerd.pid" ]] && kill "$(cat "$WORK_DIR/containerd.pid")" 2>/dev/null || true
 }
 
@@ -1342,6 +1474,7 @@ remove_nodelet_service() {
 full_cleanup() {
     stop_running_components
     remove_nodelet_service
+    remove_supervised_service flanneld
     if command -v k3s-uninstall.sh &>/dev/null; then
         log "Uninstalling k3s..."
         $SUDO k3s-uninstall.sh || true
@@ -1416,12 +1549,13 @@ full_uninstall() {
 
     stop_running_components
     remove_nodelet_service
+    remove_supervised_service flanneld
     # stop_running_components only kills what *this invocation's* pidfiles
     # know about. Ownership here is decided by package/binary provenance
     # instead (we_own_containerd/we_own_cni above, or unconditionally under
     # --force), which also covers a containerd/flanneld left running from an
     # earlier, unrelated (or untracked) run of this script.
-    [[ "$we_own_containerd" -eq 1 ]] && { $SUDO pkill -x containerd 2>/dev/null || true; }
+    [[ "$we_own_containerd" -eq 1 ]] && { remove_supervised_service containerd; $SUDO pkill -x containerd 2>/dev/null || true; }
     [[ "$we_own_cni" -eq 1 ]] && { $SUDO pkill -x flanneld 2>/dev/null || true; }
     sleep 1
 
