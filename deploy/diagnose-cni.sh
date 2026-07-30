@@ -23,8 +23,16 @@ set -uo pipefail
 NODE="${1:-$(hostname)}"
 POD="${2:-smoke-test}"
 
-echo "=== containerd CNI config ==="
-sudo grep -A2 'cni"\]' /etc/containerd/config.toml
+echo "=== containerd config.toml (full — grep for the CNI section kept coming up ==="
+echo "=== empty across containerd versions/schemas, dumping the whole file instead) ==="
+sudo cat /etc/containerd/config.toml
+
+echo "=== k3s journal mentioning this node (why did it disappear?) ==="
+sudo journalctl -u k3s --no-pager -n 400 | grep -iE "$NODE|delet|node" | tail -60
+
+echo "=== current node list + current nodelet service status ==="
+kubectl get nodes -o wide 2>&1
+sudo systemctl status nodelet --no-pager -l 2>&1 | head -20
 
 echo "=== /opt/cni/bin ==="
 ls -la /opt/cni/bin/ 2>&1
