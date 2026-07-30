@@ -66,6 +66,9 @@ pub struct Config {
     /// drops below this percent (default 10, matching kubelet's default
     /// `nodefs.available<10%`).
     pub disk_pressure_percent: u8,
+    /// PIDPressure condition fires when available PIDs (`pid_max` minus
+    /// running processes) drops below this percent (default 10).
+    pub pid_pressure_percent: u8,
     /// How often orphaned-sandbox and unreferenced-image GC runs (cri
     /// runtime only; no-op on mock). Coarse on purpose — not a poll loop
     /// for pod state, just periodic housekeeping.
@@ -81,6 +84,21 @@ pub struct Config {
     /// How often node-pressure eviction re-checks MemoryPressure/DiskPressure
     /// and, if either is active, evicts one eligible pod (see `eviction.rs`).
     pub eviction_check_interval: Duration,
+    /// Real kubelet's `--container-log-max-size`: a running container's log
+    /// file is rotated once it exceeds this many bytes.
+    pub container_log_max_size_bytes: u64,
+    /// Real kubelet's `--container-log-max-files`: how many rotated log
+    /// files (including the active one) survive per container.
+    pub container_log_max_files: u32,
+    /// How often the log-rotation check runs.
+    pub log_rotate_interval: Duration,
+    /// Real kubelet's `staticPodPath` — a directory of Pod manifests run
+    /// directly on this node (no scheduler), mirrored into the apiserver as
+    /// read-only Pod objects. `None` (unset) disables the feature entirely,
+    /// matching upstream: it's likewise optional there.
+    pub static_pod_path: Option<String>,
+    /// How often the static pod manifest directory is rescanned.
+    pub static_pod_sync_interval: Duration,
 }
 
 impl Config {
@@ -152,6 +170,16 @@ impl Config {
             Ok(v) => v.parse().context("NODELET_DISK_PRESSURE_PERCENT must be an integer 0-100")?,
             Err(_) => 10u8,
         };
+        let pid_pressure_percent = match std::env::var("NODELET_PID_PRESSURE_PERCENT") {
+            Ok(v) => v.parse().context("NODELET_PID_PRESSURE_PERCENT must be an integer 0-100")?,
+            Err(_) => 10u8,
+        };
+        let container_log_max_size_bytes =
+            env_u64("NODELET_CONTAINER_LOG_MAX_SIZE_BYTES", 10 * 1024 * 1024)?;
+        let container_log_max_files = env_u64("NODELET_CONTAINER_LOG_MAX_FILES", 5)? as u32;
+        let log_rotate_interval = Duration::from_secs(env_u64("NODELET_LOG_ROTATE_INTERVAL_SECS", 10)?);
+        let static_pod_path = std::env::var("NODELET_STATIC_POD_PATH").ok().filter(|s| !s.is_empty());
+        let static_pod_sync_interval = Duration::from_secs(env_u64("NODELET_STATIC_POD_SYNC_SECS", 20)?);
         let gc_interval = Duration::from_secs(env_u64("NODELET_GC_INTERVAL_SECS", 300)?);
 
         let cluster_dns: Vec<String> = std::env::var("NODELET_CLUSTER_DNS")
@@ -178,6 +206,12 @@ impl Config {
             memory_pressure_threshold_bytes,
             disk_path,
             disk_pressure_percent,
+            pid_pressure_percent,
+            container_log_max_size_bytes,
+            container_log_max_files,
+            log_rotate_interval,
+            static_pod_path,
+            static_pod_sync_interval,
             gc_interval,
             cluster_dns,
             cluster_domain,

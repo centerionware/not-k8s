@@ -50,6 +50,7 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
   src/metrics.rs        Real MemoryPressure/DiskPressure from /proc + statvfs.
   src/gc.rs            Orphaned-sandbox + unreferenced-image garbage collection.
   src/eviction.rs      Node-pressure eviction: QoS-ranked pod selection.
+  src/static_pods.rs   Static pod manifest directory + mirror pod reconciliation.
   src/runtime/mock.rs  In-memory runtime: reports pods Running, zero engine overhead.
   src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`): pod/init
                        container lifecycle, resource limits, securityContext,
@@ -72,21 +73,24 @@ scope* in the architecture doc, verified against upstream docs in
 `docs/GAP_CLOSURE.md`).
 
 Working today beyond the basics: liveness/readiness/startup probes, real
-node pressure conditions, GC, init containers, container resource
-requests/limits (CPU shares/quota, memory limits — actually enforced via
-cgroups now, not just advertised), `securityContext` (runAsUser/Group,
-capabilities, privileged, readOnlyRootFilesystem, seccomp), pod DNS
-(`dnsPolicy`/`dnsConfig`), private registry image pulls
+node pressure conditions (memory, disk, **and PID**), GC, init containers,
+container resource requests/limits (CPU shares/quota, memory limits —
+actually enforced via cgroups now, not just advertised), `securityContext`
+(runAsUser/Group, capabilities, privileged, readOnlyRootFilesystem,
+seccomp), pod DNS (`dnsPolicy`/`dnsConfig`), private registry image pulls
 (`imagePullSecrets`), postStart/preStop lifecycle hooks + graceful
 termination (`terminationGracePeriodSeconds`), real per-container restart
-counts, projected/downwardAPI volumes, `hostAliases`, `fsGroup`, and
-node-pressure eviction (evicts one BestEffort/Burstable pod at a time when
-MemoryPressure/DiskPressure is active). Still missing, see
+counts, projected volumes (including a real, apiserver-signed
+`serviceAccountToken` via the TokenRequest API) + downwardAPI volumes,
+`hostAliases`, `fsGroup`, container log rotation, node-pressure eviction
+(evicts one BestEffort/Burstable pod at a time when any pressure condition
+is active), and **static pods + mirror pods**
+(`NODELET_STATIC_POD_PATH`, disabled by default). Still missing, see
 `docs/GAP_CLOSURE.md` for the full list: `kubectl exec/logs/attach/
-port-forward` (no HTTP(S) server exists yet), `kubectl top`
+port-forward` (no HTTP(S) server exists yet — this is large enough to be its
+own project, and needs a live cluster to validate against), `kubectl top`
 (`/stats/summary` — would also make eviction ranking usage-based instead of
-request-based), static pods, PVC/CSI, serviceAccountToken minting for
-projected volumes, and more.
+request-based), PVC/CSI, ephemeral containers, RuntimeClass, and more.
 
 ---
 
@@ -465,6 +469,11 @@ Notes from validation:
 | `NODELET_CLUSTER_DNS` | — | Comma-separated cluster DNS server IPs, injected into `dnsPolicy: ClusterFirst` pods (real kubelet's `--cluster-dns`). Unset means pods fall back to the host's own resolv.conf. |
 | `NODELET_CLUSTER_DOMAIN` | `cluster.local` | Base domain for a ClusterFirst pod's DNS search list (`--cluster-domain`). |
 | `NODELET_EVICTION_CHECK_SECS` | `10` | How often node-pressure eviction re-checks and evicts one eligible pod under pressure — see [Status](#status). |
+| `NODELET_PID_PRESSURE_PERCENT` | `10` | `PIDPressure` fires when available PIDs drop below this percent. |
+| `NODELET_CONTAINER_LOG_MAX_SIZE_BYTES` | `10485760` | A container's log file is rotated once it exceeds this size. |
+| `NODELET_CONTAINER_LOG_MAX_FILES` | `5` | Rotated log files kept per container (including the active one). |
+| `NODELET_STATIC_POD_PATH` | (none) | Directory of static Pod manifests to run on this node; unset disables static pods entirely. |
+| `NODELET_STATIC_POD_SYNC_SECS` | `20` | How often the static pod manifest directory is rescanned. |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---

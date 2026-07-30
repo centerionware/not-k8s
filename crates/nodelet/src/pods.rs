@@ -245,7 +245,7 @@ impl PodController {
 
 /// Free functions (not PodController methods) so schedule_retry()'s
 /// detached, 'static spawned task can call them without borrowing `self`.
-async fn write_status(
+pub(crate) async fn write_status(
     client: &Client,
     host_ip: &str,
     ns: &str,

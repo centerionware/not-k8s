@@ -115,4 +115,13 @@ pub trait PodRuntime: Send + Sync {
         let _ = live_pod_keys;
         Ok(())
     }
+
+    /// Rotate any running container's log file once it exceeds
+    /// `max_size_bytes`, keeping at most `max_files` (real kubelet's
+    /// `--container-log-max-size`/`--container-log-max-files`). Default:
+    /// no-op — nothing real to rotate (mock).
+    async fn rotate_logs(&self, max_size_bytes: u64, max_files: u32) -> anyhow::Result<()> {
+        let _ = (max_size_bytes, max_files);
+        Ok(())
+    }
 }

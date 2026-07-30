@@ -14,6 +14,6 @@ fn nonexistent_path_returns_none_not_a_panic() {
 
 #[test]
 fn read_pressure_never_panics_and_fails_open_on_a_bad_path() {
-    let pressure = read_pressure("/this/path/does/not/exist/hopefully", 100_000_000, 10);
+    let pressure = read_pressure("/this/path/does/not/exist/hopefully", 100_000_000, 10, 10);
     assert!(!pressure.disk, "an unreadable path must fail open (no pressure), not assume the worst");
 }

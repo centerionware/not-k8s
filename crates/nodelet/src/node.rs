@@ -119,7 +119,11 @@ fn conditions(ready: bool, pressure: &crate::metrics::Pressure) -> Vec<NodeCondi
         } else {
             mk("DiskPressure", "False", "KubeletHasNoDiskPressure", "no disk pressure")
         },
-        mk("PIDPressure", "False", "KubeletHasSufficientPID", "sufficient PIDs"),
+        if pressure.pid {
+            mk("PIDPressure", "True", "KubeletHasInsufficientPID", "available PIDs below threshold")
+        } else {
+            mk("PIDPressure", "False", "KubeletHasSufficientPID", "sufficient PIDs")
+        },
     ]
 }
 
@@ -168,6 +172,7 @@ fn build_status(cfg: &Config, ready: bool) -> NodeStatus {
         &cfg.disk_path,
         cfg.memory_pressure_threshold_bytes,
         cfg.disk_pressure_percent,
+        cfg.pid_pressure_percent,
     );
     NodeStatus {
         capacity: Some(cap.clone()),

@@ -57,7 +57,7 @@ use v1::{
     ListPodSandboxRequest, NamespaceMode, NamespaceOption, PodSandboxConfig, PodSandboxFilter,
     PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest, Mount, RemoveContainerRequest,
     RemoveImageRequest, RemovePodSandboxRequest, RunPodSandboxRequest, StartContainerRequest,
-    StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest,
+    StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest, ReopenContainerLogRequest,
     security_profile::ProfileType, SecurityProfile,
 };
 
@@ -859,6 +859,53 @@ fn apply_fs_group(dir: &std::path::Path, gid: u32) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Shift `path`, `path.1`, `path.2`, ... up by one, dropping whatever would
+/// fall off the end past `max_files`, then leave `path` itself absent — the
+/// caller (CRI's `ReopenContainerLog`) is what makes the runtime create a
+/// fresh one. `max_files` counts the active file too, matching kubelet's
+/// `--container-log-max-files` semantics (default 5: the current log plus
+/// 4 rotated ones).
+fn rotate_log_file(path: &std::path::Path, max_files: u32) -> std::io::Result<()> {
+    let rotated = |n: u32| std::path::PathBuf::from(format!("{}.{n}", path.display()));
+    let max_files = max_files.max(1);
+    if max_files == 1 {
+        // No rotated copies kept at all — just drop the oversized log.
+        return std::fs::remove_file(path);
+    }
+
+    // Oldest surviving slot first: drop anything that would land past max_files.
+    for n in (1..max_files).rev() {
+        let from = rotated(n);
+        if !from.exists() {
+            continue;
+        }
+        if n + 1 >= max_files {
+            std::fs::remove_file(&from)?;
+        } else {
+            std::fs::rename(&from, rotated(n + 1))?;
+        }
+    }
+    std::fs::rename(path, rotated(1))?;
+    Ok(())
+}
+
+/// The ServiceAccount a Pod runs as — `default` when unset, matching real
+/// Kubernetes (every namespace has an auto-created `default` ServiceAccount).
+fn pod_service_account_name(pod: &Pod) -> String {
+    pod.spec
+        .as_ref()
+        .and_then(|s| s.service_account_name.clone())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "default".to_string())
+}
+
+/// `ServiceAccountTokenProjection.audience` is a single optional string;
+/// `TokenRequestSpec.audiences` wants a `Vec` (empty meaning "apiserver's
+/// own default audience").
+fn token_audiences(audience: Option<&str>) -> Vec<String> {
+    audience.filter(|a| !a.is_empty()).map(|a| vec![a.to_string()]).unwrap_or_default()
+}
+
 /// The registry host an image reference pulls from, e.g. `myregistry.io:5000`
 /// from `myregistry.io:5000/team/app:v1`, or `docker.io` for an unqualified
 /// ref like `busybox:latest` (Docker Hub's implicit default registry).
@@ -1124,11 +1171,23 @@ impl CriRuntime {
                 }
             } else if let Some(da) = &source.downward_api {
                 write_downward_api_volume(dir, pod, da.items.as_deref().unwrap_or(&[]))?;
-            } else if source.service_account_token.is_some() {
-                warn!(
-                    pod = %format!("{}/{}", id.namespace, id.name),
-                    "projected volume: serviceAccountToken source not supported yet (needs TokenRequest API) — see docs/GAP_CLOSURE.md"
-                );
+            } else if let Some(sat) = &source.service_account_token {
+                let service_account = pod_service_account_name(pod);
+                let audiences = token_audiences(sat.audience.as_deref());
+                match self.resolve_service_account_token(&id.namespace, &service_account, &audiences, sat.expiration_seconds).await {
+                    Ok(token) => {
+                        let target = dir.join(&sat.path);
+                        if let Some(parent) = target.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        std::fs::write(target, token)?;
+                    }
+                    Err(e) => warn!(
+                        pod = %format!("{}/{}", id.namespace, id.name),
+                        service_account, error = ?e,
+                        "projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token)"
+                    ),
+                }
             } else if source.cluster_trust_bundle.is_some() {
                 warn!(
                     pod = %format!("{}/{}", id.namespace, id.name),
@@ -1388,6 +1447,44 @@ impl CriRuntime {
     /// tries them in. `None` if none match (or none are configured), in
     /// which case `PullImageRequest.auth` is left unset — fine for public
     /// images, the pre-existing behavior for everything until now.
+    /// Mint a real, apiserver-signed ServiceAccount token via the
+    /// `serviceaccounts/token` subresource (the `TokenRequest` API) — this
+    /// is what backs a projected `serviceAccountToken` volume, the same
+    /// mechanism every current `kube-api-access-*` volume uses on real
+    /// Kubernetes. k8s-openapi 0.28 doesn't generate a typed helper for this
+    /// subresource, so it's a raw POST via `kube::Client::request`.
+    /// Needs nodelet's own client identity to have `create` on
+    /// `serviceaccounts/token` in the target namespace — a real RBAC
+    /// requirement, not a nodelet limitation; callers log and skip on
+    /// failure rather than treating it as fatal to the whole pod.
+    async fn resolve_service_account_token(
+        &self,
+        namespace: &str,
+        service_account: &str,
+        audiences: &[String],
+        expiration_seconds: Option<i64>,
+    ) -> Result<String> {
+        use k8s_openapi::api::authentication::v1::{TokenRequest, TokenRequestSpec};
+        let body = TokenRequest {
+            metadata: Default::default(),
+            spec: TokenRequestSpec {
+                audiences: audiences.to_vec(),
+                bound_object_ref: None,
+                expiration_seconds,
+            },
+            status: None,
+        };
+        let bytes = serde_json::to_vec(&body).context("serializing TokenRequest")?;
+        let req = http::Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/namespaces/{namespace}/serviceaccounts/{service_account}/token"))
+            .header("Content-Type", "application/json")
+            .body(bytes)
+            .context("building TokenRequest HTTP request")?;
+        let resp: TokenRequest = self.client.request(req).await.context("TokenRequest API call")?;
+        resp.status.map(|s| s.token).context("TokenRequest response had no status.token")
+    }
+
     async fn resolve_pull_auth(&self, namespace: &str, pull_secrets: &[String], image: &str) -> Option<AuthConfig> {
         let registry_host = registry_host_for_image(image);
         for name in pull_secrets {
@@ -1986,6 +2083,50 @@ impl PodRuntime for CriRuntime {
         self.gc_unreferenced_images().await?;
         Ok(())
     }
+
+    async fn rotate_logs(&self, max_size_bytes: u64, max_files: u32) -> Result<()> {
+        let running_v = ContainerState::ContainerRunning as i32;
+        let mut rt = self.rt.clone();
+        let containers = rt
+            .list_containers(ListContainersRequest { filter: None })
+            .await
+            .context("ListContainers")?
+            .into_inner()
+            .containers;
+
+        for c in containers {
+            if c.state != running_v {
+                continue; // nothing actively writing to a stopped container's log
+            }
+            let status = match rt.container_status(ContainerStatusRequest { container_id: c.id.clone(), verbose: false }).await {
+                Ok(resp) => resp.into_inner().status,
+                Err(e) => {
+                    warn!(container = %c.id, error = ?e, "log rotation: ContainerStatus failed");
+                    continue;
+                }
+            };
+            let Some(log_path) = status.map(|s| s.log_path).filter(|p| !p.is_empty()) else { continue };
+            let size = match std::fs::metadata(&log_path) {
+                Ok(meta) => meta.len(),
+                Err(_) => continue, // no log file yet, or already rotated by a previous tick
+            };
+            if size <= max_size_bytes {
+                continue;
+            }
+
+            if let Err(e) = rotate_log_file(std::path::Path::new(&log_path), max_files) {
+                warn!(container = %c.id, log_path, error = ?e, "log rotation: failed to rotate log file");
+                continue;
+            }
+            // Tell the runtime to reopen its fd at the same path — after the
+            // rename above, its existing fd would otherwise keep writing to
+            // the now-renamed old file forever.
+            if let Err(e) = rt.reopen_container_log(ReopenContainerLogRequest { container_id: c.id.clone() }).await {
+                warn!(container = %c.id, error = ?e, "log rotation: ReopenContainerLog failed");
+            }
+        }
+        Ok(())
+    }
 }
 
 fn sandbox_labels(id: &PodId) -> HashMap<String, String> {
@@ -2205,6 +2346,12 @@ mod tests_fs_group;
 #[cfg(test)]
 #[path = "cri_tests/etc_hosts.rs"]
 mod tests_etc_hosts;
+#[cfg(test)]
+#[path = "cri_tests/log_rotation.rs"]
+mod tests_log_rotation;
+#[cfg(test)]
+#[path = "cri_tests/service_account_token.rs"]
+mod tests_service_account_token;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

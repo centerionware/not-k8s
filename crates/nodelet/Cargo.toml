@@ -17,7 +17,7 @@ required-features = ["cri"]
 [features]
 default = []
 # Enable the real containerd/CRI runtime (requires protoc at build time).
-cri = ["dep:tonic", "dep:prost", "dep:prost-types", "dep:tonic-prost", "dep:tonic-prost-build", "dep:tower", "dep:hyper-util"]
+cri = ["dep:tonic", "dep:prost", "dep:prost-types", "dep:tonic-prost", "dep:tonic-prost-build", "dep:tower", "dep:hyper-util", "dep:http"]
 
 [dependencies]
 tokio = { workspace = true }
@@ -35,6 +35,7 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 libc = "0.2"
 base64 = "0.22"
+serde_yaml = "0.9"
 
 tonic = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
@@ -42,6 +43,7 @@ prost-types = { workspace = true, optional = true }
 tonic-prost = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true }
+http = { version = "1", optional = true }
 
 [build-dependencies]
 tonic-prost-build = { version = "0.14", optional = true }

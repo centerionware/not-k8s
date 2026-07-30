@@ -91,6 +91,34 @@ listener and is a project of its own). Closed, each with unit tests:
 260 tests passing with `--features cri` (up from 215 at the start of this
 round), 125 with the default (mock-only) build.
 
+## Round 4: PID pressure, log rotation, static/mirror pods, serviceAccountToken (2026-07-30, same day)
+
+User said "you pick the path... let's get this finished" — picked verifiable,
+self-contained gaps over the streaming exec/logs/attach/port-forward server,
+which is large enough to be a project of its own (TLS, auth, a whole new
+listener) and can't be validated here without a live cluster to test
+against. Explicitly did **not** attempt that this round; see below.
+
+- **Real PID pressure** — was the one pressure signal still hardcoded
+  `False` after rounds 1–3 fixed memory/disk; now real, same pattern.
+- **Container log rotation** — `--container-log-max-size`/`-max-files`
+  equivalent; previously logs grew forever.
+- **Static pods + mirror pods** — the big win here is architectural, not
+  just code volume: static pods reuse the exact same `PodRuntime` normal
+  apiserver-sourced pods do, so every correctness fix from rounds 1–3
+  (resource limits, securityContext, probes, volumes, ...) applies to static
+  pods for free. Disabled by default (`NODELET_STATIC_POD_PATH` unset),
+  matching upstream.
+- **serviceAccountToken projected volume** — checked kube-rs 4.0 first (no
+  typed helper for the `TokenRequest` subresource; used `kube::Client::request`
+  with a raw HTTP call instead). Real apiserver-signed tokens, not a stub —
+  this is what every actual `kube-api-access-*` volume needs to let a pod
+  authenticate back to the apiserver, previously the one skipped source in
+  an otherwise-working projected volume.
+
+297 tests passing with `--features cri` (up from 260 at the start of this
+round), 150 with the default (mock-only) build.
+
 ## Full kubelet responsibility list vs. current nodelet state
 
 Legend: ✅ done · 🟡 partial · ❌ missing
@@ -129,12 +157,12 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Images
 - ✅ **Private registry auth** — `imagePullSecrets` (`kubernetes.io/dockerconfigjson`) → CRI `AuthConfig` (`resolve_pull_auth()`). Not yet: legacy `kubernetes.io/dockercfg`, ServiceAccount-linked pull secrets, credential-provider exec plugins.
-- 🟡 Image garbage collection — unreferenced-image sweep exists (this session) but not the real kubelet policy (disk-pressure-triggered high/low watermark GC, `--image-gc-high-threshold`/`--image-gc-low-threshold`)
-- ❌ Container log rotation (`--container-log-max-size`/`--container-log-max-files`)
+- 🟡 Image garbage collection — unreferenced-image sweep exists but not the real kubelet policy (disk-pressure-triggered high/low watermark GC, `--image-gc-high-threshold`/`--image-gc-low-threshold`)
+- ✅ **Container log rotation** — running containers' log files are rotated past `NODELET_CONTAINER_LOG_MAX_SIZE_BYTES`, keeping `NODELET_CONTAINER_LOG_MAX_FILES` (`rotate_log_file()` + CRI `ReopenContainerLog`)
 
 ### Volumes
 - ✅ ConfigMap / Secret / emptyDir (materialized to host paths)
-- 🟡 **Projected volumes** — `configMap`/`secret`/`downwardAPI` sources merge into the volume dir (`write_projected_volume()`, with `items`/`KeyToPath` key-selection-and-rename support). `serviceAccountToken` and `clusterTrustBundle` sources are skipped with a warning — the former needs the TokenRequest API, a real remaining gap for any workload that authenticates in-cluster via its mounted SA token.
+- ✅ **Projected volumes** — `configMap`/`secret`/`downwardAPI`, and now `serviceAccountToken` too (mints a real token via the `TokenRequest` API — `resolve_service_account_token()`; needs nodelet's client to have `create` on `serviceaccounts/token` in the namespace, a real RBAC requirement) merge into the volume dir, with `items`/`KeyToPath` key-selection-and-rename support. `clusterTrustBundle` sources are still skipped with a warning.
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
 - ❌ PersistentVolumeClaim / CSI (`NodeStageVolume`/`NodePublishVolume`) — no PVC support at all
 - ❌ hostPath (explicitly unsupported today, logged and dropped)
@@ -144,11 +172,11 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 ### Node-pressure eviction
 - ✅ MemoryPressure/DiskPressure *conditions* reflect real reads
 - 🟡 **Eviction** — `eviction_loop()` now acts on real pressure: ranks eligible pods by QoS class (`eviction.rs`'s `qos_class()`/`pick_eviction_candidate()` — BestEffort before Burstable, Guaranteed and `system-*-critical` pods never evicted), evicts one per check. Simplified vs. real kubelet: no soft-threshold grace period (hard-style immediate action only), and ranking within a QoS class uses *requested* memory as a proxy, not live usage — there's no per-pod cgroup stats collector yet (the `/stats/summary` gap below).
-- ❌ PID pressure — condition is hardcoded `False`; no real `/proc` PID accounting at all (unlike memory/disk, which are now real)
+- ✅ PID pressure — real `/proc/sys/kernel/pid_max` + a `/proc` scan (`read_pid_info()`/`pid_pressure()`), same fail-open pattern as memory/disk
 
 ### Static pods & mirror pods
-- ❌ Static pod manifest directory watching (`staticPodPath`)
-- ❌ Mirror pod creation/reconciliation in the apiserver for static pods
+- ✅ **Static pod manifest directory watching** (`NODELET_STATIC_POD_PATH`, disabled by default like real kubelet's optional `staticPodPath`) — `static_pods::run()` scans, hashes to detect changes, and drives the same `PodRuntime` normal pods use (so resource limits/securityContext/volumes/probes all apply identically)
+- ✅ **Mirror pod creation/reconciliation** — a read-only Pod object per static pod (`kubernetes.io/config.mirror`/`kubernetes.io/config.source: file` annotations, matching real kubelet's markers), deleted when the manifest disappears. Simplified vs. real kubelet: no exact hash-based drift-detection annotation value (nodelet's own file-content hash serves the same "did it change" purpose internally, just isn't exposed as that specific annotation).
 
 ### kubelet HTTP(S) server (entirely absent — nodelet has no listening server at all)
 - ❌ **Streaming exec/attach/port-forward** — `kubectl exec`/`kubectl attach`/`kubectl port-forward` have no server to talk to
@@ -195,9 +223,15 @@ higher-value/correctness-critical than others:
 - [x] Round 3: termination grace + preStop/postStart hooks, exit-code-aware
       phase, real restart counts, projected/downwardAPI volumes,
       hostAliases, fsGroup, node-pressure eviction
+- [x] Round 4: real PID pressure, container log rotation, static/mirror
+      pods, serviceAccountToken minting via TokenRequest
 - [ ] Everything else in the responsibility list above — biggest remaining
-      single items: the streaming exec/logs/attach/port-forward HTTP(S)
-      server (needs TLS + auth, nothing like it exists yet), `/stats/summary`
-      + real per-pod usage stats (would also make eviction ranking accurate),
-      static/mirror pods, PVC/CSI, serviceAccountToken minting (TokenRequest
-      API) for projected volumes. Ask before starting the next round.
+      single items, roughly in order of likely value: `/stats/summary` +
+      real per-pod usage stats (would also make eviction ranking usage-based
+      instead of request-based), the streaming exec/logs/attach/port-forward
+      HTTP(S) server (needs TLS + auth + a whole new listener — large enough
+      to be its own project, and needs a live cluster to validate against,
+      which this environment doesn't have), PVC/CSI, ephemeral containers,
+      RuntimeClass, graceful node shutdown, cgroup driver/QoS hierarchy/node
+      allocatable enforcement, CPU/Memory/Topology managers, device plugins.
+      Ask before starting the next round.

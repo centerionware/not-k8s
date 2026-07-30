@@ -1,9 +1,10 @@
 //! Live node resource pressure.
 //!
-//! Replaces the previously-hardcoded-healthy `MemoryPressure`/`DiskPressure`
-//! node conditions (`node.rs::conditions()` used to report `"False"`
-//! unconditionally — see docs/GAP_CLOSURE.md) with real reads: `/proc/meminfo`
-//! for memory, `statvfs(2)` for disk. Piggybacks on the existing infrequent
+//! Replaces the previously-hardcoded-healthy `MemoryPressure`/`DiskPressure`/
+//! `PIDPressure` node conditions (`node.rs::conditions()` used to report
+//! `"False"` unconditionally — see docs/GAP_CLOSURE.md) with real reads:
+//! `/proc/meminfo` for memory, `statvfs(2)` for disk, `/proc/sys/kernel/pid_max`
+//! + a `/proc` directory scan for PIDs. Piggybacks on the existing infrequent
 //! status-push interval (default 60s) — no new timer.
 
 use std::ffi::CString;
@@ -67,6 +68,40 @@ pub fn read_disk_info(path: &str) -> Option<DiskInfo> {
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PidInfo {
+    pub max_pids: u64,
+    pub current_pids: u64,
+}
+
+/// Count `/proc` entries that are pure-numeric directories — each one is a
+/// live PID. Cheap enough for a 60s-interval check (a single non-recursive
+/// `readdir`); this is exactly what `ps`/`top` scan too.
+fn count_running_pids(proc_path: &str) -> Option<u64> {
+    let entries = std::fs::read_dir(proc_path).ok()?;
+    Some(
+        entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()))
+            .count() as u64,
+    )
+}
+
+pub fn read_pid_info() -> Option<PidInfo> {
+    let max_pids = std::fs::read_to_string("/proc/sys/kernel/pid_max").ok()?.trim().parse::<u64>().ok()?;
+    let current_pids = count_running_pids("/proc")?;
+    Some(PidInfo { max_pids, current_pids })
+}
+
+pub fn pid_pressure(pid: &PidInfo, threshold_percent: u8) -> bool {
+    if pid.max_pids == 0 {
+        return false;
+    }
+    let used = pid.current_pids.min(pid.max_pids);
+    let available_percent = ((pid.max_pids - used) as f64 / pid.max_pids as f64) * 100.0;
+    available_percent < threshold_percent as f64
+}
+
 pub fn memory_pressure(mem: &MemInfo, threshold_bytes: u64) -> bool {
     mem.available_bytes < threshold_bytes
 }
@@ -79,18 +114,25 @@ pub fn disk_pressure(disk: &DiskInfo, threshold_percent: u8) -> bool {
     available_percent < threshold_percent as f64
 }
 
-/// The two live pressure conditions, computed with graceful fallback
+/// The three live pressure conditions, computed with graceful fallback
 /// (unreadable -> "no pressure", never "unknown -> assume pressure", so a
 /// sandboxed/odd environment can't wedge a node NotSchedulable by itself).
 pub struct Pressure {
     pub memory: bool,
     pub disk: bool,
+    pub pid: bool,
 }
 
-pub fn read_pressure(disk_path: &str, mem_threshold_bytes: u64, disk_threshold_percent: u8) -> Pressure {
+pub fn read_pressure(
+    disk_path: &str,
+    mem_threshold_bytes: u64,
+    disk_threshold_percent: u8,
+    pid_threshold_percent: u8,
+) -> Pressure {
     Pressure {
         memory: read_mem_info().map(|m| memory_pressure(&m, mem_threshold_bytes)).unwrap_or(false),
         disk: read_disk_info(disk_path).map(|d| disk_pressure(&d, disk_threshold_percent)).unwrap_or(false),
+        pid: read_pid_info().map(|p| pid_pressure(&p, pid_threshold_percent)).unwrap_or(false),
     }
 }
 
@@ -103,3 +145,6 @@ mod tests_pressure;
 #[cfg(test)]
 #[path = "metrics_tests/disk_info.rs"]
 mod tests_disk_info;
+#[cfg(test)]
+#[path = "metrics_tests/pid_info.rs"]
+mod tests_pid_info;

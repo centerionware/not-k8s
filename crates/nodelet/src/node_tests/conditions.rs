@@ -6,7 +6,7 @@ use super::*;
 use crate::metrics::Pressure;
 
 fn no_pressure() -> Pressure {
-    Pressure { memory: false, disk: false }
+    Pressure { memory: false, disk: false, pid: false }
 }
 
 #[test]
@@ -29,24 +29,24 @@ fn pressure_conditions_reflect_the_measured_pressure_argument() {
     // This is the fix for the known gap: MemoryPressure/DiskPressure used to
     // be hardcoded "False" regardless of input. Now they must track whatever
     // metrics::read_pressure() (real /proc + statvfs reads) actually says.
-    let c = conditions(true, &Pressure { memory: true, disk: false });
+    let c = conditions(true, &Pressure { memory: true, disk: false, pid: false });
     assert_eq!(c.iter().find(|c| c.type_ == "MemoryPressure").unwrap().status, "True");
     assert_eq!(c.iter().find(|c| c.type_ == "DiskPressure").unwrap().status, "False");
 
-    let c = conditions(true, &Pressure { memory: false, disk: true });
+    let c = conditions(true, &Pressure { memory: false, disk: true, pid: false });
     assert_eq!(c.iter().find(|c| c.type_ == "MemoryPressure").unwrap().status, "False");
     assert_eq!(c.iter().find(|c| c.type_ == "DiskPressure").unwrap().status, "True");
+
+    let c = conditions(true, &Pressure { memory: false, disk: false, pid: true });
+    assert_eq!(c.iter().find(|c| c.type_ == "PIDPressure").unwrap().status, "True");
 }
 
 #[test]
-fn pid_pressure_is_always_false() {
-    // Known, deliberate limitation (not tracked yet) — pinned so a future
-    // change notices it's touching a real gap rather than silently varying.
-    for ready in [true, false] {
-        let c = conditions(ready, &no_pressure());
-        let cond = c.iter().find(|c| c.type_ == "PIDPressure").unwrap();
-        assert_eq!(cond.status, "False");
-    }
+fn pid_pressure_false_reports_sufficient() {
+    let c = conditions(true, &no_pressure());
+    let cond = c.iter().find(|c| c.type_ == "PIDPressure").unwrap();
+    assert_eq!(cond.status, "False");
+    assert_eq!(cond.reason.as_deref(), Some("KubeletHasSufficientPID"));
 }
 
 #[test]

@@ -69,6 +69,13 @@ async fn main() -> Result<()> {
     // evicting one eligible pod at a time when either is active.
     tokio::spawn(eviction_loop(client.clone(), cfg.clone()));
 
+    // Container log rotation — a no-op on the mock runtime, see
+    // PodRuntime::rotate_logs()'s default.
+    tokio::spawn(log_rotate_loop(runtime.clone(), cfg.clone()));
+
+    // Static pods: no-op unless NODELET_STATIC_POD_PATH is set.
+    tokio::spawn(nodelet::static_pods::run(client.clone(), runtime.clone(), cfg.clone()));
+
     // ClusterIP/NodePort routing (nftables). No-op if disabled or if `nft`
     // isn't usable — pods and direct pod-IP traffic work either way.
     if cfg.service_proxy {
@@ -170,11 +177,18 @@ async fn eviction_loop(client: kube::Client, cfg: Config) {
             &cfg.disk_path,
             cfg.memory_pressure_threshold_bytes,
             cfg.disk_pressure_percent,
+            cfg.pid_pressure_percent,
         );
-        if !pressure.memory && !pressure.disk {
+        if !pressure.memory && !pressure.disk && !pressure.pid {
             continue;
         }
-        let reason = if pressure.memory { "MemoryPressure" } else { "DiskPressure" };
+        let reason = if pressure.memory {
+            "MemoryPressure"
+        } else if pressure.disk {
+            "DiskPressure"
+        } else {
+            "PIDPressure"
+        };
 
         let api: Api<Pod> = Api::all(client.clone());
         let params = ListParams::default().fields(&format!("spec.nodeName={}", cfg.node_name));
@@ -207,6 +221,17 @@ async fn eviction_loop(client: kube::Client, cfg: Config) {
         match pod_api.delete(name, &dp).await {
             Ok(_) => info!(pod = %format!("{ns}/{name}"), reason, "evicted pod under node pressure"),
             Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to delete pod"),
+        }
+    }
+}
+
+/// Rotate any running container's log file once it exceeds
+/// `container_log_max_size_bytes`, keeping at most `container_log_max_files`.
+async fn log_rotate_loop(runtime: Arc<dyn PodRuntime>, cfg: Config) {
+    loop {
+        tokio::time::sleep(cfg.log_rotate_interval).await;
+        if let Err(e) = runtime.rotate_logs(cfg.container_log_max_size_bytes, cfg.container_log_max_files).await {
+            warn!(error = ?e, "log rotation cycle failed");
         }
     }
 }

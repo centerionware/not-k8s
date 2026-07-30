@@ -11,4 +11,5 @@ pub mod node;
 pub mod pods;
 pub mod probes;
 pub mod runtime;
+pub mod static_pods;
 pub mod svc;
