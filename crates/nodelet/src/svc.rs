@@ -23,13 +23,23 @@
 //! address family (`addressType: IPv4` / `IPv6`) — the legacy Endpoints
 //! mirror only ever carries one family, which would silently break v6.
 //!
-//! A real nftables quirk shaped the rule format: a `dnat to <verdict-map>`
-//! whose values are an `addr . port` concatenation needs the target family
-//! to be inferable from the rule. An `ip daddr <addr>` / `ip6 daddr <addr>`
-//! match (the ClusterIP case) already supplies that. `fib daddr type local`
-//! (the NodePort case) does not, and — verified against a real `nft -c`
-//! parse — silently fails (no error text, just a non-zero exit) unless the
-//! DNAT statement is written `dnat ip to ...` / `dnat ip6 to ...` explicitly.
+//! Two real nftables quirks shaped the rule format:
+//!   - A `dnat to <verdict-map>` whose values are an `addr . port`
+//!     concatenation needs the target family to be inferable from the rule.
+//!     An `ip daddr <addr>` / `ip6 daddr <addr>` match (the ClusterIP case)
+//!     already supplies that. `fib daddr type local` (the NodePort case)
+//!     does not, and — verified against a real `nft -c` parse — silently
+//!     fails (no error text, just a non-zero exit) unless the DNAT
+//!     statement is written `dnat ip to ...` / `dnat ip6 to ...` explicitly.
+//!   - A single-backend Service uses a plain `<ip>:<port>` target instead of
+//!     a `numgen ... mod 1 map {...}`, found necessary on a device with an
+//!     Android-derived kernel: `nft` accepted that ruleset's syntax fine but
+//!     the kernel rejected applying it with "Could not process rule: No
+//!     such file or directory" at the `numgen` token — the signature of a
+//!     missing `nft_numgen` kernel module. A single entry doesn't need
+//!     load-balancing selection at all, so this sidesteps needing that
+//!     module rather than requiring it unconditionally; N>1 backends still
+//!     need the map form.
 //! Both forms are exercised in `#[test]`s below.
 //!
 //! ## Load balancing
@@ -268,21 +278,35 @@ fn lb_expr(svc: &Service, default_method: LbMethod, family: Family) -> String {
     }
 }
 
-/// A verdict map DNAT target: `<lb-expr> mod N map { 0 : addr . port, ... }`.
-/// Always a map, even for a single backend — a bare (non-map) `addr . port`
-/// concatenation needs an explicit `dnat ip6 to` family qualifier that a map
-/// value does not (see module docs); using one form unconditionally keeps
-/// the two call sites (ClusterIP vs NodePort) identical.
-fn dnat_map(lb: &str, backends: &[(String, i32)]) -> Option<String> {
-    if backends.is_empty() {
-        return None;
+/// The DNAT target. A single backend needs no load-balancing at all, so it
+/// gets a plain `<ip>:<port>` (`[<ip>]:<port>` for IPv6) — deliberately
+/// avoiding `numgen`/a verdict map entirely. This isn't just simpler: it was
+/// changed after a real single-backend Service (the in-cluster `kubernetes`
+/// Service, one apiserver) failed on a device with an Android-derived
+/// kernel — `nft` accepted the ruleset syntax fine but the kernel rejected
+/// applying it with "Could not process rule: No such file or directory" at
+/// exactly the `numgen` token, the signature of a missing `nft_numgen`
+/// kernel module. A single-entry `numgen ... mod 1 map {...}` was doing
+/// nothing a bare target doesn't already do, so removing it for the N=1
+/// case sidesteps kernels without that module rather than requiring it
+/// unconditionally. Multiple backends still need the map form — there's no
+/// way to express "pick one of N" without some selection statement.
+fn dnat_target(lb: &str, backends: &[(String, i32)]) -> Option<String> {
+    match backends.len() {
+        0 => None,
+        1 => {
+            let (ip, port) = &backends[0];
+            Some(if ip.contains(':') { format!("[{ip}]:{port}") } else { format!("{ip}:{port}") })
+        }
+        n => {
+            let entries: Vec<String> = backends
+                .iter()
+                .enumerate()
+                .map(|(i, (ip, port))| format!("{i} : {ip} . {port}"))
+                .collect();
+            Some(format!("{lb} mod {n} map {{ {} }}", entries.join(", ")))
+        }
     }
-    let entries: Vec<String> = backends
-        .iter()
-        .enumerate()
-        .map(|(i, (ip, port))| format!("{i} : {ip} . {port}"))
-        .collect();
-    Some(format!("{lb} mod {} map {{ {} }}", backends.len(), entries.join(", ")))
 }
 
 fn build_ruleset(state: &State, ip_family: IpFamily, lb_method: LbMethod) -> String {
@@ -319,7 +343,7 @@ fn build_ruleset(state: &State, ip_family: IpFamily, lb_method: LbMethod) -> Str
             for port in spec.ports.as_deref().unwrap_or(&[]) {
                 let backends = backends_for(namespace, name, port, family, &state.endpoint_slices);
                 let lb = lb_expr(svc, lb_method, family);
-                let Some(target) = dnat_map(&lb, &backends) else { continue };
+                let Some(target) = dnat_target(&lb, &backends) else { continue };
                 let proto = port.protocol.as_deref().unwrap_or("TCP").to_ascii_lowercase();
 
                 // ClusterIP: family is already established by `<f> daddr`, no
@@ -465,8 +489,8 @@ mod tests {
         for method in [LbMethod::Random, LbMethod::RoundRobin, LbMethod::SourceHash] {
             for n in [1usize, 2, 3] {
                 let svc = fake_service(vec!["10.43.0.1", "fd00::1"], None);
-                let v4 = dnat_map(&lb_expr(&svc, method, Family::V4), &backends(n, false)).unwrap();
-                let v6 = dnat_map(&lb_expr(&svc, method, Family::V6), &backends(n, true)).unwrap();
+                let v4 = dnat_target(&lb_expr(&svc, method, Family::V4), &backends(n, false)).unwrap();
+                let v6 = dnat_target(&lb_expr(&svc, method, Family::V6), &backends(n, true)).unwrap();
 
                 let script = format!(
                     "add table inet {TABLE}\n\

@@ -22,6 +22,7 @@ use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{debug, info, warn};
 
@@ -95,12 +96,53 @@ impl PodController {
         match self.runtime.ensure_pod(&pod).await {
             Ok(status) => {
                 debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured");
-                if let Err(e) = self.write_status(&ns, &name, &status).await {
+                if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status).await {
                     warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status");
                 }
             }
-            Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "ensure_pod failed"),
+            Err(e) => {
+                // A failed ensure_pod (e.g. a CNI plugin racing flanneld's own
+                // startup — the exact failure that motivated this) previously
+                // just sat there: this controller only reacts to watch/runtime
+                // events, and an unchanged Pod generates neither, so nothing
+                // would try again until the watch stream happened to reconnect
+                // and relist. One bounded, targeted retry — not a periodic
+                // poll — reacts to the failure itself as its own edge instead
+                // of silently dropping it.
+                warn!(pod = %format!("{ns}/{name}"), error = ?e, "ensure_pod failed; retrying once in 5s");
+                self.schedule_retry(ns, name);
+            }
         }
+    }
+
+    /// One delayed retry for a pod whose first ensure_pod failed. Runs
+    /// detached from the reconcile loop (needs to outlive this call), so it
+    /// re-fetches the Pod rather than reusing the possibly-stale one — if
+    /// it's gone or being deleted by the time the retry fires, there's
+    /// nothing to do. Deliberately doesn't retry again on a second failure:
+    /// a persistent failure should surface as a stuck Pending pod for a
+    /// human to look at, not retry forever in the background.
+    fn schedule_retry(&self, ns: String, name: String) {
+        let client = self.client.clone();
+        let runtime = self.runtime.clone();
+        let host_ip = self.host_ip.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let api: Api<Pod> = Api::namespaced(client.clone(), &ns);
+            let pod = match api.get_opt(&name).await {
+                Ok(Some(p)) if p.metadata.deletion_timestamp.is_none() => p,
+                _ => return,
+            };
+            match runtime.ensure_pod(&pod).await {
+                Ok(status) => {
+                    debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured (retry)");
+                    if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status).await {
+                        warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status (retry)");
+                    }
+                }
+                Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "retry ensure_pod also failed — waiting for the next watch event instead of retrying indefinitely"),
+            }
+        });
     }
 
     async fn teardown(&self, pod: &Pod) {
@@ -128,7 +170,7 @@ impl PodController {
         let api: Api<Pod> = Api::namespaced(self.client.clone(), ns);
         match api.get_opt(name).await {
             Ok(Some(_)) => {
-                if let Err(e) = self.write_status(ns, name, &status).await {
+                if let Err(e) = write_status(&self.client, &self.host_ip, ns, name, &status).await {
                     warn!(pod = %key, error = ?e, "failed to write pod status");
                 } else {
                     debug!(pod = %key, phase = status.phase.as_str(), "status updated (event-driven)");
@@ -138,76 +180,78 @@ impl PodController {
             Err(e) => warn!(pod = %key, error = ?e, "get_opt failed"),
         }
     }
+}
 
-    async fn write_status(&self, ns: &str, name: &str, rt: &RuntimeStatus) -> Result<()> {
-        let api: Api<Pod> = Api::namespaced(self.client.clone(), ns);
-        let status = self.build_pod_status(rt);
-        let patch = serde_json::json!({ "status": status });
-        api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
-        Ok(())
-    }
+/// Free functions (not PodController methods) so schedule_retry()'s
+/// detached, 'static spawned task can call them without borrowing `self`.
+async fn write_status(client: &Client, host_ip: &str, ns: &str, name: &str, rt: &RuntimeStatus) -> Result<()> {
+    let api: Api<Pod> = Api::namespaced(client.clone(), ns);
+    let status = build_pod_status(host_ip, rt);
+    let patch = serde_json::json!({ "status": status });
+    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
+    Ok(())
+}
 
-    fn build_pod_status(&self, rt: &RuntimeStatus) -> PodStatus {
-        let running = rt.phase == Phase::Running;
-        let cond = |type_: &str, ok: bool| PodCondition {
-            type_: type_.to_string(),
-            status: if ok { "True" } else { "False" }.to_string(),
-            last_transition_time: Some(Time(k8s_openapi::jiff::Timestamp::now())),
+fn build_pod_status(host_ip: &str, rt: &RuntimeStatus) -> PodStatus {
+    let running = rt.phase == Phase::Running;
+    let cond = |type_: &str, ok: bool| PodCondition {
+        type_: type_.to_string(),
+        status: if ok { "True" } else { "False" }.to_string(),
+        last_transition_time: Some(Time(k8s_openapi::jiff::Timestamp::now())),
+        ..Default::default()
+    };
+
+    let container_statuses = rt
+        .containers
+        .iter()
+        .map(|c| ContainerStatus {
+            name: c.name.clone(),
+            image: c.image.clone(),
+            image_id: String::new(),
+            ready: c.ready,
+            restart_count: 0,
+            started: Some(c.running),
+            container_id: c.container_id.clone(),
+            state: Some(if c.running {
+                ContainerState {
+                    running: Some(ContainerStateRunning {
+                        started_at: rt.started_at.map(Time),
+                    }),
+                    ..Default::default()
+                }
+            } else {
+                ContainerState {
+                    waiting: Some(ContainerStateWaiting {
+                        reason: Some("ContainerCreating".to_string()),
+                        message: None,
+                    }),
+                    ..Default::default()
+                }
+            }),
             ..Default::default()
-        };
+        })
+        .collect();
 
-        let container_statuses = rt
-            .containers
-            .iter()
-            .map(|c| ContainerStatus {
-                name: c.name.clone(),
-                image: c.image.clone(),
-                image_id: String::new(),
-                ready: c.ready,
-                restart_count: 0,
-                started: Some(c.running),
-                container_id: c.container_id.clone(),
-                state: Some(if c.running {
-                    ContainerState {
-                        running: Some(ContainerStateRunning {
-                            started_at: rt.started_at.map(Time),
-                        }),
-                        ..Default::default()
-                    }
-                } else {
-                    ContainerState {
-                        waiting: Some(ContainerStateWaiting {
-                            reason: Some("ContainerCreating".to_string()),
-                            message: None,
-                        }),
-                        ..Default::default()
-                    }
-                }),
-                ..Default::default()
-            })
-            .collect();
+    let pod_ips = rt
+        .pod_ip
+        .as_ref()
+        .map(|ip| vec![PodIP { ip: ip.clone() }]);
 
-        let pod_ips = rt
-            .pod_ip
-            .as_ref()
-            .map(|ip| vec![PodIP { ip: ip.clone() }]);
-
-        PodStatus {
-            phase: Some(rt.phase.as_str().to_string()),
-            conditions: Some(vec![
-                cond("Initialized", true),
-                cond("PodScheduled", true),
-                cond("ContainersReady", running),
-                cond("Ready", running),
-            ]),
-            container_statuses: Some(container_statuses),
-            host_ip: Some(self.host_ip.clone()),
-            pod_ip: rt.pod_ip.clone(),
-            pod_ips,
-            start_time: rt.started_at.map(Time),
-            message: rt.message.clone(),
-            ..Default::default()
-        }
+    PodStatus {
+        phase: Some(rt.phase.as_str().to_string()),
+        conditions: Some(vec![
+            cond("Initialized", true),
+            cond("PodScheduled", true),
+            cond("ContainersReady", running),
+            cond("Ready", running),
+        ]),
+        container_statuses: Some(container_statuses),
+        host_ip: Some(host_ip.to_string()),
+        pod_ip: rt.pod_ip.clone(),
+        pod_ips,
+        start_time: rt.started_at.map(Time),
+        message: rt.message.clone(),
+        ..Default::default()
     }
 }
 
