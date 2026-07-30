@@ -98,6 +98,7 @@ impl PodRuntime for MockRuntime {
             pod_ip: None,
             containers: containers_of(pod, false),
             init_containers: Vec::new(),
+            ephemeral_containers: Vec::new(),
             initialized: true,
         };
         self.inner.state.lock().unwrap().insert(key.clone(), pending.clone());
@@ -109,6 +110,7 @@ impl PodRuntime for MockRuntime {
             pod_ip: Some(fake_pod_ip(&key)),
             containers: containers_of(pod, true),
             init_containers: Vec::new(),
+            ephemeral_containers: Vec::new(),
             initialized: true,
         };
 

@@ -16,7 +16,7 @@ use super::{ContainerRuntimeStatus, Phase, PodRuntime, RuntimeStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, EnvFromSource, EnvVarSource, LifecycleHandler, Pod, PodSecurityContext,
+    ConfigMap, Container, EnvFromSource, EnvVarSource, EphemeralContainer, LifecycleHandler, Pod, PodSecurityContext,
     ResourceRequirements, Secret, SecurityContext, Service, Volume,
 };
 use k8s_openapi::api::node::v1::RuntimeClass;
@@ -77,6 +77,12 @@ const CTR_NAME_LABEL: &str = "nodelet.dev/container-name";
 /// — lets status-building and GC tell them apart from app containers without
 /// a second side table.
 const CTR_INIT_LABEL: &str = "nodelet.dev/init";
+/// Present (value `"true"`) only on containers created from
+/// `spec.ephemeralContainers` (e.g. `kubectl debug`) — like `CTR_INIT_LABEL`,
+/// lets status-building exclude them from the app-container phase logic:
+/// unlike app/init containers, an ephemeral container exiting must never
+/// affect the pod's phase.
+const CTR_EPHEMERAL_LABEL: &str = "nodelet.dev/ephemeral";
 /// Synthetic key in the volumes map for a pod's generated `/etc/hosts`
 /// (`hostAliases`) — not a real Kubernetes volume, so it needs a name no
 /// actual `spec.volumes[].name` could collide with.
@@ -1461,8 +1467,41 @@ impl CriRuntime {
         }
 
         let attempt = self.restart_count(sandbox_id, &container.name);
-        self.create_and_start_container(sandbox_id, id, container, pod_sc, volumes, pull_secrets, envs, false, attempt)
-            .await
+        self.create_and_start_container(
+            sandbox_id, id, container, pod_sc, volumes, pull_secrets, envs, ContainerKind::App, attempt,
+        )
+        .await
+    }
+
+    /// Ephemeral (debug) containers are one-shot: unlike app containers,
+    /// once one exists (running or exited) it's never recreated or
+    /// restarted, no matter the pod's `restartPolicy` — matches real
+    /// kubelet, which doesn't support removing or re-running a debug
+    /// container once added.
+    async fn ensure_ephemeral_container(
+        &self,
+        sandbox_id: &str,
+        id: &PodId,
+        pod: &Pod,
+        container: &Container,
+        pod_sc: Option<&PodSecurityContext>,
+        volumes: &HashMap<String, PathBuf>,
+        pull_secrets: &[String],
+        service_env: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<()> {
+        let existing = self.list_pod_containers(sandbox_id).await?;
+        let already_exists = existing.iter().any(|c| {
+            c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false)
+                && c.labels.get(CTR_EPHEMERAL_LABEL).map(|v| v == "true").unwrap_or(false)
+        });
+        if already_exists {
+            return Ok(());
+        }
+        let envs = self.resolve_container_env(pod, id, container, service_env).await?;
+        self.create_and_start_container(
+            sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Ephemeral, 0,
+        )
+        .await
     }
 
     /// Resolve `{username, password}` for pulling `image` out of the given
@@ -1539,7 +1578,7 @@ impl CriRuntime {
         volumes: &HashMap<String, PathBuf>,
         pull_secrets: &[String],
         envs: &[KeyValue],
-        init: bool,
+        kind: ContainerKind,
         attempt: u32,
     ) -> Result<()> {
         let image = container.image.clone().unwrap_or_default();
@@ -1579,7 +1618,7 @@ impl CriRuntime {
             working_dir: container.working_dir.clone().unwrap_or_default(),
             envs: envs.to_vec(),
             mounts,
-            labels: container_labels(id, &container.name, init),
+            labels: container_labels(id, &container.name, kind),
             log_path: format!("{}_{}.log", container.name, attempt),
             linux,
             ..Default::default()
@@ -1747,7 +1786,7 @@ impl CriRuntime {
                     let envs = self.resolve_container_env(pod, id, container, service_env).await?;
                     let attempt = self.restart_count(sandbox_id, &container.name);
                     self.create_and_start_container(
-                        sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, true, attempt,
+                        sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt,
                     )
                     .await?;
                     return Ok(InitProgress::Waiting);
@@ -1856,7 +1895,7 @@ impl CriRuntime {
             .list_pod_containers(sandbox_id)
             .await?
             .into_iter()
-            .filter(|c| !c.labels.contains_key(CTR_INIT_LABEL))
+            .filter(|c| !c.labels.contains_key(CTR_INIT_LABEL) && !c.labels.contains_key(CTR_EPHEMERAL_LABEL))
             .collect();
         let running_v = ContainerState::ContainerRunning as i32;
         let exited_v = ContainerState::ContainerExited as i32;
@@ -1918,22 +1957,27 @@ impl CriRuntime {
             started_at,
             pod_ip: self.pod_ip(sandbox_id).await,
             containers: crs,
-            init_containers: self.build_init_container_statuses(sandbox_id).await.unwrap_or_default(),
+            init_containers: self.build_labeled_container_statuses(sandbox_id, CTR_INIT_LABEL).await.unwrap_or_default(),
+            ephemeral_containers: self
+                .build_labeled_container_statuses(sandbox_id, CTR_EPHEMERAL_LABEL)
+                .await
+                .unwrap_or_default(),
             initialized: true,
         })
     }
 
-    /// `ContainerRuntimeStatus` for every init-labeled container in the
-    /// sandbox — the counterpart to the main loop in `build_status()`
-    /// above, kept separate because init containers are excluded from that
-    /// one (their exit is expected and terminal, not something `all_exited`
-    /// should key the *pod's* phase off).
-    async fn build_init_container_statuses(&self, sandbox_id: &str) -> Result<Vec<ContainerRuntimeStatus>> {
+    /// `ContainerRuntimeStatus` for every container in the sandbox carrying
+    /// `label` (either `CTR_INIT_LABEL` or `CTR_EPHEMERAL_LABEL`) — the
+    /// counterpart to the main loop in `build_status()` above, kept separate
+    /// because both init and ephemeral containers are excluded from that one
+    /// (their exit is expected/irrelevant, not something `all_exited` should
+    /// key the *pod's* phase off).
+    async fn build_labeled_container_statuses(&self, sandbox_id: &str, label: &str) -> Result<Vec<ContainerRuntimeStatus>> {
         let running_v = ContainerState::ContainerRunning as i32;
         let containers = self.list_pod_containers(sandbox_id).await?;
         Ok(containers
             .into_iter()
-            .filter(|c| c.labels.contains_key(CTR_INIT_LABEL))
+            .filter(|c| c.labels.contains_key(label))
             .map(|c| {
                 let running = c.state == running_v;
                 let name = c.metadata.as_ref().map(|m| m.name.clone()).unwrap_or_default();
@@ -2027,7 +2071,11 @@ impl PodRuntime for CriRuntime {
                         started_at: None,
                         pod_ip: None,
                         containers: Vec::new(),
-                        init_containers: self.build_init_container_statuses(&sandbox_id).await.unwrap_or_default(),
+                        init_containers: self
+                            .build_labeled_container_statuses(&sandbox_id, CTR_INIT_LABEL)
+                            .await
+                            .unwrap_or_default(),
+                        ephemeral_containers: Vec::new(),
                         initialized: false,
                     });
                 }
@@ -2038,7 +2086,11 @@ impl PodRuntime for CriRuntime {
                         started_at: None,
                         pod_ip: None,
                         containers: Vec::new(),
-                        init_containers: self.build_init_container_statuses(&sandbox_id).await.unwrap_or_default(),
+                        init_containers: self
+                            .build_labeled_container_statuses(&sandbox_id, CTR_INIT_LABEL)
+                            .await
+                            .unwrap_or_default(),
+                        ephemeral_containers: Vec::new(),
                         initialized: false,
                     });
                 }
@@ -2051,6 +2103,19 @@ impl PodRuntime for CriRuntime {
                 let envs = self.resolve_container_env(pod, &id, c, &service_env).await?;
                 self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs)
                     .await?;
+            }
+            // Added post-hoc via the `ephemeralcontainers` subresource (e.g.
+            // `kubectl debug`), never present when a pod is first created —
+            // best-effort: a failure to start one debug container shouldn't
+            // fail reconciling the rest of a pod that's otherwise healthy.
+            for ec in spec.ephemeral_containers.as_deref().unwrap_or(&[]) {
+                let container = ephemeral_to_container(ec);
+                if let Err(e) = self
+                    .ensure_ephemeral_container(&sandbox_id, &id, pod, &container, pod_sc, &volumes, &pull_secrets, &service_env)
+                    .await
+                {
+                    warn!(container = %ec.name, error = ?e, "failed to start ephemeral container");
+                }
             }
         }
 
@@ -2327,11 +2392,60 @@ fn sandbox_labels(id: &PodId) -> HashMap<String, String> {
     ])
 }
 
-fn container_labels(id: &PodId, container_name: &str, init: bool) -> HashMap<String, String> {
+/// `EphemeralContainer` has the same shape as `Container` minus a couple of
+/// fields real kubelet itself doesn't honor for debug containers (`ports`,
+/// notably — see the API doc comment on `EphemeralContainer.ports`) plus
+/// `targetContainerName` (process-namespace-sharing target, not something
+/// CRI's `ContainerConfig` has a slot for — nodelet always shares the
+/// sandbox's containers via the sandbox's own PID namespace already, so this
+/// is a no-op here rather than a gap).
+fn ephemeral_to_container(ec: &EphemeralContainer) -> Container {
+    Container {
+        args: ec.args.clone(),
+        command: ec.command.clone(),
+        env: ec.env.clone(),
+        env_from: ec.env_from.clone(),
+        image: ec.image.clone(),
+        image_pull_policy: ec.image_pull_policy.clone(),
+        lifecycle: ec.lifecycle.clone(),
+        liveness_probe: ec.liveness_probe.clone(),
+        name: ec.name.clone(),
+        ports: None,
+        readiness_probe: ec.readiness_probe.clone(),
+        resize_policy: ec.resize_policy.clone(),
+        resources: ec.resources.clone(),
+        restart_policy: ec.restart_policy.clone(),
+        security_context: ec.security_context.clone(),
+        startup_probe: ec.startup_probe.clone(),
+        stdin: ec.stdin,
+        stdin_once: ec.stdin_once,
+        termination_message_path: ec.termination_message_path.clone(),
+        termination_message_policy: ec.termination_message_policy.clone(),
+        tty: ec.tty,
+        volume_devices: ec.volume_devices.clone(),
+        volume_mounts: ec.volume_mounts.clone(),
+        working_dir: ec.working_dir.clone(),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContainerKind {
+    App,
+    Init,
+    Ephemeral,
+}
+
+fn container_labels(id: &PodId, container_name: &str, kind: ContainerKind) -> HashMap<String, String> {
     let mut l = sandbox_labels(id);
     l.insert(CTR_NAME_LABEL.to_string(), container_name.to_string());
-    if init {
-        l.insert(CTR_INIT_LABEL.to_string(), "true".to_string());
+    match kind {
+        ContainerKind::App => {}
+        ContainerKind::Init => {
+            l.insert(CTR_INIT_LABEL.to_string(), "true".to_string());
+        }
+        ContainerKind::Ephemeral => {
+            l.insert(CTR_EPHEMERAL_LABEL.to_string(), "true".to_string());
+        }
     }
     l
 }

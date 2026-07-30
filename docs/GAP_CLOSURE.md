@@ -27,6 +27,55 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 8: ephemeral containers (`kubectl debug`) (2026-07-30, same day)
+
+Continued closing gaps ("continue" — no further scoping given). Picked
+ephemeral containers next: it reuses the exec/attach proxy infrastructure
+from round 6 for actually *using* a debug session, so `kubectl debug -it`
+was already half-working — this closes the other half, getting the
+container itself created and started.
+
+- **`spec.ephemeralContainers` → CRI containers** — `ensure_pod()` now walks
+  `spec.ephemeralContainers` after the app-container loop and starts any not
+  already present, via a new `ensure_ephemeral_container()` in
+  `runtime/cri.rs`. Unlike app containers, these are **one-shot**: once a
+  container with that name exists (running or exited), it's never recreated
+  or restarted, regardless of the pod's `restartPolicy` — matches real
+  kubelet, which has no notion of "restart a debug session."
+- **`EphemeralContainer` → CRI `ContainerConfig`** — reuses the exact same
+  `create_and_start_container()` app/init containers go through, via a new
+  `ephemeral_to_container()` that maps `EphemeralContainer`'s fields onto the
+  regular `Container` shape (they're near-identical; `ports` is dropped,
+  matching real kubelet, and `targetContainerName`, process-namespace-sharing
+  metadata, is a no-op here since nodelet's sandbox containers already share
+  the sandbox's PID namespace).
+- **New `CTR_EPHEMERAL_LABEL`** — same pattern as the existing init-container
+  label: lets status-building and future GC tell ephemeral containers apart
+  from app containers without a second side table. `build_status()` now
+  excludes both init- and ephemeral-labeled containers from the app-container
+  phase/readiness computation (a debug container exiting must never flip the
+  pod to Succeeded/Failed, or gate `ContainersReady`).
+- **`PodStatus.ephemeralContainerStatuses`** — new `RuntimeStatus.ephemeral_containers`
+  field (mirrors `init_containers`), populated in `pods.rs::build_pod_status`.
+  Reported as `Terminated` (not `Waiting`/`PodInitializing`) when not
+  running, since an ephemeral container that's stopped is *done*, not
+  "still starting up" — the opposite framing init containers need.
+
+360 tests passing with `--features cri` (up from 353), 161 mock-only.
+`deploy/lib/test/cases/ephemeral_containers.sh` added — runs
+`kubectl debug <pod> --image=... --container=debugger -- sleep 3600` against
+a live pod and asserts `ephemeralContainerStatuses` reports it running and
+the pod's own phase is untouched; skips cleanly if the test cluster's
+kubectl/apiserver doesn't support the `ephemeralcontainers` subresource.
+
+**Known simplification, documented not hidden**: exit codes aren't tracked
+for ephemeral containers (`ContainerStateTerminated.exit_code` is always
+reported as `0`) — real kubelet fetches this via `ContainerStatus` same as
+init containers do, but that's an extra CRI round-trip per ephemeral
+container on every status build, only worth paying if something actually
+reads it; nothing does yet since `kubectl debug` output goes through
+`exec`/`attach`, not the exit code.
+
 ## Round 2: correctness gaps closed (user-chosen sequencing)
 
 User picked "correctness gaps first" out of the full list below — these were
@@ -237,7 +286,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ Pod sandbox + container create/start/stop/remove via CRI
 - ✅ Restart-on-exit honoring `restartPolicy`
 - ✅ **Init containers** — run to completion, in order, before app containers (`ensure_init_containers`)
-- ❌ Ephemeral containers (`kubectl debug`)
+- ✅ **Ephemeral containers** (`kubectl debug`) — `spec.ephemeralContainers` started once (never restarted) via `ensure_ephemeral_container()`, reported in `PodStatus.ephemeralContainerStatuses`, excluded from pod phase/readiness. Exit codes not tracked (always reported `0`) — see Round 8 notes.
 - ✅ **postStart / preStop lifecycle hooks** (`exec`/`httpGet`/`sleep`; not `tcpSocket`) — `run_lifecycle_hook()`. A failing `postStart` is logged, not (yet) turned into a container kill+restart like real kubelet does.
 - ✅ **Termination grace period** — `terminationGracePeriodSeconds` now drives `preStop` + a per-container `StopContainer` timeout before `StopPodSandbox` (`graceful_stop_containers()`), instead of an untimed sandbox stop.
 - ✅ **Container restart count** — real per-container counter (`restart_count_from`/`bump_restart_count_in`), threaded through `ContainerConfig.metadata.attempt` too (so restarted containers get distinct log files, not overwritten ones).
@@ -345,8 +394,9 @@ higher-value/correctness-critical than others:
       **Needs live-cluster validation** — see streaming.sh and this round's
       confidence note above, especially for kubectl exec.
 - [x] Round 7: `/stats/summary`, usage-based eviction ranking, RuntimeClass
+- [x] Round 8: ephemeral containers (`kubectl debug`)
 - [ ] Everything else in the responsibility list above — biggest remaining
-      single items: PVC/CSI, ephemeral containers, graceful node shutdown,
-      cgroup driver/QoS hierarchy/node allocatable enforcement, CPU/Memory/
-      Topology managers, device plugins, RuntimeClass `Overhead` accounting,
+      single items: PVC/CSI, graceful node shutdown, cgroup driver/QoS
+      hierarchy/node allocatable enforcement, CPU/Memory/Topology managers,
+      device plugins, RuntimeClass `Overhead` accounting,
       `/metrics/resource`/`/metrics/cadvisor`. Ask before starting the next round.

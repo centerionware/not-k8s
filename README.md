@@ -97,7 +97,9 @@ CRI's own per-pod/per-container usage stats; `kubectl top` also needs
 metrics-server deployed separately to actually scrape it), eviction now
 ranked by real memory usage instead of just requests, and `RuntimeClass`
 (`spec.runtimeClassName` reaches CRI's `runtime_handler` for gVisor/Kata/
-etc.). Still missing: PVC/CSI, ephemeral containers, graceful node
+etc.), and **ephemeral containers** (`kubectl debug`) — one-shot,
+never restarted, reported in `PodStatus.ephemeralContainerStatuses`,
+excluded from pod phase/readiness. Still missing: PVC/CSI, graceful node
 shutdown, and more — full list in `docs/GAP_CLOSURE.md`.
 
 ---
@@ -506,9 +508,14 @@ Two layers, and they're not substitutes for each other:
   this suite does to a host you're relying on.
 
   `deploy/lib/test/cases/unimplemented.sh` still documents what's genuinely
-  missing (`/stats/summary`) the same active-assertion way — so this suite
-  starts failing loudly the moment that changes too, instead of silently
-  staying wrong.
+  missing (`/metrics/resource`/`/metrics/cadvisor`) the same active-assertion
+  way — so this suite starts failing loudly the moment that changes too,
+  instead of silently staying wrong.
+
+  `ephemeral_containers.sh` runs `kubectl debug` against a live pod and
+  checks `ephemeralContainerStatuses` — skips cleanly if the test cluster's
+  kubectl/apiserver is too old to support the `ephemeralcontainers`
+  subresource.
 
 ## Configuration (environment variables)
 

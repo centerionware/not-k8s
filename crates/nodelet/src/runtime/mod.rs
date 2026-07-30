@@ -72,6 +72,12 @@ pub struct RuntimeStatus {
     /// pods with no init-container concept (mock; any pod mid-app-startup
     /// with no init containers declared).
     pub initialized: bool,
+    /// Status of `spec.ephemeralContainers` (added post-hoc via the
+    /// `ephemeralcontainers` subresource, e.g. by `kubectl debug`) — reported
+    /// separately so `PodStatus.ephemeralContainerStatuses` can be
+    /// populated. Unlike init/app containers, these never affect the pod's
+    /// phase. Empty for runtimes/pods with none.
+    pub ephemeral_containers: Vec<ContainerRuntimeStatus>,
 }
 
 /// `namespace/name` key identifying a pod.

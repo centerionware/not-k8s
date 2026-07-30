@@ -36,6 +36,7 @@ fn running_status() -> RuntimeStatus {
             restart_count: 0,
         }],
         init_containers: Vec::new(),
+        ephemeral_containers: Vec::new(),
         initialized: true,
     }
 }
@@ -55,6 +56,7 @@ fn pending_status() -> RuntimeStatus {
             restart_count: 0,
         }],
         init_containers: Vec::new(),
+        ephemeral_containers: Vec::new(),
         initialized: true,
     }
 }
@@ -345,6 +347,69 @@ fn completed_init_container_reports_waiting_podinitializing_not_running() {
     let init_statuses = status.init_container_statuses.unwrap();
     let waiting = init_statuses[0].state.as_ref().unwrap().waiting.as_ref().unwrap();
     assert_eq!(waiting.reason.as_deref(), Some("PodInitializing"));
+}
+
+#[test]
+fn ephemeral_container_statuses_is_none_when_there_are_none() {
+    let status = bps("10.0.0.1", &running_status(), None);
+    assert!(status.ephemeral_container_statuses.is_none());
+}
+
+#[test]
+fn ephemeral_container_statuses_reflects_runtime_ephemeral_containers() {
+    let mut rt = running_status();
+    rt.ephemeral_containers = vec![ContainerRuntimeStatus {
+        name: "debugger".to_string(),
+        image: "busybox".to_string(),
+        ready: true,
+        running: true,
+        container_id: Some("debug-1".to_string()),
+        restart_count: 0,
+    }];
+    let status = bps("10.0.0.1", &rt, None);
+    let statuses = status.ephemeral_container_statuses.unwrap();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].name, "debugger");
+    assert!(statuses[0].state.as_ref().unwrap().running.is_some());
+}
+
+#[test]
+fn exited_ephemeral_container_reports_terminated_not_waiting() {
+    // Unlike init containers, a finished debug session isn't "still
+    // initializing" — it's done. Must not reuse the PodInitializing waiting
+    // reason init containers get.
+    let mut rt = running_status();
+    rt.ephemeral_containers = vec![ContainerRuntimeStatus {
+        name: "debugger".to_string(),
+        image: "busybox".to_string(),
+        ready: false,
+        running: false,
+        container_id: Some("debug-1".to_string()),
+        restart_count: 0,
+    }];
+    let status = bps("10.0.0.1", &rt, None);
+    let statuses = status.ephemeral_container_statuses.unwrap();
+    assert!(statuses[0].state.as_ref().unwrap().terminated.is_some());
+    assert!(statuses[0].state.as_ref().unwrap().waiting.is_none());
+}
+
+#[test]
+fn ephemeral_containers_do_not_affect_containers_ready_or_pod_ready() {
+    // A debug container that never comes up must not flip ContainersReady/
+    // Ready to false for the whole pod — real kubelet excludes ephemeral
+    // containers from readiness aggregation entirely.
+    let mut rt = running_status();
+    rt.ephemeral_containers = vec![ContainerRuntimeStatus {
+        name: "debugger".to_string(),
+        image: "busybox".to_string(),
+        ready: false,
+        running: false,
+        container_id: None,
+        restart_count: 0,
+    }];
+    let status = bps("10.0.0.1", &rt, None);
+    let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
+    assert_eq!(ready.status, "True");
 }
 
 #[test]

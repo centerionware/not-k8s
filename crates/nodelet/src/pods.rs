@@ -14,7 +14,7 @@ use crate::runtime::{Phase, PodRuntime, RuntimeStatus};
 use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
-    ContainerState, ContainerStateRunning, ContainerStateWaiting, ContainerStatus, Pod,
+    ContainerState, ContainerStateRunning, ContainerStateTerminated, ContainerStateWaiting, ContainerStatus, Pod,
     PodCondition, PodIP, PodStatus,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
@@ -394,6 +394,33 @@ fn build_pod_status(
         })
         .collect();
 
+    // Ephemeral (debug) containers never gate readiness/phase — they're
+    // reported for `kubectl describe`/`kubectl debug` visibility only, same
+    // as init containers get their own status list rather than folding into
+    // `container_statuses`.
+    let ephemeral_container_statuses: Vec<ContainerStatus> = rt
+        .ephemeral_containers
+        .iter()
+        .map(|c| ContainerStatus {
+            name: c.name.clone(),
+            image: c.image.clone(),
+            image_id: String::new(),
+            ready: c.running,
+            restart_count: c.restart_count as i32,
+            started: Some(c.running),
+            container_id: c.container_id.clone(),
+            state: Some(if c.running {
+                ContainerState { running: Some(ContainerStateRunning { started_at: None }), ..Default::default() }
+            } else {
+                ContainerState {
+                    terminated: Some(ContainerStateTerminated { exit_code: 0, ..Default::default() }),
+                    ..Default::default()
+                }
+            }),
+            ..Default::default()
+        })
+        .collect();
+
     let pod_ips = rt
         .pod_ip
         .as_ref()
@@ -409,6 +436,7 @@ fn build_pod_status(
         ]),
         container_statuses: Some(container_statuses),
         init_container_statuses: (!init_container_statuses.is_empty()).then_some(init_container_statuses),
+        ephemeral_container_statuses: (!ephemeral_container_statuses.is_empty()).then_some(ephemeral_container_statuses),
         host_ip: Some(host_ip.to_string()),
         pod_ip: rt.pod_ip.clone(),
         pod_ips,
