@@ -119,6 +119,30 @@ enum RestartDecision {
     NeedsRestart,
 }
 
+/// What ensure_pod() should do about a sandbox lookup result, given its CRI
+/// state. Pulled out as a pure decision for the same reason as
+/// restart_decision() above: this exact bug (reusing a dead sandbox forever
+/// after a reboot) was only found by hand, against a real device, and
+/// deserves a matrix that doesn't require one to catch again.
+#[derive(Debug, PartialEq, Eq)]
+enum SandboxDecision {
+    /// A ready sandbox exists — use it as-is.
+    Reuse,
+    /// A sandbox exists but isn't ready (its task/pause process is gone,
+    /// e.g. after a reboot) — tear it down and create a fresh one.
+    RecreateStale,
+    /// No sandbox at all — create one.
+    CreateFresh,
+}
+
+fn sandbox_reuse_decision(found: Option<i32>, ready_state: i32) -> SandboxDecision {
+    match found {
+        Some(s) if s == ready_state => SandboxDecision::Reuse,
+        Some(_) => SandboxDecision::RecreateStale,
+        None => SandboxDecision::CreateFresh,
+    }
+}
+
 fn restart_decision(existing_state: Option<i32>, running_state: i32, restart_policy: &str) -> RestartDecision {
     match existing_state {
         None => RestartDecision::NeedsRestart, // no existing container at all — same code path as a genuine restart
@@ -255,6 +279,7 @@ impl CriRuntime {
 
             if let Some(cm) = &v.config_map {
                 let name = &cm.name;
+                let optional = cm.optional.unwrap_or(false);
                 match Api::<ConfigMap>::namespaced(self.client.clone(), &id.namespace).get(name).await {
                     Ok(obj) => {
                         if let Err(e) = write_volume_dir(&vol_dir, obj.data, obj.binary_data.map(|m| {
@@ -265,10 +290,17 @@ impl CriRuntime {
                         }
                         out.insert(v.name.clone(), vol_dir);
                     }
+                    // A missing ConfigMap on a volume explicitly marked
+                    // `optional: true` (coredns's own manifest does this for
+                    // its "coredns-custom" volume, for exactly this reason —
+                    // it's fine for that ConfigMap to not exist) isn't a
+                    // real problem; only warn for a genuinely required one.
+                    Err(_) if optional => {}
                     Err(e) => warn!(volume = %v.name, configmap = %name, error = ?e, "failed to fetch ConfigMap for volume"),
                 }
             } else if let Some(sec) = &v.secret {
                 let Some(name) = &sec.secret_name else { continue };
+                let optional = sec.optional.unwrap_or(false);
                 match Api::<Secret>::namespaced(self.client.clone(), &id.namespace).get(name).await {
                     Ok(obj) => {
                         let bin = obj.data.map(|m| m.into_iter().map(|(k, v)| (k, v.0)).collect());
@@ -278,6 +310,7 @@ impl CriRuntime {
                         }
                         out.insert(v.name.clone(), vol_dir);
                     }
+                    Err(_) if optional => {}
                     Err(e) => warn!(volume = %v.name, secret = %name, error = ?e, "failed to fetch Secret for volume"),
                 }
             } else if v.empty_dir.is_some() {
@@ -298,7 +331,14 @@ impl CriRuntime {
     /// Look up our sandbox for a pod by namespace+name. These labels are always
     /// set (from real values), so this is the stable key — unlike `pod.uid`,
     /// which the agent does not have at status/teardown time.
-    async fn find_sandbox(&self, namespace: &str, name: &str) -> Result<Option<String>> {
+    /// Returns the sandbox's id and CRI state (SANDBOX_READY / SANDBOX_NOTREADY
+    /// as i32), not just existence — see ensure_pod()'s sandbox_reuse_decision()
+    /// call for why the state matters: containerd's sandbox metadata can
+    /// outlive its actual task/pause process (e.g. across a reboot — processes
+    /// don't survive one, but the bolt-db record does), and reusing a
+    /// not-ready sandbox as if it were live makes every CreateContainer
+    /// against it fail forever with "no running task found".
+    async fn find_sandbox(&self, namespace: &str, name: &str) -> Result<Option<(String, i32)>> {
         let mut rt = self.rt.clone();
         let filter = PodSandboxFilter {
             label_selector: HashMap::from([
@@ -311,7 +351,7 @@ impl CriRuntime {
             .list_pod_sandbox(ListPodSandboxRequest { filter: Some(filter) })
             .await?
             .into_inner();
-        Ok(resp.items.into_iter().next().map(|s| s.id))
+        Ok(resp.items.into_iter().next().map(|s| (s.id, s.state)))
     }
 
     async fn list_pod_containers(&self, sandbox_id: &str) -> Result<Vec<v1::Container>> {
@@ -504,9 +544,24 @@ impl CriRuntime {
 impl PodRuntime for CriRuntime {
     async fn ensure_pod(&self, pod: &Pod) -> Result<RuntimeStatus> {
         let id = pod_id(pod);
-        let sandbox_id = match self.find_sandbox(&id.namespace, &id.name).await? {
-            Some(s) => s,
-            None => self.run_sandbox(&id).await.context("RunPodSandbox")?,
+        let found = self.find_sandbox(&id.namespace, &id.name).await?;
+        let ready_state = v1::PodSandboxState::SandboxReady as i32;
+        let sandbox_id = match sandbox_reuse_decision(found.as_ref().map(|(_, s)| *s), ready_state) {
+            SandboxDecision::Reuse => found.unwrap().0,
+            SandboxDecision::RecreateStale => {
+                // The sandbox record exists but its task/pause process
+                // isn't alive (e.g. this metadata survived a reboot but
+                // the process didn't) — tear it down and start clean
+                // instead of reusing something CreateContainer can never
+                // succeed against. Best-effort: it may already be half-gone.
+                let (stale_id, _) = found.unwrap();
+                let mut rt = self.rt.clone();
+                let _ = rt.stop_pod_sandbox(StopPodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
+                let _ = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
+                self.restart_policies.lock().unwrap().remove(&stale_id);
+                self.run_sandbox(&id).await.context("RunPodSandbox")?
+            }
+            SandboxDecision::CreateFresh => self.run_sandbox(&id).await.context("RunPodSandbox")?,
         };
 
         let restart_policy = pod
@@ -530,7 +585,7 @@ impl PodRuntime for CriRuntime {
     }
 
     async fn remove_pod(&self, namespace: &str, name: &str) -> Result<()> {
-        if let Some(sandbox_id) = self.find_sandbox(namespace, name).await? {
+        if let Some((sandbox_id, _state)) = self.find_sandbox(namespace, name).await? {
             let mut rt = self.rt.clone();
             // StopPodSandbox is idempotent; RemovePodSandbox also removes its containers.
             let _ = rt
@@ -546,7 +601,7 @@ impl PodRuntime for CriRuntime {
 
     async fn status(&self, namespace: &str, name: &str) -> Result<Option<RuntimeStatus>> {
         match self.find_sandbox(namespace, name).await? {
-            Some(sandbox_id) => {
+            Some((sandbox_id, _state)) => {
                 let restart_policy = self
                     .restart_policies
                     .lock()
@@ -716,6 +771,9 @@ async fn containerd_events_loop(channel: Channel, tx: UnboundedSender<String>) {
 // this one, so they can see its private items (compute_phase,
 // restart_decision, build_mounts, write_volume_dir, pod_id, the label/
 // sandbox_config builders) without anything needing to be made `pub`.
+#[cfg(test)]
+#[path = "cri_tests/sandbox_reuse.rs"]
+mod tests_sandbox_reuse;
 #[cfg(test)]
 #[path = "cri_tests/phase.rs"]
 mod tests_phase;
