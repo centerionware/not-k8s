@@ -28,19 +28,22 @@ sudo k3s kubectl describe pod -n kube-system "$POD"
 # "connection refused"s against a containerd that was never running.
 CRICTL="crictl --runtime-endpoint unix:///run/containerd/containerd.sock"
 
-echo "=== crictl ps -a for coredns (this pod's actual container instances + exit codes) ==="
-sudo $CRICTL ps -a --name coredns
+echo "=== crictl ps -a, unfiltered (crictl's --name filter came back empty even for a container the apiserver confirms is running — listing everything instead) ==="
+sudo $CRICTL ps -a
 
-echo "=== logs for the most recent coredns container instance ==="
-id="$(sudo $CRICTL ps -a --name coredns -q --state exited 2>/dev/null | head -1)"
-[[ -z "$id" ]] && id="$(sudo $CRICTL ps -a --name coredns -q 2>/dev/null | head -1)"
-if [[ -n "$id" ]]; then
-    echo "--- container $id ---"
-    sudo $CRICTL logs "$id" 2>&1 | tail -100
-    echo "--- inspect (reason/exitCode/message) ---"
-    sudo $CRICTL inspect "$id" 2>&1 | grep -B1 -A5 '"reason"\|"exitCode"\|"message"'
+# The apiserver's own record of the current container ID is authoritative —
+# ask it directly instead of trusting crictl's own listing/filtering, which
+# didn't find a container by name that definitely exists.
+CID="$(sudo k3s kubectl get pod -n kube-system "$POD" -o jsonpath='{.status.containerStatuses[0].containerID}' 2>/dev/null | sed 's#^containerd://##')"
+echo "=== container ID per the apiserver: ${CID:-<none>} ==="
+
+if [[ -n "$CID" ]]; then
+    echo "--- crictl inspect $CID (reason/exitCode/message/state) ---"
+    sudo $CRICTL inspect "$CID" 2>&1 | grep -B1 -A5 '"reason"\|"exitCode"\|"message"\|"state"'
+    echo "--- crictl logs $CID ---"
+    sudo $CRICTL logs "$CID" 2>&1 | tail -100
 else
-    echo "no coredns container found via crictl"
+    echo "apiserver has no containerID on record for this pod right now"
 fi
 
 echo "=== done ==="
