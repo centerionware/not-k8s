@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 const LEASE_NS: &str = "kube-node-lease";
 const FIELD_MANAGER: &str = "nodelet";
 const LEASE_DURATION_SECS: i32 = 40;
+const CLOUDPROVIDER_TAINT_KEY: &str = "node.cloudprovider.kubernetes.io/uninitialized";
 
 fn now_time() -> Time {
     Time(Timestamp::now())
@@ -135,16 +136,19 @@ fn build_node(cfg: &Config) -> Node {
             labels: Some(node_labels(cfg)),
             ..Default::default()
         },
-        // Deliberately no provider_id. Setting one is exactly what tells
-        // Kubernetes' node-lifecycle-controller that a cloud-controller-
-        // manager will show up to initialize this node — it responds by
-        // adding a node.cloudprovider.kubernetes.io/uninitialized:NoSchedule
-        // taint until one does. There's no cloud provider here at all
-        // (setup-control-plane.sh passes --disable-cloud-controller on
-        // purpose, for exactly this reason: an edge device), so nothing
-        // was ever going to clear it — every pod would stay Unschedulable
-        // forever. Confirmed for real: this was the actual root cause of
-        // pods stuck Pending with "1 node(s) had untolerated taint(s)".
+        // Deliberately no provider_id — but that alone doesn't avoid the
+        // node.cloudprovider.kubernetes.io/uninitialized taint (see
+        // clear_cloudprovider_taint() below): k3s's kube-controller-manager
+        // is built with --cloud-provider=external baked in regardless, and
+        // --disable-cloud-controller (setup-control-plane.sh passes it,
+        // since there's no cloud provider on an edge device) only skips
+        // starting k3s's own embedded CCM process. The cloud-node-lifecycle
+        // controller still taints every newly created Node on registration,
+        // expecting some CCM to clear it once initialized — confirmed for
+        // real: it reappears even on a totally fresh node. Nothing was ever
+        // going to clear it, so every pod stayed Unschedulable forever
+        // ("1 node(s) had untolerated taint(s)") until register() below
+        // clears it itself.
         spec: Some(NodeSpec::default()),
         status: None,
     }
@@ -172,7 +176,47 @@ pub async fn register(client: &Client, cfg: &Config) -> Result<()> {
     api.patch(&cfg.node_name, &pp, &Patch::Apply(&build_node(cfg))).await?;
     push_status(client, cfg, true).await?;
     renew_lease(client, cfg).await?;
+
+    // k3s's cloud-node-lifecycle-controller adds this taint asynchronously
+    // after node creation, not atomically with it, so a bounded retry
+    // window covers the race instead of checking exactly once right after
+    // apply and possibly missing it. Runs detached: it must not delay pod
+    // reconciliation starting (main.rs starts the PodController immediately
+    // after register() returns), and once cleared it doesn't come back —
+    // this is a one-time-per-registration cleanup, not an ongoing poll.
+    tokio::spawn(clear_cloudprovider_taint(client.clone(), cfg.node_name.clone()));
     Ok(())
+}
+
+async fn clear_cloudprovider_taint(client: Client, node_name: String) {
+    let api: Api<Node> = Api::all(client);
+    for _ in 0..10 {
+        let node = match api.get(&node_name).await {
+            Ok(n) => n,
+            Err(_) => return, // node gone or apiserver hiccup; next registration will retry
+        };
+        let taints = node.spec.as_ref().and_then(|s| s.taints.as_ref());
+        let has_it = taints.is_some_and(|t| t.iter().any(|t| t.key == CLOUDPROVIDER_TAINT_KEY));
+        if !has_it {
+            // Not there (yet) — could be genuinely absent, or the
+            // controller-manager just hasn't gotten to it. Keep retrying
+            // for the full window rather than assuming absence on the
+            // first check, which is exactly the race this guards against.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            continue;
+        }
+        let kept: Vec<_> = taints
+            .unwrap()
+            .iter()
+            .filter(|t| t.key != CLOUDPROVIDER_TAINT_KEY)
+            .cloned()
+            .collect();
+        let patch = serde_json::json!({ "spec": { "taints": kept } });
+        if let Err(e) = api.patch(&node_name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+            tracing::warn!(node = %node_name, error = ?e, "failed to clear cloudprovider-uninitialized taint");
+        }
+        return;
+    }
 }
 
 /// Push the (heavy, infrequent) node status.
