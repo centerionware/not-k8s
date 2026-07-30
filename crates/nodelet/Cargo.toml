@@ -34,6 +34,7 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 libc = "0.2"
+base64 = "0.22"
 
 tonic = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }

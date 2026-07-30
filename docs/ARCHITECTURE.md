@@ -289,11 +289,19 @@ gives you a clean A/B measurement of the node-agent architecture change.
 | `NODELET_DISK_PATH` | `/var/lib/nodelet` | Filesystem path `DiskPressure` is measured against |
 | `NODELET_DISK_PRESSURE_PERCENT` | `10` | `DiskPressure` fires when available space on `NODELET_DISK_PATH` drops below this percent |
 | `NODELET_GC_INTERVAL_SECS` | `300` | How often orphaned sandbox/container and unreferenced-image GC runs (cri runtime only) |
+| `NODELET_CLUSTER_DNS` | (none) | Comma-separated cluster DNS server IPs for `dnsPolicy: ClusterFirst` pods |
+| `NODELET_CLUSTER_DOMAIN` | `cluster.local` | Base domain for a ClusterFirst pod's DNS search list |
 | `RUST_LOG` | (none) | Tracing filter, e.g. `info`, `nodelet=debug,kube=warn` |
 
 ## Out of Scope
 
-The following are explicitly **not** goals for the current phase of not-k8s:
+For everything kubelet itself is responsible for, the goal is now **100%
+feature parity** (see [`docs/GAP_CLOSURE.md`](GAP_CLOSURE.md) for the live,
+verified-against-upstream-docs checklist of done/partial/missing). The list
+below is different in kind: these are either genuinely another
+control-plane component's job (verified, not assumed — see GAP_CLOSURE.md's
+scope-boundary section), or a deliberate platform choice unrelated to
+kubelet parity.
 
 - **High availability / multi-node scheduling.** This is a single-device system.
   The scheduler runs, but there's one node.
@@ -342,5 +350,7 @@ The following are explicitly **not** goals for the current phase of not-k8s:
 - **Security hardening is incomplete.**  The kubeconfig is written world-readable
   for convenience; the nodelet runs as the current user; no mTLS between
   components beyond what k3s provides by default.
-- **Resource eviction is not implemented.**  nodelet does not yet evict pods
-  under memory pressure.  This is planned for the CRI runtime phase.
+- **Resource eviction is not implemented.**  nodelet reports real
+  MemoryPressure/DiskPressure conditions but does not yet act on them by
+  evicting pods.  This is kubelet's job (not another component's) and is
+  tracked as an open item in `docs/GAP_CLOSURE.md`, not a non-goal.

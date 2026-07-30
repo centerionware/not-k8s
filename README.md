@@ -12,6 +12,9 @@ kubectl/CRD compatibility, and replace only the heavy node agent (the kubelet) w
 lean, event-driven Rust binary** — because that's where the idle CPU/RAM actually goes.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full rationale.
+The project's current goal is **100% kubelet feature parity while keeping
+this performance advantage** — see [`docs/GAP_CLOSURE.md`](docs/GAP_CLOSURE.md)
+for the live, verified checklist of what's done vs. still missing.
 
 ## Quick start
 
@@ -43,8 +46,13 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
   src/config.rs        Env-driven configuration.
   src/node.rs          Node registration + Lease heartbeat + node-status push.
   src/pods.rs          The reconcile loop (apiserver watch ⨉ runtime events).
+  src/probes.rs        Liveness/readiness/startup probe execution (opt-in per pod).
+  src/metrics.rs        Real MemoryPressure/DiskPressure from /proc + statvfs.
+  src/gc.rs            Orphaned-sandbox + unreferenced-image garbage collection.
   src/runtime/mock.rs  In-memory runtime: reports pods Running, zero engine overhead.
-  src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`).
+  src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`): pod/init
+                       container lifecycle, resource limits, securityContext,
+                       DNS, private registry auth.
   proto/cri.proto      Upstream CRI v1 protobuf (vendored).
 deploy/                Control-plane setup, launcher, measurement, demo manifests.
 docs/ARCHITECTURE.md   Design, trade-offs, roadmap.
@@ -57,8 +65,21 @@ runtimes compile and run. The `mock` runtime is fully exercisable today. The `cr
 runtime is **validated end-to-end against real containerd** (1.6.20): it creates a
 sandbox, pulls an image, creates and starts a container under runc, reports status,
 is idempotent, and tears down cleanly — see [Validate against containerd](#validate-against-containerd).
-Not production-ready. No HA, no multi-node scheduling — by design (see *Out of scope*
-in the architecture doc).
+Not production-ready. No HA, no multi-node scheduling — by design, since those
+are the scheduler/etcd/controller-manager's job, not kubelet's (see *Out of
+scope* in the architecture doc, verified against upstream docs in
+`docs/GAP_CLOSURE.md`).
+
+Working today beyond the basics: liveness/readiness/startup probes, real
+node pressure conditions, GC, init containers, container resource
+requests/limits (CPU shares/quota, memory limits — actually enforced via
+cgroups now, not just advertised), `securityContext` (runAsUser/Group,
+capabilities, privileged, readOnlyRootFilesystem, seccomp), pod DNS
+(`dnsPolicy`/`dnsConfig`), and private registry image pulls
+(`imagePullSecrets`). Still missing, see `docs/GAP_CLOSURE.md` for the full
+list: `kubectl exec/logs/attach/port-forward` (no HTTP(S) server exists yet),
+`kubectl top` (`/stats/summary`), static pods, PVC/CSI, node-pressure
+eviction, and more.
 
 ---
 
@@ -430,6 +451,12 @@ Notes from validation:
 | `NODELET_SERVICE_PROXY` | `true` if `cri`, else `false` | Program ClusterIP/NodePort nftables rules (see [Services](#services-clusterip--nodeport-no-kube-proxy)). |
 | `NODELET_IP_FAMILY` | `auto` | `auto`, `ipv4`, `ipv6`, or `dual` — see [IPv4 / IPv6 / dual-stack](#ipv4--ipv6--dual-stack). |
 | `NODELET_LB_METHOD` | `random` | `random`, `round-robin`, or `source-hash` — see [Services](#services-clusterip--nodeport-no-kube-proxy). |
+| `NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES` | `104857600` (100Mi) | `MemoryPressure` fires when `/proc/meminfo` MemAvailable drops below this. |
+| `NODELET_DISK_PATH` | `/var/lib/nodelet` | Filesystem path `DiskPressure` is measured against. |
+| `NODELET_DISK_PRESSURE_PERCENT` | `10` | `DiskPressure` fires when available space on `NODELET_DISK_PATH` drops below this percent. |
+| `NODELET_GC_INTERVAL_SECS` | `300` | How often orphaned-sandbox and unreferenced-image GC runs (`cri` only). |
+| `NODELET_CLUSTER_DNS` | — | Comma-separated cluster DNS server IPs, injected into `dnsPolicy: ClusterFirst` pods (real kubelet's `--cluster-dns`). Unset means pods fall back to the host's own resolv.conf. |
+| `NODELET_CLUSTER_DOMAIN` | `cluster.local` | Base domain for a ClusterFirst pod's DNS search list (`--cluster-domain`). |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---

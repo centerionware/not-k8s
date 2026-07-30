@@ -15,7 +15,11 @@
 use super::{ContainerRuntimeStatus, Phase, PodRuntime, RuntimeStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use k8s_openapi::api::core::v1::{ConfigMap, EnvFromSource, EnvVarSource, Pod, Secret, Service, Volume};
+use k8s_openapi::api::core::v1::{
+    ConfigMap, Container, EnvFromSource, EnvVarSource, Pod, PodSecurityContext, ResourceRequirements,
+    Secret, SecurityContext, Service, Volume,
+};
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::jiff::Timestamp;
 use kube::api::{Api, ListParams};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -43,13 +47,15 @@ use prost::Message as _;
 use v1::image_service_client::ImageServiceClient;
 use v1::runtime_service_client::RuntimeServiceClient;
 use v1::{
-    ContainerConfig, ContainerFilter, ContainerMetadata, ContainerState, CreateContainerRequest,
-    GetEventsRequest, ImageSpec, KeyValue, LinuxPodSandboxConfig, LinuxSandboxSecurityContext,
-    ListContainersRequest, ListImagesRequest, ListPodSandboxRequest, NamespaceMode, NamespaceOption,
-    PodSandboxConfig, PodSandboxFilter, PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest,
-    Mount, RemoveContainerRequest, RemoveImageRequest, RemovePodSandboxRequest, RunPodSandboxRequest,
-    StartContainerRequest, StopContainerRequest, StopPodSandboxRequest,
-    ExecSyncRequest,
+    AuthConfig, Capability, ContainerConfig, ContainerFilter, ContainerMetadata, ContainerState,
+    ContainerStatusRequest, CreateContainerRequest, DnsConfig, GetEventsRequest, ImageSpec, Int64Value,
+    KeyValue, LinuxContainerConfig, LinuxContainerResources, LinuxContainerSecurityContext,
+    LinuxPodSandboxConfig, LinuxSandboxSecurityContext, ListContainersRequest, ListImagesRequest,
+    ListPodSandboxRequest, NamespaceMode, NamespaceOption, PodSandboxConfig, PodSandboxFilter,
+    PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest, Mount, RemoveContainerRequest,
+    RemoveImageRequest, RemovePodSandboxRequest, RunPodSandboxRequest, StartContainerRequest,
+    StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest,
+    security_profile::ProfileType, SecurityProfile,
 };
 
 /// Where ConfigMap/Secret volume contents get materialized on the host, one
@@ -62,6 +68,10 @@ const POD_UID_LABEL: &str = "nodelet.dev/pod-uid";
 const POD_NAME_LABEL: &str = "nodelet.dev/pod-name";
 const POD_NS_LABEL: &str = "nodelet.dev/pod-namespace";
 const CTR_NAME_LABEL: &str = "nodelet.dev/container-name";
+/// Present (value `"true"`) only on containers created from `spec.initContainers`
+/// — lets status-building and GC tell them apart from app containers without
+/// a second side table.
+const CTR_INIT_LABEL: &str = "nodelet.dev/init";
 
 pub struct CriRuntime {
     rt: RuntimeServiceClient<Channel>,
@@ -71,6 +81,9 @@ pub struct CriRuntime {
     // their contents have to be fetched from the apiserver and written to
     // disk ourselves before a container that mounts them can start.
     client: kube::Client,
+    /// `--cluster-dns`/`--cluster-domain` equivalents (see `dns_config_for()`).
+    cluster_dns: Vec<String>,
+    cluster_domain: String,
     rx: Mutex<Option<UnboundedReceiver<String>>>,
     // sandbox_id -> the owning Pod's restartPolicy ("Always"/"OnFailure"/"Never"),
     // recorded whenever ensure_pod() runs. build_status() needs this to decide
@@ -144,6 +157,66 @@ fn sandbox_reuse_decision(found: Option<i32>, ready_state: i32) -> SandboxDecisi
     }
 }
 
+/// What `ensure_init_containers()` should do about one init container, given
+/// its CRI state (if it exists at all) and — if exited — its exit code.
+/// Pulled out as a pure decision for the same reason `restart_decision()`
+/// and `compute_phase()` are: this is the exact logic that decides whether
+/// init containers gate app containers correctly, and deserves a matrix
+/// that doesn't require a live CRI socket to verify.
+#[derive(Debug, PartialEq, Eq)]
+enum InitContainerDecision {
+    /// Doesn't exist yet — create and start it.
+    Create,
+    /// Running — wait for it.
+    StillRunning,
+    /// Exited zero — this one's done; check the next init container.
+    Done,
+    /// Exited nonzero and this pod is allowed to restart — remove it so a
+    /// fresh one gets created.
+    Retry,
+    /// Exited nonzero under `restartPolicy: Never` — terminal.
+    Failed,
+    /// Neither running nor exited (e.g. still being created) — wait.
+    Waiting,
+}
+
+fn init_container_decision(
+    existing_state: Option<i32>,
+    running_state: i32,
+    exited_state: i32,
+    exit_code: i32,
+    restart_policy: &str,
+) -> InitContainerDecision {
+    match existing_state {
+        None => InitContainerDecision::Create,
+        Some(s) if s == running_state => InitContainerDecision::StillRunning,
+        Some(s) if s == exited_state => {
+            if exit_code == 0 {
+                InitContainerDecision::Done
+            } else if restart_policy == "Never" {
+                InitContainerDecision::Failed
+            } else {
+                InitContainerDecision::Retry
+            }
+        }
+        Some(_) => InitContainerDecision::Waiting,
+    }
+}
+
+/// Where `ensure_init_containers()` left off.
+#[derive(Debug, PartialEq, Eq)]
+enum InitProgress {
+    /// The next not-yet-done init container was just created, or is still
+    /// running, or is done and something after it isn't — either way, the
+    /// app containers must not start yet.
+    Waiting,
+    /// An init container exited nonzero under `restartPolicy: Never` —
+    /// terminal, matches kubelet reporting the whole Pod `Failed`.
+    Failed(String),
+    /// Every init container has exited zero, in order — start the app containers.
+    AllComplete,
+}
+
 fn restart_decision(existing_state: Option<i32>, running_state: i32, restart_policy: &str) -> RestartDecision {
     match existing_state {
         None => RestartDecision::NeedsRestart, // no existing container at all — same code path as a genuine restart
@@ -196,6 +269,189 @@ fn build_mounts(
             })
         })
         .collect()
+}
+
+/// kubelet's fixed CPU CFS period (`--cpu-cfs-quota-period`'s default, 100ms
+/// in microseconds) — quota is computed against this, not configurable here.
+const CPU_CFS_QUOTA_PERIOD_US: i64 = 100_000;
+
+/// Parse a Kubernetes `Quantity` suffix (`Ki`/`Mi`/`Gi`/`Ti` binary, `k`/`M`/`G`/`T`
+/// decimal, or bare). Uses f64 — imprecise at the very top of i64 range, which
+/// doesn't matter for cpu/memory quantities on any real machine.
+fn parse_quantity(s: &str) -> Option<f64> {
+    const BINARY: [(&str, f64); 4] =
+        [("Ki", 1024.0), ("Mi", 1024.0 * 1024.0), ("Gi", 1024.0 * 1024.0 * 1024.0), ("Ti", 1024.0 * 1024.0 * 1024.0 * 1024.0)];
+    const DECIMAL: [(&str, f64); 4] = [("k", 1e3), ("M", 1e6), ("G", 1e9), ("T", 1e12)];
+    let s = s.trim();
+    for (suf, mult) in BINARY.into_iter().chain(DECIMAL) {
+        if let Some(num) = s.strip_suffix(suf) {
+            return num.parse::<f64>().ok().map(|n| n * mult);
+        }
+    }
+    s.parse::<f64>().ok()
+}
+
+/// A cpu Quantity as millicores: `"500m"` -> 500, `"2"` -> 2000, `"0.5"` -> 500.
+fn parse_cpu_millicores(q: &Quantity) -> Option<i64> {
+    let s = q.0.trim();
+    if let Some(m) = s.strip_suffix('m') {
+        return m.parse::<f64>().ok().map(|v| v.round() as i64);
+    }
+    parse_quantity(s).map(|cores| (cores * 1000.0).round() as i64)
+}
+
+/// A memory Quantity as bytes.
+fn parse_memory_bytes(q: &Quantity) -> Option<i64> {
+    parse_quantity(&q.0).map(|b| b.round() as i64)
+}
+
+/// kubelet's cpu.shares formula: `max(2, milliCPU * 1024 / 1000)`. No
+/// request/limit at all still gets the cgroup-default minimum (2), same as
+/// a real BestEffort pod.
+fn cpu_shares_for(cpu_millicores: Option<i64>) -> i64 {
+    match cpu_millicores {
+        Some(m) if m > 0 => ((m * 1024) / 1000).max(2),
+        _ => 2,
+    }
+}
+
+/// Translate a container's `resources` into CRI's `LinuxContainerResources`.
+/// CPU shares come from requests (falling back to limits if there's no
+/// request, matching kubelet); CPU quota/period and the memory limit come
+/// from limits only — a limit-less resource is left at CRI's "unspecified"
+/// zero value, which containerd/runc treat as unconstrained.
+fn linux_resources(resources: Option<&ResourceRequirements>) -> LinuxContainerResources {
+    let requests = resources.and_then(|r| r.requests.as_ref());
+    let limits = resources.and_then(|r| r.limits.as_ref());
+    let cpu_request = requests.and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
+    let cpu_limit = limits.and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
+    let mem_limit = limits.and_then(|m| m.get("memory")).and_then(parse_memory_bytes);
+
+    let (cpu_quota, cpu_period) = match cpu_limit {
+        Some(m) if m > 0 => (CPU_CFS_QUOTA_PERIOD_US * m / 1000, CPU_CFS_QUOTA_PERIOD_US),
+        _ => (0, 0),
+    };
+
+    LinuxContainerResources {
+        cpu_shares: cpu_shares_for(cpu_request.or(cpu_limit)),
+        cpu_quota,
+        cpu_period,
+        memory_limit_in_bytes: mem_limit.unwrap_or(0),
+        ..Default::default()
+    }
+}
+
+/// Translate pod- and container-level `securityContext` into CRI's
+/// `LinuxContainerSecurityContext`. Container-level fields override pod-level
+/// ones wherever Kubernetes defines both (matches real kubelet semantics).
+/// Not translated yet (see docs/GAP_CLOSURE.md): AppArmor profile, SELinux
+/// options, and runAsNonRoot *verification* against the image's actual user
+/// (that needs image inspection, not just pass-through).
+fn linux_security_context(
+    pod_sc: Option<&PodSecurityContext>,
+    container_sc: Option<&SecurityContext>,
+) -> LinuxContainerSecurityContext {
+    let run_as_user = container_sc
+        .and_then(|s| s.run_as_user)
+        .or_else(|| pod_sc.and_then(|s| s.run_as_user));
+    let run_as_group = container_sc
+        .and_then(|s| s.run_as_group)
+        .or_else(|| pod_sc.and_then(|s| s.run_as_group));
+    let privileged = container_sc.and_then(|s| s.privileged).unwrap_or(false);
+    let readonly_rootfs = container_sc.and_then(|s| s.read_only_root_filesystem).unwrap_or(false);
+    let no_new_privs = container_sc.and_then(|s| s.allow_privilege_escalation) == Some(false);
+    let capabilities = container_sc.and_then(|s| s.capabilities.as_ref()).map(|c| Capability {
+        add_capabilities: c.add.clone().unwrap_or_default(),
+        drop_capabilities: c.drop.clone().unwrap_or_default(),
+        ..Default::default()
+    });
+    let supplemental_groups = pod_sc
+        .and_then(|s| s.supplemental_groups.clone())
+        .unwrap_or_default();
+    let seccomp = seccomp_profile(pod_sc, container_sc);
+
+    LinuxContainerSecurityContext {
+        run_as_user: run_as_user.map(|value| Int64Value { value }),
+        run_as_group: run_as_group.map(|value| Int64Value { value }),
+        privileged,
+        readonly_rootfs,
+        no_new_privs,
+        capabilities,
+        supplemental_groups,
+        seccomp,
+        ..Default::default()
+    }
+}
+
+/// Container-level `seccompProfile` wins over the pod-level one, matching
+/// Kubernetes' own override rule. `None` (neither set) means "let the
+/// runtime pick its own default" — leaving CRI's `seccomp` field unset,
+/// same as before this existed.
+fn seccomp_profile(
+    pod_sc: Option<&PodSecurityContext>,
+    container_sc: Option<&SecurityContext>,
+) -> Option<SecurityProfile> {
+    let profile = container_sc
+        .and_then(|s| s.seccomp_profile.as_ref())
+        .or_else(|| pod_sc.and_then(|s| s.seccomp_profile.as_ref()))?;
+    Some(match profile.type_.as_str() {
+        "RuntimeDefault" => SecurityProfile { profile_type: ProfileType::RuntimeDefault as i32, ..Default::default() },
+        "Localhost" => SecurityProfile {
+            profile_type: ProfileType::Localhost as i32,
+            localhost_ref: profile.localhost_profile.clone().unwrap_or_default(),
+        },
+        _ => SecurityProfile { profile_type: ProfileType::Unconfined as i32, ..Default::default() },
+    })
+}
+
+/// Build the CRI `DnsConfig` for a pod, honoring `dnsPolicy` +
+/// custom `dnsConfig`. `dnsPolicy: Default` means "inherit the node's own
+/// resolv.conf" — returning `None` leaves containerd's own default in place,
+/// which is exactly that. `ClusterFirst` (the pod-spec default) only takes
+/// effect if the node was actually configured with cluster DNS servers
+/// (`NODELET_CLUSTER_DNS`); an edge device with no cluster DNS server falls
+/// back to the host's resolv.conf rather than pointing pods at nothing.
+fn dns_config_for(pod: &Pod, cluster_dns: &[String], cluster_domain: &str) -> Option<DnsConfig> {
+    let policy = pod
+        .spec
+        .as_ref()
+        .and_then(|s| s.dns_policy.clone())
+        .unwrap_or_else(|| "ClusterFirst".to_string());
+
+    let mut servers = Vec::new();
+    let mut searches = Vec::new();
+    let mut options = Vec::new();
+
+    if matches!(policy.as_str(), "ClusterFirst" | "ClusterFirstWithHostNet") && !cluster_dns.is_empty() {
+        servers = cluster_dns.to_vec();
+        let ns = pod.metadata.namespace.as_deref().unwrap_or("default");
+        searches = vec![
+            format!("{ns}.svc.{cluster_domain}"),
+            format!("svc.{cluster_domain}"),
+            cluster_domain.to_string(),
+        ];
+        options = vec!["ndots:5".to_string()];
+    } else if policy == "Default" {
+        return None; // explicit "use the host's own resolv.conf" — nothing to set
+    }
+
+    if let Some(dns_config) = pod.spec.as_ref().and_then(|s| s.dns_config.as_ref()) {
+        servers.extend(dns_config.nameservers.clone().unwrap_or_default());
+        searches.extend(dns_config.searches.clone().unwrap_or_default());
+        options.extend(dns_config.options.clone().unwrap_or_default().into_iter().filter_map(|o| {
+            let name = o.name?;
+            Some(match o.value {
+                Some(v) => format!("{name}:{v}"),
+                None => name,
+            })
+        }));
+    }
+
+    if servers.is_empty() && searches.is_empty() && options.is_empty() {
+        None
+    } else {
+        Some(DnsConfig { servers, searches, options })
+    }
 }
 
 /// Return the Kubernetes VolumeSource variant for diagnostics. A volume's
@@ -424,6 +680,59 @@ fn write_volume_dir(
     Ok(())
 }
 
+/// The registry host an image reference pulls from, e.g. `myregistry.io:5000`
+/// from `myregistry.io:5000/team/app:v1`, or `docker.io` for an unqualified
+/// ref like `busybox:latest` (Docker Hub's implicit default registry).
+fn registry_host_for_image(image: &str) -> String {
+    // A single-segment ref (no '/' at all) is always an official Docker Hub
+    // image ("busybox:latest") — its ':' is the tag separator, not a host
+    // port, so it must never reach the "looks like a host" check below.
+    let Some((first_segment, _rest)) = image.split_once('/') else {
+        return "docker.io".to_string();
+    };
+    let looks_like_a_host = first_segment.contains('.') || first_segment.contains(':') || first_segment == "localhost";
+    if looks_like_a_host {
+        first_segment.to_string()
+    } else {
+        "docker.io".to_string()
+    }
+}
+
+/// Extract `{username, password}` for `registry_host` out of a
+/// `kubernetes.io/dockerconfigjson` Secret's `.dockerconfigjson` bytes
+/// (`{"auths": {"<host>": {"username","password"} | {"auth": base64(u:p)}}}`).
+/// Legacy `kubernetes.io/dockercfg` (no `"auths"` wrapper) isn't handled —
+/// dockerconfigjson is what every current `kubectl create secret
+/// docker-registry` produces.
+fn parse_dockerconfigjson(bytes: &[u8], registry_host: &str) -> Option<(String, String)> {
+    let json: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let auths = json.get("auths")?.as_object()?;
+
+    // Docker Hub is recorded under several historical aliases.
+    let candidates: Vec<&str> = if registry_host == "docker.io" {
+        vec!["docker.io", "https://index.docker.io/v1/", "index.docker.io"]
+    } else {
+        vec![registry_host]
+    };
+
+    for key in candidates {
+        let Some(entry) = auths.get(key) else { continue };
+        if let (Some(u), Some(p)) =
+            (entry.get("username").and_then(|v| v.as_str()), entry.get("password").and_then(|v| v.as_str()))
+        {
+            return Some((u.to_string(), p.to_string()));
+        }
+        if let Some(encoded) = entry.get("auth").and_then(|v| v.as_str()) {
+            use base64::Engine;
+            let decoded = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
+            let decoded = String::from_utf8(decoded).ok()?;
+            let (u, p) = decoded.split_once(':')?;
+            return Some((u.to_string(), p.to_string()));
+        }
+    }
+    None
+}
+
 /// Dial a unix-domain CRI socket (e.g. `unix:///run/containerd/containerd.sock`).
 async fn connect_uds(endpoint: &str) -> Result<Channel> {
     let path = endpoint
@@ -446,7 +755,12 @@ async fn connect_uds(endpoint: &str) -> Result<Channel> {
 }
 
 impl CriRuntime {
-    pub async fn connect(endpoint: &str, client: kube::Client) -> Result<Self> {
+    pub async fn connect(
+        endpoint: &str,
+        client: kube::Client,
+        cluster_dns: Vec<String>,
+        cluster_domain: String,
+    ) -> Result<Self> {
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
         let img = ImageServiceClient::new(channel.clone());
@@ -459,6 +773,8 @@ impl CriRuntime {
             rt,
             img,
             client,
+            cluster_dns,
+            cluster_domain,
             rx: Mutex::new(Some(rx)),
             restart_policies: Mutex::new(HashMap::new()),
         })
@@ -698,9 +1014,10 @@ impl CriRuntime {
             .map(|c| c.id))
     }
 
-    async fn run_sandbox(&self, id: &PodId) -> Result<String> {
+    async fn run_sandbox(&self, id: &PodId, dns: Option<DnsConfig>) -> Result<String> {
         let mut rt = self.rt.clone();
-        let config = sandbox_config(id);
+        let mut config = sandbox_config(id);
+        config.dns_config = dns;
         let resp = rt
             .run_pod_sandbox(RunPodSandboxRequest { config: Some(config), runtime_handler: String::new() })
             .await?
@@ -727,9 +1044,11 @@ impl CriRuntime {
         &self,
         sandbox_id: &str,
         id: &PodId,
-        container: &k8s_openapi::api::core::v1::Container,
+        container: &Container,
+        pod_sc: Option<&PodSecurityContext>,
         restart_policy: &str,
         volumes: &HashMap<String, PathBuf>,
+        pull_secrets: &[String],
         envs: &[KeyValue],
     ) -> Result<()> {
         let running_v = ContainerState::ContainerRunning as i32;
@@ -754,20 +1073,66 @@ impl CriRuntime {
             }
         }
 
+        self.create_and_start_container(sandbox_id, id, container, pod_sc, volumes, pull_secrets, envs, false).await
+    }
+
+    /// Resolve `{username, password}` for pulling `image` out of the given
+    /// `imagePullSecrets` (by name, in the Pod's namespace) — the first
+    /// secret with a matching registry host wins, same order kubelet itself
+    /// tries them in. `None` if none match (or none are configured), in
+    /// which case `PullImageRequest.auth` is left unset — fine for public
+    /// images, the pre-existing behavior for everything until now.
+    async fn resolve_pull_auth(&self, namespace: &str, pull_secrets: &[String], image: &str) -> Option<AuthConfig> {
+        let registry_host = registry_host_for_image(image);
+        for name in pull_secrets {
+            let Ok(secret) = Api::<Secret>::namespaced(self.client.clone(), namespace).get(name).await else {
+                continue;
+            };
+            let Some(bytes) = secret.data.as_ref().and_then(|d| d.get(".dockerconfigjson")).map(|b| b.0.clone())
+            else {
+                continue;
+            };
+            if let Some((username, password)) = parse_dockerconfigjson(&bytes, &registry_host) {
+                return Some(AuthConfig { username, password, ..Default::default() });
+            }
+        }
+        None
+    }
+
+    /// The actual pull+create+start, shared by app containers
+    /// (`ensure_container`) and init containers (`ensure_init_containers`) —
+    /// they differ only in *when* to call this and what to do with an
+    /// already-existing container, not in how a fresh one gets built.
+    async fn create_and_start_container(
+        &self,
+        sandbox_id: &str,
+        id: &PodId,
+        container: &Container,
+        pod_sc: Option<&PodSecurityContext>,
+        volumes: &HashMap<String, PathBuf>,
+        pull_secrets: &[String],
+        envs: &[KeyValue],
+        init: bool,
+    ) -> Result<()> {
         let image = container.image.clone().unwrap_or_default();
+        let auth = self.resolve_pull_auth(&id.namespace, pull_secrets, &image).await;
         let image_spec = ImageSpec { image: image.clone(), ..Default::default() };
 
         // Pull the image (idempotent; containerd no-ops if present).
         let mut img = self.img.clone();
         img.pull_image(PullImageRequest {
             image: Some(image_spec.clone()),
-            auth: None,
+            auth,
             sandbox_config: Some(sandbox_config(id)),
         })
         .await
         .context("pulling image")?;
 
         let mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes);
+        let linux = Some(LinuxContainerConfig {
+            resources: Some(linux_resources(container.resources.as_ref())),
+            security_context: Some(linux_security_context(pod_sc, container.security_context.as_ref())),
+        });
 
         let mut rt = self.rt.clone();
         let config = ContainerConfig {
@@ -778,8 +1143,9 @@ impl CriRuntime {
             working_dir: container.working_dir.clone().unwrap_or_default(),
             envs: envs.to_vec(),
             mounts,
-            labels: container_labels(id, &container.name),
+            labels: container_labels(id, &container.name, init),
             log_path: format!("{}_{}.log", container.name, 0),
+            linux,
             ..Default::default()
         };
 
@@ -797,6 +1163,77 @@ impl CriRuntime {
             .await
             .context("starting container")?;
         Ok(())
+    }
+
+    async fn container_exit_code(&self, container_id: &str) -> Result<i32> {
+        let mut rt = self.rt.clone();
+        let resp = rt
+            .container_status(ContainerStatusRequest { container_id: container_id.to_string(), verbose: false })
+            .await
+            .context("ContainerStatus")?
+            .into_inner();
+        Ok(resp.status.map(|s| s.exit_code).unwrap_or(0))
+    }
+
+    /// Drive `spec.initContainers` one at a time, in order — exactly
+    /// kubelet's sequencing: an init container must exit zero before the
+    /// next one (or the app containers) starts. Each call advances at most
+    /// one step (create-if-missing, or notice the front-of-line container
+    /// finished) and reports where things stand; `ensure_pod()` calls this
+    /// on every reconcile until it reports `AllComplete`.
+    async fn ensure_init_containers(
+        &self,
+        sandbox_id: &str,
+        id: &PodId,
+        pod: &Pod,
+        init_containers: &[Container],
+        pod_sc: Option<&PodSecurityContext>,
+        restart_policy: &str,
+        volumes: &HashMap<String, PathBuf>,
+        pull_secrets: &[String],
+        service_env: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<InitProgress> {
+        let running_v = ContainerState::ContainerRunning as i32;
+        let exited_v = ContainerState::ContainerExited as i32;
+        let existing = self.list_pod_containers(sandbox_id).await?;
+
+        for container in init_containers {
+            let existing_ctr = existing.iter().find(|c| {
+                c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false)
+                    && c.labels.get(CTR_INIT_LABEL).map(|v| v == "true").unwrap_or(false)
+            });
+            let exit_code = match existing_ctr {
+                Some(c) if c.state == exited_v => self.container_exit_code(&c.id).await?,
+                _ => 0,
+            };
+
+            match init_container_decision(existing_ctr.map(|c| c.state), running_v, exited_v, exit_code, restart_policy) {
+                InitContainerDecision::Create => {
+                    let envs = self.resolve_container_env(pod, id, container, service_env).await?;
+                    self.create_and_start_container(sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, true)
+                        .await?;
+                    return Ok(InitProgress::Waiting);
+                }
+                InitContainerDecision::Done => continue, // this init container is done — check the next one
+                InitContainerDecision::Failed => {
+                    return Ok(InitProgress::Failed(format!(
+                        "init container {} exited with code {exit_code}",
+                        container.name
+                    )));
+                }
+                InitContainerDecision::Retry => {
+                    // Allowed to retry — clear it out; the next reconcile
+                    // (triggered by this very removal, via the CRI event
+                    // stream) sees no existing container and creates a fresh one.
+                    let c = existing_ctr.expect("Retry only reached when a container exists");
+                    let mut rt = self.rt.clone();
+                    let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
+                    return Ok(InitProgress::Waiting);
+                }
+                InitContainerDecision::StillRunning | InitContainerDecision::Waiting => return Ok(InitProgress::Waiting),
+            }
+        }
+        Ok(InitProgress::AllComplete)
     }
 
     /// Every nodelet-managed sandbox on the node, unfiltered by pod — the
@@ -871,7 +1308,16 @@ impl CriRuntime {
     }
 
     async fn build_status(&self, sandbox_id: &str, restart_policy: &str) -> Result<RuntimeStatus> {
-        let containers = self.list_pod_containers(sandbox_id).await?;
+        // Init containers are excluded here — by the time app containers are
+        // even started, every init container has already exited zero
+        // (ensure_init_containers() gates on that), so counting them would
+        // make `all_exited` true for entirely the wrong reason.
+        let containers: Vec<_> = self
+            .list_pod_containers(sandbox_id)
+            .await?
+            .into_iter()
+            .filter(|c| !c.labels.contains_key(CTR_INIT_LABEL))
+            .collect();
         let running_v = ContainerState::ContainerRunning as i32;
         let exited_v = ContainerState::ContainerExited as i32;
 
@@ -926,6 +1372,7 @@ impl PodRuntime for CriRuntime {
         let id = pod_id(pod);
         let found = self.find_sandbox(&id.namespace, &id.name).await?;
         let ready_state = v1::PodSandboxState::SandboxReady as i32;
+        let dns = dns_config_for(pod, &self.cluster_dns, &self.cluster_domain);
         let sandbox_id = match sandbox_reuse_decision(found.as_ref().map(|(_, s)| *s), ready_state) {
             SandboxDecision::Reuse => found.unwrap().0,
             SandboxDecision::RecreateStale => {
@@ -939,9 +1386,9 @@ impl PodRuntime for CriRuntime {
                 let _ = rt.stop_pod_sandbox(StopPodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
                 let _ = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
                 self.restart_policies.lock().unwrap().remove(&stale_id);
-                self.run_sandbox(&id).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, dns).await.context("RunPodSandbox")?
             }
-            SandboxDecision::CreateFresh => self.run_sandbox(&id).await.context("RunPodSandbox")?,
+            SandboxDecision::CreateFresh => self.run_sandbox(&id, dns).await.context("RunPodSandbox")?,
         };
 
         let restart_policy = pod
@@ -954,6 +1401,14 @@ impl PodRuntime for CriRuntime {
         // Pending-vs-Succeeded call build_status() below does.
         self.restart_policies.lock().unwrap().insert(sandbox_id.clone(), restart_policy.clone());
 
+        let pod_sc = pod.spec.as_ref().and_then(|s| s.security_context.as_ref());
+        let pull_secrets: Vec<String> = pod
+            .spec
+            .as_ref()
+            .and_then(|s| s.image_pull_secrets.as_ref())
+            .map(|refs| refs.iter().map(|r| r.name.clone()).filter(|n| !n.is_empty()).collect())
+            .unwrap_or_default();
+
         let volumes = self.resolve_volumes(pod, &id).await;
         let service_env = if pod.spec.as_ref().and_then(|s| s.enable_service_links) == Some(false) {
             BTreeMap::new()
@@ -962,10 +1417,50 @@ impl PodRuntime for CriRuntime {
                 .await
                 .context("resolving Service environment")?
         };
+
+        let init_containers = pod.spec.as_ref().and_then(|s| s.init_containers.clone()).unwrap_or_default();
+        if !init_containers.is_empty() {
+            let progress = self
+                .ensure_init_containers(
+                    &sandbox_id,
+                    &id,
+                    pod,
+                    &init_containers,
+                    pod_sc,
+                    &restart_policy,
+                    &volumes,
+                    &pull_secrets,
+                    &service_env,
+                )
+                .await?;
+            match progress {
+                InitProgress::Waiting => {
+                    return Ok(RuntimeStatus {
+                        phase: Phase::Pending,
+                        message: Some("waiting for init containers to complete".to_string()),
+                        started_at: None,
+                        pod_ip: None,
+                        containers: Vec::new(),
+                    });
+                }
+                InitProgress::Failed(reason) => {
+                    return Ok(RuntimeStatus {
+                        phase: Phase::Failed,
+                        message: Some(reason),
+                        started_at: None,
+                        pod_ip: None,
+                        containers: Vec::new(),
+                    });
+                }
+                InitProgress::AllComplete => {}
+            }
+        }
+
         if let Some(spec) = pod.spec.as_ref() {
             for c in &spec.containers {
                 let envs = self.resolve_container_env(pod, &id, c, &service_env).await?;
-                self.ensure_container(&sandbox_id, &id, c, &restart_policy, &volumes, &envs).await?;
+                self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs)
+                    .await?;
             }
         }
 
@@ -1060,9 +1555,12 @@ fn sandbox_labels(id: &PodId) -> HashMap<String, String> {
     ])
 }
 
-fn container_labels(id: &PodId, container_name: &str) -> HashMap<String, String> {
+fn container_labels(id: &PodId, container_name: &str, init: bool) -> HashMap<String, String> {
     let mut l = sandbox_labels(id);
     l.insert(CTR_NAME_LABEL.to_string(), container_name.to_string());
+    if init {
+        l.insert(CTR_INIT_LABEL.to_string(), "true".to_string());
+    }
     l
 }
 
@@ -1233,6 +1731,21 @@ mod tests_labels;
 #[cfg(test)]
 #[path = "cri_tests/sandbox_config.rs"]
 mod tests_sandbox_config;
+#[cfg(test)]
+#[path = "cri_tests/linux_resources.rs"]
+mod tests_linux_resources;
+#[cfg(test)]
+#[path = "cri_tests/linux_security_context.rs"]
+mod tests_linux_security_context;
+#[cfg(test)]
+#[path = "cri_tests/dns_config.rs"]
+mod tests_dns_config;
+#[cfg(test)]
+#[path = "cri_tests/registry_auth.rs"]
+mod tests_registry_auth;
+#[cfg(test)]
+#[path = "cri_tests/init_container_decision.rs"]
+mod tests_init_container_decision;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

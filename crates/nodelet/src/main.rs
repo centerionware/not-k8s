@@ -95,9 +95,14 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
             #[cfg(feature = "cri")]
             {
                 info!(endpoint = %cfg.cri_endpoint, "using CRI runtime (containerd)");
-                let rt = runtime::cri::CriRuntime::connect(&cfg.cri_endpoint, client)
-                    .await
-                    .context("connecting to CRI endpoint")?;
+                let rt = runtime::cri::CriRuntime::connect(
+                    &cfg.cri_endpoint,
+                    client,
+                    cfg.cluster_dns.clone(),
+                    cfg.cluster_domain.clone(),
+                )
+                .await
+                .context("connecting to CRI endpoint")?;
                 Ok(Arc::new(rt))
             }
             #[cfg(not(feature = "cri"))]

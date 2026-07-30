@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
 
     println!("== connecting to {socket}");
     let client = kube::Client::try_default().await.context("building kube client")?;
-    let rt = nodelet::runtime::cri::CriRuntime::connect(&socket, client)
+    let rt = nodelet::runtime::cri::CriRuntime::connect(&socket, client, Vec::new(), "cluster.local".to_string())
         .await
         .context("connect to containerd")?;
 

@@ -25,6 +25,8 @@ fn cfg() -> Config {
         disk_path: "/tmp".to_string(),
         disk_pressure_percent: 10,
         gc_interval: Duration::from_secs(300),
+        cluster_dns: Vec::new(),
+        cluster_domain: "cluster.local".to_string(),
     }
 }
 

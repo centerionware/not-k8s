@@ -70,6 +70,14 @@ pub struct Config {
     /// runtime only; no-op on mock). Coarse on purpose — not a poll loop
     /// for pod state, just periodic housekeeping.
     pub gc_interval: Duration,
+    /// Cluster DNS server IPs, injected into a pod's `resolv.conf` when its
+    /// `dnsPolicy` is `ClusterFirst` (the default) — real kubelet's
+    /// `--cluster-dns`. Empty means "no cluster DNS configured", in which
+    /// case pods fall back to the host's own resolv.conf.
+    pub cluster_dns: Vec<String>,
+    /// Real kubelet's `--cluster-domain` — the base domain used to build a
+    /// ClusterFirst pod's DNS search list.
+    pub cluster_domain: String,
 }
 
 impl Config {
@@ -143,6 +151,13 @@ impl Config {
         };
         let gc_interval = Duration::from_secs(env_u64("NODELET_GC_INTERVAL_SECS", 300)?);
 
+        let cluster_dns: Vec<String> = std::env::var("NODELET_CLUSTER_DNS")
+            .ok()
+            .map(|raw| raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+        let cluster_domain =
+            std::env::var("NODELET_CLUSTER_DOMAIN").unwrap_or_else(|_| "cluster.local".to_string());
+
         Ok(Self {
             node_name,
             runtime,
@@ -160,6 +175,8 @@ impl Config {
             disk_path,
             disk_pressure_percent,
             gc_interval,
+            cluster_dns,
+            cluster_domain,
         })
     }
 }

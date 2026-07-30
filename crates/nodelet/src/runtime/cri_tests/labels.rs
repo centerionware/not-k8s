@@ -28,7 +28,7 @@ fn sandbox_labels_has_exactly_three_entries() {
 fn container_labels_include_everything_sandbox_labels_has() {
     let pod_id = id("ns", "n", "u");
     let sandbox = sandbox_labels(&pod_id);
-    let container = container_labels(&pod_id, "app");
+    let container = container_labels(&pod_id, "app", false);
     for (k, v) in &sandbox {
         assert_eq!(container.get(k), Some(v));
     }
@@ -36,14 +36,27 @@ fn container_labels_include_everything_sandbox_labels_has() {
 
 #[test]
 fn container_labels_add_the_container_name_label() {
-    let l = container_labels(&id("ns", "n", "u"), "coredns");
+    let l = container_labels(&id("ns", "n", "u"), "coredns", false);
     assert_eq!(l.get(CTR_NAME_LABEL), Some(&"coredns".to_string()));
 }
 
 #[test]
 fn container_labels_has_exactly_four_entries() {
-    let l = container_labels(&id("ns", "n", "u"), "app");
+    let l = container_labels(&id("ns", "n", "u"), "app", false);
     assert_eq!(l.len(), 4);
+}
+
+#[test]
+fn init_container_labels_add_a_fifth_init_entry() {
+    let l = container_labels(&id("ns", "n", "u"), "setup", true);
+    assert_eq!(l.len(), 5);
+    assert_eq!(l.get(CTR_INIT_LABEL), Some(&"true".to_string()));
+}
+
+#[test]
+fn non_init_container_has_no_init_label() {
+    let l = container_labels(&id("ns", "n", "u"), "app", false);
+    assert_eq!(l.get(CTR_INIT_LABEL), None);
 }
 
 #[test]
