@@ -45,7 +45,8 @@ use v1::{
     GetEventsRequest, ImageSpec, KeyValue, LinuxPodSandboxConfig, LinuxSandboxSecurityContext,
     ListContainersRequest, ListPodSandboxRequest, NamespaceMode, NamespaceOption, PodSandboxConfig,
     PodSandboxFilter, PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest,
-    RemovePodSandboxRequest, RunPodSandboxRequest, StartContainerRequest, StopPodSandboxRequest,
+    RemoveContainerRequest, RemovePodSandboxRequest, RunPodSandboxRequest, StartContainerRequest,
+    StopPodSandboxRequest,
 };
 
 const POD_UID_LABEL: &str = "nodelet.dev/pod-uid";
@@ -57,6 +58,14 @@ pub struct CriRuntime {
     rt: RuntimeServiceClient<Channel>,
     img: ImageServiceClient<Channel>,
     rx: Mutex<Option<UnboundedReceiver<String>>>,
+    // sandbox_id -> the owning Pod's restartPolicy ("Always"/"OnFailure"/"Never"),
+    // recorded whenever ensure_pod() runs. build_status() needs this to decide
+    // whether an all-exited container set means the pod is genuinely done
+    // (Never/OnFailure-with-zero-exit) or just mid-restart (Always — see the
+    // module-level restart-on-exit comment on ensure_container). The
+    // event-driven status() path has no Pod object to read it from directly
+    // (only namespace+name), hence the side table instead of a parameter.
+    restart_policies: Mutex<HashMap<String, String>>,
 }
 
 /// Identity extracted from a Pod object.
@@ -110,7 +119,7 @@ impl CriRuntime {
         let (tx, rx) = unbounded_channel();
         tokio::spawn(event_loop(channel, tx));
 
-        Ok(Self { rt, img, rx: Mutex::new(Some(rx)) })
+        Ok(Self { rt, img, rx: Mutex::new(Some(rx)), restart_policies: Mutex::new(HashMap::new()) })
     }
 
     /// Look up our sandbox for a pod by namespace+name. These labels are always
@@ -155,18 +164,48 @@ impl CriRuntime {
         Ok(resp.pod_sandbox_id)
     }
 
+    // Restart-on-exit: without this, a container that crashes (any reason —
+    // app bug, a bad Corefile, transient resource pressure) sits exited
+    // forever, `already` matches by name alone regardless of state, and
+    // ensure_container becomes a permanent no-op for it. build_status() then
+    // sees "all containers exited" and reports the *Pod* as Succeeded — a
+    // terminal phase Kubernetes' ReplicaSet controller treats as permanently
+    // inactive (isPodActive excludes Succeeded/Failed), so it creates a
+    // replacement. Forever, once per crash. Confirmed for real: this is
+    // exactly what was driving unbounded coredns pod creation — coredns's
+    // container was exiting seconds after starting, nodelet never restarted
+    // it, and every single exit silently manufactured a brand new pod
+    // instead of the crash-looping restart-in-place a real kubelet gives a
+    // restartPolicy: Always pod (the default, and what every Deployment
+    // uses). "Never" is left alone — matches the one-shot Job-style pods
+    // that policy is for.
     async fn ensure_container(
         &self,
         sandbox_id: &str,
         id: &PodId,
         container: &k8s_openapi::api::core::v1::Container,
+        restart_policy: &str,
     ) -> Result<()> {
+        let running_v = ContainerState::ContainerRunning as i32;
         let existing = self.list_pod_containers(sandbox_id).await?;
-        let already = existing.iter().any(|c| {
-            c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false)
-        });
-        if already {
-            return Ok(());
+        let existing_ctr = existing
+            .iter()
+            .find(|c| c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false));
+
+        match existing_ctr {
+            Some(c) if c.state == running_v => return Ok(()),
+            Some(_) if restart_policy == "Never" => return Ok(()),
+            Some(c) => {
+                // Not running and this pod is allowed to restart — clear the
+                // stale container out so the create-below gets a fresh one.
+                // Best-effort: if it's already gone by the time we ask, or
+                // CRI won't remove it for some other reason, fall through
+                // and let CreateContainer surface any real problem instead
+                // of masking it here.
+                let mut rt = self.rt.clone();
+                let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
+            }
+            None => {}
         }
 
         let image = container.image.clone().unwrap_or_default();
@@ -234,7 +273,7 @@ impl CriRuntime {
         (!ip.is_empty()).then_some(ip)
     }
 
-    async fn build_status(&self, sandbox_id: &str) -> Result<RuntimeStatus> {
+    async fn build_status(&self, sandbox_id: &str, restart_policy: &str) -> Result<RuntimeStatus> {
         let containers = self.list_pod_containers(sandbox_id).await?;
         let running_v = ContainerState::ContainerRunning as i32;
         let exited_v = ContainerState::ContainerExited as i32;
@@ -258,9 +297,19 @@ impl CriRuntime {
             });
         }
 
+        // all_exited only means "this pod is done" for restartPolicy: Never
+        // (or OnFailure, treated the same here — the CRI status doesn't give
+        // us per-container exit codes to distinguish "OnFailure but all
+        // exited zero" from "OnFailure and one failed", and both still
+        // report Pending/Succeeded reasonably either way). For the default,
+        // overwhelmingly common restartPolicy: Always (every Deployment,
+        // including coredns), a container exiting is never terminal —
+        // ensure_container() above just restarted it — so report Pending
+        // rather than Succeeded: never hand the ReplicaSet controller a
+        // terminal phase for a pod that's still supposed to be alive.
         let phase = if any_running {
             Phase::Running
-        } else if all_exited {
+        } else if all_exited && restart_policy == "Never" {
             Phase::Succeeded
         } else {
             Phase::Pending
@@ -289,13 +338,23 @@ impl PodRuntime for CriRuntime {
             None => self.run_sandbox(&id).await.context("RunPodSandbox")?,
         };
 
+        let restart_policy = pod
+            .spec
+            .as_ref()
+            .and_then(|s| s.restart_policy.clone())
+            .unwrap_or_else(|| "Always".to_string());
+        // Recorded for status()'s event-driven path, which only gets
+        // namespace+name (no Pod object) and needs this to make the same
+        // Pending-vs-Succeeded call build_status() below does.
+        self.restart_policies.lock().unwrap().insert(sandbox_id.clone(), restart_policy.clone());
+
         if let Some(spec) = pod.spec.as_ref() {
             for c in &spec.containers {
-                self.ensure_container(&sandbox_id, &id, c).await?;
+                self.ensure_container(&sandbox_id, &id, c, &restart_policy).await?;
             }
         }
 
-        self.build_status(&sandbox_id).await
+        self.build_status(&sandbox_id, &restart_policy).await
     }
 
     async fn remove_pod(&self, namespace: &str, name: &str) -> Result<()> {
@@ -305,16 +364,26 @@ impl PodRuntime for CriRuntime {
             let _ = rt
                 .stop_pod_sandbox(StopPodSandboxRequest { pod_sandbox_id: sandbox_id.clone() })
                 .await;
-            rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: sandbox_id })
+            rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: sandbox_id.clone() })
                 .await
                 .context("RemovePodSandbox")?;
+            self.restart_policies.lock().unwrap().remove(&sandbox_id);
         }
         Ok(())
     }
 
     async fn status(&self, namespace: &str, name: &str) -> Result<Option<RuntimeStatus>> {
         match self.find_sandbox(namespace, name).await? {
-            Some(sandbox_id) => Ok(Some(self.build_status(&sandbox_id).await?)),
+            Some(sandbox_id) => {
+                let restart_policy = self
+                    .restart_policies
+                    .lock()
+                    .unwrap()
+                    .get(&sandbox_id)
+                    .cloned()
+                    .unwrap_or_else(|| "Always".to_string());
+                Ok(Some(self.build_status(&sandbox_id, &restart_policy).await?))
+            }
             None => Ok(None),
         }
     }
