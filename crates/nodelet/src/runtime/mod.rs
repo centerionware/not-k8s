@@ -82,4 +82,33 @@ pub trait PodRuntime: Send + Sync {
     /// Called once at startup; the controller owns the receiver thereafter.
     /// Returning `None` means the runtime produces no async events.
     fn take_event_rx(&self) -> Option<UnboundedReceiver<String>>;
+
+    /// Run `command` inside the named pod's named container and report
+    /// whether it exited zero (exec-probe semantics). Default: always
+    /// succeeds — runtimes with nothing real to exec into (mock) have no
+    /// way to fail, so an exec probe against one is a no-op pass rather
+    /// than a hard error.
+    async fn exec(&self, namespace: &str, name: &str, container: &str, command: &[String]) -> anyhow::Result<bool> {
+        let _ = (namespace, name, container, command);
+        Ok(true)
+    }
+
+    /// Kill just this one container (liveness-probe-triggered restart). The
+    /// next `ensure_pod()` call recreates it via the runtime's normal
+    /// "missing container -> create fresh" path, so this only needs to make
+    /// the old one gone. Default: no-op — nothing real to restart (mock).
+    async fn restart_container(&self, namespace: &str, name: &str, container: &str) -> anyhow::Result<()> {
+        let _ = (namespace, name, container);
+        Ok(())
+    }
+
+    /// Remove any sandbox/container/image this runtime knows about that's
+    /// no longer referenced — orphaned pods (deleted from the apiserver
+    /// while nodelet wasn't watching) and unused images. `live_pod_keys` is
+    /// every `namespace/name` currently bound to this node per the
+    /// apiserver. Default: no-op — nothing real to collect (mock).
+    async fn gc(&self, live_pod_keys: &std::collections::HashSet<String>) -> anyhow::Result<()> {
+        let _ = live_pod_keys;
+        Ok(())
+    }
 }

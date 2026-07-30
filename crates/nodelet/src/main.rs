@@ -60,6 +60,10 @@ async fn main() -> Result<()> {
     // Cheap, frequent liveness (Lease) decoupled from infrequent full status push.
     tokio::spawn(heartbeat_loop(client.clone(), cfg.clone()));
 
+    // Coarse periodic housekeeping (orphaned sandboxes, unreferenced
+    // images) — a no-op on the mock runtime, see PodRuntime::gc()'s default.
+    tokio::spawn(gc_loop(client.clone(), runtime.clone(), cfg.clone()));
+
     // ClusterIP/NodePort routing (nftables). No-op if disabled or if `nft`
     // isn't usable — pods and direct pod-IP traffic work either way.
     if cfg.service_proxy {
@@ -103,6 +107,40 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                     "NODELET_RUNTIME=cri requires building with `--features cri` (containerd support)"
                 )
             }
+        }
+    }
+}
+
+/// Periodically list Pods bound to this node and hand the runtime the set
+/// of keys still live, so it can remove anything it has that the apiserver
+/// doesn't (see `gc.rs`).
+async fn gc_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
+    use k8s_openapi::api::core::v1::Pod;
+    use kube::api::{Api, ListParams};
+
+    loop {
+        tokio::time::sleep(cfg.gc_interval).await;
+
+        let api: Api<Pod> = Api::all(client.clone());
+        let params = ListParams::default().fields(&format!("spec.nodeName={}", cfg.node_name));
+        let live_pod_keys = match api.list(&params).await {
+            Ok(list) => list
+                .items
+                .iter()
+                .filter_map(|p| {
+                    let ns = p.metadata.namespace.as_deref().unwrap_or("default");
+                    let name = p.metadata.name.as_deref()?;
+                    Some(nodelet::runtime::pod_key(ns, name))
+                })
+                .collect(),
+            Err(e) => {
+                warn!(error = ?e, "gc: failed to list pods; skipping this cycle");
+                continue;
+            }
+        };
+
+        if let Err(e) = runtime.gc(&live_pod_keys).await {
+            warn!(error = ?e, "gc: cycle failed");
         }
     }
 }

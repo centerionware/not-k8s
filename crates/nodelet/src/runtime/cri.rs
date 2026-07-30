@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{ConfigMap, EnvFromSource, EnvVarSource, Pod, Secret, Service, Volume};
 use k8s_openapi::jiff::Timestamp;
 use kube::api::{Api, ListParams};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -45,10 +45,11 @@ use v1::runtime_service_client::RuntimeServiceClient;
 use v1::{
     ContainerConfig, ContainerFilter, ContainerMetadata, ContainerState, CreateContainerRequest,
     GetEventsRequest, ImageSpec, KeyValue, LinuxPodSandboxConfig, LinuxSandboxSecurityContext,
-    ListContainersRequest, ListPodSandboxRequest, NamespaceMode, NamespaceOption, PodSandboxConfig,
-    PodSandboxFilter, PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest,
-    Mount, RemoveContainerRequest, RemovePodSandboxRequest, RunPodSandboxRequest,
-    StartContainerRequest, StopPodSandboxRequest,
+    ListContainersRequest, ListImagesRequest, ListPodSandboxRequest, NamespaceMode, NamespaceOption,
+    PodSandboxConfig, PodSandboxFilter, PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest,
+    Mount, RemoveContainerRequest, RemoveImageRequest, RemovePodSandboxRequest, RunPodSandboxRequest,
+    StartContainerRequest, StopContainerRequest, StopPodSandboxRequest,
+    ExecSyncRequest,
 };
 
 /// Where ConfigMap/Secret volume contents get materialized on the host, one
@@ -688,6 +689,15 @@ impl CriRuntime {
         Ok(resp.containers)
     }
 
+    /// Find a container's CRI id within a sandbox by its `nodelet.dev/container-name` label.
+    async fn find_container_id(&self, sandbox_id: &str, container_name: &str) -> Result<Option<String>> {
+        let existing = self.list_pod_containers(sandbox_id).await?;
+        Ok(existing
+            .into_iter()
+            .find(|c| c.labels.get(CTR_NAME_LABEL).map(|n| n == container_name).unwrap_or(false))
+            .map(|c| c.id))
+    }
+
     async fn run_sandbox(&self, id: &PodId) -> Result<String> {
         let mut rt = self.rt.clone();
         let config = sandbox_config(id);
@@ -786,6 +796,63 @@ impl CriRuntime {
         rt.start_container(StartContainerRequest { container_id: created.container_id })
             .await
             .context("starting container")?;
+        Ok(())
+    }
+
+    /// Every nodelet-managed sandbox on the node, unfiltered by pod — the
+    /// `find_sandbox()` lookups elsewhere always scope to one pod; GC needs
+    /// the reverse view (every sandbox, checked against the apiserver).
+    async fn list_all_sandboxes(&self) -> Result<Vec<(String, String, String)>> {
+        let mut rt = self.rt.clone();
+        let resp = rt.list_pod_sandbox(ListPodSandboxRequest { filter: None }).await?.into_inner();
+        Ok(resp
+            .items
+            .into_iter()
+            .filter_map(|s| Some((s.labels.get(POD_NS_LABEL)?.clone(), s.labels.get(POD_NAME_LABEL)?.clone(), s.id)))
+            .collect())
+    }
+
+    async fn gc_orphaned_sandboxes(&self, live_pod_keys: &HashSet<String>) -> Result<()> {
+        let sandboxes = self.list_all_sandboxes().await?;
+        let orphans = crate::gc::orphaned_sandboxes(&sandboxes, live_pod_keys);
+        for sandbox_id in orphans {
+            info!(sandbox = %sandbox_id, "gc: removing orphaned sandbox (pod no longer in apiserver)");
+            let mut rt = self.rt.clone();
+            let _ = rt.stop_pod_sandbox(StopPodSandboxRequest { pod_sandbox_id: sandbox_id.clone() }).await;
+            if let Err(e) = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: sandbox_id.clone() }).await {
+                warn!(sandbox = %sandbox_id, error = ?e, "gc: failed to remove orphaned sandbox");
+            }
+            self.restart_policies.lock().unwrap().remove(&sandbox_id);
+        }
+        Ok(())
+    }
+
+    async fn gc_unreferenced_images(&self) -> Result<()> {
+        let mut rt = self.rt.clone();
+        let containers = rt
+            .list_containers(ListContainersRequest { filter: None })
+            .await?
+            .into_inner()
+            .containers;
+        let referenced: HashSet<String> = containers
+            .into_iter()
+            .filter_map(|c| c.image.map(|i| i.image))
+            .collect();
+
+        let mut img = self.img.clone();
+        let images = img.list_images(ListImagesRequest { filter: None }).await?.into_inner().images;
+        let refs: Vec<crate::gc::ImageRef> = images
+            .into_iter()
+            .map(|i| crate::gc::ImageRef { id: i.id, repo_tags: i.repo_tags, repo_digests: i.repo_digests })
+            .collect();
+
+        for image_id in crate::gc::images_to_gc(&refs, &referenced) {
+            info!(image = %image_id, "gc: removing unreferenced image");
+            let image_spec = ImageSpec { image: image_id.clone(), ..Default::default() };
+            if let Err(e) = img.remove_image(RemoveImageRequest { image: Some(image_spec) }).await {
+                warn!(image = %image_id, error = ?e, "gc: failed to remove unreferenced image");
+            }
+        }
         Ok(())
     }
 
@@ -938,6 +1005,50 @@ impl PodRuntime for CriRuntime {
 
     fn take_event_rx(&self) -> Option<UnboundedReceiver<String>> {
         self.rx.lock().unwrap().take()
+    }
+
+    async fn exec(&self, namespace: &str, name: &str, container: &str, command: &[String]) -> Result<bool> {
+        let Some((sandbox_id, _)) = self.find_sandbox(namespace, name).await? else {
+            return Ok(false); // pod gone; nothing to exec into
+        };
+        let Some(container_id) = self.find_container_id(&sandbox_id, container).await? else {
+            return Ok(false); // container gone (mid-restart); treat as a failed probe, not an error
+        };
+        let mut rt = self.rt.clone();
+        let resp = rt
+            .exec_sync(ExecSyncRequest {
+                container_id,
+                cmd: command.to_vec(),
+                timeout: 0, // caller (probes.rs) already bounds this with its own tokio::time::timeout
+            })
+            .await
+            .context("ExecSync")?
+            .into_inner();
+        Ok(resp.exit_code == 0)
+    }
+
+    async fn restart_container(&self, namespace: &str, name: &str, container: &str) -> Result<()> {
+        let Some((sandbox_id, _)) = self.find_sandbox(namespace, name).await? else {
+            return Ok(()); // pod already gone; nothing to restart
+        };
+        let Some(container_id) = self.find_container_id(&sandbox_id, container).await? else {
+            return Ok(()); // already gone; the next ensure_pod() will create it fresh anyway
+        };
+        let mut rt = self.rt.clone();
+        // Best-effort stop before remove: a container that's still alive
+        // (this is a *liveness* failure, not necessarily a crash) needs to
+        // actually be killed, not just have its CRI record dropped.
+        let _ = rt
+            .stop_container(StopContainerRequest { container_id: container_id.clone(), timeout: 10 })
+            .await;
+        rt.remove_container(RemoveContainerRequest { container_id }).await.context("RemoveContainerRequest")?;
+        Ok(())
+    }
+
+    async fn gc(&self, live_pod_keys: &HashSet<String>) -> Result<()> {
+        self.gc_orphaned_sandboxes(live_pod_keys).await?;
+        self.gc_unreferenced_images().await?;
+        Ok(())
     }
 }
 

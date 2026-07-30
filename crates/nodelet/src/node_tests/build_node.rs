@@ -21,6 +21,10 @@ fn cfg() -> Config {
         service_proxy: true,
         ip_family: crate::config::IpFamily::V4,
         lb_method: crate::config::LbMethod::Random,
+        memory_pressure_threshold_bytes: 100 * 1024 * 1024,
+        disk_path: "/tmp".to_string(),
+        disk_pressure_percent: 10,
+        gc_interval: Duration::from_secs(300),
     }
 }
 

@@ -9,6 +9,7 @@
 //! There is no periodic relist and no per-second polling (no PLEG). We react to
 //! edges, then reconcile the one pod that changed.
 
+use crate::probes::{self, HealthMap};
 use crate::runtime::{Phase, PodRuntime, RuntimeStatus};
 use anyhow::Result;
 use futures::StreamExt;
@@ -22,9 +23,11 @@ use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client};
 use serde_json::Value;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 pub struct PodController {
@@ -33,13 +36,62 @@ pub struct PodController {
     node_name: String,
     host_ip: String,
     events: Option<UnboundedReceiver<String>>,
+    /// Per-container liveness/readiness state, written by probe supervisor
+    /// tasks and read by build_pod_status(). Shared (not owned per-pod)
+    /// because build_pod_status() is a free function reachable from the
+    /// detached schedule_retry() task too.
+    health: HealthMap,
+    /// One probe-supervisor task per pod key, so re-reconciling an
+    /// unchanged pod doesn't spawn duplicates. Aborted on teardown.
+    probe_tasks: Mutex<HashMap<String, JoinHandle<()>>>,
 }
 
 impl PodController {
     pub fn new(client: Client, runtime: Arc<dyn PodRuntime>, node_name: String) -> Self {
         let host_ip = crate::node::detect_internal_ip();
         let events = runtime.take_event_rx();
-        Self { client, runtime, node_name, host_ip, events }
+        Self {
+            client,
+            runtime,
+            node_name,
+            host_ip,
+            events,
+            health: probes::new_health_map(),
+            probe_tasks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Spawn a probe supervisor for this pod if it declares any probes and
+    /// one isn't already running for it. Idempotent per pod key — cheap to
+    /// call from every reconcile().
+    fn ensure_probe_supervisor(&self, pod: &Pod, ns: &str, name: &str, pod_ip: Option<&str>) {
+        let key = crate::runtime::pod_key(ns, name);
+        let containers = pod.spec.as_ref().map(|s| s.containers.clone()).unwrap_or_default();
+        if !probes::has_any_probe(&containers) {
+            return;
+        }
+        let Some(pod_ip) = pod_ip else { return }; // no IP yet; wait for the next reconcile
+        let mut tasks = self.probe_tasks.lock().unwrap();
+        if tasks.contains_key(&key) {
+            return;
+        }
+        let handle = probes::spawn(
+            self.runtime.clone(),
+            self.health.clone(),
+            ns.to_string(),
+            name.to_string(),
+            containers,
+            pod_ip.to_string(),
+        );
+        tasks.insert(key, handle);
+    }
+
+    fn stop_probe_supervisor(&self, ns: &str, name: &str) {
+        let key = crate::runtime::pod_key(ns, name);
+        if let Some(handle) = self.probe_tasks.lock().unwrap().remove(&key) {
+            handle.abort();
+        }
+        probes::clear_pod_health(&self.health, ns, name);
     }
 
     /// Run the reconcile loop. Returns only if the watch stream terminates;
@@ -97,8 +149,9 @@ impl PodController {
         match self.runtime.ensure_pod(&pod).await {
             Ok(status) => {
                 debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured");
+                self.ensure_probe_supervisor(&pod, &ns, &name, status.pod_ip.as_deref());
                 let prev = pod.status.as_ref();
-                if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev).await {
+                if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev, &self.health).await {
                     warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status");
                 }
             }
@@ -128,6 +181,7 @@ impl PodController {
         let client = self.client.clone();
         let runtime = self.runtime.clone();
         let host_ip = self.host_ip.clone();
+        let health = self.health.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(5)).await;
             let api: Api<Pod> = Api::namespaced(client.clone(), &ns);
@@ -139,7 +193,7 @@ impl PodController {
                 Ok(status) => {
                     debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured (retry)");
                     let prev = pod.status.as_ref();
-                    if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev).await {
+                    if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev, &health).await {
                         warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status (retry)");
                     }
                 }
@@ -150,6 +204,7 @@ impl PodController {
 
     async fn teardown(&self, pod: &Pod) {
         if let Some((ns, name)) = key_parts(pod) {
+            self.stop_probe_supervisor(&ns, &name);
             if let Err(e) = self.runtime.remove_pod(&ns, &name).await {
                 warn!(pod = %format!("{ns}/{name}"), error = ?e, "remove_pod failed");
             } else {
@@ -173,7 +228,10 @@ impl PodController {
         let api: Api<Pod> = Api::namespaced(self.client.clone(), ns);
         match api.get_opt(name).await {
             Ok(Some(p)) => {
-                if let Err(e) = write_status(&self.client, &self.host_ip, ns, name, &status, p.status.as_ref()).await {
+                self.ensure_probe_supervisor(&p, ns, name, status.pod_ip.as_deref());
+                if let Err(e) =
+                    write_status(&self.client, &self.host_ip, ns, name, &status, p.status.as_ref(), &self.health).await
+                {
                     warn!(pod = %key, error = ?e, "failed to write pod status");
                 } else {
                     debug!(pod = %key, phase = status.phase.as_str(), "status updated (event-driven)");
@@ -194,9 +252,10 @@ async fn write_status(
     name: &str,
     rt: &RuntimeStatus,
     prev: Option<&PodStatus>,
+    health: &HealthMap,
 ) -> Result<()> {
     let api: Api<Pod> = Api::namespaced(client.clone(), ns);
-    let status = build_pod_status(host_ip, rt, prev);
+    let status = build_pod_status(host_ip, ns, name, rt, prev, health);
     if !status_patch_changes(prev, &status) {
         debug!(pod = %format!("{ns}/{name}"), "skipped unchanged pod status patch");
         return Ok(());
@@ -243,7 +302,14 @@ fn merge_patch_changes(current: Option<&Value>, patch: &Value) -> bool {
 /// real changed. Preserving unchanged timestamps makes an unchanged status
 /// patch a true no-op (identical to the stored object), so the apiserver
 /// doesn't bump resourceVersion and the loop breaks.
-fn build_pod_status(host_ip: &str, rt: &RuntimeStatus, prev: Option<&PodStatus>) -> PodStatus {
+fn build_pod_status(
+    host_ip: &str,
+    ns: &str,
+    name: &str,
+    rt: &RuntimeStatus,
+    prev: Option<&PodStatus>,
+    health: &HealthMap,
+) -> PodStatus {
     let running = rt.phase == Phase::Running;
     let prev_time = |type_: &str, status: &str| -> Option<Time> {
         prev?
@@ -260,14 +326,26 @@ fn build_pod_status(host_ip: &str, rt: &RuntimeStatus, prev: Option<&PodStatus>)
         PodCondition { type_: type_.to_string(), status, last_transition_time, ..Default::default() }
     };
 
-    let container_statuses = rt
+    // A container is only actually Ready if it's running *and* its probe
+    // supervisor (if any — probes::container_health defaults to healthy
+    // when there's no supervisor tracking it) agrees: started (no startup
+    // probe still pending) and passing its readiness probe.
+    let container_ready = |c: &crate::runtime::ContainerRuntimeStatus| {
+        if !c.running {
+            return false;
+        }
+        let h = probes::container_health(health, ns, name, &c.name);
+        h.started && h.ready
+    };
+
+    let container_statuses: Vec<ContainerStatus> = rt
         .containers
         .iter()
         .map(|c| ContainerStatus {
             name: c.name.clone(),
             image: c.image.clone(),
             image_id: String::new(),
-            ready: c.ready,
+            ready: container_ready(c),
             restart_count: 0,
             started: Some(c.running),
             container_id: c.container_id.clone(),
@@ -291,6 +369,8 @@ fn build_pod_status(host_ip: &str, rt: &RuntimeStatus, prev: Option<&PodStatus>)
         })
         .collect();
 
+    let all_ready = running && container_statuses.iter().all(|c| c.ready);
+
     let pod_ips = rt
         .pod_ip
         .as_ref()
@@ -301,8 +381,8 @@ fn build_pod_status(host_ip: &str, rt: &RuntimeStatus, prev: Option<&PodStatus>)
         conditions: Some(vec![
             cond("Initialized", true),
             cond("PodScheduled", true),
-            cond("ContainersReady", running),
-            cond("Ready", running),
+            cond("ContainersReady", all_ready),
+            cond("Ready", all_ready),
         ]),
         container_statuses: Some(container_statuses),
         host_ip: Some(host_ip.to_string()),

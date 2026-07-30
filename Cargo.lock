@@ -1112,6 +1112,7 @@ dependencies = [
  "hyper-util",
  "k8s-openapi",
  "kube",
+ "libc",
  "prost",
  "prost-types",
  "rustls",

@@ -4,7 +4,10 @@
 //! test) can drive the same code the binary runs. See `main.rs` for the agent.
 
 pub mod config;
+pub mod gc;
+pub mod metrics;
 pub mod node;
 pub mod pods;
+pub mod probes;
 pub mod runtime;
 pub mod svc;

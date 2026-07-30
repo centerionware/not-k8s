@@ -55,6 +55,21 @@ pub struct Config {
     pub service_proxy: bool,
     pub ip_family: IpFamily,
     pub lb_method: LbMethod,
+    /// MemoryPressure condition fires when `/proc/meminfo`'s MemAvailable
+    /// drops below this (default 100Mi, matching kubelet's default eviction
+    /// threshold `memory.available<100Mi`).
+    pub memory_pressure_threshold_bytes: u64,
+    /// Filesystem path DiskPressure is measured against (default: nodelet's
+    /// own state dir, since that's where images/volumes/logs actually land).
+    pub disk_path: String,
+    /// DiskPressure condition fires when available space on `disk_path`
+    /// drops below this percent (default 10, matching kubelet's default
+    /// `nodefs.available<10%`).
+    pub disk_pressure_percent: u8,
+    /// How often orphaned-sandbox and unreferenced-image GC runs (cri
+    /// runtime only; no-op on mock). Coarse on purpose — not a poll loop
+    /// for pod state, just periodic housekeeping.
+    pub gc_interval: Duration,
 }
 
 impl Config {
@@ -119,6 +134,15 @@ impl Config {
             ),
         };
 
+        let memory_pressure_threshold_bytes =
+            env_u64("NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES", 100 * 1024 * 1024)?;
+        let disk_path = std::env::var("NODELET_DISK_PATH").unwrap_or_else(|_| "/var/lib/nodelet".to_string());
+        let disk_pressure_percent = match std::env::var("NODELET_DISK_PRESSURE_PERCENT") {
+            Ok(v) => v.parse().context("NODELET_DISK_PRESSURE_PERCENT must be an integer 0-100")?,
+            Err(_) => 10u8,
+        };
+        let gc_interval = Duration::from_secs(env_u64("NODELET_GC_INTERVAL_SECS", 300)?);
+
         Ok(Self {
             node_name,
             runtime,
@@ -132,6 +156,10 @@ impl Config {
             service_proxy,
             ip_family,
             lb_method,
+            memory_pressure_threshold_bytes,
+            disk_path,
+            disk_pressure_percent,
+            gc_interval,
         })
     }
 }

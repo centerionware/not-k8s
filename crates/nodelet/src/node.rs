@@ -93,7 +93,7 @@ fn read_os_pretty_name() -> String {
     std::env::consts::OS.to_string()
 }
 
-fn conditions(ready: bool) -> Vec<NodeCondition> {
+fn conditions(ready: bool, pressure: &crate::metrics::Pressure) -> Vec<NodeCondition> {
     let mk = |type_: &str, status: &str, reason: &str, message: &str| NodeCondition {
         type_: type_.to_string(),
         status: status.to_string(),
@@ -109,8 +109,16 @@ fn conditions(ready: bool) -> Vec<NodeCondition> {
             "NodeletReady",
             "nodelet is posting status",
         ),
-        mk("MemoryPressure", "False", "KubeletHasSufficientMemory", "sufficient memory"),
-        mk("DiskPressure", "False", "KubeletHasNoDiskPressure", "no disk pressure"),
+        if pressure.memory {
+            mk("MemoryPressure", "True", "KubeletHasInsufficientMemory", "available memory below threshold")
+        } else {
+            mk("MemoryPressure", "False", "KubeletHasSufficientMemory", "sufficient memory")
+        },
+        if pressure.disk {
+            mk("DiskPressure", "True", "KubeletHasDiskPressure", "available disk space below threshold")
+        } else {
+            mk("DiskPressure", "False", "KubeletHasNoDiskPressure", "no disk pressure")
+        },
         mk("PIDPressure", "False", "KubeletHasSufficientPID", "sufficient PIDs"),
     ]
 }
@@ -156,10 +164,15 @@ fn build_node(cfg: &Config) -> Node {
 
 fn build_status(cfg: &Config, ready: bool) -> NodeStatus {
     let cap = capacity_map(cfg);
+    let pressure = crate::metrics::read_pressure(
+        &cfg.disk_path,
+        cfg.memory_pressure_threshold_bytes,
+        cfg.disk_pressure_percent,
+    );
     NodeStatus {
         capacity: Some(cap.clone()),
         allocatable: Some(cap),
-        conditions: Some(conditions(ready)),
+        conditions: Some(conditions(ready, &pressure)),
         node_info: Some(system_info(cfg)),
         addresses: Some(vec![
             NodeAddress { type_: "InternalIP".to_string(), address: detect_internal_ip() },
