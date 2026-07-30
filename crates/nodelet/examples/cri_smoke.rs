@@ -2,7 +2,12 @@
 //!
 //! Drives the exact code path the node agent uses — `CriRuntime::ensure_pod`
 //! (RunPodSandbox → PullImage → CreateContainer → StartContainer), then
-//! `status`, then `remove_pod` — against a live CRI socket. No apiserver needed.
+//! `status`, then `remove_pod` — against a live CRI socket.
+//!
+//! Needs a reachable apiserver now too (KUBECONFIG or in-cluster config):
+//! CriRuntime resolves ConfigMap/Secret volumes by fetching them, so it
+//! always needs a kube::Client to construct, even though this smoke test's
+//! own pod has no volumes and never actually calls out to it.
 //!
 //! Usage (must reach the socket; usually root):
 //!   sudo ./target/debug/examples/cri_smoke [SOCKET] [IMAGE]
@@ -25,7 +30,8 @@ async fn main() -> Result<()> {
     let image = args.next().unwrap_or_else(|| "docker.io/library/busybox:latest".to_string());
 
     println!("== connecting to {socket}");
-    let rt = nodelet::runtime::cri::CriRuntime::connect(&socket)
+    let client = kube::Client::try_default().await.context("building kube client")?;
+    let rt = nodelet::runtime::cri::CriRuntime::connect(&socket, client)
         .await
         .context("connect to containerd")?;
 

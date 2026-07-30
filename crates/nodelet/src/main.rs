@@ -46,8 +46,10 @@ async fn main() -> Result<()> {
         .await
         .context("building kube client (is KUBECONFIG set and the apiserver reachable?)")?;
 
-    // Pick the runtime. Mock needs nothing; CRI needs the `cri` feature + containerd.
-    let runtime: Arc<dyn PodRuntime> = build_runtime(&cfg).await?;
+    // Pick the runtime. Mock needs nothing; CRI needs the `cri` feature + containerd
+    // (and the kube Client, to resolve ConfigMap/Secret volumes — CRI itself has
+    // no concept of those, only host-path bind mounts).
+    let runtime: Arc<dyn PodRuntime> = build_runtime(&cfg, client.clone()).await?;
 
     // Register the node and seed status + lease before we start reconciling pods.
     node::register(&client, &cfg)
@@ -79,7 +81,7 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn build_runtime(cfg: &Config) -> Result<Arc<dyn PodRuntime>> {
+async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Client) -> Result<Arc<dyn PodRuntime>> {
     match cfg.runtime {
         RuntimeKind::Mock => {
             info!("using mock runtime (no container engine; reports pods Running)");
@@ -89,7 +91,7 @@ async fn build_runtime(cfg: &Config) -> Result<Arc<dyn PodRuntime>> {
             #[cfg(feature = "cri")]
             {
                 info!(endpoint = %cfg.cri_endpoint, "using CRI runtime (containerd)");
-                let rt = runtime::cri::CriRuntime::connect(&cfg.cri_endpoint)
+                let rt = runtime::cri::CriRuntime::connect(&cfg.cri_endpoint, client)
                     .await
                     .context("connecting to CRI endpoint")?;
                 Ok(Arc::new(rt))

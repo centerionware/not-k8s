@@ -15,9 +15,11 @@
 use super::{ContainerRuntimeStatus, Phase, PodRuntime, RuntimeStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret};
 use k8s_openapi::jiff::Timestamp;
+use kube::Api;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -45,9 +47,15 @@ use v1::{
     GetEventsRequest, ImageSpec, KeyValue, LinuxPodSandboxConfig, LinuxSandboxSecurityContext,
     ListContainersRequest, ListPodSandboxRequest, NamespaceMode, NamespaceOption, PodSandboxConfig,
     PodSandboxFilter, PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest,
-    RemoveContainerRequest, RemovePodSandboxRequest, RunPodSandboxRequest, StartContainerRequest,
-    StopPodSandboxRequest,
+    Mount, RemoveContainerRequest, RemovePodSandboxRequest, RunPodSandboxRequest,
+    StartContainerRequest, StopPodSandboxRequest,
 };
+
+/// Where ConfigMap/Secret volume contents get materialized on the host, one
+/// subdirectory per pod UID — mirrors a real kubelet's
+/// /var/lib/kubelet/pods/<uid>/volumes/ layout closely enough that this is
+/// recognizable, without trying to be a drop-in match.
+const VOLUME_ROOT: &str = "/var/lib/nodelet/pods";
 
 const POD_UID_LABEL: &str = "nodelet.dev/pod-uid";
 const POD_NAME_LABEL: &str = "nodelet.dev/pod-name";
@@ -57,6 +65,11 @@ const CTR_NAME_LABEL: &str = "nodelet.dev/container-name";
 pub struct CriRuntime {
     rt: RuntimeServiceClient<Channel>,
     img: ImageServiceClient<Channel>,
+    // Needed to resolve ConfigMap/Secret volumes (see resolve_volumes()) —
+    // the CRI API has no concept of these, only host-path bind mounts, so
+    // their contents have to be fetched from the apiserver and written to
+    // disk ourselves before a container that mounts them can start.
+    client: kube::Client,
     rx: Mutex<Option<UnboundedReceiver<String>>>,
     // sandbox_id -> the owning Pod's restartPolicy ("Always"/"OnFailure"/"Never"),
     // recorded whenever ensure_pod() runs. build_status() needs this to decide
@@ -88,6 +101,26 @@ fn pod_id(pod: &Pod) -> PodId {
     PodId { namespace, name, uid, host_network }
 }
 
+/// Write a ConfigMap/Secret's keys out as individual files under `dir`
+/// (creating it if needed) — text values from `.data`/`.stringData`, binary
+/// values from `.binaryData`/`.data` (Secret's `.data` is base64 in the wire
+/// format but k8s_openapi's `ByteString` decodes it automatically, so by the
+/// time it gets here it's already raw bytes).
+fn write_volume_dir(
+    dir: &std::path::Path,
+    text: Option<std::collections::BTreeMap<String, String>>,
+    binary: Option<std::collections::BTreeMap<String, Vec<u8>>>,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    for (k, v) in text.into_iter().flatten() {
+        std::fs::write(dir.join(k), v)?;
+    }
+    for (k, v) in binary.into_iter().flatten() {
+        std::fs::write(dir.join(k), v)?;
+    }
+    Ok(())
+}
+
 /// Dial a unix-domain CRI socket (e.g. `unix:///run/containerd/containerd.sock`).
 async fn connect_uds(endpoint: &str) -> Result<Channel> {
     let path = endpoint
@@ -110,7 +143,7 @@ async fn connect_uds(endpoint: &str) -> Result<Channel> {
 }
 
 impl CriRuntime {
-    pub async fn connect(endpoint: &str) -> Result<Self> {
+    pub async fn connect(endpoint: &str, client: kube::Client) -> Result<Self> {
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
         let img = ImageServiceClient::new(channel.clone());
@@ -119,7 +152,75 @@ impl CriRuntime {
         let (tx, rx) = unbounded_channel();
         tokio::spawn(event_loop(channel, tx));
 
-        Ok(Self { rt, img, rx: Mutex::new(Some(rx)), restart_policies: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            rt,
+            img,
+            client,
+            rx: Mutex::new(Some(rx)),
+            restart_policies: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Materialize every ConfigMap/Secret/emptyDir volume this Pod declares
+    /// onto the host filesystem, and return volume name -> host directory.
+    /// ConfigMap/Secret keys become individual files inside that directory
+    /// (matching how a real kubelet lays them out, and how a Corefile-style
+    /// single-key mount ends up as e.g. `.../Corefile`). Volume kinds this
+    /// doesn't understand yet (projected/serviceAccountToken, hostPath,
+    /// downwardAPI, ...) are skipped with a warning rather than silently
+    /// producing an empty mount — a container that needs one of those still
+    /// won't get it, but at least it's visible in the logs why, instead of
+    /// looking identical to the ConfigMap bug this fixes.
+    async fn resolve_volumes(&self, pod: &Pod, id: &PodId) -> HashMap<String, PathBuf> {
+        let mut out = HashMap::new();
+        let Some(volumes) = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()) else {
+            return out;
+        };
+        let pod_dir = PathBuf::from(VOLUME_ROOT).join(&id.uid).join("volumes");
+
+        for v in volumes {
+            let vol_dir = pod_dir.join(&v.name);
+
+            if let Some(cm) = &v.config_map {
+                let name = &cm.name;
+                match Api::<ConfigMap>::namespaced(self.client.clone(), &id.namespace).get(name).await {
+                    Ok(obj) => {
+                        if let Err(e) = write_volume_dir(&vol_dir, obj.data, obj.binary_data.map(|m| {
+                            m.into_iter().map(|(k, v)| (k, v.0)).collect()
+                        })) {
+                            warn!(volume = %v.name, configmap = %name, error = ?e, "failed to materialize ConfigMap volume");
+                            continue;
+                        }
+                        out.insert(v.name.clone(), vol_dir);
+                    }
+                    Err(e) => warn!(volume = %v.name, configmap = %name, error = ?e, "failed to fetch ConfigMap for volume"),
+                }
+            } else if let Some(sec) = &v.secret {
+                let Some(name) = &sec.secret_name else { continue };
+                match Api::<Secret>::namespaced(self.client.clone(), &id.namespace).get(name).await {
+                    Ok(obj) => {
+                        let bin = obj.data.map(|m| m.into_iter().map(|(k, v)| (k, v.0)).collect());
+                        if let Err(e) = write_volume_dir(&vol_dir, obj.string_data, bin) {
+                            warn!(volume = %v.name, secret = %name, error = ?e, "failed to materialize Secret volume");
+                            continue;
+                        }
+                        out.insert(v.name.clone(), vol_dir);
+                    }
+                    Err(e) => warn!(volume = %v.name, secret = %name, error = ?e, "failed to fetch Secret for volume"),
+                }
+            } else if v.empty_dir.is_some() {
+                if let Err(e) = std::fs::create_dir_all(&vol_dir) {
+                    warn!(volume = %v.name, error = ?e, "failed to create emptyDir volume");
+                    continue;
+                }
+                out.insert(v.name.clone(), vol_dir);
+            } else {
+                warn!(volume = %v.name, pod = %format!("{}/{}", id.namespace, id.name),
+                    "volume type not supported yet (only configMap/secret/emptyDir are) — \
+                     any container mounting it won't get this path");
+            }
+        }
+        out
     }
 
     /// Look up our sandbox for a pod by namespace+name. These labels are always
@@ -185,6 +286,7 @@ impl CriRuntime {
         id: &PodId,
         container: &k8s_openapi::api::core::v1::Container,
         restart_policy: &str,
+        volumes: &HashMap<String, PathBuf>,
     ) -> Result<()> {
         let running_v = ContainerState::ContainerRunning as i32;
         let existing = self.list_pod_containers(sandbox_id).await?;
@@ -221,6 +323,34 @@ impl CriRuntime {
         .await
         .context("pulling image")?;
 
+        // Resolve this container's volumeMounts against the pod's already-
+        // materialized volumes (see resolve_volumes()). A mount naming a
+        // volume we couldn't resolve (unsupported type, or the ConfigMap/
+        // Secret fetch failed) is dropped rather than pointing CRI at a
+        // nonexistent host path — the container starts without it and
+        // whatever needs that file fails loudly, same as it would with no
+        // volume support at all, instead of a CRI-level RunContainer error
+        // that's harder to connect back to "which mount was the problem."
+        let mounts: Vec<Mount> = container
+            .volume_mounts
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|vm| {
+                let host_dir = volumes.get(&vm.name)?;
+                let host_path = match &vm.sub_path {
+                    Some(sub) => host_dir.join(sub),
+                    None => host_dir.clone(),
+                };
+                Some(Mount {
+                    container_path: vm.mount_path.clone(),
+                    host_path: host_path.to_string_lossy().into_owned(),
+                    readonly: vm.read_only.unwrap_or(false),
+                    ..Default::default()
+                })
+            })
+            .collect();
+
         let mut rt = self.rt.clone();
         let config = ContainerConfig {
             metadata: Some(ContainerMetadata { name: container.name.clone(), attempt: 0 }),
@@ -238,6 +368,7 @@ impl CriRuntime {
                     value: e.value.clone().unwrap_or_default().into_bytes(),
                 })
                 .collect(),
+            mounts,
             labels: container_labels(id, &container.name),
             log_path: format!("{}_{}.log", container.name, 0),
             ..Default::default()
@@ -348,9 +479,10 @@ impl PodRuntime for CriRuntime {
         // Pending-vs-Succeeded call build_status() below does.
         self.restart_policies.lock().unwrap().insert(sandbox_id.clone(), restart_policy.clone());
 
+        let volumes = self.resolve_volumes(pod, &id).await;
         if let Some(spec) = pod.spec.as_ref() {
             for c in &spec.containers {
-                self.ensure_container(&sandbox_id, &id, c, &restart_policy).await?;
+                self.ensure_container(&sandbox_id, &id, c, &restart_policy, &volumes).await?;
             }
         }
 
