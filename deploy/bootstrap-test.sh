@@ -737,7 +737,14 @@ build_containerd_runc_from_source() {
 # ourselves rather than using its own package's service).
 #
 # $1 name, $2 description, $3 exec command (a single string — run through
-# `sh -c` in every tier so it doesn't need re-parsing per init system),
+# `sh -c` in every tier so it doesn't need re-parsing per init system) —
+# MUST use an absolute path for the binary, never a bare command name:
+# systemd/OpenRC services get a fresh, minimal PATH that won't include
+# wherever this script's own PATH additions put a fetched/built binary
+# ($TOOLCHAIN_DIR/bin), so a bare name resolves fine in this script's own
+# shell and then fails with "not found" (exit 127) the moment the service
+# manager actually runs it — this happened for real with flanneld, use
+# "$(command -v the-binary)" at the call site like that fix does,
 # $4 extra After=/depend() unit name or "" for none, $@ (from $5) KEY=VALUE
 # environment pairs (zero or more).
 install_supervised_service() {
@@ -873,8 +880,14 @@ ensure_container_runtime() {
             systemctl is-active --quiet containerd.service \
                 || die "containerd.service didn't come up — check: journalctl -u containerd -n 50"
         else
+            # Absolute path, not the bare command: systemd/OpenRC services
+            # get a fresh, minimal PATH that doesn't include wherever this
+            # script's own PATH additions put a fetched/built binary
+            # ($TOOLCHAIN_DIR/bin) — a bare name here resolves fine in this
+            # script's own shell and then fails with "not found" (exit 127)
+            # the moment the service manager actually runs it.
             install_supervised_service containerd "containerd container runtime (installed by not-k8s)" \
-                "containerd" ""
+                "$(command -v containerd)" ""
         fi
         for _ in $(seq 1 15); do
             [[ -S /run/containerd/containerd.sock ]] && break
@@ -1055,7 +1068,15 @@ start_flanneld() {
     # Using the inClusterConfig") and then failed outright (no
     # KUBERNETES_SERVICE_HOST in this environment either, since nothing here
     # runs as a pod).
-    local exec_cmd="flanneld --kube-subnet-mgr --ip-masq --kubeconfig=$KUBECONFIG ${net_conf_args[*]}"
+    # Absolute path, not the bare command: systemd/OpenRC services get a
+    # fresh, minimal PATH that doesn't include wherever this script's own
+    # PATH additions put a fetched/built binary ($TOOLCHAIN_DIR/bin) — a
+    # bare name here resolves fine in this script's own shell and then
+    # fails with "not found" (exit 127) the moment the service manager
+    # actually runs it. Confirmed for real: exactly this failure, in
+    # journalctl -u flanneld, on the first version of this fix.
+    local flanneld_bin; flanneld_bin="$(command -v flanneld)"
+    local exec_cmd="$flanneld_bin --kube-subnet-mgr --ip-masq --kubeconfig=$KUBECONFIG ${net_conf_args[*]}"
     local node_name="${NODELET_NODE_NAME:-$(hostname)}"
     install_supervised_service flanneld "flanneld — CNI overlay network daemon for not-k8s" \
         "$exec_cmd" "k3s.service" "NODE_NAME=$node_name"
