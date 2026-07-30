@@ -15,7 +15,7 @@
 use super::{ContainerRuntimeStatus, Phase, PodRuntime, RuntimeStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret};
+use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret, Volume};
 use k8s_openapi::jiff::Timestamp;
 use kube::Api;
 use std::collections::HashMap;
@@ -197,6 +197,74 @@ fn build_mounts(
         .collect()
 }
 
+/// Return the Kubernetes VolumeSource variant for diagnostics. A volume's
+/// name alone is not enough to explain why it was skipped — in particular,
+/// kube-controller-manager injects a volume named `kube-api-access-*` whose
+/// source is `projected`, not `hostPath` or `emptyDir`.
+fn volume_source_type(v: &Volume) -> &'static str {
+    if v.config_map.is_some() {
+        "configMap"
+    } else if v.secret.is_some() {
+        "secret"
+    } else if v.empty_dir.is_some() {
+        "emptyDir"
+    } else if v.projected.is_some() {
+        "projected"
+    } else if v.host_path.is_some() {
+        "hostPath"
+    } else if v.downward_api.is_some() {
+        "downwardAPI"
+    } else if v.persistent_volume_claim.is_some() {
+        "persistentVolumeClaim"
+    } else if v.csi.is_some() {
+        "csi"
+    } else if v.ephemeral.is_some() {
+        "ephemeral"
+    } else if v.nfs.is_some() {
+        "nfs"
+    } else if v.aws_elastic_block_store.is_some() {
+        "awsElasticBlockStore"
+    } else if v.azure_disk.is_some() {
+        "azureDisk"
+    } else if v.azure_file.is_some() {
+        "azureFile"
+    } else if v.cephfs.is_some() {
+        "cephfs"
+    } else if v.cinder.is_some() {
+        "cinder"
+    } else if v.fc.is_some() {
+        "fc"
+    } else if v.flex_volume.is_some() {
+        "flexVolume"
+    } else if v.flocker.is_some() {
+        "flocker"
+    } else if v.gce_persistent_disk.is_some() {
+        "gcePersistentDisk"
+    } else if v.git_repo.is_some() {
+        "gitRepo"
+    } else if v.glusterfs.is_some() {
+        "glusterfs"
+    } else if v.iscsi.is_some() {
+        "iscsi"
+    } else if v.photon_persistent_disk.is_some() {
+        "photonPersistentDisk"
+    } else if v.portworx.is_some() {
+        "portworx"
+    } else if v.quobyte.is_some() {
+        "quobyte"
+    } else if v.rbd.is_some() {
+        "rbd"
+    } else if v.scale_io.is_some() {
+        "scaleIO"
+    } else if v.storageos.is_some() {
+        "storageos"
+    } else if v.vsphere_volume.is_some() {
+        "vsphereVolume"
+    } else {
+        "unknown"
+    }
+}
+
 /// Write a ConfigMap/Secret's keys out as individual files under `dir`
 /// (creating it if needed) — text values from `.data`/`.stringData`, binary
 /// values from `.binaryData`/`.data` (Secret's `.data` is base64 in the wire
@@ -320,7 +388,10 @@ impl CriRuntime {
                 }
                 out.insert(v.name.clone(), vol_dir);
             } else {
-                warn!(volume = %v.name, pod = %format!("{}/{}", id.namespace, id.name),
+                warn!(
+                    volume = %v.name,
+                    volume_type = volume_source_type(v),
+                    pod = %format!("{}/{}", id.namespace, id.name),
                     "volume type not supported yet (only configMap/secret/emptyDir are) — \
                      any container mounting it won't get this path");
             }
@@ -783,6 +854,9 @@ mod tests_restart_decision;
 #[cfg(test)]
 #[path = "cri_tests/mounts.rs"]
 mod tests_mounts;
+#[cfg(test)]
+#[path = "cri_tests/volume_type.rs"]
+mod tests_volume_type;
 #[cfg(test)]
 #[path = "cri_tests/write_volume_dir.rs"]
 mod tests_write_volume_dir;
