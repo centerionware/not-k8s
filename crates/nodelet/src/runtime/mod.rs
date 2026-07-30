@@ -51,6 +51,8 @@ pub struct ContainerRuntimeStatus {
     pub ready: bool,
     pub running: bool,
     pub container_id: Option<String>,
+    /// Cumulative restart count, matching `PodStatus.containerStatuses[].restartCount`.
+    pub restart_count: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -72,8 +74,10 @@ pub trait PodRuntime: Send + Sync {
     /// Ensure the pod's containers are created and started. Idempotent.
     async fn ensure_pod(&self, pod: &Pod) -> anyhow::Result<RuntimeStatus>;
 
-    /// Tear down the pod's sandbox and containers. Idempotent.
-    async fn remove_pod(&self, namespace: &str, name: &str) -> anyhow::Result<()>;
+    /// Tear down the pod's sandbox and containers. Idempotent. Takes the
+    /// full Pod (not just its key) because a graceful teardown needs
+    /// `terminationGracePeriodSeconds` and each container's `preStop` hook.
+    async fn remove_pod(&self, pod: &Pod) -> anyhow::Result<()>;
 
     /// Current runtime status, or `None` if the pod is unknown to the runtime.
     async fn status(&self, namespace: &str, name: &str) -> anyhow::Result<Option<RuntimeStatus>>;

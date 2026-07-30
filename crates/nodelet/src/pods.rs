@@ -205,7 +205,7 @@ impl PodController {
     async fn teardown(&self, pod: &Pod) {
         if let Some((ns, name)) = key_parts(pod) {
             self.stop_probe_supervisor(&ns, &name);
-            if let Err(e) = self.runtime.remove_pod(&ns, &name).await {
+            if let Err(e) = self.runtime.remove_pod(pod).await {
                 warn!(pod = %format!("{ns}/{name}"), error = ?e, "remove_pod failed");
             } else {
                 info!(pod = %format!("{ns}/{name}"), "torn down");
@@ -346,7 +346,7 @@ fn build_pod_status(
             image: c.image.clone(),
             image_id: String::new(),
             ready: container_ready(c),
-            restart_count: 0,
+            restart_count: c.restart_count as i32,
             started: Some(c.running),
             container_id: c.container_id.clone(),
             state: Some(if c.running {

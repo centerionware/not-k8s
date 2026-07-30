@@ -60,6 +60,37 @@ are now done, each with unit tests for the pure translation logic
 215 tests passing with `--features cri` (up from 164), 107 with the default
 (mock-only) build. Both builds compile clean.
 
+## Round 3: pod-lifecycle correctness + eviction (2026-07-30, same day)
+
+User said "keep closing the gaps, get to 100%" with no further scoping —
+continued in the same "correctness first" vein rather than jumping straight
+to the largest single remaining item (the streaming exec/logs/attach/
+port-forward server, which needs a whole new TLS-authenticated HTTP(S)
+listener and is a project of its own). Closed, each with unit tests:
+
+- **Termination grace period + preStop hook** — `PodRuntime::remove_pod()`
+  now takes the full `Pod` (was just `namespace`/`name`) specifically so it
+  can read `terminationGracePeriodSeconds` and run each container's
+  `preStop` hook before stopping it.
+- **postStart lifecycle hook** — runs right after `StartContainer` succeeds.
+- **Exit-code-aware `restartPolicy: Never` phase** — `Failed` vs `Succeeded`
+  now actually depends on the exit code, not just "did everything exit."
+- **Real container restart counts** — was hardcoded `0` since the very
+  first pass; now a real per-container counter, also used as CRI's
+  `attempt` number so restarted containers don't overwrite their own log file.
+- **Projected + downwardAPI volumes** — the two most commonly hit
+  "volume type not supported" warnings before this (a projected volume is
+  what backs the auto-mounted `kube-api-access-*` service account volume,
+  though its `serviceAccountToken` source specifically still isn't — see below).
+- **hostAliases + fsGroup** — the two security/identity-adjacent volume
+  behaviors that were pure no-ops before.
+- **Node-pressure eviction** — the one item `ARCHITECTURE.md` had already
+  called out by name as not implemented; now something actually happens
+  when a node reports pressure, not just a condition update.
+
+260 tests passing with `--features cri` (up from 215 at the start of this
+round), 125 with the default (mock-only) build.
+
 ## Full kubelet responsibility list vs. current nodelet state
 
 Legend: ✅ done · 🟡 partial · ❌ missing
@@ -69,10 +100,10 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ Restart-on-exit honoring `restartPolicy`
 - ✅ **Init containers** — run to completion, in order, before app containers (`ensure_init_containers`)
 - ❌ Ephemeral containers (`kubectl debug`)
-- ❌ postStart / preStop lifecycle hooks
-- ❌ Termination grace period (`terminationGracePeriodSeconds`) — teardown calls `StopPodSandboxRequest` with no grace/SIGTERM-then-SIGKILL sequencing
-- 🟡 Container restart count — always reported as `0` (known pre-existing gap, pinned by test)
-- 🟡 Exit-code-aware phase computation — `restartPolicy: OnFailure` doesn't yet distinguish "exited 0" from "exited nonzero" (documented limitation in `cri.rs`)
+- ✅ **postStart / preStop lifecycle hooks** (`exec`/`httpGet`/`sleep`; not `tcpSocket`) — `run_lifecycle_hook()`. A failing `postStart` is logged, not (yet) turned into a container kill+restart like real kubelet does.
+- ✅ **Termination grace period** — `terminationGracePeriodSeconds` now drives `preStop` + a per-container `StopContainer` timeout before `StopPodSandbox` (`graceful_stop_containers()`), instead of an untimed sandbox stop.
+- ✅ **Container restart count** — real per-container counter (`restart_count_from`/`bump_restart_count_in`), threaded through `ContainerConfig.metadata.attempt` too (so restarted containers get distinct log files, not overwritten ones).
+- ✅ **Exit-code-aware phase computation** — `restartPolicy: Never` now reports `Failed` (not `Succeeded`) when a container exited nonzero (`compute_phase()`'s new `any_failed` parameter).
 
 ### Resource management
 - ✅ **Container resource requests/limits** — translated to CRI `LinuxContainerResources` (cpu shares/quota/period, memory limit; `linux_resources()`)
@@ -88,12 +119,12 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
 - ❌ Pod-level `sysctls`
-- ❌ `fsGroup` volume ownership application
+- ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
 - ❌ RuntimeClass (gVisor/Kata/etc. runtime selection + pod overhead accounting)
 
 ### Networking
 - ✅ **DNS config** — `dnsPolicy`/`dnsConfig` → CRI `PodSandboxConfig.dns_config` (`dns_config_for()`), via new `NODELET_CLUSTER_DNS`/`NODELET_CLUSTER_DOMAIN`
-- ❌ `hostAliases` (`/etc/hosts` entries)
+- ✅ **`hostAliases`** — generates a pod-specific `/etc/hosts` (`write_etc_hosts()`) and bind-mounts it in, exactly how real kubelet does it (CRI has no dedicated field for this)
 - ✅ Service/ClusterIP/NodePort routing (nftables — pre-existing, kube-proxy's job but already reimplemented here)
 
 ### Images
@@ -103,16 +134,16 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Volumes
 - ✅ ConfigMap / Secret / emptyDir (materialized to host paths)
-- ❌ Projected volumes (the common `kube-api-access-*` service account token volume — currently skipped with a warning)
-- ❌ downwardAPI volumes (downward API *env vars* work; the volume form doesn't)
+- 🟡 **Projected volumes** — `configMap`/`secret`/`downwardAPI` sources merge into the volume dir (`write_projected_volume()`, with `items`/`KeyToPath` key-selection-and-rename support). `serviceAccountToken` and `clusterTrustBundle` sources are skipped with a warning — the former needs the TokenRequest API, a real remaining gap for any workload that authenticates in-cluster via its mounted SA token.
+- ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
 - ❌ PersistentVolumeClaim / CSI (`NodeStageVolume`/`NodePublishVolume`) — no PVC support at all
 - ❌ hostPath (explicitly unsupported today, logged and dropped)
 - ❌ `emptyDir.sizeLimit` enforcement
 - ❌ subPath `$(VAR)` expansion
 
 ### Node-pressure eviction
-- ✅ MemoryPressure/DiskPressure *conditions* now reflect real reads (this session)
-- ❌ **Actual eviction** — nodelet reports pressure but never acts on it: no soft/hard threshold config, no pod ranking by QoS class + usage-over-request, no pod termination to reclaim resources. `ARCHITECTURE.md` already flagged this as a known gap; it's now explicitly in scope.
+- ✅ MemoryPressure/DiskPressure *conditions* reflect real reads
+- 🟡 **Eviction** — `eviction_loop()` now acts on real pressure: ranks eligible pods by QoS class (`eviction.rs`'s `qos_class()`/`pick_eviction_candidate()` — BestEffort before Burstable, Guaranteed and `system-*-critical` pods never evicted), evicts one per check. Simplified vs. real kubelet: no soft-threshold grace period (hard-style immediate action only), and ranking within a QoS class uses *requested* memory as a proxy, not live usage — there's no per-pod cgroup stats collector yet (the `/stats/summary` gap below).
 - ❌ PID pressure — condition is hardcoded `False`; no real `/proc` PID accounting at all (unlike memory/disk, which are now real)
 
 ### Static pods & mirror pods
@@ -161,6 +192,12 @@ higher-value/correctness-critical than others:
 - [x] Comprehensive gap list (this doc)
 - [x] Round 2 (user-chosen "correctness gaps first"): init containers,
       resource limits, securityContext, DNS config, private registry auth
-- [ ] Everything else in the responsibility list above — not yet sequenced;
-      ask before starting the next round given the remaining scope
-      (streaming exec/logs server, eviction manager, static pods, CSI, ...)
+- [x] Round 3: termination grace + preStop/postStart hooks, exit-code-aware
+      phase, real restart counts, projected/downwardAPI volumes,
+      hostAliases, fsGroup, node-pressure eviction
+- [ ] Everything else in the responsibility list above — biggest remaining
+      single items: the streaming exec/logs/attach/port-forward HTTP(S)
+      server (needs TLS + auth, nothing like it exists yet), `/stats/summary`
+      + real per-pod usage stats (would also make eviction ranking accurate),
+      static/mirror pods, PVC/CSI, serviceAccountToken minting (TokenRequest
+      API) for projected volumes. Ask before starting the next round.

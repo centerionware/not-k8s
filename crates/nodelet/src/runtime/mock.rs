@@ -73,6 +73,7 @@ fn containers_of(pod: &Pod, running: bool) -> Vec<ContainerRuntimeStatus> {
             ready: running,
             running,
             container_id: running.then(|| format!("mock://{}", c.name)),
+            restart_count: 0,
         })
         .collect()
 }
@@ -118,8 +119,8 @@ impl PodRuntime for MockRuntime {
         Ok(pending)
     }
 
-    async fn remove_pod(&self, namespace: &str, name: &str) -> anyhow::Result<()> {
-        let key = super::pod_key(namespace, name);
+    async fn remove_pod(&self, pod: &Pod) -> anyhow::Result<()> {
+        let key = Self::key(pod);
         self.inner.state.lock().unwrap().remove(&key);
         Ok(())
     }

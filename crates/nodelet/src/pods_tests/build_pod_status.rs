@@ -33,6 +33,7 @@ fn running_status() -> RuntimeStatus {
             ready: true,
             running: true,
             container_id: Some("abc123".to_string()),
+            restart_count: 0,
         }],
     }
 }
@@ -49,6 +50,7 @@ fn pending_status() -> RuntimeStatus {
             ready: false,
             running: false,
             container_id: None,
+            restart_count: 0,
         }],
     }
 }
@@ -263,11 +265,17 @@ fn phase_string_matches_runtime_phase() {
 }
 
 #[test]
-fn restart_count_is_always_zero() {
-    // Known limitation, not a bug this suite is asserting is correct
-    // behavior — pinned so a future change to this notices it's touching
-    // a real gap (nodelet doesn't track real restart counts yet) rather
-    // than silently "fixing" it as a side effect of something else.
+fn restart_count_mirrors_the_runtime_status() {
+    // The runtime (CriRuntime) is the source of truth for restart counts —
+    // build_pod_status() must just carry the value through, not zero it out.
+    let mut running = running_status();
+    running.containers[0].restart_count = 3;
+    let status = bps("10.0.0.1", &running, None);
+    assert_eq!(status.container_statuses.as_ref().unwrap()[0].restart_count, 3);
+}
+
+#[test]
+fn zero_restarts_reports_zero() {
     let status = bps("10.0.0.1", &running_status(), None);
     assert_eq!(status.container_statuses.as_ref().unwrap()[0].restart_count, 0);
 }

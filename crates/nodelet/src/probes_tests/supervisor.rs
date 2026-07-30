@@ -29,7 +29,7 @@ impl PodRuntime for FakeRuntime {
     async fn ensure_pod(&self, _pod: &Pod) -> anyhow::Result<RuntimeStatus> {
         unimplemented!("not exercised by these tests")
     }
-    async fn remove_pod(&self, _namespace: &str, _name: &str) -> anyhow::Result<()> {
+    async fn remove_pod(&self, _pod: &Pod) -> anyhow::Result<()> {
         Ok(())
     }
     async fn status(&self, _namespace: &str, _name: &str) -> anyhow::Result<Option<RuntimeStatus>> {

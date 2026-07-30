@@ -64,6 +64,11 @@ async fn main() -> Result<()> {
     // images) — a no-op on the mock runtime, see PodRuntime::gc()'s default.
     tokio::spawn(gc_loop(client.clone(), runtime.clone(), cfg.clone()));
 
+    // Node-pressure eviction: re-checks real MemoryPressure/DiskPressure
+    // (see metrics.rs) on its own short interval and reclaims resources by
+    // evicting one eligible pod at a time when either is active.
+    tokio::spawn(eviction_loop(client.clone(), cfg.clone()));
+
     // ClusterIP/NodePort routing (nftables). No-op if disabled or if `nft`
     // isn't usable — pods and direct pod-IP traffic work either way.
     if cfg.service_proxy {
@@ -146,6 +151,62 @@ async fn gc_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: Config
 
         if let Err(e) = runtime.gc(&live_pod_keys).await {
             warn!(error = ?e, "gc: cycle failed");
+        }
+    }
+}
+
+/// Re-check node pressure on `cfg.eviction_check_interval` and, if
+/// MemoryPressure or DiskPressure is active, evict exactly one eligible pod
+/// (see `nodelet::eviction`) — never a mass cull; the next tick re-measures
+/// and decides again, same as real kubelet's eviction manager.
+async fn eviction_loop(client: kube::Client, cfg: Config) {
+    use k8s_openapi::api::core::v1::Pod;
+    use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams};
+
+    loop {
+        tokio::time::sleep(cfg.eviction_check_interval).await;
+
+        let pressure = nodelet::metrics::read_pressure(
+            &cfg.disk_path,
+            cfg.memory_pressure_threshold_bytes,
+            cfg.disk_pressure_percent,
+        );
+        if !pressure.memory && !pressure.disk {
+            continue;
+        }
+        let reason = if pressure.memory { "MemoryPressure" } else { "DiskPressure" };
+
+        let api: Api<Pod> = Api::all(client.clone());
+        let params = ListParams::default().fields(&format!("spec.nodeName={}", cfg.node_name));
+        let pods = match api.list(&params).await {
+            Ok(list) => list.items,
+            Err(e) => {
+                warn!(error = ?e, "eviction: failed to list pods; skipping this cycle");
+                continue;
+            }
+        };
+
+        let Some(victim) = nodelet::eviction::pick_eviction_candidate(&pods) else {
+            continue; // under pressure, but nothing eligible to evict
+        };
+        let (Some(ns), Some(name)) = (victim.metadata.namespace.as_deref(), victim.metadata.name.as_deref()) else {
+            continue;
+        };
+
+        let pod_api: Api<Pod> = Api::namespaced(client.clone(), ns);
+        // Best-effort: surface why before the delete actually lands, same
+        // as real kubelet's Evicted status — but the delete is what
+        // actually reclaims anything, so a failed status patch shouldn't
+        // stop it.
+        let status_patch = serde_json::json!({
+            "status": { "phase": "Failed", "reason": "Evicted", "message": format!("The node was low on resource: {reason}.") }
+        });
+        let _ = pod_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch)).await;
+
+        let dp = DeleteParams { grace_period_seconds: Some(0), ..Default::default() };
+        match pod_api.delete(name, &dp).await {
+            Ok(_) => info!(pod = %format!("{ns}/{name}"), reason, "evicted pod under node pressure"),
+            Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to delete pod"),
         }
     }
 }

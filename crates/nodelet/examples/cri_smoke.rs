@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
     );
 
     println!("== remove_pod (teardown sandbox + container)");
-    rt.remove_pod(ns, name).await.context("remove_pod")?;
+    rt.remove_pod(&pod).await.context("remove_pod")?;
     let gone = rt.status(ns, name).await.context("status after remove")?;
     println!("   status after remove: {}", if gone.is_none() { "None (gone)" } else { "STILL PRESENT" });
 

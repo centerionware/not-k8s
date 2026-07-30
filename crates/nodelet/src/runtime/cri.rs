@@ -16,11 +16,14 @@ use super::{ContainerRuntimeStatus, Phase, PodRuntime, RuntimeStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, EnvFromSource, EnvVarSource, Pod, PodSecurityContext, ResourceRequirements,
-    Secret, SecurityContext, Service, Volume,
+    ConfigMap, Container, EnvFromSource, EnvVarSource, LifecycleHandler, Pod, PodSecurityContext,
+    ResourceRequirements, Secret, SecurityContext, Service, Volume,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use k8s_openapi::jiff::Timestamp;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use kube::api::{Api, ListParams};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -72,6 +75,10 @@ const CTR_NAME_LABEL: &str = "nodelet.dev/container-name";
 /// — lets status-building and GC tell them apart from app containers without
 /// a second side table.
 const CTR_INIT_LABEL: &str = "nodelet.dev/init";
+/// Synthetic key in the volumes map for a pod's generated `/etc/hosts`
+/// (`hostAliases`) — not a real Kubernetes volume, so it needs a name no
+/// actual `spec.volumes[].name` could collide with.
+const ETC_HOSTS_VOLUME_KEY: &str = "nodelet.dev/etc-hosts";
 
 pub struct CriRuntime {
     rt: RuntimeServiceClient<Channel>,
@@ -93,6 +100,12 @@ pub struct CriRuntime {
     // event-driven status() path has no Pod object to read it from directly
     // (only namespace+name), hence the side table instead of a parameter.
     restart_policies: Mutex<HashMap<String, String>>,
+    /// `"sandbox_id/container_name" -> cumulative restart count`, mirroring
+    /// `PodStatus.containerStatuses[].restartCount`. Side table for the same
+    /// reason `restart_policies` is one: CRI's `ListContainers` has no
+    /// concept of "how many times has this logical container restarted" —
+    /// each restart is a brand-new container id, so nodelet has to count.
+    restart_counts: Mutex<HashMap<String, u32>>,
 }
 
 /// Identity extracted from a Pod object.
@@ -232,13 +245,54 @@ fn restart_decision(existing_state: Option<i32>, running_state: i32, restart_pol
 /// whose container merely exited is the bug that drove unbounded coredns
 /// pod creation (Kubernetes' ReplicaSet controller treats Succeeded/Failed
 /// pods as permanently inactive and replaces them).
-fn compute_phase(any_running: bool, all_exited: bool, restart_policy: &str) -> Phase {
+/// `any_failed` only matters (and is only computed by the caller) when
+/// `restart_policy == "Never"` and every container has exited — otherwise a
+/// nonzero exit just means "will be restarted", not "this pod failed".
+/// Before this, `restartPolicy: Never` always reported `Succeeded` even when
+/// a container exited nonzero — a Job-style pod that actually failed looked
+/// like it succeeded.
+fn compute_phase(any_running: bool, all_exited: bool, any_failed: bool, restart_policy: &str) -> Phase {
     if any_running {
         Phase::Running
     } else if all_exited && restart_policy == "Never" {
-        Phase::Succeeded
+        if any_failed {
+            Phase::Failed
+        } else {
+            Phase::Succeeded
+        }
     } else {
         Phase::Pending
+    }
+}
+
+/// Pure restart-count-table logic, pulled out of `CriRuntime`'s methods so
+/// it's unit-testable without a real CRI socket/kube client (a `CriRuntime`
+/// can't be constructed without both).
+fn restart_count_key(sandbox_id: &str, container_name: &str) -> String {
+    format!("{sandbox_id}/{container_name}")
+}
+
+fn restart_count_from(counts: &HashMap<String, u32>, sandbox_id: &str, container_name: &str) -> u32 {
+    counts.get(&restart_count_key(sandbox_id, container_name)).copied().unwrap_or(0)
+}
+
+fn bump_restart_count_in(counts: &mut HashMap<String, u32>, sandbox_id: &str, container_name: &str) -> u32 {
+    let entry = counts.entry(restart_count_key(sandbox_id, container_name)).or_insert(0);
+    *entry += 1;
+    *entry
+}
+
+fn clear_restart_counts_in(counts: &mut HashMap<String, u32>, sandbox_id: &str) {
+    let prefix = format!("{sandbox_id}/");
+    counts.retain(|k, _| !k.starts_with(&prefix));
+}
+
+/// Real kubelet default when `terminationGracePeriodSeconds` is unset (or
+/// explicitly negative, which the API otherwise allows through): 30s.
+fn termination_grace_seconds(pod: &Pod) -> i64 {
+    match pod.spec.as_ref().and_then(|s| s.termination_grace_period_seconds) {
+        Some(s) if s >= 0 => s,
+        _ => 30,
     }
 }
 
@@ -680,6 +734,131 @@ fn write_volume_dir(
     Ok(())
 }
 
+/// Write a downwardAPI volume's files (`fieldRef` only — `resourceFieldRef`,
+/// e.g. a container's actual assigned CPU/memory limit, isn't supported: it
+/// needs the resolved container spec, not just the Pod object). An item's
+/// `path` may contain subdirectories, which is valid Kubernetes downwardAPI
+/// syntax.
+fn write_downward_api_volume(
+    dir: &std::path::Path,
+    pod: &Pod,
+    items: &[k8s_openapi::api::core::v1::DownwardAPIVolumeFile],
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    for item in items {
+        let Some(field_ref) = &item.field_ref else { continue };
+        let Some(value) = pod_field_value(pod, &field_ref.field_path) else { continue };
+        let target = dir.join(&item.path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(target, value)?;
+    }
+    Ok(())
+}
+
+/// Write one projected-volume source's contribution into `dir`. Mirrors
+/// `write_volume_dir()`'s "every key becomes a file" default, but a
+/// projected source additionally supports `items` (`KeyToPath`): select
+/// specific keys and rename them to a specific path within the volume —
+/// real Kubernetes semantics that plain top-level configMap/secret volumes
+/// also have but nodelet doesn't apply there yet (see docs/GAP_CLOSURE.md).
+fn write_projected_keys(
+    dir: &std::path::Path,
+    text: Option<std::collections::BTreeMap<String, String>>,
+    binary: Option<std::collections::BTreeMap<String, Vec<u8>>>,
+    items: Option<&[k8s_openapi::api::core::v1::KeyToPath]>,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let write_one = |path: &str, bytes: &[u8]| -> std::io::Result<()> {
+        let target = dir.join(path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(target, bytes)
+    };
+    match items {
+        Some(items) => {
+            for item in items {
+                if let Some(v) = text.as_ref().and_then(|m| m.get(&item.key)) {
+                    write_one(&item.path, v.as_bytes())?;
+                } else if let Some(v) = binary.as_ref().and_then(|m| m.get(&item.key)) {
+                    write_one(&item.path, v)?;
+                }
+            }
+        }
+        None => {
+            for (k, v) in text.into_iter().flatten() {
+                write_one(&k, v.as_bytes())?;
+            }
+            for (k, v) in binary.into_iter().flatten() {
+                write_one(&k, &v)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Build a pod's `/etc/hosts` contents from `hostAliases` — kubelet's own
+/// approach: it doesn't tell the container runtime about extra hosts
+/// entries (CRI has no such field), it generates the file itself and bind
+/// mounts it over `/etc/hosts`.
+fn write_etc_hosts(path: &std::path::Path, aliases: &[k8s_openapi::api::core::v1::HostAlias]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut content = String::from("127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n");
+    for alias in aliases {
+        let hostnames = alias.hostnames.clone().unwrap_or_default().join(" ");
+        if !hostnames.is_empty() {
+            content.push_str(&format!("{}\t{hostnames}\n", alias.ip));
+        }
+    }
+    std::fs::write(path, content)
+}
+
+/// Set the group ownership of `path` without touching its user owner
+/// (`(uid_t)-1` is POSIX for "leave unchanged").
+fn chown_gid(path: &std::path::Path, gid: u32) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let rc = unsafe { libc::chown(c_path.as_ptr(), u32::MAX as libc::uid_t, gid as libc::gid_t) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Set the setgid bit on a directory so files later written into it by the
+/// container process inherit `fsGroup` too, matching real kubelet's
+/// volume-ownership behavior.
+fn set_setgid(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::metadata(dir)?;
+    let mut perm = meta.permissions();
+    perm.set_mode(perm.mode() | 0o2000);
+    std::fs::set_permissions(dir, perm)
+}
+
+/// Recursively chown a materialized volume directory to `fsGroup`. Only
+/// touches directories nodelet itself created (ConfigMap/Secret/emptyDir/
+/// downwardAPI/projected materializations) — there's no real PV/hostPath
+/// support yet for this to reach beyond that (see docs/GAP_CLOSURE.md).
+fn apply_fs_group(dir: &std::path::Path, gid: u32) -> std::io::Result<()> {
+    chown_gid(dir, gid)?;
+    set_setgid(dir)?;
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            apply_fs_group(&path, gid)?;
+        } else {
+            chown_gid(&path, gid)?;
+        }
+    }
+    Ok(())
+}
+
 /// The registry host an image reference pulls from, e.g. `myregistry.io:5000`
 /// from `myregistry.io:5000/team/app:v1`, or `docker.io` for an unqualified
 /// ref like `busybox:latest` (Docker Hub's implicit default registry).
@@ -733,6 +912,21 @@ fn parse_dockerconfigjson(bytes: &[u8], registry_host: &str) -> Option<(String, 
     None
 }
 
+/// Fire a bare-minimum HTTP/1.1 GET for a `postStart`/`preStop` `httpGet`
+/// lifecycle hook. Result is deliberately not inspected by the caller —
+/// matches real kubelet, which only logs a failed lifecycle httpGet rather
+/// than acting on it.
+async fn lifecycle_http_get(host: &str, port: u16, path: &str) {
+    if port == 0 {
+        return;
+    }
+    let Ok(mut stream) = TcpStream::connect((host, port)).await else { return };
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    let _ = stream.write_all(req.as_bytes()).await;
+    let mut buf = [0u8; 256];
+    let _ = stream.read(&mut buf).await;
+}
+
 /// Dial a unix-domain CRI socket (e.g. `unix:///run/containerd/containerd.sock`).
 async fn connect_uds(endpoint: &str) -> Result<Channel> {
     let path = endpoint
@@ -777,6 +971,7 @@ impl CriRuntime {
             cluster_domain,
             rx: Mutex::new(Some(rx)),
             restart_policies: Mutex::new(HashMap::new()),
+            restart_counts: Mutex::new(HashMap::new()),
         })
     }
 
@@ -842,16 +1037,106 @@ impl CriRuntime {
                     continue;
                 }
                 out.insert(v.name.clone(), vol_dir);
+            } else if let Some(downward) = &v.downward_api {
+                if let Err(e) = write_downward_api_volume(&vol_dir, pod, downward.items.as_deref().unwrap_or(&[])) {
+                    warn!(volume = %v.name, error = ?e, "failed to materialize downwardAPI volume");
+                    continue;
+                }
+                out.insert(v.name.clone(), vol_dir);
+            } else if let Some(projected) = &v.projected {
+                if let Err(e) = self.write_projected_volume(&vol_dir, pod, id, projected).await {
+                    warn!(volume = %v.name, error = ?e, "failed to materialize projected volume");
+                    continue;
+                }
+                out.insert(v.name.clone(), vol_dir);
             } else {
                 warn!(
                     volume = %v.name,
                     volume_type = volume_source_type(v),
                     pod = %format!("{}/{}", id.namespace, id.name),
-                    "volume type not supported yet (only configMap/secret/emptyDir are) — \
+                    "volume type not supported yet (configMap/secret/emptyDir/downwardAPI/projected are) — \
                      any container mounting it won't get this path");
             }
         }
+
+        if let Some(aliases) = pod.spec.as_ref().and_then(|s| s.host_aliases.as_ref()).filter(|a| !a.is_empty()) {
+            let hosts_path = pod_dir.join("etc-hosts");
+            match write_etc_hosts(&hosts_path, aliases) {
+                Ok(()) => {
+                    out.insert(ETC_HOSTS_VOLUME_KEY.to_string(), hosts_path);
+                }
+                Err(e) => warn!(error = ?e, "failed to materialize /etc/hosts for hostAliases"),
+            }
+        }
+
+        if let Some(fs_group) = pod
+            .spec
+            .as_ref()
+            .and_then(|s| s.security_context.as_ref())
+            .and_then(|sc| sc.fs_group)
+        {
+            for (key, dir) in &out {
+                if key == ETC_HOSTS_VOLUME_KEY {
+                    continue; // a single file, not a directory nodelet materialized as a tree
+                }
+                if let Err(e) = apply_fs_group(dir, fs_group as u32) {
+                    warn!(dir = %dir.display(), fs_group, error = ?e, "failed to apply fsGroup to volume");
+                }
+            }
+        }
+
         out
+    }
+
+    /// Materialize a `projected` volume: each source contributes files into
+    /// the same directory (real Kubernetes semantics — sources are merged,
+    /// not nested). `serviceAccountToken`/`clusterTrustBundle` sources
+    /// aren't implemented (the former needs the TokenRequest API; see
+    /// docs/GAP_CLOSURE.md) — skipped with a warning, same treatment as any
+    /// other unsupported volume type.
+    async fn write_projected_volume(
+        &self,
+        dir: &std::path::Path,
+        pod: &Pod,
+        id: &PodId,
+        projected: &k8s_openapi::api::core::v1::ProjectedVolumeSource,
+    ) -> Result<()> {
+        for source in projected.sources.as_deref().unwrap_or(&[]) {
+            if let Some(cm) = &source.config_map {
+                let optional = cm.optional.unwrap_or(false);
+                match Api::<ConfigMap>::namespaced(self.client.clone(), &id.namespace).get(&cm.name).await {
+                    Ok(obj) => {
+                        let bin = obj.binary_data.map(|m| m.into_iter().map(|(k, v)| (k, v.0)).collect());
+                        write_projected_keys(dir, obj.data, bin, cm.items.as_deref())?;
+                    }
+                    Err(_) if optional => {}
+                    Err(e) => warn!(configmap = %cm.name, error = ?e, "projected volume: failed to fetch ConfigMap source"),
+                }
+            } else if let Some(sec) = &source.secret {
+                let optional = sec.optional.unwrap_or(false);
+                match Api::<Secret>::namespaced(self.client.clone(), &id.namespace).get(&sec.name).await {
+                    Ok(obj) => {
+                        let bin = obj.data.map(|m| m.into_iter().map(|(k, v)| (k, v.0)).collect());
+                        write_projected_keys(dir, obj.string_data, bin, sec.items.as_deref())?;
+                    }
+                    Err(_) if optional => {}
+                    Err(e) => warn!(secret = %sec.name, error = ?e, "projected volume: failed to fetch Secret source"),
+                }
+            } else if let Some(da) = &source.downward_api {
+                write_downward_api_volume(dir, pod, da.items.as_deref().unwrap_or(&[]))?;
+            } else if source.service_account_token.is_some() {
+                warn!(
+                    pod = %format!("{}/{}", id.namespace, id.name),
+                    "projected volume: serviceAccountToken source not supported yet (needs TokenRequest API) — see docs/GAP_CLOSURE.md"
+                );
+            } else if source.cluster_trust_bundle.is_some() {
+                warn!(
+                    pod = %format!("{}/{}", id.namespace, id.name),
+                    "projected volume: clusterTrustBundle source not supported"
+                );
+            }
+        }
+        Ok(())
     }
 
     async fn resolve_service_env(&self, namespace: &str) -> Result<BTreeMap<String, Vec<u8>>> {
@@ -1005,6 +1290,24 @@ impl CriRuntime {
         Ok(resp.containers)
     }
 
+    /// Drop every restart-count entry for a sandbox that's gone (removed or
+    /// recreated-stale) — otherwise this side table grows forever across
+    /// pod recreations.
+    fn clear_restart_counts(&self, sandbox_id: &str) {
+        clear_restart_counts_in(&mut self.restart_counts.lock().unwrap(), sandbox_id);
+    }
+
+    fn restart_count(&self, sandbox_id: &str, container_name: &str) -> u32 {
+        restart_count_from(&self.restart_counts.lock().unwrap(), sandbox_id, container_name)
+    }
+
+    /// Bump and return the new restart count for a container that's about
+    /// to be recreated after actually having existed before (not the very
+    /// first creation — see the `NeedsRestart` branches' `existing_ctr` check).
+    fn bump_restart_count(&self, sandbox_id: &str, container_name: &str) -> u32 {
+        bump_restart_count_in(&mut self.restart_counts.lock().unwrap(), sandbox_id, container_name)
+    }
+
     /// Find a container's CRI id within a sandbox by its `nodelet.dev/container-name` label.
     async fn find_container_id(&self, sandbox_id: &str, container_name: &str) -> Result<Option<String>> {
         let existing = self.list_pod_containers(sandbox_id).await?;
@@ -1067,13 +1370,16 @@ impl CriRuntime {
                 // fall through and let CreateContainer surface any real
                 // problem instead of masking it here.
                 if let Some(c) = existing_ctr {
+                    self.bump_restart_count(sandbox_id, &container.name);
                     let mut rt = self.rt.clone();
                     let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
                 }
             }
         }
 
-        self.create_and_start_container(sandbox_id, id, container, pod_sc, volumes, pull_secrets, envs, false).await
+        let attempt = self.restart_count(sandbox_id, &container.name);
+        self.create_and_start_container(sandbox_id, id, container, pod_sc, volumes, pull_secrets, envs, false, attempt)
+            .await
     }
 
     /// Resolve `{username, password}` for pulling `image` out of the given
@@ -1113,6 +1419,7 @@ impl CriRuntime {
         pull_secrets: &[String],
         envs: &[KeyValue],
         init: bool,
+        attempt: u32,
     ) -> Result<()> {
         let image = container.image.clone().unwrap_or_default();
         let auth = self.resolve_pull_auth(&id.namespace, pull_secrets, &image).await;
@@ -1128,7 +1435,15 @@ impl CriRuntime {
         .await
         .context("pulling image")?;
 
-        let mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes);
+        let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes);
+        if let Some(hosts_path) = volumes.get(ETC_HOSTS_VOLUME_KEY) {
+            mounts.push(Mount {
+                container_path: "/etc/hosts".to_string(),
+                host_path: hosts_path.to_string_lossy().into_owned(),
+                readonly: false,
+                ..Default::default()
+            });
+        }
         let linux = Some(LinuxContainerConfig {
             resources: Some(linux_resources(container.resources.as_ref())),
             security_context: Some(linux_security_context(pod_sc, container.security_context.as_ref())),
@@ -1136,7 +1451,7 @@ impl CriRuntime {
 
         let mut rt = self.rt.clone();
         let config = ContainerConfig {
-            metadata: Some(ContainerMetadata { name: container.name.clone(), attempt: 0 }),
+            metadata: Some(ContainerMetadata { name: container.name.clone(), attempt }),
             image: Some(image_spec),
             command: container.command.clone().unwrap_or_default(),
             args: container.args.clone().unwrap_or_default(),
@@ -1144,7 +1459,7 @@ impl CriRuntime {
             envs: envs.to_vec(),
             mounts,
             labels: container_labels(id, &container.name, init),
-            log_path: format!("{}_{}.log", container.name, 0),
+            log_path: format!("{}_{}.log", container.name, attempt),
             linux,
             ..Default::default()
         };
@@ -1159,9 +1474,108 @@ impl CriRuntime {
             .context("creating container")?
             .into_inner();
 
-        rt.start_container(StartContainerRequest { container_id: created.container_id })
+        rt.start_container(StartContainerRequest { container_id: created.container_id.clone() })
             .await
             .context("starting container")?;
+
+        // postStart runs after the container is started; a failing hook
+        // should kill+restart the container per real kubelet, but that's a
+        // bigger behavior change than this pass takes on — logged and left
+        // running instead (see docs/GAP_CLOSURE.md).
+        if let Some(post_start) = container.lifecycle.as_ref().and_then(|l| l.post_start.as_ref()) {
+            let pod_ip = self.pod_ip(sandbox_id).await.unwrap_or_default();
+            if let Err(e) = self.run_lifecycle_hook(&created.container_id, &pod_ip, post_start, 30).await {
+                warn!(container = %container.name, error = ?e, "postStart hook failed (container left running)");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Run every currently-running app container's `preStop` hook (best
+    /// effort — a failing hook must not block termination, matching real
+    /// kubelet), then send each one `StopContainer` with the pod's
+    /// termination grace period as the CRI timeout (containerd sends
+    /// SIGTERM, waits up to that long, then SIGKILLs). Runs before
+    /// `StopPodSandbox` so each container actually gets its own grace
+    /// period instead of whatever the sandbox stop does by default.
+    async fn graceful_stop_containers(&self, sandbox_id: &str, pod: &Pod, grace_seconds: i64) {
+        let Ok(containers) = self.list_pod_containers(sandbox_id).await else { return };
+        let running_v = ContainerState::ContainerRunning as i32;
+        let pod_ip = self.pod_ip(sandbox_id).await.unwrap_or_default();
+        let spec_containers = pod.spec.as_ref().map(|s| s.containers.as_slice()).unwrap_or(&[]);
+
+        for c in &containers {
+            if c.state != running_v || c.labels.contains_key(CTR_INIT_LABEL) {
+                continue;
+            }
+            let Some(name) = c.labels.get(CTR_NAME_LABEL) else { continue };
+            if let Some(pre_stop) = spec_containers
+                .iter()
+                .find(|sc| &sc.name == name)
+                .and_then(|sc| sc.lifecycle.as_ref())
+                .and_then(|l| l.pre_stop.as_ref())
+            {
+                if let Err(e) = self.run_lifecycle_hook(&c.id, &pod_ip, pre_stop, grace_seconds).await {
+                    warn!(container = %name, error = ?e, "preStop hook failed; continuing with termination anyway");
+                }
+            }
+            let mut rt = self.rt.clone();
+            let _ = rt.stop_container(StopContainerRequest { container_id: c.id.clone(), timeout: grace_seconds }).await;
+        }
+    }
+
+    /// Execute one `postStart`/`preStop` handler. Supports `exec`, `httpGet`,
+    /// and `sleep` (the newer preStop-only action) — not `tcpSocket` (the
+    /// deprecated, rarely-used lifecycle hook form). Best-effort: errors are
+    /// returned for the caller to log, never to block the container
+    /// lifecycle transition that's waiting on this.
+    async fn run_lifecycle_hook(
+        &self,
+        container_id: &str,
+        pod_ip: &str,
+        handler: &LifecycleHandler,
+        timeout_secs: i64,
+    ) -> Result<()> {
+        let timeout = Duration::from_secs(timeout_secs.max(0) as u64);
+
+        if let Some(exec) = &handler.exec {
+            let command = exec.command.clone().unwrap_or_default();
+            if command.is_empty() {
+                return Ok(());
+            }
+            let mut rt = self.rt.clone();
+            tokio::time::timeout(
+                timeout,
+                rt.exec_sync(ExecSyncRequest {
+                    container_id: container_id.to_string(),
+                    cmd: command,
+                    timeout: timeout_secs.max(0),
+                }),
+            )
+            .await
+            .context("lifecycle hook exec timed out")?
+            .context("lifecycle hook ExecSync")?;
+            return Ok(());
+        }
+
+        if let Some(http) = &handler.http_get {
+            let port = match &http.port {
+                IntOrString::Int(n) => *n as u16,
+                IntOrString::String(_) => 0, // named ports aren't resolvable here without the container spec; skip
+            };
+            let path = http.path.clone().unwrap_or_else(|| "/".to_string());
+            let host = http.host.clone().filter(|h| !h.is_empty()).unwrap_or_else(|| pod_ip.to_string());
+            // Best-effort — kubelet itself only logs a non-2xx/unreachable
+            // lifecycle httpGet, it doesn't fail the container over it.
+            let _ = tokio::time::timeout(timeout, lifecycle_http_get(&host, port, &path)).await;
+            return Ok(());
+        }
+
+        if let Some(sleep) = &handler.sleep {
+            tokio::time::sleep(Duration::from_secs(sleep.seconds.max(0) as u64).min(timeout)).await;
+        }
+
         Ok(())
     }
 
@@ -1210,8 +1624,11 @@ impl CriRuntime {
             match init_container_decision(existing_ctr.map(|c| c.state), running_v, exited_v, exit_code, restart_policy) {
                 InitContainerDecision::Create => {
                     let envs = self.resolve_container_env(pod, id, container, service_env).await?;
-                    self.create_and_start_container(sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, true)
-                        .await?;
+                    let attempt = self.restart_count(sandbox_id, &container.name);
+                    self.create_and_start_container(
+                        sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, true, attempt,
+                    )
+                    .await?;
                     return Ok(InitProgress::Waiting);
                 }
                 InitContainerDecision::Done => continue, // this init container is done — check the next one
@@ -1226,6 +1643,7 @@ impl CriRuntime {
                     // (triggered by this very removal, via the CRI event
                     // stream) sees no existing container and creates a fresh one.
                     let c = existing_ctr.expect("Retry only reached when a container exists");
+                    self.bump_restart_count(sandbox_id, &container.name);
                     let mut rt = self.rt.clone();
                     let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
                     return Ok(InitProgress::Waiting);
@@ -1260,6 +1678,7 @@ impl CriRuntime {
                 warn!(sandbox = %sandbox_id, error = ?e, "gc: failed to remove orphaned sandbox");
             }
             self.restart_policies.lock().unwrap().remove(&sandbox_id);
+            self.clear_restart_counts(&sandbox_id);
         }
         Ok(())
     }
@@ -1326,31 +1745,47 @@ impl CriRuntime {
         let mut all_exited = !containers.is_empty();
         let mut earliest_created = i64::MAX;
 
+        let mut container_names = Vec::new();
         for c in &containers {
             let running = c.state == running_v;
             any_running |= running;
             all_exited &= c.state == exited_v;
             earliest_created = earliest_created.min(c.created_at);
+            let name = c.metadata.as_ref().map(|m| m.name.clone()).unwrap_or_default();
+            container_names.push((name.clone(), c.id.clone()));
             crs.push(ContainerRuntimeStatus {
-                name: c.metadata.as_ref().map(|m| m.name.clone()).unwrap_or_default(),
+                name: name.clone(),
                 image: c.image.as_ref().map(|i| i.image.clone()).unwrap_or_default(),
                 ready: running,
                 running,
                 container_id: Some(c.id.clone()),
+                restart_count: self.restart_count(sandbox_id, &name),
             });
         }
 
-        // all_exited only means "this pod is done" for restartPolicy: Never
-        // (or OnFailure, treated the same here — the CRI status doesn't give
-        // us per-container exit codes to distinguish "OnFailure but all
-        // exited zero" from "OnFailure and one failed", and both still
-        // report Pending/Succeeded reasonably either way). For the default,
-        // overwhelmingly common restartPolicy: Always (every Deployment,
-        // including coredns), a container exiting is never terminal —
-        // ensure_container() above just restarted it — so report Pending
-        // rather than Succeeded: never hand the ReplicaSet controller a
-        // terminal phase for a pod that's still supposed to be alive.
-        let phase = compute_phase(any_running, all_exited, restart_policy);
+        // For the default, overwhelmingly common restartPolicy: Always
+        // (every Deployment, including coredns), a container exiting is
+        // never terminal — ensure_container() above just restarted it — so
+        // report Pending rather than Succeeded/Failed: never hand the
+        // ReplicaSet controller a terminal phase for a pod that's still
+        // supposed to be alive. Only restartPolicy: Never (Job-style
+        // one-shot pods) can ever be genuinely done, so exit codes — one
+        // extra ContainerStatus RPC per container, only paid here, not on
+        // every Always/OnFailure pod's status build — are only fetched to
+        // tell a real success from a real failure in that case.
+        let any_failed = if all_exited && restart_policy == "Never" {
+            let mut failed = false;
+            for (_, container_id) in &container_names {
+                if self.container_exit_code(container_id).await.unwrap_or(0) != 0 {
+                    failed = true;
+                    break;
+                }
+            }
+            failed
+        } else {
+            false
+        };
+        let phase = compute_phase(any_running, all_exited, any_failed, restart_policy);
 
         let started_at = (earliest_created != i64::MAX && earliest_created > 0)
             .then(|| Timestamp::from_nanosecond(earliest_created as i128).ok())
@@ -1386,6 +1821,7 @@ impl PodRuntime for CriRuntime {
                 let _ = rt.stop_pod_sandbox(StopPodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
                 let _ = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
                 self.restart_policies.lock().unwrap().remove(&stale_id);
+                self.clear_restart_counts(&stale_id);
                 self.run_sandbox(&id, dns).await.context("RunPodSandbox")?
             }
             SandboxDecision::CreateFresh => self.run_sandbox(&id, dns).await.context("RunPodSandbox")?,
@@ -1467,8 +1903,12 @@ impl PodRuntime for CriRuntime {
         self.build_status(&sandbox_id, &restart_policy).await
     }
 
-    async fn remove_pod(&self, namespace: &str, name: &str) -> Result<()> {
-        if let Some((sandbox_id, _state)) = self.find_sandbox(namespace, name).await? {
+    async fn remove_pod(&self, pod: &Pod) -> Result<()> {
+        let id = pod_id(pod);
+        if let Some((sandbox_id, _state)) = self.find_sandbox(&id.namespace, &id.name).await? {
+            let grace = termination_grace_seconds(pod);
+            self.graceful_stop_containers(&sandbox_id, pod, grace).await;
+
             let mut rt = self.rt.clone();
             // StopPodSandbox is idempotent; RemovePodSandbox also removes its containers.
             let _ = rt
@@ -1478,6 +1918,7 @@ impl PodRuntime for CriRuntime {
                 .await
                 .context("RemovePodSandbox")?;
             self.restart_policies.lock().unwrap().remove(&sandbox_id);
+            self.clear_restart_counts(&sandbox_id);
         }
         Ok(())
     }
@@ -1746,6 +2187,24 @@ mod tests_registry_auth;
 #[cfg(test)]
 #[path = "cri_tests/init_container_decision.rs"]
 mod tests_init_container_decision;
+#[cfg(test)]
+#[path = "cri_tests/termination_grace.rs"]
+mod tests_termination_grace;
+#[cfg(test)]
+#[path = "cri_tests/restart_count.rs"]
+mod tests_restart_count;
+#[cfg(test)]
+#[path = "cri_tests/downward_api_volume.rs"]
+mod tests_downward_api_volume;
+#[cfg(test)]
+#[path = "cri_tests/projected_keys.rs"]
+mod tests_projected_keys;
+#[cfg(test)]
+#[path = "cri_tests/fs_group.rs"]
+mod tests_fs_group;
+#[cfg(test)]
+#[path = "cri_tests/etc_hosts.rs"]
+mod tests_etc_hosts;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

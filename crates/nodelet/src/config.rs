@@ -78,6 +78,9 @@ pub struct Config {
     /// Real kubelet's `--cluster-domain` — the base domain used to build a
     /// ClusterFirst pod's DNS search list.
     pub cluster_domain: String,
+    /// How often node-pressure eviction re-checks MemoryPressure/DiskPressure
+    /// and, if either is active, evicts one eligible pod (see `eviction.rs`).
+    pub eviction_check_interval: Duration,
 }
 
 impl Config {
@@ -157,6 +160,7 @@ impl Config {
             .unwrap_or_default();
         let cluster_domain =
             std::env::var("NODELET_CLUSTER_DOMAIN").unwrap_or_else(|_| "cluster.local".to_string());
+        let eviction_check_interval = Duration::from_secs(env_u64("NODELET_EVICTION_CHECK_SECS", 10)?);
 
         Ok(Self {
             node_name,
@@ -177,6 +181,7 @@ impl Config {
             gc_interval,
             cluster_dns,
             cluster_domain,
+            eviction_check_interval,
         })
     }
 }

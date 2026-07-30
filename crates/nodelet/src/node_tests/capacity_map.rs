@@ -23,6 +23,7 @@ fn cfg(cpu: u64, mem: u64, pods: u64) -> Config {
         gc_interval: Duration::from_secs(300),
         cluster_dns: Vec::new(),
         cluster_domain: "cluster.local".to_string(),
+        eviction_check_interval: Duration::from_secs(10),
     }
 }
 

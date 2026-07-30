@@ -49,6 +49,7 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
   src/probes.rs        Liveness/readiness/startup probe execution (opt-in per pod).
   src/metrics.rs        Real MemoryPressure/DiskPressure from /proc + statvfs.
   src/gc.rs            Orphaned-sandbox + unreferenced-image garbage collection.
+  src/eviction.rs      Node-pressure eviction: QoS-ranked pod selection.
   src/runtime/mock.rs  In-memory runtime: reports pods Running, zero engine overhead.
   src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`): pod/init
                        container lifecycle, resource limits, securityContext,
@@ -75,11 +76,17 @@ node pressure conditions, GC, init containers, container resource
 requests/limits (CPU shares/quota, memory limits — actually enforced via
 cgroups now, not just advertised), `securityContext` (runAsUser/Group,
 capabilities, privileged, readOnlyRootFilesystem, seccomp), pod DNS
-(`dnsPolicy`/`dnsConfig`), and private registry image pulls
-(`imagePullSecrets`). Still missing, see `docs/GAP_CLOSURE.md` for the full
-list: `kubectl exec/logs/attach/port-forward` (no HTTP(S) server exists yet),
-`kubectl top` (`/stats/summary`), static pods, PVC/CSI, node-pressure
-eviction, and more.
+(`dnsPolicy`/`dnsConfig`), private registry image pulls
+(`imagePullSecrets`), postStart/preStop lifecycle hooks + graceful
+termination (`terminationGracePeriodSeconds`), real per-container restart
+counts, projected/downwardAPI volumes, `hostAliases`, `fsGroup`, and
+node-pressure eviction (evicts one BestEffort/Burstable pod at a time when
+MemoryPressure/DiskPressure is active). Still missing, see
+`docs/GAP_CLOSURE.md` for the full list: `kubectl exec/logs/attach/
+port-forward` (no HTTP(S) server exists yet), `kubectl top`
+(`/stats/summary` — would also make eviction ranking usage-based instead of
+request-based), static pods, PVC/CSI, serviceAccountToken minting for
+projected volumes, and more.
 
 ---
 
@@ -457,6 +464,7 @@ Notes from validation:
 | `NODELET_GC_INTERVAL_SECS` | `300` | How often orphaned-sandbox and unreferenced-image GC runs (`cri` only). |
 | `NODELET_CLUSTER_DNS` | — | Comma-separated cluster DNS server IPs, injected into `dnsPolicy: ClusterFirst` pods (real kubelet's `--cluster-dns`). Unset means pods fall back to the host's own resolv.conf. |
 | `NODELET_CLUSTER_DOMAIN` | `cluster.local` | Base domain for a ClusterFirst pod's DNS search list (`--cluster-domain`). |
+| `NODELET_EVICTION_CHECK_SECS` | `10` | How often node-pressure eviction re-checks and evicts one eligible pod under pressure — see [Status](#status). |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---
