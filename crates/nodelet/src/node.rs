@@ -135,10 +135,17 @@ fn build_node(cfg: &Config) -> Node {
             labels: Some(node_labels(cfg)),
             ..Default::default()
         },
-        spec: Some(NodeSpec {
-            provider_id: Some(format!("nodelet://{}", cfg.node_name)),
-            ..Default::default()
-        }),
+        // Deliberately no provider_id. Setting one is exactly what tells
+        // Kubernetes' node-lifecycle-controller that a cloud-controller-
+        // manager will show up to initialize this node — it responds by
+        // adding a node.cloudprovider.kubernetes.io/uninitialized:NoSchedule
+        // taint until one does. There's no cloud provider here at all
+        // (setup-control-plane.sh passes --disable-cloud-controller on
+        // purpose, for exactly this reason: an edge device), so nothing
+        // was ever going to clear it — every pod would stay Unschedulable
+        // forever. Confirmed for real: this was the actual root cause of
+        // pods stuck Pending with "1 node(s) had untolerated taint(s)".
+        spec: Some(NodeSpec::default()),
         status: None,
     }
 }

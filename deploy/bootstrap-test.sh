@@ -956,13 +956,25 @@ ensure_cni_base_plugins() {
     mkdir -p "$CNI_BIN_DIR"
 
     if pkg_install "CNI plugins" "containernetworking-plugins" "containernetworking-plugins" \
-            "cni-plugins" "cni-plugins" "containernetworking-plugins" "containernetworking-plugins" \
-       && { [[ -x /usr/lib/cni/bridge ]] || [[ -x /usr/libexec/cni/bridge ]]; }; then
-        # Distro packages install to their own dir; point ours at it.
-        local distro_cni_dir; distro_cni_dir="$(dirname "$(command -v bridge 2>/dev/null || echo /usr/lib/cni/bridge)")"
-        CNI_BIN_DIR="$distro_cni_dir"
-        log "Using distro CNI plugins in $CNI_BIN_DIR"
-        return 0
+            "cni-plugins" "cni-plugins" "containernetworking-plugins" "containernetworking-plugins"; then
+        # Distro packages install to their own dir; point ours at it. Using
+        # the exact path just verified to actually have the plugin binary —
+        # NOT `command -v bridge`, which found the wrong thing in testing:
+        # `bridge` is also the name of an unrelated standard Linux
+        # networking tool (part of iproute2, for managing bridge devices),
+        # commonly present at /usr/sbin/bridge independent of whether CNI
+        # plugins are installed at all. That silently pointed CNI_BIN_DIR at
+        # the wrong directory, and nothing downstream (containerd's config)
+        # ever got told, so RunPodSandbox couldn't find the real plugins —
+        # pods stuck forever instead of erroring somewhere visible.
+        local distro_cni_dir=""
+        [[ -x /usr/lib/cni/bridge ]] && distro_cni_dir=/usr/lib/cni
+        [[ -x /usr/libexec/cni/bridge ]] && distro_cni_dir=/usr/libexec/cni
+        if [[ -n "$distro_cni_dir" ]]; then
+            CNI_BIN_DIR="$distro_cni_dir"
+            log "Using distro CNI plugins in $CNI_BIN_DIR"
+            return 0
+        fi
     fi
 
     local goarch; goarch="$(cni_go_arch_map)"
