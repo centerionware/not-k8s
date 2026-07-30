@@ -34,14 +34,14 @@ sudo systemctl restart k3s
 echo "=== restarting nodelet with debug logging ==="
 sudo systemctl restart nodelet
 
-echo "=== capturing 60s of activity from both, interleaved by real time ==="
-sleep 60
+echo "=== capturing 10s of activity from both, interleaved by real time ==="
+sleep 10
 
 echo "=== nodelet journal (debug level) for this window ==="
-sudo journalctl -u nodelet --since "90 seconds ago" --no-pager -o short-iso-precise
+sudo journalctl -u nodelet --since "20 seconds ago" --no-pager -o short-iso-precise
 
 echo "=== k3s journal (replicaset/coredns lines only) for this window ==="
-sudo journalctl -u k3s --since "90 seconds ago" --no-pager -o short-iso-precise | grep -iE "replicaset|coredns|taint-eviction"
+sudo journalctl -u k3s --since "20 seconds ago" --no-pager -o short-iso-precise | grep -iE "replicaset|coredns|taint-eviction"
 
 echo "=== current coredns pod count ==="
 sudo k3s kubectl get pods -n kube-system -l k8s-app=kube-dns --no-headers | wc -l
