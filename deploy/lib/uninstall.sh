@@ -10,26 +10,39 @@
 # removes everything by name — see force_remove_known_packages() below and
 # the --force block comment in bootstrap-source.sh's usage header.
 #
-# IMPORTANT set -e note: every command in this file that stops something
-# already-stopped, or kills something already-dead, is wrapped in `|| true`
-# or an `if` condition — never a bare statement. Under `set -e`, a bare
-# failing command (e.g. `pkill` finding nothing to kill, `systemctl stop`
-# on a unit that's already stopped or was never installed) kills the whole
-# script immediately, silently skipping everything after it in the same
-# function. Confirmed for real: an earlier version of stop_running_components()
-# had `pkill -f "$SCRIPT_DIR/run-nodelet.sh" 2>/dev/null` with no `|| true`
-# right after `systemctl stop nodelet.service` — once systemctl had already
-# stopped the process, pkill found nothing, exited 1, and --uninstall died
-# right there without ever reaching the k3s-uninstall.sh call below. The fix
-# here is structural, not just adding `|| true` in the one spot that broke:
-# service stop+remove is now handled once each, by remove_nodelet_service()
-# and remove_supervised_service() (both already `|| true`-guarded — see
-# nodelet-service.sh / service-mgr.sh), instead of being duplicated here
+# IMPORTANT set -e note, two distinct failure modes — both hit real runs:
+#
+# 1. A bare failing command (e.g. `pkill` finding nothing to kill,
+#    `systemctl stop` on a unit that's already stopped or never installed)
+#    kills the whole script immediately. Confirmed for real: an earlier
+#    version of stop_running_components() had
+#    `pkill -f "$SCRIPT_DIR/run-nodelet.sh" 2>/dev/null` with no `|| true`
+#    right after `systemctl stop nodelet.service` — once systemctl had
+#    already stopped the process, pkill found nothing, exited 1, and
+#    --uninstall died right there. Fixed structurally, not by patching that
+#    one spot: service stop+remove is now handled once each, by
+#    remove_nodelet_service() and remove_supervised_service() (both fully
+#    `|| true`-guarded — see nodelet-service.sh / service-mgr.sh), instead
+#    of being duplicated here with its own separate, easy-to-forget guard.
+#
+# 2. Subtler: `[[ -f "$WORK_DIR/x.pid" ]] && { kill ...; }` as the LAST
+#    statement of a function does NOT crash *that* function when the test
+#    is false (bash exempts everything but the command after the final
+#    &&/|| in a list from -e) — but the function's own exit status then
+#    *is* that failing test's status, and calling the function as a bare
+#    statement in the CALLER crashes there instead. Confirmed for real:
+#    stop_running_components() ended in exactly this shape and --uninstall
+#    died right after logging "Stopping containerd..." with nothing after
+#    it, on a machine with no leftover containerd.pid file (the normal
+#    case). Every risky test that's the last thing in a function here is
+#    wrapped in an explicit `if`, never a bare `&&`, because of this.
 # with its own separate, easy-to-forget guarding.
 
 stop_service_proxy_nft() {
     log "Removing the Service-proxy nftables table (if present)..."
-    command -v nft &>/dev/null && { nft delete table inet not_k8s_svc 2>/dev/null || true; }
+    if command -v nft &>/dev/null; then
+        nft delete table inet not_k8s_svc 2>/dev/null || true
+    fi
 }
 
 # Stops+removes everything a run started: nodelet, the Service-proxy nft
@@ -44,7 +57,9 @@ stop_running_components() {
     if [[ ! -f /etc/systemd/system/containerd.service ]]; then
         remove_supervised_service containerd
     fi
-    [[ -f "$WORK_DIR/containerd.pid" ]] && { kill "$(cat "$WORK_DIR/containerd.pid")" 2>/dev/null || true; }
+    if [[ -f "$WORK_DIR/containerd.pid" ]]; then
+        kill "$(cat "$WORK_DIR/containerd.pid")" 2>/dev/null || true
+    fi
 }
 
 # Full teardown for --cleanup: stop everything this script started running,
