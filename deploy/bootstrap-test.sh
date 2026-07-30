@@ -226,28 +226,51 @@ log "OS=$OS  arch=$ARCH_RAW (normalized: $ARCH)  pkg_mgr=$PKG_MGR  root=$IS_ROOT
 # ─────────────────────────────────────────────────────────────────────────
 # IP family resolution — decided once, here, and handed to every consumer
 # (k3s's --cluster-cidr/--service-cidr, flannel's net-conf, and nodelet's
-# NODELET_IP_FAMILY) so they can't disagree with each other. auto detection
-# mirrors nodelet's own (a real socket bind in each family, not /proc
-# parsing, since that's the actual thing that matters and is consistent
-# across every distro).
+# NODELET_IP_FAMILY) so they can't disagree with each other.
+#
+# Checks for an actual default route in each family — deliberately the same
+# thing flannel itself checks when picking its interface ("failed to get
+# default v6 interface: Unable to find default v6 route"). An earlier
+# version of this used a UDP socket *bind* test instead, which only proves
+# the address family's socket API works — nearly every modern kernel has
+# IPv6 compiled in and enabled regardless of whether there's any real IPv6
+# connectivity, so that test passed on a machine with no default v6 route
+# at all. Result, confirmed for real: auto picked "dual", flannel got a
+# net-conf.json telling it to also handle IPv6, and it crash-looped forever
+# since it could never find a v6 interface to use. A route-table check is
+# the actual thing that matters, and it's exactly what was missing.
 # ─────────────────────────────────────────────────────────────────────────
 
-detect_ipv4() { python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SOCK_DGRAM).bind(("0.0.0.0", 0))' 2>/dev/null; }
-detect_ipv6() { python3 -c 'import socket; socket.socket(socket.AF_INET6, socket.SOCK_DGRAM).bind(("::", 0))' 2>/dev/null; }
+detect_ipv4() {
+    if command -v ip &>/dev/null; then
+        ip -4 route show default 2>/dev/null | grep -q .
+    else
+        # No iproute2 to check a real route table. IPv4 is near-universal,
+        # so a bind test (proves the socket API works, not real
+        # connectivity — weaker, but the false-positive direction here is
+        # low-risk) is a reasonable fallback.
+        command -v python3 &>/dev/null \
+            && python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SOCK_DGRAM).bind(("0.0.0.0", 0))' 2>/dev/null
+    fi
+}
+detect_ipv6() {
+    if command -v ip &>/dev/null; then
+        ip -6 route show default 2>/dev/null | grep -q .
+    else
+        # No route table to check, and unlike IPv4, a false positive here
+        # is exactly what caused flannel to crash-loop — default to "no
+        # v6" rather than trust a weaker test. Worst case is ipv4-only when
+        # dual-stack would actually have worked; that's a far better
+        # failure mode than a service that can never start.
+        false
+    fi
+}
 
 case "$IP_FAMILY" in
     auto)
-        if command -v python3 &>/dev/null; then
-            v4=0; v6=0
-            detect_ipv4 && v4=1
-            detect_ipv6 && v6=1
-        else
-            # No python3 to run a real bind test — fall back to the
-            # conventional /proc signal. v4 is assumed (near-universal).
-            v4=1
-            v6=0
-            [[ -f /proc/net/if_inet6 ]] && [[ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" == "0" ]] && v6=1
-        fi
+        v4=0; v6=0
+        detect_ipv4 && v4=1
+        detect_ipv6 && v6=1
         if [[ "$v4" -eq 1 && "$v6" -eq 1 ]]; then IP_FAMILY=dual
         elif [[ "$v6" -eq 1 ]]; then IP_FAMILY=ipv6
         else IP_FAMILY=ipv4

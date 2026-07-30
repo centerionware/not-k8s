@@ -160,9 +160,25 @@ fn detect_hostname() -> String {
 /// "can this process actually use this stack" — more reliable than parsing
 /// `/proc/sys/net/ipv6/...`, which varies by how IPv6 was disabled (kernel
 /// cmdline, sysctl, or just never configured).
+/// Whether this host has an actual route for the given family — not just a
+/// working socket API for it. A bare `bind()` only proves the kernel has
+/// that address family compiled in and enabled, which is true on nearly
+/// every modern Linux kernel regardless of whether there's any real
+/// connectivity; that produced a real false positive (a machine with IPv6
+/// support but no default v6 route was detected as dual-stack, and the
+/// flannel CNI daemon this feeds into crash-looped forever trying to find a
+/// v6 interface that didn't exist). `connect()` on a UDP socket sends no
+/// packets — it's a local routing-table lookup for the given destination —
+/// so this works fully offline and doesn't need the probe address itself to
+/// be reachable, only *routable*.
+fn has_route(probe_addr: &str, bind_addr: &str) -> bool {
+    let Ok(sock) = std::net::UdpSocket::bind(bind_addr) else { return false };
+    sock.connect(probe_addr).is_ok()
+}
+
 fn detect_ip_family() -> IpFamily {
-    let v4 = std::net::UdpSocket::bind("0.0.0.0:0").is_ok();
-    let v6 = std::net::UdpSocket::bind("[::]:0").is_ok();
+    let v4 = has_route("8.8.8.8:53", "0.0.0.0:0");
+    let v6 = has_route("[2001:4860:4860::8888]:53", "[::]:0");
     match (v4, v6) {
         (true, true) => IpFamily::Dual,
         (true, false) => IpFamily::V4,
