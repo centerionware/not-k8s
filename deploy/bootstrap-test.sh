@@ -1059,29 +1059,15 @@ EOF
 # flanneld's kube-subnet-mgr mode still needs an explicit net-conf.json for
 # every IP family, not just dual/v6 — there's no ConfigMap in this
 # standalone (non-DaemonSet) setup for it to fall back to, and it has no
-# built-in default Network/Backend. Confirmed for real: a prior version of
-# this function skipped writing the file for plain IPv4, on the (wrong)
-# assumption that flanneld had a v4-only default — flanneld instead failed
-# every single startup with "Failed to create SubnetManager: failed to read
-# net conf: open /etc/kube-flannel/net-conf.json: no such file or
-# directory", crash-looping forever and leaving /run/flannel/subnet.env
-# never written, which in turn made every pod's CNI setup fail.
-write_flannel_net_conf() {
-    mkdir -p /etc/kube-flannel
-    local v4_net="" v6_net=""
-    [[ "$IP_FAMILY" == "dual" || "$IP_FAMILY" == "ipv4" ]] && v4_net="$IPV4_CLUSTER_CIDR"
-    [[ "$IP_FAMILY" == "dual" || "$IP_FAMILY" == "ipv6" ]] && v6_net="$IPV6_CLUSTER_CIDR"
-    cat > /etc/kube-flannel/net-conf.json <<EOF
-{
-  "Network": "${v4_net:-$IPV4_CLUSTER_CIDR}",
-  "EnableIPv4": $( [[ -n "$v4_net" ]] && echo true || echo false ),
-  "EnableIPv6": $( [[ -n "$v6_net" ]] && echo true || echo false ),
-  "IPv6Network": "${v6_net:-::/0}",
-  "Backend": { "Type": "vxlan" }
-}
-EOF
-}
-
+# built-in default Network/Backend. Writing the file now lives entirely in
+# deploy/run-flanneld.sh, which regenerates it on every single service
+# start (not just once, here, at install time) — see that file's header
+# for why: a systemd unit's Restart=always only re-runs ExecStart, never
+# this installer, so a one-time write here can't recover from the config
+# going missing after a reboot. Confirmed for real: exactly that happened
+# on a live test machine — /etc/kube-flannel/net-conf.json wasn't there
+# after a reboot, and flanneld crash-looped forever with no way to recover
+# short of manually re-running this whole script.
 start_flanneld() {
     pgrep -x flanneld &>/dev/null && return 0
     # set -u makes a bare $KUBECONFIG reference itself fatal when the
@@ -1090,10 +1076,7 @@ start_flanneld() {
     # same way run_and_verify() does before testing/using it.
     local KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
     [[ -f "$KUBECONFIG" ]] || die "flanneld needs a KUBECONFIG (control plane must be up first)."
-    mkdir -p /run/flannel
     log "Starting flanneld (kube subnet manager, backend=vxlan, ip-family=$IP_FAMILY)..."
-    local net_conf_args=()
-    [[ -f /etc/kube-flannel/net-conf.json ]] && net_conf_args=(--net-config-path=/etc/kube-flannel/net-conf.json)
     # flanneld does NOT read the KUBECONFIG env var — its own flag-parsing
     # code (not generic client-go behavior) only looks at an explicit
     # kubeconfig flag or --master; with neither set it skips straight to
@@ -1114,10 +1097,12 @@ start_flanneld() {
     # actually runs it. Confirmed for real: exactly this failure, in
     # journalctl -u flanneld, on the first version of this fix.
     local flanneld_bin; flanneld_bin="$(command -v flanneld)"
-    local exec_cmd="$flanneld_bin --kube-subnet-mgr --ip-masq --kubeconfig-file=$KUBECONFIG ${net_conf_args[*]}"
+    local exec_cmd="$SCRIPT_DIR/run-flanneld.sh"
     local node_name="${NODELET_NODE_NAME:-$(hostname)}"
     install_supervised_service flanneld "flanneld — CNI overlay network daemon for not-k8s" \
-        "$exec_cmd" "k3s.service" "NODE_NAME=$node_name"
+        "$exec_cmd" "k3s.service" \
+        "NODE_NAME=$node_name" "FLANNELD_BIN=$flanneld_bin" "KUBECONFIG=$KUBECONFIG" \
+        "IP_FAMILY=$IP_FAMILY" "IPV4_CLUSTER_CIDR=$IPV4_CLUSTER_CIDR" "IPV6_CLUSTER_CIDR=$IPV6_CLUSTER_CIDR"
     # Deliberately not waiting for /run/flannel/subnet.env here: flanneld's
     # kube subnet manager can't get one until a Node object exists *with an
     # allocated PodCIDR* — which needs nodelet to have registered the node
@@ -1156,7 +1141,6 @@ ensure_cni() {
             ensure_cni_base_plugins
             ensure_flannel_binaries
             write_flannel_cni_conf
-            write_flannel_net_conf
             start_flanneld
             ;;
         *)
