@@ -60,7 +60,7 @@ impl PodController {
                 item = stream.next() => {
                     match item {
                         Some(Ok(ev)) => self.on_watch(ev).await,
-                        Some(Err(e)) => warn!(error = %e, "pod watch error; watcher will retry"),
+                        Some(Err(e)) => warn!(error = ?e, "pod watch error; watcher will retry"),
                         None => {
                             warn!("pod watch stream ended; restarting");
                             self.events = events; // retain for the next run()
@@ -96,17 +96,17 @@ impl PodController {
             Ok(status) => {
                 debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured");
                 if let Err(e) = self.write_status(&ns, &name, &status).await {
-                    warn!(pod = %format!("{ns}/{name}"), error = %e, "failed to write pod status");
+                    warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status");
                 }
             }
-            Err(e) => warn!(pod = %format!("{ns}/{name}"), error = %e, "ensure_pod failed"),
+            Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "ensure_pod failed"),
         }
     }
 
     async fn teardown(&self, pod: &Pod) {
         if let Some((ns, name)) = key_parts(pod) {
             if let Err(e) = self.runtime.remove_pod(&ns, &name).await {
-                warn!(pod = %format!("{ns}/{name}"), error = %e, "remove_pod failed");
+                warn!(pod = %format!("{ns}/{name}"), error = ?e, "remove_pod failed");
             } else {
                 info!(pod = %format!("{ns}/{name}"), "torn down");
             }
@@ -120,7 +120,7 @@ impl PodController {
             Ok(Some(s)) => s,
             Ok(None) => return,
             Err(e) => {
-                warn!(pod = %key, error = %e, "runtime status query failed");
+                warn!(pod = %key, error = ?e, "runtime status query failed");
                 return;
             }
         };
@@ -129,13 +129,13 @@ impl PodController {
         match api.get_opt(name).await {
             Ok(Some(_)) => {
                 if let Err(e) = self.write_status(ns, name, &status).await {
-                    warn!(pod = %key, error = %e, "failed to write pod status");
+                    warn!(pod = %key, error = ?e, "failed to write pod status");
                 } else {
                     debug!(pod = %key, phase = status.phase.as_str(), "status updated (event-driven)");
                 }
             }
             Ok(None) => debug!(pod = %key, "pod gone; skipping status write"),
-            Err(e) => warn!(pod = %key, error = %e, "get_opt failed"),
+            Err(e) => warn!(pod = %key, error = ?e, "get_opt failed"),
         }
     }
 

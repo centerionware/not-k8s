@@ -407,14 +407,14 @@ async fn run_cri_events(channel: &Channel, tx: &UnboundedSender<String>) -> Even
                         }
                         Ok(None) => break, // stream ended; reconnect
                         Err(e) => {
-                            warn!(error = %e, "CRI event stream error");
+                            warn!(error = ?e, "CRI event stream error");
                             break;
                         }
                     }
                 }
             }
             Err(e) if e.code() == tonic::Code::Unimplemented => return EventOutcome::Unsupported,
-            Err(e) => warn!(error = %e, "failed to open CRI event stream"),
+            Err(e) => warn!(error = ?e, "failed to open CRI event stream"),
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
@@ -458,13 +458,13 @@ async fn containerd_events_loop(channel: Channel, tx: UnboundedSender<String>) {
                         }
                         Ok(None) => break,
                         Err(e) => {
-                            warn!(error = %e, "containerd event stream error");
+                            warn!(error = ?e, "containerd event stream error");
                             break;
                         }
                     }
                 }
             }
-            Err(e) => warn!(error = %e, "failed to subscribe to containerd events"),
+            Err(e) => warn!(error = ?e, "failed to subscribe to containerd events"),
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }

@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
     let mut controller = pods::PodController::new(client, runtime, cfg.node_name.clone());
     loop {
         if let Err(e) = controller.run().await {
-            error!(error = %e, "pod controller exited with error");
+            error!(error = ?e, "pod controller exited with error");
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
@@ -112,13 +112,13 @@ async fn heartbeat_loop(client: kube::Client, cfg: Config) {
         tokio::time::sleep(cfg.heartbeat).await;
 
         if let Err(e) = node::renew_lease(&client, &cfg).await {
-            warn!(error = %e, "lease renewal failed");
+            warn!(error = ?e, "lease renewal failed");
         }
 
         if last_status.elapsed() >= cfg.status_interval {
             match node::push_status(&client, &cfg, true).await {
                 Ok(()) => info!("node status pushed"),
-                Err(e) => warn!(error = %e, "node status push failed"),
+                Err(e) => warn!(error = ?e, "node status push failed"),
             }
             last_status = Instant::now();
         }

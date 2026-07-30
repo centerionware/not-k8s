@@ -124,7 +124,7 @@ impl ServiceProxy {
     /// Runs forever. Returns only if `nft` is unusable (nothing to do).
     pub async fn run(&self) {
         if let Err(e) = check_nft() {
-            warn!(error = %e, "nft unavailable; Service (ClusterIP/NodePort) routing disabled. \
+            warn!(error = ?e, "nft unavailable; Service (ClusterIP/NodePort) routing disabled. \
 Direct pod-IP traffic still works.");
             return;
         }
@@ -139,7 +139,7 @@ Direct pod-IP traffic still works.");
                 item = svc_stream.next() => {
                     match item {
                         Some(Ok(ev)) => { apply_event(&mut state.services, ev); true }
-                        Some(Err(e)) => { warn!(error = %e, "service watch error"); false }
+                        Some(Err(e)) => { warn!(error = ?e, "service watch error"); false }
                         None => {
                             warn!("service watch ended; restarting");
                             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -151,7 +151,7 @@ Direct pod-IP traffic still works.");
                 item = ep_stream.next() => {
                     match item {
                         Some(Ok(ev)) => { apply_event(&mut state.endpoint_slices, ev); true }
-                        Some(Err(e)) => { warn!(error = %e, "endpointslice watch error"); false }
+                        Some(Err(e)) => { warn!(error = ?e, "endpointslice watch error"); false }
                         None => {
                             warn!("endpointslice watch ended; restarting");
                             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -166,7 +166,7 @@ Direct pod-IP traffic still works.");
                 let ruleset = build_ruleset(&state, self.ip_family, self.lb_method);
                 match apply_nft(&ruleset) {
                     Ok(()) => debug!("nft ruleset applied"),
-                    Err(e) => warn!(error = %e, "failed to apply nft ruleset"),
+                    Err(e) => warn!(error = ?e, "failed to apply nft ruleset"),
                 }
             }
         }
