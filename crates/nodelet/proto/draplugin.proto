@@ -1,0 +1,82 @@
+// draplugin.proto — the kubelet-side client half of the Dynamic Resource
+// Allocation (DRA) plugin protocol (round 63). Reconstructed from public
+// documentation of `k8s.io/kubelet/pkg/apis/dra/v1beta1` rather than
+// vendored directly from the upstream Go module (which isn't available to
+// generate Rust bindings from in this environment) — field numbers/names
+// are believed accurate but have NOT been validated against a live
+// third-party DRA driver. Verify against a real driver (or the upstream
+// k8s.io/kubelet source directly) before relying on this for production
+// interop; see docs/GAP_CLOSURE.md's round 63 notes.
+//
+// A DRA driver's own kubelet-plugin process runs this service's *server*
+// side, listening on a Unix socket it announces via the same plugin
+// registration handshake CSI drivers and device plugins already use (see
+// pluginregistration.proto) with PluginInfo.type == "DRAPlugin". nodelet
+// is the *client*: once a driver registers, nodelet dials its endpoint and
+// calls these two RPCs around a pod's container creation/removal.
+
+syntax = "proto3";
+
+// Named distinctly from deviceplugin.proto's own "v1beta1" package (they're
+// unrelated APIs that happen to share a version suffix upstream) so both
+// compile to separate generated Rust modules instead of colliding.
+package dra.v1beta1;
+
+option go_package = "k8s.io/kubelet/pkg/apis/dra/v1beta1";
+
+service DRAPlugin {
+    // Called once per (driver, claim) before any container that
+    // references an allocated device from that claim/driver is created.
+    rpc NodePrepareResources(NodePrepareResourcesRequest) returns (NodePrepareResourcesResponse) {}
+
+    // Called once per (driver, claim) after every container that
+    // referenced it has been removed, so the driver can release
+    // whatever host-side state it set up in NodePrepareResources.
+    rpc NodeUnprepareResources(NodeUnprepareResourcesRequest) returns (NodeUnprepareResourcesResponse) {}
+}
+
+// Claim identifies a single ResourceClaim to prepare/unprepare.
+message Claim {
+    string namespace = 1;
+    string uid = 2;
+    string name = 3;
+}
+
+message NodePrepareResourcesRequest {
+    repeated Claim claims = 1;
+}
+
+// Device is one device the driver prepared for a claim, and which
+// request(s) within that claim it satisfies.
+message Device {
+    // Which request(s) in the claim caused this device to be prepared.
+    repeated string request_names = 1;
+    // Fully-qualified CDI device names (vendor.com/class=id) — copied
+    // verbatim into the container's CRI ContainerConfig.cdi_devices.
+    repeated string cdi_device_ids = 2;
+}
+
+message NodePrepareResourceResponse {
+    repeated Device devices = 1;
+    // Non-empty means preparation failed for this specific claim; the
+    // request as a whole may still have succeeded for other claims.
+    string error = 2;
+}
+
+message NodePrepareResourcesResponse {
+    // Keyed by claim UID.
+    map<string, NodePrepareResourceResponse> claims = 1;
+}
+
+message NodeUnprepareResourcesRequest {
+    repeated Claim claims = 1;
+}
+
+message NodeUnprepareResourceResponse {
+    string error = 1;
+}
+
+message NodeUnprepareResourcesResponse {
+    // Keyed by claim UID.
+    map<string, NodeUnprepareResourceResponse> claims = 1;
+}

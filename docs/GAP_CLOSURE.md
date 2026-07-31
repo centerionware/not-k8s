@@ -27,6 +27,104 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 63: Dynamic Resource Allocation (2026-07-31, same day)
+
+Implements the kubelet-side of DRA (`spec.resourceClaims`) — closes the
+item round 58's re-audit found and explicitly flagged as "not necessarily
+recommended" under the project's old single-node-only framing. That
+framing changed after round 62 (see the scope note below round 61/62's
+entries): the project is now meant to be a genuine multi-node-capable
+kubelet replacement, which reopens DRA as a real target rather than a
+flagged-for-completeness item.
+
+**What's implemented** (the actual kubelet responsibilities — reading an
+already-made allocation and asking the owning driver(s) to prepare/
+unprepare it; nodelet never allocates a claim itself, that's the
+scheduler's/a driver's own controller's job):
+- `proto/draplugin.proto` — the kubelet<->DRA-driver `NodePrepareResources`/
+  `NodeUnprepareResources` gRPC protocol, reconstructed from public
+  documentation of `k8s.io/kubelet/pkg/apis/dra/v1beta1` (not vendored
+  from the upstream Go module directly, which isn't available to generate
+  Rust bindings from in this environment). **Field numbers/names are
+  believed accurate but have not been validated against a live
+  third-party DRA driver** — flagged explicitly in the proto file's own
+  comment and in the new e2e test's manual-note skip message. Verify
+  against a real driver before relying on this for third-party interop.
+- `dra.rs` (new module) — `DraDrivers`: a driver-name -> endpoint registry
+  (same shape as `runtime::csi::CsiDrivers`' endpoint map; no
+  `ListAndWatch` inventory stream needed, unlike device plugins, since
+  DRA drivers don't report inventory to kubelet at all) plus the
+  `prepare()`/`unprepare()` RPC calls themselves.
+- `plugin_registry.rs` — extended to a 3rd `PluginInfo.type`:
+  `"DRAPlugin"` routes to `dra::DraDrivers`, reusing the exact same
+  `GetInfo`/`NotifyRegistrationStatus` handshake CSI drivers (round 12/13)
+  and device plugins (round 14) already use. `register_one()`/`run()`
+  gained a 3rd `Arc<DraDrivers>` parameter.
+- `runtime/cri.rs`:
+  - `resolve_pod_claim_devices()` (new, called once per `ensure_pod()`
+    reconcile, before any container is created — zero cost for a pod with
+    no `resourceClaims`): resolves each `spec.resourceClaims[]` entry to
+    its actual `ResourceClaim` object name (direct, or via
+    `status.resourceClaimStatuses` for a template-based claim not yet
+    materialized by the resource-claim controller in
+    kube-controller-manager), fetches it, groups
+    `status.allocation.devices.results` by driver name, and calls
+    `NodePrepareResources` per driver — returning a
+    pod-claim-name -> `PreparedPodClaim` map (CDI device IDs, split by
+    which request produced them).
+  - `unprepare_pod_claim_devices()` (new, called from `remove_pod()`,
+    mirrors `unmount_csi_volumes()`'s exact placement/shape — re-derives
+    from the Pod object rather than tracking prepared state separately):
+    calls `NodeUnprepareResources` for every driver that had something
+    prepared.
+  - `create_and_start_container()` now builds each container's CRI
+    `ContainerConfig.cdi_devices` from its `resources.claims[].{name,
+    request}` entries (a field CRI's vendored proto already had — same
+    "proto already supports it, nobody wired it up" shape as round 53's
+    `Status` RPC, round 57's `Version` RPC, and round 59's
+    `hugepage_limits`) — an unset `request` means the whole claim's
+    devices, a set one filters to that specific request's devices
+    (matching either the request name exactly or a
+    `<request>/<subrequest>` prefix, same rule real kubelet's own
+    matching uses for `firstAvailable` subrequests).
+  - New pure functions (all unit-tested independent of any live claim/
+    driver): `resource_claim_object_name()`, `allocated_devices_by_driver()`,
+    `cdi_devices_for_container_claim()`.
+  - `ensure_container()`/`ensure_ephemeral_container()`/
+    `ensure_init_containers()`/`create_and_start_container()` all gained a
+    new `claim_devices: &HashMap<String, PreparedPodClaim>` parameter,
+    threaded from the single `resolve_pod_claim_devices()` call in
+    `ensure_pod()`.
+- 18 new unit tests: 5 in `dra_tests/claim_ref.rs` (`ClaimRef`->wire
+  translation, driver registry register/deregister, proto-device
+  translation) and 13 in `cri_tests/dra_claim_devices.rs` (claim-name
+  resolution — direct/template/not-yet-resolved/direct-wins-over-status;
+  driver grouping — unallocated/single/multi-driver/multi-device-same-driver;
+  container-claim CDI matching — unknown claim/no-request-filter/specific-
+  request/subrequest-prefix/no-match).
+
+**What's NOT implemented** (deliberate scope boundaries, same "genuinely
+not kubelet's job" reasoning as elsewhere in this doc):
+- Writing this node into `ResourceClaim.status.reservedFor` — real
+  kubelet does this as a still-in-use marker the claim-deallocation
+  safety check depends on; nodelet only reads `status.allocation`, never
+  writes back. A known scope limitation, not a "someone else's job" case
+  — worth closing in a later round if DRA sees real use.
+- Batching multiple claims into one `NodePrepareResources` call — the
+  real protocol supports a claims list; nodelet calls it once per
+  (driver, claim) pair. Correct, just not the most RPC-efficient shape;
+  acceptable given DRA claim counts per pod are typically small.
+- A genuinely automated e2e test: exercising a real
+  `NodePrepareResources`/CDI-injection round-trip needs an actual DRA
+  driver binary (a kubelet-plugin implementing the protocol) plus a
+  `DeviceClass`/`ResourceSlice`/`ResourceClaim` the scheduler can actually
+  allocate — none of which this bash-only harness can stand up. New
+  `deploy/lib/test/cases/dra.sh` follows the exact same honest-limitation
+  pattern `device_plugins.sh` already established (skip-with-manual-
+  spot-check-instructions), plus a real, automated check that
+  `plugin_registry.rs`'s registry directory now also watches for
+  `DRAPlugin` registrations.
+
 ## Round 62: securityContext.supplementalGroupsPolicy (2026-07-31, same day)
 
 Closes the `supplementalGroupsPolicy` item from round 58's re-audit
@@ -3656,7 +3754,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Local ephemeral storage** (found in round 45's re-audit; closed rounds 48-49) — `Node.status.capacity`/`.allocatable["ephemeral-storage"]` reports the real total filesystem size backing `disk_path` (round 48, reusing `DiskPressure`'s existing `statvfs(2)` read). A pod exceeding its *own* `resources.limits["ephemeral-storage"]` is now evicted directly (round 49) — usage measured as CRI's per-container `writable_layer.used_bytes` plus a recursive walk of nodelet's own materialized volume directory, checked independently of and ahead of the general `MemoryPressure`/`DiskPressure`/`PIDPressure`-gated eviction path (the same relationship an individual container's own OOM kill has to overall node memory pressure). Genuinely automated e2e test — the only one of this project's eviction tests that doesn't need a manual procedure, since this trigger needs no artificial node-wide pressure. **Known scope limitation**: usage measurement doesn't include container log file size (`/var/log/pods/...`) yet, only volumes + writable layer. See rounds 48-49 notes.
 - ✅ **HugePages** (found in round 58's re-audit; all 3 pieces closed rounds 59-61) — container `resources.limits["hugepages-<size>"]` is translated to CRI's `LinuxContainerResources.hugepage_limits` (round 59), `Node.status.capacity`/`.allocatable["hugepages-<size>"]` report every reserved hugepage pool read from `/sys/kernel/mm/hugepages/` (round 60), and `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volumes are now real `hugetlbfs` mounts (round 61).
 - ✅ **`securityContext.supplementalGroupsPolicy`** (GA 1.33; found in round 58's re-audit; closed round 62) — `Merge`/`Strict` now translates directly to CRI's own `SupplementalGroupsPolicy` enum on both the sandbox- and container-level security context; genuinely automated e2e test proves `Strict` excludes image-defined `/etc/group` membership while `Merge` includes it, using a portable ConfigMap-subPath-supplied `/etc/passwd`/`/etc/group` rather than depending on `$TEST_IMAGE`'s own baked-in group file.
-- ❌ **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit) — entirely unimplemented (zero references anywhere in this codebase). A newer, genuinely complex feature: `ResourceClaim`/`ResourceClaimTemplate`/`DeviceClass` cluster objects plus a kubelet-side gRPC "DRA plugin" protocol distinct from (though loosely analogous to) device plugins. **Flagged for completeness, not necessarily recommended**: likely its own large multi-round arc, and the value-to-complexity ratio for a single-node edge kubelet (vs. a real multi-node cluster's cross-node device-sharing story DRA is mainly designed for) is genuinely questionable — worth a deliberate scope discussion before starting, not a default "implement it" pick.
+- 🟡 **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit; closed round 63) — kubelet's actual responsibilities are implemented: resolving a pod's `resourceClaims` to their `ResourceClaim` objects' `status.allocation`, calling the owning driver(s)' `NodePrepareResources`/`NodeUnprepareResources` (new `dra.rs`, reusing the plugin-registration infrastructure with a new `"DRAPlugin"` type), and wiring the returned CDI device IDs into each container's CRI `ContainerConfig.cdi_devices` per its `resources.claims[].{name, request}` entries. **Known scope limitations**: nodelet never writes this node into `ResourceClaim.status.reservedFor` (real kubelet does, as a still-in-use marker); `NodePrepareResources` is called once per (driver, claim) rather than batched; `proto/draplugin.proto` was reconstructed from public documentation rather than vendored from upstream, so its exact wire format is unverified against a live third-party driver; no genuinely automated e2e test exists (needs a real DRA driver binary this bash-only harness can't stand up — see `dra.sh`'s manual-spot-check notes, same honest-limitation pattern as `device_plugins.sh`).
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
@@ -4135,8 +4233,18 @@ not necessarily recommended," but genuinely in scope now. Documentation
 (this file, `README.md`, `docs/ARCHITECTURE.md`) is being updated
 accordingly; see those files' own updated framing.
 
-- [ ] Candidates for the next round: **Dynamic Resource Allocation**
-      (`spec.resourceClaims`) is the next concrete item, now that the
-      single-node-only framing that made it questionable no longer
-      applies. Ask before starting the next round regardless — DRA is
-      large enough to warrant agreeing on an implementation slice first.
+- [x] Round 63: Dynamic Resource Allocation — kubelet's actual DRA
+      responsibilities implemented: resolve `spec.resourceClaims` ->
+      `ResourceClaim.status.allocation`, call the owning driver(s)'
+      `NodePrepareResources`/`NodeUnprepareResources` (new `dra.rs` +
+      `proto/draplugin.proto` + a 3rd plugin-registration type), wire
+      returned CDI device IDs into `ContainerConfig.cdi_devices`. 18 new
+      unit tests. No genuinely automated e2e test — needs a real driver
+      binary; see `dra.sh`'s manual-spot-check notes. See round 63 notes
+      for known scope limitations (`reservedFor` not written back, no
+      RPC batching, proto reconstructed from docs not vendored).
+- [ ] `crates/nodelet/src/runtime/cri.rs` has grown to ~4900+ lines across
+      63 rounds and needs splitting into focused ~300-line-ish files
+      before the next round starts (explicit user request, 2026-07-31) —
+      not a gap-closure item, a code-health one. Do this first, then ask
+      before picking the next gap-closure round.

@@ -10,6 +10,8 @@ pub mod config;
 pub mod cpu_manager;
 #[cfg(feature = "cri")]
 pub mod device_plugins;
+#[cfg(feature = "cri")]
+pub mod dra;
 pub mod eviction;
 pub mod gc;
 #[cfg(feature = "cri")]

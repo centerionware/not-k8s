@@ -22,6 +22,7 @@ use k8s_openapi::api::core::v1::{
     SecretReference, SecurityContext, Service, Volume,
 };
 use k8s_openapi::api::node::v1::RuntimeClass;
+use k8s_openapi::api::resource::v1beta1::ResourceClaim as DraResourceClaim;
 use k8s_openapi::api::storage::v1::{CSIDriver, VolumeAttachment};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
@@ -217,6 +218,11 @@ pub struct CriRuntime {
     /// anywhere else (CRI itself has no concept of device-plugin resources
     /// to ask back).
     device_allocations: Mutex<HashMap<String, Vec<(String, Vec<String>)>>>,
+    /// Dynamic Resource Allocation driver registry (round 63; see `dra.rs`)
+    /// — populated entirely via dynamic registration, same reason
+    /// `device_plugins` has no static-config equivalent: a DRA driver's
+    /// endpoint is meaningless without the driver process itself running.
+    dra: Arc<crate::dra::DraDrivers>,
     /// Exclusive CPU pinning for Guaranteed-QoS containers (see
     /// `cpu_manager.rs`) — `None` when `NODELET_CPU_MANAGER_POLICY` is
     /// unset/`none` (the default), meaning every container's `cpuset_cpus`
@@ -889,6 +895,82 @@ fn hugepage_limits(limits: Option<&BTreeMap<String, Quantity>>) -> Vec<v1::Hugep
             Some(v1::HugepageLimit { page_size, limit: bytes.max(0) as u64 })
         })
         .collect()
+}
+
+/// Dynamic Resource Allocation (round 63): the CDI device IDs a pod-claim
+/// resolved to, split by which `DeviceRequest` name (within the claim)
+/// produced them so `container.resources.claims[].request` can filter to
+/// just one, alongside the flattened union (`all`) for the common case of
+/// a container referencing the whole claim.
+#[derive(Default, Clone, Debug)]
+struct PreparedPodClaim {
+    by_request: HashMap<String, Vec<String>>,
+    all: Vec<String>,
+}
+
+/// `spec.resourceClaims[].name` -> the actual `ResourceClaim` object name
+/// to fetch. Direct (`resourceClaimName` set) is a pure pass-through;
+/// template-based (`resourceClaimTemplateName` set instead) requires
+/// looking up the generated name the resource-claim controller recorded
+/// in `pod.status.resourceClaimStatuses` (keyed by the pod-claim's own
+/// `name`, not by template name) — `None` if that hasn't happened yet.
+/// Pure so this resolution step is unit-testable without a live claim
+/// object.
+fn resource_claim_object_name(
+    pod_claim_name: &str,
+    resource_claim_name: Option<&str>,
+    statuses: Option<&Vec<k8s_openapi::api::core::v1::PodResourceClaimStatus>>,
+) -> Option<String> {
+    if let Some(name) = resource_claim_name {
+        return Some(name.to_string());
+    }
+    statuses?.iter().find(|s| s.name == pod_claim_name)?.resource_claim_name.clone()
+}
+
+/// A `ResourceClaim`'s `status.allocation.devices.results` grouped by
+/// which driver's kubelet plugin needs to prepare them — a claim can
+/// (rarely) span multiple drivers if its requests were satisfied by
+/// different device classes, so each driver only ever gets asked about
+/// its own devices. Pure given an already-fetched claim object, so the
+/// grouping logic is unit-testable without a live ResourceClaim.
+fn allocated_devices_by_driver(
+    claim: &DraResourceClaim,
+) -> BTreeMap<String, Vec<k8s_openapi::api::resource::v1beta1::DeviceRequestAllocationResult>> {
+    let mut out: BTreeMap<String, Vec<_>> = BTreeMap::new();
+    let results = claim
+        .status
+        .as_ref()
+        .and_then(|s| s.allocation.as_ref())
+        .and_then(|a| a.devices.as_ref())
+        .and_then(|d| d.results.as_ref());
+    for r in results.into_iter().flatten() {
+        out.entry(r.driver.clone()).or_default().push(r.clone());
+    }
+    out
+}
+
+/// A container's `resources.claims[].{name, request}` entry -> the CDI
+/// device IDs it should get, looked up from the pod-wide
+/// `resolve_pod_claim_devices()` result. An unset `request` means "the
+/// whole claim" (every device any request in it resolved to); a set one
+/// filters to just that request's devices — matching either the request
+/// name exactly, or `<request>/<subrequest>` (a `firstAvailable`
+/// subrequest match, same prefix rule real kubelet's own matching uses).
+/// A pod-claim name with no entry in `prepared` at all (fetch/prepare
+/// failed, or a template claim not yet resolved) yields no devices rather
+/// than an error — same graceful-degradation posture as a device-plugin
+/// `Allocate()` failure.
+fn cdi_devices_for_container_claim(claim_name: &str, request: Option<&str>, prepared: &HashMap<String, PreparedPodClaim>) -> Vec<String> {
+    let Some(p) = prepared.get(claim_name) else { return Vec::new() };
+    match request {
+        None => p.all.clone(),
+        Some(want) => p
+            .by_request
+            .iter()
+            .filter(|(name, _)| name.as_str() == want || name.starts_with(&format!("{want}/")))
+            .flat_map(|(_, ids)| ids.iter().cloned())
+            .collect(),
+    }
 }
 
 /// Translate `spec.overhead` (a flat `ResourceList`, not a request/limit
@@ -1782,11 +1864,18 @@ impl CriRuntime {
 
         let csi = Arc::new(crate::runtime::csi::CsiDrivers::new(csi_drivers));
         let device_plugins = Arc::new(crate::device_plugins::DevicePlugins::new());
-        // Dynamic CSI driver / device plugin discovery: watches
+        let dra = Arc::new(crate::dra::DraDrivers::new());
+        // Dynamic CSI driver / device plugin / DRA driver discovery: watches
         // plugin_registry_path for a plugin's registrar socket, same
         // protocol real kubelet's own plugin watcher speaks (see
         // plugin_registry.rs) — a no-op loop if nothing ever registers there.
-        tokio::spawn(crate::plugin_registry::run(csi.clone(), device_plugins.clone(), plugin_registry_path, plugin_registry_sync_interval));
+        tokio::spawn(crate::plugin_registry::run(
+            csi.clone(),
+            device_plugins.clone(),
+            dra.clone(),
+            plugin_registry_path,
+            plugin_registry_sync_interval,
+        ));
 
         Ok(Self {
             rt,
@@ -1807,6 +1896,7 @@ impl CriRuntime {
             csi,
             device_plugins,
             device_allocations: Mutex::new(HashMap::new()),
+            dra,
             cpu_manager,
             memory_manager,
             container_resources: Mutex::new(HashMap::new()),
@@ -2326,6 +2416,113 @@ impl CriRuntime {
         }
     }
 
+    /// Dynamic Resource Allocation (round 63): resolve every
+    /// `spec.resourceClaims` entry this pod declares to the CDI device IDs
+    /// its allocated devices' driver(s) hand back from `NodePrepareResources`,
+    /// keyed by the pod-claim's own name (`spec.resourceClaims[].name`) —
+    /// exactly the key `container.resources.claims[].name` references.
+    /// Called once per `ensure_pod()` reconcile, before any container is
+    /// created, mirroring how `overhead`/`cgroup_parent` are computed
+    /// upfront. A pod with no `resourceClaims` costs nothing here — no API
+    /// calls at all, same "zero cost when unused" shape as CPU/Memory
+    /// Manager.
+    ///
+    /// What nodelet does NOT do here, because it's not kubelet's job:
+    /// *allocate* a claim (pick which devices satisfy it) — that's the
+    /// scheduler's/a DRA driver's own controller's job, already done by
+    /// the time `status.allocation` is set. Nodelet only ever reads an
+    /// allocation already made. Also not implemented: writing this node
+    /// into `status.reservedFor` (real kubelet does, as a
+    /// still-in-use marker for the claim-deallocation safety check) — see
+    /// docs/GAP_CLOSURE.md's round 63 "known scope limitation."
+    async fn resolve_pod_claim_devices(&self, pod: &Pod) -> HashMap<String, PreparedPodClaim> {
+        let mut out = HashMap::new();
+        let Some(pod_claims) = pod.spec.as_ref().and_then(|s| s.resource_claims.as_ref()) else { return out };
+        if pod_claims.is_empty() {
+            return out;
+        }
+        let namespace = pod.metadata.namespace.clone().unwrap_or_default();
+        let statuses = pod.status.as_ref().and_then(|s| s.resource_claim_statuses.as_ref());
+        let claims_api: Api<DraResourceClaim> = Api::namespaced(self.client.clone(), &namespace);
+
+        for pc in pod_claims {
+            let Some(claim_name) = resource_claim_object_name(&pc.name, pc.resource_claim_name.as_deref(), statuses) else {
+                // Template-based claim whose generated name hasn't shown up
+                // in status yet (the resource-claim controller hasn't
+                // created it, or the apiserver update hasn't propagated) —
+                // nothing to prepare this reconcile; a later reconcile
+                // (triggered by the Pod's own status update) will retry.
+                continue;
+            };
+            let claim = match claims_api.get(&claim_name).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(pod_claim = %pc.name, claim = %claim_name, error = ?e, "DRA: failed to fetch ResourceClaim; container(s) referencing it will start without these devices");
+                    continue;
+                }
+            };
+            let claim_uid = claim.metadata.uid.clone().unwrap_or_default();
+            let by_driver = allocated_devices_by_driver(&claim);
+            let mut prepared = PreparedPodClaim::default();
+            for driver in by_driver.into_keys() {
+                if !self.dra.driver_configured(&driver) {
+                    warn!(driver = %driver, claim = %claim_name, "DRA: no registered driver for this claim's allocated devices; container(s) referencing it will start without them");
+                    continue;
+                }
+                let claim_ref = crate::dra::ClaimRef { namespace: namespace.clone(), uid: claim_uid.clone(), name: claim_name.clone() };
+                match self.dra.prepare(&driver, &claim_ref).await {
+                    Ok(devices) => {
+                        for d in devices {
+                            for request in &d.request_names {
+                                prepared.by_request.entry(request.clone()).or_default().extend(d.cdi_device_ids.iter().cloned());
+                            }
+                            prepared.all.extend(d.cdi_device_ids);
+                        }
+                    }
+                    Err(e) => warn!(driver = %driver, claim = %claim_name, error = ?e, "DRA: NodePrepareResources failed; container(s) referencing it will start without these devices"),
+                }
+            }
+            out.insert(pc.name.clone(), prepared);
+        }
+        out
+    }
+
+    /// Teardown counterpart to `resolve_pod_claim_devices()` — called from
+    /// `remove_pod()` (mirrors `unmount_csi_volumes()`'s placement/shape
+    /// exactly: re-derive from the Pod object rather than tracking prepared
+    /// state separately). Best-effort per claim: one driver being
+    /// unreachable must not stop the rest of teardown.
+    async fn unprepare_pod_claim_devices(&self, pod: &Pod) {
+        let Some(pod_claims) = pod.spec.as_ref().and_then(|s| s.resource_claims.as_ref()) else { return };
+        if pod_claims.is_empty() {
+            return;
+        }
+        let namespace = pod.metadata.namespace.clone().unwrap_or_default();
+        let statuses = pod.status.as_ref().and_then(|s| s.resource_claim_statuses.as_ref());
+        let claims_api: Api<DraResourceClaim> = Api::namespaced(self.client.clone(), &namespace);
+
+        for pc in pod_claims {
+            let Some(claim_name) = resource_claim_object_name(&pc.name, pc.resource_claim_name.as_deref(), statuses) else { continue };
+            let claim = match claims_api.get(&claim_name).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(pod_claim = %pc.name, claim = %claim_name, error = ?e, "DRA teardown: failed to fetch ResourceClaim; driver(s) not notified to unprepare");
+                    continue;
+                }
+            };
+            let claim_uid = claim.metadata.uid.clone().unwrap_or_default();
+            for driver in allocated_devices_by_driver(&claim).into_keys() {
+                if !self.dra.driver_configured(&driver) {
+                    continue;
+                }
+                let claim_ref = crate::dra::ClaimRef { namespace: namespace.clone(), uid: claim_uid.clone(), name: claim_name.clone() };
+                if let Err(e) = self.dra.unprepare(&driver, &claim_ref).await {
+                    warn!(driver = %driver, claim = %claim_name, error = ?e, "DRA teardown: NodeUnprepareResources failed");
+                }
+            }
+        }
+    }
+
     async fn resolve_service_env(&self, namespace: &str) -> Result<BTreeMap<String, Vec<u8>>> {
         let api: Api<Service> = Api::all(self.client.clone());
         let services = api.list(&ListParams::default()).await.context("listing Services")?;
@@ -2600,6 +2797,7 @@ impl CriRuntime {
         pull_secrets: &[String],
         envs: &[KeyValue],
         qos: QosClass,
+        claim_devices: &HashMap<String, PreparedPodClaim>,
     ) -> Result<()> {
         // Resize status reporting (round 43): record what the pod spec is
         // currently asking for, every reconcile, regardless of whether a
@@ -2689,7 +2887,7 @@ impl CriRuntime {
 
         let attempt = self.restart_count(sandbox_id, &container.name);
         self.create_and_start_container(
-            sandbox_id, id, container, pod_sc, volumes, pull_secrets, envs, ContainerKind::App, attempt, qos,
+            sandbox_id, id, container, pod_sc, volumes, pull_secrets, envs, ContainerKind::App, attempt, qos, claim_devices,
         )
         .await
     }
@@ -2709,6 +2907,7 @@ impl CriRuntime {
         volumes: &HashMap<String, ResolvedVolume>,
         pull_secrets: &[String],
         service_env: &BTreeMap<String, Vec<u8>>,
+        claim_devices: &HashMap<String, PreparedPodClaim>,
     ) -> Result<()> {
         let existing = self.list_pod_containers(sandbox_id).await?;
         let already_exists = existing.iter().any(|c| {
@@ -2721,7 +2920,7 @@ impl CriRuntime {
         let envs = self.resolve_container_env(pod, id, container, service_env).await?;
         let qos = crate::eviction::qos_class(pod);
         self.create_and_start_container(
-            sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Ephemeral, 0, qos,
+            sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Ephemeral, 0, qos, claim_devices,
         )
         .await
     }
@@ -2957,6 +3156,7 @@ impl CriRuntime {
         kind: ContainerKind,
         attempt: u32,
         qos: QosClass,
+        claim_devices: &HashMap<String, PreparedPodClaim>,
     ) -> Result<()> {
         let image = container.image.clone().unwrap_or_default();
         let auth = self.resolve_pull_auth(&id.namespace, pull_secrets, &image).await;
@@ -3212,6 +3412,22 @@ impl CriRuntime {
             }
         }
 
+        // Dynamic Resource Allocation (round 63): every
+        // `resources.claims[].{name, request}` entry this container
+        // declares -> the CDI device IDs `resolve_pod_claim_devices()`
+        // (called once up-front in `ensure_pod()`) already prepared for
+        // its pod-claim. No RPC here — that already happened; this is
+        // purely the per-container lookup/attach step.
+        let cdi_devices: Vec<v1::CdiDevice> = container
+            .resources
+            .as_ref()
+            .and_then(|r| r.claims.as_ref())
+            .into_iter()
+            .flatten()
+            .flat_map(|c| cdi_devices_for_container_claim(&c.name, c.request.as_deref(), claim_devices))
+            .map(|name| v1::CdiDevice { name })
+            .collect();
+
         let mut rt = self.rt.clone();
         let config = ContainerConfig {
             metadata: Some(ContainerMetadata { name: container.name.clone(), attempt }),
@@ -3226,6 +3442,7 @@ impl CriRuntime {
             labels: container_labels(id, &container.name, kind),
             log_path: format!("{}_{}.log", container.name, attempt),
             linux,
+            cdi_devices,
             ..Default::default()
         };
 
@@ -3418,6 +3635,7 @@ impl CriRuntime {
         pull_secrets: &[String],
         service_env: &BTreeMap<String, Vec<u8>>,
         qos: QosClass,
+        claim_devices: &HashMap<String, PreparedPodClaim>,
     ) -> Result<InitProgress> {
         let running_v = ContainerState::ContainerRunning as i32;
         let exited_v = ContainerState::ContainerExited as i32;
@@ -3444,7 +3662,7 @@ impl CriRuntime {
                         let envs = self.resolve_container_env(pod, id, container, service_env).await?;
                         let attempt = self.restart_count(sandbox_id, &container.name);
                         self.create_and_start_container(
-                            sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt, qos,
+                            sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt, qos, claim_devices,
                         )
                         .await?;
                         // Gate later containers on this one actually
@@ -3477,7 +3695,7 @@ impl CriRuntime {
                     let envs = self.resolve_container_env(pod, id, container, service_env).await?;
                     let attempt = self.restart_count(sandbox_id, &container.name);
                     self.create_and_start_container(
-                        sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt, qos,
+                        sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt, qos, claim_devices,
                     )
                     .await?;
                     return Ok(InitProgress::Waiting);
@@ -3862,6 +4080,10 @@ impl PodRuntime for CriRuntime {
                 .await
                 .context("resolving Service environment")?
         };
+        // Dynamic Resource Allocation (round 63): resolved/prepared once
+        // up front, same as volumes/service_env above — a pod with no
+        // resourceClaims costs nothing (see resolve_pod_claim_devices()).
+        let claim_devices = self.resolve_pod_claim_devices(pod).await;
 
         let init_containers = pod.spec.as_ref().and_then(|s| s.init_containers.clone()).unwrap_or_default();
         if !init_containers.is_empty() {
@@ -3877,6 +4099,7 @@ impl PodRuntime for CriRuntime {
                     &pull_secrets,
                     &service_env,
                     qos,
+                    &claim_devices,
                 )
                 .await?;
             match progress {
@@ -3917,7 +4140,7 @@ impl PodRuntime for CriRuntime {
         if let Some(spec) = pod.spec.as_ref() {
             for c in &spec.containers {
                 let envs = self.resolve_container_env(pod, &id, c, &service_env).await?;
-                self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs, qos)
+                self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs, qos, &claim_devices)
                     .await?;
             }
             // Added post-hoc via the `ephemeralcontainers` subresource (e.g.
@@ -3927,7 +4150,7 @@ impl PodRuntime for CriRuntime {
             for ec in spec.ephemeral_containers.as_deref().unwrap_or(&[]) {
                 let container = ephemeral_to_container(ec);
                 if let Err(e) = self
-                    .ensure_ephemeral_container(&sandbox_id, &id, pod, &container, pod_sc, &volumes, &pull_secrets, &service_env)
+                    .ensure_ephemeral_container(&sandbox_id, &id, pod, &container, pod_sc, &volumes, &pull_secrets, &service_env, &claim_devices)
                     .await
                 {
                     warn!(container = %ec.name, error = ?e, "failed to start ephemeral container");
@@ -3962,6 +4185,7 @@ impl PodRuntime for CriRuntime {
         }
         self.unmount_csi_volumes(pod, &id).await;
         unmount_special_medium_empty_dirs(pod, &id);
+        self.unprepare_pod_claim_devices(pod).await;
         Ok(())
     }
 
@@ -4627,6 +4851,9 @@ mod tests_tmpfs_empty_dir;
 #[cfg(test)]
 #[path = "cri_tests/hugetlbfs_empty_dir.rs"]
 mod tests_hugetlbfs_empty_dir;
+#[cfg(test)]
+#[path = "cri_tests/dra_claim_devices.rs"]
+mod tests_dra_claim_devices;
 #[cfg(test)]
 #[path = "cri_tests/ephemeral_volume.rs"]
 mod tests_ephemeral_volume;

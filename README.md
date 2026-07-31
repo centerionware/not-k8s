@@ -375,7 +375,15 @@ closing round 58's HugePages audit item entirely. Round 62 closed the
 `supplementalGroupsPolicy` item: **`securityContext.supplementalGroupsPolicy`**
 (`Merge`/`Strict`) now translates directly to CRI's own
 `SupplementalGroupsPolicy` enum, which had direct native support already.
-Full status list in `docs/GAP_CLOSURE.md`.
+Round 63 implemented **Dynamic Resource Allocation** (`spec.resourceClaims`):
+kubelet's actual DRA responsibilities — resolving a pod's claims to their
+`ResourceClaim.status.allocation`, calling the owning driver(s)'
+`NodePrepareResources`/`NodeUnprepareResources` over a new gRPC plugin
+protocol (reusing the same registration infrastructure CSI drivers and
+device plugins already use), and wiring the returned CDI device IDs into
+each container's CRI config. No genuinely automated e2e test exists yet —
+it needs a real DRA driver binary this project's bash-only test harness
+can't stand up. Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for
