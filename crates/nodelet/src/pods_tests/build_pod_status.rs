@@ -18,7 +18,11 @@ use tower::service_fn;
 /// phase/condition/timestamp bookkeeping, not probe-driven readiness (see
 /// probes_tests/supervisor.rs for that).
 fn bps(host_ip: &str, rt: &RuntimeStatus, prev: Option<&PodStatus>) -> PodStatus {
-    build_pod_status(host_ip, "default", "app", rt, prev, &probes::new_health_map())
+    bps_with_gates(host_ip, rt, prev, &[])
+}
+
+fn bps_with_gates(host_ip: &str, rt: &RuntimeStatus, prev: Option<&PodStatus>, readiness_gates: &[String]) -> PodStatus {
+    build_pod_status(host_ip, "default", "app", rt, prev, readiness_gates, &probes::new_health_map())
 }
 
 fn running_status() -> RuntimeStatus {
@@ -141,7 +145,7 @@ async fn unchanged_status_skips_the_http_patch() {
     let runtime = running_status();
     let previous = bps("10.0.0.1", &runtime, None);
 
-    write_status(&client, "10.0.0.1", "default", "app", &runtime, Some(&previous), &probes::new_health_map())
+    write_status(&client, "10.0.0.1", "default", "app", &runtime, Some(&previous), &[], &probes::new_health_map())
         .await
         .unwrap();
 
@@ -173,6 +177,7 @@ async fn changed_status_still_sends_the_http_patch() {
         "app",
         &running_status(),
         Some(&previous),
+        &[],
         &probes::new_health_map(),
     )
     .await
@@ -424,4 +429,105 @@ fn container_ready_mirrors_running() {
 fn container_id_is_carried_through() {
     let status = bps("10.0.0.1", &running_status(), None);
     assert_eq!(status.container_statuses.as_ref().unwrap()[0].container_id.as_deref(), Some("abc123"));
+}
+
+// --- readinessGates ---
+
+fn foreign_condition(type_: &str, status: &str) -> PodCondition {
+    PodCondition { type_: type_.to_string(), status: status.to_string(), ..Default::default() }
+}
+
+#[test]
+fn no_readiness_gates_leaves_ready_governed_by_containers_only() {
+    let status = bps("10.0.0.1", &running_status(), None);
+    let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
+    assert_eq!(ready.status, "True");
+}
+
+#[test]
+fn a_satisfied_readiness_gate_leaves_ready_true() {
+    let prev = PodStatus { conditions: Some(vec![foreign_condition("www.example.com/feature", "True")]), ..Default::default() };
+    let status = bps_with_gates("10.0.0.1", &running_status(), Some(&prev), &["www.example.com/feature".to_string()]);
+    let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
+    assert_eq!(ready.status, "True");
+    // ContainersReady is unaffected by gates — still True on its own terms.
+    let containers_ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "ContainersReady").unwrap();
+    assert_eq!(containers_ready.status, "True");
+}
+
+#[test]
+fn an_unsatisfied_readiness_gate_flips_ready_to_false_even_with_containers_ready() {
+    let prev = PodStatus { conditions: Some(vec![foreign_condition("www.example.com/feature", "False")]), ..Default::default() };
+    let status = bps_with_gates("10.0.0.1", &running_status(), Some(&prev), &["www.example.com/feature".to_string()]);
+    let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
+    assert_eq!(ready.status, "False");
+    let containers_ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "ContainersReady").unwrap();
+    assert_eq!(containers_ready.status, "True");
+}
+
+#[test]
+fn a_readiness_gate_with_no_matching_condition_at_all_is_not_satisfied() {
+    // No controller has reported this condition yet — must not default to
+    // ready, matching upstream ("missing" counts the same as "False").
+    let status = bps_with_gates("10.0.0.1", &running_status(), None, &["www.example.com/feature".to_string()]);
+    let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
+    assert_eq!(ready.status, "False");
+}
+
+#[test]
+fn every_readiness_gate_must_be_satisfied_not_just_one() {
+    let prev = PodStatus {
+        conditions: Some(vec![foreign_condition("gate-a", "True"), foreign_condition("gate-b", "False")]),
+        ..Default::default()
+    };
+    let status = bps_with_gates("10.0.0.1", &running_status(), Some(&prev), &["gate-a".to_string(), "gate-b".to_string()]);
+    let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
+    assert_eq!(ready.status, "False");
+}
+
+#[test]
+fn a_foreign_condition_is_carried_forward_into_the_new_conditions_array() {
+    // Regression test for the JSON-Merge-Patch array-replace hazard: if this
+    // condition isn't copied forward, nodelet's own next status write would
+    // silently delete whatever an external controller set — including the
+    // very condition a readinessGate is trying to read.
+    let prev = PodStatus { conditions: Some(vec![foreign_condition("www.example.com/feature", "True")]), ..Default::default() };
+    let status = bps("10.0.0.1", &running_status(), Some(&prev));
+    let carried = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "www.example.com/feature");
+    assert!(carried.is_some());
+    assert_eq!(carried.unwrap().status, "True");
+}
+
+#[test]
+fn nodelet_owned_condition_types_are_not_duplicated_from_prev() {
+    // prev's own "Ready"/"ContainersReady"/etc. entries must not also get
+    // copied into `foreign_conditions` alongside the freshly computed ones.
+    let prev = PodStatus {
+        conditions: Some(vec![foreign_condition("Ready", "False"), foreign_condition("Initialized", "True")]),
+        ..Default::default()
+    };
+    let status = bps("10.0.0.1", &running_status(), Some(&prev));
+    let ready_entries: Vec<_> = status.conditions.as_ref().unwrap().iter().filter(|c| c.type_ == "Ready").collect();
+    assert_eq!(ready_entries.len(), 1);
+}
+
+#[test]
+fn readiness_gate_types_extracts_condition_types_from_the_pod_spec() {
+    use k8s_openapi::api::core::v1::{PodReadinessGate, PodSpec};
+    let pod = Pod {
+        spec: Some(PodSpec {
+            readiness_gates: Some(vec![
+                PodReadinessGate { condition_type: "gate-a".to_string() },
+                PodReadinessGate { condition_type: "gate-b".to_string() },
+            ]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(readiness_gate_types(&pod), vec!["gate-a".to_string(), "gate-b".to_string()]);
+}
+
+#[test]
+fn readiness_gate_types_is_empty_when_the_pod_has_none() {
+    assert!(readiness_gate_types(&Pod::default()).is_empty());
 }

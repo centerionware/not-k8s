@@ -165,8 +165,18 @@ pub async fn run(client: Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
             match runtime.ensure_pod(&prepared_pod).await {
                 Ok(status) => {
                     let prev = api.get_opt(&mirror_name).await.ok().flatten().and_then(|p| p.status);
-                    if let Err(e) =
-                        crate::pods::write_status(&client, &host_ip, &namespace, &mirror_name, &status, prev.as_ref(), &health).await
+                    let gates = crate::pods::readiness_gate_types(&prepared_pod);
+                    if let Err(e) = crate::pods::write_status(
+                        &client,
+                        &host_ip,
+                        &namespace,
+                        &mirror_name,
+                        &status,
+                        prev.as_ref(),
+                        &gates,
+                        &health,
+                    )
+                    .await
                     {
                         warn!(pod = %mirror_name, error = ?e, "static pod: failed to write mirror pod status");
                     }

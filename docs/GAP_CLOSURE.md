@@ -27,6 +27,67 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 23: pod `readinessGates` (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-22). Offered the four
+implementable items round 22's audit found (checkpoint API excluded as
+not recommended); user picked `readinessGates` — highest real-world value
+of the four (lets external controllers, e.g. service mesh sidecars, gate
+a pod's `Ready` condition on their own conditions).
+
+Implementing this surfaced a real pre-existing correctness issue, not
+just a missing feature: `pods.rs::write_status()` sends the whole
+`PodStatus` via JSON Merge Patch (RFC 7386), which replaces the
+`conditions` array *wholesale* rather than merging it element-by-element
+(unlike the apiserver's typed strategic-merge-patch semantics for this
+field, which nodelet doesn't use here). `build_pod_status()` previously
+built exactly 4 conditions (`Initialized`/`PodScheduled`/`ContainersReady`/
+`Ready`) and nothing else — meaning any condition an external controller
+had set (which is the entire point of `readinessGates`) would be silently
+deleted on nodelet's very next status write, including the one a gate is
+trying to read. Fixing this was required for `readinessGates` to
+functionally work at all, not optional polish.
+
+- **`pods.rs::build_pod_status()`** gained a `readiness_gates: &[String]`
+  parameter (extracted from `pod.spec.readinessGates` by new
+  `readiness_gate_types()`, called at every `write_status()` call site —
+  `reconcile()`, `schedule_retry()`, `on_runtime_event()`, and
+  `static_pods.rs`'s mirror-pod path). `Ready`'s computation becomes
+  `all_ready && gates_ready`, where `gates_ready` checks each gate's named
+  condition is `True` in `prev`'s conditions (`condition_is_true()`) — a
+  gate with no matching condition at all counts as not-satisfied, matching
+  upstream. `ContainersReady` is unaffected by gates, computed exactly as
+  before.
+- **Foreign-condition carry-forward**: any condition in `prev.conditions`
+  whose type isn't one of nodelet's own 4 (`OWNED_CONDITION_TYPES`) is now
+  copied into the new `conditions` array being written — the actual fix
+  for the JSON-Merge-Patch clobbering issue above. This is a real,
+  independently-valuable correctness fix beyond `readinessGates` itself:
+  *any* other controller setting *any* pod condition on a node nodelet
+  manages was previously at risk of having it silently deleted.
+- 9 new unit tests (`pods_tests/build_pod_status.rs`): satisfied/
+  unsatisfied/missing gate cases, multiple-gates-all-required, foreign-
+  condition carry-forward, no-duplicate-owned-conditions, and
+  `readiness_gate_types()`'s extraction.
+
+590 tests passing with `--features cri` (up from 581), 188 mock-only (up
+from 179 — `pods.rs` isn't `cri`-gated, so this round's tests run in both
+builds). `deploy/lib/test/cases/readiness_gates.sh` added — genuinely
+automatable without any real infrastructure (the test itself plays the
+"external controller" role via `kubectl patch --subresource=status`):
+creates a pod with a `readinessGates` entry, confirms `Ready` stays
+`False` while the gate condition is unset or explicitly `False` even
+though `ContainersReady` is `True`, patches the gate condition to `True`,
+confirms `Ready` flips, and confirms the gate condition itself survives
+nodelet's subsequent status reconciles (direct proof of the
+foreign-condition carry-forward fix, not just that `Ready` happened to
+flip once).
+
+**Confidence note**: unlike most rounds in this series, this one has
+**high** live-validation confidence — the e2e test doesn't need a real
+external controller or any hardware, so it's a genuine end-to-end proof
+rather than a manual-note placeholder, once run against a live cluster.
+
 ## Round 22: fresh gap re-audit (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-21): every item
@@ -1238,7 +1299,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Container restart count** — real per-container counter (`restart_count_from`/`bump_restart_count_in`), threaded through `ContainerConfig.metadata.attempt` too (so restarted containers get distinct log files, not overwritten ones).
 - ✅ **Exit-code-aware phase computation** — `restartPolicy: Never` now reports `Failed` (not `Succeeded`) when a container exited nonzero (`compute_phase()`'s new `any_failed` parameter).
 - ❌ **`terminationMessagePath`/`terminationMessagePolicy`** (found in round 22's re-audit) — the fields are threaded through `ephemeral_to_container()`'s struct conversion (a plain k8s API type copy, not CRI behavior), but nodelet never actually reads the file at `terminationMessagePath` (default `/dev/termination-log`) back out of the container's filesystem after it exits, nor honors `FallbackToLogsOnError`. `ContainerStatus.state.terminated.message` is always empty — a real, moderate-value gap for anything relying on it (Jobs commonly write a short failure reason there for `kubectl describe` to surface).
-- ❌ **Pod `readinessGates`** (found in round 22's re-audit) — `spec.readinessGates` lets an external controller contribute additional `PodCondition`s that must all be `True` (alongside the built-in `ContainersReady`) before kubelet reports the pod's own `Ready` condition as `True`. Not implemented at all: nodelet's readiness computation only looks at container readiness probes, never consults `status.conditions` for gate-named conditions a controller may have already set.
+- ✅ **Pod `readinessGates`** (round 23; found in round 22's re-audit) — `spec.readinessGates` lets an external controller contribute additional `PodCondition`s that must all be `True` (alongside the built-in `ContainersReady`) before kubelet reports the pod's own `Ready` condition as `True`. `build_pod_status()`'s `Ready` computation now checks every gate's named condition against `prev`'s conditions; a missing condition counts as not-satisfied, matching upstream. Fixing this also required (and fixed) a real pre-existing bug: nodelet's JSON-Merge-Patch status writes were silently deleting any condition an external controller had set, since the whole `conditions` array got replaced wholesale — now foreign conditions are copied forward on every write. See round 23 notes.
 
 ### Resource management
 - ✅ **Container resource requests/limits** — translated to CRI `LinuxContainerResources` (cpu shares/quota/period, memory limit; `linux_resources()`)
@@ -1404,7 +1465,12 @@ higher-value/correctness-critical than others:
       read back, pod `readinessGates` unimplemented, user namespaces
       (`hostUsers`) unimplemented, eviction's priority-tiebreak gap, and
       the (not recommended) checkpoint API. See round 22 notes.
-- [ ] Next candidates from round 22's audit, roughly by value: pod
-      `readinessGates`, `terminationMessagePath`/`Policy` read-back, user
-      namespaces, eviction priority-tiebreaking. Ask before starting the
-      next round.
+- [x] Round 23: pod `readinessGates` — `Ready` now also requires every
+      gate's named condition to be `True`; also fixed a real pre-existing
+      bug along the way (JSON-Merge-Patch status writes were silently
+      deleting any condition an external controller had set — now carried
+      forward). Genuinely automatable e2e test, no real infra needed. See
+      round 23 notes.
+- [ ] Remaining candidates from round 22's audit, roughly by value:
+      `terminationMessagePath`/`Policy` read-back, user namespaces,
+      eviction priority-tiebreaking. Ask before starting the next round.

@@ -174,7 +174,16 @@ space (see round 17/18/20 notes), reads real NUMA topology from
 `GetPreferredAllocation` (a plugin's own device choice, validated before
 trust, falling back to nodelet's own pick otherwise) and
 `PreStartContainer` (called right after `Allocate()` succeeds, for
-plugins that require it). Full status list in `docs/GAP_CLOSURE.md`.
+plugins that require it). A fresh gap re-audit against kubelet's own
+docs (round 22) found and closed **pod `readinessGates`** (round 23) —
+`spec.readinessGates` lets an external controller (a service mesh
+sidecar, say) hold a pod's `Ready` condition `False` until its own named
+condition is `True`, alongside the built-in `ContainersReady`; closing
+this also fixed a real pre-existing bug where nodelet's JSON-Merge-Patch
+status writes silently deleted any condition an external controller had
+set (the whole `conditions` array got replaced wholesale) — now foreign
+conditions are carried forward on every write. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -659,6 +668,17 @@ Two layers, and they're not substitutes for each other:
   that requires attach with a working external-attacher — same class of
   infra dependency `csi_pvc.sh` has, but for a driver where
   `CSIDriver.spec.attachRequired` is `true` instead of `false`.
+
+  `readiness_gates.sh` (round 23) needs no real infrastructure at all —
+  the test itself plays the "external controller" role via `kubectl patch
+  --subresource=status`: creates a pod with a `readinessGates` entry,
+  confirms `Ready` stays `False` while the gate condition is unset or
+  `False` even though `ContainersReady` is `True`, patches it to `True`,
+  confirms `Ready` flips, and confirms the gate condition itself survives
+  nodelet's subsequent status reconciles (proof the foreign-condition
+  carry-forward fix works, not just that `Ready` happened to flip once).
+  Genuinely automatable, unlike most CSI/device-plugin/NUMA-adjacent tests
+  in this suite.
 
 ## Configuration (environment variables)
 

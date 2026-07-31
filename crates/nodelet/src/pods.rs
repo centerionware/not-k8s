@@ -151,7 +151,8 @@ impl PodController {
                 debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured");
                 self.ensure_probe_supervisor(&pod, &ns, &name, status.pod_ip.as_deref());
                 let prev = pod.status.as_ref();
-                if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev, &self.health).await {
+                let gates = readiness_gate_types(&pod);
+                if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev, &gates, &self.health).await {
                     warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status");
                 }
             }
@@ -193,7 +194,8 @@ impl PodController {
                 Ok(status) => {
                     debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured (retry)");
                     let prev = pod.status.as_ref();
-                    if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev, &health).await {
+                    let gates = readiness_gate_types(&pod);
+                    if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev, &gates, &health).await {
                         warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status (retry)");
                     }
                 }
@@ -229,8 +231,9 @@ impl PodController {
         match api.get_opt(name).await {
             Ok(Some(p)) => {
                 self.ensure_probe_supervisor(&p, ns, name, status.pod_ip.as_deref());
+                let gates = readiness_gate_types(&p);
                 if let Err(e) =
-                    write_status(&self.client, &self.host_ip, ns, name, &status, p.status.as_ref(), &self.health).await
+                    write_status(&self.client, &self.host_ip, ns, name, &status, p.status.as_ref(), &gates, &self.health).await
                 {
                     warn!(pod = %key, error = ?e, "failed to write pod status");
                 } else {
@@ -252,10 +255,11 @@ pub(crate) async fn write_status(
     name: &str,
     rt: &RuntimeStatus,
     prev: Option<&PodStatus>,
+    readiness_gates: &[String],
     health: &HealthMap,
 ) -> Result<()> {
     let api: Api<Pod> = Api::namespaced(client.clone(), ns);
-    let status = build_pod_status(host_ip, ns, name, rt, prev, health);
+    let status = build_pod_status(host_ip, ns, name, rt, prev, readiness_gates, health);
     if !status_patch_changes(prev, &status) {
         debug!(pod = %format!("{ns}/{name}"), "skipped unchanged pod status patch");
         return Ok(());
@@ -302,12 +306,36 @@ fn merge_patch_changes(current: Option<&Value>, patch: &Value) -> bool {
 /// real changed. Preserving unchanged timestamps makes an unchanged status
 /// patch a true no-op (identical to the stored object), so the apiserver
 /// doesn't bump resourceVersion and the loop breaks.
+/// `spec.readinessGates`' condition types, as plain strings — pulled out
+/// so `build_pod_status()`'s readiness computation doesn't need the whole
+/// `Pod` object, just the piece of it that's actually relevant.
+pub(crate) fn readiness_gate_types(pod: &Pod) -> Vec<String> {
+    pod.spec
+        .as_ref()
+        .and_then(|s| s.readiness_gates.as_ref())
+        .map(|gates| gates.iter().map(|g| g.condition_type.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// The condition types `build_pod_status()` computes and owns itself —
+/// used to decide which conditions from `prev` (see `build_pod_status()`)
+/// are foreign and must be copied forward rather than dropped.
+const OWNED_CONDITION_TYPES: [&str; 4] = ["Initialized", "PodScheduled", "ContainersReady", "Ready"];
+
+/// Whether `condition_type` is currently reported `True` in `conditions` —
+/// pure, what a `readinessGates` entry needs to check against an external
+/// controller's condition.
+fn condition_is_true(conditions: &[PodCondition], condition_type: &str) -> bool {
+    conditions.iter().any(|c| c.type_ == condition_type && c.status == "True")
+}
+
 fn build_pod_status(
     host_ip: &str,
     ns: &str,
     name: &str,
     rt: &RuntimeStatus,
     prev: Option<&PodStatus>,
+    readiness_gates: &[String],
     health: &HealthMap,
 ) -> PodStatus {
     let running = rt.phase == Phase::Running;
@@ -325,6 +353,28 @@ fn build_pod_status(
             .or_else(|| Some(Time(k8s_openapi::jiff::Timestamp::now())));
         PodCondition { type_: type_.to_string(), status, last_transition_time, ..Default::default() }
     };
+    // Conditions an external controller set (e.g. to satisfy a
+    // `readinessGates` entry) — must be carried forward into the new
+    // `conditions` array nodelet writes below, or they'd be lost: the
+    // apiserver patch is JSON Merge Patch (see `status_patch_changes()`'s
+    // doc comment), which replaces the whole `conditions` array rather
+    // than merging it element-by-element. Without this, a controller's
+    // condition would vanish on nodelet's very next status write —
+    // including the one `readinessGates` itself is trying to read.
+    let foreign_conditions: Vec<PodCondition> = prev
+        .and_then(|s| s.conditions.as_ref())
+        .map(|conds| conds.iter().filter(|c| !OWNED_CONDITION_TYPES.contains(&c.type_.as_str())).cloned().collect())
+        .unwrap_or_default();
+    // A pod's aggregate `Ready` condition needs every `readinessGates`
+    // entry's named condition to already be `True` too — checked against
+    // `prev`'s conditions (the latest known state, same source
+    // `foreign_conditions` reads from), not the ones being built here
+    // (those are nodelet's own 4, never gate-relevant). A gate whose
+    // condition doesn't exist yet at all counts as not-satisfied, same as
+    // upstream.
+    let gates_ready = readiness_gates.iter().all(|gate_type| {
+        prev.and_then(|s| s.conditions.as_deref()).map(|conds| condition_is_true(conds, gate_type)).unwrap_or(false)
+    });
 
     // A container is only actually Ready if it's running *and* its probe
     // supervisor (if any — probes::container_health defaults to healthy
@@ -426,14 +476,17 @@ fn build_pod_status(
         .as_ref()
         .map(|ip| vec![PodIP { ip: ip.clone() }]);
 
+    let mut conditions = vec![
+        cond("Initialized", rt.initialized),
+        cond("PodScheduled", true),
+        cond("ContainersReady", all_ready),
+        cond("Ready", all_ready && gates_ready),
+    ];
+    conditions.extend(foreign_conditions);
+
     PodStatus {
         phase: Some(rt.phase.as_str().to_string()),
-        conditions: Some(vec![
-            cond("Initialized", rt.initialized),
-            cond("PodScheduled", true),
-            cond("ContainersReady", all_ready),
-            cond("Ready", all_ready),
-        ]),
+        conditions: Some(conditions),
         container_statuses: Some(container_statuses),
         init_container_statuses: (!init_container_statuses.is_empty()).then_some(init_container_statuses),
         ephemeral_container_statuses: (!ephemeral_container_statuses.is_empty()).then_some(ephemeral_container_statuses),
