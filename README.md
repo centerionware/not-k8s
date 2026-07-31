@@ -307,9 +307,12 @@ instead of retrying forever with no restart at all. Round 48 started
 the **local ephemeral storage** arc: `Node.status.capacity`/
 `.allocatable["ephemeral-storage"]` now reports the real filesystem
 size backing the node's disk path, reusing the same `statvfs(2)` read
-`DiskPressure` already makes — request/limit enforcement and an
-eviction-manager signal are left for a follow-up slice. Full status
-list in `docs/GAP_CLOSURE.md`.
+`DiskPressure` already makes. Round 49 finished it: a pod exceeding its
+own `ephemeral-storage` limit (measured from CRI's per-container
+writable-layer usage plus a walk of nodelet's own materialized volume
+directory) is now evicted directly, independent of general node
+pressure — the same relationship an individual container's OOM kill
+has to overall node memory. Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 

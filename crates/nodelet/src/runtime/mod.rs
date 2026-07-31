@@ -304,13 +304,23 @@ pub struct ContainerUsage {
     pub stats: UsageStats,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PodUsage {
     pub namespace: String,
     pub name: String,
     pub uid: String,
     pub pod: UsageStats,
     pub containers: Vec<ContainerUsage>,
+    /// Local ephemeral storage usage (round 49; the deferred half of
+    /// round 48's arc) — every container's CRI-reported writable-layer
+    /// usage, plus nodelet's own materialized volume directory (emptyDir/
+    /// ConfigMap/Secret/downwardAPI/projected — everything under
+    /// `VOLUME_ROOT/<uid>`). `None` when nothing could be measured at all
+    /// (mock runtime; a `cri` pod CRI hasn't measured yet). **Known
+    /// scope limitation**: does not include container log file size
+    /// (`/var/log/pods/...`) — real kubelet's own measurement does;
+    /// nodelet's doesn't walk that directory yet.
+    pub ephemeral_storage_usage_bytes: Option<u64>,
 }
 
 /// One cached image, in the shape `Node.status.images` needs (round 33)

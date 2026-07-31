@@ -11,6 +11,7 @@ fn pod_with_one_container(cpu_nanos: Option<u64>, mem_bytes: Option<u64>) -> Pod
             name: "app".to_string(),
             stats: UsageStats { cpu_usage_core_nano_seconds: cpu_nanos, memory_working_set_bytes: mem_bytes, ..Default::default() },
         }],
+        ..Default::default()
     }
 }
 
@@ -68,6 +69,7 @@ fn missing_per_pod_stats_omit_that_pod_sample_but_not_the_whole_metric_block() {
         uid: "x".to_string(),
         pod: UsageStats::default(),
         containers: vec![],
+        ..Default::default()
     }];
     let out = render_resource_metrics("node-1", None, None, &pods);
     assert!(out.contains("# TYPE pod_cpu_usage_seconds_total counter"));

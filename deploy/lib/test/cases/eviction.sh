@@ -14,5 +14,43 @@ test_eviction_priority_tiebreak_manual_procedure() {
     skip_test "proving priority-based tiebreaking (round 26 — pick_eviction_candidate() ranks by spec.priority within a QoS class before falling back to usage) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with different PriorityClasses (e.g. a low-priority one and a high-priority one, or set spec.priority directly), force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the LOWER-priority pod is evicted first even if the higher-priority pod is using more memory — proof priority wins the tiebreak before usage does, matching real kubelet's rankMemoryPressure ordering. The pure ranking logic itself (priority beats usage, QoS class still outranks priority) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end."
 }
 
+test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted() {
+    # Round 49: unlike the node-level pressure eviction above, a pod
+    # exceeding its OWN ephemeral-storage limit is a direct per-pod
+    # resource violation — checked independently of MemoryPressure/
+    # DiskPressure/PIDPressure, so this is genuinely automatable without
+    # faking node-wide pressure. Writes well past the 1Mi limit into a
+    # plain (disk-backed) emptyDir, which nodelet materializes at
+    # VOLUME_ROOT/<uid>/volumes/data — exactly the directory
+    # directory_usage_bytes() walks.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="ephemeral-storage-limit-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      resources:
+        limits:
+          ephemeral-storage: "1Mi"
+      command: ["sh", "-c", "dd if=/dev/zero of=/data/bigfile bs=1M count=8 2>/dev/null; sleep 3600"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      emptyDir: {}
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name evicted for exceeding its own ephemeral-storage limit" bash -c \
+        "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.reason}')\" == 'Evicted' ]]"
+    delete_pod_if_exists "$name"
+}
+
 register_test test_eviction_manual_procedure
 register_test test_eviction_priority_tiebreak_manual_procedure
+register_test test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted

@@ -4007,6 +4007,35 @@ fn usage_stats_from_cpu_memory(cpu: Option<&v1::CpuUsage>, memory: Option<&v1::M
     }
 }
 
+/// Sum of every container's CRI-reported writable-layer usage (round 49)
+/// — the container's own filesystem writes (anything not on a mounted
+/// volume), the piece of ephemeral-storage usage nodelet has no other way
+/// to measure itself (containerd owns that storage, not nodelet).
+fn writable_layer_bytes(containers: &[v1::ContainerStats]) -> u64 {
+    containers.iter().filter_map(|c| c.writable_layer.as_ref().and_then(|w| u64_value(&w.used_bytes))).sum()
+}
+
+/// Recursive directory size, in bytes — nodelet's own materialized volume
+/// directory (round 49) is the other half of a pod's ephemeral-storage
+/// usage: emptyDir/ConfigMap/Secret/downwardAPI/projected content nodelet
+/// itself writes, which containerd's own stats never account for since
+/// they're not part of any container's writable layer. `0` on any error
+/// (missing directory — most pods have no such volumes at all — or a
+/// permission issue), matching this file's existing "best-effort,
+/// fail-open" posture for filesystem reads.
+fn directory_usage_bytes(path: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else { return 0 };
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        match entry.metadata() {
+            Ok(meta) if meta.is_dir() => total += directory_usage_bytes(&entry.path()),
+            Ok(meta) => total += meta.len(),
+            Err(_) => {}
+        }
+    }
+    total
+}
+
 /// Convert one CRI `PodSandboxStats` into nodelet's runtime-agnostic
 /// `PodUsage`. `None` if the sandbox has no identifying metadata or no
 /// Linux stats attached (Windows stats, or a sandbox CRI hasn't measured
@@ -4028,12 +4057,22 @@ fn pod_usage_from_sandbox_stats(stats: &v1::PodSandboxStats) -> Option<super::Po
         })
         .collect();
 
+    // Local ephemeral storage (round 49): container writable layers
+    // (containerd's own stats) plus nodelet's own materialized volume
+    // directory (not part of any writable layer). Known scope
+    // limitation: doesn't include container log file size
+    // (/var/log/pods/...) — see PodUsage's own doc comment.
+    let volume_dir = PathBuf::from(VOLUME_ROOT).join(&metadata.uid).join("volumes");
+    let ephemeral_storage_usage_bytes =
+        Some(writable_layer_bytes(&linux.containers) + directory_usage_bytes(&volume_dir));
+
     Some(super::PodUsage {
         namespace: metadata.namespace.clone(),
         name: metadata.name.clone(),
         uid: metadata.uid.clone(),
         pod: usage_stats_from_cpu_memory(linux.cpu.as_ref(), linux.memory.as_ref()),
         containers,
+        ephemeral_storage_usage_bytes,
     })
 }
 
@@ -4376,6 +4415,9 @@ mod tests_resource_field_ref;
 #[cfg(test)]
 #[path = "cri_tests/csi_ephemeral_volume_handle.rs"]
 mod tests_csi_ephemeral_volume_handle;
+#[cfg(test)]
+#[path = "cri_tests/directory_usage_bytes.rs"]
+mod tests_directory_usage_bytes;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

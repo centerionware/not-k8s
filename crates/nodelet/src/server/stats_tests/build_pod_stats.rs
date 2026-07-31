@@ -13,6 +13,7 @@ fn pod_ref_carries_through_namespace_name_and_uid() {
         uid: "abc-123".to_string(),
         pod: UsageStats::default(),
         containers: vec![],
+        ..Default::default()
     };
     let stats = build_pod_stats(&usage);
     assert_eq!(stats.pod_ref.namespace, "default");
@@ -31,6 +32,7 @@ fn container_stats_are_mapped_by_name() {
             ContainerUsage { name: "app".to_string(), stats: usage_with(Some(50_000_000), Some(1_048_576)) },
             ContainerUsage { name: "sidecar".to_string(), stats: usage_with(None, None) },
         ],
+        ..Default::default()
     };
     let stats = build_pod_stats(&usage);
     assert_eq!(stats.containers.len(), 2);
@@ -48,6 +50,7 @@ fn all_empty_usage_omits_cpu_and_memory_blocks_entirely() {
         uid: "abc-123".to_string(),
         pod: UsageStats::default(),
         containers: vec![ContainerUsage { name: "app".to_string(), stats: UsageStats::default() }],
+        ..Default::default()
     };
     let stats = build_pod_stats(&usage);
     assert!(stats.cpu.is_none());
@@ -73,6 +76,7 @@ fn serializes_to_the_expected_camel_case_json_shape() {
         uid: "abc-123".to_string(),
         pod: usage_with(Some(1_000_000), Some(4096)),
         containers: vec![],
+        ..Default::default()
     };
     let stats = build_pod_stats(&usage);
     let json = serde_json::to_value(&stats).unwrap();

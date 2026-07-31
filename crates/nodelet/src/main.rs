@@ -218,13 +218,86 @@ async fn gc_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: Config
 /// MemoryPressure or DiskPressure is active, evict exactly one eligible pod
 /// (see `nodelet::eviction`) — never a mass cull; the next tick re-measures
 /// and decides again, same as real kubelet's eviction manager.
+/// Evict one pod: best-effort `Evicted`/`Failed` status patch (surfacing
+/// why, same as real kubelet — but the delete is what actually reclaims
+/// anything, so a failed status patch must never block it), then a
+/// zero-grace delete.
+async fn evict_pod(client: &kube::Client, ns: &str, name: &str, reason: &str) {
+    use kube::api::{Api, DeleteParams, Patch, PatchParams};
+    let pod_api: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client.clone(), ns);
+    let status_patch = serde_json::json!({
+        "status": { "phase": "Failed", "reason": "Evicted", "message": format!("The node was low on resource: {reason}.") }
+    });
+    let _ = pod_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch)).await;
+
+    let dp = DeleteParams { grace_period_seconds: Some(0), ..Default::default() };
+    match pod_api.delete(name, &dp).await {
+        Ok(_) => info!(pod = %format!("{ns}/{name}"), reason, "evicted pod"),
+        Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to delete pod"),
+    }
+}
+
 async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
     use k8s_openapi::api::core::v1::Pod;
-    use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams};
+    use kube::api::{Api, ListParams};
     use std::collections::HashMap;
 
     loop {
         tokio::time::sleep(cfg.eviction_check_interval).await;
+
+        let api: Api<Pod> = Api::all(client.clone());
+        let params = ListParams::default().fields(&format!("spec.nodeName={}", cfg.node_name));
+        let pods = match api.list(&params).await {
+            Ok(list) => list.items,
+            Err(e) => {
+                warn!(error = ?e, "eviction: failed to list pods; skipping this cycle");
+                continue;
+            }
+        };
+
+        let usage_stats = match runtime.pod_usage_stats().await {
+            Ok(stats) => stats,
+            Err(e) => {
+                warn!(error = ?e, "eviction: failed to fetch usage stats; ranking by requested memory only this cycle");
+                Vec::new()
+            }
+        };
+        // Real usage, keyed by pod UID, for eviction.rs's ranking — falls
+        // back to requested memory per-pod when this is empty (mock
+        // runtime, or a CRI error listing stats).
+        let usage_bytes_by_uid: HashMap<String, u64> = usage_stats
+            .iter()
+            .filter_map(|u| u.pod.memory_working_set_bytes.or(u.pod.memory_usage_bytes).map(|bytes| (u.uid.clone(), bytes)))
+            .collect();
+
+        // Local ephemeral storage (round 49; the deferred half of round
+        // 48's arc): a pod exceeding its *own* ephemeral-storage limit is
+        // evicted immediately — this is a direct per-pod resource
+        // violation (like an OOM kill), independent of general node
+        // pressure, so it's checked first and doesn't wait for
+        // MemoryPressure/DiskPressure/PIDPressure to be active.
+        let ephemeral_usage_by_uid: HashMap<String, u64> =
+            usage_stats.iter().filter_map(|u| u.ephemeral_storage_usage_bytes.map(|bytes| (u.uid.clone(), bytes))).collect();
+        let over_limit = pods.iter().find(|p| {
+            p.metadata.deletion_timestamp.is_none()
+                && !nodelet::eviction::is_critical(p)
+                && p.metadata
+                    .uid
+                    .as_deref()
+                    .map(|uid| {
+                        nodelet::eviction::exceeds_ephemeral_storage_limit(
+                            ephemeral_usage_by_uid.get(uid).copied(),
+                            nodelet::eviction::ephemeral_storage_limit_bytes(p),
+                        )
+                    })
+                    .unwrap_or(false)
+        });
+        if let Some(victim) = over_limit {
+            if let (Some(ns), Some(name)) = (victim.metadata.namespace.as_deref(), victim.metadata.name.as_deref()) {
+                evict_pod(&client, ns, name, "Ephemeral storage limit exceeded").await;
+            }
+            continue; // one pod per check, matching the pressure-based path below
+        }
 
         let pressure = nodelet::metrics::read_pressure(
             &cfg.disk_path,
@@ -243,52 +316,13 @@ async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: 
             "PIDPressure"
         };
 
-        let api: Api<Pod> = Api::all(client.clone());
-        let params = ListParams::default().fields(&format!("spec.nodeName={}", cfg.node_name));
-        let pods = match api.list(&params).await {
-            Ok(list) => list.items,
-            Err(e) => {
-                warn!(error = ?e, "eviction: failed to list pods; skipping this cycle");
-                continue;
-            }
-        };
-
-        // Real usage, keyed by pod UID, for eviction.rs's ranking — falls
-        // back to requested memory per-pod if this comes back empty (mock
-        // runtime, or a CRI error listing stats).
-        let usage_bytes_by_uid: HashMap<String, u64> = match runtime.pod_usage_stats().await {
-            Ok(stats) => stats
-                .into_iter()
-                .filter_map(|u| u.pod.memory_working_set_bytes.or(u.pod.memory_usage_bytes).map(|bytes| (u.uid, bytes)))
-                .collect(),
-            Err(e) => {
-                warn!(error = ?e, "eviction: failed to fetch usage stats; ranking by requested memory only this cycle");
-                HashMap::new()
-            }
-        };
-
         let Some(victim) = nodelet::eviction::pick_eviction_candidate(&pods, &usage_bytes_by_uid) else {
             continue; // under pressure, but nothing eligible to evict
         };
         let (Some(ns), Some(name)) = (victim.metadata.namespace.as_deref(), victim.metadata.name.as_deref()) else {
             continue;
         };
-
-        let pod_api: Api<Pod> = Api::namespaced(client.clone(), ns);
-        // Best-effort: surface why before the delete actually lands, same
-        // as real kubelet's Evicted status — but the delete is what
-        // actually reclaims anything, so a failed status patch shouldn't
-        // stop it.
-        let status_patch = serde_json::json!({
-            "status": { "phase": "Failed", "reason": "Evicted", "message": format!("The node was low on resource: {reason}.") }
-        });
-        let _ = pod_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch)).await;
-
-        let dp = DeleteParams { grace_period_seconds: Some(0), ..Default::default() };
-        match pod_api.delete(name, &dp).await {
-            Ok(_) => info!(pod = %format!("{ns}/{name}"), reason, "evicted pod under node pressure"),
-            Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to delete pod"),
-        }
+        evict_pod(&client, ns, name, reason).await;
     }
 }
 

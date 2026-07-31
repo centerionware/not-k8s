@@ -152,6 +152,43 @@ pub fn oom_score_adj(qos: QosClass, container_memory_request_bytes: i64, node_me
     }
 }
 
+/// Sum of every container's `resources.limits["ephemeral-storage"]`
+/// (round 49; the deferred half of round 48's arc) — real kubelet's own
+/// per-pod ephemeral-storage limit is likewise the sum across containers,
+/// not a single pod-level field. `None` when no container sets one at
+/// all, distinct from `Some(0)` (an explicit `"0"` limit, which a pod
+/// with any real usage would immediately violate) — the caller needs to
+/// tell "no limit configured" apart from "a zero limit."
+pub fn ephemeral_storage_limit_bytes(pod: &Pod) -> Option<u64> {
+    let containers: Vec<&Container> = pod
+        .spec
+        .as_ref()
+        .map(|s| s.containers.iter().chain(s.init_containers.iter().flatten()).collect())
+        .unwrap_or_default();
+    let mut total = 0u64;
+    let mut any_set = false;
+    for c in &containers {
+        if let Some(v) = resource_value(c.resources.as_ref(), "limits", "ephemeral-storage") {
+            total += v.max(0.0) as u64;
+            any_set = true;
+        }
+    }
+    any_set.then_some(total)
+}
+
+/// Whether a pod's measured ephemeral-storage usage exceeds its own
+/// configured limit — real kubelet's per-pod eviction trigger, distinct
+/// from (and checked ahead of) general node-pressure-based eviction: this
+/// fires even when the node overall isn't under `DiskPressure` at all,
+/// the same way an individual container gets OOM-killed for exceeding its
+/// own memory limit regardless of the node's overall memory state.
+/// `false` whenever either input is unknown (no limit configured, or
+/// usage couldn't be measured) — never guesses a violation from missing
+/// data.
+pub fn exceeds_ephemeral_storage_limit(usage_bytes: Option<u64>, limit_bytes: Option<u64>) -> bool {
+    matches!((usage_bytes, limit_bytes), (Some(usage), Some(limit)) if usage > limit)
+}
+
 /// `spec.priority` — already a resolved numeric value by the time nodelet
 /// sees the Pod (the apiserver's Priority admission controller resolves
 /// `priorityClassName` into this field at admission time), so no
@@ -220,3 +257,6 @@ mod tests_pick_candidate;
 #[cfg(test)]
 #[path = "eviction_tests/oom_score_adj.rs"]
 mod tests_oom_score_adj;
+#[cfg(test)]
+#[path = "eviction_tests/ephemeral_storage.rs"]
+mod tests_ephemeral_storage;

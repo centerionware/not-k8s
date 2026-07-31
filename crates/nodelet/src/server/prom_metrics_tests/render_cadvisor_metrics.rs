@@ -8,6 +8,7 @@ fn pod_with_one_container(stats: UsageStats) -> PodUsage {
         uid: "abc-123".to_string(),
         pod: UsageStats::default(),
         containers: vec![ContainerUsage { name: "app".to_string(), stats }],
+        ..Default::default()
     }
 }
 

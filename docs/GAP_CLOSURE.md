@@ -27,6 +27,87 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 49: local ephemeral storage, slice 2 — eviction signal (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-48). This closes the
+local-ephemeral-storage arc rounds 48-49 opened, and with it, round
+45's audit list entirely.
+
+Before this round, a pod that filled up its own emptyDir/ConfigMap/
+Secret volumes or its container's own writable layer well past any
+`ephemeral-storage` limit it declared was never evicted for it —
+nothing measured per-pod ephemeral-storage usage at all, and
+`eviction.rs` never checked a pod's own limit against anything.
+
+- **`PodUsage` gained `ephemeral_storage_usage_bytes: Option<u64>`**,
+  computed as the sum of two sources that together cover everything
+  nodelet can see: **new `writable_layer_bytes()`** sums CRI's own
+  per-container `ContainerStats.writable_layer.used_bytes` (the piece
+  containerd tracks, not nodelet); **new `directory_usage_bytes()`**
+  recursively walks nodelet's own materialized volume directory
+  (`VOLUME_ROOT/<uid>/volumes` — emptyDir/ConfigMap/Secret/downwardAPI/
+  projected content nodelet itself writes, which containerd's stats
+  never account for). **Known scope limitation, documented on the
+  field itself**: container log file size (`/var/log/pods/...`) isn't
+  included — real kubelet's own measurement does include it; nodelet's
+  doesn't walk that directory yet.
+- **New pure `ephemeral_storage_limit_bytes(pod) -> Option<u64>`**
+  (`eviction.rs`): sums every container's own
+  `resources.limits["ephemeral-storage"]`, same pattern as
+  `qos_class()`'s own per-container resource summation. `None` when no
+  container sets one at all — kept distinct from `Some(0)` (an explicit
+  zero limit, which any real usage would immediately violate), so the
+  caller never confuses "not configured" with "configured to zero."
+- **New pure `exceeds_ephemeral_storage_limit(usage, limit) -> bool`**:
+  `false` whenever either input is unknown — never guesses a violation
+  from missing data.
+- **`eviction_loop()`** (`main.rs`) now checks every pod's own
+  ephemeral-storage usage against its own limit *first*, independent of
+  and ahead of the existing `MemoryPressure`/`DiskPressure`/
+  `PIDPressure`-gated path — a direct per-pod limit violation is
+  conceptually the same kind of trigger as an individual container
+  getting OOM-killed for exceeding its own memory limit, regardless of
+  the node's overall memory state, so it doesn't wait for general node
+  pressure to be active. The pod-evicting logic itself (`Evicted`
+  status patch + zero-grace delete) was pulled into a shared
+  `evict_pod()` helper, reused by both this new path and the existing
+  pressure-ranked one — no duplicated eviction mechanics.
+- Excludes `is_critical()` pods from this new check too, matching this
+  project's existing conservative "never touch critical pods" stance
+  documented at the top of `eviction.rs` (a deliberate consistency
+  choice, not an oversight — real kubelet's own local-storage eviction
+  is less consistently protective of priority than this project's
+  other eviction paths already are).
+- No new env vars, no new proto surface (CRI's `writable_layer` field
+  was already vendored in the proto, just unread until now).
+- `PodUsage` gained `#[derive(Default)]` (all fields already supported
+  it) to keep the ~8 existing test-file literal constructions
+  (`stats_tests/`, `prom_metrics_tests/`) working via `..Default::default()`
+  rather than touching every one's field list by hand.
+- 13 new unit tests: `eviction_tests/ephemeral_storage.rs` (7: no-limit
+  vs. explicit-zero-limit, multi-container summation, the `exceeds`
+  matrix including both "unknown" cases) and `cri_tests/directory_usage_bytes.rs`
+  (4: nonexistent path, flat sum, recursion, empty dir — real
+  filesystem I/O against real tempdirs, same style
+  `write_volume_dir.rs` already uses).
+- New e2e test (`deploy/lib/test/cases/eviction.sh`):
+  `test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted` —
+  genuinely automatable (unlike this file's existing node-pressure
+  tests, which stay manual-procedure-only since they'd need faking a
+  node-wide threshold): a pod with a 1Mi `ephemeral-storage` limit
+  writes 8Mi into a plain emptyDir via `dd`, and the test asserts it
+  actually gets evicted, with no artificial pressure needed since this
+  trigger is independent of node-level pressure entirely.
+
+**Confidence note**: the limit/violation-check logic is pure and
+thoroughly unit-tested; `directory_usage_bytes()` is exercised against
+a real filesystem. The e2e test is genuine, live, unconditional proof
+(the only ephemeral-storage/eviction-related e2e test in this codebase
+that doesn't need a manual procedure). The one real caveat is the
+documented log-file-size gap in usage measurement — a pod whose
+*only* excess usage is in its logs, not its volumes or writable layer,
+won't be caught by this yet.
+
 ## Round 48: local ephemeral storage, slice 1 — capacity/allocatable (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-47). Local ephemeral
@@ -2927,7 +3008,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **In-place pod vertical scaling** (`resize` subresource, GA 1.33; found in round 39's re-audit, mechanism round 42, status reporting round 43) — new pure `resize_decision()` compares an already-running container's *actual* last-applied resources (reusing `container_resources`, tracked since round 16 for CPU Manager) against the pod spec's *desired* ones, applying a change in-place via the existing `UpdateContainerResources` RPC when `resizePolicy` allows it (default `NotRequired`), or funneling into the existing restart machinery when it demands `RestartContainer`. `containerStatuses[].resources`/`.allocatedResources` (app containers only) and a `PodResizeInProgress` condition are now reported (round 43), computed purely from two new side tables tracking "actually applied" vs. "currently requested" resources. Genuinely automated e2e tests (`kubectl exec` reads the container's own live cgroup file and the reported status fields, before/after `kubectl patch --subresource resize`). **Still open**: `PodResizePending` isn't implemented — nodelet has no admission/node-fitting layer that could ever *defer* a resize, so there's no real state for it to represent (intentional non-goal, documented, not an oversight); no admission-time rejection of a resize that would change a pod's QoS class (same pre-existing no-admission-layer boundary); init/ephemeral containers don't participate in resize at all yet. See rounds 42-43 notes.
 - ✅ **`oom_score_adj`** (round 28; found in round 27's re-audit) — `linux_resources()` now sets CRI's `LinuxContainerResources.oom_score_adj` per container via `eviction::oom_score_adj()`: Guaranteed `-998`, BestEffort `1000`, Burstable scaled by that container's own memory *request* against node capacity (`1000 - 1000*request/capacity`, clamped `[2, 999]`), matching real kubelet's formula exactly. Gives the kernel OOM killer QoS-aware signal, closing a real gap in this project's own eviction-manager story (rounds 7, 26) — a kernel OOM kill can happen faster than `eviction_loop()`'s check interval reacts. See round 28 notes.
 - ✅ **gRPC probes** (round 29; found in round 27's re-audit) — `probes.rs::probe_check()` now handles `probe.grpc` too, via a vendored `grpc.health.v1` client (`proto/health.proto`) calling the standard `Health/Check` RPC. `cri`-gated (needs `tonic`'s transport); a mock-only build's `check_grpc()` always returns `false`. Unit-tested failure paths (timeout, refused, non-gRPC listener) with solid confidence; the success path (a real passing `Health/Check`) is unvalidated — no gRPC server available in this sandbox to prove it live. See round 29 notes.
-- 🟡 **Local ephemeral storage** (found in round 45's re-audit; capacity/allocatable closed round 48) — `Node.status.capacity`/`.allocatable["ephemeral-storage"]` now reports the real total size of the filesystem backing `disk_path`, reusing the same `statvfs(2)` read `DiskPressure` already makes. **Still open**: no request/limit enforcement on this resource, and no eviction-manager signal for `nodefs`/`imagefs` disk pressure tied to it (`eviction.rs` still has zero references) — round 48 was deliberately scoped to capacity reporting only, matching the resize arc's slice-1/slice-2 pattern. First surfaced implicitly by round 44's `resolve_resource_field_ref()`, which had to resolve `limits.ephemeral-storage`/`requests.ephemeral-storage` to a documented `"0"` stub rather than a real value. See round 48 notes.
+- ✅ **Local ephemeral storage** (found in round 45's re-audit; closed rounds 48-49) — `Node.status.capacity`/`.allocatable["ephemeral-storage"]` reports the real total filesystem size backing `disk_path` (round 48, reusing `DiskPressure`'s existing `statvfs(2)` read). A pod exceeding its *own* `resources.limits["ephemeral-storage"]` is now evicted directly (round 49) — usage measured as CRI's per-container `writable_layer.used_bytes` plus a recursive walk of nodelet's own materialized volume directory, checked independently of and ahead of the general `MemoryPressure`/`DiskPressure`/`PIDPressure`-gated eviction path (the same relationship an individual container's own OOM kill has to overall node memory pressure). Genuinely automated e2e test — the only one of this project's eviction tests that doesn't need a manual procedure, since this trigger needs no artificial node-wide pressure. **Known scope limitation**: usage measurement doesn't include container log file size (`/var/log/pods/...`) yet, only volumes + writable layer. See rounds 48-49 notes.
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
@@ -3277,8 +3358,18 @@ higher-value/correctness-critical than others:
       **Deliberately still open** (next slice): request/limit
       enforcement and an eviction-manager signal for `nodefs`/`imagefs`
       disk pressure. See round 48 notes.
-- [ ] Candidates for the next round: the ephemeral-storage
-      eviction-manager slice (the deliberately-deferred rest of round
-      48's arc), or a fresh gap re-audit — round 45's list is now fully
-      closed except for that one still-open piece. Ask before starting
-      the next round.
+- [x] Round 49: local ephemeral storage, slice 2 (eviction signal) —
+      new `PodUsage.ephemeral_storage_usage_bytes` (CRI writable-layer
+      usage + a recursive walk of nodelet's own volume directory),
+      `ephemeral_storage_limit_bytes()`/`exceeds_ephemeral_storage_limit()`
+      (`eviction.rs`), and a new eviction check in `eviction_loop()` that
+      fires independent of general node pressure — a pod exceeding its
+      own limit is evicted directly, the same relationship an
+      individual OOM kill has to overall node memory pressure.
+      Genuinely automated e2e test (no artificial pressure needed).
+      **This closes the local-ephemeral-storage arc (rounds 48-49) and,
+      with it, round 45's audit list entirely.** See round 49 notes.
+- [ ] Both round 35's and round 45's audit lists are now fully closed
+      (round 39's was already closed after round 43). A fresh gap
+      re-audit is the natural next step. Ask before starting the next
+      round.
