@@ -27,6 +27,83 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 40: hostPID/hostIPC/shareProcessNamespace (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-39). Offered round
+39's 4 new findings; user picked bundling `hostPID`/`hostIPC`/
+`shareProcessNamespace` together — same `NamespaceOption` struct, same
+`PodId`/`sandbox_config()` plumbing, and it includes a real correctness
+fix (not just a missing-feature gap).
+
+Before this round, `PodId`/`sandbox_config()` only ever set
+`NamespaceOption.network` (plus `userns_options`) — `pid`/`ipc` were
+never touched at all, meaning containers silently got containerd's own
+CRI-level default for an unset `pid` field: `POD` (every container
+shares one PID namespace) — the **opposite** of real Kubernetes' actual
+default (`CONTAINER`-scoped, i.e. every container gets its own PID
+namespace unless `shareProcessNamespace: true`).
+
+- **New `PodId` fields**: `host_pid: bool`, `host_ipc: bool`,
+  `share_process_namespace: bool` — read straight off `pod.spec` in
+  `pod_id()`, same pattern as the existing `host_network`/`host_users`
+  fields.
+- **New pure `pid_namespace_mode(host_pid, share_process_namespace) ->
+  NamespaceMode`**: `hostPID` wins outright (`Node`), then
+  `shareProcessNamespace` (`Pod`), otherwise `Container` — this is the
+  actual fix, always producing an explicit answer instead of leaving the
+  field unset.
+- **`sandbox_config()`** now always builds the `linux` block (previously
+  conditional on `host_network || userns_mapping.is_some()`) and always
+  sets `namespace_options.{network,pid,ipc}` explicitly: `network` as
+  before; `pid` via the new `pid_namespace_mode()`; `ipc` is `Node` when
+  `hostIPC` else `Pod` (IPC has no `CONTAINER`-scope concept in the
+  Kubernetes API at all — containers in a pod always share it unless
+  `hostIPC` opts into sharing the host's, so there's no unset-vs-set
+  ambiguity to fix here the way there was for `pid`).
+- **`linux_security_context()`** (the per-container
+  `LinuxContainerSecurityContext` builder) gained a `pid_mode:
+  NamespaceMode` parameter and now sets the *container's own*
+  `namespace_options.pid` too, mirroring real kubelet's own behavior of
+  setting this on every container, not just the sandbox — belt-and-
+  suspenders against relying on any given CRI runtime's own
+  sandbox-inheritance behavior for a field this consequential.
+  `network`/`ipc` are deliberately left unset at the container level,
+  matching upstream and the CRI proto's own documented rationale (no
+  `CONTAINER`-scope concept exists for either).
+- Both `run_sandbox()`'s call (sandbox creation) and
+  `create_and_start_container()`'s call (every container, app/init/
+  ephemeral — it's the single shared creation path per round 24's
+  design) now thread the resolved mode through.
+- 15 new unit tests: `cri_tests/pid_namespace_mode.rs` (4 precedence
+  cases for the pure function), `cri_tests/pod_id.rs` (+2: read-through
+  and default-false), `cri_tests/sandbox_config.rs` (+5: default
+  container/pod split, `hostPID`, `hostIPC`, `shareProcessNamespace`,
+  `hostPID` winning over `shareProcessNamespace` — plus 2 existing
+  "linux is none" tests updated since `linux` is no longer ever `None`),
+  `cri_tests/linux_security_context.rs` (+2: pid mode carried through,
+  container-scoped default).
+- 3 new e2e tests (`deploy/lib/test/cases/security.sh`), all genuinely
+  automated and structural (not just status-string checks):
+  `test_containers_get_isolated_pid_namespaces_by_default` (a second
+  container's own shell reports pid 1 — proof it's really its own
+  isolated namespace, not shared), `test_share_process_namespace_puts_every_container_in_one_pid_namespace`
+  (with `shareProcessNamespace: true`, the second container's shell is
+  *not* pid 1, since the first container already holds it in the now-
+  shared namespace), `test_host_pid_sees_host_processes` (`hostPID:
+  true` sees far more than its own 1-2 processes via `/proc`).
+  `hostIPC` stays unit-tested only — no simple, portable shell-level
+  IPC-namespace probe available in a minimal Alpine image without
+  extra tooling (`ipcs` et al.), a documented scope limitation rather
+  than a skipped correctness check.
+
+**Confidence note**: `pid_namespace_mode()` is pure and thoroughly
+unit-tested; the 3 e2e tests are genuinely live structural proof (a
+real container's own pid, not just a status field). High confidence
+overall for `hostPID`/`shareProcessNamespace`; `hostIPC`'s CRI wiring
+follows the identical code path as the tested `pid`/`network` fields
+but its own live behavior is unvalidated end-to-end (unit-tested only,
+per the note above).
+
 ## Round 39: fresh gap re-audit (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 22/27/35). Round 35's own
@@ -2302,8 +2379,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
 - ❌ **`securityContext.sysctls`** (found in round 39's re-audit) — CRI's `LinuxPodSandboxConfig` has a dedicated `sysctls` map field sitting right next to `cgroup_parent`/`overhead`/`security_context`, which `sandbox_config()` already populates — completely unread today. Moderate value: real, if less common, per-pod kernel tuning (e.g. `net.core.somaxconn`).
-- ❌ **`hostPID`/`hostIPC`** (found in round 39's re-audit) — `PodId`/`sandbox_config()` only ever set `NamespaceOption.network` (plus `userns_options`); the same message's `pid`/`ipc` fields are never touched. A real, common debugging/monitoring pattern (host-PID sidecars) is silently ignored rather than honored.
-- ❌ **`shareProcessNamespace`** (found in round 39's re-audit) — the well-known "sidecar signals/inspects the main container's process via `/proc`" pattern, via `NamespaceMode::Pod` on the PID namespace. **Correctness note, not just a missing feature**: CRI's own proto comment on `NamespaceOption.pid` says *"the CRI default is POD, but the v1.PodSpec default is CONTAINER"* — since nodelet never sets this field at all today, containers are actually getting whatever containerd's own CRI-level default is (POD-shared PID), the **opposite** of real Kubernetes' actual default (CONTAINER-scoped unless `shareProcessNamespace: true`). Higher-urgency than a typical unset-field gap.
+- ✅ **`hostPID`/`hostIPC`/`shareProcessNamespace`** (round 40; found in round 39's re-audit) — new pure `pid_namespace_mode(host_pid, share_process_namespace) -> NamespaceMode` (`hostPID` wins → `Node`, else `shareProcessNamespace` → `Pod`, else `Container`) is now always applied, on both `sandbox_config()`'s `namespace_options.pid` and each container's own `linux_security_context()`'s `namespace_options.pid` (mirroring real kubelet setting it in both places). **Correctness fix, not just a missing feature**: CRI's own proto comment on `NamespaceOption.pid` says *"the CRI default is POD, but the v1.PodSpec default is CONTAINER"* — before this round nodelet never set the field at all, so every container was silently getting containerd's own POD-shared default, the **opposite** of real Kubernetes' actual default. `hostIPC` sets `namespace_options.ipc` to `Node` (else `Pod` — IPC has no `CONTAINER`-scope concept in the API at all, unlike PID). Genuinely automated e2e tests for `hostPID`/`shareProcessNamespace` (a container's own pid, structural proof); `hostIPC` is unit-tested only — no simple portable shell-level IPC probe in a minimal image, a documented scope limitation. See round 40 notes.
 - ✅ **User namespaces** (`spec.hostUsers: false`, round 25; found in round 22's re-audit) — `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive host UID/GID range (fixed length, default 65536, configurable via `NODELET_USERNS_BASE_UID`/`_LENGTH`/`_MAX_PODS`), set as a `POD`-mode `UserNamespace` on `LinuxSandboxSecurityContext.namespace_options.userns_options`. Simplified vs. upstream's own variable-length `usernsManager`: every pod gets the same fixed range size, and allocation state is in-memory only (self-heals as still-running pods reconcile, narrow double-allocation window across a nodelet restart — documented, not hidden). Unvalidated against a real CRI runtime's actual `userns_options` wire support — see round 25 notes.
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
 - ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
@@ -2563,9 +2639,18 @@ higher-value/correctness-critical than others:
       CRI-level POD-shared default, the *opposite* of real Kubernetes'
       CONTAINER-scoped default), and `securityContext.sysctls`
       (CRI has a dedicated field, unread). See round 39 notes.
+- [x] Round 40: `hostPID`/`hostIPC`/`shareProcessNamespace` — new pure
+      `pid_namespace_mode()` (`hostPID` wins → `Node`, else
+      `shareProcessNamespace` → `Pod`, else `Container`) now always
+      applied on both the sandbox's and every container's own
+      `namespace_options.pid`, fixing the correctness bug round 39 found
+      (nodelet was silently relying on containerd's own POD-shared
+      default for an unset `pid` field). `hostIPC` → `namespace_options.ipc`.
+      Genuinely automated e2e tests for `hostPID`/`shareProcessNamespace`;
+      `hostIPC` unit-tested only (documented — no simple portable
+      shell-level IPC probe in a minimal image). See round 40 notes.
 - [ ] Candidates for the next round, roughly by value: in-place pod
-      vertical scaling, `hostPID`/`hostIPC`/`shareProcessNamespace`,
-      `securityContext.sysctls`, then round 35's 2 remaining low-priority
-      items (env `resourceFieldRef`, probe-level
+      vertical scaling, `securityContext.sysctls`, then round 35's 2
+      remaining low-priority items (env `resourceFieldRef`, probe-level
       `terminationGracePeriodSeconds`). Ask before starting the next
       round.

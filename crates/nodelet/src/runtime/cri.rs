@@ -243,6 +243,14 @@ struct PodId {
     /// user namespace at all; only an explicit `false` triggers an
     /// exclusive UID/GID range allocation (see `userns.rs`, round 25).
     host_users: bool,
+    /// `spec.hostPID`/`spec.hostIPC` (round 40) — share the host's PID/IPC
+    /// namespace instead of an isolated one.
+    host_pid: bool,
+    host_ipc: bool,
+    /// `spec.shareProcessNamespace` (round 40) — every container in the pod
+    /// shares one PID namespace instead of each getting its own. Ignored
+    /// (moot) when `host_pid` is also true.
+    share_process_namespace: bool,
 }
 
 fn pod_id(pod: &Pod) -> PodId {
@@ -253,9 +261,28 @@ fn pod_id(pod: &Pod) -> PodId {
         .uid
         .clone()
         .unwrap_or_else(|| format!("{namespace}_{name}"));
-    let host_network = pod.spec.as_ref().and_then(|s| s.host_network).unwrap_or(false);
-    let host_users = pod.spec.as_ref().and_then(|s| s.host_users).unwrap_or(true);
-    PodId { namespace, name, uid, host_network, host_users }
+    let spec = pod.spec.as_ref();
+    let host_network = spec.and_then(|s| s.host_network).unwrap_or(false);
+    let host_users = spec.and_then(|s| s.host_users).unwrap_or(true);
+    let host_pid = spec.and_then(|s| s.host_pid).unwrap_or(false);
+    let host_ipc = spec.and_then(|s| s.host_ipc).unwrap_or(false);
+    let share_process_namespace = spec.and_then(|s| s.share_process_namespace).unwrap_or(false);
+    PodId { namespace, name, uid, host_network, host_users, host_pid, host_ipc, share_process_namespace }
+}
+
+/// Real kubelet's PID-namespace mode: `hostPID` wins outright (share the
+/// host's), then `shareProcessNamespace` (every container in the pod shares
+/// one), otherwise each container gets its own — CRI's proto default (unset
+/// = `POD`) is the *opposite* of this and was round 40's actual correctness
+/// finding, not just a missing feature (see `docs/GAP_CLOSURE.md` round 39).
+fn pid_namespace_mode(host_pid: bool, share_process_namespace: bool) -> NamespaceMode {
+    if host_pid {
+        NamespaceMode::Node
+    } else if share_process_namespace {
+        NamespaceMode::Pod
+    } else {
+        NamespaceMode::Container
+    }
 }
 
 /// What ensure_container() should do about an already-existing container
@@ -679,6 +706,7 @@ fn resource_list_to_linux_resources(list: &BTreeMap<String, Quantity>) -> LinuxC
 fn linux_security_context(
     pod_sc: Option<&PodSecurityContext>,
     container_sc: Option<&SecurityContext>,
+    pid_mode: NamespaceMode,
 ) -> LinuxContainerSecurityContext {
     let run_as_user = container_sc
         .and_then(|s| s.run_as_user)
@@ -708,6 +736,7 @@ fn linux_security_context(
         capabilities,
         supplemental_groups,
         seccomp,
+        namespace_options: Some(NamespaceOption { pid: pid_mode as i32, ..Default::default() }),
         ..Default::default()
     }
 }
@@ -2627,7 +2656,11 @@ impl CriRuntime {
         let resources_for_record = resources.clone();
         let linux = Some(LinuxContainerConfig {
             resources: Some(resources),
-            security_context: Some(linux_security_context(pod_sc, container.security_context.as_ref())),
+            security_context: Some(linux_security_context(
+                pod_sc,
+                container.security_context.as_ref(),
+                pid_namespace_mode(id.host_pid, id.share_process_namespace),
+            )),
         });
 
         // Device plugin resources (nvidia.com/gpu and similar): allocate
@@ -3746,17 +3779,25 @@ fn container_labels(id: &PodId, container_name: &str, kind: ContainerKind) -> Ha
 /// namespace at all — identical to this function's pre-round-25 behavior.
 fn sandbox_config(id: &PodId, userns_mapping: Option<(u32, u32)>, hostname: &str) -> PodSandboxConfig {
     // Host-network pods set the network namespace to NODE, which makes the CRI
-    // runtime skip CNI entirely (no pod network to set up). A user-namespace
-    // mapping also needs a `linux` block even for an otherwise-default pod,
-    // so either condition forces one into existence.
+    // runtime skip CNI entirely (no pod network to set up). The `linux` block
+    // is now always built (round 40) — CRI's own proto default for an unset
+    // `pid` mode is `POD` (every container shares one PID namespace), the
+    // *opposite* of real Kubernetes' actual default (each container gets its
+    // own); always setting it explicitly is the fix, not an edge case.
     let userns_options = userns_mapping.map(|(host_id, length)| {
         let mapping = |container_id| IdMapping { host_id, container_id, length };
         UserNamespace { mode: NamespaceMode::Pod as i32, uids: vec![mapping(0)], gids: vec![mapping(0)] }
     });
-    let linux = (id.host_network || userns_options.is_some()).then(|| LinuxPodSandboxConfig {
+    // IPC has no CONTAINER-scope concept in the Kubernetes API — containers
+    // in a pod always share it unless `hostIPC` opts into sharing the host's.
+    let ipc = if id.host_ipc { NamespaceMode::Node } else { NamespaceMode::Pod };
+    let network = if id.host_network { NamespaceMode::Node } else { NamespaceMode::Pod };
+    let linux = Some(LinuxPodSandboxConfig {
         security_context: Some(LinuxSandboxSecurityContext {
             namespace_options: Some(NamespaceOption {
-                network: if id.host_network { NamespaceMode::Node as i32 } else { NamespaceMode::Pod as i32 },
+                network: network as i32,
+                pid: pid_namespace_mode(id.host_pid, id.share_process_namespace) as i32,
+                ipc: ipc as i32,
                 userns_options,
                 ..Default::default()
             }),
@@ -3981,6 +4022,9 @@ mod tests_ephemeral_volume;
 #[cfg(test)]
 #[path = "cri_tests/pod_hostname.rs"]
 mod tests_pod_hostname;
+#[cfg(test)]
+#[path = "cri_tests/pid_namespace_mode.rs"]
+mod tests_pid_namespace_mode;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

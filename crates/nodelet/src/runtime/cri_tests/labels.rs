@@ -5,7 +5,16 @@
 use super::*;
 
 fn id(ns: &str, name: &str, uid: &str) -> PodId {
-    PodId { namespace: ns.to_string(), name: name.to_string(), uid: uid.to_string(), host_network: false, host_users: true }
+    PodId {
+        namespace: ns.to_string(),
+        name: name.to_string(),
+        uid: uid.to_string(),
+        host_network: false,
+        host_users: true,
+        host_pid: false,
+        host_ipc: false,
+        share_process_namespace: false,
+    }
 }
 
 #[test]

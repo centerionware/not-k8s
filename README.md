@@ -261,7 +261,15 @@ highest-value being **in-place pod vertical scaling** (the `resize`
 subresource, GA in 1.33) — editing a running pod's CPU/memory request
 or limit today does nothing at all, not even a container restart;
 `hostPID`/`hostIPC`/`shareProcessNamespace` and `securityContext.sysctls`
-are also unset. Full status list in `docs/GAP_CLOSURE.md`.
+are also unset. Round 40 closed **`hostPID`/`hostIPC`/
+`shareProcessNamespace`** — and fixed a real correctness bug along the
+way: nodelet never set CRI's `NamespaceOption.pid` at all before this,
+so every container was silently getting containerd's own POD-shared PID
+default, the opposite of real Kubernetes' actual CONTAINER-scoped
+default. Every container now gets an explicit, correct PID-namespace
+mode (`hostPID` → shares the node's; `shareProcessNamespace` → shares
+one namespace across the pod; otherwise its own isolated one, matching
+upstream). Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 

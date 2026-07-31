@@ -60,3 +60,29 @@ fn host_network_absent_defaults_false() {
     }));
     assert!(!pod_id(&pod).host_network);
 }
+
+#[test]
+fn host_pid_host_ipc_and_share_process_namespace_are_read_through() {
+    let pod = pod_json(serde_json::json!({
+        "apiVersion": "v1", "kind": "Pod",
+        "metadata": { "name": "x", "namespace": "ns", "uid": "u" },
+        "spec": { "hostPID": true, "hostIPC": true, "shareProcessNamespace": true, "containers": [] }
+    }));
+    let id = pod_id(&pod);
+    assert!(id.host_pid);
+    assert!(id.host_ipc);
+    assert!(id.share_process_namespace);
+}
+
+#[test]
+fn host_pid_host_ipc_and_share_process_namespace_absent_default_false() {
+    let pod = pod_json(serde_json::json!({
+        "apiVersion": "v1", "kind": "Pod",
+        "metadata": { "name": "x", "namespace": "ns", "uid": "u" },
+        "spec": { "containers": [] }
+    }));
+    let id = pod_id(&pod);
+    assert!(!id.host_pid);
+    assert!(!id.host_ipc);
+    assert!(!id.share_process_namespace);
+}

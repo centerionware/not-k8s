@@ -7,7 +7,7 @@ use k8s_openapi::api::core::v1::{Capabilities, SeccompProfile};
 
 #[test]
 fn nothing_set_anywhere_produces_all_defaults() {
-    let sc = linux_security_context(None, None);
+    let sc = linux_security_context(None, None, NamespaceMode::Container);
     assert_eq!(sc.run_as_user, None);
     assert_eq!(sc.run_as_group, None);
     assert!(!sc.privileged);
@@ -21,7 +21,7 @@ fn nothing_set_anywhere_produces_all_defaults() {
 #[test]
 fn container_level_run_as_user_is_applied() {
     let csc = SecurityContext { run_as_user: Some(1000), ..Default::default() };
-    let sc = linux_security_context(None, Some(&csc));
+    let sc = linux_security_context(None, Some(&csc), NamespaceMode::Container);
     assert_eq!(sc.run_as_user, Some(Int64Value { value: 1000 }));
 }
 
@@ -29,40 +29,40 @@ fn container_level_run_as_user_is_applied() {
 fn container_level_overrides_pod_level_run_as_user() {
     let psc = PodSecurityContext { run_as_user: Some(1), ..Default::default() };
     let csc = SecurityContext { run_as_user: Some(2000), ..Default::default() };
-    let sc = linux_security_context(Some(&psc), Some(&csc));
+    let sc = linux_security_context(Some(&psc), Some(&csc), NamespaceMode::Container);
     assert_eq!(sc.run_as_user, Some(Int64Value { value: 2000 }));
 }
 
 #[test]
 fn pod_level_run_as_user_applies_when_container_doesnt_override() {
     let psc = PodSecurityContext { run_as_user: Some(1), ..Default::default() };
-    let sc = linux_security_context(Some(&psc), None);
+    let sc = linux_security_context(Some(&psc), None, NamespaceMode::Container);
     assert_eq!(sc.run_as_user, Some(Int64Value { value: 1 }));
 }
 
 #[test]
 fn privileged_true_is_carried_through() {
     let csc = SecurityContext { privileged: Some(true), ..Default::default() };
-    assert!(linux_security_context(None, Some(&csc)).privileged);
+    assert!(linux_security_context(None, Some(&csc), NamespaceMode::Container).privileged);
 }
 
 #[test]
 fn read_only_root_filesystem_is_carried_through() {
     let csc = SecurityContext { read_only_root_filesystem: Some(true), ..Default::default() };
-    assert!(linux_security_context(None, Some(&csc)).readonly_rootfs);
+    assert!(linux_security_context(None, Some(&csc), NamespaceMode::Container).readonly_rootfs);
 }
 
 #[test]
 fn allow_privilege_escalation_false_sets_no_new_privs() {
     let csc = SecurityContext { allow_privilege_escalation: Some(false), ..Default::default() };
-    assert!(linux_security_context(None, Some(&csc)).no_new_privs);
+    assert!(linux_security_context(None, Some(&csc), NamespaceMode::Container).no_new_privs);
 }
 
 #[test]
 fn allow_privilege_escalation_unset_or_true_does_not_set_no_new_privs() {
-    assert!(!linux_security_context(None, None).no_new_privs);
+    assert!(!linux_security_context(None, None, NamespaceMode::Container).no_new_privs);
     let csc = SecurityContext { allow_privilege_escalation: Some(true), ..Default::default() };
-    assert!(!linux_security_context(None, Some(&csc)).no_new_privs);
+    assert!(!linux_security_context(None, Some(&csc), NamespaceMode::Container).no_new_privs);
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn capabilities_add_and_drop_are_translated() {
         }),
         ..Default::default()
     };
-    let sc = linux_security_context(None, Some(&csc));
+    let sc = linux_security_context(None, Some(&csc), NamespaceMode::Container);
     let caps = sc.capabilities.unwrap();
     assert_eq!(caps.add_capabilities, vec!["NET_ADMIN".to_string()]);
     assert_eq!(caps.drop_capabilities, vec!["ALL".to_string()]);
@@ -83,7 +83,7 @@ fn capabilities_add_and_drop_are_translated() {
 #[test]
 fn supplemental_groups_come_from_pod_level_only() {
     let psc = PodSecurityContext { supplemental_groups: Some(vec![100, 200]), ..Default::default() };
-    let sc = linux_security_context(Some(&psc), None);
+    let sc = linux_security_context(Some(&psc), None, NamespaceMode::Container);
     assert_eq!(sc.supplemental_groups, vec![100, 200]);
 }
 
@@ -93,7 +93,7 @@ fn seccomp_runtime_default_maps_to_runtime_default_profile_type() {
         seccomp_profile: Some(SeccompProfile { type_: "RuntimeDefault".to_string(), ..Default::default() }),
         ..Default::default()
     };
-    let sc = linux_security_context(None, Some(&csc));
+    let sc = linux_security_context(None, Some(&csc), NamespaceMode::Container);
     assert_eq!(sc.seccomp.unwrap().profile_type, ProfileType::RuntimeDefault as i32);
 }
 
@@ -106,7 +106,7 @@ fn seccomp_localhost_carries_the_profile_path() {
         }),
         ..Default::default()
     };
-    let sc = linux_security_context(None, Some(&csc));
+    let sc = linux_security_context(None, Some(&csc), NamespaceMode::Container);
     let seccomp = sc.seccomp.unwrap();
     assert_eq!(seccomp.profile_type, ProfileType::Localhost as i32);
     assert_eq!(seccomp.localhost_ref, "profiles/my-profile.json");
@@ -122,11 +122,25 @@ fn seccomp_container_level_overrides_pod_level() {
         seccomp_profile: Some(SeccompProfile { type_: "Unconfined".to_string(), ..Default::default() }),
         ..Default::default()
     };
-    let sc = linux_security_context(Some(&psc), Some(&csc));
+    let sc = linux_security_context(Some(&psc), Some(&csc), NamespaceMode::Container);
     assert_eq!(sc.seccomp.unwrap().profile_type, ProfileType::Unconfined as i32);
 }
 
 #[test]
 fn no_seccomp_profile_anywhere_leaves_it_unset() {
-    assert_eq!(linux_security_context(None, None).seccomp, None);
+    assert_eq!(linux_security_context(None, None, NamespaceMode::Container).seccomp, None);
+}
+
+// --- pid namespace_options (round 40) ---
+
+#[test]
+fn pid_mode_is_carried_through_into_namespace_options() {
+    let sc = linux_security_context(None, None, NamespaceMode::Pod);
+    assert_eq!(sc.namespace_options.unwrap().pid, NamespaceMode::Pod as i32);
+}
+
+#[test]
+fn container_scoped_pid_mode_is_the_default_when_nothing_special_applies() {
+    let sc = linux_security_context(None, None, NamespaceMode::Container);
+    assert_eq!(sc.namespace_options.unwrap().pid, NamespaceMode::Container as i32);
 }

@@ -149,7 +149,103 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_containers_get_isolated_pid_namespaces_by_default() {
+    # Round 40: real Kubernetes' actual default is CONTAINER-scoped PID
+    # namespaces (each container is its own pid-1), NOT the CRI proto's own
+    # zero-value default (POD-shared) nodelet was previously silently
+    # relying on. A container's own shell reports pid 1 for itself only
+    # when it's truly the init process of its own isolated namespace.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="pid-isolated-default"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: first
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "sleep 3600"]
+    - name: second
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "echo \$\$ > /shared/second-pid.txt; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local second_pid
+    second_pid="$(wait_for_check_file "$name" shared second-pid.txt 30)"
+    assert_eq "$second_pid" "1" "second container's own shell should be pid 1 in its own isolated PID namespace"
+    delete_pod_if_exists "$name"
+}
+
+test_share_process_namespace_puts_every_container_in_one_pid_namespace() {
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="pid-shared"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  shareProcessNamespace: true
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: first
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "sleep 3600"]
+    - name: second
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "echo \$\$ > /shared/second-pid.txt; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local second_pid
+    second_pid="$(wait_for_check_file "$name" shared second-pid.txt 30)"
+    assert_not_eq "$second_pid" "1" "with shareProcessNamespace, the first container already holds pid 1 — the second container's shell must get a higher pid in the shared namespace"
+    delete_pod_if_exists "$name"
+}
+
+test_host_pid_sees_host_processes() {
+    # hostPID: true joins the node's own PID namespace, so the container
+    # should see far more than its own 1-2 processes.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="host-pid-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  hostPID: true
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "ls /proc | grep -E '^[0-9]+\$' | wc -l > /shared/proc_count.txt; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local count
+    count="$(wait_for_check_file "$name" shared proc_count.txt 30)"
+    assert_true bash -c "[[ '$count' -gt 5 ]]" "hostPID container should see many more than its own handful of processes (saw $count)"
+    delete_pod_if_exists "$name"
+}
+
 register_test test_run_as_user_is_applied
 register_test test_read_only_root_filesystem_is_enforced
 register_test test_without_read_only_root_filesystem_writes_succeed
 register_test test_host_users_false_gets_a_real_user_namespace
+register_test test_containers_get_isolated_pid_namespaces_by_default
+register_test test_share_process_namespace_puts_every_container_in_one_pid_namespace
+register_test test_host_pid_sees_host_processes

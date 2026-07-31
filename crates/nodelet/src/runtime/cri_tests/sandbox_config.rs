@@ -1,11 +1,29 @@
 //! sandbox_config(): the PodSandboxConfig sent to RunPodSandbox. Covers the
 //! host-network NamespaceMode::Node wiring (needed for hostNetwork pods to
-//! skip CNI) and the log_directory layout that diagnose-coredns-crash.sh's
-//! "read the log file directly" approach depends on matching exactly.
+//! skip CNI), the log_directory layout that diagnose-coredns-crash.sh's
+//! "read the log file directly" approach depends on matching exactly, and
+//! (round 40) hostPID/hostIPC/shareProcessNamespace.
 use super::*;
 
 fn id(ns: &str, name: &str, uid: &str, host_network: bool) -> PodId {
-    PodId { namespace: ns.to_string(), name: name.to_string(), uid: uid.to_string(), host_network, host_users: true }
+    PodId {
+        namespace: ns.to_string(),
+        name: name.to_string(),
+        uid: uid.to_string(),
+        host_network,
+        host_users: true,
+        host_pid: false,
+        host_ipc: false,
+        share_process_namespace: false,
+    }
+}
+
+fn ns_options(cfg: &PodSandboxConfig) -> NamespaceOption {
+    cfg.linux
+        .as_ref()
+        .and_then(|l| l.security_context.as_ref())
+        .and_then(|sc| sc.namespace_options.clone())
+        .expect("expected namespace_options to be set")
 }
 
 #[test]
@@ -39,19 +57,13 @@ fn host_network_pod_leaves_hostname_empty() {
 #[test]
 fn host_network_pod_sets_node_namespace_mode() {
     let cfg = sandbox_config(&id("ns", "myapp", "u", true), None, "myapp");
-    let ns_mode = cfg
-        .linux
-        .as_ref()
-        .and_then(|l| l.security_context.as_ref())
-        .and_then(|sc| sc.namespace_options.as_ref())
-        .map(|no| no.network);
-    assert_eq!(ns_mode, Some(NamespaceMode::Node as i32));
+    assert_eq!(ns_options(&cfg).network, NamespaceMode::Node as i32);
 }
 
 #[test]
-fn non_host_network_pod_has_no_linux_namespace_override() {
+fn non_host_network_pod_sets_pod_namespace_mode_for_network() {
     let cfg = sandbox_config(&id("ns", "myapp", "u", false), None, "myapp");
-    assert!(cfg.linux.is_none());
+    assert_eq!(ns_options(&cfg).network, NamespaceMode::Pod as i32);
 }
 
 #[test]
@@ -73,21 +85,9 @@ fn sandbox_labels_are_attached() {
 // --- userns_mapping (round 25) ---
 
 #[test]
-fn a_userns_mapping_forces_a_linux_block_even_without_host_network() {
-    let cfg = sandbox_config(&id("ns", "myapp", "u", false), Some((100_000, 65_536)), "myapp");
-    assert!(cfg.linux.is_some());
-}
-
-#[test]
 fn a_userns_mapping_sets_pod_mode_uid_gid_id_mappings() {
     let cfg = sandbox_config(&id("ns", "myapp", "u", false), Some((100_000, 65_536)), "myapp");
-    let userns = cfg
-        .linux
-        .as_ref()
-        .and_then(|l| l.security_context.as_ref())
-        .and_then(|sc| sc.namespace_options.as_ref())
-        .and_then(|no| no.userns_options.as_ref())
-        .expect("expected userns_options to be set");
+    let userns = ns_options(&cfg).userns_options.expect("expected userns_options to be set");
     assert_eq!(userns.mode, NamespaceMode::Pod as i32);
     assert_eq!(userns.uids.len(), 1);
     assert_eq!(userns.uids[0].host_id, 100_000);
@@ -100,5 +100,51 @@ fn a_userns_mapping_sets_pod_mode_uid_gid_id_mappings() {
 #[test]
 fn no_userns_mapping_means_no_userns_options_at_all() {
     let cfg = sandbox_config(&id("ns", "myapp", "u", false), None, "myapp");
-    assert!(cfg.linux.is_none());
+    assert!(ns_options(&cfg).userns_options.is_none());
+}
+
+// --- hostPID/hostIPC/shareProcessNamespace (round 40) ---
+
+#[test]
+fn default_pod_gets_container_scoped_pid_and_pod_scoped_ipc() {
+    // The correctness fix this round is about: CRI's own proto default for
+    // an unset `pid` is POD (every container shares one), the opposite of
+    // real Kubernetes' actual default. This must always be set explicitly.
+    let cfg = sandbox_config(&id("ns", "myapp", "u", false), None, "myapp");
+    let no = ns_options(&cfg);
+    assert_eq!(no.pid, NamespaceMode::Container as i32);
+    assert_eq!(no.ipc, NamespaceMode::Pod as i32);
+}
+
+#[test]
+fn host_pid_sets_node_pid_namespace() {
+    let mut pod_id = id("ns", "myapp", "u", false);
+    pod_id.host_pid = true;
+    let cfg = sandbox_config(&pod_id, None, "myapp");
+    assert_eq!(ns_options(&cfg).pid, NamespaceMode::Node as i32);
+}
+
+#[test]
+fn host_ipc_sets_node_ipc_namespace() {
+    let mut pod_id = id("ns", "myapp", "u", false);
+    pod_id.host_ipc = true;
+    let cfg = sandbox_config(&pod_id, None, "myapp");
+    assert_eq!(ns_options(&cfg).ipc, NamespaceMode::Node as i32);
+}
+
+#[test]
+fn share_process_namespace_sets_pod_scoped_pid_namespace() {
+    let mut pod_id = id("ns", "myapp", "u", false);
+    pod_id.share_process_namespace = true;
+    let cfg = sandbox_config(&pod_id, None, "myapp");
+    assert_eq!(ns_options(&cfg).pid, NamespaceMode::Pod as i32);
+}
+
+#[test]
+fn host_pid_wins_over_share_process_namespace() {
+    let mut pod_id = id("ns", "myapp", "u", false);
+    pod_id.host_pid = true;
+    pod_id.share_process_namespace = true;
+    let cfg = sandbox_config(&pod_id, None, "myapp");
+    assert_eq!(ns_options(&cfg).pid, NamespaceMode::Node as i32);
 }
