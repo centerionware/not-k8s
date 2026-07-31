@@ -27,6 +27,80 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 36: native sidecar containers (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-35). Offered the 3
+implementable round-35 candidates; user picked native sidecar containers
+— highest real-world value (the modern GA replacement for manually-
+injected service-mesh/logging sidecars).
+
+Real kubelet semantics for `initContainers[].restartPolicy: "Always"`:
+runs in order like a regular init container, but doesn't block later
+init/app containers on its own *exit* — only on reaching "Started"
+(post-startup-probe, or just running if no startup probe) — then keeps
+running and restarting for the pod's whole lifetime like a normal
+container, its own readiness folding into the pod's overall
+`Ready`/`ContainersReady`.
+
+- **New `sidecar_init_decision()`** (pure, mirroring `init_container_decision()`/
+  `restart_decision()`'s existing pattern) — `Create` (never created),
+  `NeedsRestart` (exited — restart it, but don't block the sequence on
+  the restart), `Started` (running, or any other transient state —
+  already satisfied, proceed). `ensure_init_containers()`'s loop now
+  checks `container.restart_policy == Some("Always")` first and routes
+  through this instead of the regular `InitContainerDecision` matrix.
+- **`CriRuntime` gained a `sidecar_names: Mutex<HashMap<String, HashSet<String>>>`
+  side table** (`sandbox_id -> sidecar init container names`, same
+  lifecycle/reason as `pod_uids`/`restart_policies` — event-driven status
+  callers have no `Pod` object) — `build_labeled_container_statuses()`
+  reads it to set a new `ContainerRuntimeStatus.is_restartable_sidecar`
+  flag.
+- **`pods.rs::build_pod_status()`**: a sidecar's `initContainerStatuses`
+  entry now gets real probe-based readiness (the same `container_ready()`
+  closure app containers use), not just "is it running" (what a regular
+  init container still gets, matching upstream — it's already done and
+  gone by the time anything would check). The pod's `all_ready`
+  computation now also requires every sidecar to be ready, alongside app
+  containers — a regular init container's readiness still never affects
+  it.
+- **`ensure_probe_supervisor()`** now includes sidecar init containers in
+  the same container list passed to `probes::spawn()` — no changes
+  needed to `probes.rs`/`restart_container()` themselves, since neither
+  distinguishes init from app containers by anything other than name.
+- **`graceful_stop_containers()`** no longer blanket-excludes
+  init-labeled containers — a still-*running* init-labeled container can
+  only be a sidecar (a regular one blocks progression until it exits, so
+  it's never concurrently running at teardown time), and now gets the
+  same preStop-hook + graceful `StopContainer` treatment app containers
+  get (the preStop lookup now also checks `spec.initContainers`, not just
+  `spec.containers`). **Documented simplification**: real kubelet stops
+  sidecars strictly *after* every app container has fully stopped; this
+  stops everything in one pass instead — not perfectly ordered, but every
+  container still gets its own graceful shutdown.
+- 9 new unit tests: `cri_tests/sidecar_init_decision.rs`'s 4 decision
+  cases, `pods_tests/build_pod_status.rs`'s 5 readiness-folding cases
+  (regular init container never affects Ready; a running sidecar with no
+  probe supervisor keeps Ready True; a sidecar failing its readiness
+  probe flips Ready False; a sidecar whose startup probe hasn't passed
+  yet isn't ready even while running; a sidecar passing its probe keeps
+  Ready True).
+
+663 tests passing with `--features cri` (up from 654), 223 mock-only (up
+from 218 — `pods.rs`'s readiness-folding tests aren't `cri`-gated,
+`sidecar_init_decision()`'s are). `deploy/lib/test/cases/lifecycle.sh`
+gained two real automated tests: a sidecar that never exits reaches
+Running (structural proof it didn't block the app container the way a
+regular init container would), and a crash-looping sidecar's own
+`restartCount` (not the app container's) climbs above zero.
+
+**Confidence note**: the core decision logic (`sidecar_init_decision()`)
+and the readiness-folding logic are both pure and unit-tested with solid
+confidence; the two e2e tests are genuinely automated (no special
+infrastructure needed, just a real CRI runtime) — real, live proof of
+the core mechanics. The one deliberately-scoped-down piece is teardown
+ordering (sidecars-stopped-last), documented above rather than silently
+thin.
+
 ## Round 35: fresh gap re-audit (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 22/27, offered alongside
@@ -2008,7 +2082,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ Pod sandbox + container create/start/stop/remove via CRI
 - ✅ Restart-on-exit honoring `restartPolicy`
 - ✅ **Init containers** — run to completion, in order, before app containers (`ensure_init_containers`)
-- ❌ **Native sidecar containers** (`initContainers[].restartPolicy: "Always"`, GA since 1.29, found in round 35's re-audit) — `init_container_decision()`/`ensure_init_containers()` key every decision off the *pod's* `restartPolicy`, never reading a per-container `restart_policy` on an init container (the field exists on `k8s_openapi`'s `Container` type, just never checked there). A sidecar-marked init container should start before later init/app containers rather than blocking on its own exit, and restart like a normal container for the pod's whole lifetime. High real-world value — the modern GA replacement for manually-injected sidecars (service mesh proxies, log shippers).
+- ✅ **Native sidecar containers** (round 36; `initContainers[].restartPolicy: "Always"`, GA since 1.29, found in round 35's re-audit) — `sidecar_init_decision()` routes a sidecar-marked init container through its own decision matrix: doesn't block later init/app containers on its own exit (only on having started at all), restarts on exit like a normal container for the pod's whole lifetime, and its real probe-based readiness folds into the pod's overall `Ready`/`ContainersReady` (`pods.rs::build_pod_status()`). Genuinely automated e2e tests. **Documented simplification**: sidecars aren't stopped strictly *after* app containers on teardown (one pass instead), unlike upstream's exact ordering. See round 36 notes.
 - ✅ **Ephemeral containers** (`kubectl debug`) — `spec.ephemeralContainers` started once (never restarted) via `ensure_ephemeral_container()`, reported in `PodStatus.ephemeralContainerStatuses`, excluded from pod phase/readiness. Exit codes not tracked (always reported `0`) — see Round 8 notes.
 - ✅ **postStart / preStop lifecycle hooks** (`exec`/`httpGet`/`sleep`; not `tcpSocket`) — `run_lifecycle_hook()`. A failing `postStart` is logged, not (yet) turned into a container kill+restart like real kubelet does.
 - ❌ **Probe-level `terminationGracePeriodSeconds`** (added ~1.25, found in round 35's re-audit) — a `livenessProbe`/`startupProbe` can specify its own grace period for the container kill it triggers, distinct from the pod's own `terminationGracePeriodSeconds`. `probes.rs` doesn't read or apply this; a liveness-probe-triggered restart always uses whatever the general container-stop path already uses. Lower value — a niche override most workloads never set.
@@ -2262,9 +2336,14 @@ higher-value/correctness-critical than others:
       `subdomain`/`setHostnameAsFQDN` not honored, env `resourceFieldRef`
       explicitly unsupported, probe-level `terminationGracePeriodSeconds`
       not applied. See round 35 notes.
-- [ ] Next candidates from round 35's audit, roughly by value: native
-      sidecar containers, ConfigMap/Secret live-update,
-      `spec.hostname`/`subdomain`/`setHostnameAsFQDN`, then the two
-      lower-priority items (env `resourceFieldRef`, probe-level
-      `terminationGracePeriodSeconds`). Ask before starting the next
-      round.
+- [x] Round 36: native sidecar containers — `sidecar_init_decision()`
+      routes `initContainers[].restartPolicy: Always` through its own
+      decision matrix (doesn't block on exit, restarts indefinitely, real
+      probe-based readiness folds into pod `Ready`). Genuinely automated
+      e2e tests. Teardown ordering (sidecars stopped last) is a
+      documented simplification. See round 36 notes.
+- [ ] Remaining candidates from round 35's audit, roughly by value:
+      ConfigMap/Secret live-update, `spec.hostname`/`subdomain`/
+      `setHostnameAsFQDN`, then the two lower-priority items (env
+      `resourceFieldRef`, probe-level `terminationGracePeriodSeconds`).
+      Ask before starting the next round.

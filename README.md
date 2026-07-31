@@ -232,8 +232,15 @@ capped at 50 (matching real kubelet's own default). Also closed (round
 reference-counting round 12 already tracked; deliberately
 lower-confidence by design since whether a real attach/detach controller
 is satisfied by this is unvalidated (the modern CSI attach path, round
-19, doesn't read these fields itself). Full status list in
-`docs/GAP_CLOSURE.md`.
+19, doesn't read these fields itself). A fresh gap re-audit (round 35)
+found more gaps, and round 36 closed the highest-value one: **native
+sidecar containers** (`initContainers[].restartPolicy: "Always"`, GA
+since 1.29) — a sidecar-marked init container no longer blocks later
+init/app containers on its own exit (only on having started), restarts
+indefinitely like a normal container, and its real probe-based readiness
+folds into the pod's overall `Ready` condition. Teardown ordering
+(sidecars stopped strictly last) is a documented simplification, not yet
+matching upstream exactly. Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 

@@ -25,6 +25,22 @@ fn bps_with_gates(host_ip: &str, rt: &RuntimeStatus, prev: Option<&PodStatus>, r
     build_pod_status(host_ip, "default", "app", rt, prev, readiness_gates, &probes::new_health_map())
 }
 
+fn bps_with_health(host_ip: &str, rt: &RuntimeStatus, health: &probes::HealthMap) -> PodStatus {
+    build_pod_status(host_ip, "default", "app", rt, None, &[], health)
+}
+
+/// Directly seed the health map's entry for one container — `set_health()`
+/// is private to `probes`, but `HealthMap`'s inner map and `ContainerHealth`'s
+/// fields are all public, so this is just as real as going through it.
+fn seed_health(health: &probes::HealthMap, container: &str, ready: bool, started: bool) {
+    health
+        .lock()
+        .unwrap()
+        .entry(crate::runtime::pod_key("default", "app"))
+        .or_default()
+        .insert(container.to_string(), probes::ContainerHealth { ready, started });
+}
+
 fn running_status() -> RuntimeStatus {
     RuntimeStatus {
         phase: Phase::Running,
@@ -420,6 +436,77 @@ fn ephemeral_containers_do_not_affect_containers_ready_or_pod_ready() {
         ..Default::default()
     }];
     let status = bps("10.0.0.1", &rt, None);
+    let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
+    assert_eq!(ready.status, "True");
+}
+
+// --- native sidecar containers (round 36) ---
+
+fn sidecar(name: &str, running: bool) -> ContainerRuntimeStatus {
+    ContainerRuntimeStatus {
+        name: name.to_string(),
+        image: "envoy".to_string(),
+        ready: running,
+        running,
+        container_id: running.then(|| format!("{name}-id")),
+        restart_count: 0,
+        is_restartable_sidecar: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_regular_init_containers_readiness_never_affects_pod_ready() {
+    let mut rt = running_status();
+    rt.init_containers = vec![ContainerRuntimeStatus { name: "setup".to_string(), running: false, ..Default::default() }];
+    let status = bps("10.0.0.1", &rt, None);
+    let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
+    assert_eq!(ready.status, "True");
+}
+
+#[test]
+fn a_running_sidecar_with_no_probe_supervisor_keeps_pod_ready_true() {
+    // No probe supervisor tracking it (default HealthMap) means healthy by
+    // default — matches how app containers with no probes behave too.
+    let mut rt = running_status();
+    rt.init_containers = vec![sidecar("proxy", true)];
+    let status = bps("10.0.0.1", &rt, None);
+    let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
+    assert_eq!(ready.status, "True");
+}
+
+#[test]
+fn a_sidecar_failing_its_readiness_probe_flips_pod_ready_to_false() {
+    let mut rt = running_status();
+    rt.init_containers = vec![sidecar("proxy", true)];
+    let health = probes::new_health_map();
+    seed_health(&health, "proxy", false, true); // running, but not ready
+    let status = bps_with_health("10.0.0.1", &rt, &health);
+    let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
+    assert_eq!(ready.status, "False");
+    // And the sidecar's own initContainerStatuses entry reflects it too.
+    let init_statuses = status.init_container_statuses.unwrap();
+    assert!(!init_statuses[0].ready);
+}
+
+#[test]
+fn a_sidecar_not_yet_started_is_not_ready_even_if_the_container_is_running() {
+    let mut rt = running_status();
+    rt.init_containers = vec![sidecar("proxy", true)];
+    let health = probes::new_health_map();
+    seed_health(&health, "proxy", true, false); // startup probe still pending
+    let status = bps_with_health("10.0.0.1", &rt, &health);
+    let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
+    assert_eq!(ready.status, "False");
+}
+
+#[test]
+fn a_sidecar_passing_its_probe_keeps_pod_ready_true() {
+    let mut rt = running_status();
+    rt.init_containers = vec![sidecar("proxy", true)];
+    let health = probes::new_health_map();
+    seed_health(&health, "proxy", true, true);
+    let status = bps_with_health("10.0.0.1", &rt, &health);
     let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
     assert_eq!(ready.status, "True");
 }

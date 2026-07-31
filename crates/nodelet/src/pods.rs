@@ -66,7 +66,17 @@ impl PodController {
     /// call from every reconcile().
     fn ensure_probe_supervisor(&self, pod: &Pod, ns: &str, name: &str, pod_ip: Option<&str>) {
         let key = crate::runtime::pod_key(ns, name);
-        let containers = pod.spec.as_ref().map(|s| s.containers.clone()).unwrap_or_default();
+        let mut containers = pod.spec.as_ref().map(|s| s.containers.clone()).unwrap_or_default();
+        // Native sidecar containers (round 36) get the same liveness/
+        // readiness/startup probe supervision an app container does —
+        // they run for the pod's whole lifetime, unlike a regular
+        // (one-shot) init container. `probes::spawn()`/`restart_container()`
+        // both look a container up by name alone (no init/app
+        // distinction anywhere in that path), so this just works by
+        // adding them to the same list.
+        if let Some(init_containers) = pod.spec.as_ref().and_then(|s| s.init_containers.as_ref()) {
+            containers.extend(init_containers.iter().filter(|c| c.restart_policy.as_deref() == Some("Always")).cloned());
+        }
         if !probes::has_any_probe(&containers) {
             return;
         }
@@ -436,8 +446,6 @@ fn build_pod_status(
         })
         .collect();
 
-    let all_ready = running && container_statuses.iter().all(|c| c.ready);
-
     let init_container_statuses: Vec<ContainerStatus> = rt
         .init_containers
         .iter()
@@ -445,7 +453,13 @@ fn build_pod_status(
             name: c.name.clone(),
             image: c.image.clone(),
             image_id: String::new(),
-            ready: c.running,
+            // Native sidecars (round 36) get real probe-based readiness,
+            // same as app containers — a regular (one-shot) init
+            // container's readiness is just "is it currently running,"
+            // matching upstream (it never has its own readinessProbe
+            // honored, since it's already done and gone by the time
+            // anything would check).
+            ready: if c.is_restartable_sidecar { container_ready(c) } else { c.running },
             restart_count: c.restart_count as i32,
             started: Some(c.running),
             container_id: c.container_id.clone(),
@@ -453,6 +467,15 @@ fn build_pod_status(
             ..Default::default()
         })
         .collect();
+
+    // A native sidecar's own readiness folds into the pod's overall
+    // Ready/ContainersReady, same as an app container's does — it runs
+    // for the pod's whole lifetime, so "is this pod fully up" has to
+    // include it. A regular (already-exited) init container never
+    // affects this, matching upstream.
+    let all_ready = running
+        && container_statuses.iter().all(|c| c.ready)
+        && init_container_statuses.iter().zip(&rt.init_containers).all(|(status, c)| !c.is_restartable_sidecar || status.ready);
 
     // Ephemeral (debug) containers never gate readiness/phase — they're
     // reported for `kubectl describe`/`kubectl debug` visibility only, same

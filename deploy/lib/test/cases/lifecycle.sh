@@ -54,6 +54,66 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_native_sidecar_container_starts_before_app_container_and_keeps_running() {
+    # Round 36: initContainers[].restartPolicy: Always. A sidecar that
+    # never exits must not block the app container the way a regular init
+    # container would — real structural proof, not just a status string.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="native-sidecar"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  initContainers:
+    - name: proxy
+      image: $TEST_IMAGE
+      restartPolicy: Always
+      command: ["sleep", "3600"]
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    assert_eq "$(pod_condition_status "$name" Initialized)" "True" "Initialized condition"
+
+    local sidecar_state
+    sidecar_state="$(kctl get pod "$name" -o jsonpath='{.status.initContainerStatuses[0].state.running}')"
+    assert_not_empty "$sidecar_state" "sidecar's own initContainerStatuses entry should show state.running (it never exits, unlike a regular init container)"
+
+    delete_pod_if_exists "$name"
+}
+
+test_native_sidecar_container_restarts_on_crash() {
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="native-sidecar-crash"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  initContainers:
+    - name: proxy
+      image: $TEST_IMAGE
+      restartPolicy: Always
+      command: ["sh", "-c", "sleep 3; exit 1"]
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    # The sidecar crash-loops every ~3s — its own restart count (not the
+    # app container's) must climb above zero, same restart-count
+    # mechanism ensure_container()'s app-container path already uses.
+    wait_until 60 "sidecar restart count > 0" bash -c \
+        "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.initContainerStatuses[0].restartCount}')\" -gt 0 ]]"
+    delete_pod_if_exists "$name"
+}
+
 test_init_container_failure_blocks_app_container_under_restart_policy_never() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="init-fail-never"
@@ -193,6 +253,8 @@ EOF
 
 register_test test_basic_pod_runs
 register_test test_init_containers_run_before_app_container
+register_test test_native_sidecar_container_starts_before_app_container_and_keeps_running
+register_test test_native_sidecar_container_restarts_on_crash
 register_test test_init_container_failure_blocks_app_container_under_restart_policy_never
 register_test test_crashing_container_restarts_and_increments_restart_count
 register_test test_restart_policy_never_exit_zero_is_succeeded

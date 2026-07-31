@@ -77,6 +77,14 @@ pub struct ContainerRuntimeStatus {
     /// implemented this round — see `docs/GAP_CLOSURE.md`'s round 24
     /// notes.
     pub termination_message: String,
+    /// Only meaningful for entries in `RuntimeStatus::init_containers` —
+    /// whether this is a native sidecar (`initContainers[].restartPolicy:
+    /// "Always"`, round 36). Unlike a regular init container (whose
+    /// readiness is just "is it running," and which never affects the
+    /// pod's overall `Ready`), a sidecar gets real probe-based readiness
+    /// folded into `Ready`/`ContainersReady`, same as an app container —
+    /// see `pods.rs::build_pod_status()`.
+    pub is_restartable_sidecar: bool,
 }
 
 #[derive(Clone, Debug)]

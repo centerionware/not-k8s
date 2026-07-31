@@ -154,6 +154,14 @@ pub struct CriRuntime {
     /// (`termination_message_host_path()`), which is keyed by pod uid, not
     /// sandbox id.
     pod_uids: Mutex<HashMap<String, String>>,
+    /// `sandbox_id -> names of init containers that are native sidecars`
+    /// (round 36; `initContainers[].restartPolicy: "Always"`), same
+    /// lifecycle/reason as `pod_uids` — `build_labeled_container_statuses()`'s
+    /// event-driven callers only get namespace+name, no `Pod` object, but
+    /// need to know which init containers to report probe-based readiness
+    /// for and fold into the pod's overall `Ready`/`ContainersReady`
+    /// (`pods.rs::build_pod_status()`), same as app containers already get.
+    sidecar_names: Mutex<HashMap<String, HashSet<String>>>,
     /// Exclusive per-pod UID/GID range allocator for `spec.hostUsers: false`
     /// (round 25; see `userns.rs`) — keyed by pod uid, released alongside
     /// `pod_uids`/`restart_policies` on pod removal/orphan GC/stale-sandbox
@@ -350,6 +358,36 @@ enum InitProgress {
     Failed(String),
     /// Every init container has exited zero, in order — start the app containers.
     AllComplete,
+}
+
+/// What `ensure_init_containers()` should do about one native sidecar
+/// container (`initContainers[].restartPolicy: "Always"`, round 36),
+/// given its CRI state if it exists at all. Unlike a regular init
+/// container (`InitContainerDecision`), a sidecar never blocks later
+/// containers on its own *exit* — only on having been created at all —
+/// and restarts on exit like a normal container, indefinitely, for the
+/// pod's whole lifetime. Pulled out as a pure decision for the same
+/// reason `init_container_decision()`/`restart_decision()` are.
+#[derive(Debug, PartialEq, Eq)]
+enum SidecarInitDecision {
+    /// Doesn't exist yet — create it, and block later containers until
+    /// it's at least been created (matching upstream's "wait for Started"
+    /// gate, approximated here as "creation issued").
+    Create,
+    /// Exited — restart it, but don't block later containers on this.
+    NeedsRestart,
+    /// Running (or some other transient CRI state) — already started;
+    /// don't block later containers.
+    Started,
+}
+
+fn sidecar_init_decision(existing_state: Option<i32>, running_state: i32, exited_state: i32) -> SidecarInitDecision {
+    match existing_state {
+        None => SidecarInitDecision::Create,
+        Some(s) if s == exited_state => SidecarInitDecision::NeedsRestart,
+        Some(s) if s == running_state => SidecarInitDecision::Started,
+        Some(_) => SidecarInitDecision::Started, // some other transient CRI state — don't block on it either
+    }
 }
 
 fn restart_decision(existing_state: Option<i32>, running_state: i32, restart_policy: &str) -> RestartDecision {
@@ -1366,6 +1404,7 @@ impl CriRuntime {
             rx: Mutex::new(Some(rx)),
             restart_policies: Mutex::new(HashMap::new()),
             pod_uids: Mutex::new(HashMap::new()),
+            sidecar_names: Mutex::new(HashMap::new()),
             userns,
             node_memory_bytes,
             restart_counts: Mutex::new(HashMap::new()),
@@ -2674,15 +2713,28 @@ impl CriRuntime {
         let Ok(containers) = self.list_pod_containers(sandbox_id).await else { return };
         let running_v = ContainerState::ContainerRunning as i32;
         let pod_ip = self.pod_ip(sandbox_id).await.unwrap_or_default();
+        // A still-*running* init-labeled container can only be a native
+        // sidecar (round 36) — a regular init container blocks progression
+        // until it exits, so it's never concurrently "running" alongside
+        // this teardown path being reached. Sidecars get the same preStop +
+        // graceful StopContainer treatment app containers do, so they're no
+        // longer excluded here; their `preStop` hook (if any) lives on
+        // `spec.initContainers`, not `spec.containers`, hence checking both.
+        // **Simplification**: real kubelet stops sidecars strictly *after*
+        // every app container has fully stopped; this stops everything in
+        // one pass instead — not perfectly ordered, but every container
+        // still gets its own graceful preStop + grace period.
         let spec_containers = pod.spec.as_ref().map(|s| s.containers.as_slice()).unwrap_or(&[]);
+        let spec_init_containers = pod.spec.as_ref().and_then(|s| s.init_containers.as_deref()).unwrap_or(&[]);
 
         for c in &containers {
-            if c.state != running_v || c.labels.contains_key(CTR_INIT_LABEL) {
+            if c.state != running_v {
                 continue;
             }
             let Some(name) = c.labels.get(CTR_NAME_LABEL) else { continue };
             if let Some(pre_stop) = spec_containers
                 .iter()
+                .chain(spec_init_containers.iter())
                 .find(|sc| &sc.name == name)
                 .and_then(|sc| sc.lifecycle.as_ref())
                 .and_then(|l| l.pre_stop.as_ref())
@@ -2796,6 +2848,45 @@ impl CriRuntime {
                 c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false)
                     && c.labels.get(CTR_INIT_LABEL).map(|v| v == "true").unwrap_or(false)
             });
+
+            // Native sidecar container (round 36):
+            // initContainers[].restartPolicy == "Always". Unlike a regular
+            // init container, this doesn't block later init/app containers
+            // on its own *exit* — only on having been started at all — and
+            // it restarts on exit like a normal container for the pod's
+            // whole lifetime, handled right here on every reconcile rather
+            // than through the app-container restart path (it's reported
+            // under initContainerStatuses, not containerStatuses, matching
+            // upstream).
+            if container.restart_policy.as_deref() == Some("Always") {
+                match sidecar_init_decision(existing_ctr.map(|c| c.state), running_v, exited_v) {
+                    SidecarInitDecision::Create => {
+                        let envs = self.resolve_container_env(pod, id, container, service_env).await?;
+                        let attempt = self.restart_count(sandbox_id, &container.name);
+                        self.create_and_start_container(
+                            sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt, qos,
+                        )
+                        .await?;
+                        // Gate later containers on this one actually
+                        // starting — the next reconcile (triggered by the
+                        // CRI event once it's running) picks up past it.
+                        return Ok(InitProgress::Waiting);
+                    }
+                    SidecarInitDecision::NeedsRestart => {
+                        // Exited — restart it, but don't block the rest of
+                        // the sequence on this restart; later containers
+                        // already saw it start once.
+                        let c = existing_ctr.expect("NeedsRestart only reached when a container exists");
+                        self.bump_restart_count(sandbox_id, &container.name);
+                        self.release_container_devices(sandbox_id, &container.name).await;
+                        let mut rt = self.rt.clone();
+                        let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
+                        continue;
+                    }
+                    SidecarInitDecision::Started => continue,
+                }
+            }
+
             let exit_code = match existing_ctr {
                 Some(c) if c.state == exited_v => self.container_exit_code(&c.id).await?,
                 _ => 0,
@@ -2862,6 +2953,7 @@ impl CriRuntime {
             if let Some(pod_uid) = self.pod_uids.lock().unwrap().remove(&sandbox_id) {
                 self.userns.release(&pod_uid);
             }
+            self.sidecar_names.lock().unwrap().remove(&sandbox_id);
             self.clear_restart_counts(&sandbox_id);
             self.release_sandbox_devices(&sandbox_id).await;
         }
@@ -2987,6 +3079,7 @@ impl CriRuntime {
                 reason,
                 finished_at,
                 termination_message,
+                is_restartable_sidecar: false, // app containers, never a sidecar concept
             });
         }
 
@@ -3038,10 +3131,12 @@ impl CriRuntime {
         let running_v = ContainerState::ContainerRunning as i32;
         let exited_v = ContainerState::ContainerExited as i32;
         let containers = self.list_pod_containers(sandbox_id).await?;
+        let sidecar_names = self.sidecar_names.lock().unwrap().get(sandbox_id).cloned().unwrap_or_default();
         let mut out = Vec::new();
         for c in containers.into_iter().filter(|c| c.labels.contains_key(label)) {
                 let running = c.state == running_v;
                 let name = c.metadata.as_ref().map(|m| m.name.clone()).unwrap_or_default();
+                let is_restartable_sidecar = sidecar_names.contains(&name);
                 let (exit_code, reason, finished_at, termination_message) = if fetch_details && c.state == exited_v {
                     match self.container_status_details(&c.id).await {
                         Ok(details) => {
@@ -3077,6 +3172,7 @@ impl CriRuntime {
                     reason,
                     finished_at,
                     termination_message,
+                    is_restartable_sidecar,
                 });
         }
         Ok(out)
@@ -3114,6 +3210,7 @@ impl PodRuntime for CriRuntime {
                 let _ = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
                 self.restart_policies.lock().unwrap().remove(&stale_id);
                 self.pod_uids.lock().unwrap().remove(&stale_id);
+                self.sidecar_names.lock().unwrap().remove(&stale_id);
                 self.clear_restart_counts(&stale_id);
                 self.release_sandbox_devices(&stale_id).await;
                 self.run_sandbox(&id, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
@@ -3133,6 +3230,18 @@ impl PodRuntime for CriRuntime {
         // Pending-vs-Succeeded call build_status() below does.
         self.restart_policies.lock().unwrap().insert(sandbox_id.clone(), restart_policy.clone());
         self.pod_uids.lock().unwrap().insert(sandbox_id.clone(), id.uid.clone());
+        // Native sidecar containers (round 36): initContainers[].restartPolicy
+        // == "Always". Recorded so build_labeled_container_statuses() (whose
+        // event-driven callers have no Pod object) knows which init
+        // containers should get real probe-based readiness folded into the
+        // pod's overall Ready/ContainersReady, same as app containers.
+        let sidecar_names: HashSet<String> = pod
+            .spec
+            .as_ref()
+            .and_then(|s| s.init_containers.as_ref())
+            .map(|cs| cs.iter().filter(|c| c.restart_policy.as_deref() == Some("Always")).map(|c| c.name.clone()).collect())
+            .unwrap_or_default();
+        self.sidecar_names.lock().unwrap().insert(sandbox_id.clone(), sidecar_names);
 
         let pod_sc = pod.spec.as_ref().and_then(|s| s.security_context.as_ref());
         let pull_secrets: Vec<String> = pod
@@ -3244,6 +3353,7 @@ impl PodRuntime for CriRuntime {
             if let Some(pod_uid) = self.pod_uids.lock().unwrap().remove(&sandbox_id) {
                 self.userns.release(&pod_uid);
             }
+            self.sidecar_names.lock().unwrap().remove(&sandbox_id);
             self.clear_restart_counts(&sandbox_id);
             self.release_sandbox_devices(&sandbox_id).await;
         }
@@ -3744,6 +3854,9 @@ mod tests_phase;
 #[cfg(test)]
 #[path = "cri_tests/restart_decision.rs"]
 mod tests_restart_decision;
+#[cfg(test)]
+#[path = "cri_tests/sidecar_init_decision.rs"]
+mod tests_sidecar_init_decision;
 #[cfg(test)]
 #[path = "cri_tests/mounts.rs"]
 mod tests_mounts;
