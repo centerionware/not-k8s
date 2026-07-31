@@ -1,0 +1,210 @@
+use super::*;
+
+/// Event subscriber: prefer the CRI-standard `GetContainerEvents` (works on
+/// containerd >= 1.7 and CRI-O); if the runtime doesn't implement it, fall back
+/// to containerd's top-level `Events/Subscribe` API (present in every containerd
+/// version). Either way, changed pod keys are pushed onto `tx` — no polling.
+pub(crate) async fn event_loop(channel: Channel, tx: UnboundedSender<String>) {
+    if run_cri_events(&channel, &tx).await == EventOutcome::Unsupported {
+        info!("CRI GetContainerEvents unsupported; using containerd native events API");
+        containerd_events_loop(channel, tx).await;
+    }
+}
+
+
+#[derive(PartialEq)]
+pub(crate) enum EventOutcome {
+    Unsupported,
+    ReceiverGone,
+}
+
+
+/// Returns `Unsupported` if the runtime lacks `GetContainerEvents` (caller should
+/// fall back); otherwise keeps reconnecting and only returns when `tx` is closed.
+pub(crate) async fn run_cri_events(channel: &Channel, tx: &UnboundedSender<String>) -> EventOutcome {
+    loop {
+        let mut client = RuntimeServiceClient::new(channel.clone());
+        match client.get_container_events(GetEventsRequest::default()).await {
+            Ok(resp) => {
+                let mut stream = resp.into_inner();
+                loop {
+                    match stream.message().await {
+                        Ok(Some(ev)) => {
+                            if let Some(meta) = ev.pod_sandbox_status.and_then(|s| s.metadata) {
+                                let key = crate::runtime::pod_key(&meta.namespace, &meta.name);
+                                debug!(pod = %key, "CRI container event");
+                                if tx.send(key).is_err() {
+                                    return EventOutcome::ReceiverGone;
+                                }
+                            }
+                        }
+                        Ok(None) => break, // stream ended; reconnect
+                        Err(e) => {
+                            warn!(error = ?e, "CRI event stream error");
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) if e.code() == tonic::Code::Unimplemented => return EventOutcome::Unsupported,
+            Err(e) => warn!(error = ?e, "failed to open CRI event stream"),
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+
+/// Fallback: subscribe to containerd's native event firehose in the `k8s.io`
+/// namespace, watch `/tasks/*` events, map the container id back to a pod via its
+/// labels, and push the pod key. Reconnects on error.
+pub(crate) async fn containerd_events_loop(channel: Channel, tx: UnboundedSender<String>) {
+    loop {
+        let mut client = EventsClient::new(channel.clone());
+        // Empty filters = whole firehose; we scope to k8s.io via the namespace
+        // header and filter topics client-side (robust against filter grammar).
+        let mut req = tonic::Request::new(SubscribeRequest { filters: vec![] });
+        req.metadata_mut()
+            .insert("containerd-namespace", "k8s.io".parse().unwrap());
+
+        match client.subscribe(req).await {
+            Ok(resp) => {
+                let mut stream = resp.into_inner();
+                loop {
+                    match stream.message().await {
+                        Ok(Some(env)) => {
+                            if !env.topic.starts_with("/tasks/") {
+                                continue;
+                            }
+                            let Some(cid) = env
+                                .event
+                                .and_then(|a| TaskEventContainerId::decode(a.value.as_slice()).ok())
+                                .map(|t| t.container_id)
+                                .filter(|c| !c.is_empty())
+                            else {
+                                continue;
+                            };
+                            debug!(topic = %env.topic, container = %cid, "containerd task event");
+                            if let Some((ns, name)) = lookup_pod_by_cid(channel.clone(), &cid).await {
+                                if tx.send(crate::runtime::pod_key(&ns, &name)).is_err() {
+                                    return; // controller dropped the receiver
+                                }
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            warn!(error = ?e, "containerd event stream error");
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => warn!(error = ?e, "failed to subscribe to containerd events"),
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+
+/// Map a containerd container/sandbox id back to its pod (namespace, name) via
+/// the `nodelet.dev/*` labels we stamped on it.
+pub(crate) async fn lookup_pod_by_cid(channel: Channel, cid: &str) -> Option<(String, String)> {
+    fn ns_name(labels: &HashMap<String, String>) -> Option<(String, String)> {
+        Some((labels.get(POD_NS_LABEL)?.clone(), labels.get(POD_NAME_LABEL)?.clone()))
+    }
+
+    // App containers first.
+    let mut rt = RuntimeServiceClient::new(channel.clone());
+    if let Ok(resp) = rt
+        .list_containers(ListContainersRequest {
+            filter: Some(ContainerFilter { id: cid.to_string(), ..Default::default() }),
+        })
+        .await
+    {
+        if let Some(c) = resp.into_inner().containers.into_iter().next() {
+            if let Some(p) = ns_name(&c.labels) {
+                return Some(p);
+            }
+        }
+    }
+
+    // Otherwise the id may be a pod sandbox (e.g. the pause container's task).
+    let mut rt = RuntimeServiceClient::new(channel);
+    if let Ok(resp) = rt
+        .list_pod_sandbox(ListPodSandboxRequest {
+            filter: Some(PodSandboxFilter { id: cid.to_string(), ..Default::default() }),
+        })
+        .await
+    {
+        if let Some(s) = resp.into_inner().items.into_iter().next() {
+            return ns_name(&s.labels);
+        }
+    }
+    None
+}
+
+
+impl CriRuntime {
+    /// Every nodelet-managed sandbox on the node, unfiltered by pod — the
+    /// `find_sandbox()` lookups elsewhere always scope to one pod; GC needs
+    /// the reverse view (every sandbox, checked against the apiserver).
+    pub(crate) async fn list_all_sandboxes(&self) -> Result<Vec<(String, String, String)>> {
+        let mut rt = self.rt.clone();
+        let resp = rt.list_pod_sandbox(ListPodSandboxRequest { filter: None }).await?.into_inner();
+        Ok(resp
+            .items
+            .into_iter()
+            .filter_map(|s| Some((s.labels.get(POD_NS_LABEL)?.clone(), s.labels.get(POD_NAME_LABEL)?.clone(), s.id)))
+            .collect())
+    }
+
+    pub(crate) async fn gc_orphaned_sandboxes(&self, live_pod_keys: &HashSet<String>) -> Result<()> {
+        let sandboxes = self.list_all_sandboxes().await?;
+        let orphans = crate::gc::orphaned_sandboxes(&sandboxes, live_pod_keys);
+        for sandbox_id in orphans {
+            info!(sandbox = %sandbox_id, "gc: removing orphaned sandbox (pod no longer in apiserver)");
+            let mut rt = self.rt.clone();
+            let _ = rt.stop_pod_sandbox(StopPodSandboxRequest { pod_sandbox_id: sandbox_id.clone() }).await;
+            if let Err(e) = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: sandbox_id.clone() }).await {
+                warn!(sandbox = %sandbox_id, error = ?e, "gc: failed to remove orphaned sandbox");
+            }
+            self.restart_policies.lock().unwrap().remove(&sandbox_id);
+            if let Some(pod_uid) = self.pod_uids.lock().unwrap().remove(&sandbox_id) {
+                self.userns.release(&pod_uid);
+            }
+            self.sidecar_names.lock().unwrap().remove(&sandbox_id);
+            self.clear_restart_counts(&sandbox_id);
+            self.release_sandbox_devices(&sandbox_id).await;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn gc_unreferenced_images(&self) -> Result<()> {
+        let mut rt = self.rt.clone();
+        let containers = rt
+            .list_containers(ListContainersRequest { filter: None })
+            .await?
+            .into_inner()
+            .containers;
+        let referenced: HashSet<String> = containers
+            .into_iter()
+            .filter_map(|c| c.image.map(|i| i.image))
+            .collect();
+
+        let mut img = self.img.clone();
+        let images = img.list_images(ListImagesRequest { filter: None }).await?.into_inner().images;
+        let refs: Vec<crate::gc::ImageRef> = images
+            .into_iter()
+            .map(|i| crate::gc::ImageRef { id: i.id, repo_tags: i.repo_tags, repo_digests: i.repo_digests })
+            .collect();
+
+        for image_id in crate::gc::images_to_gc(&refs, &referenced) {
+            info!(image = %image_id, "gc: removing unreferenced image");
+            let image_spec = ImageSpec { image: image_id.clone(), ..Default::default() };
+            if let Err(e) = img.remove_image(RemoveImageRequest { image: Some(image_spec) }).await {
+                warn!(image = %image_id, error = ?e, "gc: failed to remove unreferenced image");
+            }
+        }
+        Ok(())
+    }
+
+}

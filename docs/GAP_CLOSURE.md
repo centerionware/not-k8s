@@ -4243,8 +4243,28 @@ accordingly; see those files' own updated framing.
       binary; see `dra.sh`'s manual-spot-check notes. See round 63 notes
       for known scope limitations (`reservedFor` not written back, no
       RPC batching, proto reconstructed from docs not vendored).
-- [ ] `crates/nodelet/src/runtime/cri.rs` has grown to ~4900+ lines across
-      63 rounds and needs splitting into focused ~300-line-ish files
-      before the next round starts (explicit user request, 2026-07-31) —
-      not a gap-closure item, a code-health one. Do this first, then ask
-      before picking the next gap-closure round.
+- [x] Code health: split `crates/nodelet/src/runtime/cri.rs` (~4930
+      lines across 63 rounds) into 12 focused files under a new
+      `runtime/cri/` submodule directory, plus a ~530-line `cri.rs` core
+      (module doc/imports, `pub mod v1`/`events`, all top-level
+      `const`s, `struct CriRuntime`, `connect_uds()` +
+      `CriRuntime::connect()`, and every `#[cfg(test)] mod tests_x;`
+      declaration — those stay pointing at the existing
+      `cri_tests/*.rs` files unchanged, made visible via a blanket
+      `pub(crate) use submodule::*;` re-export per new file):
+      `sandbox.rs` (273L, `PodId`/sandbox lifecycle), `container_state.rs`
+      (235L, restart/init decision state machine), `volumes_pure.rs`
+      (443L) / `volumes_resolve.rs` (513L, split pure helpers from the
+      async resolution methods), `env.rs` (500L, env var/DNS/hostname
+      resolution), `resources.rs` (285L, resource-quantity/security-context
+      translation), `claims.rs` (191L, DRA), `container_create.rs` (624L,
+      `ensure_container`/`ensure_init_containers`/
+      `create_and_start_container`) / `container_support.rs` (483L, image
+      pull/auth/device-release support), `status.rs` (364L,
+      `build_status`/stats), `events_gc.rs` (210L), `pod_runtime_impl.rs`
+      (455L, the single `impl PodRuntime for CriRuntime` block, which
+      can't be split — trait impls must stay in one block, but the file
+      itself is still reasonably sized). No behavior change: 809 tests
+      passing with `--features cri` (unchanged), 264 mock-only
+      (unchanged), `cri_smoke` example builds clean, zero new compiler
+      warnings. Not a numbered gap-closure round.
