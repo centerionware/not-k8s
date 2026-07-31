@@ -30,6 +30,21 @@ fn matches_port_forward_without_a_container_segment() {
 }
 
 #[test]
+fn matches_stats_summary() {
+    assert_eq!(parse_route("/stats/summary"), Route::StatsSummary);
+}
+
+#[test]
+fn matches_metrics_resource() {
+    assert_eq!(parse_route("/metrics/resource"), Route::MetricsResource);
+}
+
+#[test]
+fn matches_metrics_cadvisor() {
+    assert_eq!(parse_route("/metrics/cadvisor"), Route::MetricsCadvisor);
+}
+
+#[test]
 fn unknown_prefix_is_not_found() {
     assert_eq!(parse_route("/healthz"), Route::NotFound);
     assert_eq!(parse_route("/"), Route::NotFound);

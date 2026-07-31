@@ -27,6 +27,55 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 10: `/metrics/resource` + `/metrics/cadvisor` (2026-07-31, same day)
+
+Continued closing gaps ("continue" — no further scoping given). Picked
+these next: they were the last two items on `unimplemented.sh`'s active-
+placeholder list, both reuse `/stats/summary`'s existing `PodUsage`/
+`UsageStats` data (round 7), and neither touches the container-creation
+path at all — a low-risk, self-contained follow-up after round 9's larger
+D-Bus addition.
+
+- **New `server::prom_metrics`** (`cri`-feature-gated, same as every other
+  `server::*` module) — renders Prometheus text-exposition-format output
+  from the same `PodUsage` data `/stats/summary` already collects via CRI's
+  `ListPodSandboxStats`. No separate collection path for either endpoint.
+- **`/metrics/resource`** implements
+  [KEP-2371](https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/2371-cri-pod-container-stats)'s
+  small, well-specified metric set completely: `node_cpu_usage_seconds_total`,
+  `node_memory_working_set_bytes`, `pod_cpu_usage_seconds_total`,
+  `pod_memory_working_set_bytes`, `container_cpu_usage_seconds_total`,
+  `container_memory_working_set_bytes`.
+- **New node-wide CPU accounting** (`metrics.rs::read_node_cpu_seconds`) —
+  parses the aggregate `cpu ` line of `/proc/stat` (same technique
+  `node_exporter` uses) to get cumulative node CPU core-seconds since boot.
+  This closes the "`/stats/summary` doesn't report node CPU" gap noted in
+  round 7 too, for free — `server::stats::node_stats()` still doesn't use it
+  (out of scope for this round; `/stats/summary`'s JSON shape wasn't
+  touched), but the underlying data now exists for whichever endpoint wants
+  it next.
+- **`/metrics/cadvisor` is a deliberately scoped-down subset**, not the
+  full cAdvisor catalog — real cAdvisor exposes dozens of metrics (network/
+  disk I/O, per-cpu-core breakdowns, `container_last_seen`, spec/limit
+  metrics, and more) that would be a lot of surface for an edge agent
+  that's otherwise deliberately lean, and CRI's own stats don't carry most
+  of that data anyway (no network/disk I/O in `ListPodSandboxStats`).
+  Implements the four metrics most dashboards/scrapers built against
+  cAdvisor actually read: `container_cpu_usage_seconds_total`,
+  `container_memory_usage_bytes`, `container_memory_working_set_bytes`,
+  `container_memory_rss`. Also drops cAdvisor's usual `id`/`name`/`image`
+  labels (container cgroup path, runtime name, image ref) — nothing in
+  `PodUsage` tracks those today, and faking them would be worse than
+  omitting them; only `namespace`/`pod`/`container` labels are emitted.
+- Deleted `deploy/lib/test/cases/unimplemented.sh` — its one remaining
+  placeholder test was exactly this gap; replaced by real functional tests
+  in the new `prom_metrics.sh` (same treatment streaming.sh/stats.sh got
+  when their gaps closed in earlier rounds).
+
+397 tests passing with `--features cri` (up from 374), 168 mock-only (up
+from 161 — `read_node_cpu_seconds`'s pure parser lives in `metrics.rs`,
+which isn't `cri`-gated).
+
 ## Round 9: graceful node shutdown (2026-07-31)
 
 Continued closing gaps ("continue" — no further scoping given). Picked
@@ -416,7 +465,9 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ TLS serving certificate — self-signed, generated on first start via `rcgen` and cached as raw DER under `NODELET_SERVER_CERT_DIR` (persists across restarts so a client that already trusts it doesn't get invalidated). Not yet: CSR-based issuance against a real cluster CA.
 - ✅ Bearer token authentication via `TokenReview` (the same mechanism real kubelet's `--authentication-token-webhook` uses). Authorization is deliberately `AlwaysAllow` once a token authenticates — matches real kubelet's own historical default (`--authorization-mode=AlwaysAllow`), not a from-scratch `SubjectAccessReview` implementation. No anonymous access (real kubelet has historically defaulted to allowing it; nodelet doesn't).
 - ✅ `Node.status.daemonEndpoints.kubeletEndpoint.port` now advertised (was never set before — without it the apiserver has no route to proxy exec/logs/attach/port-forward requests to at all, regardless of whether a server is listening).
-- ✅ **`/stats/summary`** (`server::stats`) — built from CRI's `ListPodSandboxStats` (one call gets per-pod *and* per-container CPU/memory usage, no cgroup-path guessing needed). Real caveat, not a nodelet limitation: `kubectl top` itself needs metrics-server (or another `metrics.k8s.io` implementation) deployed and configured to scrape this — implementing the endpoint is necessary but not sufficient for `kubectl top` on its own. Node-level CPU usage isn't populated (CRI's stats are per-pod, not whole-node; only memory comes from `/proc/meminfo`). Not yet: `/metrics/resource`, `/metrics/cadvisor` (the Prometheus-format alternatives).
+- ✅ **`/stats/summary`** (`server::stats`) — built from CRI's `ListPodSandboxStats` (one call gets per-pod *and* per-container CPU/memory usage, no cgroup-path guessing needed). Real caveat, not a nodelet limitation: `kubectl top` itself needs metrics-server (or another `metrics.k8s.io` implementation) deployed and configured to scrape this — implementing the endpoint is necessary but not sufficient for `kubectl top` on its own. Node-level CPU usage isn't populated in this endpoint's JSON shape (unlike `/metrics/resource` below, which does report it) — only memory comes from `/proc/meminfo` here.
+- ✅ **`/metrics/resource`** (`server::prom_metrics`) — full [KEP-2371](https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/2371-cri-pod-container-stats) metric set, including real node-wide CPU usage from a new `/proc/stat` parser (`metrics.rs::read_node_cpu_seconds`).
+- 🟡 **`/metrics/cadvisor`** (`server::prom_metrics`) — a deliberately scoped-down subset of real cAdvisor's much larger legacy catalog: `container_cpu_usage_seconds_total`, `container_memory_usage_bytes`, `container_memory_working_set_bytes`, `container_memory_rss`, labeled `{namespace,pod,container}` only (no `id`/`name`/`image` — not tracked in `PodUsage`). Missing: network/disk I/O, per-cpu-core breakdowns, `container_last_seen`, spec/limit metrics.
 - ❌ Client certificate authentication (bearer token only)
 
 ### Node shutdown
@@ -470,8 +521,9 @@ higher-value/correctness-critical than others:
 - [x] Round 8: ephemeral containers (`kubectl debug`)
 - [x] Round 9: graceful node shutdown (systemd-logind inhibitor lock,
       unvalidated against a real logind — see the confidence note above)
+- [x] Round 10: `/metrics/resource` (complete) + `/metrics/cadvisor`
+      (scoped-down subset — see round 10 notes)
 - [ ] Everything else in the responsibility list above — biggest remaining
       single items: PVC/CSI, cgroup driver/QoS hierarchy/node allocatable
       enforcement, CPU/Memory/Topology managers, device plugins, RuntimeClass
-      `Overhead` accounting, `/metrics/resource`/`/metrics/cadvisor`. Ask
-      before starting the next round.
+      `Overhead` accounting. Ask before starting the next round.

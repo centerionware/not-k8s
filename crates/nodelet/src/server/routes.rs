@@ -3,7 +3,7 @@
 //! {pod}/{container}`, `/exec/{ns}/{pod}/{container}`, etc.) since that's
 //! what the apiserver's kubelet proxy sends unmodified.
 
-use super::{auth, exec, logs, stats, text_response, BoxedBody, ServerState};
+use super::{auth, exec, logs, prom_metrics, stats, text_response, BoxedBody, ServerState};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use std::convert::Infallible;
@@ -17,6 +17,8 @@ pub enum Route {
     Attach { namespace: String, pod: String, container: String },
     PortForward { namespace: String, pod: String },
     StatsSummary,
+    MetricsResource,
+    MetricsCadvisor,
     NotFound,
 }
 
@@ -36,6 +38,8 @@ pub fn parse_route(path: &str) -> Route {
         }
         ["portForward", ns, pod] => Route::PortForward { namespace: ns.to_string(), pod: pod.to_string() },
         ["stats", "summary"] => Route::StatsSummary,
+        ["metrics", "resource"] => Route::MetricsResource,
+        ["metrics", "cadvisor"] => Route::MetricsCadvisor,
         _ => Route::NotFound,
     }
 }
@@ -112,6 +116,8 @@ pub async fn handle(
         }
         Route::PortForward { namespace, pod } => exec::handle_port_forward(state, req, &namespace, &pod).await,
         Route::StatsSummary => stats::handle_stats_summary(&state).await,
+        Route::MetricsResource => prom_metrics::handle_metrics_resource(&state).await,
+        Route::MetricsCadvisor => prom_metrics::handle_metrics_cadvisor(&state).await,
         Route::NotFound => unreachable!("handled above"),
     };
     Ok(response)

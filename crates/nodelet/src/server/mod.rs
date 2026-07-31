@@ -9,6 +9,7 @@
 pub mod auth;
 pub mod exec;
 pub mod logs;
+pub mod prom_metrics;
 pub mod routes;
 pub mod stats;
 pub mod tls;

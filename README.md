@@ -51,7 +51,7 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
   src/gc.rs            Orphaned-sandbox + unreferenced-image garbage collection.
   src/eviction.rs      Node-pressure eviction: QoS-ranked pod selection.
   src/static_pods.rs   Static pod manifest directory + mirror pod reconciliation.
-  src/server/          kubelet-style HTTP(S) server: logs/exec/attach/port-forward (feature `cri`).
+  src/server/          kubelet-style HTTP(S) server: logs/exec/attach/port-forward/stats/metrics (feature `cri`).
   src/shutdown.rs      Graceful node shutdown: systemd-logind inhibitor lock + pod drain (feature `cri`).
   src/runtime/mock.rs  In-memory runtime: reports pods Running, zero engine overhead.
   src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`): pod/init
@@ -105,8 +105,10 @@ excluded from pod phase/readiness — and **graceful node shutdown**
 systemd-logind inhibitor lock and drains pods (non-critical first) within a
 time budget before letting the host actually power off — **the D-Bus glue
 is unvalidated against a real systemd-logind**, see `docs/GAP_CLOSURE.md`'s
-round 9 notes. Still missing: PVC/CSI, and more — full list in
-`docs/GAP_CLOSURE.md`.
+round 9 notes. Also `/metrics/resource` (complete) and `/metrics/cadvisor`
+(a scoped-down subset — see round 10 notes), the Prometheus-text
+alternatives to `/stats/summary`. Still missing: PVC/CSI, and more — full
+list in `docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -517,10 +519,9 @@ Two layers, and they're not substitutes for each other:
   was written without ever observing a real systemd-logind (see
   `docs/GAP_CLOSURE.md`'s round 9 notes).
 
-  `deploy/lib/test/cases/unimplemented.sh` still documents what's genuinely
-  missing (`/metrics/resource`/`/metrics/cadvisor`) the same active-assertion
-  way — so this suite starts failing loudly the moment that changes too,
-  instead of silently staying wrong.
+  `prom_metrics.sh` checks `/metrics/resource` and `/metrics/cadvisor`
+  directly (same bearer-token-minting pattern as `stats.sh`) for the
+  Prometheus-text HELP/TYPE lines and the running pod's labels.
 
   `ephemeral_containers.sh` runs `kubectl debug` against a live pod and
   checks `ephemeralContainerStatuses` — skips cleanly if the test cluster's

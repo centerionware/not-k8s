@@ -114,6 +114,38 @@ pub fn disk_pressure(disk: &DiskInfo, threshold_percent: u8) -> bool {
     available_percent < threshold_percent as f64
 }
 
+/// Linux's `/proc/stat` reports CPU time in USER_HZ ticks — 100 on every
+/// mainstream Linux (the value `sysconf(_SC_CLK_TCK)` returns almost
+/// everywhere `CONFIG_HZ` isn't hand-tuned), so this is the same constant
+/// `node_exporter` and `cadvisor` themselves assume rather than calling
+/// `sysconf` for a value that's this uniform in practice.
+const USER_HZ: f64 = 100.0;
+
+/// Cumulative node-wide CPU time consumed since boot, in core-seconds —
+/// parses the leading `cpu ` (aggregate, not per-core `cpu0`/`cpu1`/...)
+/// line of `/proc/stat`. Sums every "busy" field (user, nice, system, irq,
+/// softirq, steal) and excludes idle/iowait, matching what
+/// `node_cpu_usage_seconds_total` means in both `node_exporter` and real
+/// kubelet's `/metrics/resource`. `guest`/`guest_nice` are already included
+/// in `user`/`nice` per the kernel's own accounting, so they're not summed
+/// again here — that would double-count.
+pub fn parse_proc_stat_cpu_line(text: &str) -> Option<f64> {
+    let line = text.lines().find(|l| l.starts_with("cpu "))?;
+    let fields: Vec<u64> = line.split_whitespace().skip(1).filter_map(|f| f.parse::<u64>().ok()).collect();
+    // user nice system idle iowait irq softirq steal — at least the first
+    // four have existed since the earliest /proc/stat; the rest are widely
+    // present but treated as optional (0) for an older/minimal kernel.
+    let get = |i: usize| fields.get(i).copied().unwrap_or(0);
+    let (user, nice, system) = (get(0), get(1), get(2));
+    let (irq, softirq, steal) = (get(5), get(6), get(7));
+    let busy_ticks = user + nice + system + irq + softirq + steal;
+    Some(busy_ticks as f64 / USER_HZ)
+}
+
+pub fn read_node_cpu_seconds() -> Option<f64> {
+    parse_proc_stat_cpu_line(&std::fs::read_to_string("/proc/stat").ok()?)
+}
+
 /// The three live pressure conditions, computed with graceful fallback
 /// (unreadable -> "no pressure", never "unknown -> assume pressure", so a
 /// sandboxed/odd environment can't wedge a node NotSchedulable by itself).
@@ -148,3 +180,6 @@ mod tests_disk_info;
 #[cfg(test)]
 #[path = "metrics_tests/pid_info.rs"]
 mod tests_pid_info;
+#[cfg(test)]
+#[path = "metrics_tests/proc_stat_cpu.rs"]
+mod tests_proc_stat_cpu;
