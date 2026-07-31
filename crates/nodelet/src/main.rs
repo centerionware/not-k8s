@@ -81,6 +81,11 @@ async fn main() -> Result<()> {
     #[cfg(feature = "cri")]
     tokio::spawn(nodelet::server::run(client.clone(), runtime.clone(), cfg.clone()));
 
+    // Graceful node shutdown: no-op unless NODELET_SHUTDOWN_GRACE_PERIOD_SECS
+    // is set (systemd-logind inhibitor lock + pod drain on shutdown).
+    #[cfg(feature = "cri")]
+    tokio::spawn(nodelet::shutdown::run(client.clone(), runtime.clone(), cfg.clone()));
+
     // ClusterIP/NodePort routing (nftables). No-op if disabled or if `nft`
     // isn't usable — pods and direct pod-IP traffic work either way.
     if cfg.service_proxy {

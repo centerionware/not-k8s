@@ -108,6 +108,18 @@ pub struct Config {
     pub server_port: u16,
     /// Where the server's self-signed TLS cert/key are generated/cached.
     pub server_cert_dir: String,
+    /// Real kubelet's `ShutdownGracePeriod` — total time budget to terminate
+    /// pods after systemd-logind signals an imminent shutdown, before
+    /// releasing the inhibitor lock and letting shutdown proceed. `0`
+    /// (default) disables graceful node shutdown entirely, matching
+    /// upstream: it's opt-in there too (`shutdown.rs` is a no-op loop when
+    /// this is `0`).
+    pub shutdown_grace_period_seconds: u64,
+    /// Real kubelet's `ShutdownGracePeriodCriticalPods` — a sub-budget of
+    /// the above reserved for `system-node-critical`/`system-cluster-critical`
+    /// pods, which are terminated last so ordinary pods get first crack at
+    /// a clean exit. Must be `<= shutdown_grace_period_seconds`; clamped if not.
+    pub shutdown_grace_period_critical_seconds: u64,
 }
 
 impl Config {
@@ -209,6 +221,10 @@ impl Config {
             std::env::var("NODELET_CLUSTER_DOMAIN").unwrap_or_else(|_| "cluster.local".to_string());
         let eviction_check_interval = Duration::from_secs(env_u64("NODELET_EVICTION_CHECK_SECS", 10)?);
 
+        let shutdown_grace_period_seconds = env_u64("NODELET_SHUTDOWN_GRACE_PERIOD_SECS", 0)?;
+        let shutdown_grace_period_critical_seconds =
+            env_u64("NODELET_SHUTDOWN_GRACE_PERIOD_CRITICAL_SECS", 0)?.min(shutdown_grace_period_seconds);
+
         Ok(Self {
             node_name,
             runtime,
@@ -238,6 +254,8 @@ impl Config {
             cluster_dns,
             cluster_domain,
             eviction_check_interval,
+            shutdown_grace_period_seconds,
+            shutdown_grace_period_critical_seconds,
         })
     }
 }

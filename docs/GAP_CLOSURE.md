@@ -27,6 +27,79 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 9: graceful node shutdown (2026-07-31)
+
+Continued closing gaps ("continue" — no further scoping given). Picked
+graceful node shutdown next: it's the one item on the "biggest remaining"
+list that's specifically valuable for nodelet's actual target hardware
+(edge devices get power-cycled far more often than a datacenter node ever
+does), and unlike PVC/CSI or the CPU/Memory/Topology managers it's a
+self-contained addition that doesn't touch the container-creation path at
+all.
+
+- **New `shutdown.rs`** (`cri`-feature-gated, like `server.rs` and
+  `static_pods.rs`'s real uses) — holds a systemd-logind shutdown-delay
+  inhibitor lock (`Inhibit("shutdown", "nodelet", ..., "delay")` over
+  D-Bus, via the `zbus` crate) for as long as nodelet is running with the
+  feature enabled, and subscribes to logind's `PrepareForShutdown` signal.
+  On `PrepareForShutdown(true)`, terminates every pod on the node through
+  the *same* graceful path a normal delete already gets
+  (`PodRuntime::remove_pod` — `preStop` + a bounded `StopContainer`
+  timeout), bounded by a fixed time budget, then drops the held fd (closing
+  it releases the lock) so shutdown actually proceeds. On `(false)`
+  (shutdown cancelled), re-acquires the lock for next time.
+- **Priority-ordered, budget-capped** — non-critical pods terminate first;
+  `system-node-critical`/`system-cluster-critical` pods (reuses
+  `eviction::is_critical`, the same definition node-pressure eviction
+  already uses) get their own reserved sub-budget
+  (`NODELET_SHUTDOWN_GRACE_PERIOD_CRITICAL_SECS`) and go last, so ordinary
+  workloads get first crack at a clean exit while system add-ons keep
+  serving as long as possible. Each pod's own `terminationGracePeriodSeconds`
+  is capped to whatever's actually left in its group's budget — a pod
+  asking for a 5-minute grace period doesn't get it if the node only has 30
+  seconds of runtime left.
+- **New config**: `NODELET_SHUTDOWN_GRACE_PERIOD_SECS` (default `0`,
+  disabled — matches upstream, where this is opt-in) and
+  `NODELET_SHUTDOWN_GRACE_PERIOD_CRITICAL_SECS` (default `0`, clamped to
+  never exceed the total). `run()` doesn't even connect to D-Bus when
+  disabled, so this is a true no-op on hosts without systemd or a system
+  bus, same as every other opt-in background loop in this codebase.
+- Pure scheduling logic (`split_by_criticality`, `budget_split`,
+  `capped_grace_period`) is fully unit tested — 14 new tests. The D-Bus
+  glue itself (`Connection::system()`, the `Inhibit` call, the signal
+  stream) is **not** — see the caveat below.
+
+374 tests passing with `--features cri` (up from 360), 161 mock-only (this
+feature is entirely `cri`-gated, so it adds nothing to the mock-only count).
+`deploy/lib/test/cases/graceful_shutdown.sh` added as a manual-note skip
+test, not an automated one — see why below.
+
+**Known limitation, honestly flagged, same treatment as round 6's exec/
+attach proxy**: the D-Bus interaction was written and compiled against the
+`zbus` 5.x API (verified by reading its vendored source directly, since no
+network docs were consulted) but has never been run against a real
+systemd-logind — there's no system/session D-Bus bus reachable in the
+sandbox that built this. The three places most likely to need adjustment
+on first real use: (1) whether `Connection::system()` succeeds inside
+whatever init/container context nodelet actually runs in (needs
+`/run/dbus/system_bus_socket` reachable — likely fine on a real systemd
+host, questionable inside a minimal container without the host's D-Bus
+socket bind-mounted in), (2) whether the `Inhibit` call is permitted by the
+host's polkit policy for whatever user nodelet runs as (typically requires
+root, or an explicit policy grant), (3) whether `PrepareForShutdown`'s
+signal body actually deserializes as a bare `bool` the way `msg.body()
+.deserialize()` expects (this matches the D-Bus signal signature `b`
+documented for logind, but wasn't observed on the wire). None of these can
+regress anything when the feature is disabled (the default) — worst case
+if any of the three is wrong, `run()` logs a warning and returns, same as
+today, and shutdown behaves exactly as it did before this feature existed
+(SIGKILL-on-power-loss, not preStop-first). Also not implemented: real
+kubelet's per-`PriorityClass`-level budget bands (`shutdownGracePeriodByPod
+Priority`, a list of arbitrary priority/grace-period pairs) — this uses the
+simpler two-tier critical/non-critical split kubelet's own
+`--shutdown-grace-period`/`--shutdown-grace-period-critical-pods` flags
+predate that with, which is a closer match to nodelet's minimalism anyway.
+
 ## Round 8: ephemeral containers (`kubectl debug`) (2026-07-30, same day)
 
 Continued closing gaps ("continue" — no further scoping given). Picked
@@ -347,7 +420,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ❌ Client certificate authentication (bearer token only)
 
 ### Node shutdown
-- ❌ Graceful node shutdown (systemd inhibitor lock, priority-ordered pod eviction on `shutdown -h now`)
+- ✅ **Graceful node shutdown** (`shutdown.rs`) — a systemd-logind shutdown-delay inhibitor lock held via D-Bus, released once every pod's been driven through the normal `preStop`/`StopContainer` teardown path within a configurable time budget (`NODELET_SHUTDOWN_GRACE_PERIOD_SECS`, `0`/disabled by default matching upstream). Non-critical pods terminated first, `system-node-critical`/`system-cluster-critical` pods last, each pod's own `terminationGracePeriodSeconds` capped to whatever's left of the budget. **The D-Bus glue is unvalidated against a real systemd-logind** — no system bus in the environment that built it; see the round 9 notes below and `deploy/lib/test/cases/graceful_shutdown.sh`'s manual spot-check procedure.
 
 ### Bootstrapping / config
 - ❌ TLS bootstrap (CSR-based initial client cert issuance) — nodelet currently expects to be handed a working kubeconfig directly; lower priority given the project's already-simplified config philosophy, but a real gap if "100%" includes it.
@@ -395,8 +468,10 @@ higher-value/correctness-critical than others:
       confidence note above, especially for kubectl exec.
 - [x] Round 7: `/stats/summary`, usage-based eviction ranking, RuntimeClass
 - [x] Round 8: ephemeral containers (`kubectl debug`)
+- [x] Round 9: graceful node shutdown (systemd-logind inhibitor lock,
+      unvalidated against a real logind — see the confidence note above)
 - [ ] Everything else in the responsibility list above — biggest remaining
-      single items: PVC/CSI, graceful node shutdown, cgroup driver/QoS
-      hierarchy/node allocatable enforcement, CPU/Memory/Topology managers,
-      device plugins, RuntimeClass `Overhead` accounting,
-      `/metrics/resource`/`/metrics/cadvisor`. Ask before starting the next round.
+      single items: PVC/CSI, cgroup driver/QoS hierarchy/node allocatable
+      enforcement, CPU/Memory/Topology managers, device plugins, RuntimeClass
+      `Overhead` accounting, `/metrics/resource`/`/metrics/cadvisor`. Ask
+      before starting the next round.

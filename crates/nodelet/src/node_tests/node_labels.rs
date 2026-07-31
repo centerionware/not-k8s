@@ -34,6 +34,8 @@ fn cfg(labels: BTreeMap<String, String>) -> Config {
         cluster_dns: Vec::new(),
         cluster_domain: "cluster.local".to_string(),
         eviction_check_interval: Duration::from_secs(10),
+        shutdown_grace_period_seconds: 0,
+        shutdown_grace_period_critical_seconds: 0,
     }
 }
 

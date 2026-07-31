@@ -13,5 +13,7 @@ pub mod probes;
 pub mod runtime;
 #[cfg(feature = "cri")]
 pub mod server;
+#[cfg(feature = "cri")]
+pub mod shutdown;
 pub mod static_pods;
 pub mod svc;

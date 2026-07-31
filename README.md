@@ -52,6 +52,7 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
   src/eviction.rs      Node-pressure eviction: QoS-ranked pod selection.
   src/static_pods.rs   Static pod manifest directory + mirror pod reconciliation.
   src/server/          kubelet-style HTTP(S) server: logs/exec/attach/port-forward (feature `cri`).
+  src/shutdown.rs      Graceful node shutdown: systemd-logind inhibitor lock + pod drain (feature `cri`).
   src/runtime/mock.rs  In-memory runtime: reports pods Running, zero engine overhead.
   src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`): pod/init
                        container lifecycle, resource limits, securityContext,
@@ -97,10 +98,15 @@ CRI's own per-pod/per-container usage stats; `kubectl top` also needs
 metrics-server deployed separately to actually scrape it), eviction now
 ranked by real memory usage instead of just requests, and `RuntimeClass`
 (`spec.runtimeClassName` reaches CRI's `runtime_handler` for gVisor/Kata/
-etc.), and **ephemeral containers** (`kubectl debug`) — one-shot,
+etc.), **ephemeral containers** (`kubectl debug`) — one-shot,
 never restarted, reported in `PodStatus.ephemeralContainerStatuses`,
-excluded from pod phase/readiness. Still missing: PVC/CSI, graceful node
-shutdown, and more — full list in `docs/GAP_CLOSURE.md`.
+excluded from pod phase/readiness — and **graceful node shutdown**
+(`NODELET_SHUTDOWN_GRACE_PERIOD_SECS`, disabled by default): holds a
+systemd-logind inhibitor lock and drains pods (non-critical first) within a
+time budget before letting the host actually power off — **the D-Bus glue
+is unvalidated against a real systemd-logind**, see `docs/GAP_CLOSURE.md`'s
+round 9 notes. Still missing: PVC/CSI, and more — full list in
+`docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -502,10 +508,14 @@ Two layers, and they're not substitutes for each other:
   matching `NODELET_STATIC_POD_PATH`) and `TEST_LOG_MAX_SIZE_BYTES` (log
   rotation — nodelet must be running with a small
   `NODELET_CONTAINER_LOG_MAX_SIZE_BYTES` so a test can actually fill it).
-  Node-pressure eviction and orphaned-sandbox GC are documented as manual
-  procedures instead of automated tests — both need either exhausting a
-  real resource or stopping nodelet out from under a pod, neither of which
-  this suite does to a host you're relying on.
+  Node-pressure eviction, orphaned-sandbox GC, and graceful node shutdown
+  are documented as manual procedures instead of automated tests — each
+  needs either exhausting a real resource, stopping nodelet out from under
+  a pod, or an actual host reboot/poweroff, none of which this suite does
+  to a host you're relying on. `graceful_shutdown.sh` has the manual
+  spot-check steps and is the piece to watch most closely — its D-Bus glue
+  was written without ever observing a real systemd-logind (see
+  `docs/GAP_CLOSURE.md`'s round 9 notes).
 
   `deploy/lib/test/cases/unimplemented.sh` still documents what's genuinely
   missing (`/metrics/resource`/`/metrics/cadvisor`) the same active-assertion
@@ -549,6 +559,8 @@ Two layers, and they're not substitutes for each other:
 | `NODELET_SERVER_ENABLED` | `true` if `cri`, else `false` | Run the kubelet-style HTTP(S) server (`kubectl logs`/`exec`/`attach`/`port-forward`). |
 | `NODELET_SERVER_PORT` | `10250` | Port for that server (real kubelet's default). |
 | `NODELET_SERVER_CERT_DIR` | `/var/lib/nodelet/pki` | Where its self-signed TLS cert/key are generated/cached. |
+| `NODELET_SHUTDOWN_GRACE_PERIOD_SECS` | `0` (disabled) | Total time budget to gracefully terminate pods after systemd-logind signals an imminent shutdown, before releasing the inhibitor lock (`cri` only) — see [Status](#status). |
+| `NODELET_SHUTDOWN_GRACE_PERIOD_CRITICAL_SECS` | `0` | Sub-budget of the above reserved for `system-node-critical`/`system-cluster-critical` pods, terminated last; clamped to `NODELET_SHUTDOWN_GRACE_PERIOD_SECS`. |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---
