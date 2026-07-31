@@ -9,7 +9,7 @@ fn plugins_with(entries: Vec<(&str, Vec<DeviceInfo>)>) -> DevicePlugins {
 }
 
 fn dev(id: &str, healthy: bool) -> DeviceInfo {
-    DeviceInfo { id: id.to_string(), healthy }
+    DeviceInfo { id: id.to_string(), healthy, numa_node: None }
 }
 
 #[test]

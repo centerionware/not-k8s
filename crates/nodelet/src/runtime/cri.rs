@@ -28,7 +28,7 @@ use k8s_openapi::jiff::Timestamp;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use kube::api::{Api, ListParams};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -151,6 +151,18 @@ pub struct CriRuntime {
     /// structured, cross-runtime way, so this is nodelet's own record of
     /// "what did I last tell the runtime this container's resources were."
     container_resources: Mutex<HashMap<String, (String, LinuxContainerResources)>>,
+    /// Real kubelet's `--topology-manager-policy` (see `topology.rs`) —
+    /// `None` (upstream's own default) means the alignment computation in
+    /// `create_and_start_container` is skipped entirely.
+    topology_policy: crate::topology::TopologyManagerPolicy,
+    /// NUMA node -> the CPU IDs it owns, read once at startup (NUMA
+    /// topology doesn't change at runtime on any real hardware nodelet
+    /// targets). Empty on a host with no NUMA info at all (most
+    /// single-socket edge devices) — Topology Manager then never finds an
+    /// alignment, which `BestEffort` tolerates and `Restricted`/
+    /// `SingleNumaNode` would reject on, so those policies only make
+    /// sense on hardware that actually reports NUMA topology.
+    numa_topology: BTreeMap<u32, BTreeSet<u32>>,
 }
 
 /// Identity extracted from a Pod object.
@@ -1091,6 +1103,8 @@ impl CriRuntime {
         plugin_registry_path: String,
         plugin_registry_sync_interval: Duration,
         cpu_manager: Option<crate::cpu_manager::CpuManager>,
+        topology_policy: crate::topology::TopologyManagerPolicy,
+        numa_topology: BTreeMap<u32, BTreeSet<u32>>,
     ) -> Result<Self> {
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
@@ -1122,6 +1136,8 @@ impl CriRuntime {
             device_allocations: Mutex::new(HashMap::new()),
             cpu_manager,
             container_resources: Mutex::new(HashMap::new()),
+            topology_policy,
+            numa_topology,
         })
     }
 
@@ -1953,19 +1969,61 @@ impl CriRuntime {
             });
         }
         let mut resources = linux_resources(container.resources.as_ref());
+        let limits = container.resources.as_ref().and_then(|r| r.limits.as_ref());
+        let cpu_limit = limits.and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
+        let wants_exclusive_cpus = crate::cpu_manager::wants_exclusive_cpus(qos, cpu_limit);
+        let device_requests: Vec<(String, u64)> =
+            extended_resource_requests(limits).into_iter().filter(|(name, _)| self.device_plugins.resource_configured(name)).collect();
+
+        // Topology Manager (opt-in — see topology.rs): find a single NUMA
+        // node that can satisfy both this container's exclusive-CPU want
+        // (if any) and every device-plugin resource it needs (if any), so
+        // they don't end up scattered across nodes. A no-op (aligned =
+        // None, exactly pre-round-17 behavior) when the policy is `none`,
+        // or when this container has nothing for it to coordinate at all.
+        let mut aligned_numa_node: Option<u32> = None;
+        if self.topology_policy != crate::topology::TopologyManagerPolicy::None {
+            let mut hints = Vec::new();
+            if let (Some(count), Some(cpu_manager)) = (wants_exclusive_cpus, &self.cpu_manager) {
+                hints.push(crate::topology::cpu_hint(&self.numa_topology, &cpu_manager.shared_pool(), count));
+            }
+            for (resource_name, count) in &device_requests {
+                let available = self.device_plugins.available_device_numa_nodes(resource_name);
+                let all_nodes: std::collections::BTreeSet<u32> = self.numa_topology.keys().copied().collect();
+                hints.push(crate::topology::device_hint(&available, &all_nodes, *count as u32));
+            }
+            if !hints.is_empty() {
+                aligned_numa_node = crate::topology::align(&hints);
+                if aligned_numa_node.is_none() {
+                    match self.topology_policy {
+                        crate::topology::TopologyManagerPolicy::Restricted | crate::topology::TopologyManagerPolicy::SingleNumaNode => {
+                            anyhow::bail!(
+                                "Topology Manager: no single NUMA node can satisfy container '{}'s CPU/device requests together",
+                                container.name
+                            );
+                        }
+                        crate::topology::TopologyManagerPolicy::BestEffort => {
+                            warn!(container = %container.name, "Topology Manager: no aligned NUMA node found; proceeding without alignment (best-effort policy)");
+                        }
+                        crate::topology::TopologyManagerPolicy::None => unreachable!("guarded above"),
+                    }
+                }
+            }
+        }
+        let preferred_cpus = aligned_numa_node.and_then(|node| self.numa_topology.get(&node));
 
         // CPU Manager (static policy, opt-in — see cpu_manager.rs): a
         // Guaranteed-QoS container requesting a whole number of CPUs gets
-        // pinned to exclusive cores; every other container gets the
+        // pinned to exclusive cores (preferring the Topology Manager's
+        // aligned NUMA node, if any); every other container gets the
         // current shared pool (everything except reserved + exclusively-
         // claimed cores) instead of being left unconstrained. Both are
         // no-ops when the policy is disabled (self.cpu_manager is None).
         let mut cpu_manager_key: Option<String> = None;
         if let Some(cpu_manager) = &self.cpu_manager {
-            let cpu_limit = container.resources.as_ref().and_then(|r| r.limits.as_ref()).and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
             let key = restart_count_key(sandbox_id, &container.name);
-            let cpuset = match crate::cpu_manager::wants_exclusive_cpus(qos, cpu_limit) {
-                Some(count) => match cpu_manager.allocate(&key, count) {
+            let cpuset = match wants_exclusive_cpus {
+                Some(count) => match cpu_manager.allocate_preferring(&key, count, preferred_cpus) {
                     Some(cpus) => {
                         cpu_manager_key = Some(key);
                         cpus
@@ -1987,23 +2045,19 @@ impl CriRuntime {
         });
 
         // Device plugin resources (nvidia.com/gpu and similar): allocate
-        // specific devices for any extended resource this container's
-        // limits name that a registered device plugin actually backs, and
-        // merge in whatever envs/mounts/device-nodes/annotations the
-        // plugin's Allocate() RPC says to inject. Best-effort per
-        // resource — a plugin failure means the container starts without
-        // that device rather than failing the whole pod, logged clearly
-        // either way.
-        let limits = container.resources.as_ref().and_then(|r| r.limits.as_ref());
+        // specific devices (preferring the Topology Manager's aligned NUMA
+        // node, if any) for each resource this container's limits name
+        // that a registered device plugin actually backs, and merge in
+        // whatever envs/mounts/device-nodes/annotations the plugin's
+        // Allocate() RPC says to inject. Best-effort per resource — a
+        // plugin failure means the container starts without that device
+        // rather than failing the whole pod, logged clearly either way.
         let mut envs = envs.to_vec();
         let mut devices = Vec::new();
         let mut annotations = HashMap::new();
         let mut allocated_devices: Vec<(String, Vec<String>)> = Vec::new();
-        for (resource_name, count) in extended_resource_requests(limits) {
-            if !self.device_plugins.resource_configured(&resource_name) {
-                continue;
-            }
-            match self.device_plugins.allocate(&resource_name, count).await {
+        for (resource_name, count) in device_requests {
+            match self.device_plugins.allocate_preferring(&resource_name, count, aligned_numa_node).await {
                 Ok((device_ids, resp)) => {
                     envs.extend(resp.envs.into_iter().map(|(key, value)| KeyValue { key, value: value.into_bytes() }));
                     mounts.extend(resp.mounts.into_iter().map(|m| Mount {

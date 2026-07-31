@@ -47,7 +47,7 @@ async fn update_devices_is_rejected_for_a_stale_endpoint() {
     dp.register("nvidia.com/gpu".to_string(), "unix:///a.sock".to_string());
     // A different (fresher) registration replaced this one.
     dp.register("nvidia.com/gpu".to_string(), "unix:///b.sock".to_string());
-    let accepted = dp.update_devices("nvidia.com/gpu", "unix:///a.sock", vec![DeviceInfo { id: "gpu-0".to_string(), healthy: true }]);
+    let accepted = dp.update_devices("nvidia.com/gpu", "unix:///a.sock", vec![DeviceInfo { id: "gpu-0".to_string(), healthy: true, numa_node: None }]);
     assert!(!accepted);
     // The fresher registration's (empty, since nothing streamed to it yet)
     // device list must be untouched by the stale update.
@@ -58,7 +58,7 @@ async fn update_devices_is_rejected_for_a_stale_endpoint() {
 async fn update_devices_is_accepted_for_the_current_endpoint() {
     let dp = Arc::new(DevicePlugins::new());
     dp.register("nvidia.com/gpu".to_string(), "unix:///a.sock".to_string());
-    let accepted = dp.update_devices("nvidia.com/gpu", "unix:///a.sock", vec![DeviceInfo { id: "gpu-0".to_string(), healthy: true }]);
+    let accepted = dp.update_devices("nvidia.com/gpu", "unix:///a.sock", vec![DeviceInfo { id: "gpu-0".to_string(), healthy: true, numa_node: None }]);
     assert!(accepted);
     assert_eq!(dp.capacity_map().get("nvidia.com/gpu"), Some(&1));
 }
@@ -67,7 +67,7 @@ async fn update_devices_is_accepted_for_the_current_endpoint() {
 async fn release_frees_a_device_for_reallocation() {
     let dp = Arc::new(DevicePlugins::new());
     dp.register("nvidia.com/gpu".to_string(), "unix:///a.sock".to_string());
-    dp.update_devices("nvidia.com/gpu", "unix:///a.sock", vec![DeviceInfo { id: "gpu-0".to_string(), healthy: true }]);
+    dp.update_devices("nvidia.com/gpu", "unix:///a.sock", vec![DeviceInfo { id: "gpu-0".to_string(), healthy: true, numa_node: None }]);
     {
         let mut plugins = dp.plugins.lock().unwrap();
         plugins.get_mut("nvidia.com/gpu").unwrap().allocated.insert("gpu-0".to_string());

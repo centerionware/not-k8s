@@ -117,10 +117,31 @@ impl CpuManager {
     /// pre-admission step to reject the pod before it reaches the node,
     /// so graceful degradation beats a hard failure here).
     pub fn allocate(&self, key: &str, count: u32) -> Option<BTreeSet<u32>> {
+        self.allocate_preferring(key, count, None)
+    }
+
+    /// Same as `allocate()`, but tries `preferred` CPUs first (the aligned
+    /// NUMA node's own CPUs, computed by `topology.rs` — see
+    /// `runtime/cri.rs`'s Topology Manager wiring) before falling back to
+    /// the rest of the shared pool if `preferred` alone can't satisfy
+    /// `count`. `preferred = None` is exactly `allocate()`'s plain
+    /// lowest-numbered-first behavior (Topology Manager disabled, or no
+    /// alignment was found).
+    pub fn allocate_preferring(&self, key: &str, count: u32, preferred: Option<&BTreeSet<u32>>) -> Option<BTreeSet<u32>> {
         let mut guard = self.exclusive.lock().unwrap();
         let claimed = self.all_exclusive(&guard);
-        let picked: BTreeSet<u32> =
-            self.total_cpus.difference(&self.reserved).filter(|c| !claimed.contains(c)).take(count as usize).copied().collect();
+        let free: BTreeSet<u32> = self.total_cpus.difference(&self.reserved).filter(|c| !claimed.contains(c)).copied().collect();
+
+        let mut picked: BTreeSet<u32> = match preferred {
+            Some(preferred) => free.intersection(preferred).take(count as usize).copied().collect(),
+            None => BTreeSet::new(),
+        };
+        for cpu in &free {
+            if picked.len() >= count as usize {
+                break;
+            }
+            picked.insert(*cpu);
+        }
         if picked.len() < count as usize {
             return None;
         }

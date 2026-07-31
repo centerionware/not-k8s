@@ -80,14 +80,43 @@ async fn connect_uds(endpoint: &str) -> Result<Channel> {
 pub struct DeviceInfo {
     pub id: String,
     pub healthy: bool,
+    /// The first NUMA node ID from the plugin's `TopologyInfo`, if it
+    /// reported one — `None` means the plugin didn't report topology at
+    /// all, which Topology Manager (`topology.rs`) treats as "compatible
+    /// with every NUMA node," not "compatible with none." A device
+    /// spanning multiple NUMA nodes only keeps the first; real kubelet's
+    /// own hint generation does the same simplification.
+    pub numa_node: Option<u32>,
 }
 
 /// Pure selection logic behind `DevicePlugins::allocate()`: the first
-/// `count` healthy, not-already-allocated devices, in list order. `None`
-/// if there aren't enough — pulled out specifically so this decision is
-/// unit-testable without a live device plugin socket.
-fn pick_devices(devices: &[DeviceInfo], allocated: &HashSet<String>, count: u64) -> Option<Vec<String>> {
-    let picked: Vec<String> = devices.iter().filter(|d| d.healthy && !allocated.contains(&d.id)).take(count as usize).map(|d| d.id.clone()).collect();
+/// `count` healthy, not-already-allocated devices, in list order — pulled
+/// out specifically so this decision is unit-testable without a live
+/// device plugin socket. If `preferred_numa_node` is set (Topology
+/// Manager's aligned-node choice — see `topology.rs`), devices on that
+/// node are tried first, falling back to any other free device if the
+/// preferred node alone can't supply `count`. A device with `numa_node:
+/// None` (the plugin didn't report topology) counts toward *either* the
+/// preferred-node pass or the fallback pass, matching
+/// `topology::device_hint()`'s "compatible with every node" treatment of
+/// untagged devices. `None` overall if there still aren't enough.
+fn pick_devices_preferring(devices: &[DeviceInfo], allocated: &HashSet<String>, count: u64, preferred_numa_node: Option<u32>) -> Option<Vec<String>> {
+    let free = || devices.iter().filter(|d| d.healthy && !allocated.contains(&d.id));
+
+    let mut picked: Vec<String> = match preferred_numa_node {
+        Some(node) => free().filter(|d| d.numa_node.is_none_or(|n| n == node)).take(count as usize).map(|d| d.id.clone()).collect(),
+        None => Vec::new(),
+    };
+    if (picked.len() as u64) < count {
+        for d in free() {
+            if picked.len() as u64 >= count {
+                break;
+            }
+            if !picked.contains(&d.id) {
+                picked.push(d.id.clone());
+            }
+        }
+    }
     (picked.len() as u64 >= count).then_some(picked)
 }
 
@@ -134,6 +163,22 @@ impl DevicePlugins {
         self.plugins.lock().unwrap().contains_key(resource_name)
     }
 
+    /// The NUMA-node affinity of every currently healthy, unallocated
+    /// device for `resource_name` — what Topology Manager's
+    /// `topology::device_hint()` needs to decide which NUMA nodes can
+    /// satisfy a request for this resource. Empty for an unconfigured
+    /// resource (matches every other "unknown resource" case in this
+    /// module — the caller learns that from `resource_configured()`
+    /// separately, this just has nothing to report).
+    pub fn available_device_numa_nodes(&self, resource_name: &str) -> Vec<Option<u32>> {
+        self.plugins
+            .lock()
+            .unwrap()
+            .get(resource_name)
+            .map(|state| state.devices.iter().filter(|d| d.healthy && !state.allocated.contains(&d.id)).map(|d| d.numa_node).collect())
+            .unwrap_or_default()
+    }
+
     /// resource name -> count of currently healthy devices, for
     /// `Node.status.capacity`/`.allocatable` (see `node.rs`). Real kubelet
     /// doesn't subtract already-allocated devices from this — that
@@ -171,10 +216,22 @@ impl DevicePlugins {
     /// Devices are put back if anything after picking them fails — a
     /// failed allocation must not permanently strand devices as "in use."
     pub async fn allocate(&self, resource_name: &str, count: u64) -> Result<(Vec<String>, ContainerAllocateResponse)> {
+        self.allocate_preferring(resource_name, count, None).await
+    }
+
+    /// Same as `allocate()`, but tries devices on `preferred_numa_node`
+    /// first — Topology Manager's aligned-node choice, so this container's
+    /// devices land on the same NUMA node its exclusive CPUs (if any) do.
+    pub async fn allocate_preferring(
+        &self,
+        resource_name: &str,
+        count: u64,
+        preferred_numa_node: Option<u32>,
+    ) -> Result<(Vec<String>, ContainerAllocateResponse)> {
         let (endpoint, device_ids) = {
             let mut plugins = self.plugins.lock().unwrap();
             let state = plugins.get_mut(resource_name).with_context(|| format!("no device plugin registered for '{resource_name}'"))?;
-            let picked = pick_devices(&state.devices, &state.allocated, count)
+            let picked = pick_devices_preferring(&state.devices, &state.allocated, count, preferred_numa_node)
                 .with_context(|| format!("not enough healthy devices available for '{resource_name}'"))?;
             for id in &picked {
                 state.allocated.insert(id.clone());
@@ -236,7 +293,15 @@ async fn watch_once(devices: &Arc<DevicePlugins>, resource_name: &str, endpoint:
     let mut stream = client.list_and_watch(Empty {}).await.context("ListAndWatch")?.into_inner();
 
     while let Some(resp) = stream.message().await.context("reading ListAndWatch stream")? {
-        let list: Vec<DeviceInfo> = resp.devices.into_iter().map(|d| DeviceInfo { id: d.id, healthy: d.health == "Healthy" }).collect();
+        let list: Vec<DeviceInfo> = resp
+            .devices
+            .into_iter()
+            .map(|d| DeviceInfo {
+                id: d.id,
+                healthy: d.health == "Healthy",
+                numa_node: d.topology.as_ref().and_then(|t| t.nodes.first()).map(|n| n.id as u32),
+            })
+            .collect();
         info!(resource = %resource_name, devices = list.len(), healthy = list.iter().filter(|d| d.healthy).count(), "device plugin: inventory updated");
         if !devices.update_devices(resource_name, endpoint, list) {
             return Ok(()); // stale — deregistered or re-registered elsewhere; stop watching quietly

@@ -98,3 +98,34 @@ fn is_exclusive_is_false_for_a_shared_pool_only_container() {
     let mgr = CpuManager::new(4, 0);
     assert!(!mgr.is_exclusive("sandbox/never-allocated"));
 }
+
+#[test]
+fn allocate_preferring_picks_from_the_preferred_set_first() {
+    let mgr = CpuManager::new(4, 0);
+    let preferred: BTreeSet<u32> = [2, 3].into_iter().collect();
+    let picked = mgr.allocate_preferring("sandbox/a", 2, Some(&preferred)).unwrap();
+    assert_eq!(picked, preferred);
+}
+
+#[test]
+fn allocate_preferring_tops_up_from_the_rest_of_the_pool_if_preferred_is_too_small() {
+    let mgr = CpuManager::new(4, 0);
+    let preferred: BTreeSet<u32> = [3].into_iter().collect();
+    let picked = mgr.allocate_preferring("sandbox/a", 2, Some(&preferred)).unwrap();
+    assert_eq!(picked.len(), 2);
+    assert!(picked.contains(&3));
+}
+
+#[test]
+fn allocate_preferring_with_none_behaves_like_plain_allocate() {
+    let mgr = CpuManager::new(4, 0);
+    let picked = mgr.allocate_preferring("sandbox/a", 2, None).unwrap();
+    assert_eq!(picked, [0, 1].into_iter().collect());
+}
+
+#[test]
+fn allocate_preferring_still_fails_if_the_whole_pool_cannot_satisfy_it() {
+    let mgr = CpuManager::new(2, 0);
+    let preferred: BTreeSet<u32> = [0].into_iter().collect();
+    assert!(mgr.allocate_preferring("sandbox/a", 3, Some(&preferred)).is_none());
+}

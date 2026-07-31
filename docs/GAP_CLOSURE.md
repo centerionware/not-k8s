@@ -27,6 +27,80 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 17: Topology Manager (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-16). Offered Topology
+Manager, Memory Manager, CSI's Controller service, or device plugin
+polish; user picked Topology Manager — it ties together CPU Manager
+(rounds 15-16) and device plugins (round 14) rather than opening a new
+subsystem, and Memory Manager would need the same NUMA-topology
+groundwork this round already builds, so doing Topology Manager first
+avoids duplicating that work.
+
+- **New `topology.rs`** (`cri`-gated): reads real NUMA topology from
+  `/sys/devices/system/node/node*/cpulist` (`read_numa_topology()`,
+  parsed once at startup — NUMA layout doesn't change at runtime on any
+  hardware nodelet targets), and implements a **single-node-only**
+  hint/alignment algorithm — deliberately simpler than upstream's full
+  per-provider-bitmask/cross-combination search, documented up front in
+  the module doc comment. `cpu_hint()`/`device_hint()` compute which
+  individual NUMA nodes can alone satisfy a CPU or device request;
+  `align()` intersects every hint provider's candidate set and returns the
+  lowest-numbered common node, or `None` if none exists. Reaches the same
+  answer as upstream whenever a single node can satisfy everything (the
+  common case, and the only case `single-numa-node` policy upstream ever
+  accepts either) — the gap is upstream's `restricted` policy also
+  accepting valid *multi*-node alignments, which this doesn't search for;
+  `restricted` is treated identically to `single-numa-node` here.
+- **`DeviceInfo` gained `numa_node: Option<u32>`** — parsed from the
+  device plugin's `TopologyInfo.nodes[0]` during `ListAndWatch` (round 14
+  only tracked `id`/`healthy`, dropping topology entirely). `None` (no
+  `TopologyInfo` reported) is treated as "compatible with every NUMA
+  node," not "compatible with none," matching upstream's own device
+  manager hint generation.
+- **`CpuManager::allocate_preferring()`/`DevicePlugins::allocate_preferring()`**
+  — both gained a NUMA-preference parameter: try the aligned node's own
+  CPUs/devices first, falling back to the rest of the pool if the
+  preferred node alone can't supply the full count. `allocate()` on both
+  is now a thin wrapper calling these with `None` (Topology Manager
+  disabled — identical behavior to before this round).
+- **Wired into `runtime/cri.rs::create_and_start_container()`**: before
+  the existing CPU/device allocation logic runs, computes every hint
+  provider's candidate set for *this* container (its exclusive-CPU want,
+  if any; each device-plugin resource it requests), intersects them via
+  `align()`, and applies the configured policy — `None` skips the whole
+  computation (a true no-op, exactly pre-round-17 behavior); `BestEffort`
+  logs and proceeds unaligned on failure; `Restricted`/`SingleNumaNode`
+  return an error that propagates up through `ensure_container()`/
+  `ensure_pod()`, leaving the pod Pending rather than starting it
+  misaligned — nodelet's version of upstream's Topology Manager admission
+  rejection.
+- 25 new unit tests for `topology.rs` (`parse_cpulist`, `read_numa_topology`
+  — including a real read against `/sys/devices/system/node` on this
+  host, `cpu_hint`/`device_hint`/`align`), plus 4 new `CpuManager` tests
+  and 4 new `pick_devices_preferring` tests for the NUMA-preference paths.
+
+533 tests passing with `--features cri` (up from 500), 179 mock-only
+(unchanged — entirely `cri`-gated).
+`deploy/lib/test/cases/topology_manager.sh` added: an automated check
+that `single-numa-node` policy never spuriously rejects a pod on a
+single-NUMA-node host (this sandbox's own host has exactly one NUMA node
+with cpus 0-3, confirmed via the real-topology unit test above), plus a
+manual-note for genuine cross-provider alignment verification (needs
+real multi-socket hardware or a NUMA-aware device plugin, neither
+available here).
+
+**Confidence note**: the NUMA-topology *reading* (`read_numa_topology()`)
+is validated against this sandbox's real `/sys/devices/system/node`
+directly in a unit test — genuine confidence there, unlike the usual
+"no live X in this sandbox" caveat other rounds have carried. What's
+*not* validated live is genuine multi-NUMA cross-provider alignment
+(CPU + device on the same node) and the `Restricted`/`SingleNumaNode`
+rejection path actually firing for a real unsatisfiable request — this
+sandbox has only one NUMA node, so every request trivially aligns and
+rejection never triggers here. Same failure-safe posture as always:
+`None` policy (the default) never touches any of this new code.
+
 ## Round 16: CPU Manager retroactive shared-pool updates (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-15). Offered closing
@@ -853,9 +927,9 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **QoS cgroup hierarchy** (`--cgroups-per-qos`) — every pod sandbox now gets a `cgroup_parent` scoped by QoS class (`cgroup.rs::cgroup_parent_for`): `/kubepods/pod<uid>` for Guaranteed, `/kubepods/burstable/pod<uid>` / `/kubepods/besteffort/pod<uid>` otherwise, wired into `runtime/cri.rs::ensure_pod`.
 - ✅ **cgroup driver — no detection needed.** CRI's own `LinuxPodSandboxConfig.cgroup_parent` proto contract specifies the cgroupfs-style syntax is always sent, with "the container runtime can convert it to systemd semantics if needed" — nodelet always builds the cgroupfs-style path and lets the runtime do any systemd-unit-naming conversion, matching that contract exactly. No `--cgroup-driver`-equivalent config needed.
 - ✅ **Node allocatable enforcement** (`--enforce-node-allocatable=pods`, its own upstream default) — `cgroup.rs::enforce_node_allocatable`, called once at startup, creates and caps the top-level `kubepods` cgroup (cpu.max/memory.max) at `Node.status.allocatable` so pods collectively can never exceed it. `Node.status.allocatable` itself is now `capacity - (system-reserved + kube-reserved)` (`node.rs::allocatable_map`) rather than always equal to capacity — a real correctness fix, not just the enforcement mechanism (`NODELET_SYSTEM_RESERVED_CPU_MILLICORES`/`_MEMORY_BYTES`, `NODELET_KUBE_RESERVED_CPU_MILLICORES`/`_MEMORY_BYTES`, all default `0`). Best-effort: needs root + cgroup v2 (cgroup v1 unsupported, matching modern kubelet defaults), logs and continues on failure rather than blocking startup — **unvalidated against a real cgroup v2 hierarchy**, no writable `/sys/fs/cgroup` in the sandbox that built this; see `deploy/lib/test/cases/cgroup_hierarchy.sh` for the live-cluster check.
-- ✅ **CPU Manager** (`cpu_manager.rs`, `static` policy) — Guaranteed-QoS containers requesting a whole number of CPUs get pinned to exclusive cores (`cpuset_cpus`); every other container gets the current shared pool (total minus reserved minus exclusively-claimed). Opt-in (`NODELET_CPU_MANAGER_POLICY`, default `none` matching upstream). **Bidirectional as of round 16**: `runtime/cri.rs::refresh_shared_pool_cpusets()` retroactively shrinks/grows every already-running shared-pool container's `cpuset_cpus` via CRI's `UpdateContainerResources` whenever an exclusive claim is made or released, matching real kubelet's own policy behavior — not just newly-created containers. Not topology/socket-aware (simple ascending-CPU-ID selection); that's Topology Manager's job, still missing.
+- ✅ **CPU Manager** (`cpu_manager.rs`, `static` policy) — Guaranteed-QoS containers requesting a whole number of CPUs get pinned to exclusive cores (`cpuset_cpus`); every other container gets the current shared pool (total minus reserved minus exclusively-claimed). Opt-in (`NODELET_CPU_MANAGER_POLICY`, default `none` matching upstream). **Bidirectional as of round 16**: `runtime/cri.rs::refresh_shared_pool_cpusets()` retroactively shrinks/grows every already-running shared-pool container's `cpuset_cpus` via CRI's `UpdateContainerResources` whenever an exclusive claim is made or released, matching real kubelet's own policy behavior — not just newly-created containers. As of round 17, NUMA-aware when Topology Manager is also enabled (`allocate_preferring()`); simple ascending-CPU-ID selection otherwise.
 - ❌ Memory Manager — advanced/optional
-- ❌ Topology Manager (NUMA-aware coordination between CPU Manager, device plugins, and Memory Manager) — advanced/optional; device plugins' `TopologyInfo` field is parsed by the vendored proto but not acted on
+- 🟡 **Topology Manager** (`topology.rs`) — coordinates CPU Manager and device plugins (no Memory Manager exists here to also coordinate) so a container's exclusive cores and allocated devices land on the same NUMA node. Opt-in (`NODELET_TOPOLOGY_MANAGER_POLICY`, default `none`); `best-effort` prefers alignment without rejecting, `restricted`/`single-numa-node` reject the container if no single NUMA node satisfies every hint provider. **Single-node-only algorithm, not upstream's full bitmask/permutation one** — reaches the same answer whenever one NUMA node can satisfy everything (the common case), but won't find a valid multi-node alignment upstream's `restricted` would accept; this treats `restricted` identically to `single-numa-node`. See round 17 notes.
 - 🟡 **Device plugins** (`device_plugins.rs`, GPU/FPGA/etc. hardware resources) — discovered via the same dynamic plugin-registration protocol CSI drivers use (`plugin_registry.rs`, round 13); tracks live device inventory/health per resource name via `ListAndWatch`, advertises healthy counts on `Node.status.capacity`/`.allocatable`, and calls `Allocate()` during container creation to inject the envs/mounts/device-nodes/annotations a plugin returns. Not implemented: `GetPreferredAllocation` (always does its own first-healthy-unallocated pick) and `PreStartContainer`. Unvalidated against a real device plugin — see round 14 notes.
 - ❌ In-place pod resource resize (newer, still-maturing upstream feature)
 
@@ -978,9 +1052,12 @@ higher-value/correctness-critical than others:
 - [x] Round 16: CPU Manager retroactive shared-pool updates
       (refresh_shared_pool_cpusets()) — closes round 15's biggest flagged
       gap; not topology/socket-aware yet. See round 16 notes.
+- [x] Round 17: Topology Manager (topology.rs) — single-node-only
+      alignment algorithm, coordinates CPU Manager + device plugins; no
+      Memory Manager to also coordinate. See round 17 notes.
 - [ ] Everything else in the responsibility list above — biggest remaining
-      single items: Memory/Topology managers, CPU Manager topology/socket-
-      aware selection, device plugin
+      single items: Memory Manager, Topology Manager's multi-node
+      `restricted` allowance, device plugin
       GetPreferredAllocation/PreStartContainer, plus deepening PVC/CSI
       further (Controller service/attach — the one CSI capability still
       entirely missing). Ask before starting the next round.

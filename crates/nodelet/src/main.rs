@@ -136,6 +136,13 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                         cfg.system_reserved_cpu_millicores + cfg.kube_reserved_cpu_millicores,
                     )
                 });
+                let topology_policy = match cfg.topology_manager_policy.as_str() {
+                    "best-effort" => nodelet::topology::TopologyManagerPolicy::BestEffort,
+                    "restricted" => nodelet::topology::TopologyManagerPolicy::Restricted,
+                    "single-numa-node" => nodelet::topology::TopologyManagerPolicy::SingleNumaNode,
+                    _ => nodelet::topology::TopologyManagerPolicy::None,
+                };
+                let numa_topology = nodelet::topology::read_numa_topology(std::path::Path::new("/sys/devices/system/node"));
                 let rt = runtime::cri::CriRuntime::connect(
                     &cfg.cri_endpoint,
                     client,
@@ -145,6 +152,8 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                     cfg.plugin_registry_path.clone(),
                     cfg.plugin_registry_sync_interval,
                     cpu_manager,
+                    topology_policy,
+                    numa_topology,
                 )
                 .await
                 .context("connecting to CRI endpoint")?;

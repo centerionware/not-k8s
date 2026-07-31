@@ -166,6 +166,12 @@ pub struct Config {
     /// `true` (`static`), which pins Guaranteed-QoS containers requesting
     /// a whole number of CPUs to exclusive cores instead of the shared pool.
     pub cpu_manager_static: bool,
+    /// Real kubelet's `--topology-manager-policy` (`cri` only; see
+    /// `topology.rs`) — `none` (default, matches upstream), `best-effort`,
+    /// `restricted`, or `single-numa-node`. Coordinates CPU Manager and
+    /// device plugins so a container's exclusive cores and allocated
+    /// devices land on the same NUMA node.
+    pub topology_manager_policy: String,
 }
 
 impl Config {
@@ -297,6 +303,14 @@ impl Config {
             Ok(other) => anyhow::bail!("unknown NODELET_CPU_MANAGER_POLICY '{other}' (want 'none' or 'static')"),
         };
 
+        let topology_manager_policy = match std::env::var("NODELET_TOPOLOGY_MANAGER_POLICY").as_deref() {
+            Ok(p @ ("none" | "best-effort" | "restricted" | "single-numa-node")) => p.to_string(),
+            Err(_) => "none".to_string(),
+            Ok(other) => anyhow::bail!(
+                "unknown NODELET_TOPOLOGY_MANAGER_POLICY '{other}' (want 'none', 'best-effort', 'restricted', or 'single-numa-node')"
+            ),
+        };
+
         Ok(Self {
             node_name,
             runtime,
@@ -337,6 +351,7 @@ impl Config {
             plugin_registry_path,
             plugin_registry_sync_interval,
             cpu_manager_static,
+            topology_manager_policy,
         })
     }
 }
