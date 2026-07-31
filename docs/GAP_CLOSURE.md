@@ -27,6 +27,58 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 21: device plugin `GetPreferredAllocation`/`PreStartContainer` (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-20). Offered device
+plugin polish, a fresh gap re-audit, or pause; user picked device plugin
+polish — the last item on the tracked list.
+
+- **`GetPreferredAllocation`**: `DevicePlugins::allocate_preferring()`
+  fetches each plugin's `DevicePluginOptions` once (via
+  `GetDevicePluginOptions`, right after registering — new `PluginState`
+  fields `pre_start_required`/`get_preferred_allocation_available`, set
+  by `watch_once()` before its `ListAndWatch` loop starts). When a plugin
+  supports it, `allocate_preferring()` offers the full healthy-unallocated
+  candidate list and lets the plugin choose; the response is only trusted
+  if `is_valid_preferred_allocation()` accepts it — exactly `count` IDs,
+  no duplicates, every one currently healthy and unallocated. Anything
+  else (missing/malformed response, RPC failure, or a genuine race lost
+  against a concurrent allocation in the gap between snapshotting
+  candidates and the plugin's response coming back) falls back to
+  nodelet's own `pick_devices_preferring()` selection — the plugin never
+  gets blind trust for something that could double-allocate a device.
+- **`PreStartContainer`**: called with the final device IDs right after
+  `Allocate()` succeeds (matching upstream's ordering — reset-before-use
+  semantics), for plugins that set `pre_start_required`. A failure here
+  releases the devices and fails the whole allocation, the same treatment
+  an `Allocate()` failure already gets.
+- 7 new unit tests (`device_plugins_tests/preferred_allocation.rs`):
+  `is_valid_preferred_allocation()`'s accept case plus every rejection
+  case (wrong count, duplicates, unknown ID, unhealthy, already
+  allocated, zero-count edge case).
+
+581 tests passing with `--features cri` (up from 574), 179 mock-only
+(unchanged — entirely `cri`-gated).
+`deploy/lib/test/cases/device_plugins.sh` gained a new manual-note test
+describing the spot-check needed on real hardware — reference plugins
+like nvidia-device-plugin don't set these options by default, so even
+genuine device-plugin hardware access wouldn't automatically exercise
+either RPC; a plugin specifically implementing them is required either
+way, same "can't be automated in bash without real infra" limitation
+every device-plugin-adjacent round has carried since 14.
+
+**Confidence note**: `is_valid_allocation()`'s validation logic is pure
+and unit-tested with solid confidence. Not validated live: no real
+device plugin implementing either RPC exists in this sandbox (no
+hardware at all, as every device-plugin round has noted) — the actual
+`GetPreferredAllocation`/`PreStartContainer` gRPC call paths are
+unexercised outside compilation and the manual-note's description.
+
+This closes the "device plugins' GetPreferredAllocation/PreStartContainer"
+framing that's been the last tracked item since round 14 — the kubelet
+parity gap-closure effort has now covered every explicitly-scoped item
+identified since the round 1 rescoping.
+
 ## Round 20: Topology Manager `restricted` multi-node spread (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-19). Offered Topology
@@ -1144,7 +1196,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **CPU Manager** (`cpu_manager.rs`, `static` policy) — Guaranteed-QoS containers requesting a whole number of CPUs get pinned to exclusive cores (`cpuset_cpus`); every other container gets the current shared pool (total minus reserved minus exclusively-claimed). Opt-in (`NODELET_CPU_MANAGER_POLICY`, default `none` matching upstream). **Bidirectional as of round 16**: `runtime/cri.rs::refresh_shared_pool_cpusets()` retroactively shrinks/grows every already-running shared-pool container's `cpuset_cpus` via CRI's `UpdateContainerResources` whenever an exclusive claim is made or released, matching real kubelet's own policy behavior — not just newly-created containers. As of round 17, NUMA-aware when Topology Manager is also enabled (`allocate_preferring()`); simple ascending-CPU-ID selection otherwise.
 - ✅ **Memory Manager** (`memory_manager.rs`, `static` policy) — Guaranteed-QoS containers with a memory limit get pinned to a single NUMA node (`cpuset_mems`). Opt-in (`NODELET_MEMORY_MANAGER_POLICY`, default `none`). **First-slice scope**: never spans multiple NUMA nodes (falls back to unconstrained if no single node has enough free capacity, rather than upstream's multi-node spanning); no shared-pool tracking or `UpdateContainerResources` retroactive sweep for non-pinned containers (unlike CPU Manager) — they're simply left unconstrained; no per-NUMA-node `--reserved-memory`-equivalent reservation. See round 18 notes.
 - ✅ **Topology Manager** (`topology.rs`) — coordinates CPU Manager, Memory Manager (as of round 18), and device plugins so a container's exclusive cores, pinned memory, and allocated devices land on the same NUMA node. Opt-in (`NODELET_TOPOLOGY_MANAGER_POLICY`, default `none`); `best-effort` prefers alignment without rejecting, `single-numa-node` rejects the container outright if no single NUMA node satisfies every hint provider. **`restricted`** (round 20) gets a real, bounded multi-node relaxation instead — `spread()` places each hint provider on its own best node independently when no single node works for everyone, rejecting only if some provider's request can't be placed anywhere at all. **Single-node-only alignment, not upstream's full bitmask/permutation combination search** — `align()`/`spread()` reach the same answer as upstream whenever a single node can satisfy everything or every provider individually has *some* home, but don't search for upstream's genuinely joint cross-provider multi-node splits. See round 17/18/20 notes.
-- 🟡 **Device plugins** (`device_plugins.rs`, GPU/FPGA/etc. hardware resources) — discovered via the same dynamic plugin-registration protocol CSI drivers use (`plugin_registry.rs`, round 13); tracks live device inventory/health per resource name via `ListAndWatch`, advertises healthy counts on `Node.status.capacity`/`.allocatable`, and calls `Allocate()` during container creation to inject the envs/mounts/device-nodes/annotations a plugin returns. Not implemented: `GetPreferredAllocation` (always does its own first-healthy-unallocated pick) and `PreStartContainer`. Unvalidated against a real device plugin — see round 14 notes.
+- ✅ **Device plugins** (`device_plugins.rs`, GPU/FPGA/etc. hardware resources) — discovered via the same dynamic plugin-registration protocol CSI drivers use (`plugin_registry.rs`, round 13); tracks live device inventory/health per resource name via `ListAndWatch`, advertises healthy counts on `Node.status.capacity`/`.allocatable`, and calls `Allocate()` during container creation to inject the envs/mounts/device-nodes/annotations a plugin returns. **`GetPreferredAllocation`/`PreStartContainer`** (round 21) — a plugin's `DevicePluginOptions` (fetched once via `GetDevicePluginOptions`) says whether either applies; `GetPreferredAllocation`'s response is validated (`is_valid_preferred_allocation()`) before being trusted, falling back to nodelet's own first-healthy-unallocated pick otherwise; `PreStartContainer` is called right after `Allocate()` succeeds when required, a failure there releasing devices and failing the allocation. Unvalidated against a real device plugin — see rounds 14 and 21 notes.
 - ❌ In-place pod resource resize (newer, still-maturing upstream feature)
 
 ### Security context
@@ -1287,6 +1339,12 @@ higher-value/correctness-critical than others:
       single-node reject. Not upstream's exact joint-hint combination
       search — a real, honestly-scoped bounded relaxation. See round 20
       notes.
-- [ ] Everything else in the responsibility list above — biggest remaining
-      single item: device plugin GetPreferredAllocation/PreStartContainer.
-      Ask before starting the next round.
+- [x] Round 21: device plugin `GetPreferredAllocation`/`PreStartContainer`
+      — a plugin's `DevicePluginOptions` decides whether either applies;
+      the preferred-allocation response is validated before use, falling
+      back to nodelet's own selection otherwise. Closes the last item
+      explicitly tracked on this list since round 14. See round 21 notes.
+- [ ] Everything else in the responsibility list above — no specific
+      known item currently tracked; a fresh gap re-audit against
+      kubernetes.io docs was offered and declined at round 21 in favor of
+      closing this one out. Ask before starting the next round.

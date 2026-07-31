@@ -27,14 +27,20 @@
 //!    inject — merged into the container's `ContainerConfig` the same way
 //!    everything else already is.
 //!
-//! **Not implemented**: `GetPreferredAllocation` (this always does its own
-//! "first N healthy, unallocated" selection — a real simplification vs.
-//! real kubelet's topology-aware placement, but device-count correctness
-//! doesn't depend on it) and `PreStartContainer` (some plugins want a
-//! call right before each container start; skipped, matches this round's
-//! "first slice" framing — a plugin requiring it will still register and
-//! report devices, `Allocate` will still work, `PreStartContainer` is
-//! simply never called).
+//! **`GetPreferredAllocation`/`PreStartContainer` (round 21)**: a plugin's
+//! `DevicePluginOptions` (fetched once via `GetDevicePluginOptions` right
+//! after registering, alongside its device inventory) says whether either
+//! is needed. If `get_preferred_allocation_available`, `allocate_preferring()`
+//! offers the plugin the full healthy-unallocated candidate list and lets
+//! it pick — falling back to nodelet's own "first N, NUMA-preferring"
+//! selection (`pick_devices_preferring()`) if the plugin's response is
+//! missing, malformed, or (a race lost against a concurrent allocation)
+//! no longer valid by the time it comes back. If `pre_start_required`,
+//! `PreStartContainer` is called with the final device IDs right after
+//! `Allocate()` succeeds and before the container actually starts,
+//! matching upstream's own ordering — a failure here fails the whole
+//! allocation (devices released) the same way an `Allocate()` failure
+//! already does.
 
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -48,7 +54,10 @@ pub mod v1beta1 {
 }
 
 use v1beta1::device_plugin_client::DevicePluginClient;
-use v1beta1::{AllocateRequest, ContainerAllocateRequest, ContainerAllocateResponse, Empty};
+use v1beta1::{
+    AllocateRequest, ContainerAllocateRequest, ContainerAllocateResponse, ContainerPreferredAllocationRequest, Empty,
+    PreStartContainerRequest, PreferredAllocationRequest,
+};
 
 /// How long to wait before reconnecting a `ListAndWatch` stream that ended
 /// or errored (the plugin process restarting is the common case) — a
@@ -120,12 +129,41 @@ fn pick_devices_preferring(devices: &[DeviceInfo], allocated: &HashSet<String>, 
     (picked.len() as u64 >= count).then_some(picked)
 }
 
+/// Whether a `GetPreferredAllocation` response is safe to actually use —
+/// pure so it's unit-testable without a live plugin. `ids` must be
+/// exactly `count` device IDs, no duplicates, and every one of them
+/// currently healthy and unallocated in `devices`/`allocated` — the same
+/// checks a hand-rolled selection would already satisfy by construction,
+/// but a plugin's response is untrusted input: it could return garbage
+/// IDs, too few/many, duplicates, or (a real race, not just a hostile
+/// plugin) IDs that got allocated to something else in the time between
+/// this module snapshotting the candidate list and the plugin's response
+/// coming back. Any of those falls back to `pick_devices_preferring()`
+/// instead of trusting the plugin blindly.
+fn is_valid_preferred_allocation(ids: &[String], devices: &[DeviceInfo], allocated: &HashSet<String>, count: u64) -> bool {
+    if ids.len() as u64 != count {
+        return false;
+    }
+    let unique: HashSet<&String> = ids.iter().collect();
+    if unique.len() != ids.len() {
+        return false;
+    }
+    ids.iter().all(|id| devices.iter().any(|d| &d.id == id && d.healthy) && !allocated.contains(id))
+}
+
 struct PluginState {
     endpoint: String,
     devices: Vec<DeviceInfo>,
     /// Device IDs currently allocated to a container — never handed out
     /// again by `allocate()` until `release()`'s called for them.
     allocated: HashSet<String>,
+    /// From the plugin's `DevicePluginOptions`, fetched once via
+    /// `GetDevicePluginOptions` right after registering (see
+    /// `watch_once()`) — both default to `false` until that first call
+    /// completes, matching this module's existing "not implemented"
+    /// behavior for the brief window before it does.
+    pre_start_required: bool,
+    get_preferred_allocation_available: bool,
 }
 
 pub struct DevicePlugins {
@@ -146,7 +184,16 @@ impl DevicePlugins {
     pub fn register(self: &Arc<Self>, resource_name: String, endpoint: String) {
         {
             let mut plugins = self.plugins.lock().unwrap();
-            plugins.insert(resource_name.clone(), PluginState { endpoint: endpoint.clone(), devices: Vec::new(), allocated: HashSet::new() });
+            plugins.insert(
+                resource_name.clone(),
+                PluginState {
+                    endpoint: endpoint.clone(),
+                    devices: Vec::new(),
+                    allocated: HashSet::new(),
+                    pre_start_required: false,
+                    get_preferred_allocation_available: false,
+                },
+            );
         }
         let this = self.clone();
         tokio::spawn(async move { watch_loop(this, resource_name, endpoint).await });
@@ -208,6 +255,23 @@ impl DevicePlugins {
         self.plugins.lock().unwrap().get(resource_name).map(|s| s.endpoint == endpoint).unwrap_or(false)
     }
 
+    /// Record a plugin's `DevicePluginOptions`, fetched once right after
+    /// registration (see `watch_once()`). Same staleness guard as
+    /// `update_devices()`: a `false` return means this watcher's
+    /// registration has already been superseded, so the caller should
+    /// stop rather than write into a fresher registration's state.
+    fn set_options(&self, resource_name: &str, endpoint: &str, pre_start_required: bool, get_preferred_allocation_available: bool) -> bool {
+        let mut plugins = self.plugins.lock().unwrap();
+        match plugins.get_mut(resource_name) {
+            Some(state) if state.endpoint == endpoint => {
+                state.pre_start_required = pre_start_required;
+                state.get_preferred_allocation_available = get_preferred_allocation_available;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Pick `count` healthy, currently-unallocated device IDs for
     /// `resource_name`, mark them allocated, and call the plugin's
     /// `Allocate` RPC for them. Returns the device IDs (so the caller can
@@ -222,24 +286,64 @@ impl DevicePlugins {
     /// Same as `allocate()`, but tries devices on `preferred_numa_node`
     /// first — Topology Manager's aligned-node choice, so this container's
     /// devices land on the same NUMA node its exclusive CPUs (if any) do.
+    ///
+    /// If the plugin supports `GetPreferredAllocation` (round 21), it gets
+    /// first say: offered the full healthy-unallocated candidate list, its
+    /// response used verbatim if `is_valid_preferred_allocation()` accepts
+    /// it, falling back to nodelet's own `pick_devices_preferring()`
+    /// otherwise (missing/malformed response, or a lost race against a
+    /// concurrent allocation). If the plugin requires `PreStartContainer`,
+    /// it's called with the final device IDs right after `Allocate()`
+    /// succeeds — a failure there releases the devices and fails the
+    /// allocation, same treatment an `Allocate()` failure already gets.
     pub async fn allocate_preferring(
         &self,
         resource_name: &str,
         count: u64,
         preferred_numa_node: Option<u32>,
     ) -> Result<(Vec<String>, ContainerAllocateResponse)> {
-        let (endpoint, device_ids) = {
+        let (endpoint, available_ids, get_preferred_allocation_available, pre_start_required) = {
+            let plugins = self.plugins.lock().unwrap();
+            let state = plugins.get(resource_name).with_context(|| format!("no device plugin registered for '{resource_name}'"))?;
+            let available_ids: Vec<String> =
+                state.devices.iter().filter(|d| d.healthy && !state.allocated.contains(&d.id)).map(|d| d.id.clone()).collect();
+            (state.endpoint.clone(), available_ids, state.get_preferred_allocation_available, state.pre_start_required)
+        };
+
+        let preferred_ids = if get_preferred_allocation_available {
+            match self.get_preferred_allocation_call(&endpoint, &available_ids, count).await {
+                Ok(ids) => Some(ids),
+                Err(e) => {
+                    warn!(resource = %resource_name, error = ?e, "device plugin GetPreferredAllocation failed; falling back to nodelet's own selection");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let device_ids = {
             let mut plugins = self.plugins.lock().unwrap();
             let state = plugins.get_mut(resource_name).with_context(|| format!("no device plugin registered for '{resource_name}'"))?;
-            let picked = pick_devices_preferring(&state.devices, &state.allocated, count, preferred_numa_node)
-                .with_context(|| format!("not enough healthy devices available for '{resource_name}'"))?;
+            let picked = match &preferred_ids {
+                Some(ids) if is_valid_preferred_allocation(ids, &state.devices, &state.allocated, count) => ids.clone(),
+                _ => pick_devices_preferring(&state.devices, &state.allocated, count, preferred_numa_node)
+                    .with_context(|| format!("not enough healthy devices available for '{resource_name}'"))?,
+            };
             for id in &picked {
                 state.allocated.insert(id.clone());
             }
-            (state.endpoint.clone(), picked)
+            picked
         };
 
         match self.allocate_call(&endpoint, &device_ids).await {
+            Ok(resp) if pre_start_required => match self.pre_start_container_call(&endpoint, &device_ids).await {
+                Ok(()) => Ok((device_ids, resp)),
+                Err(e) => {
+                    self.release(resource_name, &device_ids);
+                    Err(e)
+                }
+            },
             Ok(resp) => Ok((device_ids, resp)),
             Err(e) => {
                 self.release(resource_name, &device_ids);
@@ -260,6 +364,33 @@ impl DevicePlugins {
             anyhow::bail!("device plugin Allocate() returned no container response");
         }
         Ok(resp.container_responses.remove(0))
+    }
+
+    async fn get_preferred_allocation_call(&self, endpoint: &str, available_ids: &[String], count: u64) -> Result<Vec<String>> {
+        let channel = connect_uds(endpoint).await?;
+        let mut client = DevicePluginClient::new(channel);
+        let mut resp = client
+            .get_preferred_allocation(PreferredAllocationRequest {
+                container_requests: vec![ContainerPreferredAllocationRequest {
+                    available_device_i_ds: available_ids.to_vec(),
+                    must_include_device_i_ds: Vec::new(),
+                    allocation_size: count as i32,
+                }],
+            })
+            .await
+            .context("GetPreferredAllocation")?
+            .into_inner();
+        if resp.container_responses.is_empty() {
+            anyhow::bail!("device plugin GetPreferredAllocation returned no container response");
+        }
+        Ok(resp.container_responses.remove(0).device_i_ds)
+    }
+
+    async fn pre_start_container_call(&self, endpoint: &str, device_ids: &[String]) -> Result<()> {
+        let channel = connect_uds(endpoint).await?;
+        let mut client = DevicePluginClient::new(channel);
+        client.pre_start_container(PreStartContainerRequest { devices_ids: device_ids.to_vec() }).await.context("PreStartContainer")?;
+        Ok(())
     }
 
     /// Give back device IDs previously returned by `allocate()` — call on
@@ -290,6 +421,12 @@ async fn watch_loop(devices: Arc<DevicePlugins>, resource_name: String, endpoint
 async fn watch_once(devices: &Arc<DevicePlugins>, resource_name: &str, endpoint: &str) -> Result<()> {
     let channel = connect_uds(endpoint).await?;
     let mut client = DevicePluginClient::new(channel);
+
+    let options = client.get_device_plugin_options(Empty {}).await.context("GetDevicePluginOptions")?.into_inner();
+    if !devices.set_options(resource_name, endpoint, options.pre_start_required, options.get_preferred_allocation_available) {
+        return Ok(()); // stale — deregistered or re-registered elsewhere since this task started
+    }
+
     let mut stream = client.list_and_watch(Empty {}).await.context("ListAndWatch")?.into_inner();
 
     while let Some(resp) = stream.message().await.context("reading ListAndWatch stream")? {
@@ -319,3 +456,6 @@ mod tests_capacity_map;
 #[cfg(test)]
 #[path = "device_plugins_tests/registration_state.rs"]
 mod tests_registration_state;
+#[cfg(test)]
+#[path = "device_plugins_tests/preferred_allocation.rs"]
+mod tests_preferred_allocation;

@@ -170,9 +170,11 @@ placed on its own best node independently when no single node satisfies
 everyone — while `single-numa-node` stays strict single-node-only, and
 neither searches upstream's full joint cross-provider bitmask/permutation
 space (see round 17/18/20 notes), reads real NUMA topology from
-`/sys/devices/system/node`. Still missing: device plugins'
-`GetPreferredAllocation`/`PreStartContainer` — full list in
-`docs/GAP_CLOSURE.md`.
+`/sys/devices/system/node`. Device plugins also gained (round 21)
+`GetPreferredAllocation` (a plugin's own device choice, validated before
+trust, falling back to nodelet's own pick otherwise) and
+`PreStartContainer` (called right after `Allocate()` succeeds, for
+plugins that require it). Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -617,12 +619,13 @@ Two layers, and they're not substitutes for each other:
   `NODELET_CSI_DRIVERS` set is the actual end-to-end proof that dynamic
   discovery works, once that's set up.
 
-  `device_plugins.sh` checks the same shared registry directory, plus a
-  manual-note for the full device-allocation flow — this suite has no
-  GPU/FPGA hardware to test against and a real device plugin binary isn't
-  something to bundle here (unlike CSI, a fake gRPC device plugin needs no
-  real hardware to build, so this is flagged as a natural next step rather
-  than attempted in this round).
+  `device_plugins.sh` checks the same shared registry directory, plus
+  manual-notes for the full device-allocation flow and (round 21)
+  `GetPreferredAllocation`/`PreStartContainer` specifically — this suite
+  has no GPU/FPGA hardware to test against and a real device plugin
+  binary isn't something to bundle here (unlike CSI, a fake gRPC device
+  plugin needs no real hardware to build, so this is flagged as a natural
+  next step rather than attempted so far).
 
   `cpu_manager.sh` creates two Guaranteed 1-CPU pods and checks their
   `cpuset.cpus` cgroup files (found by container ID, tolerant of driver

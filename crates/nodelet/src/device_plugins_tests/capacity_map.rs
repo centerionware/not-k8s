@@ -3,7 +3,16 @@ use super::*;
 fn plugins_with(entries: Vec<(&str, Vec<DeviceInfo>)>) -> DevicePlugins {
     let mut plugins = HashMap::new();
     for (name, devices) in entries {
-        plugins.insert(name.to_string(), PluginState { endpoint: "unix:///dummy.sock".to_string(), devices, allocated: HashSet::new() });
+        plugins.insert(
+            name.to_string(),
+            PluginState {
+                endpoint: "unix:///dummy.sock".to_string(),
+                devices,
+                allocated: HashSet::new(),
+                pre_start_required: false,
+                get_preferred_allocation_available: false,
+            },
+        );
     }
     DevicePlugins { plugins: Mutex::new(plugins) }
 }
