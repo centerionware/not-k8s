@@ -418,8 +418,21 @@ fn termination_grace_seconds(pod: &Pod) -> i64 {
     }
 }
 
+/// A volume `resolve_volumes()` has resolved to something mountable —
+/// either a host path nodelet materialized itself (every volume kind
+/// before round 32: ConfigMap/Secret/emptyDir/downwardAPI/projected/PVC/
+/// ephemeral, all bind-mounted from a real host directory), or an image
+/// reference for `volumeSource.image` (round 32) — CRI's `Mount.image`
+/// field handles those directly, with no host path involved at all
+/// (`host_path` must stay empty per the proto's own contract).
+#[derive(Clone, Debug)]
+enum ResolvedVolume {
+    HostPath(PathBuf),
+    Image { image_ref: String },
+}
+
 /// Build CRI `Mount` entries for a container's volumeMounts against the
-/// pod's already-resolved volume name -> host directory map (see
+/// pod's already-resolved volume name -> mount source map (see
 /// resolve_volumes()). A mount naming a volume that isn't in the map
 /// (unsupported volume type, or the ConfigMap/Secret fetch failed) is
 /// silently dropped — pulled out as a pure function specifically to make
@@ -427,22 +440,37 @@ fn termination_grace_seconds(pod: &Pod) -> i64 {
 /// real CRI socket.
 fn build_mounts(
     volume_mounts: &[k8s_openapi::api::core::v1::VolumeMount],
-    volumes: &HashMap<String, PathBuf>,
+    volumes: &HashMap<String, ResolvedVolume>,
 ) -> Vec<Mount> {
     volume_mounts
         .iter()
-        .filter_map(|vm| {
-            let host_dir = volumes.get(&vm.name)?;
-            let host_path = match &vm.sub_path {
-                Some(sub) => host_dir.join(sub),
-                None => host_dir.clone(),
-            };
-            Some(Mount {
+        .filter_map(|vm| match volumes.get(&vm.name)? {
+            ResolvedVolume::HostPath(host_dir) => {
+                let host_path = match &vm.sub_path {
+                    Some(sub) => host_dir.join(sub),
+                    None => host_dir.clone(),
+                };
+                Some(Mount {
+                    container_path: vm.mount_path.clone(),
+                    host_path: host_path.to_string_lossy().into_owned(),
+                    readonly: vm.read_only.unwrap_or(false),
+                    ..Default::default()
+                })
+            }
+            ResolvedVolume::Image { image_ref } => Some(Mount {
                 container_path: vm.mount_path.clone(),
-                host_path: host_path.to_string_lossy().into_owned(),
-                readonly: vm.read_only.unwrap_or(false),
+                // Must stay empty — CRI's Mount.image and Mount.host_path
+                // are mutually exclusive by the proto's own contract.
+                host_path: String::new(),
+                readonly: true, // image volumes are always read-only, matching the KEP
+                image: Some(ImageSpec { image: image_ref.clone(), ..Default::default() }),
+                // The container's own volumeMounts[].subPath, same field
+                // regular volumes already use to select a subdirectory —
+                // for an image-backed volume it selects a path *within*
+                // the mounted image instead (CRI's `image_sub_path`).
+                image_sub_path: vm.sub_path.clone().unwrap_or_default(),
                 ..Default::default()
-            })
+            }),
         })
         .collect()
 }
@@ -1362,7 +1390,7 @@ impl CriRuntime {
     /// producing an empty mount — a container that needs one of those still
     /// won't get it, but at least it's visible in the logs why, instead of
     /// looking identical to the ConfigMap bug this fixes.
-    async fn resolve_volumes(&self, pod: &Pod, id: &PodId) -> HashMap<String, PathBuf> {
+    async fn resolve_volumes(&self, pod: &Pod, id: &PodId, pull_secrets: &[String]) -> HashMap<String, ResolvedVolume> {
         let mut out = HashMap::new();
         let Some(volumes) = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()) else {
             return out;
@@ -1383,7 +1411,7 @@ impl CriRuntime {
                             warn!(volume = %v.name, configmap = %name, error = ?e, "failed to materialize ConfigMap volume");
                             continue;
                         }
-                        out.insert(v.name.clone(), vol_dir);
+                        out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
                     }
                     // A missing ConfigMap on a volume explicitly marked
                     // `optional: true` (coredns's own manifest does this for
@@ -1403,7 +1431,7 @@ impl CriRuntime {
                             warn!(volume = %v.name, secret = %name, error = ?e, "failed to materialize Secret volume");
                             continue;
                         }
-                        out.insert(v.name.clone(), vol_dir);
+                        out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
                     }
                     Err(_) if optional => {}
                     Err(e) => warn!(volume = %v.name, secret = %name, error = ?e, "failed to fetch Secret for volume"),
@@ -1419,26 +1447,26 @@ impl CriRuntime {
                         warn!(volume = %v.name, error = ?e, "failed to mount tmpfs for a Memory-medium emptyDir volume; falling back to a plain disk directory");
                     }
                 }
-                out.insert(v.name.clone(), vol_dir);
+                out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
             } else if let Some(downward) = &v.downward_api {
                 if let Err(e) = write_downward_api_volume(&vol_dir, pod, downward.items.as_deref().unwrap_or(&[])) {
                     warn!(volume = %v.name, error = ?e, "failed to materialize downwardAPI volume");
                     continue;
                 }
-                out.insert(v.name.clone(), vol_dir);
+                out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
             } else if let Some(projected) = &v.projected {
                 if let Err(e) = self.write_projected_volume(&vol_dir, pod, id, projected).await {
                     warn!(volume = %v.name, error = ?e, "failed to materialize projected volume");
                     continue;
                 }
-                out.insert(v.name.clone(), vol_dir);
+                out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
             } else if let Some(pvc_source) = &v.persistent_volume_claim {
                 match self.resolve_csi_source(&id.namespace, &pvc_source.claim_name).await {
                     Ok(Some(mut source)) => {
                         source.read_only |= pvc_source.read_only.unwrap_or(false);
                         match self.csi.mount(&source, &vol_dir, &id.uid).await {
                             Ok(()) => {
-                                out.insert(v.name.clone(), vol_dir);
+                                out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
                             }
                             Err(e) => warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "failed to mount CSI volume"),
                         }
@@ -1465,7 +1493,7 @@ impl CriRuntime {
                 match self.resolve_ephemeral_source(&id.namespace, &claim_name, &id.uid).await {
                     Ok(Some(source)) => match self.csi.mount(&source, &vol_dir, &id.uid).await {
                         Ok(()) => {
-                            out.insert(v.name.clone(), vol_dir);
+                            out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
                         }
                         Err(e) => warn!(volume = %v.name, claim = %claim_name, error = ?e, "failed to mount CSI volume for generic ephemeral volume"),
                     },
@@ -1476,6 +1504,19 @@ impl CriRuntime {
                         // warned with the specific reason.
                     }
                     Err(e) => warn!(volume = %v.name, claim = %claim_name, error = ?e, "failed to resolve generic ephemeral volume's PersistentVolumeClaim"),
+                }
+            } else if let Some(image_source) = &v.image {
+                // volumeSource.image (round 32, KEP-4639): CRI has direct
+                // native support for this via Mount.image — kubelet's own
+                // job is just to PullImage the reference (respecting the
+                // pod's imagePullSecrets, same as any container image) and
+                // pass the runtime's resolved image_ref through; the
+                // runtime does the actual mounting.
+                match self.pull_image_volume(&id.namespace, pull_secrets, image_source).await {
+                    Ok(resolved) => {
+                        out.insert(v.name.clone(), resolved);
+                    }
+                    Err(e) => warn!(volume = %v.name, reference = %image_source.reference.as_deref().unwrap_or(""), error = ?e, "failed to pull image for image volume"),
                 }
             } else {
                 warn!(
@@ -1491,7 +1532,7 @@ impl CriRuntime {
             let hosts_path = pod_dir.join("etc-hosts");
             match write_etc_hosts(&hosts_path, aliases) {
                 Ok(()) => {
-                    out.insert(ETC_HOSTS_VOLUME_KEY.to_string(), hosts_path);
+                    out.insert(ETC_HOSTS_VOLUME_KEY.to_string(), ResolvedVolume::HostPath(hosts_path));
                 }
                 Err(e) => warn!(error = ?e, "failed to materialize /etc/hosts for hostAliases"),
             }
@@ -1503,10 +1544,14 @@ impl CriRuntime {
             .and_then(|s| s.security_context.as_ref())
             .and_then(|sc| sc.fs_group)
         {
-            for (key, dir) in &out {
+            for (key, source) in &out {
                 if key == ETC_HOSTS_VOLUME_KEY {
                     continue; // a single file, not a directory nodelet materialized as a tree
                 }
+                // Image volumes (round 32) are read-only OCI content with
+                // no host directory of nodelet's own to chown at all —
+                // fsGroup doesn't apply to them, matching upstream.
+                let ResolvedVolume::HostPath(dir) = source else { continue };
                 if let Err(e) = apply_fs_group(dir, fs_group as u32) {
                     warn!(dir = %dir.display(), fs_group, error = ?e, "failed to apply fsGroup to volume");
                 }
@@ -2030,7 +2075,7 @@ impl CriRuntime {
         container: &Container,
         pod_sc: Option<&PodSecurityContext>,
         restart_policy: &str,
-        volumes: &HashMap<String, PathBuf>,
+        volumes: &HashMap<String, ResolvedVolume>,
         pull_secrets: &[String],
         envs: &[KeyValue],
         qos: QosClass,
@@ -2078,7 +2123,7 @@ impl CriRuntime {
         pod: &Pod,
         container: &Container,
         pod_sc: Option<&PodSecurityContext>,
-        volumes: &HashMap<String, PathBuf>,
+        volumes: &HashMap<String, ResolvedVolume>,
         pull_secrets: &[String],
         service_env: &BTreeMap<String, Vec<u8>>,
     ) -> Result<()> {
@@ -2157,6 +2202,35 @@ impl CriRuntime {
             }
         }
         None
+    }
+
+    /// Pull `source.reference` (respecting the pod's `imagePullSecrets`,
+    /// the same as any container image — `resolve_pull_auth()`) for a
+    /// `volumeSource.image` volume (round 32, KEP-4639) and return the
+    /// `ResolvedVolume::Image` CRI's own `Mount.image` field needs.
+    /// `image_ref` comes from the runtime's own `PullImageResponse`, not
+    /// the raw `source.reference` — matching the CRI proto's documented
+    /// contract ("evaluates the returned `PullImageResponse.image_ref`
+    /// value, which is then set to the `ImageSpec.image` field").
+    async fn pull_image_volume(
+        &self,
+        namespace: &str,
+        pull_secrets: &[String],
+        source: &k8s_openapi::api::core::v1::ImageVolumeSource,
+    ) -> Result<ResolvedVolume> {
+        let reference = source.reference.clone().filter(|r| !r.is_empty()).context("image volume has no .reference set")?;
+        let auth = self.resolve_pull_auth(namespace, pull_secrets, &reference).await;
+        let mut img = self.img.clone();
+        let resp = img
+            .pull_image(PullImageRequest {
+                image: Some(ImageSpec { image: reference, ..Default::default() }),
+                auth,
+                sandbox_config: None,
+            })
+            .await
+            .context("PullImage for image volume")?
+            .into_inner();
+        Ok(ResolvedVolume::Image { image_ref: resp.image_ref })
     }
 
     /// Record which devices ended up backing a container, keyed the same
@@ -2290,7 +2364,7 @@ impl CriRuntime {
         id: &PodId,
         container: &Container,
         pod_sc: Option<&PodSecurityContext>,
-        volumes: &HashMap<String, PathBuf>,
+        volumes: &HashMap<String, ResolvedVolume>,
         pull_secrets: &[String],
         envs: &[KeyValue],
         kind: ContainerKind,
@@ -2312,7 +2386,7 @@ impl CriRuntime {
         .context("pulling image")?;
 
         let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes);
-        if let Some(hosts_path) = volumes.get(ETC_HOSTS_VOLUME_KEY) {
+        if let Some(ResolvedVolume::HostPath(hosts_path)) = volumes.get(ETC_HOSTS_VOLUME_KEY) {
             mounts.push(Mount {
                 container_path: "/etc/hosts".to_string(),
                 host_path: hosts_path.to_string_lossy().into_owned(),
@@ -2708,7 +2782,7 @@ impl CriRuntime {
         init_containers: &[Container],
         pod_sc: Option<&PodSecurityContext>,
         restart_policy: &str,
-        volumes: &HashMap<String, PathBuf>,
+        volumes: &HashMap<String, ResolvedVolume>,
         pull_secrets: &[String],
         service_env: &BTreeMap<String, Vec<u8>>,
         qos: QosClass,
@@ -3068,7 +3142,7 @@ impl PodRuntime for CriRuntime {
             .map(|refs| refs.iter().map(|r| r.name.clone()).filter(|n| !n.is_empty()).collect())
             .unwrap_or_default();
 
-        let volumes = self.resolve_volumes(pod, &id).await;
+        let volumes = self.resolve_volumes(pod, &id, &pull_secrets).await;
         let service_env = if pod.spec.as_ref().and_then(|s| s.enable_service_links) == Some(false) {
             BTreeMap::new()
         } else {

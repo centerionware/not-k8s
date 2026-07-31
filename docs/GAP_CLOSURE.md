@@ -27,6 +27,72 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 32: image volume source (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-31). Offered the 3
+remaining round-27 candidates (all explicitly lower-priority); user
+picked image volume source over `Node.status.images` and
+`volumesInUse`/`volumesAttached`.
+
+`volumeSource.image` (KEP-4639, beta) turned out to have direct native
+CRI support — unlike `emptyDir.medium: Memory` or generic ephemeral
+volumes, this isn't "kubelet materializes it, CRI just bind-mounts"; CRI's
+`Mount` message has a dedicated `image`/`image_sub_path` field pair
+specifically for this, mutually exclusive with `host_path`. Kubelet's own
+job is just to `PullImage` the reference (respecting `imagePullSecrets`,
+same as any container image) and pass the runtime's resolved
+`image_ref` through — the runtime does the actual mounting.
+
+- **`resolve_volumes()`'s return type widened** from
+  `HashMap<String, PathBuf>` to `HashMap<String, ResolvedVolume>`, a new
+  enum with `HostPath(PathBuf)` (every volume kind before this round) and
+  `Image { image_ref: String }` (this round) — kept as a single map
+  rather than a second one threaded through 5 function signatures
+  separately, since every consumer already just looks a volume name up
+  once. `build_mounts()` now matches on the variant: `HostPath` builds
+  the existing plain bind mount; `Image` sets `Mount.image` (leaving
+  `host_path` empty, per the proto's mutual-exclusivity contract),
+  `readonly: true` (image volumes are always read-only, per the KEP),
+  and `image_sub_path` from the container's own `volumeMounts[].subPath`
+  (the same field regular volumes already use to select a subdirectory —
+  for an image volume it selects a path *within* the mounted image
+  instead, not a second field on `ImageVolumeSource` itself).
+- **`pull_image_volume()`** calls `PullImage` reusing `resolve_pull_auth()`
+  (so the pod's own `imagePullSecrets` apply, same as container images),
+  and uses the runtime's own resolved `PullImageResponse.image_ref` —
+  not the raw `spec.reference` — matching CRI's documented contract.
+- The fsGroup-application loop now skips `Image` entries (they're
+  read-only OCI content with no host directory of nodelet's own to chown
+  — matches upstream, fsGroup doesn't apply to image volumes either).
+- `resolve_volumes()` gained a `pull_secrets: &[String]` parameter
+  (already computed earlier in `ensure_pod()`, just not previously
+  threaded this far).
+- 3 new unit tests (`cri_tests/mounts.rs`): image mount sets `Mount.image`
+  with an empty `host_path` and `readonly: true`; `subPath` becomes
+  `image_sub_path`, not a joined host path; no `subPath` leaves
+  `image_sub_path` empty.
+
+647 tests passing with `--features cri` (up from 644), 211 mock-only
+(unchanged — this feature is entirely `cri`-gated, same as every other
+real-container-materialization feature). `deploy/lib/test/cases/volumes.sh`
+gained a **genuinely automated** test — unlike CSI/ephemeral-volume
+rounds, this needs no external StorageClass/provisioner/CSI driver at
+all, since any pullable OCI image works as the volume reference; reuses
+`$TEST_IMAGE` for both the container and the image volume, and proves
+both that the mount has real content (`ls -A /img`) and that it's
+genuinely read-only (a write attempt must fail) — using this suite's
+established file-based reporting trick rather than `kubectl exec` (the
+one piece of the streaming server this suite already flags as its least
+confident, per round 6's notes), so this test's own confidence isn't
+diluted by an unrelated dependency.
+
+**Confidence note**: real automated e2e coverage, no manual-note
+placeholder needed — a rare case among the CSI/volume-adjacent rounds in
+this parity effort. Only remaining unknown: whether a given CRI runtime's
+*version* actually implements `Mount.image` at all (containerd ≥ 2.0 with
+the ImageVolume feature) — the test's own skip message calls that out
+specifically if it fails.
+
 ## Round 31: generic ephemeral volumes (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-30). Offered the 3
@@ -1822,7 +1888,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ❌ subPath `$(VAR)` expansion
 - ✅ **`emptyDir.medium: Memory`** (round 30; found in round 27's re-audit) — `resolve_volumes()` now shells out to `mount -t tmpfs` (`mount_tmpfs_empty_dir()`) on the host directory for a `Memory`-medium `emptyDir`, honoring `sizeLimit` as `-o size=` when set. `remove_pod()` unmounts it again on teardown (a real RAM leak otherwise, unlike plain-disk `emptyDir`). Best-effort: falls back to the plain-disk directory (already created) on mount failure rather than failing the pod. Unvalidated against a real privileged mount in this sandbox — see round 30 notes.
 - ✅ **Generic ephemeral volumes** (round 31; `volumeSource.ephemeral`, found in round 27's re-audit) — `resolve_volumes()` now recognizes `.ephemeral`, resolving the deterministic-named (`<pod name>-<volume name>`) PVC the ephemeral-volume controller (a `kube-controller-manager` component — not nodelet's job, same as dynamic provisioning) auto-creates, with an ownership safety check (by UID) before trusting it, then reuses all of CSI's existing mount machinery. Unvalidated against a real CSI driver/ephemeral-volume controller — see round 31 notes.
-- ❌ **Image volume source** (`volumeSource.image`, OCI-artifact volumes, KEP-4639, still beta, found in round 27's re-audit) — mounting an OCI image/artifact as a read-only volume. Not implemented. Lower priority given its immaturity upstream too.
+- ✅ **Image volume source** (round 32; `volumeSource.image`, KEP-4639, still beta, found in round 27's re-audit) — `resolve_volumes()`/`build_mounts()` use CRI's native `Mount.image`/`image_sub_path` fields directly (no host-path materialization needed, unlike every other volume kind) after a `PullImage` call resolves the reference. Always read-only, per the KEP. Genuinely automated e2e test (no external StorageClass/CSI driver needed — any pullable image works). See round 32 notes.
 - ❌ **`Node.status.volumesInUse`/`.volumesAttached`** (found in round 27's re-audit) — coordination fields for the legacy in-tree attach/detach controller path. Not populated. Low value: this project's actual PVC story is CSI-first (rounds 12, 13, 19), and CSI's own attach coordination (round 19) doesn't read these fields at all.
 
 ### Node-pressure eviction
@@ -2003,7 +2069,10 @@ higher-value/correctness-critical than others:
       ownership safety check), reusing all of CSI's existing mount
       machinery. Unvalidated against a real CSI driver/controller. See
       round 31 notes.
-- [ ] Remaining candidates from round 27's audit — the three
-      lower-priority items: image volume source, `Node.status.images`,
-      `volumesInUse`/`volumesAttached`. Ask before
+- [x] Round 32: image volume source — CRI's native `Mount.image` field
+      used directly (no host-path materialization needed). Genuinely
+      automated e2e test, no external infra needed (any pullable image
+      works). See round 32 notes.
+- [ ] Remaining candidates from round 27's audit — the two
+      lowest-priority items: `Node.status.images`,
       starting the next round.

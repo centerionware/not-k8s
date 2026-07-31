@@ -220,7 +220,11 @@ unmounts it again on teardown (a real RAM leak otherwise). Also closed
 (round 31): **generic ephemeral volumes** (`spec.volumes[].ephemeral`) —
 resolves the ephemeral-volume controller's deterministic-named
 (`<pod name>-<volume name>`) PVC, with an ownership safety check by UID,
-then reuses all of CSI's existing mount machinery. Full status list in
+then reuses all of CSI's existing mount machinery. Also closed (round
+32): **image volume source** (`volumeSource.image`) — uses CRI's native
+`Mount.image`/`image_sub_path` fields directly after a `PullImage` call,
+no host-path materialization needed (unlike every other volume kind);
+always read-only, per the KEP. Full status list in
 `docs/GAP_CLOSURE.md`.
 
 ---

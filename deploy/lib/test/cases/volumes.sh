@@ -253,10 +253,61 @@ EOF
     fi
 }
 
+test_image_volume_source_mounts_a_read_only_image() {
+    # Round 32: volumeSource.image. Unlike CSI/ephemeral-volume tests
+    # elsewhere in this suite, this needs no external infrastructure at
+    # all — any pullable OCI image works as the volume's own reference,
+    # so this reuses $TEST_IMAGE for both the container and the image
+    # volume. Real proof (no exec needed — same file-based trick as the
+    # rest of this suite): the app container lists /img and attempts a
+    # write inside it, reporting both results into a writable shared
+    # emptyDir the host can read directly.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="image-volume-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: img
+      image:
+        reference: $TEST_IMAGE
+        pullPolicy: IfNotPresent
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "ls -A /img > /shared/listing.txt 2>&1; (echo x > /img/should-fail-readonly 2>/shared/write.err && echo WROTE > /shared/write.result) || echo BLOCKED > /shared/write.result; sleep 3600"]
+      volumeMounts:
+        - {name: img, mountPath: /img}
+        - {name: shared, mountPath: /shared}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with an image volume mounted — check nodelet's logs for 'failed to pull image for image volume', and that this CRI runtime's version actually supports CRI's Mount.image field (containerd >= 2.0 with the ImageVolume feature)"
+    fi
+
+    local listing write_result
+    listing="$(wait_for_check_file "$name" shared listing.txt 30)"
+    write_result="$(wait_for_check_file "$name" shared write.result 15)"
+
+    if [[ -z "$listing" ]]; then
+        delete_pod_if_exists "$name"
+        skip_test "/img appears empty inside the container — check ResolvedVolume::Image wiring in build_mounts()/resolve_volumes() in runtime/cri.rs, or whether this runtime mounted an empty layer"
+    fi
+    assert_eq "$write_result" "BLOCKED" "writing inside an image volume mount must fail — image volumes are always read-only per the KEP; check build_mounts()'s Image arm sets readonly: true"
+
+    delete_pod_if_exists "$name"
+}
+
 register_test test_configmap_and_secret_volumes_are_materialized
 register_test test_downward_api_volume_writes_pod_metadata
 register_test test_projected_volume_merges_configmap_and_downward_api
 register_test test_service_account_token_projected_volume_mints_a_real_token
 register_test test_host_aliases_are_written_to_etc_hosts
 register_test test_empty_dir_medium_memory_is_backed_by_tmpfs
+register_test test_image_volume_source_mounts_a_read_only_image
 register_test test_fsgroup_chowns_materialized_volumes

@@ -20,7 +20,7 @@ fn empty_mounts_list_produces_no_mounts() {
 #[test]
 fn resolves_a_simple_mount_to_its_volume_directory() {
     let mut volumes = HashMap::new();
-    volumes.insert("config-volume".to_string(), PathBuf::from("/var/lib/nodelet/pods/uid1/volumes/config-volume"));
+    volumes.insert("config-volume".to_string(), ResolvedVolume::HostPath(PathBuf::from("/var/lib/nodelet/pods/uid1/volumes/config-volume")));
     let mounts = build_mounts(&[vm("config-volume", "/etc/coredns")], &volumes);
     assert_eq!(mounts.len(), 1);
     assert_eq!(mounts[0].container_path, "/etc/coredns");
@@ -39,7 +39,7 @@ fn mount_naming_an_unresolved_volume_is_dropped_not_errored() {
 #[test]
 fn sub_path_is_joined_onto_the_volume_directory() {
     let mut volumes = HashMap::new();
-    volumes.insert("config-volume".to_string(), PathBuf::from("/vol/config-volume"));
+    volumes.insert("config-volume".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/config-volume")));
     let mut mount = vm("config-volume", "/etc/coredns/Corefile");
     mount.sub_path = Some("Corefile".to_string());
     let mounts = build_mounts(&[mount], &volumes);
@@ -49,7 +49,7 @@ fn sub_path_is_joined_onto_the_volume_directory() {
 #[test]
 fn read_only_true_is_propagated() {
     let mut volumes = HashMap::new();
-    volumes.insert("v".to_string(), PathBuf::from("/vol/v"));
+    volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
     let mut mount = vm("v", "/etc/v");
     mount.read_only = Some(true);
     let mounts = build_mounts(&[mount], &volumes);
@@ -59,7 +59,7 @@ fn read_only_true_is_propagated() {
 #[test]
 fn read_only_unset_defaults_to_false() {
     let mut volumes = HashMap::new();
-    volumes.insert("v".to_string(), PathBuf::from("/vol/v"));
+    volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
     let mounts = build_mounts(&[vm("v", "/etc/v")], &volumes);
     assert!(!mounts[0].readonly);
 }
@@ -67,7 +67,7 @@ fn read_only_unset_defaults_to_false() {
 #[test]
 fn read_only_explicit_false_stays_false() {
     let mut volumes = HashMap::new();
-    volumes.insert("v".to_string(), PathBuf::from("/vol/v"));
+    volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
     let mut mount = vm("v", "/etc/v");
     mount.read_only = Some(false);
     let mounts = build_mounts(&[mount], &volumes);
@@ -77,8 +77,8 @@ fn read_only_explicit_false_stays_false() {
 #[test]
 fn multiple_mounts_each_resolve_independently() {
     let mut volumes = HashMap::new();
-    volumes.insert("a".to_string(), PathBuf::from("/vol/a"));
-    volumes.insert("b".to_string(), PathBuf::from("/vol/b"));
+    volumes.insert("a".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/a")));
+    volumes.insert("b".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/b")));
     let mounts = build_mounts(&[vm("a", "/mnt/a"), vm("b", "/mnt/b"), vm("c", "/mnt/c")], &volumes);
     // "c" has no matching volume — dropped, leaving exactly the two resolvable ones.
     assert_eq!(mounts.len(), 2);
@@ -91,9 +91,41 @@ fn coredns_shaped_mount_matches_the_real_crash_scenario() {
     // The exact case that motivated this whole file: a ConfigMap volume
     // mounted at /etc/coredns, containing a Corefile.
     let mut volumes = HashMap::new();
-    volumes.insert("config-volume".to_string(), PathBuf::from("/var/lib/nodelet/pods/abc/volumes/config-volume"));
+    volumes.insert("config-volume".to_string(), ResolvedVolume::HostPath(PathBuf::from("/var/lib/nodelet/pods/abc/volumes/config-volume")));
     let mounts = build_mounts(&[vm("config-volume", "/etc/coredns")], &volumes);
     assert_eq!(mounts.len(), 1);
     assert_eq!(mounts[0].container_path, "/etc/coredns");
     assert!(!mounts[0].host_path.is_empty());
+}
+
+// --- volumeSource.image (round 32) ---
+
+#[test]
+fn image_volume_sets_the_image_field_not_a_host_path() {
+    let mut volumes = HashMap::new();
+    volumes.insert("config-image".to_string(), ResolvedVolume::Image { image_ref: "docker.io/library/nginx@sha256:abc".to_string() });
+    let mounts = build_mounts(&[vm("config-image", "/etc/nginx")], &volumes);
+    assert_eq!(mounts.len(), 1);
+    assert_eq!(mounts[0].host_path, "");
+    assert!(mounts[0].readonly, "image volumes must always be readonly");
+    assert_eq!(mounts[0].image.as_ref().unwrap().image, "docker.io/library/nginx@sha256:abc");
+}
+
+#[test]
+fn image_volume_subpath_becomes_image_sub_path_not_a_joined_host_path() {
+    let mut volumes = HashMap::new();
+    volumes.insert("config-image".to_string(), ResolvedVolume::Image { image_ref: "example.com/img:latest".to_string() });
+    let mut mount = vm("config-image", "/etc/nginx");
+    mount.sub_path = Some("conf.d".to_string());
+    let mounts = build_mounts(&[mount], &volumes);
+    assert_eq!(mounts[0].image_sub_path, "conf.d");
+    assert_eq!(mounts[0].host_path, "");
+}
+
+#[test]
+fn image_volume_with_no_subpath_leaves_image_sub_path_empty() {
+    let mut volumes = HashMap::new();
+    volumes.insert("config-image".to_string(), ResolvedVolume::Image { image_ref: "example.com/img:latest".to_string() });
+    let mounts = build_mounts(&[vm("config-image", "/etc/nginx")], &volumes);
+    assert_eq!(mounts[0].image_sub_path, "");
 }
