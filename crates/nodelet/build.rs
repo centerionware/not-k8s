@@ -35,6 +35,13 @@ fn main() {
                 .build_client(true)
                 .compile_protos(&["proto/deviceplugin.proto"], &["proto"])
                 .expect("failed to compile device plugin proto");
+
+            println!("cargo:rerun-if-changed=proto/health.proto");
+            tonic_prost_build::configure()
+                .build_server(false)
+                .build_client(true)
+                .compile_protos(&["proto/health.proto"], &["proto"])
+                .expect("failed to compile grpc.health.v1 proto");
         }
     }
 }

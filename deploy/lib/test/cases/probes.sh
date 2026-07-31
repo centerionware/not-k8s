@@ -121,7 +121,12 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_grpc_probe_manual_note() {
+    skip_test "exercising grpc probes for real needs a container that actually speaks grpc.health.v1.Health/Check — TEST_IMAGE (busybox-style) doesn't, and this suite doesn't bundle a gRPC server image. Manual spot-check: deploy a pod running something that exposes the standard health-checking protocol (etcd does, out of the box, on its client port; or any grpc-health-probe-compatible workload), set readinessProbe.grpc.port to that port (and .service if the workload registers a named service rather than reporting overall health), and confirm the pod reaches Ready. Also worth checking: an unreachable/wrong port should leave the pod NOT Ready (proof check_grpc()'s timeout/connect-failure path works, not just the success path) — probes_tests/network_checks.rs already covers those failure paths against a real (non-grpc) TCP listener, so this is really just proving the success path end to end."
+}
+
 register_test test_readiness_probe_gates_ready_condition
 register_test test_liveness_probe_failure_restarts_the_container
 register_test test_startup_probe_gates_liveness_and_readiness
 register_test test_http_get_readiness_probe_against_a_real_server
+register_test test_grpc_probe_manual_note

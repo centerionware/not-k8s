@@ -1,5 +1,5 @@
 use super::*;
-use k8s_openapi::api::core::v1::{Container, ContainerPort, ExecAction, HTTPGetAction, Probe, TCPSocketAction};
+use k8s_openapi::api::core::v1::{Container, ContainerPort, ExecAction, GRPCAction, HTTPGetAction, Probe, TCPSocketAction};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 
 fn container_with_port(name: &str, port: i32) -> Container {
@@ -64,6 +64,20 @@ fn exec_extracts_command() {
         probe_check(&probe, &Container::default()),
         ProbeCheck::Exec { command: vec!["cat".to_string(), "/healthy".to_string()] }
     );
+}
+
+#[test]
+fn grpc_resolves_port_and_service() {
+    let probe = Probe { grpc: Some(GRPCAction { port: 9000, service: Some("my.service".to_string()) }), ..Default::default() };
+    let check = probe_check(&probe, &Container::default());
+    assert_eq!(check, ProbeCheck::Grpc { port: 9000, service: Some("my.service".to_string()) });
+}
+
+#[test]
+fn grpc_with_no_service_name_resolves_to_none_service() {
+    let probe = Probe { grpc: Some(GRPCAction { port: 9000, service: None }), ..Default::default() };
+    let check = probe_check(&probe, &Container::default());
+    assert_eq!(check, ProbeCheck::Grpc { port: 9000, service: None });
 }
 
 #[test]

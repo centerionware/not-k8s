@@ -93,6 +93,11 @@ pub enum ProbeCheck {
     Http { path: String, port: u16, https: bool },
     Tcp { port: u16 },
     Exec { command: Vec<String> },
+    /// `probe.grpc` (round 29) — the standard `grpc.health.v1.Health/Check`
+    /// protocol. `service` is the (optional) service name to place in the
+    /// `HealthCheckRequest`; unset means "overall server health," matching
+    /// the field's own documented default.
+    Grpc { port: u16, service: Option<String> },
     None,
 }
 
@@ -122,6 +127,8 @@ pub fn probe_check(probe: &Probe, container: &Container) -> ProbeCheck {
         ProbeCheck::Tcp { port: resolve_port(&tcp.port, container) }
     } else if let Some(exec) = &probe.exec {
         ProbeCheck::Exec { command: exec.command.clone().unwrap_or_default() }
+    } else if let Some(grpc) = &probe.grpc {
+        ProbeCheck::Grpc { port: grpc.port as u16, service: grpc.service.clone() }
     } else {
         ProbeCheck::None
     }
@@ -229,6 +236,47 @@ async fn check_http(host: &str, port: u16, path: &str, timeout: Duration) -> boo
     .unwrap_or(false)
 }
 
+/// Generated `grpc.health.v1` types/client (from `proto/health.proto`) —
+/// `cri`-only since it needs `tonic`'s transport, same as CSI/device
+/// plugin clients elsewhere in this codebase. Not compiled in a mock-only
+/// build; `check_grpc()` below has a matching stub for that case.
+#[cfg(feature = "cri")]
+mod grpc_health {
+    tonic::include_proto!("grpc.health.v1");
+}
+
+#[cfg(feature = "cri")]
+async fn check_grpc(host: &str, port: u16, service: Option<&str>, timeout: Duration) -> bool {
+    use grpc_health::health_client::HealthClient;
+    use grpc_health::{health_check_response::ServingStatus, HealthCheckRequest};
+
+    if port == 0 {
+        return false;
+    }
+    let host = host.to_string();
+    let service = service.unwrap_or_default().to_string();
+    tokio::time::timeout(timeout, async move {
+        let endpoint = tonic::transport::Endpoint::try_from(format!("http://{host}:{port}")).ok()?;
+        let channel = endpoint.connect().await.ok()?;
+        let mut client = HealthClient::new(channel);
+        let resp = client.check(HealthCheckRequest { service }).await.ok()?;
+        Some(resp.into_inner().status == ServingStatus::Serving as i32)
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(false)
+}
+
+/// No `tonic` transport in a mock-only build (see `grpc_health` above) —
+/// a `grpc` probe simply can't be checked here, same treatment `exec`
+/// probes would get without a real runtime to exec into. Always `false`
+/// (not-ready/not-alive) rather than silently claiming success.
+#[cfg(not(feature = "cri"))]
+async fn check_grpc(_host: &str, _port: u16, _service: Option<&str>, _timeout: Duration) -> bool {
+    false
+}
+
 async fn run_check(
     check: &ProbeCheck,
     runtime: &dyn PodRuntime,
@@ -249,6 +297,7 @@ async fn run_check(
             }
         }
         ProbeCheck::Tcp { port } => check_tcp(pod_ip, *port, timeout).await,
+        ProbeCheck::Grpc { port, service } => check_grpc(pod_ip, *port, service.as_deref(), timeout).await,
         ProbeCheck::Exec { command } => {
             tokio::time::timeout(timeout, runtime.exec(ns, name, container, command))
                 .await

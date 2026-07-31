@@ -27,6 +27,58 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 29: gRPC probes (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-28). Offered the 3
+remaining implementable round-27 candidates; user picked gRPC probes —
+highest real-world value of the three (a genuinely common probe type for
+cloud-native gRPC services).
+
+- **Vendored `proto/health.proto`** (`grpc/grpc-proto`, Apache-2.0,
+  unmodified — no gogoproto to strip, same as `csi.proto`) and wired it
+  into `build.rs` alongside the other CRI-adjacent protos, generating a
+  real `grpc.health.v1.HealthClient` — the same "vendor + `tonic_prost_build`"
+  pattern every other gRPC integration in this codebase already uses,
+  rather than hand-rolling raw HTTP/2 framing.
+- **`probes.rs` gained `ProbeCheck::Grpc { port, service }`** (parsed
+  from `probe.grpc` in `probe_check()`) and `check_grpc()` — dials the
+  container's port, calls `Health/Check` with the (optional) service
+  name, and treats `ServingStatus::Serving` as passing. **`cri`-gated**
+  (the generated client needs `tonic`'s transport, a `cri`-only
+  dependency) with a `#[cfg(not(feature = "cri"))]` stub that always
+  returns `false` — a mock-only build has no real containers to dial
+  anyway, same treatment `exec` probes effectively get without a real
+  runtime.
+- 5 new unit tests: `probes_tests/check_extraction.rs`'s
+  port/service-name parsing (with and without an explicit service name),
+  `probes_tests/network_checks.rs`'s failure-path cases (port `0`,
+  nothing listening, a real TCP listener that never speaks HTTP/2 gRPC —
+  proving this doesn't confuse a bare TCP accept with a real health
+  check, unlike `tcp_socket` probing which intentionally does just
+  that). **Positive-path (a real `Health/Check` exchange) isn't unit-tested**:
+  `tonic`'s server codegen isn't compiled anywhere in this workspace
+  (`.build_server(false)` on every vendored proto — nodelet is only ever
+  a CSI/device-plugin/CRI *client*), and standing one up just for this
+  test would need a workspace-wide feature change; documented rather
+  than silently skipped.
+
+631 tests passing with `--features cri` (up from 626), 211 mock-only (up
+from 206 — the extraction/failure-path tests aren't `cri`-gated even
+though `check_grpc`'s real implementation is). `deploy/lib/test/cases/probes.sh`
+gained a manual-note test — this suite's `TEST_IMAGE` (busybox-style)
+doesn't speak gRPC at all and no gRPC server image is bundled, so the
+live positive-path proof needs a real workload (e.g. etcd, which exposes
+the standard health-checking protocol out of the box) — same
+"can't automate without real infra" limitation the CSI/device-plugin
+rounds have carried since 12.
+
+**Confidence note**: `probe_check()`'s parsing and `check_grpc()`'s
+failure paths (timeout, connection refused, non-gRPC listener) are real
+and unit-tested with solid confidence — genuine coverage, not simulated.
+The one real gap is the success path: no real gRPC health server was
+available in this sandbox to prove a passing check actually flips
+`Ready`, unlike round 23/24/26/28's fully-automated e2e proofs.
+
 ## Round 28: `oom_score_adj` (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-27). Offered the 4
@@ -1629,7 +1681,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Device plugins** (`device_plugins.rs`, GPU/FPGA/etc. hardware resources) — discovered via the same dynamic plugin-registration protocol CSI drivers use (`plugin_registry.rs`, round 13); tracks live device inventory/health per resource name via `ListAndWatch`, advertises healthy counts on `Node.status.capacity`/`.allocatable`, and calls `Allocate()` during container creation to inject the envs/mounts/device-nodes/annotations a plugin returns. **`GetPreferredAllocation`/`PreStartContainer`** (round 21) — a plugin's `DevicePluginOptions` (fetched once via `GetDevicePluginOptions`) says whether either applies; `GetPreferredAllocation`'s response is validated (`is_valid_preferred_allocation()`) before being trusted, falling back to nodelet's own first-healthy-unallocated pick otherwise; `PreStartContainer` is called right after `Allocate()` succeeds when required, a failure there releasing devices and failing the allocation. Unvalidated against a real device plugin — see rounds 14 and 21 notes.
 - ❌ In-place pod resource resize (newer, still-maturing upstream feature)
 - ✅ **`oom_score_adj`** (round 28; found in round 27's re-audit) — `linux_resources()` now sets CRI's `LinuxContainerResources.oom_score_adj` per container via `eviction::oom_score_adj()`: Guaranteed `-998`, BestEffort `1000`, Burstable scaled by that container's own memory *request* against node capacity (`1000 - 1000*request/capacity`, clamped `[2, 999]`), matching real kubelet's formula exactly. Gives the kernel OOM killer QoS-aware signal, closing a real gap in this project's own eviction-manager story (rounds 7, 26) — a kernel OOM kill can happen faster than `eviction_loop()`'s check interval reacts. See round 28 notes.
-- ❌ **gRPC probes** (`probe.grpc`, found in round 27's re-audit) — `probes.rs::probe_check()` handles `httpGet`/`tcpSocket`/`exec` but falls through to `ProbeCheck::None` for a `grpc` probe (the standard `grpc.health.v1.Health/Check` protocol, GA since 1.27). High real-world value — a genuinely common probe type for cloud-native gRPC services this silently can't check at all.
+- ✅ **gRPC probes** (round 29; found in round 27's re-audit) — `probes.rs::probe_check()` now handles `probe.grpc` too, via a vendored `grpc.health.v1` client (`proto/health.proto`) calling the standard `Health/Check` RPC. `cri`-gated (needs `tonic`'s transport); a mock-only build's `check_grpc()` always returns `false`. Unit-tested failure paths (timeout, refused, non-gRPC listener) with solid confidence; the success path (a real passing `Health/Check`) is unvalidated — no gRPC server available in this sandbox to prove it live. See round 29 notes.
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
@@ -1825,8 +1877,13 @@ higher-value/correctness-critical than others:
       (Guaranteed `-998`, BestEffort `1000`, Burstable scaled by request
       vs. node capacity). Two genuinely automated e2e tests (no cgroup-v2
       dependency, unlike most of `resources.sh`). See round 28 notes.
-- [ ] Remaining candidates from round 27's audit, roughly by value: gRPC
-      probes, `emptyDir.medium: Memory`, generic ephemeral volumes, then
-      the three lower-priority items (image volume source,
+- [x] Round 29: gRPC probes — `probe.grpc` now dials the standard
+      `grpc.health.v1.Health/Check` protocol via a vendored client
+      (`proto/health.proto`), `cri`-gated. Failure paths unit-tested with
+      solid confidence; the success path is unvalidated (no gRPC server
+      available in this sandbox). See round 29 notes.
+- [ ] Remaining candidates from round 27's audit, roughly by value:
+      `emptyDir.medium: Memory`, generic ephemeral volumes, then the
+      three lower-priority items (image volume source,
       `Node.status.images`, `volumesInUse`/`volumesAttached`). Ask before
       starting the next round.

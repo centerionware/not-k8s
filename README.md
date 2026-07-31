@@ -208,7 +208,12 @@ BestEffort `1000`, Burstable scaled by that container's own memory
 request against node capacity), giving the kernel OOM killer QoS-aware
 signal — closing a real gap in this project's own eviction-manager story
 (rounds 7, 26), since a kernel OOM kill can happen faster than
-`eviction_loop()`'s own check interval reacts. Full status list in
+`eviction_loop()`'s own check interval reacts. Also closed (round 29):
+**gRPC probes** — `probe.grpc` now dials the standard
+`grpc.health.v1.Health/Check` protocol via a vendored client
+(`proto/health.proto`, `cri`-gated); failure paths (timeout, refused,
+non-gRPC listener) are unit-tested, the success path is unvalidated (no
+gRPC server available to test against live). Full status list in
 `docs/GAP_CLOSURE.md`.
 
 ---
