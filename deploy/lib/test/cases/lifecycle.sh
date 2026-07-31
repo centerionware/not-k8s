@@ -138,9 +138,64 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_exited_container_reports_terminated_state_with_exit_code() {
+    # Round 24: exited containers used to always show "Waiting:
+    # ContainerCreating" forever, never a real Terminated state.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="terminated-state-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  restartPolicy: Never
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "exit 3"]
+EOF
+    wait_until 60 "$name Failed" pod_is_phase "$name" Failed
+
+    local exit_code reason
+    exit_code="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')"
+    reason="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].state.terminated.reason}')"
+    assert_eq "$exit_code" "3" "containerStatuses[0].state.terminated.exitCode"
+    assert_not_empty "$reason" "containerStatuses[0].state.terminated.reason (e.g. Error/Completed, or the runtime's own OOMKilled etc.)"
+    delete_pod_if_exists "$name"
+}
+
+test_termination_message_path_is_read_back_into_container_status() {
+    # Round 24: terminationMessagePath was threaded through to CRI's
+    # ContainerConfig struct copy but never actually bind-mounted or read
+    # back — this proves both the mount and the read-back work end to end.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="termination-message-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  restartPolicy: Never
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "echo -n 'disk quota exceeded' > /dev/termination-log; exit 1"]
+EOF
+    wait_until 60 "$name Failed" pod_is_phase "$name" Failed
+
+    local message
+    message="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].state.terminated.message}')"
+    assert_eq "$message" "disk quota exceeded" "containerStatuses[0].state.terminated.message — check the termination-log host bind mount and read_termination_message() in runtime/cri.rs"
+    delete_pod_if_exists "$name"
+}
+
 register_test test_basic_pod_runs
 register_test test_init_containers_run_before_app_container
 register_test test_init_container_failure_blocks_app_container_under_restart_policy_never
 register_test test_crashing_container_restarts_and_increments_restart_count
 register_test test_restart_policy_never_exit_zero_is_succeeded
 register_test test_restart_policy_never_exit_nonzero_is_failed
+register_test test_exited_container_reports_terminated_state_with_exit_code
+register_test test_termination_message_path_is_read_back_into_container_status

@@ -329,6 +329,38 @@ fn condition_is_true(conditions: &[PodCondition], condition_type: &str) -> bool 
     conditions.iter().any(|c| c.type_ == condition_type && c.status == "True")
 }
 
+/// One container's `ContainerState` — `Running`, `Terminated` (round 24:
+/// `c.exit_code.is_some()` means it has genuinely exited at least once,
+/// as opposed to never having started at all), or `Waiting` with
+/// `waiting_reason` (`"ContainerCreating"` for app containers,
+/// `"PodInitializing"` for init containers — the two real kubelet uses)
+/// for a container that's never run. `started_at` is only meaningful for
+/// the `Running` case (`RuntimeStatus.started_at` is pod-wide, not
+/// per-container — init containers pass `None` since they don't track
+/// this individually, matching pre-round-24 behavior).
+fn container_state(c: &crate::runtime::ContainerRuntimeStatus, started_at: Option<Time>, waiting_reason: &str) -> ContainerState {
+    if c.running {
+        ContainerState { running: Some(ContainerStateRunning { started_at }), ..Default::default() }
+    } else if let Some(exit_code) = c.exit_code {
+        ContainerState {
+            terminated: Some(ContainerStateTerminated {
+                container_id: c.container_id.clone(),
+                exit_code,
+                finished_at: c.finished_at.map(Time),
+                message: (!c.termination_message.is_empty()).then(|| c.termination_message.clone()),
+                reason: (!c.reason.is_empty()).then(|| c.reason.clone()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    } else {
+        ContainerState {
+            waiting: Some(ContainerStateWaiting { reason: Some(waiting_reason.to_string()), message: None }),
+            ..Default::default()
+        }
+    }
+}
+
 fn build_pod_status(
     host_ip: &str,
     ns: &str,
@@ -399,22 +431,7 @@ fn build_pod_status(
             restart_count: c.restart_count as i32,
             started: Some(c.running),
             container_id: c.container_id.clone(),
-            state: Some(if c.running {
-                ContainerState {
-                    running: Some(ContainerStateRunning {
-                        started_at: rt.started_at.map(Time),
-                    }),
-                    ..Default::default()
-                }
-            } else {
-                ContainerState {
-                    waiting: Some(ContainerStateWaiting {
-                        reason: Some("ContainerCreating".to_string()),
-                        message: None,
-                    }),
-                    ..Default::default()
-                }
-            }),
+            state: Some(container_state(c, rt.started_at.map(Time), "ContainerCreating")),
             ..Default::default()
         })
         .collect();
@@ -432,14 +449,7 @@ fn build_pod_status(
             restart_count: c.restart_count as i32,
             started: Some(c.running),
             container_id: c.container_id.clone(),
-            state: Some(if c.running {
-                ContainerState { running: Some(ContainerStateRunning { started_at: None }), ..Default::default() }
-            } else {
-                ContainerState {
-                    waiting: Some(ContainerStateWaiting { reason: Some("PodInitializing".to_string()), message: None }),
-                    ..Default::default()
-                }
-            }),
+            state: Some(container_state(c, None, "PodInitializing")),
             ..Default::default()
         })
         .collect();

@@ -74,6 +74,7 @@ fn containers_of(pod: &Pod, running: bool) -> Vec<ContainerRuntimeStatus> {
             running,
             container_id: running.then(|| format!("mock://{}", c.name)),
             restart_count: 0,
+            ..Default::default()
         })
         .collect()
 }

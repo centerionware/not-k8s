@@ -72,6 +72,38 @@ use v1::{
 /// recognizable, without trying to be a drop-in match.
 const VOLUME_ROOT: &str = "/var/lib/nodelet/pods";
 
+/// `terminationMessagePath`'s effective cap (round 24) — real kubelet's own
+/// `kubecontainer.MaxContainerTerminationMessageLength`. A container that
+/// writes more than this to its termination-log file only has the last
+/// this-many bytes read back (matching upstream: the most recent content
+/// is what usually matters for a short human-readable failure reason, not
+/// whatever was written first).
+const MAX_TERMINATION_MESSAGE_BYTES: usize = 4096;
+
+/// Where a container's `terminationMessagePath` file lives on the host —
+/// bind-mounted into the container at container-creation time (see
+/// `create_and_start_container()`) so nodelet can read it back after the
+/// container exits without needing any runtime cooperation, the same
+/// approach real kubelet itself uses (not a CRI-level concept at all).
+fn termination_message_host_path(pod_uid: &str, container_name: &str) -> PathBuf {
+    PathBuf::from(VOLUME_ROOT).join(pod_uid).join("termination-log").join(container_name)
+}
+
+/// Read a termination-message file's content, capped at
+/// `MAX_TERMINATION_MESSAGE_BYTES` — keeping the *last* bytes if the file
+/// is larger (a container's most recent write), not the first. Empty (not
+/// an error) for a missing/unreadable file — the common case: most
+/// containers never write one at all.
+fn read_termination_message(path: &std::path::Path) -> String {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let start = bytes.len().saturating_sub(MAX_TERMINATION_MESSAGE_BYTES);
+            String::from_utf8_lossy(&bytes[start..]).into_owned()
+        }
+        Err(_) => String::new(),
+    }
+}
+
 const POD_UID_LABEL: &str = "nodelet.dev/pod-uid";
 const POD_NAME_LABEL: &str = "nodelet.dev/pod-name";
 const POD_NS_LABEL: &str = "nodelet.dev/pod-namespace";
@@ -115,6 +147,12 @@ pub struct CriRuntime {
     // event-driven status() path has no Pod object to read it from directly
     // (only namespace+name), hence the side table instead of a parameter.
     restart_policies: Mutex<HashMap<String, String>>,
+    /// `sandbox_id -> pod uid`, same reason/lifecycle as `restart_policies`
+    /// (event-driven `status()` only gets namespace+name, no `Pod` object)
+    /// — needed to find a container's `terminationMessagePath` host file
+    /// (`termination_message_host_path()`), which is keyed by pod uid, not
+    /// sandbox id.
+    pod_uids: Mutex<HashMap<String, String>>,
     /// `"sandbox_id/container_name" -> cumulative restart count`, mirroring
     /// `PodStatus.containerStatuses[].restartCount`. Side table for the same
     /// reason `restart_policies` is one: CRI's `ListContainers` has no
@@ -1183,6 +1221,7 @@ impl CriRuntime {
             cluster_domain,
             rx: Mutex::new(Some(rx)),
             restart_policies: Mutex::new(HashMap::new()),
+            pod_uids: Mutex::new(HashMap::new()),
             restart_counts: Mutex::new(HashMap::new()),
             csi,
             device_plugins,
@@ -2065,6 +2104,26 @@ impl CriRuntime {
                 ..Default::default()
             });
         }
+        // `terminationMessagePath` (round 24): bind-mount an empty host file
+        // in at the container's requested path (default `/dev/termination-log`,
+        // matching the apiserver's own defaulting) so nodelet can read
+        // whatever the container writes there back out after it exits — the
+        // same host-file-bind-mount approach real kubelet uses, not a CRI
+        // concept at all. App and init containers only; ephemeral/debug
+        // containers keep round 8's existing "exit codes not tracked"
+        // simplification (see `build_labeled_container_statuses()`).
+        if matches!(kind, ContainerKind::App | ContainerKind::Init) {
+            let host_path = termination_message_host_path(&id.uid, &container.name);
+            if let Some(parent) = host_path.parent() {
+                std::fs::create_dir_all(parent).context("creating termination-message host directory")?;
+            }
+            if !host_path.exists() {
+                std::fs::File::create(&host_path).context("creating termination-message host file")?;
+            }
+            let container_path =
+                container.termination_message_path.clone().filter(|p| !p.is_empty()).unwrap_or_else(|| "/dev/termination-log".to_string());
+            mounts.push(Mount { container_path, host_path: host_path.to_string_lossy().into_owned(), readonly: false, ..Default::default() });
+        }
         let mut resources = linux_resources(container.resources.as_ref());
         let limits = container.resources.as_ref().and_then(|r| r.limits.as_ref());
         let cpu_limit = limits.and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
@@ -2402,13 +2461,21 @@ impl CriRuntime {
     }
 
     async fn container_exit_code(&self, container_id: &str) -> Result<i32> {
+        Ok(self.container_status_details(container_id).await?.exit_code)
+    }
+
+    /// Full CRI `ContainerStatus` (exit code, reason, message, finished_at)
+    /// for one container — the richer counterpart to `container_exit_code()`,
+    /// used by `build_status()` (round 24) to populate `ContainerRuntimeStatus`'s
+    /// terminated-state fields, not just decide pod phase.
+    async fn container_status_details(&self, container_id: &str) -> Result<v1::ContainerStatus> {
         let mut rt = self.rt.clone();
         let resp = rt
             .container_status(ContainerStatusRequest { container_id: container_id.to_string(), verbose: false })
             .await
             .context("ContainerStatus")?
             .into_inner();
-        Ok(resp.status.map(|s| s.exit_code).unwrap_or(0))
+        resp.status.context("ContainerStatus response had no status")
     }
 
     /// Drive `spec.initContainers` one at a time, in order — exactly
@@ -2502,6 +2569,7 @@ impl CriRuntime {
                 warn!(sandbox = %sandbox_id, error = ?e, "gc: failed to remove orphaned sandbox");
             }
             self.restart_policies.lock().unwrap().remove(&sandbox_id);
+            self.pod_uids.lock().unwrap().remove(&sandbox_id);
             self.clear_restart_counts(&sandbox_id);
             self.release_sandbox_devices(&sandbox_id).await;
         }
@@ -2551,7 +2619,7 @@ impl CriRuntime {
         (!ip.is_empty()).then_some(ip)
     }
 
-    async fn build_status(&self, sandbox_id: &str, restart_policy: &str) -> Result<RuntimeStatus> {
+    async fn build_status(&self, sandbox_id: &str, pod_uid: &str, restart_policy: &str) -> Result<RuntimeStatus> {
         // Init containers are excluded here — by the time app containers are
         // even started, every init container has already exited zero
         // (ensure_init_containers() gates on that), so counting them would
@@ -2568,16 +2636,54 @@ impl CriRuntime {
         let mut crs = Vec::new();
         let mut any_running = false;
         let mut all_exited = !containers.is_empty();
+        // Unlike the old exit-code-only check this replaces (which only
+        // ever ran for restartPolicy: Never, and only once every container
+        // had exited), terminated-state details below are now fetched for
+        // *any* individual exited container regardless of restart policy or
+        // sibling state — real value for a crash-looping Always-restart
+        // container (kubectl describe should show *why* it last died), not
+        // just Job-style completion. Still bounded to "no longer running"
+        // containers only, so a healthy steady-state pod pays zero extra
+        // RPCs, matching this codebase's low-idle-cost design throughout.
+        let mut any_failed = false;
         let mut earliest_created = i64::MAX;
 
-        let mut container_names = Vec::new();
         for c in &containers {
             let running = c.state == running_v;
+            let exited = c.state == exited_v;
             any_running |= running;
-            all_exited &= c.state == exited_v;
+            all_exited &= exited;
             earliest_created = earliest_created.min(c.created_at);
             let name = c.metadata.as_ref().map(|m| m.name.clone()).unwrap_or_default();
-            container_names.push((name.clone(), c.id.clone()));
+
+            let (exit_code, reason, finished_at, termination_message) = if exited {
+                match self.container_status_details(&c.id).await {
+                    Ok(details) => {
+                        if details.exit_code != 0 {
+                            any_failed = true;
+                        }
+                        let reason = if !details.reason.is_empty() {
+                            details.reason
+                        } else if details.exit_code == 0 {
+                            "Completed".to_string()
+                        } else {
+                            "Error".to_string()
+                        };
+                        let finished_at = (details.finished_at > 0)
+                            .then(|| Timestamp::from_nanosecond(details.finished_at as i128).ok())
+                            .flatten();
+                        let message = read_termination_message(&termination_message_host_path(pod_uid, &name));
+                        (Some(details.exit_code), reason, finished_at, message)
+                    }
+                    Err(e) => {
+                        warn!(container = %c.id, error = ?e, "ContainerStatus failed; reporting this exited container without terminated details");
+                        (None, String::new(), None, String::new())
+                    }
+                }
+            } else {
+                (None, String::new(), None, String::new())
+            };
+
             crs.push(ContainerRuntimeStatus {
                 name: name.clone(),
                 image: c.image.as_ref().map(|i| i.image.clone()).unwrap_or_default(),
@@ -2585,32 +2691,18 @@ impl CriRuntime {
                 running,
                 container_id: Some(c.id.clone()),
                 restart_count: self.restart_count(sandbox_id, &name),
+                exit_code,
+                reason,
+                finished_at,
+                termination_message,
             });
         }
 
-        // For the default, overwhelmingly common restartPolicy: Always
-        // (every Deployment, including coredns), a container exiting is
-        // never terminal — ensure_container() above just restarted it — so
-        // report Pending rather than Succeeded/Failed: never hand the
-        // ReplicaSet controller a terminal phase for a pod that's still
-        // supposed to be alive. Only restartPolicy: Never (Job-style
-        // one-shot pods) can ever be genuinely done, so exit codes — one
-        // extra ContainerStatus RPC per container, only paid here, not on
-        // every Always/OnFailure pod's status build — are only fetched to
-        // tell a real success from a real failure in that case.
-        let any_failed = if all_exited && restart_policy == "Never" {
-            let mut failed = false;
-            for (_, container_id) in &container_names {
-                if self.container_exit_code(container_id).await.unwrap_or(0) != 0 {
-                    failed = true;
-                    break;
-                }
-            }
-            failed
-        } else {
-            false
-        };
-        let phase = compute_phase(any_running, all_exited, any_failed, restart_policy);
+        // The pod's phase must only treat a nonzero exit as terminal
+        // failure under restartPolicy: Never — Always/OnFailure exits
+        // aren't final, ensure_container() above just restarted them.
+        let phase_failed = any_failed && all_exited && restart_policy == "Never";
+        let phase = compute_phase(any_running, all_exited, phase_failed, restart_policy);
 
         let started_at = (earliest_created != i64::MAX && earliest_created > 0)
             .then(|| Timestamp::from_nanosecond(earliest_created as i128).ok())
@@ -2622,9 +2714,9 @@ impl CriRuntime {
             started_at,
             pod_ip: self.pod_ip(sandbox_id).await,
             containers: crs,
-            init_containers: self.build_labeled_container_statuses(sandbox_id, CTR_INIT_LABEL).await.unwrap_or_default(),
+            init_containers: self.build_labeled_container_statuses(sandbox_id, pod_uid, CTR_INIT_LABEL, true).await.unwrap_or_default(),
             ephemeral_containers: self
-                .build_labeled_container_statuses(sandbox_id, CTR_EPHEMERAL_LABEL)
+                .build_labeled_container_statuses(sandbox_id, pod_uid, CTR_EPHEMERAL_LABEL, false)
                 .await
                 .unwrap_or_default(),
             initialized: true,
@@ -2636,26 +2728,66 @@ impl CriRuntime {
     /// counterpart to the main loop in `build_status()` above, kept separate
     /// because both init and ephemeral containers are excluded from that one
     /// (their exit is expected/irrelevant, not something `all_exited` should
-    /// key the *pod's* phase off).
-    async fn build_labeled_container_statuses(&self, sandbox_id: &str, label: &str) -> Result<Vec<ContainerRuntimeStatus>> {
+    /// key the *pod's* phase off). `fetch_details` gates the same
+    /// terminated-state enrichment `build_status()`'s main loop does — `true`
+    /// for init containers (a failed init container's exit reason matters,
+    /// same as app containers), `false` for ephemeral/debug containers
+    /// (round 8's existing, still-documented simplification: exit codes
+    /// aren't tracked for those at all, `pods.rs` hardcodes `exit_code: 0`
+    /// regardless of what's fetched here, so there's no reason to pay the
+    /// extra `ContainerStatus` RPC for them).
+    async fn build_labeled_container_statuses(
+        &self,
+        sandbox_id: &str,
+        pod_uid: &str,
+        label: &str,
+        fetch_details: bool,
+    ) -> Result<Vec<ContainerRuntimeStatus>> {
         let running_v = ContainerState::ContainerRunning as i32;
+        let exited_v = ContainerState::ContainerExited as i32;
         let containers = self.list_pod_containers(sandbox_id).await?;
-        Ok(containers
-            .into_iter()
-            .filter(|c| c.labels.contains_key(label))
-            .map(|c| {
+        let mut out = Vec::new();
+        for c in containers.into_iter().filter(|c| c.labels.contains_key(label)) {
                 let running = c.state == running_v;
                 let name = c.metadata.as_ref().map(|m| m.name.clone()).unwrap_or_default();
-                ContainerRuntimeStatus {
+                let (exit_code, reason, finished_at, termination_message) = if fetch_details && c.state == exited_v {
+                    match self.container_status_details(&c.id).await {
+                        Ok(details) => {
+                            let reason = if !details.reason.is_empty() {
+                                details.reason
+                            } else if details.exit_code == 0 {
+                                "Completed".to_string()
+                            } else {
+                                "Error".to_string()
+                            };
+                            let finished_at = (details.finished_at > 0)
+                                .then(|| Timestamp::from_nanosecond(details.finished_at as i128).ok())
+                                .flatten();
+                            let message = read_termination_message(&termination_message_host_path(pod_uid, &name));
+                            (Some(details.exit_code), reason, finished_at, message)
+                        }
+                        Err(e) => {
+                            warn!(container = %c.id, error = ?e, "ContainerStatus failed; reporting this exited container without terminated details");
+                            (None, String::new(), None, String::new())
+                        }
+                    }
+                } else {
+                    (None, String::new(), None, String::new())
+                };
+                out.push(ContainerRuntimeStatus {
                     restart_count: self.restart_count(sandbox_id, &name),
                     name,
                     image: c.image.as_ref().map(|i| i.image.clone()).unwrap_or_default(),
                     ready: running,
                     running,
                     container_id: Some(c.id.clone()),
-                }
-            })
-            .collect())
+                    exit_code,
+                    reason,
+                    finished_at,
+                    termination_message,
+                });
+        }
+        Ok(out)
     }
 }
 
@@ -2689,6 +2821,7 @@ impl PodRuntime for CriRuntime {
                 let _ = rt.stop_pod_sandbox(StopPodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
                 let _ = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
                 self.restart_policies.lock().unwrap().remove(&stale_id);
+                self.pod_uids.lock().unwrap().remove(&stale_id);
                 self.clear_restart_counts(&stale_id);
                 self.release_sandbox_devices(&stale_id).await;
                 self.run_sandbox(&id, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
@@ -2707,6 +2840,7 @@ impl PodRuntime for CriRuntime {
         // namespace+name (no Pod object) and needs this to make the same
         // Pending-vs-Succeeded call build_status() below does.
         self.restart_policies.lock().unwrap().insert(sandbox_id.clone(), restart_policy.clone());
+        self.pod_uids.lock().unwrap().insert(sandbox_id.clone(), id.uid.clone());
 
         let pod_sc = pod.spec.as_ref().and_then(|s| s.security_context.as_ref());
         let pull_secrets: Vec<String> = pod
@@ -2750,7 +2884,7 @@ impl PodRuntime for CriRuntime {
                         pod_ip: None,
                         containers: Vec::new(),
                         init_containers: self
-                            .build_labeled_container_statuses(&sandbox_id, CTR_INIT_LABEL)
+                            .build_labeled_container_statuses(&sandbox_id, &id.uid, CTR_INIT_LABEL, true)
                             .await
                             .unwrap_or_default(),
                         ephemeral_containers: Vec::new(),
@@ -2765,7 +2899,7 @@ impl PodRuntime for CriRuntime {
                         pod_ip: None,
                         containers: Vec::new(),
                         init_containers: self
-                            .build_labeled_container_statuses(&sandbox_id, CTR_INIT_LABEL)
+                            .build_labeled_container_statuses(&sandbox_id, &id.uid, CTR_INIT_LABEL, true)
                             .await
                             .unwrap_or_default(),
                         ephemeral_containers: Vec::new(),
@@ -2797,7 +2931,7 @@ impl PodRuntime for CriRuntime {
             }
         }
 
-        self.build_status(&sandbox_id, &restart_policy).await
+        self.build_status(&sandbox_id, &id.uid, &restart_policy).await
     }
 
     async fn remove_pod(&self, pod: &Pod) -> Result<()> {
@@ -2815,6 +2949,7 @@ impl PodRuntime for CriRuntime {
                 .await
                 .context("RemovePodSandbox")?;
             self.restart_policies.lock().unwrap().remove(&sandbox_id);
+            self.pod_uids.lock().unwrap().remove(&sandbox_id);
             self.clear_restart_counts(&sandbox_id);
             self.release_sandbox_devices(&sandbox_id).await;
         }
@@ -2832,7 +2967,8 @@ impl PodRuntime for CriRuntime {
                     .get(&sandbox_id)
                     .cloned()
                     .unwrap_or_else(|| "Always".to_string());
-                Ok(Some(self.build_status(&sandbox_id, &restart_policy).await?))
+                let pod_uid = self.pod_uids.lock().unwrap().get(&sandbox_id).cloned().unwrap_or_default();
+                Ok(Some(self.build_status(&sandbox_id, &pod_uid, &restart_policy).await?))
             }
             None => Ok(None),
         }
@@ -3349,6 +3485,9 @@ mod tests_extended_resource_requests;
 #[cfg(test)]
 #[path = "cri_tests/csi_attach.rs"]
 mod tests_csi_attach;
+#[cfg(test)]
+#[path = "cri_tests/termination_message.rs"]
+mod tests_termination_message;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

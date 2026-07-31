@@ -46,7 +46,7 @@ impl Phase {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ContainerRuntimeStatus {
     pub name: String,
     pub image: String,
@@ -55,6 +55,28 @@ pub struct ContainerRuntimeStatus {
     pub container_id: Option<String>,
     /// Cumulative restart count, matching `PodStatus.containerStatuses[].restartCount`.
     pub restart_count: u32,
+    /// Exit code from the container's last run, if it has ever exited —
+    /// `None` means it hasn't (never started, or currently running).
+    /// `build_pod_status()` uses `Some`/`None` here to decide whether a
+    /// non-running container gets `state.terminated` (has run before) or
+    /// `state.waiting` (never has) — see `pods.rs`.
+    pub exit_code: Option<i32>,
+    /// CRI's own `ContainerStatus.reason` (e.g. `"OOMKilled"`), falling
+    /// back to `"Completed"`/`"Error"` (matching real kubelet) when the
+    /// runtime didn't report one. Empty/meaningless while `exit_code` is
+    /// `None`.
+    pub reason: String,
+    pub finished_at: Option<Timestamp>,
+    /// Content of the container's `terminationMessagePath` file (round
+    /// 24), read from the host-mounted copy `runtime/cri.rs`'s
+    /// `create_and_start_container()` sets up — empty if the container
+    /// never wrote one, is still running, or never ran at all. Only the
+    /// `File` policy is implemented; `FallbackToLogsOnError` (reading the
+    /// container's own log tail when the file is empty and the exit code
+    /// is nonzero) is a documented, deliberate simplification not
+    /// implemented this round — see `docs/GAP_CLOSURE.md`'s round 24
+    /// notes.
+    pub termination_message: String,
 }
 
 #[derive(Clone, Debug)]

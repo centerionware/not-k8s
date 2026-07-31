@@ -182,8 +182,15 @@ condition is `True`, alongside the built-in `ContainersReady`; closing
 this also fixed a real pre-existing bug where nodelet's JSON-Merge-Patch
 status writes silently deleted any condition an external controller had
 set (the whole `conditions` array got replaced wholesale) — now foreign
-conditions are carried forward on every write. Full status list in
-`docs/GAP_CLOSURE.md`.
+conditions are carried forward on every write. Also closed (round 24):
+**`terminationMessagePath`/`terminationMessagePolicy`** — a container's
+termination-log file is now bind-mounted and read back into
+`ContainerStatus.state.terminated.message`, which surfaced a bigger
+pre-existing gap along the way — regular/init containers never reported
+a real `terminated` state at all before this round, always
+`Waiting: ContainerCreating` forever once exited. `FallbackToLogsOnError`
+is a documented, deliberate simplification not implemented. Full status
+list in `docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -679,6 +686,14 @@ Two layers, and they're not substitutes for each other:
   carry-forward fix works, not just that `Ready` happened to flip once).
   Genuinely automatable, unlike most CSI/device-plugin/NUMA-adjacent tests
   in this suite.
+
+  `lifecycle.sh` gained two more real automated tests (round 24, also no
+  infra needed): one creates a `restartPolicy: Never` pod that exits `3`
+  and asserts `containerStatuses[0].state.terminated.exitCode` is `3`
+  with a non-empty `reason`; the other has a container write to
+  `/dev/termination-log` before exiting and asserts the exact string
+  round-trips into `state.terminated.message` — proof of both the
+  termination-log bind mount and the read-back.
 
 ## Configuration (environment variables)
 

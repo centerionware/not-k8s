@@ -38,6 +38,7 @@ fn running_status() -> RuntimeStatus {
             running: true,
             container_id: Some("abc123".to_string()),
             restart_count: 0,
+            ..Default::default()
         }],
         init_containers: Vec::new(),
         ephemeral_containers: Vec::new(),
@@ -58,6 +59,7 @@ fn pending_status() -> RuntimeStatus {
             running: false,
             container_id: None,
             restart_count: 0,
+            ..Default::default()
         }],
         init_containers: Vec::new(),
         ephemeral_containers: Vec::new(),
@@ -326,6 +328,7 @@ fn init_container_statuses_reflects_runtime_init_containers() {
         running: true,
         container_id: Some("init-1".to_string()),
         restart_count: 0,
+        ..Default::default()
     }];
     let status = bps("10.0.0.1", &rt, None);
     let init_statuses = status.init_container_statuses.unwrap();
@@ -347,6 +350,7 @@ fn completed_init_container_reports_waiting_podinitializing_not_running() {
         running: false,
         container_id: None,
         restart_count: 0,
+        ..Default::default()
     }];
     let status = bps("10.0.0.1", &rt, None);
     let init_statuses = status.init_container_statuses.unwrap();
@@ -370,6 +374,7 @@ fn ephemeral_container_statuses_reflects_runtime_ephemeral_containers() {
         running: true,
         container_id: Some("debug-1".to_string()),
         restart_count: 0,
+        ..Default::default()
     }];
     let status = bps("10.0.0.1", &rt, None);
     let statuses = status.ephemeral_container_statuses.unwrap();
@@ -391,6 +396,7 @@ fn exited_ephemeral_container_reports_terminated_not_waiting() {
         running: false,
         container_id: Some("debug-1".to_string()),
         restart_count: 0,
+        ..Default::default()
     }];
     let status = bps("10.0.0.1", &rt, None);
     let statuses = status.ephemeral_container_statuses.unwrap();
@@ -411,6 +417,7 @@ fn ephemeral_containers_do_not_affect_containers_ready_or_pod_ready() {
         running: false,
         container_id: None,
         restart_count: 0,
+        ..Default::default()
     }];
     let status = bps("10.0.0.1", &rt, None);
     let ready = status.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "Ready").unwrap();
@@ -530,4 +537,59 @@ fn readiness_gate_types_extracts_condition_types_from_the_pod_spec() {
 #[test]
 fn readiness_gate_types_is_empty_when_the_pod_has_none() {
     assert!(readiness_gate_types(&Pod::default()).is_empty());
+}
+
+// --- container_state (round 24: terminated state / termination message) ---
+
+fn exited_container(name: &str, exit_code: i32, reason: &str, message: &str) -> ContainerRuntimeStatus {
+    ContainerRuntimeStatus {
+        name: name.to_string(),
+        running: false,
+        exit_code: Some(exit_code),
+        reason: reason.to_string(),
+        termination_message: message.to_string(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_container_that_has_never_run_is_waiting_not_terminated() {
+    let c = ContainerRuntimeStatus { name: "app".to_string(), running: false, exit_code: None, ..Default::default() };
+    let state = container_state(&c, None, "ContainerCreating");
+    assert!(state.waiting.is_some());
+    assert!(state.terminated.is_none());
+}
+
+#[test]
+fn an_exited_container_reports_terminated_with_its_exit_code() {
+    let c = exited_container("app", 137, "OOMKilled", "");
+    let state = container_state(&c, None, "ContainerCreating");
+    let terminated = state.terminated.expect("expected terminated state");
+    assert_eq!(terminated.exit_code, 137);
+    assert_eq!(terminated.reason.as_deref(), Some("OOMKilled"));
+}
+
+#[test]
+fn a_running_container_is_running_even_if_it_has_a_stale_exit_code() {
+    // exit_code carries a *last* exit across restarts (real kubelet's own
+    // lastState concept) — a currently-running container must report
+    // Running regardless of what exit_code says about its previous life.
+    let c = ContainerRuntimeStatus { name: "app".to_string(), running: true, exit_code: Some(1), ..Default::default() };
+    let state = container_state(&c, None, "ContainerCreating");
+    assert!(state.running.is_some());
+    assert!(state.terminated.is_none());
+}
+
+#[test]
+fn termination_message_populates_the_terminated_states_message_field() {
+    let c = exited_container("app", 1, "Error", "boom: disk full");
+    let state = container_state(&c, None, "ContainerCreating");
+    assert_eq!(state.terminated.unwrap().message.as_deref(), Some("boom: disk full"));
+}
+
+#[test]
+fn an_empty_termination_message_leaves_the_message_field_unset() {
+    let c = exited_container("app", 0, "Completed", "");
+    let state = container_state(&c, None, "ContainerCreating");
+    assert!(state.terminated.unwrap().message.is_none());
 }

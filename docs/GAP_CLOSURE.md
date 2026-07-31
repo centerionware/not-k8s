@@ -27,6 +27,93 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 24: `terminationMessagePath`/`terminationMessagePolicy` read-back (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-23). Offered the 3
+remaining round-22 candidates; user picked this one — the highest-value
+of the three.
+
+Investigating this surfaced a bigger pre-existing gap than round 22's
+note implied: it's not just the termination *message* that was never
+read back — `pods.rs::build_pod_status()` never built a `terminated`
+`ContainerState` for regular or init containers **at all**. A container
+that had exited (whether genuinely done, or just between crash-loop
+restarts) was always reported `Waiting: ContainerCreating`, forever —
+only ephemeral/debug containers (round 8) ever got a `terminated` state,
+and even that was hardcoded `exitCode: 0` regardless of reality.
+Implementing termination-message read-back required building real
+terminated-state reporting first, since the message is a field *on* that
+state.
+
+- **Real terminated-state reporting** (`ContainerRuntimeStatus` gained
+  `exit_code: Option<i32>`, `reason: String`, `finished_at: Option<Timestamp>`,
+  `termination_message: String`) — `runtime/cri.rs::build_status()` now
+  fetches each **exited** (not just non-running — genuinely `CONTAINER_EXITED`,
+  distinct from "created but never started") container's full CRI
+  `ContainerStatus` (exit code, reason, finished_at), regardless of
+  `restartPolicy` — a deliberate widening from the old "only for
+  `restartPolicy: Never`, only once everything's exited" gate, since a
+  crash-looping `Always`-restart container's last exit reason is real
+  operational value (`kubectl describe` should say *why* it died last),
+  not just Job-completion bookkeeping. Still bounded to non-running
+  containers only, so a healthy steady-state pod pays zero extra RPCs —
+  same low-idle-cost posture this codebase has held throughout. `reason`
+  falls back to `"Completed"`/`"Error"` (matching real kubelet) when CRI
+  didn't report one (e.g. `"OOMKilled"` when it did).
+- **`pods.rs`** gained a shared `container_state()` helper (replacing
+  separately-duplicated running/waiting logic in both the app-container
+  and init-container builders) that now also produces `terminated` when
+  `exit_code.is_some()` — `Some` means "has genuinely exited at least
+  once," `None` means "never started," the actual distinction that was
+  previously missing entirely.
+- **`terminationMessagePath` mount + read-back**: `create_and_start_container()`
+  now bind-mounts an empty host file (`termination_message_host_path()`,
+  under the same per-pod-UID `VOLUME_ROOT` tree every other host-materialized
+  volume already uses) at the container's `terminationMessagePath`
+  (default `/dev/termination-log`, matching apiserver defaulting) for App
+  and Init containers — the same host-bind-mount approach real kubelet
+  itself uses, not a CRI-level concept. `build_status()` reads it back
+  (`read_termination_message()`, capped at `MAX_TERMINATION_MESSAGE_BYTES`
+  = 4096, keeping the *last* bytes if larger) for every exited container
+  and populates `ContainerStatus.state.terminated.message`.
+- **`CriRuntime` gained a `pod_uids: Mutex<HashMap<String, String>>`**
+  side table (`sandbox_id -> pod uid`, same lifecycle as the existing
+  `restart_policies` table) — `status()`'s event-driven path only gets
+  namespace+name, no `Pod` object, but needs the pod uid to find a
+  container's termination-log host file.
+- **Deliberately not implemented, documented not hidden**:
+  `FallbackToLogsOnError` (reading the container's log tail when the
+  termination-log file is empty and the exit code is nonzero) — nodelet
+  always behaves as if policy were `File`. For `FallbackToLogsOnError`
+  pods this is a strict subset of correct behavior (message may be empty
+  in cases upstream would populate it from logs) but never wrong or
+  misleading. Avoided real complexity (CRI log format tail-parsing,
+  already used elsewhere for `kubectl logs` but not wired to this path)
+  for a policy variant most workloads don't set.
+- 12 new unit tests: `pods_tests/build_pod_status.rs`'s `container_state()`
+  cases (never-run stays waiting, exited reports terminated with its exit
+  code, a currently-running container ignores a stale exit code, message
+  population/non-population), `runtime/cri_tests/termination_message.rs`'s
+  `read_termination_message()` cases (missing file, small file, oversized
+  file truncated to the last `MAX_TERMINATION_MESSAGE_BYTES`, empty file)
+  and `termination_message_host_path()`'s path shape.
+
+600 tests passing with `--features cri` (up from 590), 193 mock-only (up
+from 188 — `pods.rs`'s `container_state()` tests aren't `cri`-gated;
+`termination_message.rs`'s file-reading tests are, hence the different
+deltas). `deploy/lib/test/cases/lifecycle.sh` gained two real automated
+tests (no infrastructure needed): one creates a `restartPolicy: Never`
+pod that exits 3 and asserts `containerStatuses[0].state.terminated.exitCode`
+is `3` with a non-empty `reason`; the other has a container write to
+`/dev/termination-log` before exiting and asserts the exact string
+round-trips into `state.terminated.message`.
+
+**Confidence note**: like round 23, this has genuinely **high**
+live-validation confidence once run — both new e2e tests are fully
+automated proofs, not manual-note placeholders, since termination
+messages and exit-code reporting need no special infrastructure to
+exercise for real.
+
 ## Round 23: pod `readinessGates` (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-22). Offered the four
@@ -1298,7 +1385,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Termination grace period** — `terminationGracePeriodSeconds` now drives `preStop` + a per-container `StopContainer` timeout before `StopPodSandbox` (`graceful_stop_containers()`), instead of an untimed sandbox stop.
 - ✅ **Container restart count** — real per-container counter (`restart_count_from`/`bump_restart_count_in`), threaded through `ContainerConfig.metadata.attempt` too (so restarted containers get distinct log files, not overwritten ones).
 - ✅ **Exit-code-aware phase computation** — `restartPolicy: Never` now reports `Failed` (not `Succeeded`) when a container exited nonzero (`compute_phase()`'s new `any_failed` parameter).
-- ❌ **`terminationMessagePath`/`terminationMessagePolicy`** (found in round 22's re-audit) — the fields are threaded through `ephemeral_to_container()`'s struct conversion (a plain k8s API type copy, not CRI behavior), but nodelet never actually reads the file at `terminationMessagePath` (default `/dev/termination-log`) back out of the container's filesystem after it exits, nor honors `FallbackToLogsOnError`. `ContainerStatus.state.terminated.message` is always empty — a real, moderate-value gap for anything relying on it (Jobs commonly write a short failure reason there for `kubectl describe` to surface).
+- ✅ **`terminationMessagePath`/`terminationMessagePolicy`** (round 24; found in round 22's re-audit) — `create_and_start_container()` bind-mounts an empty host file at the container's `terminationMessagePath` (default `/dev/termination-log`) for App/Init containers, same approach real kubelet uses; `build_status()` reads it back (capped at 4096 bytes, keeping the last bytes if larger) into `ContainerStatus.state.terminated.message` for every exited container. Closing this also surfaced and fixed a bigger pre-existing gap: regular/init containers never reported a `terminated` state at all before this round (always `Waiting: ContainerCreating` forever once exited) — see round 24 notes. Still not implemented: `FallbackToLogsOnError` (documented, deliberate — nodelet always behaves as `File` policy, a strict subset of correct behavior, never wrong/misleading).
 - ✅ **Pod `readinessGates`** (round 23; found in round 22's re-audit) — `spec.readinessGates` lets an external controller contribute additional `PodCondition`s that must all be `True` (alongside the built-in `ContainersReady`) before kubelet reports the pod's own `Ready` condition as `True`. `build_pod_status()`'s `Ready` computation now checks every gate's named condition against `prev`'s conditions; a missing condition counts as not-satisfied, matching upstream. Fixing this also required (and fixed) a real pre-existing bug: nodelet's JSON-Merge-Patch status writes were silently deleting any condition an external controller had set, since the whole `conditions` array got replaced wholesale — now foreign conditions are copied forward on every write. See round 23 notes.
 
 ### Resource management
@@ -1471,6 +1558,13 @@ higher-value/correctness-critical than others:
       deleting any condition an external controller had set — now carried
       forward). Genuinely automatable e2e test, no real infra needed. See
       round 23 notes.
-- [ ] Remaining candidates from round 22's audit, roughly by value:
-      `terminationMessagePath`/`Policy` read-back, user namespaces,
-      eviction priority-tiebreaking. Ask before starting the next round.
+- [x] Round 24: `terminationMessagePath`/`terminationMessagePolicy`
+      read-back — also fixed a bigger pre-existing gap along the way:
+      regular/init containers never reported a real `terminated`
+      `ContainerState` at all before this round (always
+      `Waiting: ContainerCreating` forever once exited). Two genuinely
+      automated e2e tests, no real infra needed. `FallbackToLogsOnError`
+      still not implemented (documented, deliberate). See round 24 notes.
+- [ ] Remaining candidates from round 22's audit, roughly by value: user
+      namespaces, eviction priority-tiebreaking. Ask before starting the
+      next round.
