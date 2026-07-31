@@ -300,7 +300,11 @@ like `secrets-store-csi-driver` use) by reusing all of the existing
 CSI Node-service plumbing (rounds 12/13/19) as-is; `CsiDrivers::mount()`/
 `unmount()` now correctly skip staging/attach entirely for this volume
 kind, per the CSI spec's own rule rather than a driver-capability
-check. Full status list in `docs/GAP_CLOSURE.md`.
+check. Round 47 closed **startup probe failure restart** — a startup
+probe failing past its own `failureThreshold` now kills and restarts
+the container, matching real kubelet's liveness-probe-like behavior,
+instead of retrying forever with no restart at all. Full status list
+in `docs/GAP_CLOSURE.md`.
 
 ---
 

@@ -50,3 +50,18 @@ fn zero_thresholds_are_clamped_to_one() {
     t.record(false, 0, 0);
     assert!(!t.passing, "threshold 0 must behave like threshold 1, not never-flip");
 }
+
+#[test]
+fn public_failures_counter_tracks_the_consecutive_streak() {
+    // Round 47: probe_container()'s startup-probe loop reads this field
+    // directly to decide when to trigger a restart (distinct from
+    // `passing`, which for a startup probe starts at `false` and would
+    // never toggle again on further failures).
+    let mut t = ProbeTracker::new(false);
+    t.record(false, 1, 3);
+    assert_eq!(t.failures, 1);
+    t.record(false, 1, 3);
+    assert_eq!(t.failures, 2);
+    t.record(true, 1, 3);
+    assert_eq!(t.failures, 0, "a success resets the failure streak");
+}

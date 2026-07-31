@@ -160,7 +160,7 @@ pub fn probe_timing(probe: &Probe) -> ProbeTiming {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProbeTracker {
     successes: u32,
-    failures: u32,
+    pub failures: u32,
     pub passing: bool,
 }
 
@@ -377,6 +377,23 @@ async fn probe_container(
             tracker.record(ok, timing.success_threshold, timing.failure_threshold);
             if tracker.passing {
                 break;
+            }
+            // Round 47 (found in round 45's re-audit): real kubelet kills
+            // and restarts the container once a startup probe fails past
+            // its own failureThreshold, exactly like a liveness failure —
+            // previously this loop retried forever with no restart at all.
+            // This same supervisor task is spawned once per container for
+            // its whole lifetime (`ensure_probe_supervisor()`), so after a
+            // restart-triggering failure the loop keeps going (doesn't
+            // return) and re-attempts startup probing fresh for the new
+            // container instance, rather than ending the supervisor task.
+            if tracker.failures >= timing.failure_threshold.max(1) {
+                let grace = probe_grace_period_seconds(&startup, pod_grace_period_seconds);
+                warn!(pod = %key, container = %cname, grace_period_seconds = grace, "startup probe failed; restarting container");
+                if let Err(e) = runtime.restart_container(&ns, &name, &cname, grace).await {
+                    warn!(pod = %key, container = %cname, error = ?e, "restart_container failed");
+                }
+                tracker = ProbeTracker::new(false);
             }
             tokio::time::sleep(timing.period).await;
         }

@@ -198,3 +198,49 @@ async fn startup_probe_gates_readiness_until_it_passes() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn startup_probe_failure_past_threshold_triggers_a_restart_and_recovers() {
+    // Round 47: real kubelet kills and restarts the container once a
+    // startup probe fails past its own failureThreshold, exactly like a
+    // liveness failure — previously this loop retried forever with no
+    // restart at all.
+    let runtime = FakeRuntime::new(false); // keeps failing
+    let health = new_health_map();
+    let container = Container {
+        name: "app".to_string(),
+        startup_probe: Some(exec_probe("boot-check", 2)),
+        ..Default::default()
+    };
+
+    let handle = tokio::spawn(probe_container(
+        runtime.clone(),
+        health.clone(),
+        "default".to_string(),
+        "web".to_string(),
+        container,
+        "10.0.0.5".to_string(),
+        30,
+    ));
+
+    // failure_threshold=2, period=1s -> restart fires around t=2s.
+    tokio::time::sleep(Duration::from_millis(2600)).await;
+    assert!(
+        runtime.restart_count.load(Ordering::SeqCst) >= 1,
+        "a startup probe failing past its failureThreshold must trigger a restart"
+    );
+    assert_eq!(
+        runtime.last_grace_period_seconds.load(Ordering::SeqCst),
+        30,
+        "restart_container should get the pod's own grace period, same as a liveness-triggered restart"
+    );
+    assert!(!container_health(&health, "default", "web", "app").started, "still not started — it keeps failing");
+
+    // The supervisor task must keep retrying after the restart (same task,
+    // whole container lifetime), not give up — let it start passing now.
+    runtime.exec_ok.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(2300)).await;
+    assert!(container_health(&health, "default", "web", "app").started, "should recover and pass once the (recreated) container starts succeeding");
+
+    handle.abort();
+}

@@ -27,6 +27,59 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 47: startup probe failure restart (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-46). Offered the 2
+remaining round-45 findings; user picked this one over local ephemeral
+storage (the bigger, likely multi-round item).
+
+Before this round, `probe_container()`'s startup-probe loop retried
+*forever* until it eventually passed — there was no
+`failureThreshold`-triggered restart the way a liveness failure gets
+one, even though real kubelet kills and restarts the container
+(subject to `restartPolicy`) once a startup probe fails past its own
+`failureThreshold`, exactly like a liveness failure.
+
+- **`ProbeTracker.failures`** made `pub` (was private, only `passing`
+  was exposed). Needed because a startup probe's tracker starts at
+  `passing: false` and — unlike the liveness loop's
+  `was_passing && !tracker.passing` edge-detection, which relies on
+  starting `true` — never has a "flip to failing" transition to detect
+  a second time; the loop needs the raw consecutive-failure count
+  directly instead.
+- **The startup-probe loop** now checks `tracker.failures >=
+  timing.failure_threshold.max(1)` on every non-passing iteration; on
+  hitting it, calls `runtime.restart_container()` (threading a probe-
+  level `terminationGracePeriodSeconds` override the same way round 44's
+  liveness path already does — `probe_grace_period_seconds()` needed no
+  changes at all, it was already generic over which probe called it)
+  and resets the tracker fresh, then **keeps looping** rather than
+  returning. This matters because `probe_container()` is spawned once
+  per container for its *entire lifetime*
+  (`ensure_probe_supervisor()`), so after a restart-triggering failure
+  the same task must keep re-attempting startup probing against the
+  newly-recreated container instance, not give up.
+- No new env vars, no new proto surface — pure logic change in
+  `probes.rs` plus one field visibility change.
+- 2 new unit tests: `probes_tests/tracker.rs` (the new public
+  `failures` field tracks the consecutive streak correctly, resetting
+  on success) and a new integration-style case in
+  `probes_tests/supervisor.rs` proving the *whole* `probe_container()`
+  loop restarts past threshold, keeps retrying, and recovers once the
+  (simulated) recreated container starts passing — not just the pure
+  counter in isolation.
+- New e2e test (`deploy/lib/test/cases/probes.sh`):
+  `test_startup_probe_failure_past_threshold_restarts_the_container` —
+  a marker file that's never created (so the startup probe can only
+  ever fail) with `failureThreshold: 2`; a nonzero restart count is
+  direct, structural proof the new restart path fired, not just
+  "eventually reaches some state."
+
+**Confidence note**: the core logic change is small and pure
+(`tracker.failures` comparison), and both the integration-style unit
+test and the e2e test are genuine, live proof of the whole path
+end-to-end — high confidence overall.
+
 ## Round 46: CSI ephemeral (inline) volumes (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-45). Offered the 3
@@ -2805,7 +2858,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Exit-code-aware phase computation** — `restartPolicy: Never` now reports `Failed` (not `Succeeded`) when a container exited nonzero (`compute_phase()`'s new `any_failed` parameter).
 - ✅ **`terminationMessagePath`/`terminationMessagePolicy`** (round 24; found in round 22's re-audit) — `create_and_start_container()` bind-mounts an empty host file at the container's `terminationMessagePath` (default `/dev/termination-log`) for App/Init containers, same approach real kubelet uses; `build_status()` reads it back (capped at 4096 bytes, keeping the last bytes if larger) into `ContainerStatus.state.terminated.message` for every exited container. Closing this also surfaced and fixed a bigger pre-existing gap: regular/init containers never reported a `terminated` state at all before this round (always `Waiting: ContainerCreating` forever once exited) — see round 24 notes. Still not implemented: `FallbackToLogsOnError` (documented, deliberate — nodelet always behaves as `File` policy, a strict subset of correct behavior, never wrong/misleading).
 - ✅ **Pod `readinessGates`** (round 23; found in round 22's re-audit) — `spec.readinessGates` lets an external controller contribute additional `PodCondition`s that must all be `True` (alongside the built-in `ContainersReady`) before kubelet reports the pod's own `Ready` condition as `True`. `build_pod_status()`'s `Ready` computation now checks every gate's named condition against `prev`'s conditions; a missing condition counts as not-satisfied, matching upstream. Fixing this also required (and fixed) a real pre-existing bug: nodelet's JSON-Merge-Patch status writes were silently deleting any condition an external controller had set, since the whole `conditions` array got replaced wholesale — now foreign conditions are copied forward on every write. See round 23 notes.
-- ❌ **Startup probe failure never triggers a restart** (found in round 45's re-audit) — `probe_container()`'s startup-probe loop retries *forever* until it passes; there's no `failureThreshold`-triggered kill/restart the way a liveness failure gets one. Real kubelet kills and restarts the container (subject to `restartPolicy`) once a startup probe fails past its own `failureThreshold`, same as a liveness failure. Directly relevant to round 44's `probe_grace_period_seconds()` work, which was explicitly scoped to liveness only because this restart path doesn't exist yet for startup probes — this finding is that absence made concrete.
+- ✅ **Startup probe failure triggers a restart** (round 47; found in round 45's re-audit) — the startup-probe loop now checks the new public `ProbeTracker.failures` count against `failureThreshold` on every non-passing iteration, calling `restart_container()` (reusing round 44's `probe_grace_period_seconds()` unchanged — it was already generic over which probe called it) and resetting the tracker, then continuing to loop (the supervisor task lives for the container's whole lifetime, so it must keep re-attempting startup probing against the recreated instance rather than giving up). Genuinely automated e2e test (a marker file that's never created, so the probe can only ever fail — a nonzero restart count is direct proof). See round 47 notes.
 
 ### Resource management
 - ✅ **Container resource requests/limits** — translated to CRI `LinuxContainerResources` (cpu shares/quota/period, memory limit; `linux_resources()`)
@@ -3153,7 +3206,15 @@ higher-value/correctness-critical than others:
       Reuses all the existing CSI Node-service plumbing (rounds 12/13/19)
       as-is. Genuinely automated e2e test, gated behind a new
       `TEST_CSI_INLINE_DRIVER` env var. See round 46 notes.
-- [ ] Candidates for the next round, by value: startup probe failure
-      restart, local ephemeral storage (biggest — capacity reporting +
-      eviction signal, likely its own arc). Ask before starting the next
-      round.
+- [x] Round 47: startup probe failure restart — the startup-probe loop
+      now checks the new public `ProbeTracker.failures` against
+      `failureThreshold`, restarts the container (reusing round 44's
+      `probe_grace_period_seconds()` unchanged), and keeps retrying
+      against the recreated instance rather than looping forever with
+      no restart at all. Genuinely automated e2e test. See round 47
+      notes.
+- [ ] Local ephemeral storage remains the only open item from round
+      45's audit — likely its own multi-round arc (capacity/allocatable
+      reporting is one piece, an eviction-manager signal a separate
+      one). A fresh gap re-audit is also reasonable at this point. Ask
+      before starting the next round.
