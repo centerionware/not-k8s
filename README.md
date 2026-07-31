@@ -345,8 +345,15 @@ singular `hostIP`, mirroring the already-correct `podIP`/`podIPs`
 split. Round 57 closed the last item: `ContainerStatus.containerID`
 now gets the real `<runtimeName>://<id>` scheme prefix (e.g.
 `containerd://...`), from a new one-time CRI `Version` call — all 5
-audit lists to date are now fully closed. Full status list in
-`docs/GAP_CLOSURE.md`.
+audit lists to date were fully closed as of that round. A fresh gap
+re-audit (round 58) found 3 more gaps: **HugePages support is entirely
+missing** (container resource limits, `Node.status.capacity`
+reporting, and the `emptyDir.medium: HugePages` volume form),
+`securityContext.supplementalGroupsPolicy` (GA 1.33) is never read,
+and Dynamic Resource Allocation (`spec.resourceClaims`) is
+unimplemented — flagged for completeness, though its value-to-
+complexity ratio for a single-node edge kubelet is genuinely
+questionable. Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 

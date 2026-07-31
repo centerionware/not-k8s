@@ -27,6 +27,63 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 58: fresh gap re-audit (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 22/27/35/39/45/50/54).
+All 5 prior audit lists were fully closed as of round 57; user picked
+another re-audit. No code changed this round — audit-only.
+
+This pass checked newer/less-common resource and security-context
+surface (hugepages, `supplementalGroupsPolicy`, Dynamic Resource
+Allocation) rather than a specific feature area, since the bread-and-
+butter CRI/lifecycle/volume/probe surface has now been swept
+repeatedly across 7 prior audits. Found 3 previously-untracked items:
+
+- **HugePages support is entirely missing** — confirmed via grep: zero
+  references anywhere in this codebase to `hugepages`/`HugePage`
+  besides the `hugepages-2Mi` string already used as an *error-path*
+  test fixture in `resource_field_ref.rs` (round 44's "unsupported
+  resource name" case — not real support). Three distinct pieces, of
+  increasing cost: **(1)** container `resources.limits["hugepages-<size>"]`
+  translation to CRI's `LinuxContainerResources.hugepage_limits` —
+  CRI has direct, dedicated native support for this (`HugepageLimit`
+  message, matching the `hugetlb.<size>.limit_in_bytes` cgroup file
+  exactly), making this the cheapest slice, similar in shape to the
+  existing cpu/memory limit translation in `linux_resources()`;
+  **(2)** `Node.status.capacity`/`.allocatable["hugepages-<size>"]`
+  reporting (would need reading `/sys/kernel/mm/hugepages/`, no CRI
+  RPC involved); **(3)** the `emptyDir`-like hugepages volume medium
+  (`volumes[].emptyDir.medium: "HugePages"`/`"HugePages-<size>"`) —
+  the biggest and most CRI-adjacent-but-still-manual piece, closer in
+  shape to round 30's tmpfs `emptyDir.medium: Memory` work (a real
+  mount, not a CRI concept) than to the container-limit piece.
+- **`securityContext.supplementalGroupsPolicy`** (GA 1.33) — controls
+  whether `supplementalGroups`/fsGroup-derived groups *merge with* or
+  *strictly replace* the groups the container image's own `/etc/group`
+  would otherwise assign the container's user; nodelet's existing
+  `linux_security_context()` sets `supplemental_groups` but never reads
+  this policy field at all, so it always behaves as the implicit merge
+  case regardless of what the pod spec asks for. Moderate value — a
+  real, if narrow, security-hardening knob some workloads (especially
+  ones with a restrictive base image `/etc/group`) depend on.
+- **Dynamic Resource Allocation (`spec.resourceClaims`)** — zero
+  references anywhere in this codebase. A newer (GA-track), genuinely
+  complex feature: `ResourceClaim`/`ResourceClaimTemplate`/`DeviceClass`
+  cluster objects, plus a kubelet-side gRPC "DRA plugin" protocol
+  roughly analogous in shape to device plugins (round 14/21) but
+  distinct in its own right (separate proto, separate
+  allocate/prepare/unprepare lifecycle). Flagged for completeness, not
+  necessarily recommended as a near-term target — likely a large,
+  multi-round arc on its own, and the value-to-complexity ratio for a
+  single-node edge kubelet (vs. a cluster with many nodes actually
+  needing DRA's cross-node device-sharing story) is genuinely
+  questionable; worth a deliberate go/no-go conversation before
+  starting rather than defaulting to "implement it."
+
+**Not re-flagging**: AppArmor profile / SELinux options (already a
+documented, pre-existing gap in the `securityContext` responsibility
+line, not new this round), and everything else already tracked below.
+
 ## Round 57: `ContainerStatus.containerID` scheme prefix (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-56). This closes
@@ -3399,6 +3456,9 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`oom_score_adj`** (round 28; found in round 27's re-audit) — `linux_resources()` now sets CRI's `LinuxContainerResources.oom_score_adj` per container via `eviction::oom_score_adj()`: Guaranteed `-998`, BestEffort `1000`, Burstable scaled by that container's own memory *request* against node capacity (`1000 - 1000*request/capacity`, clamped `[2, 999]`), matching real kubelet's formula exactly. Gives the kernel OOM killer QoS-aware signal, closing a real gap in this project's own eviction-manager story (rounds 7, 26) — a kernel OOM kill can happen faster than `eviction_loop()`'s check interval reacts. See round 28 notes.
 - ✅ **gRPC probes** (round 29; found in round 27's re-audit) — `probes.rs::probe_check()` now handles `probe.grpc` too, via a vendored `grpc.health.v1` client (`proto/health.proto`) calling the standard `Health/Check` RPC. `cri`-gated (needs `tonic`'s transport); a mock-only build's `check_grpc()` always returns `false`. Unit-tested failure paths (timeout, refused, non-gRPC listener) with solid confidence; the success path (a real passing `Health/Check`) is unvalidated — no gRPC server available in this sandbox to prove it live. See round 29 notes.
 - ✅ **Local ephemeral storage** (found in round 45's re-audit; closed rounds 48-49) — `Node.status.capacity`/`.allocatable["ephemeral-storage"]` reports the real total filesystem size backing `disk_path` (round 48, reusing `DiskPressure`'s existing `statvfs(2)` read). A pod exceeding its *own* `resources.limits["ephemeral-storage"]` is now evicted directly (round 49) — usage measured as CRI's per-container `writable_layer.used_bytes` plus a recursive walk of nodelet's own materialized volume directory, checked independently of and ahead of the general `MemoryPressure`/`DiskPressure`/`PIDPressure`-gated eviction path (the same relationship an individual container's own OOM kill has to overall node memory pressure). Genuinely automated e2e test — the only one of this project's eviction tests that doesn't need a manual procedure, since this trigger needs no artificial node-wide pressure. **Known scope limitation**: usage measurement doesn't include container log file size (`/var/log/pods/...`) yet, only volumes + writable layer. See rounds 48-49 notes.
+- ❌ **HugePages** (found in round 58's re-audit) — entirely unimplemented: no container `resources.limits["hugepages-<size>"]` translation (CRI has direct, dedicated support for this — `LinuxContainerResources.hugepage_limits` — making this the cheapest of the 3 pieces), no `Node.status.capacity`/`.allocatable["hugepages-<size>"]` reporting (would read `/sys/kernel/mm/hugepages/`, no CRI RPC involved), and no `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volume support (closer in shape to round 30's tmpfs `emptyDir.medium: Memory` work — a real mount, not a CRI concept — than to the container-limit piece).
+- ❌ **`securityContext.supplementalGroupsPolicy`** (GA 1.33; found in round 58's re-audit) — controls whether `supplementalGroups`/fsGroup-derived groups *merge with* or *strictly replace* the groups a container image's own `/etc/group` would otherwise assign its user; `linux_security_context()` sets `supplemental_groups` but never reads this policy field, so it always behaves as the implicit merge case regardless of what the pod spec asks for.
+- ❌ **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit) — entirely unimplemented (zero references anywhere in this codebase). A newer, genuinely complex feature: `ResourceClaim`/`ResourceClaimTemplate`/`DeviceClass` cluster objects plus a kubelet-side gRPC "DRA plugin" protocol distinct from (though loosely analogous to) device plugins. **Flagged for completeness, not necessarily recommended**: likely its own large multi-round arc, and the value-to-complexity ratio for a single-node edge kubelet (vs. a real multi-node cluster's cross-node device-sharing story DRA is mainly designed for) is genuinely questionable — worth a deliberate scope discussion before starting, not a default "implement it" pick.
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
@@ -3819,6 +3879,17 @@ higher-value/correctness-critical than others:
       `ContainerStatus.containerID` and `state.terminated.containerID`
       get fixed in one change. Genuinely automated e2e test. See round
       57 notes.
-- [ ] All 5 audit lists to date (rounds 35, 39, 45, 50, 54) are now
-      fully closed. A fresh gap re-audit is the natural next step. Ask
-      before starting the next round.
+- [x] Round 58: fresh gap re-audit (no code change) — found 3
+      previously-untracked items: **HugePages entirely unimplemented**
+      (3 pieces: container limit translation — CRI has direct support,
+      cheapest; `Node.status.capacity`/`.allocatable` reporting; the
+      `emptyDir.medium: HugePages` volume form), **`securityContext.supplementalGroupsPolicy`**
+      (GA 1.33, merge-vs-strict group semantics, never read), and
+      **Dynamic Resource Allocation** (`spec.resourceClaims`,
+      genuinely complex, flagged for completeness — not necessarily
+      recommended given the value-to-complexity ratio for a
+      single-node edge kubelet). See round 58 notes.
+- [ ] Candidates for the next round, by value: HugePages container
+      limits (cheapest slice — direct CRI support), `supplementalGroupsPolicy`,
+      then a deliberate scope discussion on Dynamic Resource Allocation
+      before committing to it. Ask before starting the next round.
