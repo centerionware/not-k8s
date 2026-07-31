@@ -139,6 +139,16 @@ pub struct Config {
     /// mainly so tests can point this at a throwaway directory instead of
     /// the real `/sys/fs/cgroup`.
     pub cgroup_fs_root: String,
+    /// Statically-configured CSI driver name -> Node-service unix socket
+    /// endpoint (`cri` only; see `runtime/csi.rs`), e.g.
+    /// `NODELET_CSI_DRIVERS=hostpath.csi.k8s.io=unix:///var/lib/nodelet/csi-sockets/hostpath.sock`.
+    /// Empty by default — `PersistentVolumeClaim` volumes are skipped with
+    /// a warning (same treatment any other unresolvable volume gets) until
+    /// at least one driver is configured. Real kubelet discovers CSI
+    /// sockets dynamically via a plugin-registration protocol nodelet
+    /// doesn't implement (see the module doc comment on `runtime/csi.rs`);
+    /// this is the deliberately simpler static alternative.
+    pub csi_drivers: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -250,6 +260,16 @@ impl Config {
         let kube_reserved_memory_bytes = env_u64("NODELET_KUBE_RESERVED_MEMORY_BYTES", 0)?;
         let cgroup_fs_root = std::env::var("NODELET_CGROUP_FS_ROOT").unwrap_or_else(|_| "/sys/fs/cgroup".to_string());
 
+        let mut csi_drivers = BTreeMap::new();
+        if let Ok(raw) = std::env::var("NODELET_CSI_DRIVERS") {
+            for pair in raw.split(',').filter(|s| !s.trim().is_empty()) {
+                let (name, endpoint) = pair
+                    .split_once('=')
+                    .with_context(|| format!("bad NODELET_CSI_DRIVERS entry '{pair}', expected name=endpoint"))?;
+                csi_drivers.insert(name.trim().to_string(), endpoint.trim().to_string());
+            }
+        }
+
         Ok(Self {
             node_name,
             runtime,
@@ -286,6 +306,7 @@ impl Config {
             kube_reserved_cpu_millicores,
             kube_reserved_memory_bytes,
             cgroup_fs_root,
+            csi_drivers,
         })
     }
 }

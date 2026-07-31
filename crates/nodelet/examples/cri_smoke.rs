@@ -31,9 +31,15 @@ async fn main() -> Result<()> {
 
     println!("== connecting to {socket}");
     let client = kube::Client::try_default().await.context("building kube client")?;
-    let rt = nodelet::runtime::cri::CriRuntime::connect(&socket, client, Vec::new(), "cluster.local".to_string())
-        .await
-        .context("connect to containerd")?;
+    let rt = nodelet::runtime::cri::CriRuntime::connect(
+        &socket,
+        client,
+        Vec::new(),
+        "cluster.local".to_string(),
+        Default::default(),
+    )
+    .await
+    .context("connect to containerd")?;
 
     // Drain the runtime's event channel (the event-driven status path). With
     // containerd < 1.7 this is fed by the native Events/Subscribe fallback.

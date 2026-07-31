@@ -44,6 +44,7 @@ fn cfg() -> Config {
         kube_reserved_cpu_millicores: 0,
         kube_reserved_memory_bytes: 0,
         cgroup_fs_root: "/sys/fs/cgroup".to_string(),
+        csi_drivers: Default::default(),
     }
 }
 

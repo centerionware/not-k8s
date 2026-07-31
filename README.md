@@ -55,6 +55,8 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
   src/server/          kubelet-style HTTP(S) server: logs/exec/attach/port-forward/stats/metrics (feature `cri`).
   src/shutdown.rs      Graceful node shutdown: systemd-logind inhibitor lock + pod drain (feature `cri`).
   src/runtime/mock.rs  In-memory runtime: reports pods Running, zero engine overhead.
+  src/runtime/csi.rs   Minimal CSI Node-service client for PersistentVolumeClaim
+                       volumes, first-slice scope (feature `cri`).
   src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`): pod/init
                        container lifecycle, resource limits, securityContext,
                        DNS, private registry auth.
@@ -116,9 +118,16 @@ created/capped at `Node.status.allocatable` (`capacity` minus
 default) — **the cgroup v2 writes are unvalidated against a real
 `/sys/fs/cgroup`**, best-effort/logged-not-fatal on failure, see
 `docs/GAP_CLOSURE.md`'s round 11 notes. `RuntimeClass.overhead` is wired
-through too, closed alongside this round's cgroup work. Still missing:
-PVC/CSI, CPU/Memory/Topology managers, device plugins — full list in
-`docs/GAP_CLOSURE.md`.
+through too, closed alongside this round's cgroup work. Also
+**PersistentVolumeClaim/CSI** (`runtime/csi.rs`) — a first slice, not full
+CSI: a bound PVC's CSI-backed `PersistentVolume` gets staged/published via
+a CSI driver's Node service and bind-mounted into the container like any
+other volume, but driver discovery is static (`NODELET_CSI_DRIVERS`, no
+dynamic plugin registration) and there's no Controller service (attach/
+detach — not kubelet's job upstream either) or per-volume secret support
+yet — **unvalidated against a real CSI driver**, see `docs/GAP_CLOSURE.md`'s
+round 12 notes. Still missing: CPU/Memory/Topology managers, device
+plugins, and deepening PVC/CSI itself — full list in `docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -547,6 +556,15 @@ Two layers, and they're not substitutes for each other:
   exercised against a real `/sys/fs/cgroup` (see `docs/GAP_CLOSURE.md`'s
   round 11 notes).
 
+  `csi_pvc.sh` creates a PVC and a pod mounting it, then checks a file the
+  container wrote lands in the host-materialized volume path. Needs
+  `TEST_CSI_STORAGE_CLASS` set to a StorageClass backed by both a working
+  external-provisioner and a driver also listed in the running nodelet's
+  `NODELET_CSI_DRIVERS` — skips cleanly without it, since this suite can't
+  stand up that infrastructure itself. This is round 12's least-validated
+  piece: no CSI driver socket was reachable in the environment that built
+  `runtime/csi.rs` (see `docs/GAP_CLOSURE.md`'s round 12 notes).
+
 ## Configuration (environment variables)
 
 | Variable | Default | Meaning |
@@ -586,6 +604,7 @@ Two layers, and they're not substitutes for each other:
 | `NODELET_KUBE_RESERVED_CPU_MILLICORES` | `0` | CPU reserved for nodelet/the container runtime itself. |
 | `NODELET_KUBE_RESERVED_MEMORY_BYTES` | `0` | Same, for memory bytes. |
 | `NODELET_CGROUP_FS_ROOT` | `/sys/fs/cgroup` | Where the host's cgroup v2 unified hierarchy is mounted (`cri` only) — used to create/cap the top-level `kubepods` cgroup at `Node.status.allocatable`. |
+| `NODELET_CSI_DRIVERS` | (none) | Comma-separated `driver-name=unix:///path/to/socket` pairs mapping a CSI driver name to its Node-service socket (`cri` only) — see [Status](#status). Unset means `PersistentVolumeClaim` volumes are skipped with a warning. |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---

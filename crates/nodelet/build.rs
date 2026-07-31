@@ -14,6 +14,13 @@ fn main() {
                     &["proto"],
                 )
                 .expect("failed to compile CRI/events protos");
+
+            println!("cargo:rerun-if-changed=proto/csi.proto");
+            tonic_prost_build::configure()
+                .build_server(false)
+                .build_client(true)
+                .compile_protos(&["proto/csi.proto"], &["proto"])
+                .expect("failed to compile CSI proto");
         }
     }
 }

@@ -16,6 +16,8 @@ pub mod mock;
 
 #[cfg(feature = "cri")]
 pub mod cri;
+#[cfg(feature = "cri")]
+pub mod csi;
 
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::Pod;

@@ -27,6 +27,90 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 12: PersistentVolumeClaim / CSI, first slice (2026-07-31, same day)
+
+Explicitly asked again (same reasoning as round 11 — everything left is
+big/invasive): user picked PVC/CSI over the CPU/Memory/Topology managers
+and device plugins, calling it "the single biggest remaining feature gap
+... real user-facing value," while accepting it as a first-slice/multi-round
+effort rather than expecting full CSI support in one pass.
+
+- **New `runtime/csi.rs`**: a minimal CSI Node-service client
+  (`NodeStageVolume`/`NodeUnstageVolume`/`NodePublishVolume`/
+  `NodeUnpublishVolume`/`NodeGetCapabilities`) using a freshly vendored
+  `proto/csi.proto` (the stable v1 API from the upstream
+  container-storage-interface/spec repo, tag `v1.9.0`) — compiled the same
+  way `proto/cri.proto` already is (`tonic_prost_build`, `cri`-feature-only).
+- **Deliberate scope-narrowing, documented up front in the module's own doc
+  comment**: real kubelet discovers CSI drivers dynamically — a driver's
+  DaemonSet registers its socket against kubelet's own plugin-registration
+  gRPC service. Implementing that second server is real additional CSI
+  plumbing on top of the Node service itself. This round takes the simpler
+  route instead: `NODELET_CSI_DRIVERS=driver-name=unix:///path/to/socket`
+  statically maps a driver name to its already-known socket path. This
+  still talks to an unmodified, off-the-shelf CSI driver container (the
+  registration dance is how kubelet *discovers* the socket, not something
+  the Node RPCs themselves depend on) — it just needs that path configured
+  up front instead of found automatically.
+- **Wired into `runtime/cri.rs`**: `resolve_volumes()` gained a
+  `persistent_volume_claim` branch — resolves the PVC (must be
+  already-Bound; not-yet-bound is logged and retried next reconcile, same
+  as any transient volume-resolution failure) to its `PersistentVolume`,
+  extracts `.spec.csi`, calls `CsiDrivers::mount()`, and — on success —
+  inserts the publish target path into the same `volume name -> host
+  directory` map every other volume kind already populates. No special
+  casing needed in `build_mounts()`: NodePublishVolume makes that directory
+  a real, populated mountpoint, which then gets bind-mounted into the
+  container exactly like a ConfigMap/Secret/emptyDir directory already is.
+  `remove_pod()` gained a matching `unmount_csi_volumes()` that
+  unpublishes (and, if this was the last pod referencing it, unstages)
+  every CSI volume the pod had — best-effort, one failing driver call
+  doesn't block the rest of teardown.
+- **Per-node reference counting** (`CsiDrivers`'s `refs` map, keyed by
+  `(driver, volume_handle)` -> the *set* of pod UIDs using it, not a plain
+  counter) — `ensure_pod()`/`resolve_volumes()` runs on every reconcile of
+  an already-running pod, not just once at creation, so a plain increment-
+  on-mount counter would inflate without bound; a set makes repeated calls
+  for the same pod a no-op, and `NodeUnstageVolume` only fires once the set
+  is actually empty.
+- 12 new unit tests, all pure logic: `has_stage_unstage_capability`
+  (decides whether to call NodeStageVolume at all),
+  `staging_path`/`mount_capability` (path/request construction). The
+  gRPC plumbing itself (`connect_uds`, the actual Stage/Publish/Unpublish/
+  Unstage calls) mirrors `runtime/cri.rs`'s existing CRI client exactly and
+  is validated the same way that always has been: against a live socket,
+  not a unit test — see the confidence note below.
+
+435 tests passing with `--features cri` (up from 423), 174 mock-only
+(unchanged — this round's new code is entirely `cri`-gated).
+`deploy/lib/test/cases/csi_pvc.sh` added — creates a PVC against
+`TEST_CSI_STORAGE_CLASS`, a pod mounting it, and verifies a file the
+container wrote lands in the host-materialized volume path. Skips cleanly
+without `TEST_CSI_STORAGE_CLASS` set to a StorageClass backed by both a
+working external-provisioner *and* a driver also listed in the running
+nodelet's `NODELET_CSI_DRIVERS` — real infrastructure this suite can't
+stand up itself, same category as the graceful-shutdown and cgroup-write
+manual/live-only checks from rounds 9 and 11.
+
+**Known limitation, honestly flagged, same treatment as rounds 9 and 11**:
+no CSI driver socket was reachable in the environment that built this, so
+none of the actual gRPC calls (`NodeGetCapabilities`, `NodeStageVolume`,
+`NodePublishVolume`, `NodeUnpublishVolume`, `NodeUnstageVolume`) have been
+exercised against a real driver — only the proto compilation itself and
+the pure request-construction logic were verified directly. The CSI wire
+protocol is well-specified and this client mirrors the exact shape
+`runtime/cri.rs`'s already-working CRI client uses (same `connect_uds`
+pattern, same tonic-generated client style), so the main risk isn't
+protocol-level, it's driver-specific behavior this slice doesn't handle:
+drivers that require `nodeStageSecretRef`/`nodePublishSecretRef`
+credentials, drivers whose `NodeGetCapabilities` needs a Controller-service
+round-trip first (rare, but not impossible), and any driver-specific
+`volume_context`/`publish_context` expectations beyond what's in
+`PersistentVolume.spec.csi.volumeAttributes`. All of these fail as a
+logged warning + the volume silently absent from the pod's mounts (the
+pod still starts, just without that volume) — never a crash or a stuck
+reconcile loop.
+
 ## Round 11: cgroup/QoS hierarchy + node allocatable enforcement (2026-07-31, same day)
 
 Unlike rounds 6–10 (picked autonomously, "you pick the path"/"continue"),
@@ -531,7 +615,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ ConfigMap / Secret / emptyDir (materialized to host paths)
 - ✅ **Projected volumes** — `configMap`/`secret`/`downwardAPI`, and now `serviceAccountToken` too (mints a real token via the `TokenRequest` API — `resolve_service_account_token()`; needs nodelet's client to have `create` on `serviceaccounts/token` in the namespace, a real RBAC requirement) merge into the volume dir, with `items`/`KeyToPath` key-selection-and-rename support. `clusterTrustBundle` sources are still skipped with a warning.
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
-- ❌ PersistentVolumeClaim / CSI (`NodeStageVolume`/`NodePublishVolume`) — no PVC support at all
+- 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **First-slice scope, not full CSI**: static `NODELET_CSI_DRIVERS` driver-name→socket config instead of dynamic plugin registration (see the module doc comment for why), no Controller service (attach/detach — not kubelet's job upstream either), no `nodeStageSecretRef`/`nodePublishSecretRef` credential support. Unvalidated against a real CSI driver — see round 12 notes.
 - ❌ hostPath (explicitly unsupported today, logged and dropped)
 - ❌ `emptyDir.sizeLimit` enforcement
 - ❌ subPath `$(VAR)` expansion
@@ -613,6 +697,11 @@ higher-value/correctness-critical than others:
       RuntimeClass Overhead (user-picked over PVC/CSI and the CPU/Memory/
       Topology managers — see round 11 notes for the cgroup-write
       confidence caveat)
+- [x] Round 12: PersistentVolumeClaim/CSI, first slice (static driver
+      config, no Controller service — see round 12 notes; unvalidated
+      against a real CSI driver, same confidence caveat pattern as rounds
+      9 and 11)
 - [ ] Everything else in the responsibility list above — biggest remaining
-      single items: PVC/CSI, CPU/Memory/Topology managers, device plugins.
-      Ask before starting the next round.
+      single items: CPU/Memory/Topology managers, device plugins, plus
+      deepening PVC/CSI itself (dynamic plugin registration, Controller
+      service/attach, per-volume secrets). Ask before starting the next round.

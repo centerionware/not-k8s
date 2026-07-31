@@ -16,8 +16,9 @@ use super::{ContainerRuntimeStatus, Phase, PodRuntime, RuntimeStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, EnvFromSource, EnvVarSource, EphemeralContainer, LifecycleHandler, Pod, PodSecurityContext,
-    ResourceRequirements, Secret, SecurityContext, Service, Volume,
+    ConfigMap, Container, EnvFromSource, EnvVarSource, EphemeralContainer, LifecycleHandler,
+    PersistentVolume, PersistentVolumeClaim, Pod, PodSecurityContext, ResourceRequirements, Secret,
+    SecurityContext, Service, Volume,
 };
 use k8s_openapi::api::node::v1::RuntimeClass;
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
@@ -114,6 +115,11 @@ pub struct CriRuntime {
     /// concept of "how many times has this logical container restarted" —
     /// each restart is a brand-new container id, so nodelet has to count.
     restart_counts: Mutex<HashMap<String, u32>>,
+    /// CSI Node-service clients for `PersistentVolumeClaim` volumes (see
+    /// `runtime/csi.rs`) — empty (`NODELET_CSI_DRIVERS` unset) means every
+    /// PVC volume is skipped with a warning, same treatment any other
+    /// unresolvable volume already gets.
+    csi: crate::runtime::csi::CsiDrivers,
 }
 
 /// Identity extracted from a Pod object.
@@ -1034,6 +1040,7 @@ impl CriRuntime {
         client: kube::Client,
         cluster_dns: Vec<String>,
         cluster_domain: String,
+        csi_drivers: BTreeMap<String, String>,
     ) -> Result<Self> {
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
@@ -1052,6 +1059,7 @@ impl CriRuntime {
             rx: Mutex::new(Some(rx)),
             restart_policies: Mutex::new(HashMap::new()),
             restart_counts: Mutex::new(HashMap::new()),
+            csi: crate::runtime::csi::CsiDrivers::new(csi_drivers),
         })
     }
 
@@ -1129,6 +1137,26 @@ impl CriRuntime {
                     continue;
                 }
                 out.insert(v.name.clone(), vol_dir);
+            } else if let Some(pvc_source) = &v.persistent_volume_claim {
+                match self.resolve_csi_source(&id.namespace, &pvc_source.claim_name).await {
+                    Ok(Some(mut source)) => {
+                        source.read_only |= pvc_source.read_only.unwrap_or(false);
+                        match self.csi.mount(&source, &vol_dir, &id.uid).await {
+                            Ok(()) => {
+                                out.insert(v.name.clone(), vol_dir);
+                            }
+                            Err(e) => warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "failed to mount CSI volume"),
+                        }
+                    }
+                    Ok(None) => {
+                        // Not yet Bound, no CSI source, or no driver
+                        // configured for it — resolve_csi_source() already
+                        // warned with the specific reason. Same as any
+                        // other unresolvable volume: silently absent from
+                        // the mount map, container starts without it.
+                    }
+                    Err(e) => warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "failed to resolve PersistentVolumeClaim"),
+                }
             } else {
                 warn!(
                     volume = %v.name,
@@ -1229,6 +1257,79 @@ impl CriRuntime {
             }
         }
         Ok(())
+    }
+
+    /// Resolve a `PersistentVolumeClaim` (by name, in `namespace`) to its
+    /// bound `PersistentVolume`'s CSI source — `Ok(None)` (not an error) for
+    /// every legitimate "nothing to mount yet" case: the PVC doesn't exist,
+    /// isn't Bound yet (`.spec.volumeName` unset — this is normal right
+    /// after pod creation if a provisioner is still creating the PV; the
+    /// next reconcile tries again), the bound PV isn't backed by CSI at all
+    /// (an in-tree volume type — out of scope for this slice), or no CSI
+    /// driver is configured in `NODELET_CSI_DRIVERS` for it. Each case is
+    /// logged with its specific reason so "why isn't my volume mounted"
+    /// doesn't require reading source to answer.
+    async fn resolve_csi_source(&self, namespace: &str, claim_name: &str) -> Result<Option<crate::runtime::csi::CsiVolumeSource>> {
+        let pvc = match Api::<PersistentVolumeClaim>::namespaced(self.client.clone(), namespace).get(claim_name).await {
+            Ok(pvc) => pvc,
+            Err(e) => return Err(e).with_context(|| format!("fetching PersistentVolumeClaim {claim_name}")),
+        };
+        let Some(pv_name) = pvc.spec.as_ref().and_then(|s| s.volume_name.as_ref()) else {
+            warn!(claim = %claim_name, "PersistentVolumeClaim not yet Bound to a PersistentVolume; will retry next reconcile");
+            return Ok(None);
+        };
+
+        let pv = match Api::<PersistentVolume>::all(self.client.clone()).get(pv_name).await {
+            Ok(pv) => pv,
+            Err(e) => return Err(e).with_context(|| format!("fetching PersistentVolume {pv_name}")),
+        };
+        let Some(csi) = pv.spec.as_ref().and_then(|s| s.csi.as_ref()) else {
+            warn!(claim = %claim_name, volume = %pv_name, "bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported)");
+            return Ok(None);
+        };
+
+        if !self.csi.driver_configured(&csi.driver) {
+            warn!(claim = %claim_name, driver = %csi.driver, "no CSI driver configured for this PersistentVolume's driver — set NODELET_CSI_DRIVERS");
+            return Ok(None);
+        }
+
+        Ok(Some(crate::runtime::csi::CsiVolumeSource {
+            driver: csi.driver.clone(),
+            volume_handle: csi.volume_handle.clone(),
+            fs_type: csi.fs_type.clone().unwrap_or_default(),
+            read_only: csi.read_only.unwrap_or(false),
+            volume_attributes: csi.volume_attributes.clone().unwrap_or_default().into_iter().collect(),
+        }))
+    }
+
+    /// Unpublish (and, if this was the last pod using it, unstage) every
+    /// CSI-backed `PersistentVolumeClaim` volume this pod referenced.
+    /// Best-effort per volume — one failing CSI driver call must not stop
+    /// the rest of teardown, same treatment `graceful_stop_containers`
+    /// already gives a failing `preStop` hook. Re-resolves the PVC->PV
+    /// chain rather than remembering it from `ensure_pod()` time: simpler
+    /// than a second side table, at the cost of a volume whose PVC/PV was
+    /// deleted out from under a still-running pod not getting cleanly
+    /// unmounted (logged, not silently lost — a real but narrow gap).
+    async fn unmount_csi_volumes(&self, pod: &Pod, id: &PodId) {
+        let Some(volumes) = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()) else { return };
+        let pod_dir = PathBuf::from(VOLUME_ROOT).join(&id.uid).join("volumes");
+
+        for v in volumes {
+            let Some(pvc_source) = &v.persistent_volume_claim else { continue };
+            let source = match self.resolve_csi_source(&id.namespace, &pvc_source.claim_name).await {
+                Ok(Some(source)) => source,
+                Ok(None) => continue, // already logged why in resolve_csi_source()
+                Err(e) => {
+                    warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "CSI teardown: failed to resolve PersistentVolumeClaim; volume left mounted");
+                    continue;
+                }
+            };
+            let vol_dir = pod_dir.join(&v.name);
+            if let Err(e) = self.csi.unmount(&source.driver, &source.volume_handle, &vol_dir, &id.uid).await {
+                warn!(volume = %v.name, driver = %source.driver, error = ?e, "CSI teardown: failed to unmount volume");
+            }
+        }
     }
 
     async fn resolve_service_env(&self, namespace: &str) -> Result<BTreeMap<String, Vec<u8>>> {
@@ -2184,6 +2285,7 @@ impl PodRuntime for CriRuntime {
             self.restart_policies.lock().unwrap().remove(&sandbox_id);
             self.clear_restart_counts(&sandbox_id);
         }
+        self.unmount_csi_volumes(pod, &id).await;
         Ok(())
     }
 
