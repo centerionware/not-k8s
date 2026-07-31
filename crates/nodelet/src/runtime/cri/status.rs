@@ -138,6 +138,22 @@ pub(crate) fn pod_usage_from_sandbox_stats(stats: &v1::PodSandboxStats) -> Optio
     let ephemeral_storage_usage_bytes =
         Some(writable_layer_bytes(&linux.containers) + directory_usage_bytes(&volume_dir));
 
+    // Per-volume usage (round 67; feeds emptyDir.sizeLimit enforcement)
+    // — every immediate subdirectory of volume_dir is one
+    // spec.volumes[].name, regardless of kind; the eviction-side check
+    // only ever looks up the emptyDir ones that actually have a
+    // sizeLimit set, so measuring every volume here unconditionally
+    // (rather than first figuring out which are emptyDir) keeps this
+    // function decoupled from the Pod spec entirely, same as
+    // ephemeral_storage_usage_bytes above.
+    let empty_dir_usage_bytes: HashMap<String, u64> = std::fs::read_dir(&volume_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), directory_usage_bytes(&e.path())))
+        .collect();
+
     Some(crate::runtime::PodUsage {
         namespace: metadata.namespace.clone(),
         name: metadata.name.clone(),
@@ -145,6 +161,7 @@ pub(crate) fn pod_usage_from_sandbox_stats(stats: &v1::PodSandboxStats) -> Optio
         pod: usage_stats_from_cpu_memory(linux.cpu.as_ref(), linux.memory.as_ref()),
         containers,
         ephemeral_storage_usage_bytes,
+        empty_dir_usage_bytes,
     })
 }
 

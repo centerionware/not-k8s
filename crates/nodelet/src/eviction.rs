@@ -202,6 +202,43 @@ pub fn exceeds_ephemeral_storage_limit(usage_bytes: Option<u64>, limit_bytes: Op
     matches!((usage_bytes, limit_bytes), (Some(usage), Some(limit)) if usage > limit)
 }
 
+/// Every `emptyDir` volume with `sizeLimit` set, as `(volume name, limit
+/// bytes)` (round 67; found in round 65's fresh gap re-audit) — real
+/// kubelet enforces this per-volume, distinct from the whole-pod
+/// `ephemeral-storage` limit above (a pod can have no ephemeral-storage
+/// limit at all and still have one specific `emptyDir` capped). Scoped
+/// to plain-disk `emptyDir` only: a `Memory`-medium (tmpfs) or
+/// `HugePages`-medium `emptyDir`'s `sizeLimit` is already a real
+/// kernel-enforced cap at mount time (`mount -t tmpfs/hugetlbfs -o
+/// size=...`, rounds 30/61) — writes past it just fail with `ENOSPC`,
+/// there's nothing for periodic measurement-based eviction to add. Pure
+/// so this is unit-testable without a live volume directory.
+pub fn empty_dir_size_limits(pod: &Pod) -> Vec<(String, u64)> {
+    let Some(volumes) = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()) else { return Vec::new() };
+    volumes
+        .iter()
+        .filter_map(|v| {
+            let empty_dir = v.empty_dir.as_ref()?;
+            let is_disk_backed = empty_dir.medium.as_deref().unwrap_or("").is_empty();
+            if !is_disk_backed {
+                return None;
+            }
+            let limit = quantity_value(&empty_dir.size_limit.as_ref()?.0)?;
+            Some((v.name.clone(), limit.max(0.0) as u64))
+        })
+        .collect()
+}
+
+/// The name of the first `emptyDir` volume (in `limits`' order) whose
+/// measured usage exceeds its own `sizeLimit`, or `None` if every volume
+/// with a limit is still within it (or its usage wasn't measured at all
+/// — same "never guess a violation from missing data" posture as
+/// `exceeds_ephemeral_storage_limit()`). Pure given an already-measured
+/// usage map, so unit-testable without a live volume directory.
+pub fn first_empty_dir_over_limit(limits: &[(String, u64)], usage_bytes: &std::collections::HashMap<String, u64>) -> Option<String> {
+    limits.iter().find(|(name, limit)| usage_bytes.get(name).is_some_and(|usage| usage > limit)).map(|(name, _)| name.clone())
+}
+
 /// `spec.priority` — already a resolved numeric value by the time nodelet
 /// sees the Pod (the apiserver's Priority admission controller resolves
 /// `priorityClassName` into this field at admission time), so no
@@ -273,3 +310,6 @@ mod tests_oom_score_adj;
 #[cfg(test)]
 #[path = "eviction_tests/ephemeral_storage.rs"]
 mod tests_ephemeral_storage;
+#[cfg(test)]
+#[path = "eviction_tests/empty_dir_size_limit.rs"]
+mod tests_empty_dir_size_limit;

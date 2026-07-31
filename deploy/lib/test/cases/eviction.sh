@@ -51,6 +51,41 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_pod_exceeding_an_empty_dir_size_limit_is_evicted() {
+    # Round 67: distinct from the whole-pod ephemeral-storage limit above
+    # — this pod has no ephemeral-storage limit at all, only a per-volume
+    # emptyDir.sizeLimit, and that alone must trigger eviction. Scoped to
+    # plain-disk emptyDir only (a Memory/HugePages-medium emptyDir's
+    # sizeLimit is already a real kernel-enforced cap at mount time,
+    # rounds 30/61 — see empty_dir_size_limits()'s own pure-logic tests
+    # for that scoping).
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="empty-dir-size-limit-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "dd if=/dev/zero of=/data/bigfile bs=1M count=8 2>/dev/null; sleep 3600"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      emptyDir:
+        sizeLimit: 1Mi
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name evicted for exceeding its emptyDir volume's sizeLimit" bash -c \
+        "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.reason}')\" == 'Evicted' ]]"
+    delete_pod_if_exists "$name"
+}
+
 register_test test_eviction_manual_procedure
 register_test test_eviction_priority_tiebreak_manual_procedure
 register_test test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
+register_test test_pod_exceeding_an_empty_dir_size_limit_is_evicted

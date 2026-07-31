@@ -27,6 +27,51 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 67: emptyDir.sizeLimit enforcement (2026-07-31, same day)
+
+Closes the last of round 65's fresh-audit candidates that wasn't swap
+support — `emptyDir.sizeLimit` had been tracked as an open gap since
+early rounds (a plain-disk `emptyDir` volume had no size cap at all,
+unlike its `Memory`/`HugePages`-medium siblings, whose `sizeLimit` is
+already a real kernel-enforced cap at mount time via rounds 30/61).
+
+- `PodUsage` (`runtime/mod.rs`) gained `empty_dir_usage_bytes:
+  HashMap<String, u64>`, populated in `pod_usage_from_sandbox_stats()`
+  by measuring every immediate subdirectory of `VOLUME_ROOT/<uid>/volumes/`
+  with the same `directory_usage_bytes()` walk round 49's ephemeral-storage
+  total already uses — reported unconditionally for every materialized
+  volume regardless of kind, keeping the runtime-side measurement fully
+  decoupled from the Pod spec (the eviction-side check below is what
+  decides which entries actually matter).
+- New pure `empty_dir_size_limits()`/`first_empty_dir_over_limit()` in
+  `eviction.rs`: the first finds every plain-disk `emptyDir` volume with
+  `sizeLimit` set (explicitly excluding `Memory`/`HugePages`-medium ones
+  — their cap is already kernel-enforced, nothing for measurement-based
+  eviction to add), the second finds the first volume (if any) whose
+  measured usage exceeds its own limit.
+- `main.rs`'s eviction loop gained a new check, structured identically to
+  round 49's whole-pod ephemeral-storage check and evaluated right after
+  it (same "direct per-pod resource violation, checked ahead of general
+  node pressure" reasoning) — a pod with even one emptyDir volume over
+  its own `sizeLimit` is evicted immediately, with a reason message
+  naming the specific offending volume.
+- 12 new unit tests (both `cri`-gated and mock-only, since this logic
+  lives in `eviction.rs`, not the CRI runtime): size-limit extraction
+  (disk-backed reported, no-limit not reported, `Memory`/`HugePages`-medium
+  never reported even with a limit set, non-emptyDir volumes ignored,
+  multiple volumes each get their own entry) and violation detection
+  (over/at/under limit, unmeasured usage never violates, only the
+  actually-violating volume among several is returned).
+- Genuinely automated e2e test
+  (`test_pod_exceeding_an_empty_dir_size_limit_is_evicted` in
+  `deploy/lib/test/cases/eviction.sh`), mirroring round 49's
+  ephemeral-storage eviction test exactly: a pod with **no**
+  ephemeral-storage limit at all, only a `1Mi` `emptyDir.sizeLimit`,
+  writes an 8Mi file into it and is confirmed evicted — proving the
+  per-volume check fires independently of the whole-pod one.
+- **Still open**: swap support (`memorySwap.swapBehavior`, GA 1.34) —
+  the last of round 65's audit candidates.
+
 ## Round 66: lifecycle.stopSignal (2026-07-31, same day)
 
 Closes the cheapest of the 2 remaining candidates round 65's fresh gap
@@ -3942,7 +3987,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
 - 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`, `plugin_registry.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **Dynamic CSI driver discovery** (round 13) — a driver's `node-driver-registrar` sidecar can register itself against `NODELET_PLUGIN_REGISTRY_PATH` the same protocol it'd use against real kubelet's plugin watcher, no static config needed; `NODELET_CSI_DRIVERS` still works too, as a seed/override. **`nodeStageSecretRef`/`nodePublishSecretRef`** (round 13) — resolved to real Secret data and passed through to the driver. **Attach coordination** (round 19) — checks `CSIDriver.spec.attachRequired`, and for drivers that need it, waits on the matching `VolumeAttachment.status.attached` before Stage/Publish, threading `status.attachmentMetadata` through as `publish_context`. Calling the Controller service itself (`ControllerPublishVolume`/`ControllerUnpublishVolume`) stays out of scope — that's external-attacher's job upstream too, not kubelet's, confirmed against docs in round 19. Still out of scope: device-plugin registrations against this module (the same registration protocol, explicitly rejected with a real `NotifyRegistrationStatus{plugin_registered: false}` rather than ignored — that's `device_plugins.rs`'s job instead). Unvalidated against a real CSI driver — see rounds 12, 13, and 19 notes.
 - ✅ **hostPath** (found in a fresh gap re-audit; closed round 65) — `spec.volumes[].hostPath` resolves directly to the host's own existing path (not materialized under `VOLUME_ROOT` like every other volume kind), with real `type` validation (`DirectoryOrCreate`/`FileOrCreate`/`Directory`/`File`/`Socket`/`CharDevice`/`BlockDevice`) matching real kubelet's own create-vs-require-existing semantics exactly. A validation failure is logged and the volume skipped, same best-effort posture as every other unresolvable volume kind.
-- ❌ `emptyDir.sizeLimit` enforcement
+- ✅ **`emptyDir.sizeLimit` enforcement** (found in round 65's fresh gap re-audit; closed round 67) — a plain-disk `emptyDir` volume exceeding its own `sizeLimit` now evicts the pod, checked independently of (and ahead of) both the whole-pod ephemeral-storage limit (round 49) and general node-pressure eviction — new `PodUsage.empty_dir_usage_bytes` (per-volume, same `directory_usage_bytes()` walk round 49 already uses) plus new pure `empty_dir_size_limits()`/`first_empty_dir_over_limit()` in `eviction.rs`. Scoped to plain-disk `emptyDir` only — `Memory`/`HugePages`-medium `sizeLimit` is already a real kernel-enforced cap at mount time (rounds 30/61), nothing for measurement-based eviction to add there.
 - ❌ subPath `$(VAR)` expansion
 - 🟡 **CSI ephemeral (inline) volumes** (round 46; found in round 45's re-audit) — `volumes[].csi` specified directly (not via a PVC or the generic `ephemeral` templated form, round 31), via new `resolve_csi_ephemeral_source()` and a synthetic `csi_ephemeral_volume_handle()` (`"<pod_uid>-<volume_name>"`, since there's no PV/PVC to derive one from). `CsiDrivers::mount()`/`unmount()` gained an `ephemeral: bool` param that skips `NodeStageVolume`/`NodeUnstageVolume` and any attach concept entirely, regardless of what the driver otherwise reports supporting — the CSI spec itself says neither applies to the inline form. Reuses all of the CSI Node-service plumbing built in rounds 12/13/19 as-is. Genuinely automated e2e test, gated behind a `TEST_CSI_INLINE_DRIVER` env var (same pattern as the PVC path's `TEST_CSI_STORAGE_CLASS`) since it needs a real driver. Unvalidated against a real CSI driver — same caveat every prior CSI round has carried. See round 46 notes.
 - ✅ **`emptyDir.medium: Memory`** (round 30; found in round 27's re-audit) — `resolve_volumes()` now shells out to `mount -t tmpfs` (`mount_tmpfs_empty_dir()`) on the host directory for a `Memory`-medium `emptyDir`, honoring `sizeLimit` as `-o size=` when set. `remove_pod()` unmounts it again on teardown (a real RAM leak otherwise, unlike plain-disk `emptyDir`). Best-effort: falls back to the plain-disk directory (already created) on mount failure rather than failing the pod. Unvalidated against a real privileged mount in this sandbox — see round 30 notes.
@@ -4456,9 +4501,18 @@ accordingly; see those files' own updated framing.
       cost on a healthy pod). 7 new unit tests + a genuinely automated
       e2e test proving a non-default signal (SIGUSR1) actually gets
       delivered via a trap-and-marker container. See round 66 notes.
+- [x] Round 67: emptyDir.sizeLimit enforcement — a plain-disk `emptyDir`
+      volume exceeding its own `sizeLimit` now evicts the pod, checked
+      independently of the whole-pod ephemeral-storage limit and general
+      node pressure. New `PodUsage.empty_dir_usage_bytes` (per-volume) +
+      pure `empty_dir_size_limits()`/`first_empty_dir_over_limit()` in
+      `eviction.rs`. Scoped to plain-disk emptyDir only —
+      `Memory`/`HugePages`-medium `sizeLimit` is already kernel-enforced
+      at mount time. 12 new unit tests + a genuinely automated e2e test.
+      See round 67 notes.
 - [ ] Candidates for the next round: swap support
       (`memorySwap.swapBehavior`, GA 1.34 — a new
       `NODELET_MEMORY_SWAP_BEHAVIOR` knob, Burstable-QoS-only allowance
-      per upstream rules, similar shape/scope to CPU/Memory Manager), or
-      `emptyDir.sizeLimit` enforcement (older tracked gap, still open).
-      Ask before starting the next round.
+      per upstream rules, similar shape/scope to CPU/Memory Manager) is
+      the last remaining candidate from round 65's fresh audit. Ask
+      before starting the next round.

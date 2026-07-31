@@ -307,6 +307,29 @@ async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: 
             continue; // one pod per check, matching the pressure-based path below
         }
 
+        // emptyDir.sizeLimit (round 67; found in round 65's fresh gap
+        // re-audit): distinct per-volume check from the whole-pod
+        // ephemeral-storage limit above — same "direct resource
+        // violation, checked ahead of general pressure" reasoning.
+        let empty_dir_usage_by_uid: HashMap<String, &HashMap<String, u64>> =
+            usage_stats.iter().map(|u| (u.uid.clone(), &u.empty_dir_usage_bytes)).collect();
+        let over_empty_dir_limit = pods.iter().find_map(|p| {
+            if p.metadata.deletion_timestamp.is_some() || nodelet::eviction::is_critical(p) {
+                return None;
+            }
+            let uid = p.metadata.uid.as_deref()?;
+            let usage = empty_dir_usage_by_uid.get(uid)?;
+            let limits = nodelet::eviction::empty_dir_size_limits(p);
+            let volume = nodelet::eviction::first_empty_dir_over_limit(&limits, usage)?;
+            Some((p, volume))
+        });
+        if let Some((victim, volume)) = over_empty_dir_limit {
+            if let (Some(ns), Some(name)) = (victim.metadata.namespace.as_deref(), victim.metadata.name.as_deref()) {
+                evict_pod(&client, ns, name, &format!("emptyDir volume '{volume}' exceeded its sizeLimit")).await;
+            }
+            continue; // one pod per check, matching the pressure-based path below
+        }
+
         let pressure = nodelet::metrics::read_pressure(
             &cfg.disk_path,
             cfg.memory_pressure_threshold_bytes,

@@ -359,6 +359,16 @@ pub struct PodUsage {
     /// (`/var/log/pods/...`) — real kubelet's own measurement does;
     /// nodelet's doesn't walk that directory yet.
     pub ephemeral_storage_usage_bytes: Option<u64>,
+    /// Per-volume usage in bytes, keyed by `spec.volumes[].name` (round
+    /// 67) — every subdirectory nodelet materializes under
+    /// `VOLUME_ROOT/<uid>/volumes/`, regardless of volume kind. Only
+    /// `emptyDir` volumes with `sizeLimit` set are ever checked against
+    /// this (`eviction::first_empty_dir_over_limit()`); entries for other
+    /// volume kinds are harmlessly present but never matched against
+    /// anything. Empty (not `None`) when nothing could be measured —
+    /// same "no volumes, nothing to report" shape as an empty `containers`
+    /// list, not a distinct "measurement failed" state.
+    pub empty_dir_usage_bytes: std::collections::HashMap<String, u64>,
 }
 
 /// One cached image, in the shape `Node.status.images` needs (round 33)

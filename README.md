@@ -399,8 +399,14 @@ kubelet's own create-vs-require-existing semantics. Round 66 closed
 `lifecycle.stopSignal` (GA 1.33), also found in that audit: translates
 directly to CRI's own `Signal` enum (native support, never wired up
 before), with a genuinely automated e2e test proving a non-default
-signal (`SIGUSR1`) actually gets delivered to the container. Full status
-list in `docs/GAP_CLOSURE.md`.
+signal (`SIGUSR1`) actually gets delivered to the container. Round 67
+closed `emptyDir.sizeLimit` enforcement (the last audit item that wasn't
+swap support): a plain-disk `emptyDir` volume exceeding its own
+`sizeLimit` now evicts the pod, checked independently of both the
+whole-pod ephemeral-storage limit (round 49) and general node-pressure
+eviction — scoped to plain-disk `emptyDir` only, since a `Memory`/
+`HugePages`-medium volume's `sizeLimit` is already a real kernel-enforced
+cap at mount time. Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for
