@@ -27,6 +27,56 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 22: fresh gap re-audit (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-21): every item
+explicitly tracked on the responsibility list's checkbox log was closed
+as of round 21, so the options offered were a fresh re-audit against
+kubernetes.io docs or pausing; user picked the re-audit. No code changed
+this round — audit-only, documenting new findings for the user to pick
+from next.
+
+Cross-referenced the kubelet CLI reference
+(`kubernetes.io/docs/reference/command-line-tools-reference/kubelet/`)
+against the current codebase (`grep` for each candidate feature's
+expected code path, not just doc-reading) and found five items not
+previously tracked anywhere in this doc:
+
+- **`terminationMessagePath`/`terminationMessagePolicy`** — the fields
+  are copied through `ephemeral_to_container()`'s struct conversion (a
+  plain k8s API type copy, not CRI behavior), but nodelet never actually
+  reads the file back out of the container's filesystem after it exits,
+  nor honors `FallbackToLogsOnError`. `ContainerStatus.state.terminated.message`
+  is always empty. Moderate value — Jobs commonly rely on this for
+  `kubectl describe` to surface a short failure reason.
+- **Pod `readinessGates`** — not implemented at all; nodelet's readiness
+  computation only looks at container readiness probes, never consults
+  `status.conditions` for gate-named conditions an external controller
+  may have already set.
+- **User namespaces** (`spec.hostUsers: false`) — a newer (beta as of
+  1.30) isolation feature; not read or translated to CRI's
+  `UserNamespace`/`Uids`/`Gids` fields at all.
+- **Eviction priority-tiebreaking** — real kubelet breaks ties within a
+  QoS class by `PriorityClass` before usage; nodelet already protects
+  `system-*-critical` pods outright but doesn't otherwise rank by
+  priority, purely by memory usage. A refinement to the existing 🟡
+  Eviction entry, not a wholly new capability.
+- **Checkpoint API** — a CRIU-based forensic/debugging endpoint (still
+  alpha upstream), not implemented. Flagged but **not recommended** —
+  CRIU is a real external dependency (kernel + userspace tooling) beyond
+  anything else this project needs, for a niche debugging feature with
+  low value on nodelet's edge-device target.
+
+All five added to the responsibility list at their appropriate section
+(pod lifecycle, security context, node-pressure eviction, kubelet HTTP
+server) rather than only in this round's own notes, so they show up in
+the normal ✅/🟡/❌ scan future rounds already do.
+
+Everything else checked against the reference (in-place pod resize,
+swap, sysctls, checkpointing generally, cert rotation, subPath, seccomp/
+AppArmor, pod-level resources) was already tracked from earlier rounds —
+no other new gaps found.
+
 ## Round 21: device plugin `GetPreferredAllocation`/`PreStartContainer` (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-20). Offered device
@@ -1187,6 +1237,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Termination grace period** — `terminationGracePeriodSeconds` now drives `preStop` + a per-container `StopContainer` timeout before `StopPodSandbox` (`graceful_stop_containers()`), instead of an untimed sandbox stop.
 - ✅ **Container restart count** — real per-container counter (`restart_count_from`/`bump_restart_count_in`), threaded through `ContainerConfig.metadata.attempt` too (so restarted containers get distinct log files, not overwritten ones).
 - ✅ **Exit-code-aware phase computation** — `restartPolicy: Never` now reports `Failed` (not `Succeeded`) when a container exited nonzero (`compute_phase()`'s new `any_failed` parameter).
+- ❌ **`terminationMessagePath`/`terminationMessagePolicy`** (found in round 22's re-audit) — the fields are threaded through `ephemeral_to_container()`'s struct conversion (a plain k8s API type copy, not CRI behavior), but nodelet never actually reads the file at `terminationMessagePath` (default `/dev/termination-log`) back out of the container's filesystem after it exits, nor honors `FallbackToLogsOnError`. `ContainerStatus.state.terminated.message` is always empty — a real, moderate-value gap for anything relying on it (Jobs commonly write a short failure reason there for `kubectl describe` to surface).
+- ❌ **Pod `readinessGates`** (found in round 22's re-audit) — `spec.readinessGates` lets an external controller contribute additional `PodCondition`s that must all be `True` (alongside the built-in `ContainersReady`) before kubelet reports the pod's own `Ready` condition as `True`. Not implemented at all: nodelet's readiness computation only looks at container readiness probes, never consults `status.conditions` for gate-named conditions a controller may have already set.
 
 ### Resource management
 - ✅ **Container resource requests/limits** — translated to CRI `LinuxContainerResources` (cpu shares/quota/period, memory limit; `linux_resources()`)
@@ -1202,6 +1254,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
 - ❌ Pod-level `sysctls`
+- ❌ **User namespaces** (`spec.hostUsers: false`, `HostUsers`/`UserNamespacesSupport`) (found in round 22's re-audit) — a newer (beta as of 1.30) isolation feature remapping container UIDs/GIDs into an unprivileged host range via CRI's `UserNamespace`/`Uids`/`Gids` fields on `LinuxSandboxSecurityContext`/`LinuxContainerSecurityContext`. Not read or translated at all; every pod runs in the host's user namespace regardless of `hostUsers`.
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
 - ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
 
@@ -1226,7 +1279,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Node-pressure eviction
 - ✅ MemoryPressure/DiskPressure *conditions* reflect real reads
-- 🟡 **Eviction** — `eviction_loop()` now acts on real pressure: ranks eligible pods by QoS class (`eviction.rs`'s `qos_class()`/`pick_eviction_candidate()` — BestEffort before Burstable, Guaranteed and `system-*-critical` pods never evicted), evicts one per check. Ranking within a QoS class now uses **real memory usage** from CRI's `ListPodSandboxStats` (the same source `/stats/summary` uses) when known, falling back to requested memory otherwise (`eviction_weight()`). Still simplified vs. real kubelet: no soft-threshold grace period (hard-style immediate action only).
+- 🟡 **Eviction** — `eviction_loop()` now acts on real pressure: ranks eligible pods by QoS class (`eviction.rs`'s `qos_class()`/`pick_eviction_candidate()` — BestEffort before Burstable, Guaranteed and `system-*-critical` pods never evicted), evicts one per check. Ranking within a QoS class now uses **real memory usage** from CRI's `ListPodSandboxStats` (the same source `/stats/summary` uses) when known, falling back to requested memory otherwise (`eviction_weight()`). Still simplified vs. real kubelet: no soft-threshold grace period (hard-style immediate action only); real kubelet also breaks ties within a QoS class by `PriorityClass` before usage (higher priority evicted later) — nodelet already protects `system-*-critical` outright (see `shutdown.rs` notes) but doesn't rank the rest by priority at all, purely by usage (found in round 22's re-audit).
 - ✅ PID pressure — real `/proc/sys/kernel/pid_max` + a `/proc` scan (`read_pid_info()`/`pid_pressure()`), same fail-open pattern as memory/disk
 
 ### Static pods & mirror pods
@@ -1243,6 +1296,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`/metrics/resource`** (`server::prom_metrics`) — full [KEP-2371](https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/2371-cri-pod-container-stats) metric set, including real node-wide CPU usage from a new `/proc/stat` parser (`metrics.rs::read_node_cpu_seconds`).
 - 🟡 **`/metrics/cadvisor`** (`server::prom_metrics`) — a deliberately scoped-down subset of real cAdvisor's much larger legacy catalog: `container_cpu_usage_seconds_total`, `container_memory_usage_bytes`, `container_memory_working_set_bytes`, `container_memory_rss`, labeled `{namespace,pod,container}` only (no `id`/`name`/`image` — not tracked in `PodUsage`). Missing: network/disk I/O, per-cpu-core breakdowns, `container_last_seen`, spec/limit metrics.
 - ❌ Client certificate authentication (bearer token only)
+- ❌ **Checkpoint API** (`/checkpoint/{namespace}/{pod}/{container}`) (found in round 22's re-audit) — a forensic/debugging endpoint (CRIU-based container checkpointing, still alpha upstream) not implemented at all. Low value for nodelet's edge-device target and CRIU itself is a real external dependency (kernel + userspace tooling) beyond anything else this project needs — noted here rather than silently missing, not currently recommended for implementation.
 
 ### Node shutdown
 - ✅ **Graceful node shutdown** (`shutdown.rs`) — a systemd-logind shutdown-delay inhibitor lock held via D-Bus, released once every pod's been driven through the normal `preStop`/`StopContainer` teardown path within a configurable time budget (`NODELET_SHUTDOWN_GRACE_PERIOD_SECS`, `0`/disabled by default matching upstream). Non-critical pods terminated first, `system-node-critical`/`system-cluster-critical` pods last, each pod's own `terminationGracePeriodSeconds` capped to whatever's left of the budget. **The D-Bus glue is unvalidated against a real systemd-logind** — no system bus in the environment that built it; see the round 9 notes below and `deploy/lib/test/cases/graceful_shutdown.sh`'s manual spot-check procedure.
@@ -1344,7 +1398,13 @@ higher-value/correctness-critical than others:
       the preferred-allocation response is validated before use, falling
       back to nodelet's own selection otherwise. Closes the last item
       explicitly tracked on this list since round 14. See round 21 notes.
-- [ ] Everything else in the responsibility list above — no specific
-      known item currently tracked; a fresh gap re-audit against
-      kubernetes.io docs was offered and declined at round 21 in favor of
-      closing this one out. Ask before starting the next round.
+- [x] Round 22: fresh gap re-audit (no code change) — cross-referenced
+      the kubelet CLI reference against the codebase and found 5
+      previously-untracked items: `terminationMessagePath`/`Policy` not
+      read back, pod `readinessGates` unimplemented, user namespaces
+      (`hostUsers`) unimplemented, eviction's priority-tiebreak gap, and
+      the (not recommended) checkpoint API. See round 22 notes.
+- [ ] Next candidates from round 22's audit, roughly by value: pod
+      `readinessGates`, `terminationMessagePath`/`Policy` read-back, user
+      namespaces, eviction priority-tiebreaking. Ask before starting the
+      next round.
