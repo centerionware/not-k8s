@@ -27,6 +27,89 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 42: in-place pod vertical scaling, slice 1 (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-41). Offered the
+last high-value round-39 item (this one, flagged as likely needing its
+own multi-round arc) alongside round 35's 2 leftovers and a fresh
+re-audit; user picked starting the resize arc.
+
+Before this round, editing a running pod's CPU/memory did **nothing at
+all** — `ensure_container()`'s `AlreadyRunning` branch just returned
+`Ok(())` unconditionally, never comparing the live container against
+the current pod spec.
+
+**Scope of this slice**: the actual functional mechanism — detecting a
+resource change on an already-running container and either applying it
+live or restarting the container, per `resizePolicy`. Explicitly
+**out of scope for this round** (left for a follow-up): reporting
+`containerStatuses[].resources`/`.allocatedResources` back to the API,
+and the `PodResizePending`/`PodResizeInProgress` pod conditions. This
+mirrors round 39's own framing of the finding as multi-part.
+
+- **New `ResizeDecision` enum + pure `resize_decision(desired, actual,
+  resize_policies) -> ResizeDecision`** (`NoChange`/`UpdateInPlace`/
+  `RequiresRestart`) — compares only the pod-spec-derived fields
+  (`cpu_shares`/`cpu_quota`/`cpu_period`/`memory_limit_in_bytes`),
+  deliberately never `cpuset_cpus`/`cpuset_mems` (CPU/Memory Manager
+  own those independently — round 16/18 — and a change there must
+  never be mistaken for a resize request). A resource's own
+  `resizePolicy.restartPolicy` (default `NotRequired` per the API's own
+  documented default, when unspecified) decides `UpdateInPlace` vs.
+  `RequiresRestart`.
+- **Reused, not duplicated, existing state**: rather than adding a new
+  side table, this reads `CriRuntime::container_resources` — already
+  tracked per container since round 16 for CPU Manager's shared-pool
+  `UpdateContainerResources` refresh — as the "last applied resources"
+  baseline to diff the freshly-recomputed `linux_resources()` against.
+- **`ensure_container()`** restructured: `AlreadyRunning` no longer
+  short-circuits unconditionally. `NoChange` still returns immediately
+  (identical to before, no regression to the common case);
+  `UpdateInPlace` calls the existing `UpdateContainerResources` RPC
+  (mutating only the 4 resize-relevant fields on a clone of the
+  recorded resources, preserving whatever CPU/Memory Manager cpuset
+  assignment is already there) and records the new baseline;
+  `RequiresRestart` now funnels into the *same* restart machinery
+  `RestartDecision::NeedsRestart` already uses (bump restart count,
+  release devices, remove the container, fall through to recreate) —
+  no new restart mechanism needed. A resize-required restart is applied
+  regardless of `restartPolicy` (it's a distinct, deliberate user
+  action, not a crash-restart decision).
+- **Known simplification, documented rather than hidden**: nodelet has
+  no admission layer (a pre-existing architectural boundary — see the
+  CSI/RuntimeClass/sysctls notes above), so it doesn't reject a resize
+  that would change a pod's QoS class (e.g. removing a Guaranteed
+  container's limit) the way real kubelet's admission validation does;
+  it simply applies whatever the (already-accepted-by-the-apiserver)
+  pod spec says.
+- 8 new unit tests (`cri_tests/resize_decision.rs`): identical-is-no-
+  change, cpu/memory changed with no policy (defaults to
+  `UpdateInPlace`), explicit `NotRequired`, explicit
+  `RestartContainer` for both cpu and memory, an unrelated resource's
+  `RestartContainer` policy not forcing a restart, and — the
+  correctness-critical one — a `cpuset_cpus` difference alone being
+  `NoChange`.
+- New e2e test (`deploy/lib/test/cases/resources.sh`):
+  `test_in_place_resize_updates_memory_limit_without_restarting` —
+  uses `kubectl exec` (the streaming server, see `streaming.sh`) to
+  read the container's own live `/sys/fs/cgroup/memory.max` before and
+  after `kubectl patch pod ... --subresource resize`, and asserts the
+  container's own restart count stayed `0` throughout — genuine live
+  proof, not a status-string check. Skips (not fails) if the node uses
+  cgroup v1, or if the cluster's kubectl/apiserver doesn't support the
+  `resize` subresource at all (needs `InPlacePodVerticalScaling`, GA in
+  Kubernetes 1.33 — this project targets recent Kubernetes but the
+  exact apiserver version in any given deployment may vary).
+
+**Confidence note**: `resize_decision()` is pure and thoroughly unit-
+tested, including the cpuset-non-interference case that was the
+trickiest correctness risk in this design. The e2e test is genuinely
+live proof (a real container's own cgroup file, read via real
+`kubectl exec`+`patch --subresource resize`) but exercises only the
+memory/`UpdateInPlace` path — the `RequiresRestart` path and CPU
+resizing are unit-tested only, not yet proven end-to-end against a
+real cluster.
+
 ## Round 41: securityContext.sysctls (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-40). Offered the 3
@@ -2429,7 +2512,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Memory Manager** (`memory_manager.rs`, `static` policy) — Guaranteed-QoS containers with a memory limit get pinned to a single NUMA node (`cpuset_mems`). Opt-in (`NODELET_MEMORY_MANAGER_POLICY`, default `none`). **First-slice scope**: never spans multiple NUMA nodes (falls back to unconstrained if no single node has enough free capacity, rather than upstream's multi-node spanning); no shared-pool tracking or `UpdateContainerResources` retroactive sweep for non-pinned containers (unlike CPU Manager) — they're simply left unconstrained; no per-NUMA-node `--reserved-memory`-equivalent reservation. See round 18 notes.
 - ✅ **Topology Manager** (`topology.rs`) — coordinates CPU Manager, Memory Manager (as of round 18), and device plugins so a container's exclusive cores, pinned memory, and allocated devices land on the same NUMA node. Opt-in (`NODELET_TOPOLOGY_MANAGER_POLICY`, default `none`); `best-effort` prefers alignment without rejecting, `single-numa-node` rejects the container outright if no single NUMA node satisfies every hint provider. **`restricted`** (round 20) gets a real, bounded multi-node relaxation instead — `spread()` places each hint provider on its own best node independently when no single node works for everyone, rejecting only if some provider's request can't be placed anywhere at all. **Single-node-only alignment, not upstream's full bitmask/permutation combination search** — `align()`/`spread()` reach the same answer as upstream whenever a single node can satisfy everything or every provider individually has *some* home, but don't search for upstream's genuinely joint cross-provider multi-node splits. See round 17/18/20 notes.
 - ✅ **Device plugins** (`device_plugins.rs`, GPU/FPGA/etc. hardware resources) — discovered via the same dynamic plugin-registration protocol CSI drivers use (`plugin_registry.rs`, round 13); tracks live device inventory/health per resource name via `ListAndWatch`, advertises healthy counts on `Node.status.capacity`/`.allocatable`, and calls `Allocate()` during container creation to inject the envs/mounts/device-nodes/annotations a plugin returns. **`GetPreferredAllocation`/`PreStartContainer`** (round 21) — a plugin's `DevicePluginOptions` (fetched once via `GetDevicePluginOptions`) says whether either applies; `GetPreferredAllocation`'s response is validated (`is_valid_preferred_allocation()`) before being trusted, falling back to nodelet's own first-healthy-unallocated pick otherwise; `PreStartContainer` is called right after `Allocate()` succeeds when required, a failure there releasing devices and failing the allocation. Unvalidated against a real device plugin — see rounds 14 and 21 notes.
-- ❌ **In-place pod vertical scaling** (`resize` subresource, GA 1.33; found in round 39's re-audit) — by far round 39's highest-value finding. `ensure_container()`'s `restart_decision()` only ever inspects CRI *state* (running/exited/missing), never compares the live container's actual resources against the `Pod` object's current `container.resources` — so editing a running pod's CPU/memory today does **nothing at all**, not even the pre-1.27 "recreate the container" fallback. A real implementation would reuse CRI's `UpdateContainerResources` (already used by CPU Manager's shared-pool cpuset refresh) for `resizePolicy: NoRestart` resources, and the existing create/remove/create path for `RestartRequired` ones; would also need `containerStatuses[].resources`/`.allocatedResources` and a `PodResizePending`/`PodResizeInProgress` condition in `pods.rs::build_pod_status()`, none of which exist yet. Multi-part; not a small polish item.
+- 🟡 **In-place pod vertical scaling** (`resize` subresource, GA 1.33; found in round 39's re-audit, mechanism closed round 42) — new pure `resize_decision()` compares an already-running container's *actual* last-applied resources (reusing `container_resources`, tracked since round 16 for CPU Manager) against the pod spec's *desired* ones, applying a change in-place via the existing `UpdateContainerResources` RPC when `resizePolicy` allows it (default `NotRequired`), or funneling into the existing restart machinery when it demands `RestartContainer`. Genuinely automated e2e test (`kubectl exec` reads the container's own live cgroup file before/after `kubectl patch --subresource resize`). **Still open**: `containerStatuses[].resources`/`.allocatedResources` and `PodResizePending`/`PodResizeInProgress` pod conditions aren't reported yet (round 42 was scoped to the mechanism only); no admission-time rejection of a resize that would change a pod's QoS class (nodelet has no admission layer at all, a pre-existing boundary). See round 42 notes.
 - ✅ **`oom_score_adj`** (round 28; found in round 27's re-audit) — `linux_resources()` now sets CRI's `LinuxContainerResources.oom_score_adj` per container via `eviction::oom_score_adj()`: Guaranteed `-998`, BestEffort `1000`, Burstable scaled by that container's own memory *request* against node capacity (`1000 - 1000*request/capacity`, clamped `[2, 999]`), matching real kubelet's formula exactly. Gives the kernel OOM killer QoS-aware signal, closing a real gap in this project's own eviction-manager story (rounds 7, 26) — a kernel OOM kill can happen faster than `eviction_loop()`'s check interval reacts. See round 28 notes.
 - ✅ **gRPC probes** (round 29; found in round 27's re-audit) — `probes.rs::probe_check()` now handles `probe.grpc` too, via a vendored `grpc.health.v1` client (`proto/health.proto`) calling the standard `Health/Check` RPC. `cri`-gated (needs `tonic`'s transport); a mock-only build's `check_grpc()` always returns `false`. Unit-tested failure paths (timeout, refused, non-gRPC listener) with solid confidence; the success path (a real passing `Health/Check`) is unvalidated — no gRPC server available in this sandbox to prove it live. See round 29 notes.
 
@@ -2713,8 +2796,19 @@ higher-value/correctness-critical than others:
       an unsupported sysctl surfaces as a real `RunPodSandbox` error.
       Genuinely automated e2e test (a real container's own `/proc/sys`
       read). See round 41 notes.
-- [ ] Candidates for the next round: in-place pod vertical scaling
-      (the last high-value item; likely its own multi-round arc), then
-      round 35's 2 remaining low-priority items (env `resourceFieldRef`,
+- [x] Round 42: in-place pod vertical scaling, slice 1 — new pure
+      `resize_decision()` detects a live-vs-desired resource mismatch on
+      an already-running container (reusing the existing
+      `container_resources` side table, round 16) and either applies it
+      via the existing `UpdateContainerResources` RPC or funnels into
+      the existing restart machinery, per `resizePolicy`. Genuinely
+      automated e2e test (`kubectl exec` + `--subresource resize`).
+      **Deliberately still open** (next slice): `containerStatuses[]
+      .resources`/`.allocatedResources` reporting, `PodResizePending`/
+      `PodResizeInProgress` conditions. See round 42 notes.
+- [ ] Candidates for the next round: the resize status-reporting slice
+      (`containerStatuses[].resources`/`.allocatedResources`,
+      `PodResizePending`/`PodResizeInProgress` conditions), then round
+      35's 2 remaining low-priority items (env `resourceFieldRef`,
       probe-level `terminationGracePeriodSeconds`). Ask before starting
       the next round.

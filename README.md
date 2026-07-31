@@ -272,7 +272,15 @@ one namespace across the pod; otherwise its own isolated one, matching
 upstream). Round 41 closed **`securityContext.sysctls`** — flattened
 into CRI's `LinuxPodSandboxConfig.sysctls` map, the same field
 `sandbox_config()` already populates for `cgroup_parent`/`overhead`.
-Full status list in `docs/GAP_CLOSURE.md`.
+Round 42 started the **in-place pod vertical scaling** arc (the
+`resize` subresource, GA in 1.33): editing a running pod's CPU/memory
+now actually does something — applied live via CRI's
+`UpdateContainerResources` when `resizePolicy` allows it, or a real
+container restart when it doesn't — instead of the previous no-op.
+Still open: reporting the resize back via `containerStatuses[]
+.resources`/`.allocatedResources` and `PodResizePending`/
+`PodResizeInProgress` conditions. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 ---
 

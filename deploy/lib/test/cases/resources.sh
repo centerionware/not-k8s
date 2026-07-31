@@ -161,7 +161,62 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_in_place_resize_updates_memory_limit_without_restarting() {
+    # Round 42: in-place pod vertical scaling. Before this round, editing a
+    # running pod's resources did nothing at all — not even a container
+    # restart. Uses kubectl exec (streaming server, see streaming.sh) to
+    # read the container's own live cgroup file before and after patching
+    # the resize subresource, and confirms the container's own restart
+    # count stayed at 0 (resizePolicy defaults to NotRequired).
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="resize-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      resources:
+        limits:
+          memory: "134217728"
+      command: ["sleep", "3600"]
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 30 "$name container ready" pod_container_ready "$name" app
+
+    local before
+    before="$(kctl exec "$name" -- cat /sys/fs/cgroup/memory.max 2>/dev/null || true)"
+    if [[ "$before" != "134217728" ]]; then
+        delete_pod_if_exists "$name"
+        skip_test "couldn't read the container's own /sys/fs/cgroup/memory.max via kubectl exec — either a cgroup v1 node or an exec-path issue (see streaming.sh notes)"
+    fi
+
+    if ! kubectl --namespace "$TEST_NAMESPACE" patch pod "$name" --subresource resize --type merge \
+        -p '{"spec":{"containers":[{"name":"app","resources":{"limits":{"memory":"268435456"}}}]}}' >/dev/null 2>&1; then
+        delete_pod_if_exists "$name"
+        skip_test "this kubectl/apiserver version doesn't support the pod 'resize' subresource (needs InPlacePodVerticalScaling, GA in Kubernetes 1.33)"
+    fi
+
+    local after waited=0
+    while true; do
+        after="$(kctl exec "$name" -- cat /sys/fs/cgroup/memory.max 2>/dev/null || true)"
+        [[ "$after" == "268435456" ]] && break
+        if [[ "$waited" -ge 30 ]]; then
+            die "timed out after 30s waiting for the container's own memory.max to reflect the resized limit — check resize_decision()/UpdateContainerResources wiring in runtime/cri.rs"
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    assert_eq "$after" "268435456" "memory.max should reflect the resized limit"
+    assert_eq "$(pod_container_restart_count "$name" app)" "0" "container restart count (resizePolicy defaults to NotRequired — must not restart)"
+    delete_pod_if_exists "$name"
+}
+
 register_test test_memory_limit_is_enforced_via_cgroup
+register_test test_in_place_resize_updates_memory_limit_without_restarting
 register_test test_cpu_limit_is_enforced_via_cgroup
 register_test test_besteffort_pod_gets_no_cgroup_limit
 register_test test_besteffort_pod_gets_the_certain_death_oom_score

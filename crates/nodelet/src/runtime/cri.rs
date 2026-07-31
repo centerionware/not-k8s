@@ -17,7 +17,7 @@ use anyhow::{bail, Context, Result};
 use crate::eviction::QosClass;
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, EnvFromSource, EnvVarSource, EphemeralContainer, LifecycleHandler,
+    ConfigMap, Container, ContainerResizePolicy, EnvFromSource, EnvVarSource, EphemeralContainer, LifecycleHandler,
     PersistentVolume, PersistentVolumeClaim, Pod, PodSecurityContext, ResourceRequirements, Secret,
     SecretReference, SecurityContext, Service, Volume,
 };
@@ -637,6 +637,60 @@ fn cpu_shares_for(cpu_millicores: Option<i64>) -> i64 {
     match cpu_millicores {
         Some(m) if m > 0 => ((m * 1024) / 1000).max(2),
         _ => 2,
+    }
+}
+
+/// What `ensure_container()` should do about an already-running container
+/// whose live resources no longer match its (possibly just-edited) pod
+/// spec — the in-place pod vertical scaling decision (round 42; found in
+/// round 39's re-audit). Pulled out pure, same reasoning as every other
+/// `*_decision()` function in this file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResizeDecision {
+    /// Live resources already match the pod spec — nothing to do.
+    NoChange,
+    /// A changed resource's `resizePolicy` allows applying it without a
+    /// restart (or none was specified — `NotRequired` is the real default).
+    UpdateInPlace,
+    /// A changed resource's `resizePolicy` explicitly requires
+    /// `RestartContainer` — the caller should recreate the container
+    /// exactly like `RestartDecision::NeedsRestart` already does.
+    RequiresRestart,
+}
+
+/// Compare the pod spec's *desired* resources (freshly computed via
+/// `linux_resources()`) against the *actual* resources last recorded for
+/// this container (`CriRuntime::container_resources`, already tracked for
+/// CPU Manager's shared-pool refresh — round 16). Deliberately only
+/// compares the pod-spec-derived fields (`cpu_shares`/`cpu_quota`/
+/// `cpu_period`/`memory_limit_in_bytes`), never `cpuset_cpus`/`cpuset_mems`
+/// — those are owned independently by CPU/Memory Manager and can change
+/// for reasons that have nothing to do with a spec edit (a neighboring
+/// container's exclusive claim coming or going), which must never itself
+/// be mistaken for a resize request.
+fn resize_decision(
+    desired: &LinuxContainerResources,
+    actual: &LinuxContainerResources,
+    resize_policies: Option<&[ContainerResizePolicy]>,
+) -> ResizeDecision {
+    let cpu_changed =
+        desired.cpu_shares != actual.cpu_shares || desired.cpu_quota != actual.cpu_quota || desired.cpu_period != actual.cpu_period;
+    let memory_changed = desired.memory_limit_in_bytes != actual.memory_limit_in_bytes;
+    if !cpu_changed && !memory_changed {
+        return ResizeDecision::NoChange;
+    }
+    let restart_required_for = |resource_name: &str| -> bool {
+        resize_policies
+            .unwrap_or(&[])
+            .iter()
+            .find(|p| p.resource_name == resource_name)
+            .map(|p| p.restart_policy == "RestartContainer")
+            .unwrap_or(false) // unspecified defaults to NotRequired, matching the API's own documented default
+    };
+    if (cpu_changed && restart_required_for("cpu")) || (memory_changed && restart_required_for("memory")) {
+        ResizeDecision::RequiresRestart
+    } else {
+        ResizeDecision::UpdateInPlace
     }
 }
 
@@ -2201,21 +2255,72 @@ impl CriRuntime {
             .iter()
             .find(|c| c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false));
 
+        let needs_restart;
         match restart_decision(existing_ctr.map(|c| c.state), running_v, restart_policy) {
-            RestartDecision::AlreadyRunning | RestartDecision::LeaveTerminated => return Ok(()),
-            RestartDecision::NeedsRestart => {
-                // Not running and this pod is allowed to restart — clear the
-                // stale container out (if there was one) so the create-below
-                // gets a fresh one. Best-effort: if it's already gone by the
-                // time we ask, or CRI won't remove it for some other reason,
-                // fall through and let CreateContainer surface any real
-                // problem instead of masking it here.
-                if let Some(c) = existing_ctr {
-                    self.bump_restart_count(sandbox_id, &container.name);
-                    self.release_container_devices(sandbox_id, &container.name).await;
-                    let mut rt = self.rt.clone();
-                    let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
+            RestartDecision::LeaveTerminated => return Ok(()),
+            RestartDecision::AlreadyRunning => {
+                // In-place pod vertical scaling (round 42; found in round 39's
+                // re-audit): the container's live resources may no longer
+                // match its (possibly just-edited) pod spec. Compare against
+                // the resources actually last applied (`container_resources`,
+                // already tracked for CPU Manager's shared-pool refresh —
+                // round 16) rather than recomputing from scratch, so a
+                // CPU/Memory Manager-driven cpuset change is never itself
+                // mistaken for a resize request (`resize_decision()` only
+                // looks at the pod-spec-derived fields).
+                let key = restart_count_key(sandbox_id, &container.name);
+                let recorded = self.container_resources.lock().unwrap().get(&key).cloned();
+                if let Some((container_id, actual)) = recorded {
+                    let desired = linux_resources(container.resources.as_ref(), qos, self.node_memory_bytes);
+                    match resize_decision(&desired, &actual, container.resize_policy.as_deref()) {
+                        ResizeDecision::NoChange => return Ok(()),
+                        ResizeDecision::UpdateInPlace => {
+                            let mut updated = actual;
+                            updated.cpu_shares = desired.cpu_shares;
+                            updated.cpu_quota = desired.cpu_quota;
+                            updated.cpu_period = desired.cpu_period;
+                            updated.memory_limit_in_bytes = desired.memory_limit_in_bytes;
+                            updated.oom_score_adj = desired.oom_score_adj;
+                            let mut rt = self.rt.clone();
+                            match rt
+                                .update_container_resources(UpdateContainerResourcesRequest {
+                                    container_id: container_id.clone(),
+                                    linux: Some(updated.clone()),
+                                    ..Default::default()
+                                })
+                                .await
+                            {
+                                Ok(_) => {
+                                    self.container_resources.lock().unwrap().insert(key, (container_id, updated));
+                                }
+                                Err(e) => {
+                                    warn!(container = %container.name, error = ?e, "in-place resize: UpdateContainerResources failed; leaving the container's resources unchanged for now");
+                                }
+                            }
+                            return Ok(());
+                        }
+                        ResizeDecision::RequiresRestart => needs_restart = true,
+                    }
+                } else {
+                    return Ok(()); // nothing recorded yet (shouldn't happen for a running container) — nothing to compare against
                 }
+            }
+            RestartDecision::NeedsRestart => needs_restart = true,
+        }
+
+        if needs_restart {
+            // Not running (or a resize policy demanded a restart) and this
+            // pod is allowed to restart — clear the stale container out (if
+            // there was one) so the create-below gets a fresh one.
+            // Best-effort: if it's already gone by the time we ask, or CRI
+            // won't remove it for some other reason, fall through and let
+            // CreateContainer surface any real problem instead of masking
+            // it here.
+            if let Some(c) = existing_ctr {
+                self.bump_restart_count(sandbox_id, &container.name);
+                self.release_container_devices(sandbox_id, &container.name).await;
+                let mut rt = self.rt.clone();
+                let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
             }
         }
 
@@ -4048,6 +4153,9 @@ mod tests_pid_namespace_mode;
 #[cfg(test)]
 #[path = "cri_tests/pod_sysctls.rs"]
 mod tests_pod_sysctls;
+#[cfg(test)]
+#[path = "cri_tests/resize_decision.rs"]
+mod tests_resize_decision;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.
