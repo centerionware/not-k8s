@@ -59,7 +59,7 @@ use v1::{
     KeyValue, LinuxContainerConfig, LinuxContainerResources, LinuxContainerSecurityContext,
     LinuxPodSandboxConfig, LinuxSandboxSecurityContext, ListContainersRequest, ListImagesRequest,
     ListPodSandboxRequest, NamespaceMode, NamespaceOption, PodSandboxConfig, PodSandboxFilter,
-    PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest, Mount, RemoveContainerRequest, StatusRequest,
+    PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest, Mount, RemoveContainerRequest, StatusRequest, VersionRequest,
     RemoveImageRequest, RemovePodSandboxRequest, RunPodSandboxRequest, StartContainerRequest,
     StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest, ReopenContainerLogRequest,
     ExecRequest, AttachRequest, PortForwardRequest, ListPodSandboxStatsRequest,
@@ -182,6 +182,14 @@ pub struct CriRuntime {
     /// `Node.status.capacity.cpu` (`config.rs`'s `cpu_cores` /
     /// `NODELET_CPU`).
     node_cpu_millicores: i64,
+    /// This CRI runtime's own name (e.g. `"containerd"`), from a one-time
+    /// `Version` RPC call made in `connect()` (round 57; found in round
+    /// 54's re-audit) — real kubelet always formats `ContainerStatus.containerID`/
+    /// `state.terminated.containerID` as `<runtimeName>://<id>`, built
+    /// from this exact same call. `"unknown"` if the call ever fails
+    /// (best-effort — a cosmetic prefix isn't worth failing `connect()`
+    /// over).
+    runtime_name: String,
     /// `"sandbox_id/container_name" -> cumulative restart count`, mirroring
     /// `PodStatus.containerStatuses[].restartCount`. Side table for the same
     /// reason `restart_policies` is one: CRI's `ListContainers` has no
@@ -1646,6 +1654,19 @@ impl CriRuntime {
         let rt = RuntimeServiceClient::new(channel.clone());
         let img = ImageServiceClient::new(channel.clone());
 
+        // This runtime's own name (round 57), for the `<runtimeName>://<id>`
+        // prefix real kubelet always puts on container IDs in status.
+        // Best-effort: a failure here shouldn't block startup over what's
+        // ultimately a cosmetic formatting detail.
+        let mut version_client = rt.clone();
+        let runtime_name = match version_client.version(VersionRequest { version: String::new() }).await {
+            Ok(resp) => resp.into_inner().runtime_name,
+            Err(e) => {
+                warn!(error = ?e, "CRI Version call failed; container IDs in status will use a generic runtime name");
+                "unknown".to_string()
+            }
+        };
+
         // Spawn the event subscriber (event-driven status, no polling).
         let (tx, rx) = unbounded_channel();
         tokio::spawn(event_loop(channel, tx));
@@ -1672,6 +1693,7 @@ impl CriRuntime {
             userns,
             node_memory_bytes,
             node_cpu_millicores,
+            runtime_name,
             restart_counts: Mutex::new(HashMap::new()),
             csi,
             device_plugins,
@@ -3521,7 +3543,7 @@ impl CriRuntime {
                 image_id: c.image_ref.clone(),
                 ready: running,
                 running,
-                container_id: Some(c.id.clone()),
+                container_id: Some(format_container_id(&self.runtime_name, &c.id)),
                 restart_count: self.restart_count(sandbox_id, &name),
                 exit_code,
                 reason,
@@ -3618,7 +3640,7 @@ impl CriRuntime {
                     image_id: c.image_ref.clone(),
                     ready: running,
                     running,
-                    container_id: Some(c.id.clone()),
+                    container_id: Some(format_container_id(&self.runtime_name, &c.id)),
                     exit_code,
                     reason,
                     finished_at,
@@ -4057,6 +4079,16 @@ fn node_image_from_cri(image: v1::Image) -> crate::runtime::NodeImage {
     let mut names = image.repo_tags;
     names.extend(image.repo_digests);
     crate::runtime::NodeImage { names, size_bytes: image.size }
+}
+
+/// Real kubelet's `<runtimeName>://<id>` container-ID format (round 57;
+/// found in round 54's re-audit) — applied to `ContainerRuntimeStatus.container_id`
+/// right where it's populated from CRI's own bare ID, so every downstream
+/// consumer (`ContainerStatus.containerID`, `state.terminated.containerID`
+/// — both read the same field) gets the prefix without needing its own
+/// formatting logic.
+fn format_container_id(runtime_name: &str, id: &str) -> String {
+    format!("{runtime_name}://{id}")
 }
 
 /// CRI's `RuntimeHandler` -> `Node.status.runtimeHandlers`' shape (round
@@ -4503,6 +4535,9 @@ mod tests_image_pull_policy;
 #[cfg(test)]
 #[path = "cri_tests/runtime_handler_from_cri.rs"]
 mod tests_runtime_handler_from_cri;
+#[cfg(test)]
+#[path = "cri_tests/format_container_id.rs"]
+mod tests_format_container_id;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

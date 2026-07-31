@@ -251,6 +251,32 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_container_status_container_id_has_a_runtime_scheme_prefix() {
+    # Round 57: real kubelet always formats containerStatuses[].containerID
+    # as <runtimeName>://<id> (e.g. containerd://...); nodelet used to
+    # report the bare CRI container ID with no prefix at all. Not
+    # asserting the exact runtime name (varies by deployment) — just that
+    # the well-known scheme-separator shape is present.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="container-id-scheme-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local container_id
+    container_id="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].containerID}')"
+    assert_contains "$container_id" "://" "containerStatuses[0].containerID should have a <runtimeName>:// scheme prefix"
+    delete_pod_if_exists "$name"
+}
+
 test_pod_status_reports_host_ips_plural() {
     # Round 56: real kubelet always sets hostIPs alongside the singular
     # hostIP, even on a single-stack node — this was never set at all.
@@ -376,6 +402,7 @@ register_test test_restart_policy_never_exit_zero_is_succeeded
 register_test test_restart_policy_never_exit_nonzero_is_failed
 register_test test_exited_container_reports_terminated_state_with_exit_code
 register_test test_termination_message_path_is_read_back_into_container_status
+register_test test_container_status_container_id_has_a_runtime_scheme_prefix
 register_test test_pod_status_reports_host_ips_plural
 register_test test_pod_status_reports_qos_class
 register_test test_container_status_reports_a_real_image_id

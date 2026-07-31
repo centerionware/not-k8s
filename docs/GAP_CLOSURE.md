@@ -27,6 +27,46 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 57: `ContainerStatus.containerID` scheme prefix (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-56). This closes
+round 54's audit list entirely.
+
+Before this round, `ContainerStatus.containerID`/`state.terminated.containerID`
+reported CRI's bare container ID with no prefix at all — real kubelet
+always formats these as `<runtimeName>://<id>` (e.g.
+`containerd://1234abcd...`), built from CRI's own `Version` RPC (never
+called anywhere in this codebase before this round — distinct from the
+`Status` RPC round 53 already wired up).
+
+- **`CriRuntime` gained a `runtime_name: String` field**, populated by
+  a one-time `Version` RPC call in `connect()`. Best-effort: a failure
+  falls back to `"unknown"` rather than failing `connect()` outright —
+  a cosmetic formatting detail isn't worth blocking startup over,
+  matching this file's existing posture toward non-essential CRI calls.
+- **New pure `format_container_id(runtime_name, id) -> String`**
+  (`"{runtime_name}://{id}"`), applied right where
+  `ContainerRuntimeStatus.container_id` is populated from CRI's raw ID
+  (both construction sites — app containers in `build_status()`,
+  init/ephemeral in `build_labeled_container_statuses()`) — fixing it
+  at the source means every downstream consumer of that one field
+  (`ContainerStatus.containerID` *and* `state.terminated.containerID`,
+  which both read the same `ContainerRuntimeStatus.container_id`) gets
+  the prefix without needing its own formatting logic.
+- No new env vars.
+- 2 new unit tests (`cri_tests/format_container_id.rs`): the basic
+  combination, and the `"unknown"` fallback name still producing a
+  well-formed (if generic) ID rather than something broken.
+- New e2e test (`deploy/lib/test/cases/lifecycle.sh`):
+  `test_container_status_container_id_has_a_runtime_scheme_prefix` —
+  asserts the real `containerID` contains `"://"` (not asserting a
+  specific runtime name, since that varies by deployment).
+
+**Confidence note**: the field-mapping logic is pure and unit-tested;
+the e2e test is genuinely live proof of the scheme-separator shape,
+though it doesn't pin an exact runtime name (correctly so — that's
+deployment-specific, not something to hardcode an expectation about).
+
 ## Round 56: `PodStatus.hostIPs` (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-55). Offered the 2
@@ -3344,7 +3384,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Startup probe failure triggers a restart** (round 47; found in round 45's re-audit) — the startup-probe loop now checks the new public `ProbeTracker.failures` count against `failureThreshold` on every non-passing iteration, calling `restart_container()` (reusing round 44's `probe_grace_period_seconds()` unchanged — it was already generic over which probe called it) and resetting the tracker, then continuing to loop (the supervisor task lives for the container's whole lifetime, so it must keep re-attempting startup probing against the recreated instance rather than giving up). Genuinely automated e2e test (a marker file that's never created, so the probe can only ever fail — a nonzero restart count is direct proof). See round 47 notes.
 - ✅ **`PodStatus.qosClass`** (round 55; found in round 54's re-audit) — new `QosClass::as_str()` matches real kubelet's exact API constants; `build_pod_status()`/`write_status()` gained a `qos` parameter, computed via the existing `eviction::qos_class()` and threaded in from all 4 `Pod`-derived status call sites, the same pattern round 23 already established for `readiness_gates`. Fixing this also required updating a pre-existing test whose premise ("qosClass is server-owned, nodelet doesn't touch it") no longer held — switched to `nominatedNodeName`, a field that's genuinely still server-owned. Genuinely automated e2e test (a real `Guaranteed` pod). See round 55 notes.
 - ✅ **`PodStatus.hostIPs`** (round 56; plural, dual-stack; found in round 54's re-audit) — `build_pod_status()` now sets `hostIPs` alongside the existing singular `hostIP` unconditionally (a one-element list, matching real kubelet's own single-stack behavior), mirroring how `podIPs`/`podIP` already coexist correctly in this same struct. Genuinely automated e2e test. See round 56 notes.
-- ❌ **`ContainerStatus.containerID` missing its `<runtime>://` scheme prefix** (found in round 54's re-audit) — real kubelet always formats this as `<runtimeName>://<id>` (e.g. `containerd://1234abcd...`), built from CRI's own `Version` RPC's `runtime_name` field; nodelet reports the bare CRI container ID with no prefix. CRI's `Version` RPC (distinct from the `Status` RPC round 53 wired up) has never been called anywhere in this codebase either. Not the same finding as round 52's `imageID` — that field is *not* scheme-prefixed by real kubelet, so round 52's implementation needs no revisiting.
+- ✅ **`ContainerStatus.containerID` scheme prefix** (round 57; found in round 54's re-audit) — `CriRuntime` gained a `runtime_name` field (from a one-time `Version` RPC call, never called before this round) and new pure `format_container_id()` applies the real `<runtimeName>://<id>` format right where `ContainerRuntimeStatus.container_id` is populated, fixing both `ContainerStatus.containerID` and `state.terminated.containerID` (both read the same field) in one change. Best-effort: falls back to `"unknown"` rather than failing `connect()` if the `Version` call fails. Genuinely automated e2e test (asserts the scheme-separator shape, not a specific runtime name). Not the same finding as round 52's `imageID` — that field is *not* scheme-prefixed by real kubelet, so round 52's implementation needed no revisiting. See round 57 notes.
 
 ### Resource management
 - ✅ **Container resource requests/limits** — translated to CRI `LinuxContainerResources` (cpu shares/quota/period, memory limit; `linux_resources()`)
@@ -3771,5 +3811,14 @@ higher-value/correctness-critical than others:
       the plural `hostIPs` alongside the existing singular `hostIP`
       unconditionally, mirroring the already-correct `podIP`/`podIPs`
       split. Genuinely automated e2e test. See round 56 notes.
-- [ ] `ContainerStatus.containerID` scheme prefix is the only remaining
-      item from round 54's audit. Ask before starting the next round.
+- [x] Round 57: `ContainerStatus.containerID` scheme prefix — **this
+      closes round 54's audit list entirely.** New `runtime_name`
+      field (from a one-time `Version` RPC call, never called before
+      this round) plus new pure `format_container_id()`, applied where
+      `ContainerRuntimeStatus.container_id` is populated so both
+      `ContainerStatus.containerID` and `state.terminated.containerID`
+      get fixed in one change. Genuinely automated e2e test. See round
+      57 notes.
+- [ ] All 5 audit lists to date (rounds 35, 39, 45, 50, 54) are now
+      fully closed. A fresh gap re-audit is the natural next step. Ask
+      before starting the next round.

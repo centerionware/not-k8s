@@ -342,7 +342,11 @@ the `eviction::qos_class()` computation nodelet already had internally
 for eviction ranking since round 7. Round 56 closed the next: the
 plural **`PodStatus.hostIPs`** is now set alongside the existing
 singular `hostIP`, mirroring the already-correct `podIP`/`podIPs`
-split. Full status list in `docs/GAP_CLOSURE.md`.
+split. Round 57 closed the last item: `ContainerStatus.containerID`
+now gets the real `<runtimeName>://<id>` scheme prefix (e.g.
+`containerd://...`), from a new one-time CRI `Version` call — all 5
+audit lists to date are now fully closed. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 ---
 
