@@ -55,7 +55,7 @@ use v1::image_service_client::ImageServiceClient;
 use v1::runtime_service_client::RuntimeServiceClient;
 use v1::{
     AuthConfig, Capability, ContainerConfig, ContainerFilter, ContainerMetadata, ContainerState,
-    ContainerStatusRequest, CreateContainerRequest, DnsConfig, GetEventsRequest, ImageSpec, Int64Value,
+    ContainerStatusRequest, CreateContainerRequest, DnsConfig, GetEventsRequest, ImageSpec, ImageStatusRequest, Int64Value,
     KeyValue, LinuxContainerConfig, LinuxContainerResources, LinuxContainerSecurityContext,
     LinuxPodSandboxConfig, LinuxSandboxSecurityContext, ListContainersRequest, ListImagesRequest,
     ListPodSandboxRequest, NamespaceMode, NamespaceOption, PodSandboxConfig, PodSandboxFilter,
@@ -657,6 +657,38 @@ fn parse_cpu_millicores(q: &Quantity) -> Option<i64> {
 /// A memory Quantity as bytes.
 fn parse_memory_bytes(q: &Quantity) -> Option<i64> {
     parse_quantity(&q.0).map(|b| b.round() as i64)
+}
+
+/// The mutable tag on an image reference, if any — `None` for a bare
+/// digest reference (`repo@sha256:...`) or a plain repo name with no tag
+/// at all. Only looks at the segment after the last `/`, so a registry
+/// host:port (e.g. `myregistry.io:5000/nginx:1.25`) is never mistaken for
+/// a tag separator.
+fn image_tag(image: &str) -> Option<&str> {
+    if image.contains('@') {
+        return None;
+    }
+    let repo_start = image.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let tail = &image[repo_start..];
+    tail.rfind(':').map(|i| &tail[i + 1..])
+}
+
+/// `imagePullPolicy` (round 51; found in round 50's re-audit), including
+/// real kubelet's own default-policy heuristic when unset: `Always` for
+/// an untagged or `:latest`-tagged image (a floating reference that could
+/// have changed since it was last pulled), `IfNotPresent` for anything
+/// else (a specific version tag, or a digest — both immutable by
+/// definition, so there's nothing to gain from re-checking the registry
+/// every time).
+fn effective_pull_policy<'a>(policy: Option<&'a str>, image: &str) -> &'a str {
+    match policy {
+        Some(p @ ("Always" | "IfNotPresent" | "Never")) => p,
+        _ if image.contains('@') => "IfNotPresent", // digest-pinned: immutable, nothing to gain from re-checking
+        _ => match image_tag(image) {
+            None | Some("latest") => "Always",
+            Some(_) => "IfNotPresent",
+        },
+    }
 }
 
 /// Real kubelet's `resourceFieldRef` output format (round 44; found in
@@ -2793,15 +2825,42 @@ impl CriRuntime {
         let auth = self.resolve_pull_auth(&id.namespace, pull_secrets, &image).await;
         let image_spec = ImageSpec { image: image.clone(), ..Default::default() };
 
-        // Pull the image (idempotent; containerd no-ops if present).
+        // imagePullPolicy (round 51; found in round 50's re-audit): `Always`
+        // still pulls unconditionally (containerd itself no-ops if the
+        // digest is already current) — the point of `IfNotPresent`/`Never`
+        // is avoiding the *network round-trip* to the registry entirely,
+        // which matters on a genuinely offline edge device even when the
+        // image is already cached locally.
+        let policy = effective_pull_policy(container.image_pull_policy.as_deref(), &image);
         let mut img = self.img.clone();
-        img.pull_image(PullImageRequest {
-            image: Some(image_spec.clone()),
-            auth,
-            sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new())),
-        })
-        .await
-        .context("pulling image")?;
+        let already_present = if policy != "Always" {
+            img.image_status(ImageStatusRequest { image: Some(image_spec.clone()), verbose: false })
+                .await
+                .ok()
+                .and_then(|r| r.into_inner().image)
+                .is_some()
+        } else {
+            false
+        };
+        let need_pull = match policy {
+            "Always" => true,
+            "Never" => {
+                if !already_present {
+                    anyhow::bail!("imagePullPolicy: Never, but image '{image}' is not present on this node");
+                }
+                false
+            }
+            _ => !already_present, // IfNotPresent
+        };
+        if need_pull {
+            img.pull_image(PullImageRequest {
+                image: Some(image_spec.clone()),
+                auth,
+                sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new())),
+            })
+            .await
+            .context("pulling image")?;
+        }
 
         let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes);
         if let Some(ResolvedVolume::HostPath(hosts_path)) = volumes.get(ETC_HOSTS_VOLUME_KEY) {
@@ -4418,6 +4477,9 @@ mod tests_csi_ephemeral_volume_handle;
 #[cfg(test)]
 #[path = "cri_tests/directory_usage_bytes.rs"]
 mod tests_directory_usage_bytes;
+#[cfg(test)]
+#[path = "cri_tests/image_pull_policy.rs"]
+mod tests_image_pull_policy;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

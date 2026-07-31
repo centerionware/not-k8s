@@ -27,6 +27,80 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 51: imagePullPolicy enforcement (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-50). Offered the 3
+round-50 findings; user picked this one — the highest-value find, and
+arguably higher priority than a typical missing-field gap since it cuts
+against this project's own edge/offline-capable design goal.
+
+Before this round, `create_and_start_container()` called CRI's
+`PullImage` unconditionally for every container, every time, regardless
+of `imagePullPolicy` — `Never` would silently pull anyway instead of
+refusing, and `IfNotPresent` always contacted the registry even when
+the image was already cached.
+
+- **New pure `image_tag(image) -> Option<&str>`**: the mutable tag on
+  an image reference, `None` for a bare digest reference (`repo@sha256:...`)
+  or an untagged repo name. Only looks at the segment after the last
+  `/`, so a registry host:port (`myregistry.io:5000/nginx:1.25`) is
+  never mistaken for a tag separator.
+- **New pure `effective_pull_policy(policy, image) -> &str`**: an
+  explicit `Always`/`IfNotPresent`/`Never` always wins; otherwise real
+  kubelet's own default-policy heuristic — `Always` for an untagged or
+  `:latest`-tagged image (a floating reference that could have changed
+  since it was last pulled), `IfNotPresent` for anything else,
+  including a digest reference (immutable by definition, so there's
+  nothing to gain from re-checking the registry every time).
+- **`create_and_start_container()`** now calls CRI's `ImageStatus` RPC
+  (vendored in the proto, never called anywhere in this codebase
+  before this round) to check local presence whenever the policy isn't
+  `Always` (skipping that extra round-trip entirely when it's going to
+  pull unconditionally anyway), then: `Never` without local presence
+  now `bail!`s a real, descriptive error instead of pulling — surfacing
+  as the same retry-and-report path every other `ensure_pod()` failure
+  already uses, no new failure mechanism needed; `IfNotPresent` skips
+  `PullImage` entirely when already cached; `Always` keeps its previous
+  unconditional-pull behavior (containerd itself still no-ops if the
+  digest is already current — the *network round-trip* to check is
+  what actually changes here, not the create-time outcome for `Always`
+  specifically).
+- No new env vars, no new proto surface — `ImageStatusRequest`/
+  `ImageStatusResponse` were already vendored, just unused.
+- 8 new unit tests (`cri_tests/image_pull_policy.rs`): `image_tag()`'s
+  tag/digest/untagged/registry-port-vs-tag-separator cases, and
+  `effective_pull_policy()`'s explicit-policy-always-wins,
+  unset-defaults-to-`Always`-for-untagged/`:latest`,
+  unset-defaults-to-`IfNotPresent`-for-a-specific-tag-or-digest, and an
+  unrecognized-string-falls-back-to-the-heuristic defensive case.
+  (Caught and fixed a real design bug during development: the first
+  implementation treated a digest reference the same as "untagged" —
+  defaulting it to `Always` — before a failing test caught that a
+  digest is immutable and should behave like a specific tag,
+  `IfNotPresent`, instead.)
+- New e2e test (`deploy/lib/test/cases/lifecycle.sh`):
+  `test_image_pull_policy_never_fails_when_image_is_absent` —
+  deliberately uses a *real, valid, pullable* image/tag this suite
+  never otherwise references (rather than a fake nonexistent tag,
+  which wouldn't distinguish "`Never` correctly refused to pull" from
+  "`Never` was ignored but the pull failed anyway because the tag
+  doesn't exist upstream either") — if `Never` isn't honored, this pod
+  would actually succeed in pulling and reach `Running`, so the test is
+  a real, structural proof, not just an "eventually stays Pending"
+  check. A companion manual-note documents why proving
+  `IfNotPresent`'s "skip the round-trip" behavior specifically (as
+  opposed to `Never`'s "refuse entirely," which the automated test
+  above already covers live) needs reading nodelet's own logs, which
+  this suite doesn't do.
+
+**Confidence note**: both new pure functions are thoroughly unit-tested
+(including a design bug the tests themselves caught before merge). The
+e2e test is genuine, live, structural proof for `Never`'s refusal
+behavior specifically; `IfNotPresent`'s registry-round-trip-skipping
+behavior is unit-tested only, not proven live end-to-end (documented as
+a manual spot-check instead, consistent with several other CRI-detail
+behaviors in this codebase that need log access to observe).
+
 ## Round 50: fresh gap re-audit (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 22/27/35/39/45). All 3
@@ -3089,7 +3163,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - 🟡 Image garbage collection — unreferenced-image sweep exists but not the real kubelet policy (disk-pressure-triggered high/low watermark GC, `--image-gc-high-threshold`/`--image-gc-low-threshold`)
 - ✅ **Container log rotation** — running containers' log files are rotated past `NODELET_CONTAINER_LOG_MAX_SIZE_BYTES`, keeping `NODELET_CONTAINER_LOG_MAX_FILES` (`rotate_log_file()` + CRI `ReopenContainerLog`)
 - ✅ **`Node.status.images`** (round 33; found in round 27's re-audit) — `node.rs::select_node_images()` sorts CRI's `ListImages` results (via the new `PodRuntime::node_images()` trait method) largest-first and caps at 50, matching real kubelet's own `--node-status-max-images` default. Genuinely automated e2e test. See round 33 notes.
-- ❌ **`imagePullPolicy` enforcement** (found in round 50's re-audit) — `create_and_start_container()` calls CRI's `PullImage` unconditionally for every container regardless of `image_pull_policy`. `Never` should refuse to pull at all (failing the container if the image isn't already cached, not silently pulling anyway); `IfNotPresent` should skip the pull entirely when already cached rather than still contacting the registry. Cuts directly against this project's own edge/offline-capable design goal — a pod that should start immediately from a pre-loaded image could instead block/fail on an unreachable registry call it should never have made. The real default-policy heuristic when unset (`Always` for untagged/`:latest`, `IfNotPresent` otherwise) also isn't implemented.
+- ✅ **`imagePullPolicy` enforcement** (round 51; found in round 50's re-audit) — new pure `effective_pull_policy()` (an explicit policy always wins; otherwise real kubelet's own default heuristic — `Always` for untagged/`:latest`, `IfNotPresent` for a specific tag *or* a digest reference) plus a new `ImageStatus` RPC call (vendored, never used before) to check local presence whenever the policy isn't `Always`. `Never` without local presence now `bail!`s a real error (surfaces via `ensure_pod()`'s existing retry-and-report path) instead of silently pulling anyway; `IfNotPresent` skips `PullImage` entirely when already cached. Genuinely automated e2e test for `Never`'s refusal behavior (a real, valid image/tag this suite never otherwise pulls — a fake tag wouldn't distinguish "correctly refused" from "ignored but failed anyway upstream"); `IfNotPresent`'s registry-round-trip-skipping is unit-tested only (needs nodelet's own logs to observe live). See round 51 notes.
 - ❌ **`ContainerStatus.imageID`** (found in round 50's re-audit) — always the empty string at all 3 `pods.rs` construction sites; CRI's own `ContainerStatus.image_ref` ("digested reference to the image in use") is already available on the exact struct `container_status_details()` returns elsewhere in this file — a read-an-already-available-field fix, not new plumbing. Lets a user confirm exactly which image digest is running, catching `:latest`-tag drift.
 
 ### Volumes
@@ -3440,7 +3514,14 @@ higher-value/correctness-critical than others:
       `image_ref` is already available, just unread), and
       **`Node.status.runtimeHandlers` unreported** (CRI's runtime-level
       `Status` RPC is never called at all). See round 50 notes.
-- [ ] Candidates for the next round, by value: `imagePullPolicy`
-      enforcement, `ContainerStatus.imageID` (cheapest — an
-      already-available field, no new plumbing), `Node.status.runtimeHandlers`.
-      Ask before starting the next round.
+- [x] Round 51: `imagePullPolicy` enforcement — new pure
+      `effective_pull_policy()`/`image_tag()` plus a new `ImageStatus`
+      RPC call to check local presence; `Never` now `bail!`s instead of
+      silently pulling, `IfNotPresent` skips the pull entirely when
+      cached. Genuinely automated e2e test for `Never`'s refusal
+      (a real image/tag, not a fake one, to actually distinguish
+      correct from buggy behavior). See round 51 notes.
+- [ ] Candidates for the next round, by value: `ContainerStatus.imageID`
+      (cheapest — an already-available field, no new plumbing),
+      `Node.status.runtimeHandlers`. Ask before starting the next
+      round.

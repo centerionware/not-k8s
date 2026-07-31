@@ -251,6 +251,39 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_image_pull_policy_never_fails_when_image_is_absent() {
+    # Round 51: imagePullPolicy: Never must refuse to pull at all. Uses a
+    # real, valid, pullable image/tag this suite never otherwise
+    # references (so it's very unlikely already cached) — a fake/
+    # nonexistent tag wouldn't distinguish "Never correctly refused to
+    # pull" from "Never was ignored but the pull failed anyway because
+    # the tag doesn't exist upstream either." If Never isn't honored,
+    # this pod would actually succeed in pulling and reach Running.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="pull-never-absent"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: busybox:1.35.0
+      imagePullPolicy: Never
+      command: ["sleep", "3600"]
+EOF
+    if try_wait_until 20 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        die "pod reached Running with imagePullPolicy: Never against an image this node shouldn't already have cached — the Never policy isn't being honored (check effective_pull_policy()/create_and_start_container() in runtime/cri.rs)"
+    fi
+    delete_pod_if_exists "$name"
+}
+
+test_image_pull_policy_if_not_present_manual_note() {
+    skip_test "proving IfNotPresent/Never actually SKIP the registry round-trip (not just that Never fails when absent, which test_image_pull_policy_never_fails_when_image_is_absent already covers live) needs reading nodelet's own logs or observing network activity — not something this suite does. Manual spot-check: pull $TEST_IMAGE once via a Running pod, then create a second pod referencing the same image with imagePullPolicy: IfNotPresent and (if your registry supports it) point nodelet at an unreachable/offline registry mirror — confirm the second pod still reaches Running quickly (no failed registry call blocking it), and check nodelet's logs show no new ImageStatus miss or PullImage call for that image."
+}
+
 register_test test_basic_pod_runs
 register_test test_init_containers_run_before_app_container
 register_test test_native_sidecar_container_starts_before_app_container_and_keeps_running
@@ -261,3 +294,5 @@ register_test test_restart_policy_never_exit_zero_is_succeeded
 register_test test_restart_policy_never_exit_nonzero_is_failed
 register_test test_exited_container_reports_terminated_state_with_exit_code
 register_test test_termination_message_path_is_read_back_into_container_status
+register_test test_image_pull_policy_never_fails_when_image_is_absent
+register_test test_image_pull_policy_if_not_present_manual_note

@@ -319,7 +319,13 @@ regardless of `Always`/`IfNotPresent`/`Never`, which cuts against this
 project's own edge/offline-capable design goal; `ContainerStatus.imageID`
 is also always empty (CRI already returns the digest, just unread),
 and `Node.status.runtimeHandlers` is never reported (the CRI `Status`
-RPC is never called). Full status list in `docs/GAP_CLOSURE.md`.
+RPC is never called). Round 51 closed the first: `imagePullPolicy`
+(`Always`/`IfNotPresent`/`Never`) is now actually enforced, including
+real kubelet's own default-policy heuristic when unset — `Never`
+refuses to pull at all instead of silently doing so, and
+`IfNotPresent` skips the registry round-trip entirely once an image
+is cached, both real wins for genuinely offline edge operation. Full
+status list in `docs/GAP_CLOSURE.md`.
 
 ---
 
