@@ -353,7 +353,16 @@ reporting, and the `emptyDir.medium: HugePages` volume form),
 and Dynamic Resource Allocation (`spec.resourceClaims`) is
 unimplemented — flagged for completeness, though its value-to-
 complexity ratio for a single-node edge kubelet is genuinely
-questionable. Full status list in `docs/GAP_CLOSURE.md`.
+questionable. Round 59 closed the cheapest HugePages piece: container
+`resources.limits["hugepages-<size>"]` is now translated to CRI's
+`LinuxContainerResources.hugepage_limits` (a field the vendored proto
+already had, unused until now) via new `hugepage_limits()`/
+`hugepage_cri_page_size()` helpers — the latter a naming-convention
+translation only (k8s's `Mi`/`Gi`/`Ki` suffix to CRI's `MB`/`GB`/`KB`
+page_size string; the byte value itself is unchanged). Still open:
+`Node.status.capacity`/`.allocatable["hugepages-<size>"]` reporting and
+the `emptyDir.medium: HugePages` volume form. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 ---
 

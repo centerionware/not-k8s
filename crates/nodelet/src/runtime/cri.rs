@@ -856,8 +856,39 @@ fn linux_resources(resources: Option<&ResourceRequirements>, qos: QosClass, node
         cpu_period,
         memory_limit_in_bytes: mem_limit.unwrap_or(0),
         oom_score_adj: crate::eviction::oom_score_adj(qos, mem_request, node_memory_bytes),
+        hugepage_limits: hugepage_limits(limits),
         ..Default::default()
     }
+}
+
+/// A k8s hugepage resource name's binary-unit suffix (`"Mi"`/`"Gi"`/`"Ki"`)
+/// -> CRI's own `HugepageLimit.page_size` format (round 59; found in
+/// round 58's re-audit) — `"<size><unit-prefix>B"` (e.g. `"2MB"`,
+/// `"1GB"`), matching the corresponding `hugetlb.<pagesize>.limit_in_bytes`
+/// cgroup file name exactly. Despite looking decimal, the proto's own doc
+/// comment confirms these are still parsed base-1024 — this is purely a
+/// naming-convention translation (drop the trailing `i`, append `B`), not
+/// a unit conversion; the byte *value* itself needs no rescaling.
+fn hugepage_cri_page_size(k8s_suffix: &str) -> Option<String> {
+    k8s_suffix.strip_suffix('i').map(|s| format!("{s}B"))
+}
+
+/// Every `resources.limits["hugepages-<size>"]` entry -> CRI's
+/// `HugepageLimit` list, which has direct native support for exactly this
+/// (`LinuxContainerResources.hugepage_limits`) — no host-side mount or
+/// separate mechanism needed, unlike `emptyDir`'s own (still separately
+/// tracked, still open) HugePages volume medium.
+fn hugepage_limits(limits: Option<&BTreeMap<String, Quantity>>) -> Vec<v1::HugepageLimit> {
+    let Some(limits) = limits else { return Vec::new() };
+    limits
+        .iter()
+        .filter_map(|(name, q)| {
+            let suffix = name.strip_prefix("hugepages-")?;
+            let page_size = hugepage_cri_page_size(suffix)?;
+            let bytes = parse_memory_bytes(q)?;
+            Some(v1::HugepageLimit { page_size, limit: bytes.max(0) as u64 })
+        })
+        .collect()
 }
 
 /// Translate `spec.overhead` (a flat `ResourceList`, not a request/limit
@@ -4538,6 +4569,9 @@ mod tests_runtime_handler_from_cri;
 #[cfg(test)]
 #[path = "cri_tests/format_container_id.rs"]
 mod tests_format_container_id;
+#[cfg(test)]
+#[path = "cri_tests/hugepage_cri_page_size.rs"]
+mod tests_hugepage_cri_page_size;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

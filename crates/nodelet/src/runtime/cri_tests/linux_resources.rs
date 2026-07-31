@@ -117,6 +117,35 @@ fn parse_memory_bytes_handles_bare_integer_bytes() {
     assert_eq!(parse_memory_bytes(&Quantity("500000000".to_string())), Some(500_000_000));
 }
 
+// --- hugepage_limits wiring (round 59; found in round 58's re-audit) ---
+
+#[test]
+fn a_hugepages_limit_is_translated_to_the_cri_page_size_format() {
+    let mut limits = BTreeMap::new();
+    limits.insert("hugepages-2Mi".to_string(), Quantity("64Mi".to_string()));
+    let res = ResourceRequirements { limits: Some(limits), ..Default::default() };
+    let hp = lr(Some(&res)).hugepage_limits;
+    assert_eq!(hp.len(), 1);
+    assert_eq!(hp[0].page_size, "2MB");
+    assert_eq!(hp[0].limit, 64 * 1024 * 1024);
+}
+
+#[test]
+fn multiple_hugepage_sizes_all_appear() {
+    let mut limits = BTreeMap::new();
+    limits.insert("hugepages-2Mi".to_string(), Quantity("64Mi".to_string()));
+    limits.insert("hugepages-1Gi".to_string(), Quantity("2Gi".to_string()));
+    let res = ResourceRequirements { limits: Some(limits), ..Default::default() };
+    let hp = lr(Some(&res)).hugepage_limits;
+    assert_eq!(hp.len(), 2);
+}
+
+#[test]
+fn no_hugepages_limit_produces_an_empty_list() {
+    let res = resources(None, None, Some("256Mi"));
+    assert!(lr(Some(&res)).hugepage_limits.is_empty());
+}
+
 // --- oom_score_adj wiring (round 28) ---
 
 #[test]

@@ -27,6 +27,52 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 59: HugePages container limits (2026-07-31, same day)
+
+Closes the cheapest of the 3 pieces round 58's re-audit found under
+**HugePages**: container `resources.limits["hugepages-<size>"]` was never
+translated to CRI at all — a pod requesting hugepages ran with no hugetlb
+cgroup limit set whatsoever, silently ignoring the request.
+
+- `runtime/cri.rs::linux_resources()` now populates
+  `LinuxContainerResources.hugepage_limits` — a field CRI's vendored proto
+  already had, just never read or written until now (same "proto already
+  supports it, nobody wired it up" shape as round 53's `Status` RPC and
+  round 57's `Version` RPC).
+- New pure `hugepage_limits(limits: Option<&BTreeMap<String, Quantity>>)`
+  extracts every `hugepages-<size>` key from a container's
+  `resources.limits` and converts each to a CRI `HugepageLimit`.
+- New pure `hugepage_cri_page_size(k8s_suffix: &str)` converts k8s's
+  `Ki`/`Mi`/`Gi` binary suffix to CRI's `page_size` format (`"2MB"`,
+  `"1GB"`, `"64KB"`) — despite looking decimal, this is a **naming
+  convention only**: CRI's own proto doc comment confirms `page_size` is
+  still parsed as base-1024, so this is a string-format translation, not a
+  numeric unit conversion. The byte value itself (`limit`) is copied
+  through unchanged. A suffix without the trailing `i` (malformed —
+  real hugepage resource names always use the binary suffix, apiserver
+  validation enforces this) is rejected rather than mistranslated.
+- 7 new unit tests: 3 in `cri_tests/linux_resources.rs` (single size,
+  multiple sizes, empty when absent) and 4 in a new dedicated
+  `cri_tests/hugepage_cri_page_size.rs` (Mi/Gi/Ki conversion, malformed
+  suffix rejection).
+- Genuinely automated e2e test
+  (`test_hugepages_limit_is_enforced_via_cgroup` in
+  `deploy/lib/test/cases/resources.sh`): creates a pod with a
+  `hugepages-2Mi` limit (plus the memory limit real k8s validation
+  requires alongside any hugepages limit) and reads back
+  `/sys/fs/cgroup/hugetlb.2MB.limit_in_bytes` from inside the container via
+  a shared emptyDir, asserting it matches exactly. Skips cleanly (not a
+  hard failure) if the node has no 2Mi hugepages reserved
+  (`/proc/sys/vm/nr_hugepages`) or the hugetlb cgroup controller isn't
+  enabled — genuinely outside nodelet's control, same reasoning as round
+  45's cgroup-hierarchy tests' skip conditions.
+- **Still open** (the other 2 of round 58's 3 HugePages pieces):
+  `Node.status.capacity`/`.allocatable["hugepages-<size>"]` reporting
+  (would read `/sys/kernel/mm/hugepages/`, no CRI RPC involved), and
+  `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volume support
+  (closer in shape to round 30's tmpfs `emptyDir.medium: Memory` work — a
+  real mount, not a CRI concept).
+
 ## Round 58: fresh gap re-audit (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 22/27/35/39/45/50/54).
@@ -3456,7 +3502,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`oom_score_adj`** (round 28; found in round 27's re-audit) — `linux_resources()` now sets CRI's `LinuxContainerResources.oom_score_adj` per container via `eviction::oom_score_adj()`: Guaranteed `-998`, BestEffort `1000`, Burstable scaled by that container's own memory *request* against node capacity (`1000 - 1000*request/capacity`, clamped `[2, 999]`), matching real kubelet's formula exactly. Gives the kernel OOM killer QoS-aware signal, closing a real gap in this project's own eviction-manager story (rounds 7, 26) — a kernel OOM kill can happen faster than `eviction_loop()`'s check interval reacts. See round 28 notes.
 - ✅ **gRPC probes** (round 29; found in round 27's re-audit) — `probes.rs::probe_check()` now handles `probe.grpc` too, via a vendored `grpc.health.v1` client (`proto/health.proto`) calling the standard `Health/Check` RPC. `cri`-gated (needs `tonic`'s transport); a mock-only build's `check_grpc()` always returns `false`. Unit-tested failure paths (timeout, refused, non-gRPC listener) with solid confidence; the success path (a real passing `Health/Check`) is unvalidated — no gRPC server available in this sandbox to prove it live. See round 29 notes.
 - ✅ **Local ephemeral storage** (found in round 45's re-audit; closed rounds 48-49) — `Node.status.capacity`/`.allocatable["ephemeral-storage"]` reports the real total filesystem size backing `disk_path` (round 48, reusing `DiskPressure`'s existing `statvfs(2)` read). A pod exceeding its *own* `resources.limits["ephemeral-storage"]` is now evicted directly (round 49) — usage measured as CRI's per-container `writable_layer.used_bytes` plus a recursive walk of nodelet's own materialized volume directory, checked independently of and ahead of the general `MemoryPressure`/`DiskPressure`/`PIDPressure`-gated eviction path (the same relationship an individual container's own OOM kill has to overall node memory pressure). Genuinely automated e2e test — the only one of this project's eviction tests that doesn't need a manual procedure, since this trigger needs no artificial node-wide pressure. **Known scope limitation**: usage measurement doesn't include container log file size (`/var/log/pods/...`) yet, only volumes + writable layer. See rounds 48-49 notes.
-- ❌ **HugePages** (found in round 58's re-audit) — entirely unimplemented: no container `resources.limits["hugepages-<size>"]` translation (CRI has direct, dedicated support for this — `LinuxContainerResources.hugepage_limits` — making this the cheapest of the 3 pieces), no `Node.status.capacity`/`.allocatable["hugepages-<size>"]` reporting (would read `/sys/kernel/mm/hugepages/`, no CRI RPC involved), and no `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volume support (closer in shape to round 30's tmpfs `emptyDir.medium: Memory` work — a real mount, not a CRI concept — than to the container-limit piece).
+- 🟡 **HugePages** (found in round 58's re-audit; container-limit piece closed round 59) — container `resources.limits["hugepages-<size>"]` is now translated to CRI's `LinuxContainerResources.hugepage_limits` (round 59). **Still missing**: `Node.status.capacity`/`.allocatable["hugepages-<size>"]` reporting (would read `/sys/kernel/mm/hugepages/`, no CRI RPC involved), and `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volume support (closer in shape to round 30's tmpfs `emptyDir.medium: Memory` work — a real mount, not a CRI concept).
 - ❌ **`securityContext.supplementalGroupsPolicy`** (GA 1.33; found in round 58's re-audit) — controls whether `supplementalGroups`/fsGroup-derived groups *merge with* or *strictly replace* the groups a container image's own `/etc/group` would otherwise assign its user; `linux_security_context()` sets `supplemental_groups` but never reads this policy field, so it always behaves as the implicit merge case regardless of what the pod spec asks for.
 - ❌ **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit) — entirely unimplemented (zero references anywhere in this codebase). A newer, genuinely complex feature: `ResourceClaim`/`ResourceClaimTemplate`/`DeviceClass` cluster objects plus a kubelet-side gRPC "DRA plugin" protocol distinct from (though loosely analogous to) device plugins. **Flagged for completeness, not necessarily recommended**: likely its own large multi-round arc, and the value-to-complexity ratio for a single-node edge kubelet (vs. a real multi-node cluster's cross-node device-sharing story DRA is mainly designed for) is genuinely questionable — worth a deliberate scope discussion before starting, not a default "implement it" pick.
 
@@ -3889,7 +3935,17 @@ higher-value/correctness-critical than others:
       genuinely complex, flagged for completeness — not necessarily
       recommended given the value-to-complexity ratio for a
       single-node edge kubelet). See round 58 notes.
-- [ ] Candidates for the next round, by value: HugePages container
-      limits (cheapest slice — direct CRI support), `supplementalGroupsPolicy`,
+- [x] Round 59: HugePages container limits — closes the cheapest of
+      round 58's 3 HugePages pieces. `linux_resources()` now populates
+      CRI's `LinuxContainerResources.hugepage_limits` via new pure
+      `hugepage_limits()`/`hugepage_cri_page_size()` helpers (the latter
+      a naming-convention translation only: k8s's `Mi`/`Gi`/`Ki` suffix →
+      CRI's `MB`/`GB`/`KB` page_size string, byte value copied through
+      unchanged). Genuinely automated e2e test reading back
+      `hugetlb.2MB.limit_in_bytes`, skips cleanly if the node has no
+      hugepages reserved. See round 59 notes.
+- [ ] Candidates for the next round, by value: HugePages
+      `Node.status.capacity`/`.allocatable` reporting, HugePages
+      `emptyDir.medium: HugePages` volume support, `supplementalGroupsPolicy`,
       then a deliberate scope discussion on Dynamic Resource Allocation
       before committing to it. Ask before starting the next round.

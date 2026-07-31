@@ -42,6 +42,56 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_hugepages_limit_is_enforced_via_cgroup() {
+    # Round 59: resources.limits["hugepages-2Mi"] was never translated to
+    # CRI's LinuxContainerResources.hugepage_limits at all before this.
+    # Real k8s validation requires a memory limit alongside any hugepages
+    # limit, hence both here. Skips cleanly (not a hard fail) if this
+    # node/kernel has no 2Mi hugepages reserved or the hugetlb cgroup
+    # controller isn't enabled — genuinely outside nodelet's control.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="hugepages-limit"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      resources:
+        limits:
+          hugepages-2Mi: "4Mi"
+          memory: "67108864"
+      command: ["sh", "-c", "cat /sys/fs/cgroup/hugetlb.2MB.limit_in_bytes > /shared/hugetlb.txt 2>/shared/hugetlb.err; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with a hugepages-2Mi limit set — this node/kernel likely has no 2Mi hugepages reserved (check /proc/sys/vm/nr_hugepages) or the runtime doesn't support the hugetlb cgroup controller"
+    fi
+
+    local path="$(pod_volume_host_path "$name" shared)/hugetlb.txt"
+    local waited=0
+    while [[ ! -s "$path" && "$waited" -lt 20 ]]; do
+        sleep 2
+        waited=$((waited + 2))
+    done
+    if [[ ! -s "$path" ]]; then
+        delete_pod_if_exists "$name"
+        skip_test "no /sys/fs/cgroup/hugetlb.2MB.limit_in_bytes in the container — this node's cgroup v2 hierarchy may not have the hugetlb controller enabled"
+    fi
+    local value
+    value="$(cat "$path")"
+    assert_eq "$value" "4194304" "cgroup hugetlb.2MB.limit_in_bytes should match the Pod's hugepages-2Mi limit exactly (4Mi)"
+    delete_pod_if_exists "$name"
+}
+
 test_cpu_limit_is_enforced_via_cgroup() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="cpu-limit"
@@ -272,6 +322,7 @@ EOF
 }
 
 register_test test_memory_limit_is_enforced_via_cgroup
+register_test test_hugepages_limit_is_enforced_via_cgroup
 register_test test_in_place_resize_updates_memory_limit_without_restarting
 register_test test_env_resource_field_ref_reports_the_containers_own_limits
 register_test test_cpu_limit_is_enforced_via_cgroup
