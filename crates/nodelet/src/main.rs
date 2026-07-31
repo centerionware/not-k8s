@@ -149,6 +149,7 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                 let rt = runtime::cri::CriRuntime::connect(
                     &cfg.cri_endpoint,
                     client,
+                    cfg.node_name.clone(),
                     cfg.cluster_dns.clone(),
                     cfg.cluster_domain.clone(),
                     cfg.csi_drivers.clone(),

@@ -22,6 +22,7 @@ use k8s_openapi::api::core::v1::{
     SecretReference, SecurityContext, Service, Volume,
 };
 use k8s_openapi::api::node::v1::RuntimeClass;
+use k8s_openapi::api::storage::v1::{CSIDriver, VolumeAttachment};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use k8s_openapi::jiff::Timestamp;
@@ -98,6 +99,10 @@ pub struct CriRuntime {
     // their contents have to be fetched from the apiserver and written to
     // disk ourselves before a container that mounts them can start.
     client: kube::Client,
+    /// This node's name — needed to match this node's `VolumeAttachment`
+    /// objects (`spec.nodeName`) when waiting on a CSI attach (see
+    /// `resolve_csi_source()`).
+    node_name: String,
     /// `--cluster-dns`/`--cluster-domain` equivalents (see `dns_config_for()`).
     cluster_dns: Vec<String>,
     cluster_domain: String,
@@ -405,6 +410,46 @@ fn parse_quantity(s: &str) -> Option<f64> {
         }
     }
     s.parse::<f64>().ok()
+}
+
+/// Whether a CSI driver requires an attach before Stage/Publish — pure
+/// wrapper around `CSIDriver.spec.attachRequired` so the "assume yes
+/// if the field/object is missing" default (matching upstream) is
+/// unit-testable without a cluster. `None` means no `CSIDriver` object
+/// exists for this driver name at all.
+fn attach_required(driver: Option<&CSIDriver>) -> bool {
+    driver.and_then(|d| d.spec.attach_required) != Some(false)
+}
+
+/// Find the `VolumeAttachment` (if any) describing `driver` attaching
+/// `pv_name` to `node_name` — a pure search so the matching logic is
+/// unit-testable without listing real cluster objects. `VolumeAttachment`
+/// names are generated (hashed) by the attach/detach controller, not
+/// derivable from `(driver, node, pv)`, so this has to scan rather than
+/// `.get()` by name.
+fn find_volume_attachment<'a>(
+    attachments: &'a [VolumeAttachment],
+    driver: &str,
+    node_name: &str,
+    pv_name: &str,
+) -> Option<&'a VolumeAttachment> {
+    attachments.iter().find(|a| {
+        a.spec.attacher == driver
+            && a.spec.node_name == node_name
+            && a.spec.source.persistent_volume_name.as_deref() == Some(pv_name)
+    })
+}
+
+/// Extract the `publish_context` for Stage/Publish from an attached
+/// `VolumeAttachment` — `None` if it isn't attached yet
+/// (`status.attached == false`, or no `status` at all: the
+/// external-attacher hasn't finished `ControllerPublishVolume` yet).
+fn attachment_publish_context(attachment: &VolumeAttachment) -> Option<HashMap<String, String>> {
+    let status = attachment.status.as_ref()?;
+    if !status.attached {
+        return None;
+    }
+    Some(status.attachment_metadata.clone().unwrap_or_default().into_iter().collect())
 }
 
 /// Every non-cpu/memory resource in `limits`, as `(name, count)` — a pure
@@ -1102,6 +1147,7 @@ impl CriRuntime {
     pub async fn connect(
         endpoint: &str,
         client: kube::Client,
+        node_name: String,
         cluster_dns: Vec<String>,
         cluster_domain: String,
         csi_drivers: BTreeMap<String, String>,
@@ -1132,6 +1178,7 @@ impl CriRuntime {
             rt,
             img,
             client,
+            node_name,
             cluster_dns,
             cluster_domain,
             rx: Mutex::new(Some(rx)),
@@ -1378,6 +1425,28 @@ impl CriRuntime {
             return Ok(None);
         }
 
+        let publish_context = if self.driver_requires_attach(&csi.driver).await {
+            let attachments = Api::<VolumeAttachment>::all(self.client.clone())
+                .list(&ListParams::default())
+                .await
+                .context("listing VolumeAttachments")?;
+            match find_volume_attachment(&attachments.items, &csi.driver, &self.node_name, pv_name) {
+                Some(att) => match attachment_publish_context(att) {
+                    Some(ctx) => ctx,
+                    None => {
+                        warn!(claim = %claim_name, volume = %pv_name, driver = %csi.driver, "VolumeAttachment found but not yet attached; will retry next reconcile");
+                        return Ok(None);
+                    }
+                },
+                None => {
+                    warn!(claim = %claim_name, volume = %pv_name, driver = %csi.driver, "driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile");
+                    return Ok(None);
+                }
+            }
+        } else {
+            HashMap::new()
+        };
+
         let node_stage_secrets = self.resolve_csi_secret_ref(csi.node_stage_secret_ref.as_ref(), namespace).await;
         let node_publish_secrets = self.resolve_csi_secret_ref(csi.node_publish_secret_ref.as_ref(), namespace).await;
 
@@ -1389,7 +1458,22 @@ impl CriRuntime {
             volume_attributes: csi.volume_attributes.clone().unwrap_or_default().into_iter().collect(),
             node_stage_secrets,
             node_publish_secrets,
+            publish_context,
         }))
+    }
+
+    /// Whether `driver` needs an attach before it can be staged/published —
+    /// `CSIDriver.spec.attachRequired`, defaulting to "yes" (matching
+    /// upstream: a driver with no `CSIDriver` object registered at all, or
+    /// one that doesn't set the field, is assumed to require attach). Most
+    /// node-local/edge storage drivers explicitly set `attachRequired:
+    /// false` and skip this path entirely — this only matters for drivers
+    /// backed by real block storage (cloud disks, SANs, ...).
+    async fn driver_requires_attach(&self, driver: &str) -> bool {
+        match Api::<CSIDriver>::all(self.client.clone()).get(driver).await {
+            Ok(obj) => attach_required(Some(&obj)),
+            Err(_) => attach_required(None),
+        }
     }
 
     /// Resolve a CSI `SecretReference` (`nodeStageSecretRef`/
@@ -3222,6 +3306,9 @@ mod tests_resource_list_to_linux_resources;
 #[cfg(test)]
 #[path = "cri_tests/extended_resource_requests.rs"]
 mod tests_extended_resource_requests;
+#[cfg(test)]
+#[path = "cri_tests/csi_attach.rs"]
+mod tests_csi_attach;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

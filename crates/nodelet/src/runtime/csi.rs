@@ -21,11 +21,16 @@
 //! configured up front instead of discovering it automatically.
 //!
 //! Also out of scope for this slice, each documented at its point of use
-//! below: the Controller service (attach/detach, dynamic provisioning —
-//! real kubelet doesn't do these either, they're external-attacher/
-//! external-provisioner's job, so this isn't a nodelet-specific gap) and
-//! `nodeStageSecretRef`/`nodePublishSecretRef` (drivers requiring
-//! per-volume credentials for Stage/Publish aren't supported yet).
+//! below: dynamic provisioning (external-provisioner's job, not kubelet's)
+//! and calling the Controller service's `ControllerPublishVolume`/
+//! `ControllerUnpublishVolume` RPCs directly (that's external-attacher's
+//! job too — real kubelet never calls them either). What real kubelet
+//! *does* do on the node side of attach, and what `runtime/cri.rs`'s
+//! `resolve_csi_source()` now does too: check whether the driver even
+//! requires an attach (`CSIDriver.spec.attachRequired`), and if so, wait
+//! for the `VolumeAttachment` object the external-attacher produces to
+//! reach `status.attached == true` before staging/publishing, threading
+//! its `status.attachmentMetadata` through as `publish_context`.
 
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -120,6 +125,15 @@ pub struct CsiVolumeSource {
     pub node_stage_secrets: HashMap<String, String>,
     /// From `.spec.csi.nodePublishSecretRef`.
     pub node_publish_secrets: HashMap<String, String>,
+    /// Opaque driver-specific data returned by `ControllerPublishVolume`
+    /// (the external-attacher's job, not nodelet's — see the module doc
+    /// comment) and stashed on the matching `VolumeAttachment.status`.
+    /// Required by some drivers' NodeStage/NodePublish calls (e.g. a device
+    /// path chosen at attach time). Empty for volumes that didn't need an
+    /// attach at all (`CSIDriver.spec.attachRequired == false`, the common
+    /// case for node-local/edge storage) — never populated in that case
+    /// since there's no VolumeAttachment to read it from.
+    pub publish_context: HashMap<String, String>,
 }
 
 pub struct CsiDrivers {
@@ -233,7 +247,7 @@ impl CsiDrivers {
             client
                 .node_stage_volume(NodeStageVolumeRequest {
                     volume_id: source.volume_handle.clone(),
-                    publish_context: Default::default(),
+                    publish_context: source.publish_context.clone(),
                     staging_target_path: staging_target_path.clone(),
                     volume_capability: Some(capability.clone()),
                     secrets: source.node_stage_secrets.clone(),
@@ -247,7 +261,7 @@ impl CsiDrivers {
         client
             .node_publish_volume(NodePublishVolumeRequest {
                 volume_id: source.volume_handle.clone(),
-                publish_context: Default::default(),
+                publish_context: source.publish_context.clone(),
                 staging_target_path,
                 target_path: target_path.to_string_lossy().into_owned(),
                 volume_capability: Some(capability),

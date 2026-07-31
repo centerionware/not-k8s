@@ -136,10 +136,16 @@ other volume. Driver discovery is both static (`NODELET_CSI_DRIVERS`) and
 dynamic — a driver's `node-driver-registrar` sidecar can register itself
 against `NODELET_PLUGIN_REGISTRY_PATH`, the same protocol it'd use against
 real kubelet's own plugin watcher — and `nodeStageSecretRef`/
-`nodePublishSecretRef` are resolved and passed through. Still no
-Controller service (attach/detach — not kubelet's job upstream either) —
+`nodePublishSecretRef` are resolved and passed through. **Attach
+coordination** (round 19) — checks `CSIDriver.spec.attachRequired`, and
+for drivers that need it, waits on the matching
+`VolumeAttachment.status.attached` before Stage/Publish, passing
+`status.attachmentMetadata` through as `publish_context`; calling the
+Controller service itself stays out of scope, confirmed against docs that
+`ControllerPublishVolume`/`ControllerUnpublishVolume` are
+external-attacher's job upstream, not kubelet's —
 **unvalidated against a real CSI driver**, see `docs/GAP_CLOSURE.md`'s
-round 12/13 notes. Also **device plugins** (`device_plugins.rs`,
+round 12/13/19 notes. Also **device plugins** (`device_plugins.rs`,
 GPU/FPGA/etc. hardware) — discovered via the same dynamic registration
 protocol as CSI drivers, advertised on `Node.status.capacity`/
 `.allocatable`, and allocated into requesting containers'
@@ -161,9 +167,9 @@ container's exclusive cores, pinned memory, and allocated devices all
 land on the same NUMA node; a single-node-only alignment algorithm (not
 upstream's full multi-node search — see round 17/18 notes), reads real
 NUMA topology from `/sys/devices/system/node`. Still missing: Topology
-Manager's multi-node `restricted` allowance, CSI's Controller service,
-and device plugins' `GetPreferredAllocation`/`PreStartContainer` — full
-list in `docs/GAP_CLOSURE.md`.
+Manager's multi-node `restricted` allowance and device plugins'
+`GetPreferredAllocation`/`PreStartContainer` — full list in
+`docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -635,6 +641,15 @@ Two layers, and they're not substitutes for each other:
   checks its `cpuset.mems` cgroup file is non-empty (found by container
   ID, same technique `cpu_manager.sh` uses). Needs
   `TEST_MEMORY_MANAGER_STATIC=true`.
+
+  `csi_attach.sh` provisions a PVC against an attach-requiring
+  StorageClass, waits for the pod to reach Running, then asserts the
+  matching `VolumeAttachment.status.attached` is `true` — proof the pod
+  only started because nodelet actually waited on it. Needs
+  `TEST_CSI_ATTACH_STORAGE_CLASS` set to a StorageClass backed by a driver
+  that requires attach with a working external-attacher — same class of
+  infra dependency `csi_pvc.sh` has, but for a driver where
+  `CSIDriver.spec.attachRequired` is `true` instead of `false`.
 
 ## Configuration (environment variables)
 

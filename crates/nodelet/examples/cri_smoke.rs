@@ -34,6 +34,7 @@ async fn main() -> Result<()> {
     let rt = nodelet::runtime::cri::CriRuntime::connect(
         &socket,
         client,
+        "cri-smoke-node".to_string(),
         Vec::new(),
         "cluster.local".to_string(),
         Default::default(),

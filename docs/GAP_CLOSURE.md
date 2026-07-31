@@ -27,6 +27,81 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 19: CSI attach coordination (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-18). Offered "CSI
+Controller service (attach/detach)", device plugin polish (`GetPreferredAllocation`/
+`PreStartContainer`), extending Topology Manager's `restricted` policy to
+the multi-node case, or pause; user picked CSI's Controller service — the
+one remaining entirely-missing CSI capability.
+
+Re-verified against kubernetes-csi docs before implementing (same
+"checked, not assumed" posture as the scope boundary above) and found the
+framing in the AskUserQuestion offer was imprecise: **real kubelet never
+calls `ControllerPublishVolume`/`ControllerUnpublishVolume` itself** —
+those are the **external-attacher** sidecar's job, watching
+`VolumeAttachment` objects that **kube-controller-manager**'s
+AttachDetachController creates/deletes. This is the same "not kubelet's
+job" boundary already established for dynamic provisioning
+(external-provisioner) elsewhere in this doc — implementing the Controller
+service client itself would have been scope creep into another
+component's responsibility, not a nodelet gap.
+
+What **is** kubelet's (and so nodelet's) job on the node side of attach,
+and what this round actually implements:
+- Check `CSIDriver.spec.attachRequired` for the volume's driver — defaults
+  to "attach required" if the object is missing or the field is unset
+  (matching upstream's own default).
+- If attach isn't required (the common case for node-local/edge storage —
+  `csi_pvc.sh`'s existing coverage), behavior is unchanged from round 13.
+- If attach **is** required, list `VolumeAttachment` objects and find the
+  one matching `(attacher == driver, nodeName == this node,
+  source.persistentVolumeName == the bound PV)`. Not yet found, or found
+  but `status.attached == false`: `Ok(None)` (same "retry next reconcile"
+  treatment every other not-ready-yet PVC/PV state already gets, logged
+  with which of the two it is). Found and attached: thread
+  `status.attachmentMetadata` through as `publish_context` on both
+  `NodeStageVolume` and `NodePublishVolume` (previously hardcoded to
+  empty) — some drivers require this (e.g. a device path chosen at attach
+  time) for Stage/Publish to succeed at all.
+- **`CsiVolumeSource` gained a `publish_context: HashMap<String, String>`
+  field**; `resolve_csi_source()` in `runtime/cri.rs` computes it via two
+  new pure helpers (`attach_required()`, `find_volume_attachment()`,
+  `attachment_publish_context()`) plus a `driver_requires_attach()`
+  cluster lookup.
+- **`CriRuntime` gained a `node_name` field** (threaded through
+  `connect()`) — needed to match `VolumeAttachment.spec.nodeName` against
+  this node; nothing in `resolve_csi_source()` previously needed to know
+  the node's own name.
+- `runtime/csi.rs`'s module doc comment corrected: it previously implied
+  the Controller service was "out of scope, not kubelet's job" without
+  distinguishing *calling* it (still correctly out of scope) from
+  *consuming what it produces* (the actual gap, now closed).
+
+11 new unit tests (`runtime/cri_tests/csi_attach.rs`): `attach_required()`'s
+missing-object/unset-field/explicit-true/explicit-false cases,
+`find_volume_attachment()`'s match/no-match/empty-list cases,
+`attachment_publish_context()`'s no-status/not-attached/attached-empty/
+attached-with-metadata cases. 570 tests passing with `--features cri` (up
+from 559), 179 mock-only (unchanged — entirely `cri`-gated).
+`deploy/lib/test/cases/csi_attach.sh` added — provisions a PVC against an
+attach-requiring StorageClass, waits for the pod to reach Running, then
+asserts the matching `VolumeAttachment.status.attached` is `true` (proof
+the pod only started because nodelet actually found and waited on it, not
+a coincidence of timing). Needs `TEST_CSI_ATTACH_STORAGE_CLASS` — a real
+attach-requiring driver with a working external-attacher, same class of
+infra dependency `csi_pvc.sh` already has for provisioning.
+
+**Confidence note**: `attach_required()`/`find_volume_attachment()`/
+`attachment_publish_context()` are pure and unit-tested against
+hand-built `CSIDriver`/`VolumeAttachment` objects — solid confidence
+there. Not validated live: no real attach-requiring CSI driver or
+external-attacher exists in this sandbox (edge/single-node target, no
+cloud block storage), so the actual `driver_requires_attach()` cluster
+lookup and the end-to-end wait-then-mount flow are unexercised outside
+the e2e test's manual-invocation path, same caveat every CSI-adjacent
+round since 12 has carried.
+
 ## Round 18: Memory Manager (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-17). Offered Memory
@@ -1021,7 +1096,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ ConfigMap / Secret / emptyDir (materialized to host paths)
 - ✅ **Projected volumes** — `configMap`/`secret`/`downwardAPI`, and now `serviceAccountToken` too (mints a real token via the `TokenRequest` API — `resolve_service_account_token()`; needs nodelet's client to have `create` on `serviceaccounts/token` in the namespace, a real RBAC requirement) merge into the volume dir, with `items`/`KeyToPath` key-selection-and-rename support. `clusterTrustBundle` sources are still skipped with a warning.
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
-- 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`, `plugin_registry.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **Dynamic CSI driver discovery** (round 13) — a driver's `node-driver-registrar` sidecar can register itself against `NODELET_PLUGIN_REGISTRY_PATH` the same protocol it'd use against real kubelet's plugin watcher, no static config needed; `NODELET_CSI_DRIVERS` still works too, as a seed/override. **`nodeStageSecretRef`/`nodePublishSecretRef`** (round 13) — resolved to real Secret data and passed through to the driver. Still out of scope: the Controller service (attach/detach — not kubelet's job upstream either), device-plugin registrations (the same registration protocol, explicitly rejected with a real `NotifyRegistrationStatus{plugin_registered: false}` rather than ignored). Unvalidated against a real CSI driver — see rounds 12 and 13 notes.
+- 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`, `plugin_registry.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **Dynamic CSI driver discovery** (round 13) — a driver's `node-driver-registrar` sidecar can register itself against `NODELET_PLUGIN_REGISTRY_PATH` the same protocol it'd use against real kubelet's plugin watcher, no static config needed; `NODELET_CSI_DRIVERS` still works too, as a seed/override. **`nodeStageSecretRef`/`nodePublishSecretRef`** (round 13) — resolved to real Secret data and passed through to the driver. **Attach coordination** (round 19) — checks `CSIDriver.spec.attachRequired`, and for drivers that need it, waits on the matching `VolumeAttachment.status.attached` before Stage/Publish, threading `status.attachmentMetadata` through as `publish_context`. Calling the Controller service itself (`ControllerPublishVolume`/`ControllerUnpublishVolume`) stays out of scope — that's external-attacher's job upstream too, not kubelet's, confirmed against docs in round 19. Still out of scope: device-plugin registrations against this module (the same registration protocol, explicitly rejected with a real `NotifyRegistrationStatus{plugin_registered: false}` rather than ignored — that's `device_plugins.rs`'s job instead). Unvalidated against a real CSI driver — see rounds 12, 13, and 19 notes.
 - ❌ hostPath (explicitly unsupported today, logged and dropped)
 - ❌ `emptyDir.sizeLimit` enforcement
 - ❌ subPath `$(VAR)` expansion
@@ -1127,8 +1202,14 @@ higher-value/correctness-critical than others:
       pinning, no shared-pool retroactive tracking, no per-node reserved-
       memory. CPU/Memory/Topology manager thread now closed. See round 18
       notes.
+- [x] Round 19: CSI attach coordination — `CSIDriver.spec.attachRequired`
+      check + waiting on the matching `VolumeAttachment.status.attached`
+      before Stage/Publish, threading `status.attachmentMetadata` through
+      as `publish_context`. Calling the Controller service itself
+      (`ControllerPublishVolume`/`ControllerUnpublishVolume`) stays out of
+      scope — confirmed against docs that's external-attacher's job, not
+      kubelet's. See round 19 notes.
 - [ ] Everything else in the responsibility list above — biggest remaining
       single items: Topology Manager's multi-node `restricted` allowance,
-      device plugin GetPreferredAllocation/PreStartContainer, plus
-      deepening PVC/CSI further (Controller service/attach — the one CSI
-      capability still entirely missing). Ask before starting the next round.
+      device plugin GetPreferredAllocation/PreStartContainer. Ask before
+      starting the next round.
