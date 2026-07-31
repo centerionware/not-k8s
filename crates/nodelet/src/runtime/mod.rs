@@ -85,6 +85,17 @@ pub struct ContainerRuntimeStatus {
     /// folded into `Ready`/`ContainersReady`, same as an app container —
     /// see `pods.rs::build_pod_status()`.
     pub is_restartable_sidecar: bool,
+    /// In-place pod vertical scaling status reporting (round 43; the
+    /// deferred half of round 42's resize arc) — `resources` is the
+    /// container's *actual* currently-applied requests/limits (`None` for
+    /// init/ephemeral containers this round; app containers only), mapped
+    /// to `containerStatuses[].resources`. `allocated_resources` is what
+    /// the current pod spec is asking for right now — nodelet has no
+    /// admission/deferral layer, so this always mirrors the live spec
+    /// rather than some separately-gated "accepted" value — mapped to
+    /// `containerStatuses[].allocatedResources`.
+    pub resources: Option<k8s_openapi::api::core::v1::ResourceRequirements>,
+    pub allocated_resources: Option<std::collections::BTreeMap<String, k8s_openapi::apimachinery::pkg::api::resource::Quantity>>,
 }
 
 #[derive(Clone, Debug)]

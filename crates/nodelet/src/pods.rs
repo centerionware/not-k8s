@@ -400,7 +400,8 @@ pub(crate) fn readiness_gate_types(pod: &Pod) -> Vec<String> {
 /// The condition types `build_pod_status()` computes and owns itself —
 /// used to decide which conditions from `prev` (see `build_pod_status()`)
 /// are foreign and must be copied forward rather than dropped.
-const OWNED_CONDITION_TYPES: [&str; 4] = ["Initialized", "PodScheduled", "ContainersReady", "Ready"];
+const OWNED_CONDITION_TYPES: [&str; 5] =
+    ["Initialized", "PodScheduled", "ContainersReady", "Ready", "PodResizeInProgress"];
 
 /// Whether `condition_type` is currently reported `True` in `conditions` —
 /// pure, what a `readinessGates` entry needs to check against an external
@@ -512,9 +513,23 @@ fn build_pod_status(
             started: Some(c.running),
             container_id: c.container_id.clone(),
             state: Some(container_state(c, rt.started_at.map(Time), "ContainerCreating")),
+            resources: c.resources.clone(),
+            allocated_resources: c.allocated_resources.clone(),
             ..Default::default()
         })
         .collect();
+
+    // In-place pod vertical scaling (round 43): a resize is still being
+    // applied if any app container's actual last-applied resources
+    // (`resources`) don't yet match what the current pod spec is asking
+    // for (`allocatedResources`) — nodelet has no admission/deferral layer,
+    // so there's no separate "pending" state to report, only "in
+    // progress" vs. "done." `PodResizePending` is deliberately not
+    // implemented — nothing in this codebase ever defers a resize.
+    let resize_in_progress = rt.containers.iter().any(|c| match (&c.resources, &c.allocated_resources) {
+        (Some(actual), Some(desired)) => actual.requests.clone().unwrap_or_default() != *desired,
+        _ => false,
+    });
 
     let init_container_statuses: Vec<ContainerStatus> = rt
         .init_containers
@@ -584,6 +599,7 @@ fn build_pod_status(
         cond("PodScheduled", true),
         cond("ContainersReady", all_ready),
         cond("Ready", all_ready && gates_ready),
+        cond("PodResizeInProgress", resize_in_progress),
     ];
     conditions.extend(foreign_conditions);
 
@@ -693,6 +709,9 @@ mod tests_key_parts;
 #[cfg(test)]
 #[path = "pods_tests/event_loop.rs"]
 mod tests_event_loop;
+#[cfg(test)]
+#[path = "pods_tests/resize_status.rs"]
+mod tests_resize_status;
 #[cfg(test)]
 #[path = "pods_tests/referenced_names.rs"]
 mod tests_referenced_names;

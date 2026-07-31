@@ -219,6 +219,26 @@ pub struct CriRuntime {
     /// structured, cross-runtime way, so this is nodelet's own record of
     /// "what did I last tell the runtime this container's resources were."
     container_resources: Mutex<HashMap<String, (String, LinuxContainerResources)>>,
+    /// Resize status reporting (round 43; the deferred half of round 42's
+    /// arc). Same `"sandbox_id/container_name"` key as `container_resources`
+    /// (and the same reasoning: `build_status()`'s event-driven path has no
+    /// `Pod` object to read this from directly).
+    /// `applied_resources`: the container's ORIGINAL k8s `ResourceRequirements`
+    /// last successfully applied (create, or a successful in-place resize) —
+    /// reported as `containerStatuses[].resources` (the *actual* running
+    /// value). Tracking the k8s-native struct directly (rather than
+    /// reverse-converting `container_resources`' CRI-form
+    /// `LinuxContainerResources` back into `Quantity` strings) avoids a
+    /// lossy round trip.
+    applied_resources: Mutex<HashMap<String, ResourceRequirements>>,
+    /// `spec_resources`: the current pod spec's own requests for this
+    /// container, refreshed on every `ensure_container()` call regardless
+    /// of whether a resize succeeded, failed, or wasn't needed — reported
+    /// as `containerStatuses[].allocatedResources` (what nodelet is
+    /// currently trying to admit). Nodelet has no admission/deferral layer
+    /// at all, so this always just mirrors the live pod spec rather than
+    /// some separately-gated "accepted" value.
+    spec_resources: Mutex<HashMap<String, BTreeMap<String, Quantity>>>,
     /// Real kubelet's `--topology-manager-policy` (see `topology.rs`) —
     /// `None` (upstream's own default) means the alignment computation in
     /// `create_and_start_container` is skipped entirely.
@@ -1542,6 +1562,8 @@ impl CriRuntime {
             cpu_manager,
             memory_manager,
             container_resources: Mutex::new(HashMap::new()),
+            applied_resources: Mutex::new(HashMap::new()),
+            spec_resources: Mutex::new(HashMap::new()),
             topology_policy,
             numa_topology,
         })
@@ -2249,6 +2271,16 @@ impl CriRuntime {
         envs: &[KeyValue],
         qos: QosClass,
     ) -> Result<()> {
+        // Resize status reporting (round 43): record what the pod spec is
+        // currently asking for, every reconcile, regardless of whether a
+        // resize below succeeds/fails/isn't needed — nodelet has no
+        // admission/deferral layer, so "allocated" always just mirrors the
+        // live spec. Reported as `containerStatuses[].allocatedResources`.
+        self.spec_resources.lock().unwrap().insert(
+            restart_count_key(sandbox_id, &container.name),
+            container.resources.as_ref().and_then(|r| r.requests.clone()).unwrap_or_default(),
+        );
+
         let running_v = ContainerState::ContainerRunning as i32;
         let existing = self.list_pod_containers(sandbox_id).await?;
         let existing_ctr = existing
@@ -2291,7 +2323,8 @@ impl CriRuntime {
                                 .await
                             {
                                 Ok(_) => {
-                                    self.container_resources.lock().unwrap().insert(key, (container_id, updated));
+                                    self.container_resources.lock().unwrap().insert(key.clone(), (container_id, updated));
+                                    self.applied_resources.lock().unwrap().insert(key, container.resources.clone().unwrap_or_default());
                                 }
                                 Err(e) => {
                                     warn!(container = %container.name, error = ?e, "in-place resize: UpdateContainerResources failed; leaving the container's resources unchanged for now");
@@ -2489,6 +2522,8 @@ impl CriRuntime {
             self.release_devices(&allocations);
         }
         self.container_resources.lock().unwrap().remove(&key);
+        self.applied_resources.lock().unwrap().remove(&key);
+        self.spec_resources.lock().unwrap().remove(&key);
         if let Some(cpu_manager) = &self.cpu_manager {
             let was_exclusive = cpu_manager.is_exclusive(&key);
             cpu_manager.release(&key);
@@ -2514,6 +2549,8 @@ impl CriRuntime {
             self.release_devices(&allocations);
         }
         self.container_resources.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));
+        self.applied_resources.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));
+        self.spec_resources.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));
         if let Some(cpu_manager) = &self.cpu_manager {
             // Unconditionally refresh (unlike release_container_devices,
             // which only bothers when it knows a single container was
@@ -2868,7 +2905,8 @@ impl CriRuntime {
         // just took a new exclusive claim — sweep every other already-
         // running shared-pool container to exclude these cores now.
         let key = restart_count_key(sandbox_id, &container.name);
-        self.container_resources.lock().unwrap().insert(key, (created.container_id.clone(), resources_for_record));
+        self.container_resources.lock().unwrap().insert(key.clone(), (created.container_id.clone(), resources_for_record));
+        self.applied_resources.lock().unwrap().insert(key, container.resources.clone().unwrap_or_default());
         if cpu_manager_key.is_some() {
             self.refresh_shared_pool_cpusets().await;
         }
@@ -3253,6 +3291,10 @@ impl CriRuntime {
                 (None, String::new(), None, String::new())
             };
 
+            let resource_key = restart_count_key(sandbox_id, &name);
+            let resources = self.applied_resources.lock().unwrap().get(&resource_key).cloned();
+            let allocated_resources = self.spec_resources.lock().unwrap().get(&resource_key).cloned();
+
             crs.push(ContainerRuntimeStatus {
                 name: name.clone(),
                 image: c.image.as_ref().map(|i| i.image.clone()).unwrap_or_default(),
@@ -3265,6 +3307,8 @@ impl CriRuntime {
                 finished_at,
                 termination_message,
                 is_restartable_sidecar: false, // app containers, never a sidecar concept
+                resources,
+                allocated_resources,
             });
         }
 
@@ -3358,6 +3402,11 @@ impl CriRuntime {
                     finished_at,
                     termination_message,
                     is_restartable_sidecar,
+                    // Resize status reporting (round 43) is scoped to app
+                    // containers only this round — init/ephemeral containers
+                    // don't get a resize decision at all yet either.
+                    resources: None,
+                    allocated_resources: None,
                 });
         }
         Ok(out)

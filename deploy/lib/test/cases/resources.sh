@@ -212,6 +212,20 @@ EOF
     done
     assert_eq "$after" "268435456" "memory.max should reflect the resized limit"
     assert_eq "$(pod_container_restart_count "$name" app)" "0" "container restart count (resizePolicy defaults to NotRequired — must not restart)"
+
+    # Round 43: containerStatuses[].resources should catch up to the
+    # resized limit once the in-place update lands (allocatedResources
+    # already reflects it as soon as the patch is accepted).
+    local reported_limit
+    wait_until 30 "containerStatuses[0].resources.limits.memory to catch up" bash -c \
+        "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.containerStatuses[0].resources.limits.memory}')\" == '268435456' ]]"
+    reported_limit="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].resources.limits.memory}')"
+    assert_eq "$reported_limit" "268435456" "containerStatuses[0].resources.limits.memory should reflect the actually-applied resize"
+
+    local resize_condition
+    resize_condition="$(kctl get pod "$name" -o jsonpath='{.status.conditions[?(@.type=="PodResizeInProgress")].status}')"
+    assert_eq "$resize_condition" "False" "PodResizeInProgress should be False once the container's actual resources have caught up"
+
     delete_pod_if_exists "$name"
 }
 

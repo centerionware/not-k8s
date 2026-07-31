@@ -277,10 +277,12 @@ Round 42 started the **in-place pod vertical scaling** arc (the
 now actually does something — applied live via CRI's
 `UpdateContainerResources` when `resizePolicy` allows it, or a real
 container restart when it doesn't — instead of the previous no-op.
-Still open: reporting the resize back via `containerStatuses[]
-.resources`/`.allocatedResources` and `PodResizePending`/
-`PodResizeInProgress` conditions. Full status list in
-`docs/GAP_CLOSURE.md`.
+Round 43 finished the arc: `containerStatuses[].resources`/
+`.allocatedResources` (app containers) and a `PodResizeInProgress`
+condition now report what's actually happening — `PodResizePending`
+stays unimplemented on purpose, since nodelet has no admission/
+node-fitting layer that could ever *defer* a resize. Full status list
+in `docs/GAP_CLOSURE.md`.
 
 ---
 

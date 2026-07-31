@@ -27,6 +27,74 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 43: in-place pod vertical scaling, slice 2 — status reporting (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-42). Offered the
+deferred half of round 42's arc alongside round 35's 2 leftovers; user
+picked finishing the resize arc's status reporting.
+
+Round 42 built the mechanism (detect + apply a resource change) but
+deliberately deferred reporting it back to the API. This round closes
+that gap: `containerStatuses[].resources`/`.allocatedResources` and a
+`PodResizeInProgress` condition.
+
+- **Two new side tables on `CriRuntime`**, same key (`restart_count_key`)
+  and lifecycle as the existing `container_resources` (round 16):
+  `applied_resources: HashMap<String, ResourceRequirements>` — the
+  container's *original* k8s-native `ResourceRequirements` last
+  successfully applied (create, or a successful in-place resize).
+  Tracking the k8s-native struct directly (rather than reverse-
+  converting `container_resources`'s CRI-form `LinuxContainerResources`
+  back into `Quantity` strings) avoids a lossy round trip.
+  `spec_resources: HashMap<String, BTreeMap<String, Quantity>>` — the
+  current pod spec's own `resources.requests`, refreshed on *every*
+  `ensure_container()` call regardless of whether a resize succeeded,
+  failed, or wasn't needed. Nodelet has no admission/deferral layer at
+  all, so this always just mirrors the live spec rather than some
+  separately-gated "accepted" value.
+- **`ContainerRuntimeStatus`** gained `resources: Option<ResourceRequirements>`
+  and `allocated_resources: Option<BTreeMap<String, Quantity>>`, read
+  from the two side tables above in `build_status()`'s app-container
+  loop. Scoped to app containers only this round — init/ephemeral
+  containers get `None` for both (they don't get a resize decision at
+  all yet either, matching round 42's own scope).
+- **`pods.rs::build_pod_status()`** copies these straight onto
+  `ContainerStatus.resources`/`.allocatedResources`, and computes a new
+  `PodResizeInProgress` condition: `True` when any app container's
+  actual `resources.requests` doesn't yet match its own
+  `allocatedResources` (a resize was requested but hasn't landed),
+  `False` otherwise — including when neither is tracked at all (never
+  misread absence as "in progress"). Added to `OWNED_CONDITION_TYPES`
+  (round 23's foreign-conditions carry-forward set) since nodelet now
+  owns writing this condition too.
+- **Deliberately not implemented**: `PodResizePending` (reasons
+  `Deferred`/`Infeasible`) — nodelet has no admission/node-fitting
+  check that could ever cause it to *defer* a resize (it always
+  attempts to apply one immediately in the same reconcile the spec
+  change was noticed in), so there's no real state for this condition
+  to represent. Documented as an intentional non-goal, not an
+  oversight.
+- No new env vars, no new proto surface.
+- 4 new unit tests (`pods_tests/resize_status.rs`): fields copied
+  through correctly, matching resources means not-in-progress,
+  mismatched resources means in-progress, and the no-data-at-all case
+  correctly defaults to not-in-progress rather than misreading absence.
+- Extended round 42's existing e2e test
+  (`test_in_place_resize_updates_memory_limit_without_restarting`,
+  `deploy/lib/test/cases/resources.sh`) rather than writing a new pod:
+  after the resize lands, polls `containerStatuses[0].resources.limits.memory`
+  until it reflects the new limit, then asserts `PodResizeInProgress`
+  reads `False` — genuinely automated, reusing the same pod/patch this
+  test already exercises.
+
+**Confidence note**: the condition/field-copying logic is pure and
+unit-tested with solid confidence. The e2e extension is genuinely live
+proof but only exercises the "resize completes successfully" path —
+a resize that fails partway (leaving `PodResizeInProgress` stuck
+`True` indefinitely, since nodelet has no separate retry/backoff logic
+for a failed `UpdateContainerResources` beyond the next unrelated
+reconcile) is unit-tested only, not proven live.
+
 ## Round 42: in-place pod vertical scaling, slice 1 (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-41). Offered the
@@ -2512,7 +2580,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Memory Manager** (`memory_manager.rs`, `static` policy) — Guaranteed-QoS containers with a memory limit get pinned to a single NUMA node (`cpuset_mems`). Opt-in (`NODELET_MEMORY_MANAGER_POLICY`, default `none`). **First-slice scope**: never spans multiple NUMA nodes (falls back to unconstrained if no single node has enough free capacity, rather than upstream's multi-node spanning); no shared-pool tracking or `UpdateContainerResources` retroactive sweep for non-pinned containers (unlike CPU Manager) — they're simply left unconstrained; no per-NUMA-node `--reserved-memory`-equivalent reservation. See round 18 notes.
 - ✅ **Topology Manager** (`topology.rs`) — coordinates CPU Manager, Memory Manager (as of round 18), and device plugins so a container's exclusive cores, pinned memory, and allocated devices land on the same NUMA node. Opt-in (`NODELET_TOPOLOGY_MANAGER_POLICY`, default `none`); `best-effort` prefers alignment without rejecting, `single-numa-node` rejects the container outright if no single NUMA node satisfies every hint provider. **`restricted`** (round 20) gets a real, bounded multi-node relaxation instead — `spread()` places each hint provider on its own best node independently when no single node works for everyone, rejecting only if some provider's request can't be placed anywhere at all. **Single-node-only alignment, not upstream's full bitmask/permutation combination search** — `align()`/`spread()` reach the same answer as upstream whenever a single node can satisfy everything or every provider individually has *some* home, but don't search for upstream's genuinely joint cross-provider multi-node splits. See round 17/18/20 notes.
 - ✅ **Device plugins** (`device_plugins.rs`, GPU/FPGA/etc. hardware resources) — discovered via the same dynamic plugin-registration protocol CSI drivers use (`plugin_registry.rs`, round 13); tracks live device inventory/health per resource name via `ListAndWatch`, advertises healthy counts on `Node.status.capacity`/`.allocatable`, and calls `Allocate()` during container creation to inject the envs/mounts/device-nodes/annotations a plugin returns. **`GetPreferredAllocation`/`PreStartContainer`** (round 21) — a plugin's `DevicePluginOptions` (fetched once via `GetDevicePluginOptions`) says whether either applies; `GetPreferredAllocation`'s response is validated (`is_valid_preferred_allocation()`) before being trusted, falling back to nodelet's own first-healthy-unallocated pick otherwise; `PreStartContainer` is called right after `Allocate()` succeeds when required, a failure there releasing devices and failing the allocation. Unvalidated against a real device plugin — see rounds 14 and 21 notes.
-- 🟡 **In-place pod vertical scaling** (`resize` subresource, GA 1.33; found in round 39's re-audit, mechanism closed round 42) — new pure `resize_decision()` compares an already-running container's *actual* last-applied resources (reusing `container_resources`, tracked since round 16 for CPU Manager) against the pod spec's *desired* ones, applying a change in-place via the existing `UpdateContainerResources` RPC when `resizePolicy` allows it (default `NotRequired`), or funneling into the existing restart machinery when it demands `RestartContainer`. Genuinely automated e2e test (`kubectl exec` reads the container's own live cgroup file before/after `kubectl patch --subresource resize`). **Still open**: `containerStatuses[].resources`/`.allocatedResources` and `PodResizePending`/`PodResizeInProgress` pod conditions aren't reported yet (round 42 was scoped to the mechanism only); no admission-time rejection of a resize that would change a pod's QoS class (nodelet has no admission layer at all, a pre-existing boundary). See round 42 notes.
+- ✅ **In-place pod vertical scaling** (`resize` subresource, GA 1.33; found in round 39's re-audit, mechanism round 42, status reporting round 43) — new pure `resize_decision()` compares an already-running container's *actual* last-applied resources (reusing `container_resources`, tracked since round 16 for CPU Manager) against the pod spec's *desired* ones, applying a change in-place via the existing `UpdateContainerResources` RPC when `resizePolicy` allows it (default `NotRequired`), or funneling into the existing restart machinery when it demands `RestartContainer`. `containerStatuses[].resources`/`.allocatedResources` (app containers only) and a `PodResizeInProgress` condition are now reported (round 43), computed purely from two new side tables tracking "actually applied" vs. "currently requested" resources. Genuinely automated e2e tests (`kubectl exec` reads the container's own live cgroup file and the reported status fields, before/after `kubectl patch --subresource resize`). **Still open**: `PodResizePending` isn't implemented — nodelet has no admission/node-fitting layer that could ever *defer* a resize, so there's no real state for it to represent (intentional non-goal, documented, not an oversight); no admission-time rejection of a resize that would change a pod's QoS class (same pre-existing no-admission-layer boundary); init/ephemeral containers don't participate in resize at all yet. See rounds 42-43 notes.
 - ✅ **`oom_score_adj`** (round 28; found in round 27's re-audit) — `linux_resources()` now sets CRI's `LinuxContainerResources.oom_score_adj` per container via `eviction::oom_score_adj()`: Guaranteed `-998`, BestEffort `1000`, Burstable scaled by that container's own memory *request* against node capacity (`1000 - 1000*request/capacity`, clamped `[2, 999]`), matching real kubelet's formula exactly. Gives the kernel OOM killer QoS-aware signal, closing a real gap in this project's own eviction-manager story (rounds 7, 26) — a kernel OOM kill can happen faster than `eviction_loop()`'s check interval reacts. See round 28 notes.
 - ✅ **gRPC probes** (round 29; found in round 27's re-audit) — `probes.rs::probe_check()` now handles `probe.grpc` too, via a vendored `grpc.health.v1` client (`proto/health.proto`) calling the standard `Health/Check` RPC. `cri`-gated (needs `tonic`'s transport); a mock-only build's `check_grpc()` always returns `false`. Unit-tested failure paths (timeout, refused, non-gRPC listener) with solid confidence; the success path (a real passing `Health/Check`) is unvalidated — no gRPC server available in this sandbox to prove it live. See round 29 notes.
 
@@ -2806,9 +2874,18 @@ higher-value/correctness-critical than others:
       **Deliberately still open** (next slice): `containerStatuses[]
       .resources`/`.allocatedResources` reporting, `PodResizePending`/
       `PodResizeInProgress` conditions. See round 42 notes.
-- [ ] Candidates for the next round: the resize status-reporting slice
-      (`containerStatuses[].resources`/`.allocatedResources`,
-      `PodResizePending`/`PodResizeInProgress` conditions), then round
-      35's 2 remaining low-priority items (env `resourceFieldRef`,
-      probe-level `terminationGracePeriodSeconds`). Ask before starting
-      the next round.
+- [x] Round 43: in-place pod vertical scaling, slice 2 (status
+      reporting) — `containerStatuses[].resources`/`.allocatedResources`
+      (app containers only) and a `PodResizeInProgress` condition, from
+      two new side tables tracking "actually applied" vs. "currently
+      requested" resources per container. `PodResizePending` deliberately
+      not implemented (no admission/deferral layer exists to ever
+      produce that state). Genuinely automated e2e test extension. See
+      round 43 notes. **This closes the in-place resize arc** (rounds
+      42-43) opened by round 39's audit.
+- [ ] Candidates for the next round: round 35's 2 remaining low-priority
+      items (env `resourceFieldRef`, probe-level
+      `terminationGracePeriodSeconds`) — the only known open items left
+      from any prior audit. A fresh re-audit is also a reasonable next
+      step, since both prior audits' lists are now nearly or fully
+      exhausted. Ask before starting the next round.
