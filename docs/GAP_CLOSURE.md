@@ -27,6 +27,60 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 64: DRA follow-ups — reservedFor gating + RPC batching (2026-07-31, same day)
+
+Closes both known scope limitations round 63 flagged, and corrects a
+factual error in round 63's own docs along the way.
+
+- **Correction, not a new gap**: round 63's docs said real kubelet writes
+  `ResourceClaim.status.reservedFor` and nodelet was missing that. This
+  was wrong — `reservedFor` is written by the **scheduler** at bind time
+  (the dynamicresources scheduler plugin), not by kubelet. Kubelet's
+  actual job is to **gate** `NodePrepareResources` on this pod already
+  being listed there, as a safety check against acting on a claim not
+  (yet, or no longer) genuinely reserved for it. That gate — the real
+  gap — is what this round adds: new pure `pod_is_reserved_for_claim()`
+  checks `status.reservedFor` for an entry with `resource: "pods"`
+  matching this pod's name *and* UID (UID, not just name, since a
+  delete+recreate changes UID but could reuse the name). A claim not yet
+  reserved isn't treated as an error — it's a normal timing window before
+  the scheduler finishes binding — so `resolve_pod_claim_devices()` just
+  skips it for that reconcile and retries on the next one.
+- **RPC batching**: `dra.rs`'s `prepare()`/`unprepare()` now take a
+  `&[ClaimRef]` slice instead of a single `ClaimRef`, issuing one
+  `NodePrepareResources`/`NodeUnprepareResources` call covering every
+  claim a given driver owns for this pod, rather than one call per
+  (driver, claim) pair — matching how the real protocol's `claims` list
+  field is meant to be used. Per-claim failures inside a batch (reported
+  via the response's own `error` field) don't fail the whole batch; new
+  pure `map_prepare_results()`/`map_unprepare_results()` do this
+  per-claim-UID mapping and are unit-tested independent of any live
+  driver connection.
+- `runtime/cri/claims.rs`'s `resolve_pod_claim_devices()`/
+  `unprepare_pod_claim_devices()` were restructured accordingly: resolve
+  and reservedFor-check every claim first, then group by driver *across
+  all* of the pod's claims (not per-claim) before issuing RPCs.
+- 13 new unit tests: 6 for `pod_is_reserved_for_claim()` in
+  `cri_tests/dra_claim_devices.rs` (no status, empty reservedFor,
+  matching name+UID, wrong pod, matching name but stale UID, one match
+  among several entries) and 7 for `map_prepare_results()`/
+  `map_unprepare_results()` in a new `dra_tests/batch_results.rs`
+  (every requested claim gets an entry, successful devices translate,
+  a claim-level error doesn't fail the batch, a claim missing from the
+  response is a synthetic error for prepare but a benign no-op for
+  unprepare, empty claims list is a no-op).
+- `deploy/lib/test/cases/dra.sh`'s manual-spot-check note updated to
+  mention checking `status.reservedFor` (not just `status.allocation`)
+  and verifying only one `NodePrepareResources` call per driver appears
+  in the driver's own logs when a pod has multiple claims from the same
+  driver.
+- This closes both of round 63's flagged limitations. Still open, same
+  as before: the DRA plugin proto (`proto/draplugin.proto`) was
+  reconstructed from public documentation rather than vendored from
+  upstream, so its exact wire format remains unverified against a live
+  third-party driver; and there's still no genuinely automated e2e test
+  (needs a real driver binary this bash-only harness can't stand up).
+
 ## Round 63: Dynamic Resource Allocation (2026-07-31, same day)
 
 Implements the kubelet-side of DRA (`spec.resourceClaims`) — closes the
@@ -3754,7 +3808,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Local ephemeral storage** (found in round 45's re-audit; closed rounds 48-49) — `Node.status.capacity`/`.allocatable["ephemeral-storage"]` reports the real total filesystem size backing `disk_path` (round 48, reusing `DiskPressure`'s existing `statvfs(2)` read). A pod exceeding its *own* `resources.limits["ephemeral-storage"]` is now evicted directly (round 49) — usage measured as CRI's per-container `writable_layer.used_bytes` plus a recursive walk of nodelet's own materialized volume directory, checked independently of and ahead of the general `MemoryPressure`/`DiskPressure`/`PIDPressure`-gated eviction path (the same relationship an individual container's own OOM kill has to overall node memory pressure). Genuinely automated e2e test — the only one of this project's eviction tests that doesn't need a manual procedure, since this trigger needs no artificial node-wide pressure. **Known scope limitation**: usage measurement doesn't include container log file size (`/var/log/pods/...`) yet, only volumes + writable layer. See rounds 48-49 notes.
 - ✅ **HugePages** (found in round 58's re-audit; all 3 pieces closed rounds 59-61) — container `resources.limits["hugepages-<size>"]` is translated to CRI's `LinuxContainerResources.hugepage_limits` (round 59), `Node.status.capacity`/`.allocatable["hugepages-<size>"]` report every reserved hugepage pool read from `/sys/kernel/mm/hugepages/` (round 60), and `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volumes are now real `hugetlbfs` mounts (round 61).
 - ✅ **`securityContext.supplementalGroupsPolicy`** (GA 1.33; found in round 58's re-audit; closed round 62) — `Merge`/`Strict` now translates directly to CRI's own `SupplementalGroupsPolicy` enum on both the sandbox- and container-level security context; genuinely automated e2e test proves `Strict` excludes image-defined `/etc/group` membership while `Merge` includes it, using a portable ConfigMap-subPath-supplied `/etc/passwd`/`/etc/group` rather than depending on `$TEST_IMAGE`'s own baked-in group file.
-- 🟡 **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit; closed round 63) — kubelet's actual responsibilities are implemented: resolving a pod's `resourceClaims` to their `ResourceClaim` objects' `status.allocation`, calling the owning driver(s)' `NodePrepareResources`/`NodeUnprepareResources` (new `dra.rs`, reusing the plugin-registration infrastructure with a new `"DRAPlugin"` type), and wiring the returned CDI device IDs into each container's CRI `ContainerConfig.cdi_devices` per its `resources.claims[].{name, request}` entries. **Known scope limitations**: nodelet never writes this node into `ResourceClaim.status.reservedFor` (real kubelet does, as a still-in-use marker); `NodePrepareResources` is called once per (driver, claim) rather than batched; `proto/draplugin.proto` was reconstructed from public documentation rather than vendored from upstream, so its exact wire format is unverified against a live third-party driver; no genuinely automated e2e test exists (needs a real DRA driver binary this bash-only harness can't stand up — see `dra.sh`'s manual-spot-check notes, same honest-limitation pattern as `device_plugins.sh`).
+- 🟡 **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit; closed round 63, gating + batching closed round 64) — kubelet's actual responsibilities are implemented: resolving a pod's `resourceClaims` to their `ResourceClaim` objects' `status.allocation`, gating on `status.reservedFor` actually listing this pod (round 64 — real kubelet's own safety check; `reservedFor` itself is scheduler-written, not kubelet-written, correcting round 63's docs), calling the owning driver(s)' `NodePrepareResources`/`NodeUnprepareResources` once per driver per pod covering every claim it owns (round 64 batching; new `dra.rs`, reusing the plugin-registration infrastructure with a new `"DRAPlugin"` type), and wiring the returned CDI device IDs into each container's CRI `ContainerConfig.cdi_devices` per its `resources.claims[].{name, request}` entries. **Known scope limitations**: `proto/draplugin.proto` was reconstructed from public documentation rather than vendored from upstream, so its exact wire format is unverified against a live third-party driver; no genuinely automated e2e test exists (needs a real DRA driver binary this bash-only harness can't stand up — see `dra.sh`'s manual-spot-check notes, same honest-limitation pattern as `device_plugins.sh`).
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
@@ -4268,3 +4322,19 @@ accordingly; see those files' own updated framing.
       passing with `--features cri` (unchanged), 264 mock-only
       (unchanged), `cri_smoke` example builds clean, zero new compiler
       warnings. Not a numbered gap-closure round.
+- [x] Round 64: DRA follow-ups — closed both known scope limitations
+      round 63 flagged. `pod_is_reserved_for_claim()` (new) gates
+      `NodePrepareResources` on `status.reservedFor` actually listing
+      this pod — correcting round 63's docs, which wrongly said kubelet
+      writes that field (it's scheduler-written; kubelet only gates on
+      it). `dra.rs`'s `prepare()`/`unprepare()` now batch every claim a
+      driver owns for a pod into one RPC instead of one call per claim,
+      via new pure `map_prepare_results()`/`map_unprepare_results()`. 13
+      new unit tests. See round 64 notes.
+- [ ] Candidates for the next round: a fresh gap re-audit (kubernetes.io
+      docs + CRI/K8s API struct fields directly), similar to round 58's,
+      is the natural next step — a lot has closed since then (HugePages,
+      supplementalGroupsPolicy, DRA) and the project's own scope expanded
+      (no longer single-node-only after round 62), so previously
+      out-of-scope or unnoticed gaps are worth a fresh look. Ask before
+      starting the next round.

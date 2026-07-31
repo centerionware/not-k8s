@@ -7,7 +7,8 @@
 use super::*;
 use k8s_openapi::api::core::v1::PodResourceClaimStatus;
 use k8s_openapi::api::resource::v1beta1::{
-    AllocationResult, DeviceAllocationResult, DeviceRequestAllocationResult, ResourceClaimSpec, ResourceClaimStatus,
+    AllocationResult, DeviceAllocationResult, DeviceRequestAllocationResult, ResourceClaimConsumerReference, ResourceClaimSpec,
+    ResourceClaimStatus,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
@@ -144,4 +145,57 @@ fn a_request_name_with_no_matching_devices_yields_an_empty_list() {
     let mut map = HashMap::new();
     map.insert("pod-claim".to_string(), prepared(&["vendor.com/gpu=0"], &[("req-a", &["vendor.com/gpu=0"])]));
     assert!(cdi_devices_for_container_claim("pod-claim", Some("req-nonexistent"), &map).is_empty());
+}
+
+// --- pod_is_reserved_for_claim() (round 64) ---
+
+fn claim_reserved_for(refs: Vec<ResourceClaimConsumerReference>) -> DraResourceClaim {
+    DraResourceClaim {
+        metadata: ObjectMeta::default(),
+        spec: ResourceClaimSpec::default(),
+        status: Some(ResourceClaimStatus { allocation: None, devices: None, reserved_for: Some(refs) }),
+    }
+}
+
+fn consumer_ref(name: &str, uid: &str) -> ResourceClaimConsumerReference {
+    ResourceClaimConsumerReference { api_group: None, name: name.to_string(), resource: "pods".to_string(), uid: uid.to_string() }
+}
+
+#[test]
+fn no_status_at_all_is_not_reserved() {
+    let claim = DraResourceClaim { metadata: ObjectMeta::default(), spec: ResourceClaimSpec::default(), status: None };
+    assert!(!pod_is_reserved_for_claim(&claim, "my-pod", "uid-1"));
+}
+
+#[test]
+fn no_reserved_for_entries_is_not_reserved() {
+    let claim = claim_reserved_for(vec![]);
+    assert!(!pod_is_reserved_for_claim(&claim, "my-pod", "uid-1"));
+}
+
+#[test]
+fn a_matching_pod_name_and_uid_is_reserved() {
+    let claim = claim_reserved_for(vec![consumer_ref("my-pod", "uid-1")]);
+    assert!(pod_is_reserved_for_claim(&claim, "my-pod", "uid-1"));
+}
+
+#[test]
+fn a_different_pods_reservation_does_not_count() {
+    let claim = claim_reserved_for(vec![consumer_ref("other-pod", "uid-2")]);
+    assert!(!pod_is_reserved_for_claim(&claim, "my-pod", "uid-1"));
+}
+
+#[test]
+fn matching_name_but_different_uid_does_not_count() {
+    // UID is what actually disambiguates two incarnations of the same
+    // pod name (e.g. after a delete+recreate) — matching on name alone
+    // would be a real correctness bug.
+    let claim = claim_reserved_for(vec![consumer_ref("my-pod", "stale-uid")]);
+    assert!(!pod_is_reserved_for_claim(&claim, "my-pod", "uid-1"));
+}
+
+#[test]
+fn one_matching_entry_among_several_others_is_reserved() {
+    let claim = claim_reserved_for(vec![consumer_ref("other-pod", "uid-2"), consumer_ref("my-pod", "uid-1")]);
+    assert!(pod_is_reserved_for_claim(&claim, "my-pod", "uid-1"));
 }

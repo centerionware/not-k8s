@@ -381,9 +381,16 @@ kubelet's actual DRA responsibilities — resolving a pod's claims to their
 `NodePrepareResources`/`NodeUnprepareResources` over a new gRPC plugin
 protocol (reusing the same registration infrastructure CSI drivers and
 device plugins already use), and wiring the returned CDI device IDs into
-each container's CRI config. No genuinely automated e2e test exists yet —
-it needs a real DRA driver binary this project's bash-only test harness
-can't stand up. Full status list in `docs/GAP_CLOSURE.md`.
+each container's CRI config. Round 64 closed round 63's 2 known scope
+limitations: `NodePrepareResources`/`NodeUnprepareResources` are now
+batched (one call per driver per pod, covering every claim it owns,
+instead of one call per claim), and preparation is now gated on
+`ResourceClaim.status.reservedFor` actually listing the pod — the real
+safety check kubelet performs, correcting round 63's docs which
+mistakenly said kubelet writes that field (it's scheduler-written,
+kubelet-read). No genuinely automated e2e test exists yet — it needs a
+real DRA driver binary this project's bash-only test harness can't stand
+up. Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for
