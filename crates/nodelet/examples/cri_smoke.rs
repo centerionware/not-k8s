@@ -49,6 +49,10 @@ async fn main() -> Result<()> {
         4_000,
         0,
         false,
+        "/tmp".to_string(),
+        85,
+        80,
+        120,
     )
     .await
     .context("connect to containerd")?;

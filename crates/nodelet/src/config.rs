@@ -82,6 +82,22 @@ pub struct Config {
     /// runtime only; no-op on mock). Coarse on purpose — not a poll loop
     /// for pod state, just periodic housekeeping.
     pub gc_interval: Duration,
+    /// Image GC watermark policy (round 70; found in round 69's fresh gap
+    /// re-audit) — real kubelet's `--image-gc-high-threshold` (default
+    /// 85): unreferenced images are only actually removed once `disk_path`'s
+    /// usage reaches this percent. Below it, an unreferenced image is left
+    /// alone regardless of how long it's sat there — matches upstream's own
+    /// purely-reactive-to-pressure policy, not an opportunistic sweep.
+    pub image_gc_high_threshold_percent: u8,
+    /// `--image-gc-low-threshold` (default 80) — removal (oldest-unreferenced
+    /// first) stops once usage drops to this percent, or there's nothing
+    /// left eligible, whichever comes first.
+    pub image_gc_low_threshold_percent: u8,
+    /// `--image-minimum-gc-age` (default 120s/2m) — an unreferenced image
+    /// is only eligible for removal once it's been unreferenced for at
+    /// least this long, even under high-watermark pressure (avoids
+    /// evicting an image mid-rollout that's about to be reused).
+    pub image_gc_min_age_secs: u64,
     /// Cluster DNS server IPs, injected into a pod's `resolv.conf` when its
     /// `dnsPolicy` is `ClusterFirst` (the default) — real kubelet's
     /// `--cluster-dns`. Empty means "no cluster DNS configured", in which
@@ -301,6 +317,15 @@ impl Config {
         let server_cert_dir =
             std::env::var("NODELET_SERVER_CERT_DIR").unwrap_or_else(|_| "/var/lib/nodelet/pki".to_string());
         let gc_interval = Duration::from_secs(env_u64("NODELET_GC_INTERVAL_SECS", 300)?);
+        let image_gc_high_threshold_percent = match std::env::var("NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT") {
+            Ok(v) => v.parse().context("NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT must be an integer 0-100")?,
+            Err(_) => 85u8,
+        };
+        let image_gc_low_threshold_percent = match std::env::var("NODELET_IMAGE_GC_LOW_THRESHOLD_PERCENT") {
+            Ok(v) => v.parse().context("NODELET_IMAGE_GC_LOW_THRESHOLD_PERCENT must be an integer 0-100")?,
+            Err(_) => 80u8,
+        };
+        let image_gc_min_age_secs = env_u64("NODELET_IMAGE_GC_MIN_AGE_SECS", 120)?;
 
         let cluster_dns: Vec<String> = std::env::var("NODELET_CLUSTER_DNS")
             .ok()
@@ -386,6 +411,9 @@ impl Config {
             server_port,
             server_cert_dir,
             gc_interval,
+            image_gc_high_threshold_percent,
+            image_gc_low_threshold_percent,
+            image_gc_min_age_secs,
             cluster_dns,
             cluster_domain,
             eviction_check_interval,

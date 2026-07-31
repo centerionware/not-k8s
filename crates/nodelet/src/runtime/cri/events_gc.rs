@@ -178,6 +178,15 @@ impl CriRuntime {
         Ok(())
     }
 
+    /// Image GC (round 70; found in round 69's fresh gap re-audit):
+    /// real kubelet's own watermark policy, not an unconditional
+    /// unreferenced-image sweep on every cycle (the pre-round-70
+    /// behavior). An unreferenced image is left alone — regardless of
+    /// how long it's sat there — unless `disk_path`'s usage has crossed
+    /// `image_gc_high_threshold_percent`; once triggered, only images
+    /// unreferenced for at least `image_gc_min_age_secs` are eligible,
+    /// removed oldest-unreferenced-first until usage drops to
+    /// `image_gc_low_threshold_percent` or nothing eligible remains.
     pub(crate) async fn gc_unreferenced_images(&self) -> Result<()> {
         let mut rt = self.rt.clone();
         let containers = rt
@@ -194,14 +203,51 @@ impl CriRuntime {
         let images = img.list_images(ListImagesRequest { filter: None }).await?.into_inner().images;
         let refs: Vec<crate::gc::ImageRef> = images
             .into_iter()
-            .map(|i| crate::gc::ImageRef { id: i.id, repo_tags: i.repo_tags, repo_digests: i.repo_digests })
+            .map(|i| crate::gc::ImageRef { id: i.id, repo_tags: i.repo_tags, repo_digests: i.repo_digests, size_bytes: i.size })
             .collect();
 
-        for image_id in crate::gc::images_to_gc(&refs, &referenced) {
-            info!(image = %image_id, "gc: removing unreferenced image");
+        let unreferenced_ids: HashSet<String> = crate::gc::images_to_gc(&refs, &referenced).into_iter().collect();
+
+        let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let unreferenced_since = {
+            let mut tracked = self.image_unreferenced_since.lock().unwrap();
+            tracked.retain(|id, _| unreferenced_ids.contains(id));
+            for id in &unreferenced_ids {
+                tracked.entry(id.clone()).or_insert(now_secs);
+            }
+            tracked.clone()
+        };
+
+        let Some(disk) = crate::metrics::read_disk_info(&self.disk_path) else {
+            // Can't measure usage at all — fail open (skip this cycle)
+            // rather than guessing, same posture as DiskPressure's own
+            // statvfs read failure.
+            return Ok(());
+        };
+        let usage_percent = crate::gc::disk_usage_percent(disk.total_bytes, disk.available_bytes);
+        if !crate::gc::should_start_image_gc(usage_percent, self.image_gc_high_threshold_percent) {
+            return Ok(());
+        }
+
+        let candidates: Vec<crate::gc::ImageRef> = refs.into_iter().filter(|r| unreferenced_ids.contains(&r.id)).collect();
+        let to_remove = crate::gc::images_to_reclaim_space(
+            &candidates,
+            &unreferenced_since,
+            now_secs,
+            self.image_gc_min_age_secs,
+            disk.total_bytes,
+            disk.available_bytes,
+            self.image_gc_low_threshold_percent,
+        );
+
+        for image_id in to_remove {
+            info!(image = %image_id, usage_percent, "gc: removing image to reclaim disk space (image GC high watermark exceeded)");
             let image_spec = ImageSpec { image: image_id.clone(), ..Default::default() };
-            if let Err(e) = img.remove_image(RemoveImageRequest { image: Some(image_spec) }).await {
-                warn!(image = %image_id, error = ?e, "gc: failed to remove unreferenced image");
+            match img.remove_image(RemoveImageRequest { image: Some(image_spec) }).await {
+                Ok(_) => {
+                    self.image_unreferenced_since.lock().unwrap().remove(&image_id);
+                }
+                Err(e) => warn!(image = %image_id, error = ?e, "gc: failed to remove image"),
             }
         }
         Ok(())

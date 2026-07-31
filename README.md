@@ -416,7 +416,14 @@ cgroup effect. A fresh gap re-audit (round 69) found `volumeMounts[].subPathExpr
 still unimplemented — closed: `$(VAR)` references now expand against a
 container's own resolved env (most commonly Downward API values like
 `$(POD_NAME)`), with an unresolvable reference dropping the mount rather
-than substituting a garbage path. Full status list in `docs/GAP_CLOSURE.md`.
+than substituting a garbage path. Round 70 closed **image GC watermark
+policy**: real kubelet's disk-pressure-triggered high/low threshold
+policy (`NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT`/`_LOW_THRESHOLD_PERCENT`/
+`_MIN_AGE_SECS`, matching upstream's own flags) replaces the previous
+unconditional every-cycle unreferenced-image sweep — an unreferenced
+image is now left alone until disk usage actually crosses the high
+threshold, then removed oldest-unreferenced-first. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for
@@ -961,6 +968,9 @@ Two layers, and they're not substitutes for each other:
 | `NODELET_DISK_PATH` | `/var/lib/nodelet` | Filesystem path `DiskPressure` is measured against. |
 | `NODELET_DISK_PRESSURE_PERCENT` | `10` | `DiskPressure` fires when available space on `NODELET_DISK_PATH` drops below this percent. |
 | `NODELET_GC_INTERVAL_SECS` | `300` | How often orphaned-sandbox and unreferenced-image GC runs (`cri` only). |
+| `NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT` | `85` | Image GC only starts reclaiming space once disk usage on `NODELET_DISK_PATH` reaches this percent (`cri` only). See [Status](#status). |
+| `NODELET_IMAGE_GC_LOW_THRESHOLD_PERCENT` | `80` | Image removal (oldest-unreferenced first) stops once usage drops to this percent, or nothing eligible remains. |
+| `NODELET_IMAGE_GC_MIN_AGE_SECS` | `120` | An unreferenced image must have been unreferenced for at least this long before it's eligible for removal. |
 | `NODELET_CLUSTER_DNS` | — | Comma-separated cluster DNS server IPs, injected into `dnsPolicy: ClusterFirst` pods (real kubelet's `--cluster-dns`). Unset means pods fall back to the host's own resolv.conf. |
 | `NODELET_CLUSTER_DOMAIN` | `cluster.local` | Base domain for a ClusterFirst pod's DNS search list (`--cluster-domain`). |
 | `NODELET_EVICTION_CHECK_SECS` | `10` | How often node-pressure eviction re-checks and evicts one eligible pod under pressure — see [Status](#status). |

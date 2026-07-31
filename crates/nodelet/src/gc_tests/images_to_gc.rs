@@ -9,6 +9,7 @@ fn image(id: &str, tags: &[&str], digests: &[&str]) -> ImageRef {
         id: id.to_string(),
         repo_tags: tags.iter().map(|s| s.to_string()).collect(),
         repo_digests: digests.iter().map(|s| s.to_string()).collect(),
+        ..Default::default()
     }
 }
 

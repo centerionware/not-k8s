@@ -27,6 +27,55 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 70: image GC watermark policy (2026-07-31, same day)
+
+Closes a long-tracked partial gap: image GC previously swept *every*
+unreferenced image on *every* GC cycle regardless of actual disk usage —
+not real kubelet's own policy, which is purely reactive to disk pressure.
+
+- 3 new config knobs, matching upstream's own flags: `NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT`
+  (default 85, `--image-gc-high-threshold`), `NODELET_IMAGE_GC_LOW_THRESHOLD_PERCENT`
+  (default 80, `--image-gc-low-threshold`), `NODELET_IMAGE_GC_MIN_AGE_SECS`
+  (default 120/2m, `--image-minimum-gc-age`).
+- New pure `disk_usage_percent()` (reuses the same `statvfs(2)`-backed
+  measurement `DiskPressure` already makes against `disk_path`) and
+  `should_start_image_gc()` in `gc.rs`: an unreferenced image is left
+  entirely alone — no matter how long it's sat there — until usage
+  crosses the high threshold.
+- New pure `images_to_reclaim_space()`: once triggered, only images
+  unreferenced for at least the minimum age are eligible, removed
+  oldest-unreferenced-first (simulating freed space per removal against
+  each image's own `size_bytes`, now added to `ImageRef`) until usage
+  drops to the low threshold or nothing eligible remains.
+- `CriRuntime` gained a new `image_unreferenced_since: Mutex<HashMap<String,
+  u64>>` side table (image id -> unix seconds first observed
+  unreferenced), rebuilt incrementally every `gc_unreferenced_images()`
+  cycle — an id currently referenced is dropped from tracking (its clock
+  resets if it becomes unreferenced again later, an acceptable
+  simplification vs. upstream's own richer access-time bookkeeping,
+  which nodelet has no equivalent in-memory image manager for).
+- **Real behavior change, not just an addition**: this round's own
+  automated e2e test (`test_unreferenced_image_gc`) that proved
+  unconditional removal had to be rewritten, since that behavior is now
+  intentionally gone — replaced with
+  `test_unreferenced_image_is_not_removed_below_the_watermark`, which
+  proves the *opposite*: a freshly-unreferenced image survives a full GC
+  cycle untouched on a normal (non-full) disk. Actual watermark-triggered
+  removal joins the existing manual-procedure group in `gc.sh`
+  (`test_image_gc_watermark_removal_manual_procedure`) — genuinely
+  filling a disk, or restarting nodelet with an artificially-low
+  threshold, isn't something this suite does to a live node
+  automatically, same reasoning as the pre-existing orphaned-sandbox/
+  eviction manual procedures.
+- 15 new unit tests (`gc_tests/image_gc_watermark.rs`): `disk_usage_percent()`'s
+  edge cases (half/empty/full disk, zero total bytes, available exceeding
+  total), `should_start_image_gc()`'s threshold comparison, and
+  `images_to_reclaim_space()`'s full behavior matrix (too-young image not
+  eligible, an untracked image treated as not-yet-eligible rather than an
+  error, stopping once the low threshold is already met, single- and
+  multi-image removal, oldest-first ordering, no eligible candidates
+  removes nothing even under pressure, empty input).
+
 ## Round 69: subPath $(VAR) expansion (2026-07-31, same day)
 
 A fresh gap re-audit (checked kubernetes.io docs + CRI/K8s API struct
@@ -4085,7 +4134,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Images
 - ✅ **Private registry auth** — `imagePullSecrets` (`kubernetes.io/dockerconfigjson`) → CRI `AuthConfig` (`resolve_pull_auth()`). Not yet: legacy `kubernetes.io/dockercfg`, ServiceAccount-linked pull secrets, credential-provider exec plugins.
-- 🟡 Image garbage collection — unreferenced-image sweep exists but not the real kubelet policy (disk-pressure-triggered high/low watermark GC, `--image-gc-high-threshold`/`--image-gc-low-threshold`)
+- ✅ **Image garbage collection** (found in round 69's fresh gap re-audit; closed round 70) — real kubelet's disk-pressure-triggered high/low watermark policy: `NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT`/`_LOW_THRESHOLD_PERCENT`/`_MIN_AGE_SECS` (defaults 85/80/120s, matching `--image-gc-high-threshold`/`-low-threshold`/`--image-minimum-gc-age`) drive new pure `should_start_image_gc()`/`images_to_reclaim_space()` — an unreferenced image is left alone entirely until disk usage crosses the high threshold, then removed oldest-unreferenced-first down to the low threshold. Replaces the previous unconditional every-cycle sweep — a real behavior change, not just an addition.
 - ✅ **Container log rotation** — running containers' log files are rotated past `NODELET_CONTAINER_LOG_MAX_SIZE_BYTES`, keeping `NODELET_CONTAINER_LOG_MAX_FILES` (`rotate_log_file()` + CRI `ReopenContainerLog`)
 - ✅ **`Node.status.images`** (round 33; found in round 27's re-audit) — `node.rs::select_node_images()` sorts CRI's `ListImages` results (via the new `PodRuntime::node_images()` trait method) largest-first and caps at 50, matching real kubelet's own `--node-status-max-images` default. Genuinely automated e2e test. See round 33 notes.
 - ✅ **`imagePullPolicy` enforcement** (round 51; found in round 50's re-audit) — new pure `effective_pull_policy()` (an explicit policy always wins; otherwise real kubelet's own default heuristic — `Always` for untagged/`:latest`, `IfNotPresent` for a specific tag *or* a digest reference) plus a new `ImageStatus` RPC call (vendored, never used before) to check local presence whenever the policy isn't `Always`. `Never` without local presence now `bail!`s a real error (surfaces via `ensure_pod()`'s existing retry-and-report path) instead of silently pulling anyway; `IfNotPresent` skips `PullImage` entirely when already cached. Genuinely automated e2e test for `Never`'s refusal behavior (a real, valid image/tag this suite never otherwise pulls — a fake tag wouldn't distinguish "correctly refused" from "ignored but failed anyway upstream"); `IfNotPresent`'s registry-round-trip-skipping is unit-tested only (needs nodelet's own logs to observe live). See round 51 notes.
@@ -4644,11 +4693,20 @@ accordingly; see those files' own updated framing.
       substituting a garbage path. 7 new unit tests + a genuinely
       automated e2e test proving real Downward-API-driven expansion. See
       round 69 notes.
-- [ ] Candidates for the next round: image GC watermark policy
-      (disk-pressure-triggered high/low threshold GC, matching
-      `--image-gc-high-threshold`/`-low-threshold` — nodelet currently
-      only has an unreferenced-image sweep), or ServiceAccount token
-      credential providers (beta/default-on in k8s 1.34 — bigger, needs
-      the credential-provider exec-plugin protocol; worth a scope
-      discussion before committing, not a default pick). Ask before
-      starting the next round.
+- [x] Round 70: image GC watermark policy — real kubelet's
+      disk-pressure-triggered high/low watermark GC (3 new config knobs
+      matching upstream's own flags), replacing the previous
+      unconditional every-cycle unreferenced-image sweep — a real
+      behavior change. New pure `disk_usage_percent()`/
+      `should_start_image_gc()`/`images_to_reclaim_space()`, a new
+      `image_unreferenced_since` side table on `CriRuntime`. 15 new unit
+      tests; the existing automated e2e test for unconditional removal
+      was rewritten to prove the opposite (a freshly-unreferenced image
+      survives a GC cycle below the watermark), with actual
+      watermark-triggered removal joining the manual-procedure group.
+      See round 70 notes.
+- [ ] Candidates for the next round: ServiceAccount token credential
+      providers (beta/default-on in k8s 1.34 — bigger, needs the
+      credential-provider exec-plugin protocol; worth a scope discussion
+      before committing, not a default pick), or another fresh gap
+      re-audit. Ask before starting the next round.

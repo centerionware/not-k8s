@@ -210,6 +210,26 @@ pub struct CriRuntime {
     /// swap — not just left unconfigured, which on a node with swap
     /// already enabled at the OS level wouldn't actually prevent swap use).
     memory_swap_limited: bool,
+    /// Filesystem path image-GC disk usage is measured against (round 70)
+    /// — same `NODELET_DISK_PATH` `DiskPressure` already reads.
+    disk_path: String,
+    /// `NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT`/`_LOW_THRESHOLD_PERCENT`/
+    /// `_MIN_AGE_SECS` (round 70; found in round 69's fresh gap re-audit)
+    /// — real kubelet's image-GC watermark policy, replacing the
+    /// pre-round-70 behavior of sweeping every unreferenced image on
+    /// every GC cycle regardless of actual disk pressure. See
+    /// `gc.rs::should_start_image_gc()`/`images_to_reclaim_space()`.
+    image_gc_high_threshold_percent: u8,
+    image_gc_low_threshold_percent: u8,
+    image_gc_min_age_secs: u64,
+    /// `image id -> unix seconds first observed unreferenced` (round 70)
+    /// — real kubelet's own `--image-minimum-gc-age` reference point.
+    /// Rebuilt incrementally every GC cycle in `gc_unreferenced_images()`:
+    /// an id not currently unreferenced is dropped (its clock resets if
+    /// it becomes unreferenced again later, an acceptable simplification
+    /// vs. upstream's own richer access-time tracking); a newly-unreferenced
+    /// id is inserted with the current time.
+    image_unreferenced_since: Mutex<HashMap<String, u64>>,
     /// This CRI runtime's own name (e.g. `"containerd"`), from a one-time
     /// `Version` RPC call made in `connect()` (round 57; found in round
     /// 54's re-audit) — real kubelet always formats `ContainerStatus.containerID`/
@@ -343,6 +363,10 @@ impl CriRuntime {
         node_cpu_millicores: i64,
         node_swap_bytes: i64,
         memory_swap_limited: bool,
+        disk_path: String,
+        image_gc_high_threshold_percent: u8,
+        image_gc_low_threshold_percent: u8,
+        image_gc_min_age_secs: u64,
     ) -> Result<Self> {
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
@@ -396,6 +420,11 @@ impl CriRuntime {
             node_cpu_millicores,
             node_swap_bytes,
             memory_swap_limited,
+            disk_path,
+            image_gc_high_threshold_percent,
+            image_gc_low_threshold_percent,
+            image_gc_min_age_secs,
+            image_unreferenced_since: Mutex::new(HashMap::new()),
             runtime_name,
             restart_counts: Mutex::new(HashMap::new()),
             csi,
