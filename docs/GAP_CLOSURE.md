@@ -27,6 +27,49 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 72: fresh gap re-audit (2026-07-31, same day)
+
+No code changed. Grepped the codebase directly for a handful of specific
+kubelet features not yet checked in any prior round's audit, cross-checked
+against kubernetes.io docs. Found 3 previously-untracked items:
+
+1. **Crash-loop backoff** — the biggest finding. `ensure_container()`'s
+   restart path (`restart_decision()` in `container_create.rs`) has no
+   delay or attempt-count-based backoff of any kind: a container that
+   keeps exiting gets recreated immediately on the very next reconcile.
+   Because nodelet's architecture is event-driven (a `ContainerExited`
+   CRI event triggers an immediate reconcile, not a polling interval),
+   this isn't merely "no `CrashLoopBackOff` status string" — it's a
+   genuine tight restart loop with no throttle, unlike real kubelet's
+   10s/20s/40s/.../5m-capped exponential backoff (resetting after ~10
+   minutes of stable running). Reclassified the existing "Restart-on-exit"
+   line from ✅ to 🟡 rather than adding a separate bullet, since it's a
+   real gap in an already-implemented feature, not a wholly missing one.
+2. **PodResources API** — kubelet's own gRPC service (`List`/
+   `GetAllocatableResources`/`Watch` on `/var/lib/kubelet/pod-resources/kubelet.sock`)
+   isn't implemented. Real-world device-monitoring tooling (NVIDIA DCGM,
+   Prometheus device exporters) depends on this socket directly. All the
+   underlying state already exists in `cpu_manager.rs`/`memory_manager.rs`/
+   `device_plugins.rs` — this would be a read-only gRPC projection of
+   already-tracked allocation state, not new allocation logic.
+3. **`allocatedResourcesStatus`** (ResourceHealthStatus, KEP-4680) — a
+   device going unhealthy after allocation to a running container has no
+   pod-visible signal; `device_plugins.rs` already tracks per-device
+   health for capacity purposes but never reports it back per-container.
+   Lower priority — still alpha/beta upstream, not GA.
+
+Everything else checked directly against the API/CRI proto (pod-level
+`spec.resources`, seccomp/AppArmor, `spec.os`, probe-level grace period,
+image volume source, `Node.status.volumesInUse`/`.volumesAttached`) was
+already tracked from earlier rounds or already closed — no other new
+gaps found.
+
+Ranked by value: crash-loop backoff (real resource-protection gap, not
+just cosmetic), PodResources API (real external-tooling integration
+value, low implementation risk since the state already exists), then
+`allocatedResourcesStatus` (alpha/beta, lower urgency). Ask the user for
+sequencing again before starting the next round.
+
 ## Round 71: image credential providers (2026-07-31, same day)
 
 Closes the round 69 audit's other flagged gap: kubelet's
@@ -4151,7 +4194,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Pod & container lifecycle
 - ✅ Pod sandbox + container create/start/stop/remove via CRI
-- ✅ Restart-on-exit honoring `restartPolicy`
+- 🟡 Restart-on-exit honoring `restartPolicy`. **Missing: crash-loop backoff** (found in round 72's re-audit) — a container that keeps exiting is restarted immediately on every reconcile, with no exponential delay and no `CrashLoopBackOff` status reason ever reported. Real kubelet backs off 10s/20s/40s/.../capped at 5 minutes, resetting after ~10 minutes of stable running. Nodelet's event-driven architecture (a `ContainerExited` event triggers an immediate reconcile) makes this a genuine tight-loop risk, not just a cosmetic status-string gap — a truly crash-looping container currently gets restarted as fast as the runtime can create+start it.
 - ✅ **Init containers** — run to completion, in order, before app containers (`ensure_init_containers`)
 - ✅ **Native sidecar containers** (round 36; `initContainers[].restartPolicy: "Always"`, GA since 1.29, found in round 35's re-audit) — `sidecar_init_decision()` routes a sidecar-marked init container through its own decision matrix: doesn't block later init/app containers on its own exit (only on having started at all), restarts on exit like a normal container for the pod's whole lifetime, and its real probe-based readiness folds into the pod's overall `Ready`/`ContainersReady` (`pods.rs::build_pod_status()`). Genuinely automated e2e tests. **Documented simplification**: sidecars aren't stopped strictly *after* app containers on teardown (one pass instead), unlike upstream's exact ordering. See round 36 notes.
 - ✅ **Ephemeral containers** (`kubectl debug`) — `spec.ephemeralContainers` started once (never restarted) via `ensure_ephemeral_container()`, reported in `PodStatus.ephemeralContainerStatuses`, excluded from pod phase/readiness. Exit codes not tracked (always reported `0`) — see Round 8 notes.
@@ -4185,6 +4228,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`securityContext.supplementalGroupsPolicy`** (GA 1.33; found in round 58's re-audit; closed round 62) — `Merge`/`Strict` now translates directly to CRI's own `SupplementalGroupsPolicy` enum on both the sandbox- and container-level security context; genuinely automated e2e test proves `Strict` excludes image-defined `/etc/group` membership while `Merge` includes it, using a portable ConfigMap-subPath-supplied `/etc/passwd`/`/etc/group` rather than depending on `$TEST_IMAGE`'s own baked-in group file.
 - 🟡 **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit; closed round 63, gating + batching closed round 64) — kubelet's actual responsibilities are implemented: resolving a pod's `resourceClaims` to their `ResourceClaim` objects' `status.allocation`, gating on `status.reservedFor` actually listing this pod (round 64 — real kubelet's own safety check; `reservedFor` itself is scheduler-written, not kubelet-written, correcting round 63's docs), calling the owning driver(s)' `NodePrepareResources`/`NodeUnprepareResources` once per driver per pod covering every claim it owns (round 64 batching; new `dra.rs`, reusing the plugin-registration infrastructure with a new `"DRAPlugin"` type), and wiring the returned CDI device IDs into each container's CRI `ContainerConfig.cdi_devices` per its `resources.claims[].{name, request}` entries. **Known scope limitations**: `proto/draplugin.proto` was reconstructed from public documentation rather than vendored from upstream, so its exact wire format is unverified against a live third-party driver; no genuinely automated e2e test exists (needs a real DRA driver binary this bash-only harness can't stand up — see `dra.sh`'s manual-spot-check notes, same honest-limitation pattern as `device_plugins.sh`).
 - ✅ **Swap support (`memorySwap.swapBehavior`)** (GA 1.34; found in round 65's fresh gap re-audit; closed round 68) — `NODELET_MEMORY_SWAP_BEHAVIOR` (`NoSwap` default / `LimitedSwap`) drives CRI's native `LinuxContainerResources.memory_swap_limit_in_bytes` via new `container_swap_limit_bytes()`, implementing upstream's KEP-2400 formula exactly for `LimitedSwap` (proportional share for Burstable-shaped containers only, an emergent property of the per-container `request == limit` / no-request checks rather than a separate QoS lookup). **Known scope limitation**: no `--system-reserved`/`--kube-reserved`-equivalent knob for swap, so the node's full raw `SwapTotal` is used with nothing withheld.
+- ❌ **PodResources API** (found in round 72's re-audit) — kubelet's own gRPC service on `/var/lib/kubelet/pod-resources/kubelet.sock` (`List`/`GetAllocatableResources`/`Watch`, `k8s.io/kubelet/pkg/apis/podresources`) exposing which CPUs/devices/NUMA nodes are assigned to which running container — not implemented at all. Real-world consumers: NVIDIA DCGM and other device-monitoring exporters query this socket directly rather than guessing allocation from `Node.status`. Nodelet already has every piece of the underlying state (`cpu_manager.rs`/`memory_manager.rs`/`device_plugins.rs` all track exactly this), so this would be a read-only projection of existing state onto a new gRPC surface, not new allocation logic.
+- ❌ **`allocatedResourcesStatus` / ResourceHealthStatus** (`containerStatuses[].allocatedResourcesStatus`; found in round 72's re-audit; alpha/beta KEP-4680, `ResourceHealthStatus` feature gate) — per-device health (Healthy/Unhealthy/Unknown) isn't reported back into `PodStatus` at all; `device_plugins.rs` already tracks per-device health from `ListAndWatch` for capacity/allocatable purposes, but a device going unhealthy *after* allocation to a running container currently has no pod-visible signal at all. Lower priority than PodResources API — still an alpha/beta upstream feature, not GA.
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
@@ -4787,6 +4832,17 @@ accordingly; see those files' own updated framing.
       feature-off-by-default regression check, with real exec-plugin
       fetches joining the manual-procedure group (needs a real cloud
       vendor binary + live registry). See round 71 notes.
-- [ ] Candidates for the next round: a fresh gap re-audit is the natural
-      next step — every audit-flagged item from round 65's list is now
-      closed. Ask before starting the next round.
+- [x] Round 72: fresh gap re-audit — no code change. Found 3 new
+      candidates: crash-loop backoff (biggest finding — restart-on-exit
+      has no delay/attempt throttle at all, a genuine tight-loop risk
+      given nodelet's event-driven reconcile, not just a missing status
+      string), the PodResources API gRPC service (read-only projection of
+      already-tracked CPU/Memory/device-manager state, real external
+      tooling depends on it), and `allocatedResourcesStatus`/
+      ResourceHealthStatus (alpha/beta, lower priority). See round 72
+      notes.
+- [ ] Candidates for the next round, ranked: crash-loop backoff (highest
+      value — real resource-protection gap), PodResources API (real
+      external-tooling value, low implementation risk), then
+      `allocatedResourcesStatus` (alpha/beta upstream, lower urgency).
+      Ask before starting the next round.
