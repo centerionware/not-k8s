@@ -14,16 +14,16 @@ use crate::runtime::{Phase, PodRuntime, RuntimeStatus};
 use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
-    ContainerState, ContainerStateRunning, ContainerStateTerminated, ContainerStateWaiting, ContainerStatus, Pod,
-    PodCondition, PodIP, PodStatus,
+    ConfigMap, ContainerState, ContainerStateRunning, ContainerStateTerminated, ContainerStateWaiting,
+    ContainerStatus, Pod, PodCondition, PodIP, PodStatus, Secret, Volume,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-use kube::api::{Patch, PatchParams};
+use kube::api::{ListParams, Patch, PatchParams};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -111,6 +111,13 @@ impl PodController {
         let wc = watcher::Config::default()
             .fields(&format!("spec.nodeName={}", self.node_name));
         let mut stream = watcher(api, wc).boxed();
+        // ConfigMaps/Secrets have no node-scoping fieldSelector (they aren't
+        // bound to a node), so these watches are cluster-wide. That's fine:
+        // they're rare-write objects and we only react to edges, never poll.
+        let cm_api: Api<ConfigMap> = Api::all(self.client.clone());
+        let mut cm_stream = watcher(cm_api, watcher::Config::default()).boxed();
+        let sec_api: Api<Secret> = Api::all(self.client.clone());
+        let mut sec_stream = watcher(sec_api, watcher::Config::default()).boxed();
         // Move the receiver into a local so reconcile methods can borrow `&self`.
         let mut events = self.events.take();
 
@@ -132,7 +139,70 @@ impl PodController {
                         }
                     }
                 }
+                item = cm_stream.next() => {
+                    match item {
+                        Some(Ok(Event::Apply(cm))) | Some(Ok(Event::InitApply(cm))) => {
+                            if let (Some(ns), Some(name)) = (cm.metadata.namespace.clone(), cm.metadata.name.clone()) {
+                                self.on_referenced_object_changed(&ns, &name, ReferencedKind::ConfigMap).await;
+                            }
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => warn!(error = ?e, "configmap watch error; watcher will retry"),
+                        None => {
+                            warn!("configmap watch stream ended; restarting");
+                            self.events = events;
+                            return Ok(());
+                        }
+                    }
+                }
+                item = sec_stream.next() => {
+                    match item {
+                        Some(Ok(Event::Apply(sec))) | Some(Ok(Event::InitApply(sec))) => {
+                            if let (Some(ns), Some(name)) = (sec.metadata.namespace.clone(), sec.metadata.name.clone()) {
+                                self.on_referenced_object_changed(&ns, &name, ReferencedKind::Secret).await;
+                            }
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => warn!(error = ?e, "secret watch error; watcher will retry"),
+                        None => {
+                            warn!("secret watch stream ended; restarting");
+                            self.events = events;
+                            return Ok(());
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    /// A ConfigMap or Secret changed. Re-reconcile every pod on this node
+    /// whose volumes reference it, so the bind-mounted files get fresh
+    /// content within seconds — no pod/container restart needed, matching
+    /// real kubelet's config-map-manager live-update behavior. Env vars
+    /// (envFrom/valueFrom) are deliberately NOT covered: kubelet captures
+    /// those once at container start, by design, and never refreshes them.
+    async fn on_referenced_object_changed(&self, namespace: &str, name: &str, kind: ReferencedKind) {
+        let api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
+        let lp = ListParams::default().fields(&format!("spec.nodeName={}", self.node_name));
+        let pods = match api.list(&lp).await {
+            Ok(list) => list.items,
+            Err(e) => {
+                warn!(namespace, name, ?kind, error = ?e, "failed to list pods while handling ConfigMap/Secret change");
+                return;
+            }
+        };
+        for pod in pods {
+            let referenced = match kind {
+                ReferencedKind::ConfigMap => referenced_configmap_names(&pod).contains(name),
+                ReferencedKind::Secret => referenced_secret_names(&pod).contains(name),
+            };
+            if !referenced {
+                continue;
+            }
+            if let Some((ns, pname)) = key_parts(&pod) {
+                info!(pod = %format!("{ns}/{pname}"), namespace, name, ?kind, "re-materializing volumes after referenced object changed");
+            }
+            self.reconcile(pod).await;
         }
     }
 
@@ -553,6 +623,66 @@ fn key_parts(pod: &Pod) -> Option<(String, String)> {
     Some((ns, name))
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ReferencedKind {
+    ConfigMap,
+    Secret,
+}
+
+/// Every ConfigMap name a pod's volumes reference — directly
+/// (`volumes[].configMap.name`) or via a `projected` volume's
+/// `sources[].configMap.name`. Used to decide which pods need
+/// re-materializing when a ConfigMap changes. Deliberately does not look at
+/// `envFrom`/`valueFrom.configMapKeyRef` — those are captured once at
+/// container start and never refreshed, matching real kubelet.
+fn referenced_configmap_names(pod: &Pod) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for v in pod.spec.as_ref().and_then(|s| s.volumes.as_deref()).unwrap_or_default() {
+        collect_configmap_name(v, &mut names);
+    }
+    names
+}
+
+fn collect_configmap_name(v: &Volume, names: &mut HashSet<String>) {
+    if let Some(cm) = &v.config_map {
+        names.insert(cm.name.clone());
+    }
+    if let Some(projected) = &v.projected {
+        for source in projected.sources.as_deref().unwrap_or(&[]) {
+            if let Some(cm) = &source.config_map {
+                names.insert(cm.name.clone());
+            }
+        }
+    }
+}
+
+/// Every Secret name a pod's volumes reference — directly
+/// (`volumes[].secret.secretName`) or via a `projected` volume's
+/// `sources[].secret.name`. Same env-var exclusion as
+/// `referenced_configmap_names()` above.
+fn referenced_secret_names(pod: &Pod) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for v in pod.spec.as_ref().and_then(|s| s.volumes.as_deref()).unwrap_or_default() {
+        collect_secret_name(v, &mut names);
+    }
+    names
+}
+
+fn collect_secret_name(v: &Volume, names: &mut HashSet<String>) {
+    if let Some(sec) = &v.secret {
+        if let Some(name) = &sec.secret_name {
+            names.insert(name.clone());
+        }
+    }
+    if let Some(projected) = &v.projected {
+        for source in projected.sources.as_deref().unwrap_or(&[]) {
+            if let Some(sec) = &source.secret {
+                names.insert(sec.name.clone());
+            }
+        }
+    }
+}
+
 // Small, isolated test files — one behavior area each.
 #[cfg(test)]
 #[path = "pods_tests/build_pod_status.rs"]
@@ -563,3 +693,6 @@ mod tests_key_parts;
 #[cfg(test)]
 #[path = "pods_tests/event_loop.rs"]
 mod tests_event_loop;
+#[cfg(test)]
+#[path = "pods_tests/referenced_names.rs"]
+mod tests_referenced_names;

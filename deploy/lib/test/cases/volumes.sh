@@ -45,6 +45,58 @@ EOF
     kctl delete secret "$name-secret" --ignore-not-found >/dev/null
 }
 
+test_configmap_volume_updates_live_without_pod_restart() {
+    # Round 37: real kubelet's well-known "edit a ConfigMap, the mounted
+    # file updates live" behavior — no pod/container restart. Proves the
+    # ConfigMap watch in pods.rs actually re-triggers materialization: we
+    # never delete/recreate the pod, and check the CONTAINER'S OWN restart
+    # count stays at 0 throughout.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="cm-live-update"
+    kctl create configmap "$name-cm" --from-literal=greeting=hello >/dev/null
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: cm-vol
+      configMap:
+        name: $name-cm
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+      volumeMounts:
+        - {name: cm-vol, mountPath: /cm}
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local before
+    before="$(wait_for_check_file "$name" cm-vol greeting 30)"
+    assert_eq "$before" "hello" "ConfigMap volume content before update"
+
+    kctl create configmap "$name-cm" --from-literal=greeting=updated --dry-run=client -o yaml \
+        | kctl apply -f - >/dev/null
+
+    local path waited=0 after=""
+    path="$(pod_volume_host_path "$name" cm-vol)/greeting"
+    while true; do
+        after="$(cat "$path" 2>/dev/null || true)"
+        [[ "$after" == "updated" ]] && break
+        if [[ "$waited" -ge 30 ]]; then
+            die "timed out after 30s waiting for ConfigMap volume content to live-update"
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    assert_eq "$after" "updated" "ConfigMap volume content after live update"
+    assert_eq "$(pod_container_restart_count "$name" app)" "0" "container restart count (must not restart for a live volume update)"
+
+    delete_pod_if_exists "$name"
+    kctl delete configmap "$name-cm" --ignore-not-found >/dev/null
+}
+
 test_downward_api_volume_writes_pod_metadata() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="downward-vol"
@@ -304,6 +356,7 @@ EOF
 }
 
 register_test test_configmap_and_secret_volumes_are_materialized
+register_test test_configmap_volume_updates_live_without_pod_restart
 register_test test_downward_api_volume_writes_pod_metadata
 register_test test_projected_volume_merges_configmap_and_downward_api
 register_test test_service_account_token_projected_volume_mints_a_real_token

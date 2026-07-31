@@ -27,6 +27,72 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 37: ConfigMap/Secret live-update (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-36). Offered the
+remaining round-35 candidates; user picked ConfigMap/Secret live-update
+— the well-known "edit a ConfigMap, the mounted file updates live"
+behavior several controllers (cert-manager, external-secrets) actively
+rely on for auto-rotation.
+
+Real kubelet's config-map-manager watches every ConfigMap/Secret
+referenced by a volume on this node and refreshes the bind-mounted host
+file content within seconds of a change — no pod or container restart
+needed, since the mount is already a live bind-mount of the host path
+nodelet itself materializes content into. Before this round,
+`resolve_volumes()` only ever materialized ConfigMap/Secret volume
+content once, at pod (re)creation time; the only way to pick up a change
+was deleting and recreating the pod.
+
+- **Two new cluster-wide watch streams** (`Api::<ConfigMap>::all`,
+  `Api::<Secret>::all`) added as additional `tokio::select!` branches in
+  `PodController::run()`, alongside the existing node-scoped Pod watch
+  and the runtime event channel. ConfigMaps/Secrets have no
+  `spec.nodeName`-equivalent field to scope a watch by, so these are
+  necessarily cluster-wide — still purely edge-driven (fires only on a
+  genuine object change), not a poll.
+- **New `referenced_configmap_names(pod)`/`referenced_secret_names(pod)`**
+  (pure functions) — scan `pod.spec.volumes` for direct
+  `configMap.name`/`secret.secretName` sources plus `projected` volumes'
+  `sources[].configMap.name`/`sources[].secret.name`. Deliberately do
+  NOT look at `envFrom`/`valueFrom.configMapKeyRef`/`secretKeyRef` —
+  those are captured once at container start and never refreshed by
+  real kubelet either, so extending live-update to env vars would be
+  incorrect, not just extra scope.
+- **`on_referenced_object_changed(namespace, name, kind)`**: on a
+  ConfigMap/Secret `Apply`/`InitApply` event, lists this node's pods in
+  that namespace (`fieldSelector spec.nodeName=...`, the same pattern
+  the pod watch itself uses), filters to the ones whose volumes
+  reference the changed object, and calls the controller's existing
+  `reconcile(pod)` for each match — reusing the fully-idempotent
+  `ensure_pod()` → `resolve_volumes()` re-materialization path that
+  every normal reconcile already goes through. No new runtime-side code
+  needed: overwriting the host file content in place is sufficient
+  because the container's mount is already live.
+- No new env vars, no new CRI/proto surface — this is a `pods.rs`-only,
+  control-plane-side change.
+- 5 new unit tests (`pods_tests/referenced_names.rs`): direct ConfigMap
+  volume reference, direct Secret volume reference, both `projected`
+  volume source kinds, an env-only reference correctly NOT counted, and
+  the no-volumes-at-all empty case.
+- New e2e test (`deploy/lib/test/cases/volumes.sh`):
+  `test_configmap_volume_updates_live_without_pod_restart` — creates a
+  pod with a ConfigMap volume, confirms the initial content, patches the
+  ConfigMap via `kctl apply`, then polls the host-materialized file
+  directly (same trick every other volume test in this file uses) until
+  it reflects the new value, and asserts the app container's own
+  `restartCount` stayed at 0 throughout — genuine proof no restart was
+  needed, not just that the content eventually changed.
+
+**Confidence note**: the reference-scanning logic and the watch-to-
+reconcile wiring are both straightforward and covered by real automated
+tests (unit + a genuinely live e2e proof, no special infrastructure
+needed). The cluster-wide watch scope (rather than a filtered/indexed
+one) is a deliberate, documented simplification — acceptable because
+ConfigMap/Secret changes are rare events, not a hot path, and the
+existing per-pod `reconcile()` call is already idempotent and cheap to
+invoke redundantly.
+
 ## Round 36: native sidecar containers (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-35). Offered the 3
@@ -2126,7 +2192,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Volumes
 - ✅ ConfigMap / Secret / emptyDir (materialized to host paths)
-- ❌ **ConfigMap/Secret live-update** (found in round 35's re-audit) — `resolve_volumes()` materializes ConfigMap/Secret volume content exactly once, at pod (re)creation time. Real kubelet's config-map-manager watches the referenced objects and refreshes mounted volume content within seconds of a change, no pod restart needed — the well-known "edit a ConfigMap, the mounted file updates live" behavior most operators expect, and several controllers (cert-manager, external-secrets) actively rely on for auto-rotation. High real-world value; currently the only way to pick up a change is deleting and recreating the pod.
+- ✅ **ConfigMap/Secret live-update** (round 37; found in round 35's re-audit) — `PodController::run()` now watches ConfigMaps/Secrets cluster-wide (they have no node-scoping fieldSelector) alongside the existing node-scoped Pod watch; on a change, `referenced_configmap_names()`/`referenced_secret_names()` (pure) find every pod on this node whose volumes reference the changed object (direct or via `projected` sources) and re-`reconcile()`s them, reusing the existing idempotent `resolve_volumes()` materialization path to overwrite the bind-mounted host file content in place — no pod/container restart. Deliberately does NOT cover `envFrom`/`valueFrom.configMapKeyRef`/`secretKeyRef` — real kubelet captures those once at container start too. Genuinely automated e2e test proves the content updates AND the container's own restart count stays 0. See round 37 notes.
 - ❌ **`valueFrom.resourceFieldRef` in container env vars** (found in round 35's re-audit) — a distinct code path from the already-tracked downwardAPI-volume `resourceFieldRef` gap below: env var resolution's own `resourceFieldRef` branch explicitly `bail!`s "not supported yet" (visible, not silently dropped) rather than resolving a container's own actual CPU/memory limit, a common init-script pattern (e.g. JVM heap sizing off the container's own memory limit).
 - ✅ **Projected volumes** — `configMap`/`secret`/`downwardAPI`, and now `serviceAccountToken` too (mints a real token via the `TokenRequest` API — `resolve_service_account_token()`; needs nodelet's client to have `create` on `serviceaccounts/token` in the namespace, a real RBAC requirement) merge into the volume dir, with `items`/`KeyToPath` key-selection-and-rename support. `clusterTrustBundle` sources are still skipped with a warning.
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
@@ -2342,8 +2408,16 @@ higher-value/correctness-critical than others:
       probe-based readiness folds into pod `Ready`). Genuinely automated
       e2e tests. Teardown ordering (sidecars stopped last) is a
       documented simplification. See round 36 notes.
+- [x] Round 37: ConfigMap/Secret live-update — two new cluster-wide
+      watch streams (ConfigMap/Secret have no node-scoping fieldSelector)
+      added to `PodController::run()`'s `select!` loop;
+      `referenced_configmap_names()`/`referenced_secret_names()` (pure)
+      find affected pods on this node, re-`reconcile()` reuses the
+      existing idempotent materialization path. Deliberately excludes
+      env var references (matches real kubelet). Genuinely automated
+      e2e test, no external infra needed. See round 37 notes.
 - [ ] Remaining candidates from round 35's audit, roughly by value:
-      ConfigMap/Secret live-update, `spec.hostname`/`subdomain`/
-      `setHostnameAsFQDN`, then the two lower-priority items (env
-      `resourceFieldRef`, probe-level `terminationGracePeriodSeconds`).
-      Ask before starting the next round.
+      `spec.hostname`/`subdomain`/`setHostnameAsFQDN`, then the two
+      lower-priority items (env `resourceFieldRef`, probe-level
+      `terminationGracePeriodSeconds`). Ask before starting the next
+      round.

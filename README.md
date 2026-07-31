@@ -240,7 +240,15 @@ init/app containers on its own exit (only on having started), restarts
 indefinitely like a normal container, and its real probe-based readiness
 folds into the pod's overall `Ready` condition. Teardown ordering
 (sidecars stopped strictly last) is a documented simplification, not yet
-matching upstream exactly. Full status list in `docs/GAP_CLOSURE.md`.
+matching upstream exactly. Round 37 closed **ConfigMap/Secret
+live-update** — the pod controller now watches referenced ConfigMap/
+Secret objects (cluster-wide; they have no node-scoping fieldSelector)
+and re-materializes any affected pod's volumes within seconds of a
+change, overwriting the already-live bind-mounted host files with no
+pod/container restart needed — the well-known "edit a ConfigMap, the
+mounted file updates live" behavior. Deliberately scoped to
+volume-mounted references only, not env vars (`envFrom`/`valueFrom...Ref`),
+matching real kubelet exactly. Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 
