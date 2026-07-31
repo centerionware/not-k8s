@@ -27,6 +27,73 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 45: fresh gap re-audit (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 22/27/35/39). Both prior
+audit lists (round 35's, round 39's) were fully closed as of round 44;
+user picked another re-audit rather than pausing. No code changed this
+round — audit-only.
+
+This pass checked a different set of areas than rounds 22/27/35/39
+covered: volume source kinds beyond the already-tracked ones (grepping
+`volume_source_type()`'s full match arm list against what
+`resolve_volumes()` actually handles), the startup-probe supervisor
+loop's failure handling, and local ephemeral-storage's presence (or
+absence) anywhere in the resource/eviction story. Also explicitly
+re-checked several previously-plausible candidates and confirmed they're
+**already implemented**, not gaps: `Node.status.nodeInfo` (architecture/
+kernelVersion/osImage/containerRuntimeVersion/kubeletVersion — all
+real, `node.rs::system_info()`), `MemoryPressure`/`DiskPressure`/
+`PIDPressure` node conditions (all three present, `node.rs`), and
+`preStop`'s `sleep` action (`run_lifecycle_hook()` already handles
+`exec`/`httpGet`/`sleep`, just not the deprecated `tcpSocket`).
+
+Found 2 previously-untracked items, plus generalized an already-noted
+detail (round 44's `ephemeral-storage` `"0"` stub) into its own tracked
+gap. Not re-flagging `subPath $(VAR) expansion` (`subPathExpr`) —
+already a tracked gap in the Volumes list below, just confirmed still
+open, not newly found this round.
+
+- **CSI ephemeral (inline) volumes** (`volumes[].csi` directly, not
+  PVC/`ephemeral`-templated) — `volume_source_type()`'s diagnostic
+  match arm knows the name `"csi"` exists, but `resolve_volumes()`
+  itself never branches on `v.csi` at all; it falls straight through to
+  the generic "volume type not supported yet" warning. Distinct from
+  the CSI PVC path (round 12/13) and generic ephemeral volumes (round
+  31, PVC-templated) — this is the *inline* form real-world drivers
+  like `secrets-store-csi-driver` use to mount secrets from
+  Vault/AWS Secrets Manager/etc. directly into a pod with no PVC at
+  all. **Likely low implementation cost**: the actual CSI Node-service
+  plumbing (`NodePublishVolume`, driver discovery, `csi.rs`) already
+  exists end-to-end for the PVC path — this would mostly be a new,
+  smaller resolution function building a `NodePublishVolumeRequest`
+  straight from the volume's own `CSIVolumeSource` fields
+  (`driver`/`volumeAttributes`/`nodePublishSecretRef`), skipping the
+  PVC/PV lookup entirely. High real-world value relative to effort.
+- **Startup probe failure doesn't trigger a restart** — `probe_container()`'s
+  startup-probe loop (`probes.rs`) retries *forever* until it passes;
+  there's no `failureThreshold`-triggered kill/restart the way a
+  liveness failure gets. Real kubelet kills and restarts the container
+  (subject to `restartPolicy`) once a startup probe fails past its own
+  `failureThreshold`, exactly like a liveness failure — a container
+  stuck in a bad boot state today just polls forever instead of ever
+  being retried. Directly relevant to round 44's own
+  `probe_grace_period_seconds()` work, which was explicitly scoped to
+  liveness only because this code path didn't exist yet — this finding
+  is that path's actual absence, made concrete.
+- **Local ephemeral storage isn't tracked anywhere** — no
+  `ephemeral-storage` in `Node.status.capacity`/`.allocatable`, no
+  request/limit enforcement, no eviction-manager signal for it at all
+  (`eviction.rs`/`node.rs` both have zero references). First surfaced
+  implicitly by round 44's `resolve_resource_field_ref()`, which had to
+  resolve `limits.ephemeral-storage`/`requests.ephemeral-storage` to a
+  documented `"0"` stub rather than a real value — this finding
+  generalizes that into its own tracked gap: real kubelet also
+  evicts pods under `nodefs`/`imagefs` disk pressure using this same
+  resource accounting, tying into this project's own pre-existing
+  eviction-manager story (rounds 7, 26, 28) the same way `oom_score_adj`
+  (round 28) did.
+
 ## Round 44: env resourceFieldRef + probe terminationGracePeriodSeconds (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-43). Round 39's audit
@@ -2675,6 +2742,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Exit-code-aware phase computation** — `restartPolicy: Never` now reports `Failed` (not `Succeeded`) when a container exited nonzero (`compute_phase()`'s new `any_failed` parameter).
 - ✅ **`terminationMessagePath`/`terminationMessagePolicy`** (round 24; found in round 22's re-audit) — `create_and_start_container()` bind-mounts an empty host file at the container's `terminationMessagePath` (default `/dev/termination-log`) for App/Init containers, same approach real kubelet uses; `build_status()` reads it back (capped at 4096 bytes, keeping the last bytes if larger) into `ContainerStatus.state.terminated.message` for every exited container. Closing this also surfaced and fixed a bigger pre-existing gap: regular/init containers never reported a `terminated` state at all before this round (always `Waiting: ContainerCreating` forever once exited) — see round 24 notes. Still not implemented: `FallbackToLogsOnError` (documented, deliberate — nodelet always behaves as `File` policy, a strict subset of correct behavior, never wrong/misleading).
 - ✅ **Pod `readinessGates`** (round 23; found in round 22's re-audit) — `spec.readinessGates` lets an external controller contribute additional `PodCondition`s that must all be `True` (alongside the built-in `ContainersReady`) before kubelet reports the pod's own `Ready` condition as `True`. `build_pod_status()`'s `Ready` computation now checks every gate's named condition against `prev`'s conditions; a missing condition counts as not-satisfied, matching upstream. Fixing this also required (and fixed) a real pre-existing bug: nodelet's JSON-Merge-Patch status writes were silently deleting any condition an external controller had set, since the whole `conditions` array got replaced wholesale — now foreign conditions are copied forward on every write. See round 23 notes.
+- ❌ **Startup probe failure never triggers a restart** (found in round 45's re-audit) — `probe_container()`'s startup-probe loop retries *forever* until it passes; there's no `failureThreshold`-triggered kill/restart the way a liveness failure gets one. Real kubelet kills and restarts the container (subject to `restartPolicy`) once a startup probe fails past its own `failureThreshold`, same as a liveness failure. Directly relevant to round 44's `probe_grace_period_seconds()` work, which was explicitly scoped to liveness only because this restart path doesn't exist yet for startup probes — this finding is that absence made concrete.
 
 ### Resource management
 - ✅ **Container resource requests/limits** — translated to CRI `LinuxContainerResources` (cpu shares/quota/period, memory limit; `linux_resources()`)
@@ -2688,6 +2756,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **In-place pod vertical scaling** (`resize` subresource, GA 1.33; found in round 39's re-audit, mechanism round 42, status reporting round 43) — new pure `resize_decision()` compares an already-running container's *actual* last-applied resources (reusing `container_resources`, tracked since round 16 for CPU Manager) against the pod spec's *desired* ones, applying a change in-place via the existing `UpdateContainerResources` RPC when `resizePolicy` allows it (default `NotRequired`), or funneling into the existing restart machinery when it demands `RestartContainer`. `containerStatuses[].resources`/`.allocatedResources` (app containers only) and a `PodResizeInProgress` condition are now reported (round 43), computed purely from two new side tables tracking "actually applied" vs. "currently requested" resources. Genuinely automated e2e tests (`kubectl exec` reads the container's own live cgroup file and the reported status fields, before/after `kubectl patch --subresource resize`). **Still open**: `PodResizePending` isn't implemented — nodelet has no admission/node-fitting layer that could ever *defer* a resize, so there's no real state for it to represent (intentional non-goal, documented, not an oversight); no admission-time rejection of a resize that would change a pod's QoS class (same pre-existing no-admission-layer boundary); init/ephemeral containers don't participate in resize at all yet. See rounds 42-43 notes.
 - ✅ **`oom_score_adj`** (round 28; found in round 27's re-audit) — `linux_resources()` now sets CRI's `LinuxContainerResources.oom_score_adj` per container via `eviction::oom_score_adj()`: Guaranteed `-998`, BestEffort `1000`, Burstable scaled by that container's own memory *request* against node capacity (`1000 - 1000*request/capacity`, clamped `[2, 999]`), matching real kubelet's formula exactly. Gives the kernel OOM killer QoS-aware signal, closing a real gap in this project's own eviction-manager story (rounds 7, 26) — a kernel OOM kill can happen faster than `eviction_loop()`'s check interval reacts. See round 28 notes.
 - ✅ **gRPC probes** (round 29; found in round 27's re-audit) — `probes.rs::probe_check()` now handles `probe.grpc` too, via a vendored `grpc.health.v1` client (`proto/health.proto`) calling the standard `Health/Check` RPC. `cri`-gated (needs `tonic`'s transport); a mock-only build's `check_grpc()` always returns `false`. Unit-tested failure paths (timeout, refused, non-gRPC listener) with solid confidence; the success path (a real passing `Health/Check`) is unvalidated — no gRPC server available in this sandbox to prove it live. See round 29 notes.
+- ❌ **Local ephemeral storage** (found in round 45's re-audit) — no `ephemeral-storage` anywhere: not in `Node.status.capacity`/`.allocatable`, no request/limit enforcement, no eviction-manager signal for `nodefs`/`imagefs` disk pressure at all (`eviction.rs`/`node.rs` both have zero references). First surfaced implicitly by round 44's `resolve_resource_field_ref()`, which had to resolve `limits.ephemeral-storage`/`requests.ephemeral-storage` to a documented `"0"` stub rather than a real value. Ties into this project's own pre-existing eviction-manager story (rounds 7, 26, 28) the same way `oom_score_adj` (round 28) did.
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
@@ -2719,6 +2788,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ❌ hostPath (explicitly unsupported today, logged and dropped)
 - ❌ `emptyDir.sizeLimit` enforcement
 - ❌ subPath `$(VAR)` expansion
+- ❌ **CSI ephemeral (inline) volumes** (found in round 45's re-audit) — `volumes[].csi` specified directly (not via a PVC or the generic `ephemeral` templated form, round 31) is never resolved at all; `resolve_volumes()` doesn't branch on `v.csi`, so it falls through to the generic "volume type not supported yet" warning. The real-world driver for this (e.g. `secrets-store-csi-driver`, mounting Vault/AWS Secrets Manager secrets with no PVC) would mostly reuse the CSI Node-service plumbing (`NodePublishVolume`, `csi.rs`) already built for the PVC path (rounds 12/13/19) — a new resolution function building the request straight from `CSIVolumeSource`, skipping the PVC/PV lookup entirely.
 - ✅ **`emptyDir.medium: Memory`** (round 30; found in round 27's re-audit) — `resolve_volumes()` now shells out to `mount -t tmpfs` (`mount_tmpfs_empty_dir()`) on the host directory for a `Memory`-medium `emptyDir`, honoring `sizeLimit` as `-o size=` when set. `remove_pod()` unmounts it again on teardown (a real RAM leak otherwise, unlike plain-disk `emptyDir`). Best-effort: falls back to the plain-disk directory (already created) on mount failure rather than failing the pod. Unvalidated against a real privileged mount in this sandbox — see round 30 notes.
 - ✅ **Generic ephemeral volumes** (round 31; `volumeSource.ephemeral`, found in round 27's re-audit) — `resolve_volumes()` now recognizes `.ephemeral`, resolving the deterministic-named (`<pod name>-<volume name>`) PVC the ephemeral-volume controller (a `kube-controller-manager` component — not nodelet's job, same as dynamic provisioning) auto-creates, with an ownership safety check (by UID) before trusting it, then reuses all of CSI's existing mount machinery. Unvalidated against a real CSI driver/ephemeral-volume controller — see round 31 notes.
 - ✅ **Image volume source** (round 32; `volumeSource.image`, KEP-4639, still beta, found in round 27's re-audit) — `resolve_volumes()`/`build_mounts()` use CRI's native `Mount.image`/`image_sub_path` fields directly (no host-path materialization needed, unlike every other volume kind) after a `PullImage` call resolves the reference. Always read-only, per the KEP. Genuinely automated e2e test (no external StorageClass/CSI driver needed — any pullable image works). See round 32 notes.
@@ -2999,6 +3069,21 @@ higher-value/correctness-critical than others:
       probe's own override (else the pod's), replacing a hardcoded
       `10` in `restart_container()`'s `StopContainer` timeout. Both
       genuinely automated e2e tests. See round 44 notes.
-- [ ] Both round 35's and round 39's audit lists are now fully closed.
-      A fresh gap re-audit is the natural next step. Ask before
+- [x] Round 45: fresh gap re-audit (no code change) — confirmed several
+      plausible candidates are already implemented (`Node.status.nodeInfo`,
+      all 3 node-pressure conditions, `preStop`'s `sleep` action), and
+      found 2 previously-untracked items plus generalized a
+      round-44-adjacent detail into its own gap: **CSI ephemeral (inline)
+      volumes** (`volumes[].csi` directly — likely low implementation
+      cost, the CSI Node-service plumbing already exists for the PVC
+      path), **startup probe failure never triggers a restart** (retries
+      forever instead of killing/restarting past `failureThreshold`, the
+      same way a liveness failure does), and **local ephemeral storage
+      isn't tracked anywhere** (capacity/allocatable/requests/limits/
+      eviction — round 44's `resolve_resource_field_ref()` `"0"` stub
+      was the first hint of this). See round 45 notes.
+- [ ] Candidates for the next round, by value: CSI ephemeral (inline)
+      volumes (likely the cheapest given existing CSI plumbing), startup
+      probe failure restart, local ephemeral storage (biggest — capacity
+      reporting + eviction signal, likely its own arc). Ask before
       starting the next round.

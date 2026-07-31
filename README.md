@@ -286,8 +286,15 @@ out the last two known audit findings: env `valueFrom.resourceFieldRef`
 (reproducing kubelet's "CPU reports whole cores, rounded up" quirk and
 the common JVM-heap-sizing memory-divisor pattern) and a liveness
 probe's own `terminationGracePeriodSeconds` override (previously a
-hardcoded 10s regardless of pod or probe settings). Full status list in
-`docs/GAP_CLOSURE.md`.
+hardcoded 10s regardless of pod or probe settings). A fresh gap
+re-audit (round 45) confirmed several plausible candidates were already
+implemented, and found 2 new gaps plus generalized one: **CSI
+ephemeral (inline) volumes** (`volumes[].csi` directly, not PVC-based —
+likely cheap given the CSI Node-service plumbing already exists),
+**startup probe failure never triggers a restart** (retries forever
+instead of killing/restarting past `failureThreshold`), and **local
+ephemeral storage isn't tracked anywhere** (capacity, requests/limits,
+or eviction). Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 
