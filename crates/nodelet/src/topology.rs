@@ -21,11 +21,22 @@
 //! providers — a single-node-only algorithm, not the general bitmask one.
 //! It reaches the same answer as upstream whenever a single NUMA node can
 //! satisfy everything (the common case, and the only case
-//! `single-numa-node` policy ever accepts anyway), but won't find a valid
-//! *multi*-node alignment upstream's `restricted` policy would accept —
-//! this treats `restricted` the same as `single-numa-node` (reject if no
-//! single node works) rather than upstream's wider multi-node allowance.
-//! Documented here rather than silently thin.
+//! `single-numa-node` policy ever accepts anyway).
+//!
+//! `restricted` (round 20) gets a real, bounded multi-node relaxation from
+//! `single-numa-node`'s strict co-location via `spread()`: when no single
+//! node satisfies every provider together, each provider instead picks
+//! its own best individual node independently (`None`/infeasible only if
+//! some provider's hint set is empty everywhere — a resource nodelet
+//! genuinely can't place at all, still a hard reject under both
+//! policies). This is *not* upstream's actual algorithm — upstream's
+//! providers themselves generate genuinely joint multi-node hints (e.g.
+//! "these two nodes together, split") evaluated as combinations across
+//! providers; here each provider is independently placed with no joint
+//! evaluation. It's a real (not simulated) relaxation that lets Restricted
+//! admit pods `single-numa-node` would reject, honestly scoped to what
+//! this implementation's independent hint providers can actually support
+//! — not a claim of upstream's combination search.
 //!
 //! As of round 18, Memory Manager is a third hint provider alongside CPU
 //! Manager and device plugins — see `memory_hint()` below.
@@ -40,13 +51,15 @@ pub enum TopologyManagerPolicy {
     /// Prefer an aligned NUMA node when one's achievable; never reject the
     /// pod if it isn't.
     BestEffort,
-    /// Reject the pod if no single NUMA node can satisfy every hint
-    /// provider's request (see the module doc comment for how this
-    /// differs from upstream's wider multi-node `restricted`).
+    /// Prefer single-node co-location; if no single node satisfies every
+    /// hint provider together, fall back to `spread()`'s per-provider
+    /// independent placement instead — only reject if some provider's
+    /// hint set is empty everywhere (see the module doc comment for how
+    /// this differs from upstream's own multi-node `restricted`).
     Restricted,
-    /// Same rejection behavior as `Restricted` in this implementation —
-    /// upstream distinguishes these two policies via the multi-node
-    /// allowance neither policy gets here.
+    /// Reject the pod outright if no single NUMA node can satisfy every
+    /// hint provider's request together — no spread fallback, unlike
+    /// `Restricted`.
     SingleNumaNode,
 }
 
@@ -190,6 +203,20 @@ pub fn align(hints: &[BTreeSet<u32>]) -> Option<u32> {
     let first = iter.next()?.clone();
     let common = iter.fold(first, |acc, h| acc.intersection(h).copied().collect::<BTreeSet<u32>>());
     common.into_iter().next()
+}
+
+/// `Restricted` policy's multi-node relaxation from `align()`'s strict
+/// single-node requirement (see the module doc comment): when no one node
+/// satisfies every provider, each provider still independently gets its
+/// own lowest-numbered eligible node. Returns one entry per `hints`, in
+/// the same order the caller passed them in (so it can zip the result
+/// back up to which resource each hint came from) — `None` overall
+/// (infeasible) if *any* hint set is completely empty, the one case
+/// `Restricted` still has to reject outright: a resource with nowhere on
+/// the node it could go at all, not just nowhere in common with the
+/// others.
+pub fn spread(hints: &[BTreeSet<u32>]) -> Option<Vec<u32>> {
+    hints.iter().map(|h| h.iter().copied().next()).collect()
 }
 
 #[cfg(test)]

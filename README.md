@@ -164,10 +164,13 @@ non-pinned containers — see round 18 notes), and **Topology Manager**
 (`topology.rs`, `NODELET_TOPOLOGY_MANAGER_POLICY`, disabled by default) —
 coordinates CPU Manager, Memory Manager, and device plugins so a
 container's exclusive cores, pinned memory, and allocated devices all
-land on the same NUMA node; a single-node-only alignment algorithm (not
-upstream's full multi-node search — see round 17/18 notes), reads real
-NUMA topology from `/sys/devices/system/node`. Still missing: Topology
-Manager's multi-node `restricted` allowance and device plugins'
+land on the same NUMA node; `restricted` policy (round 20) gets a real,
+bounded multi-node relaxation via `topology::spread()` — each provider
+placed on its own best node independently when no single node satisfies
+everyone — while `single-numa-node` stays strict single-node-only, and
+neither searches upstream's full joint cross-provider bitmask/permutation
+space (see round 17/18/20 notes), reads real NUMA topology from
+`/sys/devices/system/node`. Still missing: device plugins'
 `GetPreferredAllocation`/`PreStartContainer` — full list in
 `docs/GAP_CLOSURE.md`.
 
@@ -631,11 +634,14 @@ Two layers, and they're not substitutes for each other:
   check. Needs `TEST_CPU_MANAGER_STATIC=true` telling the suite the
   running nodelet has `NODELET_CPU_MANAGER_POLICY=static` set.
 
-  `topology_manager.sh` checks that `single-numa-node` policy never
-  spuriously rejects a pod on a single-NUMA-node host (the common case),
-  plus a manual-note for genuine cross-provider (CPU + device) alignment
-  verification, which needs real multi-socket hardware or a NUMA-aware
-  device plugin. Needs `TEST_TOPOLOGY_MANAGER_POLICY=single-numa-node`.
+  `topology_manager.sh` checks that `single-numa-node` and (round 20)
+  `restricted` policy both never spuriously reject a pod on a
+  single-NUMA-node host (the common case — `align()` alone already
+  satisfies it there), plus manual-notes for genuine cross-provider
+  (CPU + device) alignment and `restricted`'s multi-node `spread()`
+  fallback, both of which need real multi-socket hardware or a
+  NUMA-aware device plugin. Needs
+  `TEST_TOPOLOGY_MANAGER_POLICY=single-numa-node` or `=restricted`.
 
   `memory_manager.sh` creates a Guaranteed pod with a memory limit and
   checks its `cpuset.mems` cgroup file is non-empty (found by container

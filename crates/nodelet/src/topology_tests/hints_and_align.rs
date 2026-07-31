@@ -114,3 +114,29 @@ fn align_with_an_empty_hint_in_the_mix_is_none() {
     // is possible, full stop — even if other providers found plenty.
     assert_eq!(align(&[set(&[0, 1]), BTreeSet::new()]), None);
 }
+
+// --- spread ---
+
+#[test]
+fn spread_with_no_hints_at_all_is_an_empty_placement() {
+    assert_eq!(spread(&[]), Some(vec![]));
+}
+
+#[test]
+fn spread_picks_each_hints_own_lowest_node_independently() {
+    // No common node between {0} and {1}, but spread doesn't need one —
+    // each provider gets its own best node.
+    assert_eq!(spread(&[set(&[0]), set(&[1])]), Some(vec![0, 1]));
+}
+
+#[test]
+fn spread_still_prefers_the_lowest_node_when_multiple_qualify() {
+    assert_eq!(spread(&[set(&[2, 1]), set(&[3, 0])]), Some(vec![1, 0]));
+}
+
+#[test]
+fn spread_is_none_when_any_hint_is_completely_empty() {
+    // A resource with nowhere on the node it could go at all is still a
+    // hard reject, same as align() — spreading the others doesn't help.
+    assert_eq!(spread(&[set(&[0, 1]), BTreeSet::new()]), None);
+}

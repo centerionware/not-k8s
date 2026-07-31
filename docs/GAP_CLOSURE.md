@@ -27,6 +27,77 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 20: Topology Manager `restricted` multi-node spread (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-19). Offered Topology
+Manager's multi-node `restricted` allowance, device plugin polish, a
+fresh gap re-audit, or pause; user picked Topology Manager.
+
+Rounds 17/18 both documented `restricted` as behaving identically to
+`single-numa-node` (reject if no single node satisfies every hint
+provider together) — a deliberately simpler stand-in for upstream's own
+multi-node combination search, which needs each hint provider to
+generate genuinely joint multi-node hints (e.g. "these two nodes
+together, split") evaluated across provider combinations. This round
+gives `restricted` a **real, bounded** relaxation instead of upstream's
+exact algorithm: `topology::spread()` — when `align()` finds no single
+common node, each hint provider independently gets its own
+lowest-numbered eligible node rather than all providers being forced
+onto one. `None` (still a hard reject) only when some provider's hint
+set is completely empty — a resource that can't be placed anywhere on
+the node at all, the one case `restricted` and `single-numa-node` still
+agree on. `single-numa-node` itself is unchanged — never falls back to
+spread, matching upstream's own strict single-node-only semantics for
+that policy.
+
+- **`topology.rs` gained `spread(hints: &[BTreeSet<u32>]) -> Option<Vec<u32>>`**
+  — one entry per hint, in the same order passed in, each the lowest node
+  in that hint's own set.
+- **`runtime/cri.rs::create_and_start_container()`'s Topology Manager
+  block restructured**: the single `aligned_numa_node: Option<u32>` used
+  uniformly by CPU/Memory/device allocation is now three independent
+  preferences — `cpu_preferred_node`, `memory_preferred_node`,
+  `device_preferred_nodes: HashMap<String, u32>` (one entry per requested
+  extended resource) — populated together (all pointing at the same node)
+  when `align()` succeeds, or independently via `spread()` under
+  `restricted` when it doesn't. `HintKind` (a small local enum: `Cpu` /
+  `Memory` / `Device(String)`) tracks which hint in the `Vec` came from
+  which provider so `align()`'s/`spread()`'s node results can be zipped
+  back to the right preference variable. `CpuManager::allocate_preferring()`/
+  `MemoryManager::allocate_preferring()`/`DevicePlugins::allocate_preferring()`
+  call sites now each pass their own resource-specific preferred node
+  instead of one shared value — a real correctness fix on top of the new
+  capability: previously a `BestEffort`-policy container with, say, a
+  memory hint but no CPU hint would've had no preferred node computed at
+  all for memory even when one was knowable in isolation; now each
+  provider's own preference is used whenever it's known, independent of
+  whether the *others* aligned.
+- 4 new unit tests (`topology_tests/hints_and_align.rs`):
+  `spread()`'s empty-input, independent-per-hint-node,
+  lowest-node-preference, and empty-hint-is-infeasible cases.
+
+574 tests passing with `--features cri` (up from 570), 179 mock-only
+(unchanged — entirely `cri`-gated).
+`deploy/lib/test/cases/topology_manager.sh` extended: a new automated
+test proves `restricted` policy doesn't spuriously reject a pod on this
+sandbox's single-NUMA-node host either (mirroring the existing
+`single-numa-node` non-rejection test — `align()` alone should already
+satisfy it there, `spread()` never needs to trigger), plus a new
+manual-note test describing the real multi-NUMA hardware spot-check
+needed to prove `spread()` actually triggers and places resources
+correctly (this sandbox has only one NUMA node, so the interesting
+"CPU fits node 0, device/memory only fits node 1" case is inherently
+unautomatable here, same limitation every NUMA-adjacent round since 17
+has carried).
+
+**Confidence note**: `spread()` itself is pure and unit-tested with solid
+confidence. What's not validated live, same as every topology round
+before it: this sandbox has exactly one NUMA node, so the actual
+`align()`-fails-but-`spread()`-succeeds branch (the entire point of this
+round) has never executed against real divergent-NUMA hardware — only
+proven correct by direct unit test and by the "still doesn't
+spuriously reject on one node" e2e check.
+
 ## Round 19: CSI attach coordination (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-18). Offered "CSI
@@ -1072,7 +1143,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Node allocatable enforcement** (`--enforce-node-allocatable=pods`, its own upstream default) — `cgroup.rs::enforce_node_allocatable`, called once at startup, creates and caps the top-level `kubepods` cgroup (cpu.max/memory.max) at `Node.status.allocatable` so pods collectively can never exceed it. `Node.status.allocatable` itself is now `capacity - (system-reserved + kube-reserved)` (`node.rs::allocatable_map`) rather than always equal to capacity — a real correctness fix, not just the enforcement mechanism (`NODELET_SYSTEM_RESERVED_CPU_MILLICORES`/`_MEMORY_BYTES`, `NODELET_KUBE_RESERVED_CPU_MILLICORES`/`_MEMORY_BYTES`, all default `0`). Best-effort: needs root + cgroup v2 (cgroup v1 unsupported, matching modern kubelet defaults), logs and continues on failure rather than blocking startup — **unvalidated against a real cgroup v2 hierarchy**, no writable `/sys/fs/cgroup` in the sandbox that built this; see `deploy/lib/test/cases/cgroup_hierarchy.sh` for the live-cluster check.
 - ✅ **CPU Manager** (`cpu_manager.rs`, `static` policy) — Guaranteed-QoS containers requesting a whole number of CPUs get pinned to exclusive cores (`cpuset_cpus`); every other container gets the current shared pool (total minus reserved minus exclusively-claimed). Opt-in (`NODELET_CPU_MANAGER_POLICY`, default `none` matching upstream). **Bidirectional as of round 16**: `runtime/cri.rs::refresh_shared_pool_cpusets()` retroactively shrinks/grows every already-running shared-pool container's `cpuset_cpus` via CRI's `UpdateContainerResources` whenever an exclusive claim is made or released, matching real kubelet's own policy behavior — not just newly-created containers. As of round 17, NUMA-aware when Topology Manager is also enabled (`allocate_preferring()`); simple ascending-CPU-ID selection otherwise.
 - ✅ **Memory Manager** (`memory_manager.rs`, `static` policy) — Guaranteed-QoS containers with a memory limit get pinned to a single NUMA node (`cpuset_mems`). Opt-in (`NODELET_MEMORY_MANAGER_POLICY`, default `none`). **First-slice scope**: never spans multiple NUMA nodes (falls back to unconstrained if no single node has enough free capacity, rather than upstream's multi-node spanning); no shared-pool tracking or `UpdateContainerResources` retroactive sweep for non-pinned containers (unlike CPU Manager) — they're simply left unconstrained; no per-NUMA-node `--reserved-memory`-equivalent reservation. See round 18 notes.
-- ✅ **Topology Manager** (`topology.rs`) — coordinates CPU Manager, Memory Manager (as of round 18), and device plugins so a container's exclusive cores, pinned memory, and allocated devices land on the same NUMA node. Opt-in (`NODELET_TOPOLOGY_MANAGER_POLICY`, default `none`); `best-effort` prefers alignment without rejecting, `restricted`/`single-numa-node` reject the container if no single NUMA node satisfies every hint provider. **Single-node-only algorithm, not upstream's full bitmask/permutation one** — reaches the same answer whenever one NUMA node can satisfy everything (the common case), but won't find a valid multi-node alignment upstream's `restricted` would accept; this treats `restricted` identically to `single-numa-node`. See round 17/18 notes.
+- ✅ **Topology Manager** (`topology.rs`) — coordinates CPU Manager, Memory Manager (as of round 18), and device plugins so a container's exclusive cores, pinned memory, and allocated devices land on the same NUMA node. Opt-in (`NODELET_TOPOLOGY_MANAGER_POLICY`, default `none`); `best-effort` prefers alignment without rejecting, `single-numa-node` rejects the container outright if no single NUMA node satisfies every hint provider. **`restricted`** (round 20) gets a real, bounded multi-node relaxation instead — `spread()` places each hint provider on its own best node independently when no single node works for everyone, rejecting only if some provider's request can't be placed anywhere at all. **Single-node-only alignment, not upstream's full bitmask/permutation combination search** — `align()`/`spread()` reach the same answer as upstream whenever a single node can satisfy everything or every provider individually has *some* home, but don't search for upstream's genuinely joint cross-provider multi-node splits. See round 17/18/20 notes.
 - 🟡 **Device plugins** (`device_plugins.rs`, GPU/FPGA/etc. hardware resources) — discovered via the same dynamic plugin-registration protocol CSI drivers use (`plugin_registry.rs`, round 13); tracks live device inventory/health per resource name via `ListAndWatch`, advertises healthy counts on `Node.status.capacity`/`.allocatable`, and calls `Allocate()` during container creation to inject the envs/mounts/device-nodes/annotations a plugin returns. Not implemented: `GetPreferredAllocation` (always does its own first-healthy-unallocated pick) and `PreStartContainer`. Unvalidated against a real device plugin — see round 14 notes.
 - ❌ In-place pod resource resize (newer, still-maturing upstream feature)
 
@@ -1209,7 +1280,13 @@ higher-value/correctness-critical than others:
       (`ControllerPublishVolume`/`ControllerUnpublishVolume`) stays out of
       scope — confirmed against docs that's external-attacher's job, not
       kubelet's. See round 19 notes.
+- [x] Round 20: Topology Manager `restricted` multi-node spread —
+      `topology::spread()` places each hint provider on its own best NUMA
+      node independently when no single node satisfies everyone, instead
+      of `restricted` behaving identically to `single-numa-node`'s strict
+      single-node reject. Not upstream's exact joint-hint combination
+      search — a real, honestly-scoped bounded relaxation. See round 20
+      notes.
 - [ ] Everything else in the responsibility list above — biggest remaining
-      single items: Topology Manager's multi-node `restricted` allowance,
-      device plugin GetPreferredAllocation/PreStartContainer. Ask before
-      starting the next round.
+      single item: device plugin GetPreferredAllocation/PreStartContainer.
+      Ask before starting the next round.

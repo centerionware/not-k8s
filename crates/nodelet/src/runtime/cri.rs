@@ -2078,42 +2078,81 @@ impl CriRuntime {
         // node that can satisfy this container's exclusive-CPU want (if
         // any), pinned-memory want (if any), and every device-plugin
         // resource it needs (if any), so they don't end up scattered
-        // across nodes. A no-op (aligned = None, exactly pre-round-17
+        // across nodes. A no-op (nothing preferred, exactly pre-round-17
         // behavior) when the policy is `none`, or when this container has
-        // nothing for it to coordinate at all.
-        let mut aligned_numa_node: Option<u32> = None;
+        // nothing for it to coordinate at all. `Restricted` (round 20)
+        // falls back to `topology::spread()` — each provider placed on its
+        // own best node independently — when no single node works for
+        // everyone; `SingleNumaNode` never does (see topology.rs).
+        enum HintKind {
+            Cpu,
+            Memory,
+            Device(String),
+        }
+        let mut cpu_preferred_node: Option<u32> = None;
+        let mut memory_preferred_node: Option<u32> = None;
+        let mut device_preferred_nodes: HashMap<String, u32> = HashMap::new();
         if self.topology_policy != crate::topology::TopologyManagerPolicy::None {
             let mut hints = Vec::new();
+            let mut hint_kinds = Vec::new();
             if let (Some(count), Some(cpu_manager)) = (wants_exclusive_cpus, &self.cpu_manager) {
                 hints.push(crate::topology::cpu_hint(&self.numa_topology, &cpu_manager.shared_pool(), count));
+                hint_kinds.push(HintKind::Cpu);
             }
             if let (Some(bytes), Some(memory_manager)) = (wants_pinned_memory, &self.memory_manager) {
                 hints.push(crate::topology::memory_hint(&memory_manager.free_per_node(), bytes));
+                hint_kinds.push(HintKind::Memory);
             }
             for (resource_name, count) in &device_requests {
                 let available = self.device_plugins.available_device_numa_nodes(resource_name);
                 let all_nodes: std::collections::BTreeSet<u32> = self.numa_topology.keys().copied().collect();
                 hints.push(crate::topology::device_hint(&available, &all_nodes, *count as u32));
+                hint_kinds.push(HintKind::Device(resource_name.clone()));
             }
             if !hints.is_empty() {
-                aligned_numa_node = crate::topology::align(&hints);
-                if aligned_numa_node.is_none() {
-                    match self.topology_policy {
-                        crate::topology::TopologyManagerPolicy::Restricted | crate::topology::TopologyManagerPolicy::SingleNumaNode => {
+                let apply = |node: u32, kind: &HintKind, cpu: &mut Option<u32>, mem: &mut Option<u32>, dev: &mut HashMap<String, u32>| match kind {
+                    HintKind::Cpu => *cpu = Some(node),
+                    HintKind::Memory => *mem = Some(node),
+                    HintKind::Device(name) => {
+                        dev.insert(name.clone(), node);
+                    }
+                };
+                match crate::topology::align(&hints) {
+                    Some(node) => {
+                        for kind in &hint_kinds {
+                            apply(node, kind, &mut cpu_preferred_node, &mut memory_preferred_node, &mut device_preferred_nodes);
+                        }
+                    }
+                    None => match self.topology_policy {
+                        crate::topology::TopologyManagerPolicy::SingleNumaNode => {
                             anyhow::bail!(
                                 "Topology Manager: no single NUMA node can satisfy container '{}'s CPU/memory/device requests together",
                                 container.name
                             );
                         }
+                        crate::topology::TopologyManagerPolicy::Restricted => match crate::topology::spread(&hints) {
+                            Some(nodes) => {
+                                for (kind, node) in hint_kinds.iter().zip(nodes) {
+                                    apply(node, kind, &mut cpu_preferred_node, &mut memory_preferred_node, &mut device_preferred_nodes);
+                                }
+                                warn!(container = %container.name, "Topology Manager: no single NUMA node satisfies every request together; spreading each across its own best node (restricted policy)");
+                            }
+                            None => {
+                                anyhow::bail!(
+                                    "Topology Manager: some request in container '{}' can't be satisfied on any NUMA node at all",
+                                    container.name
+                                );
+                            }
+                        },
                         crate::topology::TopologyManagerPolicy::BestEffort => {
                             warn!(container = %container.name, "Topology Manager: no aligned NUMA node found; proceeding without alignment (best-effort policy)");
                         }
                         crate::topology::TopologyManagerPolicy::None => unreachable!("guarded above"),
-                    }
+                    },
                 }
             }
         }
-        let preferred_cpus = aligned_numa_node.and_then(|node| self.numa_topology.get(&node));
+        let preferred_cpus = cpu_preferred_node.and_then(|node| self.numa_topology.get(&node));
 
         // CPU Manager (static policy, opt-in — see cpu_manager.rs): a
         // Guaranteed-QoS container requesting a whole number of CPUs gets
@@ -2152,7 +2191,7 @@ impl CriRuntime {
         let mut memory_manager_key: Option<String> = None;
         if let (Some(bytes), Some(memory_manager)) = (wants_pinned_memory, &self.memory_manager) {
             let key = restart_count_key(sandbox_id, &container.name);
-            match memory_manager.allocate_preferring(&key, bytes, aligned_numa_node) {
+            match memory_manager.allocate_preferring(&key, bytes, memory_preferred_node) {
                 Some(node) => {
                     memory_manager_key = Some(key);
                     resources.cpuset_mems = node.to_string();
@@ -2182,7 +2221,8 @@ impl CriRuntime {
         let mut annotations = HashMap::new();
         let mut allocated_devices: Vec<(String, Vec<String>)> = Vec::new();
         for (resource_name, count) in device_requests {
-            match self.device_plugins.allocate_preferring(&resource_name, count, aligned_numa_node).await {
+            let preferred = device_preferred_nodes.get(&resource_name).copied();
+            match self.device_plugins.allocate_preferring(&resource_name, count, preferred).await {
                 Ok((device_ids, resp)) => {
                     envs.extend(resp.envs.into_iter().map(|(key, value)| KeyValue { key, value: value.into_bytes() }));
                     mounts.extend(resp.mounts.into_iter().map(|m| Mount {
