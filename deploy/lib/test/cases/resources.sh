@@ -42,6 +42,50 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_no_swap_default_disables_swap_via_cgroup() {
+    # Round 68: memorySwap.swapBehavior was never wired up at all before
+    # this. NODELET_MEMORY_SWAP_BEHAVIOR's default (NoSwap, matching
+    # upstream) pins a container's combined memory+swap ceiling to
+    # exactly its own memory limit — the OCI runtime derives cgroup v2's
+    # memory.swap.max as (combined ceiling - memory.max), so a limited
+    # container should read swap.max as exactly 0. This proves the
+    # *default* behavior end to end; LimitedSwap itself needs restarting
+    # nodelet with a different env var — see the manual-note test below.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="no-swap-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      resources:
+        limits:
+          memory: "67108864"
+      command: ["sh", "-c", "cat /sys/fs/cgroup/memory.swap.max > /shared/swapmax.txt 2>/shared/swapmax.err; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local value
+    if ! value="$(try_wait_until 30 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/swapmax.txt\" ]]" && wait_for_check_file "$name" shared swapmax.txt 5)"; then
+        delete_pod_if_exists "$name"
+        skip_test "no /sys/fs/cgroup/memory.swap.max in the container — this node either uses cgroup v1, or has the memory controller's swap accounting disabled at the kernel level (CONFIG_MEMCG_SWAP / swapaccount=1)"
+    fi
+    assert_eq "$value" "0" "with the default NoSwap behavior, a memory-limited container's cgroup memory.swap.max should read exactly 0 (no additional swap beyond its memory limit)"
+    delete_pod_if_exists "$name"
+}
+
+test_limited_swap_manual_note() {
+    skip_test "exercising memorySwap.swapBehavior: LimitedSwap needs restarting nodelet with NODELET_MEMORY_SWAP_BEHAVIOR=LimitedSwap set — not something this suite does to a running node automatically (same reasoning as eviction.sh's pressure-based manual procedures). Manual spot-check: (1) confirm the node actually has swap enabled (swapon --show, or a nonzero SwapTotal in /proc/meminfo — LimitedSwap grants nothing on a swapless node regardless of config), (2) restart nodelet with NODELET_MEMORY_SWAP_BEHAVIOR=LimitedSwap, (3) apply a Burstable pod (memory request set, no limit or a limit above the request) and read /sys/fs/cgroup/memory.swap.max from inside it — it should be a nonzero value roughly proportional to (memory request / node memory) * node swap, per KEP-2400's formula (container_swap_limit_bytes() in resources.rs), (4) apply a Guaranteed pod (request == limit) and confirm its memory.swap.max is still exactly 0 — LimitedSwap explicitly grants Guaranteed-shaped containers no swap at all, same as BestEffort."
+}
+
 test_hugepages_limit_is_enforced_via_cgroup() {
     # Round 59: resources.limits["hugepages-2Mi"] was never translated to
     # CRI's LinuxContainerResources.hugepage_limits at all before this.
@@ -323,6 +367,8 @@ EOF
 
 register_test test_memory_limit_is_enforced_via_cgroup
 register_test test_hugepages_limit_is_enforced_via_cgroup
+register_test test_no_swap_default_disables_swap_via_cgroup
+register_test test_limited_swap_manual_note
 register_test test_in_place_resize_updates_memory_limit_without_restarting
 register_test test_env_resource_field_ref_reports_the_containers_own_limits
 register_test test_cpu_limit_is_enforced_via_cgroup

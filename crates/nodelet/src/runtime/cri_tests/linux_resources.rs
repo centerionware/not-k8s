@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 /// (see linux_resources_oom_score_adj.rs for that) — a fixed arbitrary
 /// QoS/node-memory pair keeps them unaffected by round 28's new params.
 fn lr(resources: Option<&ResourceRequirements>) -> LinuxContainerResources {
-    linux_resources(resources, QosClass::Burstable, 4_000_000_000)
+    linux_resources(resources, QosClass::Burstable, 4_000_000_000, 0, false)
 }
 
 fn resources(cpu_request: Option<&str>, cpu_limit: Option<&str>, mem_limit: Option<&str>) -> ResourceRequirements {
@@ -151,13 +151,13 @@ fn no_hugepages_limit_produces_an_empty_list() {
 #[test]
 fn guaranteed_qos_gets_the_protected_oom_score() {
     let res = resources(None, None, None);
-    assert_eq!(linux_resources(Some(&res), QosClass::Guaranteed, 4_000_000_000).oom_score_adj, -998);
+    assert_eq!(linux_resources(Some(&res), QosClass::Guaranteed, 4_000_000_000, 0, false).oom_score_adj, -998);
 }
 
 #[test]
 fn besteffort_qos_gets_the_certain_death_oom_score() {
     let res = resources(None, None, None);
-    assert_eq!(linux_resources(Some(&res), QosClass::BestEffort, 4_000_000_000).oom_score_adj, 1000);
+    assert_eq!(linux_resources(Some(&res), QosClass::BestEffort, 4_000_000_000, 0, false).oom_score_adj, 1000);
 }
 
 #[test]
@@ -171,5 +171,5 @@ fn burstable_qos_uses_the_containers_own_memory_request_not_its_limit() {
     let res = ResourceRequirements { limits: Some(limits), ..Default::default() };
     let capacity = 4i64 * 1024 * 1024 * 1024;
     // request=0 over a 4Gi node -> 1000 - 0 = 1000, clamped to 999.
-    assert_eq!(linux_resources(Some(&res), QosClass::Burstable, capacity).oom_score_adj, 999);
+    assert_eq!(linux_resources(Some(&res), QosClass::Burstable, capacity, 0, false).oom_score_adj, 999);
 }

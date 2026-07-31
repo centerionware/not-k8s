@@ -117,7 +117,13 @@ pub(crate) fn resize_decision(
 ) -> ResizeDecision {
     let cpu_changed =
         desired.cpu_shares != actual.cpu_shares || desired.cpu_quota != actual.cpu_quota || desired.cpu_period != actual.cpu_period;
-    let memory_changed = desired.memory_limit_in_bytes != actual.memory_limit_in_bytes;
+    // memory_swap_limit_in_bytes (round 68) also changes on a
+    // request-only edit under LimitedSwap (the memory limit itself can
+    // stay put while the request-derived swap share moves) — comparing
+    // it too catches that, which comparing memory_limit_in_bytes alone
+    // wouldn't.
+    let memory_changed =
+        desired.memory_limit_in_bytes != actual.memory_limit_in_bytes || desired.memory_swap_limit_in_bytes != actual.memory_swap_limit_in_bytes;
     if !cpu_changed && !memory_changed {
         return ResizeDecision::NoChange;
     }
@@ -146,7 +152,13 @@ pub(crate) fn resize_decision(
 /// `eviction::oom_score_adj()`. Real kubelet computes this per container
 /// (not per pod), using each container's own memory *request*, which is
 /// why it's threaded through here rather than computed once per pod.
-pub(crate) fn linux_resources(resources: Option<&ResourceRequirements>, qos: QosClass, node_memory_bytes: i64) -> LinuxContainerResources {
+pub(crate) fn linux_resources(
+    resources: Option<&ResourceRequirements>,
+    qos: QosClass,
+    node_memory_bytes: i64,
+    node_swap_bytes: i64,
+    memory_swap_limited: bool,
+) -> LinuxContainerResources {
     let requests = resources.and_then(|r| r.requests.as_ref());
     let limits = resources.and_then(|r| r.limits.as_ref());
     let cpu_request = requests.and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
@@ -164,10 +176,66 @@ pub(crate) fn linux_resources(resources: Option<&ResourceRequirements>, qos: Qos
         cpu_quota,
         cpu_period,
         memory_limit_in_bytes: mem_limit.unwrap_or(0),
+        memory_swap_limit_in_bytes: container_swap_limit_bytes(
+            mem_request,
+            mem_limit.unwrap_or(0),
+            node_memory_bytes,
+            node_swap_bytes,
+            memory_swap_limited,
+        ),
         oom_score_adj: crate::eviction::oom_score_adj(qos, mem_request, node_memory_bytes),
         hugepage_limits: hugepage_limits(limits),
         ..Default::default()
     }
+}
+
+/// `memorySwap.swapBehavior` (round 68; GA 1.34, found in round 65's
+/// fresh gap re-audit) -> CRI's `LinuxContainerResources.memory_swap_limit_in_bytes`,
+/// which CRI's own proto/OCI runtime-spec both define as the *combined*
+/// memory+swap ceiling (mirroring cgroup v1's `memory.memsw.limit_in_bytes`
+/// naming even under cgroup v2, where the runtime derives the actual
+/// `memory.swap.max` by subtracting `memory.max` internally) — this
+/// function returns that combined value, never a swap-only one.
+///
+/// `NoSwap` (the default, matching upstream): every container with a
+/// memory limit gets its swap ceiling pinned to exactly that limit (zero
+/// *additional* swap) — a real correctness requirement, not just leaving
+/// the field unset, since an unset field wouldn't override a node that
+/// already has swap enabled at the OS level. A container with no memory
+/// limit at all is left unconfigured (`0`, CRI's own "not specified"
+/// sentinel) — there's no bound to peg a combined memory+swap value to.
+///
+/// `LimitedSwap`: implements the upstream KEP-2400 formula exactly —
+/// `swapLimit = (containerMemoryRequest / nodeTotalMemory) * nodeTotalSwap`,
+/// with `ContainerMemoryProportion` (and so the swap share) defined as
+/// zero whenever `request == limit` (a Guaranteed-shaped container) or
+/// the container has no memory request at all (BestEffort-shaped) —
+/// between those two rules, only genuinely Burstable-shaped containers
+/// (a request set, and no limit or a limit above the request) ever get a
+/// nonzero share, without needing to compute the pod's overall QoS class
+/// at all. **Known scope limitation**: nodelet has no
+/// `--system-reserved`/`--kube-reserved`-equivalent knob for swap, so
+/// `node_swap_bytes` is the node's raw `SwapTotal` with nothing withheld
+/// — same simplification already accepted for ephemeral-storage (round
+/// 48) and hugepages (round 60) capacity reporting.
+pub(crate) fn container_swap_limit_bytes(mem_request: i64, mem_limit: i64, node_memory_bytes: i64, node_swap_bytes: i64, memory_swap_limited: bool) -> i64 {
+    let no_extra_swap = || if mem_limit > 0 { mem_limit } else { 0 };
+    if !memory_swap_limited {
+        return no_extra_swap();
+    }
+    let guaranteed_shaped = mem_limit > 0 && mem_limit == mem_request;
+    let best_effort_shaped = mem_request <= 0;
+    if guaranteed_shaped || best_effort_shaped || node_memory_bytes <= 0 {
+        return no_extra_swap();
+    }
+    if mem_limit <= 0 {
+        // Burstable-shaped but no memory limit at all — no bound to
+        // combine a swap share with; see the doc comment above.
+        return 0;
+    }
+    let proportion = mem_request as f64 / node_memory_bytes as f64;
+    let swap_share = (proportion * node_swap_bytes as f64).round() as i64;
+    mem_limit + swap_share.clamp(0, node_swap_bytes.max(0))
 }
 
 

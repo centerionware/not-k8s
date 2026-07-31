@@ -13,6 +13,8 @@ fn cfg(labels: BTreeMap<String, String>) -> Config {
         status_interval: Duration::from_secs(60),
         cpu_cores: 1,
         memory_bytes: 1,
+        memory_swap_bytes: 0,
+        memory_swap_limited: false,
         max_pods: 1,
         labels,
         service_proxy: false,

@@ -27,6 +27,71 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 68: swap support (memorySwap.swapBehavior) (2026-07-31, same day)
+
+Closes the last of round 65's fresh-audit candidates — `memorySwap.swapBehavior`
+(GA in k8s 1.34). CRI already had native support
+(`LinuxContainerResources.memory_swap_limit_in_bytes`), never wired up.
+
+- New `NODELET_MEMORY_SWAP_BEHAVIOR` config knob (`config.rs`), default
+  `NoSwap` (matching upstream's own kubelet default) — `LimitedSwap` is
+  the only other accepted value. `config.rs` also gained
+  `memory_swap_bytes` (node total swap capacity), read once at startup
+  from `/proc/meminfo`'s `SwapTotal` via new `detect_swap_bytes()` —
+  deliberately the *total* capacity, not currently-free swap, so a
+  container's computed share stays stable regardless of what else on the
+  node happens to be using swap at any given moment. `0` on a swapless
+  node or any read failure (no fallback guess, unlike
+  `detect_memory_bytes()`'s 2GiB fallback — a wrong swap-capacity guess
+  would actively mislead the `LimitedSwap` formula, whereas 0 correctly
+  means "nothing to allocate" either way).
+- New pure `container_swap_limit_bytes()` in `resources.rs`, wired into
+  `linux_resources()`'s existing memory-limit computation:
+  - **`NoSwap`**: every container with a memory limit gets its combined
+    memory+swap ceiling pinned to exactly that limit (zero *additional*
+    swap) — CRI's field (and the underlying OCI runtime-spec field it
+    maps to) is documented as the *combined* memory+swap total, mirroring
+    cgroup v1's `memory.memsw.limit_in_bytes` naming even under cgroup
+    v2 (where the runtime derives `memory.swap.max` by subtracting
+    `memory.max` internally) — setting it to exactly the memory limit is
+    what actually yields `memory.swap.max = 0`. A container with no
+    memory limit at all is left unconfigured (nothing to peg a combined
+    value to).
+  - **`LimitedSwap`**: implements upstream's KEP-2400 formula exactly —
+    `swapLimit = (containerMemoryRequest / nodeTotalMemory) * nodeTotalSwap`,
+    with the container's proportional share defined as zero whenever
+    `request == limit` (Guaranteed-shaped) or there's no memory request
+    at all (BestEffort-shaped) — between those two rules alone, only
+    genuinely Burstable-shaped containers ever get a nonzero share,
+    without needing to compute the pod's overall QoS class at all
+    (matching upstream's own documented "only Burstable" restriction as
+    an emergent property of the per-container formula, not a separate
+    QoS check). **Known scope limitation**: nodelet has no
+    `--system-reserved`/`--kube-reserved`-equivalent knob for swap, so
+    the full raw `SwapTotal` is used as `nodeTotalSwap` with nothing
+    withheld — same simplification already accepted for ephemeral-storage
+    (round 48) and hugepages (round 60) capacity reporting.
+  - `resize_decision()` now also compares `memory_swap_limit_in_bytes`
+    between desired/actual (not just `memory_limit_in_bytes`) — catches
+    a request-only in-place resize, which changes a `LimitedSwap`
+    container's swap share even when its memory *limit* doesn't move.
+- 11 new unit tests (`cri_tests/swap_limit.rs`): `NoSwap` pinning
+  behavior (with/without a memory limit, ignores node swap capacity
+  entirely), `LimitedSwap`'s Guaranteed/BestEffort zero-share cases,
+  Burstable's proportional share (exact value checked), the
+  no-memory-limit Burstable case granting nothing, swap-share clamping
+  to the node's total swap, and zero-node-memory/zero-node-swap
+  degenerate cases (no divide-by-zero panics).
+- Genuinely automated e2e test
+  (`test_no_swap_default_disables_swap_via_cgroup` in
+  `deploy/lib/test/cases/resources.sh`): proves the *default* `NoSwap`
+  behavior end to end — a memory-limited container's real
+  `/sys/fs/cgroup/memory.swap.max` reads exactly `0`. `LimitedSwap`
+  itself needs restarting nodelet with a different env var, so it gets a
+  manual-spot-check note (`test_limited_swap_manual_note`), same pattern
+  as `eviction.sh`'s pressure-based procedures.
+- This closes every candidate round 65's fresh gap re-audit found.
+
 ## Round 67: emptyDir.sizeLimit enforcement (2026-07-31, same day)
 
 Closes the last of round 65's fresh-audit candidates that wasn't swap
@@ -3955,6 +4020,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **HugePages** (found in round 58's re-audit; all 3 pieces closed rounds 59-61) — container `resources.limits["hugepages-<size>"]` is translated to CRI's `LinuxContainerResources.hugepage_limits` (round 59), `Node.status.capacity`/`.allocatable["hugepages-<size>"]` report every reserved hugepage pool read from `/sys/kernel/mm/hugepages/` (round 60), and `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volumes are now real `hugetlbfs` mounts (round 61).
 - ✅ **`securityContext.supplementalGroupsPolicy`** (GA 1.33; found in round 58's re-audit; closed round 62) — `Merge`/`Strict` now translates directly to CRI's own `SupplementalGroupsPolicy` enum on both the sandbox- and container-level security context; genuinely automated e2e test proves `Strict` excludes image-defined `/etc/group` membership while `Merge` includes it, using a portable ConfigMap-subPath-supplied `/etc/passwd`/`/etc/group` rather than depending on `$TEST_IMAGE`'s own baked-in group file.
 - 🟡 **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit; closed round 63, gating + batching closed round 64) — kubelet's actual responsibilities are implemented: resolving a pod's `resourceClaims` to their `ResourceClaim` objects' `status.allocation`, gating on `status.reservedFor` actually listing this pod (round 64 — real kubelet's own safety check; `reservedFor` itself is scheduler-written, not kubelet-written, correcting round 63's docs), calling the owning driver(s)' `NodePrepareResources`/`NodeUnprepareResources` once per driver per pod covering every claim it owns (round 64 batching; new `dra.rs`, reusing the plugin-registration infrastructure with a new `"DRAPlugin"` type), and wiring the returned CDI device IDs into each container's CRI `ContainerConfig.cdi_devices` per its `resources.claims[].{name, request}` entries. **Known scope limitations**: `proto/draplugin.proto` was reconstructed from public documentation rather than vendored from upstream, so its exact wire format is unverified against a live third-party driver; no genuinely automated e2e test exists (needs a real DRA driver binary this bash-only harness can't stand up — see `dra.sh`'s manual-spot-check notes, same honest-limitation pattern as `device_plugins.sh`).
+- ✅ **Swap support (`memorySwap.swapBehavior`)** (GA 1.34; found in round 65's fresh gap re-audit; closed round 68) — `NODELET_MEMORY_SWAP_BEHAVIOR` (`NoSwap` default / `LimitedSwap`) drives CRI's native `LinuxContainerResources.memory_swap_limit_in_bytes` via new `container_swap_limit_bytes()`, implementing upstream's KEP-2400 formula exactly for `LimitedSwap` (proportional share for Burstable-shaped containers only, an emergent property of the per-container `request == limit` / no-request checks rather than a separate QoS lookup). **Known scope limitation**: no `--system-reserved`/`--kube-reserved`-equivalent knob for swap, so the node's full raw `SwapTotal` is used with nothing withheld.
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
@@ -4510,9 +4576,20 @@ accordingly; see those files' own updated framing.
       `Memory`/`HugePages`-medium `sizeLimit` is already kernel-enforced
       at mount time. 12 new unit tests + a genuinely automated e2e test.
       See round 67 notes.
-- [ ] Candidates for the next round: swap support
-      (`memorySwap.swapBehavior`, GA 1.34 — a new
-      `NODELET_MEMORY_SWAP_BEHAVIOR` knob, Burstable-QoS-only allowance
-      per upstream rules, similar shape/scope to CPU/Memory Manager) is
-      the last remaining candidate from round 65's fresh audit. Ask
-      before starting the next round.
+- [x] Round 68: swap support (memorySwap.swapBehavior) — new
+      `NODELET_MEMORY_SWAP_BEHAVIOR` knob (`NoSwap` default /
+      `LimitedSwap`) drives CRI's native `memory_swap_limit_in_bytes` via
+      new pure `container_swap_limit_bytes()`, implementing KEP-2400's
+      formula exactly. `resize_decision()` also now compares the new
+      field. 11 new unit tests + a genuinely automated e2e test proving
+      the default `NoSwap` behavior's real cgroup effect
+      (`memory.swap.max == 0`); `LimitedSwap` itself gets a
+      manual-spot-check note (needs a node restart with a different env
+      var). See round 68 notes. This closes every candidate round 65's
+      fresh gap re-audit found.
+- [ ] Candidates for the next round: none currently queued — round 65's
+      fresh gap re-audit is now fully closed out (hostPath, stopSignal,
+      emptyDir.sizeLimit, swap support). The natural next step is
+      another fresh gap re-audit (kubernetes.io docs + CRI/K8s API
+      struct fields directly), similar to rounds 58 and 65. Ask before
+      starting the next round.

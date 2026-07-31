@@ -12,6 +12,8 @@ fn cfg(cpu: u64, mem: u64, pods: u64) -> Config {
         status_interval: Duration::from_secs(60),
         cpu_cores: cpu,
         memory_bytes: mem,
+        memory_swap_bytes: 0,
+        memory_swap_limited: false,
         max_pods: pods,
         labels: Default::default(),
         service_proxy: false,

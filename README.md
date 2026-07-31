@@ -406,7 +406,13 @@ swap support): a plain-disk `emptyDir` volume exceeding its own
 whole-pod ephemeral-storage limit (round 49) and general node-pressure
 eviction — scoped to plain-disk `emptyDir` only, since a `Memory`/
 `HugePages`-medium volume's `sizeLimit` is already a real kernel-enforced
-cap at mount time. Full status list in `docs/GAP_CLOSURE.md`.
+cap at mount time. Round 68 closed the last of round 65's audit
+candidates, swap support (`memorySwap.swapBehavior`, GA 1.34): a new
+`NODELET_MEMORY_SWAP_BEHAVIOR` knob (`NoSwap` default / `LimitedSwap`)
+drives CRI's native `memory_swap_limit_in_bytes`, implementing upstream's
+KEP-2400 proportional-share formula exactly for `LimitedSwap` — with a
+genuinely automated e2e test proving the default `NoSwap` behavior's real
+cgroup effect. Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for
@@ -975,6 +981,7 @@ Two layers, and they're not substitutes for each other:
 | `NODELET_CPU_MANAGER_POLICY` | `none` | `none` or `static` (`cri` only) — pins Guaranteed-QoS containers requesting a whole number of CPUs to exclusive cores. See [Status](#status). |
 | `NODELET_MEMORY_MANAGER_POLICY` | `none` | `none` or `static` (`cri` only) — pins Guaranteed-QoS containers with a memory limit to a single NUMA node. See [Status](#status). |
 | `NODELET_TOPOLOGY_MANAGER_POLICY` | `none` | `none`, `best-effort`, `restricted`, or `single-numa-node` (`cri` only) — coordinates CPU Manager, Memory Manager, and device plugins by NUMA node. See [Status](#status). |
+| `NODELET_MEMORY_SWAP_BEHAVIOR` | `NoSwap` | `NoSwap` or `LimitedSwap` (`cri` only) — `NoSwap` disables swap for every memory-limited container; `LimitedSwap` grants Burstable-shaped containers a proportional share of the node's swap. See [Status](#status). |
 | `NODELET_USERNS_BASE_UID` | `100000` | Base host UID/GID for `spec.hostUsers: false` pods' exclusive ID ranges (`cri` only). See [Status](#status). |
 | `NODELET_USERNS_LENGTH` | `65536` | Size of each pod's exclusive UID/GID range (`cri` only). |
 | `NODELET_USERNS_MAX_PODS` | `1024` | How many concurrent `hostUsers: false` pods this node's allocator supports (`cri` only). |

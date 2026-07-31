@@ -13,6 +13,8 @@ fn cfg() -> Config {
         status_interval: Duration::from_secs(60),
         cpu_cores: 4,
         memory_bytes: 8_000_000_000,
+        memory_swap_bytes: 0,
+        memory_swap_limited: false,
         max_pods: 110,
         labels: Default::default(),
         service_proxy: false,

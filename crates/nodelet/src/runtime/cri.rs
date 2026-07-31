@@ -194,6 +194,22 @@ pub struct CriRuntime {
     /// `Node.status.capacity.cpu` (`config.rs`'s `cpu_cores` /
     /// `NODELET_CPU`).
     node_cpu_millicores: i64,
+    /// Node swap capacity in bytes (round 68) — the `TotalPodsSwapAvailable`
+    /// input to `container_swap_limit_bytes()`'s `LimitedSwap` formula.
+    /// Read once at startup from `/proc/meminfo`'s `SwapTotal` (total
+    /// capacity, not currently-free swap — a container's computed swap
+    /// share must stay stable across reconciles regardless of what else on
+    /// the node happens to be using swap right now). `0` on a swapless
+    /// node, which the formula already treats as "no swap to allocate."
+    node_swap_bytes: i64,
+    /// `NODELET_MEMORY_SWAP_BEHAVIOR` (round 68; GA 1.34, found in round
+    /// 65's fresh gap re-audit) — `true` means `LimitedSwap` (Burstable-QoS
+    /// containers get a proportional swap allowance), `false` (the
+    /// default, matching upstream) means `NoSwap` (every container's swap
+    /// is explicitly capped at its own memory limit, i.e. zero additional
+    /// swap — not just left unconfigured, which on a node with swap
+    /// already enabled at the OS level wouldn't actually prevent swap use).
+    memory_swap_limited: bool,
     /// This CRI runtime's own name (e.g. `"containerd"`), from a one-time
     /// `Version` RPC call made in `connect()` (round 57; found in round
     /// 54's re-audit) — real kubelet always formats `ContainerStatus.containerID`/
@@ -325,6 +341,8 @@ impl CriRuntime {
         userns: crate::userns::UsernsAllocator,
         node_memory_bytes: i64,
         node_cpu_millicores: i64,
+        node_swap_bytes: i64,
+        memory_swap_limited: bool,
     ) -> Result<Self> {
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
@@ -376,6 +394,8 @@ impl CriRuntime {
             userns,
             node_memory_bytes,
             node_cpu_millicores,
+            node_swap_bytes,
+            memory_swap_limited,
             runtime_name,
             restart_counts: Mutex::new(HashMap::new()),
             csi,
@@ -499,6 +519,9 @@ mod tests_host_path;
 #[cfg(test)]
 #[path = "cri_tests/stop_signal.rs"]
 mod tests_stop_signal;
+#[cfg(test)]
+#[path = "cri_tests/swap_limit.rs"]
+mod tests_swap_limit;
 #[cfg(test)]
 #[path = "cri_tests/ephemeral_volume.rs"]
 mod tests_ephemeral_volume;

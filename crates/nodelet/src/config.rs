@@ -47,6 +47,15 @@ pub struct Config {
     pub status_interval: Duration,
     pub cpu_cores: u64,
     pub memory_bytes: u64,
+    /// Node swap capacity in bytes (round 68), read from `/proc/meminfo`'s
+    /// `SwapTotal` — the `TotalPodsSwapAvailable` input to `LimitedSwap`'s
+    /// per-container swap-share formula. `0` on a swapless node.
+    pub memory_swap_bytes: u64,
+    /// `NODELET_MEMORY_SWAP_BEHAVIOR` (round 68; GA 1.34) — `true` means
+    /// `LimitedSwap`, `false` (the default, matching upstream) means
+    /// `NoSwap`. See `runtime/cri/resources.rs::container_swap_limit_bytes()`.
+    #[cfg_attr(not(feature = "cri"), allow(dead_code))]
+    pub memory_swap_limited: bool,
     pub max_pods: u64,
     pub labels: BTreeMap<String, String>,
     /// Program ClusterIP/NodePort nftables rules (see `svc.rs`). Defaults to
@@ -221,6 +230,12 @@ impl Config {
             Ok(v) => v.parse().context("NODELET_MEMORY_BYTES must be an integer")?,
             Err(_) => detect_memory_bytes(),
         };
+        let memory_swap_bytes = detect_swap_bytes();
+        let memory_swap_limited = match std::env::var("NODELET_MEMORY_SWAP_BEHAVIOR").as_deref() {
+            Ok("LimitedSwap") => true,
+            Ok("NoSwap") | Err(_) => false,
+            Ok(other) => anyhow::bail!("unknown NODELET_MEMORY_SWAP_BEHAVIOR '{other}' (want 'NoSwap' or 'LimitedSwap')"),
+        };
 
         let max_pods = env_u64("NODELET_MAX_PODS", 110)?;
 
@@ -351,6 +366,8 @@ impl Config {
             status_interval,
             cpu_cores,
             memory_bytes,
+            memory_swap_bytes,
+            memory_swap_limited,
             max_pods,
             labels,
             service_proxy,
@@ -459,4 +476,24 @@ fn detect_memory_bytes() -> u64 {
         }
     }
     2 * 1024 * 1024 * 1024 // 2 GiB fallback
+}
+
+/// Parse `SwapTotal` (kB) from `/proc/meminfo` (round 68) — total swap
+/// capacity, not currently-free swap, so a container's `LimitedSwap`
+/// share stays stable regardless of what else on the node is using swap
+/// right now. `0` (not a fallback guess) on any read/parse failure or a
+/// genuinely swapless node — both cases correctly mean "nothing to
+/// allocate," unlike `detect_memory_bytes()`'s 2GiB fallback where a
+/// wrong guess would be actively misleading for Node.status.capacity.
+fn detect_swap_bytes() -> u64 {
+    if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+        for line in meminfo.lines() {
+            if let Some(rest) = line.strip_prefix("SwapTotal:") {
+                if let Some(kb) = rest.split_whitespace().next().and_then(|n| n.parse::<u64>().ok()) {
+                    return kb * 1024;
+                }
+            }
+        }
+    }
+    0
 }

@@ -61,7 +61,7 @@ impl CriRuntime {
                 let key = restart_count_key(sandbox_id, &container.name);
                 let recorded = self.container_resources.lock().unwrap().get(&key).cloned();
                 if let Some((container_id, actual)) = recorded {
-                    let desired = linux_resources(container.resources.as_ref(), qos, self.node_memory_bytes);
+                    let desired = linux_resources(container.resources.as_ref(), qos, self.node_memory_bytes, self.node_swap_bytes, self.memory_swap_limited);
                     match resize_decision(&desired, &actual, container.resize_policy.as_deref()) {
                         ResizeDecision::NoChange => return Ok(()),
                         ResizeDecision::UpdateInPlace => {
@@ -70,6 +70,7 @@ impl CriRuntime {
                             updated.cpu_quota = desired.cpu_quota;
                             updated.cpu_period = desired.cpu_period;
                             updated.memory_limit_in_bytes = desired.memory_limit_in_bytes;
+                            updated.memory_swap_limit_in_bytes = desired.memory_swap_limit_in_bytes;
                             updated.oom_score_adj = desired.oom_score_adj;
                             let mut rt = self.rt.clone();
                             match rt
@@ -243,7 +244,7 @@ impl CriRuntime {
                 container.termination_message_path.clone().filter(|p| !p.is_empty()).unwrap_or_else(|| "/dev/termination-log".to_string());
             mounts.push(Mount { container_path, host_path: host_path.to_string_lossy().into_owned(), readonly: false, ..Default::default() });
         }
-        let mut resources = linux_resources(container.resources.as_ref(), qos, self.node_memory_bytes);
+        let mut resources = linux_resources(container.resources.as_ref(), qos, self.node_memory_bytes, self.node_swap_bytes, self.memory_swap_limited);
         let limits = container.resources.as_ref().and_then(|r| r.limits.as_ref());
         let cpu_limit = limits.and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
         let mem_limit = limits.and_then(|m| m.get("memory")).and_then(parse_memory_bytes);
