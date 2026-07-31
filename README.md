@@ -269,7 +269,10 @@ default, the opposite of real Kubernetes' actual CONTAINER-scoped
 default. Every container now gets an explicit, correct PID-namespace
 mode (`hostPID` → shares the node's; `shareProcessNamespace` → shares
 one namespace across the pod; otherwise its own isolated one, matching
-upstream). Full status list in `docs/GAP_CLOSURE.md`.
+upstream). Round 41 closed **`securityContext.sysctls`** — flattened
+into CRI's `LinuxPodSandboxConfig.sysctls` map, the same field
+`sandbox_config()` already populates for `cgroup_parent`/`overhead`.
+Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 

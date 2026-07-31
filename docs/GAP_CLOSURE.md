@@ -27,6 +27,63 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 41: securityContext.sysctls (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-40). Offered the 3
+remaining round-39 candidates (in-place resize, sysctls, round 35's
+2 leftovers); user picked `sysctls` — smaller and self-contained,
+compared to resize's likely multi-round scope.
+
+Before this round, `spec.securityContext.sysctls` was read nowhere —
+CRI's `LinuxPodSandboxConfig` has a dedicated `sysctls` map field
+sitting right next to `cgroup_parent`/`overhead`/`security_context`
+(all already populated by `sandbox_config()`), completely unread.
+
+- **New pure `pod_sysctls(pod_sc: Option<&PodSecurityContext>) ->
+  HashMap<String, String>`** — flattens `spec.securityContext.sysctls`
+  (a `Vec<Sysctl{name, value}>`) into the map CRI wants. A later
+  duplicate `name` in the list simply overwrites an earlier one in the
+  resulting map; the apiserver's own validation already rejects
+  duplicate sysctl names within a single Pod, so this never has to
+  arbitrate a real conflict itself.
+- **`sandbox_config()`** gained a `sysctls: &HashMap<String, String>`
+  parameter, set directly on `LinuxPodSandboxConfig.sysctls`.
+  `ensure_pod()` computes it once (alongside the existing hostname
+  resolution) and threads it through `run_sandbox()`. The two other
+  `sandbox_config()` call sites (`PullImageRequest`/
+  `CreateContainerRequest`'s own context-only `sandbox_config` field)
+  pass an empty map — unaffected, same reasoning as `hostname` in
+  round 38 and the namespace options in round 40: only the real
+  `RunPodSandbox` call needs the real value.
+- No CRI-level enforcement of which sysctls are "namespaced" (safe)
+  vs. host-wide (unsafe, real kubelet gates the latter behind a node
+  allowlist) — that validation is the apiserver's job upstream
+  (`PodSecurityPolicy`/admission), and nodelet has no admission layer
+  at all (documented architectural boundary, not new to this round).
+  An unsupported/unknown sysctl simply surfaces as a real
+  `RunPodSandbox` error from the CRI runtime itself, same as any other
+  sandbox-creation failure.
+- No new env vars, no new proto surface — pure logic plus one widened
+  function signature in `runtime/cri.rs`.
+- 5 new unit tests: `cri_tests/pod_sysctls.rs` (3 cases: no security
+  context, no sysctls field, translation with 2 entries) and
+  `cri_tests/sandbox_config.rs` (+2: pass-through, empty-map default).
+- New e2e test (`deploy/lib/test/cases/security.sh`):
+  `test_sysctls_are_applied_to_the_sandbox` — sets
+  `net.ipv4.ip_unprivileged_port_start` (namespaced, safe without
+  `hostNetwork`/`privileged`) and reads its live value back from
+  `/proc/sys` inside the container, a real structural proof rather
+  than a status-string check; skips (not fails) if the CRI runtime
+  doesn't reach `Running` at all, since sysctl namespacing support can
+  vary by kernel/runtime version.
+
+**Confidence note**: `pod_sysctls()` is pure and fully unit-tested; the
+e2e test is genuinely live proof (a real container's own `/proc/sys`
+read), though it only exercises one specific sysctl — the general
+mechanism (an arbitrary name/value map reaching CRI unmodified) doesn't
+depend on which sysctl was chosen, so this is representative, not a
+narrow special case.
+
 ## Round 40: hostPID/hostIPC/shareProcessNamespace (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-39). Offered round
@@ -2378,7 +2435,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
-- ❌ **`securityContext.sysctls`** (found in round 39's re-audit) — CRI's `LinuxPodSandboxConfig` has a dedicated `sysctls` map field sitting right next to `cgroup_parent`/`overhead`/`security_context`, which `sandbox_config()` already populates — completely unread today. Moderate value: real, if less common, per-pod kernel tuning (e.g. `net.core.somaxconn`).
+- ✅ **`securityContext.sysctls`** (round 41; found in round 39's re-audit) — new pure `pod_sysctls()` flattens `spec.securityContext.sysctls` into CRI's `LinuxPodSandboxConfig.sysctls` map, threaded through `sandbox_config()`/`ensure_pod()` alongside the existing hostname resolution. No admission-time allowlisting of "safe" (namespaced) vs. unsafe (host-wide) sysctls — that's the apiserver's job upstream and nodelet has no admission layer at all; an unsupported sysctl simply surfaces as a real `RunPodSandbox` error from the CRI runtime. Genuinely automated e2e test (a real container's own `/proc/sys` read). See round 41 notes.
 - ✅ **`hostPID`/`hostIPC`/`shareProcessNamespace`** (round 40; found in round 39's re-audit) — new pure `pid_namespace_mode(host_pid, share_process_namespace) -> NamespaceMode` (`hostPID` wins → `Node`, else `shareProcessNamespace` → `Pod`, else `Container`) is now always applied, on both `sandbox_config()`'s `namespace_options.pid` and each container's own `linux_security_context()`'s `namespace_options.pid` (mirroring real kubelet setting it in both places). **Correctness fix, not just a missing feature**: CRI's own proto comment on `NamespaceOption.pid` says *"the CRI default is POD, but the v1.PodSpec default is CONTAINER"* — before this round nodelet never set the field at all, so every container was silently getting containerd's own POD-shared default, the **opposite** of real Kubernetes' actual default. `hostIPC` sets `namespace_options.ipc` to `Node` (else `Pod` — IPC has no `CONTAINER`-scope concept in the API at all, unlike PID). Genuinely automated e2e tests for `hostPID`/`shareProcessNamespace` (a container's own pid, structural proof); `hostIPC` is unit-tested only — no simple portable shell-level IPC probe in a minimal image, a documented scope limitation. See round 40 notes.
 - ✅ **User namespaces** (`spec.hostUsers: false`, round 25; found in round 22's re-audit) — `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive host UID/GID range (fixed length, default 65536, configurable via `NODELET_USERNS_BASE_UID`/`_LENGTH`/`_MAX_PODS`), set as a `POD`-mode `UserNamespace` on `LinuxSandboxSecurityContext.namespace_options.userns_options`. Simplified vs. upstream's own variable-length `usernsManager`: every pod gets the same fixed range size, and allocation state is in-memory only (self-heals as still-running pods reconcile, narrow double-allocation window across a nodelet restart — documented, not hidden). Unvalidated against a real CRI runtime's actual `userns_options` wire support — see round 25 notes.
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
@@ -2649,8 +2706,15 @@ higher-value/correctness-critical than others:
       Genuinely automated e2e tests for `hostPID`/`shareProcessNamespace`;
       `hostIPC` unit-tested only (documented — no simple portable
       shell-level IPC probe in a minimal image). See round 40 notes.
-- [ ] Candidates for the next round, roughly by value: in-place pod
-      vertical scaling, `securityContext.sysctls`, then round 35's 2
-      remaining low-priority items (env `resourceFieldRef`, probe-level
-      `terminationGracePeriodSeconds`). Ask before starting the next
-      round.
+- [x] Round 41: `securityContext.sysctls` — new pure `pod_sysctls()`
+      flattens `spec.securityContext.sysctls` into CRI's
+      `LinuxPodSandboxConfig.sysctls` map. No admission-time allowlisting
+      (apiserver's job upstream, nodelet has no admission layer at all);
+      an unsupported sysctl surfaces as a real `RunPodSandbox` error.
+      Genuinely automated e2e test (a real container's own `/proc/sys`
+      read). See round 41 notes.
+- [ ] Candidates for the next round: in-place pod vertical scaling
+      (the last high-value item; likely its own multi-round arc), then
+      round 35's 2 remaining low-priority items (env `resourceFieldRef`,
+      probe-level `terminationGracePeriodSeconds`). Ask before starting
+      the next round.

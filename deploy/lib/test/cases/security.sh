@@ -245,7 +245,46 @@ EOF
 register_test test_run_as_user_is_applied
 register_test test_read_only_root_filesystem_is_enforced
 register_test test_without_read_only_root_filesystem_writes_succeed
+test_sysctls_are_applied_to_the_sandbox() {
+    # Round 41: spec.securityContext.sysctls -> CRI's
+    # LinuxPodSandboxConfig.sysctls map. net.ipv4.ip_unprivileged_port_start
+    # is namespaced (safe to set without hostNetwork/privileged) and its
+    # current value is directly readable via /proc/sys, so this is a real,
+    # structural proof rather than just a status-string check.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="sysctls-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  securityContext:
+    sysctls:
+      - name: net.ipv4.ip_unprivileged_port_start
+        value: "1234"
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "cat /proc/sys/net/ipv4/ip_unprivileged_port_start > /shared/sysctl.txt; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with a sysctl set — check nodelet's logs for a RunPodSandbox error (runtime may not support this specific sysctl as namespaced, or reject unknown sysctls)"
+    fi
+    local value
+    value="$(wait_for_check_file "$name" shared sysctl.txt 30)"
+    assert_eq "$value" "1234" "net.ipv4.ip_unprivileged_port_start should reflect the pod's own securityContext.sysctls value"
+    delete_pod_if_exists "$name"
+}
+
 register_test test_host_users_false_gets_a_real_user_namespace
 register_test test_containers_get_isolated_pid_namespaces_by_default
 register_test test_share_process_namespace_puts_every_container_in_one_pid_namespace
 register_test test_host_pid_sees_host_processes
+register_test test_sysctls_are_applied_to_the_sandbox

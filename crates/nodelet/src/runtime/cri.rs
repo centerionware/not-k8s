@@ -845,6 +845,18 @@ fn resolve_pod_hostname(
     Ok(fqdn)
 }
 
+/// `spec.securityContext.sysctls` -> CRI's `LinuxPodSandboxConfig.sysctls`
+/// map (round 41; found in round 39's re-audit). A later duplicate `name`
+/// in the list simply overwrites an earlier one in the resulting map —
+/// the apiserver's own validation already rejects duplicate sysctl names
+/// within a single Pod, so this never has to arbitrate a real conflict.
+fn pod_sysctls(pod_sc: Option<&PodSecurityContext>) -> HashMap<String, String> {
+    pod_sc
+        .and_then(|sc| sc.sysctls.as_ref())
+        .map(|list| list.iter().map(|s| (s.name.clone(), s.value.clone())).collect())
+        .unwrap_or_default()
+}
+
 /// Return the Kubernetes VolumeSource variant for diagnostics. A volume's
 /// name alone is not enough to explain why it was skipped — in particular,
 /// kube-controller-manager injects a volume named `kube-api-access-*` whose
@@ -2098,6 +2110,7 @@ impl CriRuntime {
         &self,
         id: &PodId,
         hostname: &str,
+        sysctls: &HashMap<String, String>,
         dns: Option<DnsConfig>,
         runtime_handler: String,
         cgroup_parent: String,
@@ -2121,7 +2134,7 @@ impl CriRuntime {
         } else {
             None
         };
-        let mut config = sandbox_config(id, userns_mapping, hostname);
+        let mut config = sandbox_config(id, userns_mapping, hostname, sysctls);
         config.dns_config = dns;
         let linux = config.linux.get_or_insert_with(LinuxPodSandboxConfig::default);
         linux.cgroup_parent = cgroup_parent;
@@ -2482,7 +2495,7 @@ impl CriRuntime {
         img.pull_image(PullImageRequest {
             image: Some(image_spec.clone()),
             auth,
-            sandbox_config: Some(sandbox_config(id, None, &id.name)),
+            sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new())),
         })
         .await
         .context("pulling image")?;
@@ -2721,7 +2734,7 @@ impl CriRuntime {
             .create_container(CreateContainerRequest {
                 pod_sandbox_id: sandbox_id.to_string(),
                 config: Some(config),
-                sandbox_config: Some(sandbox_config(id, None, &id.name)),
+                sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new())),
             })
             .await
         {
@@ -3263,6 +3276,7 @@ impl PodRuntime for CriRuntime {
             &id.namespace,
             &self.cluster_domain,
         )?;
+        let sysctls = pod_sysctls(spec.and_then(|s| s.security_context.as_ref()));
         // Real kubelet computes both of these before RunPodSandbox too —
         // cgroup_parent so the sandbox lands in the right QoS-scoped cgroup
         // from the start (not something CRI lets you change after the
@@ -3289,10 +3303,10 @@ impl PodRuntime for CriRuntime {
                 self.sidecar_names.lock().unwrap().remove(&stale_id);
                 self.clear_restart_counts(&stale_id);
                 self.release_sandbox_devices(&stale_id).await;
-                self.run_sandbox(&id, &hostname, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
             }
             SandboxDecision::CreateFresh => {
-                self.run_sandbox(&id, &hostname, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
             }
         };
 
@@ -3777,7 +3791,12 @@ fn container_labels(id: &PodId, container_name: &str, kind: ContainerKind) -> Ha
 /// function stays pure/side-effect-free for testability. `None` (the
 /// overwhelmingly common case, `hostUsers` unset or `true`) means no user
 /// namespace at all — identical to this function's pre-round-25 behavior.
-fn sandbox_config(id: &PodId, userns_mapping: Option<(u32, u32)>, hostname: &str) -> PodSandboxConfig {
+fn sandbox_config(
+    id: &PodId,
+    userns_mapping: Option<(u32, u32)>,
+    hostname: &str,
+    sysctls: &HashMap<String, String>,
+) -> PodSandboxConfig {
     // Host-network pods set the network namespace to NODE, which makes the CRI
     // runtime skip CNI entirely (no pod network to set up). The `linux` block
     // is now always built (round 40) — CRI's own proto default for an unset
@@ -3803,6 +3822,7 @@ fn sandbox_config(id: &PodId, userns_mapping: Option<(u32, u32)>, hostname: &str
             }),
             ..Default::default()
         }),
+        sysctls: sysctls.clone(),
         ..Default::default()
     });
 
@@ -4025,6 +4045,9 @@ mod tests_pod_hostname;
 #[cfg(test)]
 #[path = "cri_tests/pid_namespace_mode.rs"]
 mod tests_pid_namespace_mode;
+#[cfg(test)]
+#[path = "cri_tests/pod_sysctls.rs"]
+mod tests_pod_sysctls;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.
