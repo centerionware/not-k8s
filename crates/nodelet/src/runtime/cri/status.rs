@@ -210,7 +210,7 @@ impl CriRuntime {
             earliest_created = earliest_created.min(c.created_at);
             let name = c.metadata.as_ref().map(|m| m.name.clone()).unwrap_or_default();
 
-            let (exit_code, reason, finished_at, termination_message) = if exited {
+            let (exit_code, reason, finished_at, termination_message, stop_signal) = if exited {
                 match self.container_status_details(&c.id).await {
                     Ok(details) => {
                         if details.exit_code != 0 {
@@ -227,15 +227,16 @@ impl CriRuntime {
                             .then(|| Timestamp::from_nanosecond(details.finished_at as i128).ok())
                             .flatten();
                         let message = read_termination_message(&termination_message_host_path(pod_uid, &name));
-                        (Some(details.exit_code), reason, finished_at, message)
+                        let stop_signal = stop_signal_k8s(details.stop_signal);
+                        (Some(details.exit_code), reason, finished_at, message, stop_signal)
                     }
                     Err(e) => {
                         warn!(container = %c.id, error = ?e, "ContainerStatus failed; reporting this exited container without terminated details");
-                        (None, String::new(), None, String::new())
+                        (None, String::new(), None, String::new(), None)
                     }
                 }
             } else {
-                (None, String::new(), None, String::new())
+                (None, String::new(), None, String::new(), None)
             };
 
             let resource_key = restart_count_key(sandbox_id, &name);
@@ -257,6 +258,7 @@ impl CriRuntime {
                 is_restartable_sidecar: false, // app containers, never a sidecar concept
                 resources,
                 allocated_resources,
+                stop_signal,
             });
         }
 
@@ -314,7 +316,7 @@ impl CriRuntime {
                 let running = c.state == running_v;
                 let name = c.metadata.as_ref().map(|m| m.name.clone()).unwrap_or_default();
                 let is_restartable_sidecar = sidecar_names.contains(&name);
-                let (exit_code, reason, finished_at, termination_message) = if fetch_details && c.state == exited_v {
+                let (exit_code, reason, finished_at, termination_message, stop_signal) = if fetch_details && c.state == exited_v {
                     match self.container_status_details(&c.id).await {
                         Ok(details) => {
                             let reason = if !details.reason.is_empty() {
@@ -328,15 +330,16 @@ impl CriRuntime {
                                 .then(|| Timestamp::from_nanosecond(details.finished_at as i128).ok())
                                 .flatten();
                             let message = read_termination_message(&termination_message_host_path(pod_uid, &name));
-                            (Some(details.exit_code), reason, finished_at, message)
+                            let stop_signal = stop_signal_k8s(details.stop_signal);
+                            (Some(details.exit_code), reason, finished_at, message, stop_signal)
                         }
                         Err(e) => {
                             warn!(container = %c.id, error = ?e, "ContainerStatus failed; reporting this exited container without terminated details");
-                            (None, String::new(), None, String::new())
+                            (None, String::new(), None, String::new(), None)
                         }
                     }
                 } else {
-                    (None, String::new(), None, String::new())
+                    (None, String::new(), None, String::new(), None)
                 };
                 out.push(ContainerRuntimeStatus {
                     restart_count: self.restart_count(sandbox_id, &name),
@@ -356,6 +359,7 @@ impl CriRuntime {
                     // don't get a resize decision at all yet either.
                     resources: None,
                     allocated_resources: None,
+                    stop_signal,
                 });
         }
         Ok(out)

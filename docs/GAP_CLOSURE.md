@@ -27,6 +27,62 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 66: lifecycle.stopSignal (2026-07-31, same day)
+
+Closes the cheapest of the 2 remaining candidates round 65's fresh gap
+re-audit found: `lifecycle.stopSignal` (GA in k8s 1.33) — CRI's proto
+already had direct native support (`ContainerConfig.stop_signal` at
+creation, `ContainerStatus.stop_signal` for reading back the effective
+signal), nobody had wired either side up.
+
+- **Write side** (real functional behavior, not just status reporting):
+  `container_create.rs`'s `create_and_start_container()` now sets
+  `ContainerConfig.stop_signal` from `container.lifecycle.stopSignal`,
+  via new pure `stop_signal_cri()` in `resources.rs`. k8s and CRI define
+  exactly the same 65-signal set (confirmed against upstream docs — "one
+  of sixty-five additional stop signals"), just spelled differently: CRI's
+  generated enum strips the shared `SIGNAL_` prefix, and since proto
+  identifiers can't contain `+`/`-`, real-time signal offsets become
+  `PLUS`/`MINUS` words instead of the literal symbol (`SIGRTMIN+5` ->
+  `Sigrtminplus5`). Translating is therefore purely a naming-convention
+  exercise (same shape as round 59's `hugepage_cri_page_size()`) —
+  `stop_signal_cri()` re-derives the proto's own constant name
+  (`format!("SIGNAL_{normalized}")`) and lets prost-generated
+  `Signal::from_str_name()` do the matching, rather than hand-maintaining
+  a 65-entry lookup table.
+- **Read side**: new pure `stop_signal_k8s()` (the exact inverse) maps
+  CRI's `ContainerStatus.stop_signal` — the *effective* signal, as
+  actually reported by the runtime — back to k8s's spelling for
+  `containerStatuses[].stopSignal`. `ContainerRuntimeStatus` gained a new
+  `stop_signal: Option<String>` field, threaded through `pods.rs`'s 3
+  `ContainerStatus` construction sites (app/init/ephemeral). **Deliberately
+  scoped to exited containers only**: `container_status_details()` (CRI's
+  `ContainerStatus` RPC) is already called for every exited container
+  (termination details), so reading `stop_signal` off that same response
+  costs nothing extra; a still-*running* container's `stopSignal` isn't
+  populated, since fetching it would mean a brand-new per-container RPC
+  on every reconcile of a healthy pod — directly against this codebase's
+  low-idle-cost design that's held throughout every prior round. A
+  documented scope limitation, not an oversight.
+- 7 new unit tests (`cri_tests/stop_signal.rs`): plain-name translation,
+  real-time-signal `+`/`-` handling (both symbol and word spelling),
+  unrecognized input, full round-trip for every tested signal,
+  `RuntimeDefault` mapping to `None` not a sentinel string, an
+  out-of-range CRI value also mapping to `None`.
+- Genuinely automated e2e test
+  (`test_lifecycle_stop_signal_is_honored_by_the_runtime` in
+  `deploy/lib/test/cases/lifecycle.sh`): the container traps `SIGUSR1`
+  (deliberately *not* the default `SIGTERM` a plain `sleep` would just
+  silently die to) and writes a marker before exiting — real proof the
+  configured signal was actually delivered, not just that the pod ran.
+  Reads the marker off the host-materialized `emptyDir` directory (left
+  in place after pod teardown, a pre-existing documented simplification)
+  since the Pod object itself may already be gone from the apiserver by
+  the time this checks, making status-field polling unreliable here.
+- **Still open**: swap support (`memorySwap.swapBehavior`, GA 1.34) and
+  `emptyDir.sizeLimit` enforcement, both surfaced/reconfirmed by round
+  65's audit.
+
 ## Round 65: hostPath volumes (2026-07-31, same day)
 
 Closes a long-standing gap this doc has tracked since early rounds:
@@ -3826,6 +3882,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Native sidecar containers** (round 36; `initContainers[].restartPolicy: "Always"`, GA since 1.29, found in round 35's re-audit) — `sidecar_init_decision()` routes a sidecar-marked init container through its own decision matrix: doesn't block later init/app containers on its own exit (only on having started at all), restarts on exit like a normal container for the pod's whole lifetime, and its real probe-based readiness folds into the pod's overall `Ready`/`ContainersReady` (`pods.rs::build_pod_status()`). Genuinely automated e2e tests. **Documented simplification**: sidecars aren't stopped strictly *after* app containers on teardown (one pass instead), unlike upstream's exact ordering. See round 36 notes.
 - ✅ **Ephemeral containers** (`kubectl debug`) — `spec.ephemeralContainers` started once (never restarted) via `ensure_ephemeral_container()`, reported in `PodStatus.ephemeralContainerStatuses`, excluded from pod phase/readiness. Exit codes not tracked (always reported `0`) — see Round 8 notes.
 - ✅ **postStart / preStop lifecycle hooks** (`exec`/`httpGet`/`sleep`; not `tcpSocket`) — `run_lifecycle_hook()`. A failing `postStart` is logged, not (yet) turned into a container kill+restart like real kubelet does.
+- ✅ **`lifecycle.stopSignal`** (GA 1.33; found in round 65's fresh gap re-audit; closed round 66) — translates directly to CRI's own `Signal` enum on `ContainerConfig.stop_signal` (native support, never wired up before this), a naming-convention-only translation (`stop_signal_cri()`/`stop_signal_k8s()`) since k8s and CRI define the identical 65-signal set. `containerStatuses[].stopSignal` is reported back from the runtime's own `ContainerStatus.stop_signal`, but only for exited containers (reuses an RPC already being made for termination details) — a still-running container's `stopSignal` isn't populated, a documented scope limitation to avoid a new per-container RPC on every healthy-pod reconcile.
 - ✅ **Probe-level `terminationGracePeriodSeconds`** (round 44; added ~1.25, found in round 35's re-audit) — a `livenessProbe` can specify its own grace period for the container kill it triggers, distinct from the pod's own `terminationGracePeriodSeconds`; new pure `probes::probe_grace_period_seconds()` resolves the override (else the pod's own) and threads it into `PodRuntime::restart_container()`'s new `grace_period_seconds` parameter, replacing a previously-hardcoded `10`. Genuinely automated e2e test (a `SIGTERM`-trapping container that can only die via the grace-period kill, constructed so a wrong value causes an observable timeout). **Scoped to liveness probes only** — the startup-probe loop has no failure-threshold-triggered restart at all yet (pre-existing simplification: it retries forever until it passes), so there's no live code path for a startup-probe override to apply to yet either. See round 44 notes.
 - ✅ **Termination grace period** — `terminationGracePeriodSeconds` now drives `preStop` + a per-container `StopContainer` timeout before `StopPodSandbox` (`graceful_stop_containers()`), instead of an untimed sandbox stop.
 - ✅ **Container restart count** — real per-container counter (`restart_count_from`/`bump_restart_count_in`), threaded through `ContainerConfig.metadata.attempt` too (so restarted containers get distinct log files, not overwritten ones).
@@ -4391,11 +4448,17 @@ accordingly; see those files' own updated framing.
       10 new unit tests + 3 genuinely automated e2e tests (real
       bind-mount proof via a host-written marker file, `DirectoryOrCreate`
       actually creating, `Directory` NOT creating). See round 65 notes.
-- [ ] Candidates for the next round, from this round's fresh audit:
-      `lifecycle.stopSignal` (cheap — CRI has direct native support,
-      similar shape to round 59's `hugepage_limits`), swap support
-      (`memorySwap.swapBehavior`, bigger — a new `NODELET_MEMORY_SWAP_BEHAVIOR`
-      knob, Burstable-QoS-only allowance per upstream rules, similar
-      shape/scope to CPU/Memory Manager), or `emptyDir.sizeLimit`
-      enforcement (older tracked gap, still open). Ask before starting
-      the next round.
+- [x] Round 66: lifecycle.stopSignal — translates to CRI's native
+      `Signal` enum via new pure `stop_signal_cri()`/`stop_signal_k8s()`
+      (naming-convention-only, k8s and CRI share the same 65-signal set).
+      `containerStatuses[].stopSignal` reported back for exited
+      containers only (reuses an already-made RPC, no new per-container
+      cost on a healthy pod). 7 new unit tests + a genuinely automated
+      e2e test proving a non-default signal (SIGUSR1) actually gets
+      delivered via a trap-and-marker container. See round 66 notes.
+- [ ] Candidates for the next round: swap support
+      (`memorySwap.swapBehavior`, GA 1.34 — a new
+      `NODELET_MEMORY_SWAP_BEHAVIOR` knob, Burstable-QoS-only allowance
+      per upstream rules, similar shape/scope to CPU/Memory Manager), or
+      `emptyDir.sizeLimit` enforcement (older tracked gap, still open).
+      Ask before starting the next round.

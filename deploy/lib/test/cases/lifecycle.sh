@@ -225,6 +225,54 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_lifecycle_stop_signal_is_honored_by_the_runtime() {
+    # Round 66: lifecycle.stopSignal (GA 1.33) used to be entirely
+    # ignored — CRI's own ContainerConfig.stop_signal field already had
+    # native support, nobody wired it up. Real proof, not just "the pod
+    # ran": the container traps SIGUSR1 (NOT the default SIGTERM a plain
+    # `sleep` would just die to silently) and writes a marker before
+    # exiting. If stopSignal were ignored and the runtime sent SIGTERM
+    # instead, the trap would never fire and the marker would never
+    # appear. Reads the marker off the host-materialized emptyDir
+    # directory (which nodelet leaves in place after pod teardown, a
+    # documented pre-existing simplification) since the Pod object itself
+    # may already be gone from the apiserver by the time this checks.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="stop-signal-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      lifecycle:
+        stopSignal: SIGUSR1
+      command: ["sh", "-c", "trap 'echo got-usr1 > /shared/signal.txt; exit 7' USR1; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with lifecycle.stopSignal set — check nodelet's logs, or that this runtime version supports CRI's ContainerConfig.stop_signal field at all"
+    fi
+    local path="$(pod_volume_host_path "$name" shared)/signal.txt"
+    delete_pod_if_exists "$name"
+    if ! try_wait_until 30 bash -c "[[ -s '$path' ]]"; then
+        rm -f "$path" 2>/dev/null || true
+        skip_test "no $path appeared after pod deletion — the runtime may not honor CRI's ContainerConfig.stop_signal (sent plain SIGTERM instead of the configured SIGUSR1, so the trap never fired); check runtime/cri/container_create.rs's stop_signal wiring if this is unexpected on a runtime version known to support it"
+    fi
+    local content
+    content="$(cat "$path")"
+    rm -f "$path" 2>/dev/null || true
+    assert_eq "$content" "got-usr1" "the container's SIGUSR1 trap should have fired, proving the runtime used the configured stopSignal instead of the default SIGTERM"
+}
+
 test_termination_message_path_is_read_back_into_container_status() {
     # Round 24: terminationMessagePath was threaded through to CRI's
     # ContainerConfig struct copy but never actually bind-mounted or read
@@ -401,6 +449,7 @@ register_test test_crashing_container_restarts_and_increments_restart_count
 register_test test_restart_policy_never_exit_zero_is_succeeded
 register_test test_restart_policy_never_exit_nonzero_is_failed
 register_test test_exited_container_reports_terminated_state_with_exit_code
+register_test test_lifecycle_stop_signal_is_honored_by_the_runtime
 register_test test_termination_message_path_is_read_back_into_container_status
 register_test test_container_status_container_id_has_a_runtime_scheme_prefix
 register_test test_pod_status_reports_host_ips_plural

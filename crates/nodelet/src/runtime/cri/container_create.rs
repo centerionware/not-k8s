@@ -443,6 +443,18 @@ impl CriRuntime {
             .map(|name| v1::CdiDevice { name })
             .collect();
 
+        // lifecycle.stopSignal (round 66; GA 1.33, found in a fresh gap
+        // re-audit) — an unset field, or one this build's vendored proto
+        // doesn't recognize, leaves CRI's own zero value (RuntimeDefault:
+        // "the runtime picks its own default"), exactly matching the
+        // unset case's real behavior.
+        let stop_signal = container
+            .lifecycle
+            .as_ref()
+            .and_then(|l| l.stop_signal.as_deref())
+            .and_then(stop_signal_cri)
+            .unwrap_or(v1::Signal::RuntimeDefault as i32);
+
         let mut rt = self.rt.clone();
         let config = ContainerConfig {
             metadata: Some(ContainerMetadata { name: container.name.clone(), attempt }),
@@ -458,6 +470,7 @@ impl CriRuntime {
             log_path: format!("{}_{}.log", container.name, attempt),
             linux,
             cdi_devices,
+            stop_signal,
             ..Default::default()
         };
 

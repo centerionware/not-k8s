@@ -536,6 +536,7 @@ fn build_pod_status(
             state: Some(container_state(c, rt.started_at.map(Time), "ContainerCreating")),
             resources: c.resources.clone(),
             allocated_resources: c.allocated_resources.clone(),
+            stop_signal: c.stop_signal.clone(),
             ..Default::default()
         })
         .collect();
@@ -570,6 +571,7 @@ fn build_pod_status(
             started: Some(c.running),
             container_id: c.container_id.clone(),
             state: Some(container_state(c, None, "PodInitializing")),
+            stop_signal: c.stop_signal.clone(),
             ..Default::default()
         })
         .collect();
@@ -606,6 +608,7 @@ fn build_pod_status(
                     ..Default::default()
                 }
             }),
+            stop_signal: c.stop_signal.clone(),
             ..Default::default()
         })
         .collect();

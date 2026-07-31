@@ -4,6 +4,39 @@ use super::*;
 /// in microseconds) — quota is computed against this, not configurable here.
 const CPU_CFS_QUOTA_PERIOD_US: i64 = 100_000;
 
+/// `container.lifecycle.stopSignal`'s k8s API spelling (e.g. `"SIGTERM"`,
+/// `"SIGRTMIN+5"`) -> CRI's own `Signal` enum (round 66; GA 1.33, found
+/// in a fresh gap re-audit — CRI's proto already had direct native
+/// support for this, nobody had wired it up). k8s and CRI define exactly
+/// the same 65-signal set (confirmed against upstream docs), just spelled
+/// differently: CRI's generated enum strips the shared `SIGNAL_` prefix
+/// and can't contain `+`/`-` in an identifier, so real-time signal
+/// offsets become `PLUS`/`MINUS` words instead of the literal symbol.
+/// Translating is therefore purely a naming-convention exercise (same
+/// shape as round 59's `hugepage_cri_page_size()`), not a lookup table:
+/// re-derive the proto's own constant name and let `Signal::from_str_name()`
+/// (prost-generated) do the matching. Unrecognized input (shouldn't reach
+/// here at all — apiserver validation restricts this field to exactly
+/// the 65 real values) returns `None` rather than guessing.
+pub(crate) fn stop_signal_cri(k8s_signal: &str) -> Option<i32> {
+    let normalized = k8s_signal.replace('+', "PLUS").replace('-', "MINUS");
+    v1::Signal::from_str_name(&format!("SIGNAL_{normalized}")).map(|s| s as i32)
+}
+
+/// `stop_signal_cri()`'s inverse — CRI's `Signal` enum value (as reported
+/// back on `ContainerStatus.stop_signal`) -> k8s's own spelling, for
+/// `containerStatuses[].stopSignal`. `RuntimeDefault` (CRI's zero value,
+/// meaning "the runtime picked its own default, nothing explicit was
+/// asked for") maps to `None` — real kubelet only reports a concrete
+/// signal name here, never a sentinel for "unspecified."
+pub(crate) fn stop_signal_k8s(cri_signal: i32) -> Option<String> {
+    let signal = v1::Signal::try_from(cri_signal).ok()?;
+    if signal == v1::Signal::RuntimeDefault {
+        return None;
+    }
+    signal.as_str_name().strip_prefix("SIGNAL_").map(|s| s.replace("PLUS", "+").replace("MINUS", "-"))
+}
+
 /// Every non-cpu/memory resource in `limits`, as `(name, count)` — a pure
 /// extraction so "does this container ask for an extended resource" is
 /// unit-testable without a live `DevicePlugins` registry. Whether nodelet

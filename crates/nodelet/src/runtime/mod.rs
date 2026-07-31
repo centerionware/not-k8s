@@ -103,6 +103,17 @@ pub struct ContainerRuntimeStatus {
     /// `containerStatuses[].allocatedResources`.
     pub resources: Option<k8s_openapi::api::core::v1::ResourceRequirements>,
     pub allocated_resources: Option<std::collections::BTreeMap<String, k8s_openapi::apimachinery::pkg::api::resource::Quantity>>,
+    /// CRI's own `ContainerStatus.stop_signal` (round 66; GA 1.33's
+    /// `lifecycle.stopSignal`/`ContainerStatus.stopSignal`), mapped to
+    /// `containerStatuses[].stopSignal` — the *effective* signal the
+    /// runtime will use to stop this container. Only populated for
+    /// containers whose full `ContainerStatus` was already being fetched
+    /// for other reasons (currently: exited ones, for termination
+    /// details) — a healthy running container doesn't pay an extra RPC
+    /// just for this field, matching this codebase's low-idle-cost design
+    /// throughout. `None` for a still-running container is a documented
+    /// scope limitation, not "unset/RuntimeDefault."
+    pub stop_signal: Option<String>,
 }
 
 #[derive(Clone, Debug)]

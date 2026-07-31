@@ -497,6 +497,9 @@ mod tests_dra_claim_devices;
 #[path = "cri_tests/host_path.rs"]
 mod tests_host_path;
 #[cfg(test)]
+#[path = "cri_tests/stop_signal.rs"]
+mod tests_stop_signal;
+#[cfg(test)]
 #[path = "cri_tests/ephemeral_volume.rs"]
 mod tests_ephemeral_volume;
 #[cfg(test)]

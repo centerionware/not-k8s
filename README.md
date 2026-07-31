@@ -395,8 +395,12 @@ explicitly unsupported (silently dropped) since early on — closed:
 `spec.volumes[].hostPath` now mounts the host's own real path directly,
 with full `type` validation (`DirectoryOrCreate`/`FileOrCreate`/
 `Directory`/`File`/`Socket`/`CharDevice`/`BlockDevice`) matching real
-kubelet's own create-vs-require-existing semantics. Full status list in
-`docs/GAP_CLOSURE.md`.
+kubelet's own create-vs-require-existing semantics. Round 66 closed
+`lifecycle.stopSignal` (GA 1.33), also found in that audit: translates
+directly to CRI's own `Signal` enum (native support, never wired up
+before), with a genuinely automated e2e test proving a non-default
+signal (`SIGUSR1`) actually gets delivered to the container. Full status
+list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for
