@@ -5,31 +5,31 @@
 use super::*;
 
 fn id(ns: &str, name: &str, uid: &str, host_network: bool) -> PodId {
-    PodId { namespace: ns.to_string(), name: name.to_string(), uid: uid.to_string(), host_network }
+    PodId { namespace: ns.to_string(), name: name.to_string(), uid: uid.to_string(), host_network, host_users: true }
 }
 
 #[test]
 fn log_directory_matches_the_ns_name_uid_layout() {
-    let cfg = sandbox_config(&id("kube-system", "coredns-abc", "uid-1", false));
+    let cfg = sandbox_config(&id("kube-system", "coredns-abc", "uid-1", false), None);
     assert_eq!(cfg.log_directory, "/var/log/pods/kube-system_coredns-abc_uid-1");
 }
 
 #[test]
 fn non_host_network_pod_sets_hostname_to_pod_name() {
-    let cfg = sandbox_config(&id("ns", "myapp", "u", false));
+    let cfg = sandbox_config(&id("ns", "myapp", "u", false), None);
     assert_eq!(cfg.hostname, "myapp");
 }
 
 #[test]
 fn host_network_pod_leaves_hostname_empty() {
     // runc rejects setting a hostname when sharing the host UTS namespace.
-    let cfg = sandbox_config(&id("ns", "myapp", "u", true));
+    let cfg = sandbox_config(&id("ns", "myapp", "u", true), None);
     assert_eq!(cfg.hostname, "");
 }
 
 #[test]
 fn host_network_pod_sets_node_namespace_mode() {
-    let cfg = sandbox_config(&id("ns", "myapp", "u", true));
+    let cfg = sandbox_config(&id("ns", "myapp", "u", true), None);
     let ns_mode = cfg
         .linux
         .as_ref()
@@ -41,13 +41,13 @@ fn host_network_pod_sets_node_namespace_mode() {
 
 #[test]
 fn non_host_network_pod_has_no_linux_namespace_override() {
-    let cfg = sandbox_config(&id("ns", "myapp", "u", false));
+    let cfg = sandbox_config(&id("ns", "myapp", "u", false), None);
     assert!(cfg.linux.is_none());
 }
 
 #[test]
 fn metadata_fields_round_trip_from_pod_id() {
-    let cfg = sandbox_config(&id("kube-system", "coredns-abc", "uid-1", false));
+    let cfg = sandbox_config(&id("kube-system", "coredns-abc", "uid-1", false), None);
     let meta = cfg.metadata.expect("metadata must be set");
     assert_eq!(meta.name, "coredns-abc");
     assert_eq!(meta.namespace, "kube-system");
@@ -57,6 +57,39 @@ fn metadata_fields_round_trip_from_pod_id() {
 
 #[test]
 fn sandbox_labels_are_attached() {
-    let cfg = sandbox_config(&id("ns", "n", "u", false));
+    let cfg = sandbox_config(&id("ns", "n", "u", false), None);
     assert_eq!(cfg.labels.get(POD_NAME_LABEL), Some(&"n".to_string()));
+}
+
+// --- userns_mapping (round 25) ---
+
+#[test]
+fn a_userns_mapping_forces_a_linux_block_even_without_host_network() {
+    let cfg = sandbox_config(&id("ns", "myapp", "u", false), Some((100_000, 65_536)));
+    assert!(cfg.linux.is_some());
+}
+
+#[test]
+fn a_userns_mapping_sets_pod_mode_uid_gid_id_mappings() {
+    let cfg = sandbox_config(&id("ns", "myapp", "u", false), Some((100_000, 65_536)));
+    let userns = cfg
+        .linux
+        .as_ref()
+        .and_then(|l| l.security_context.as_ref())
+        .and_then(|sc| sc.namespace_options.as_ref())
+        .and_then(|no| no.userns_options.as_ref())
+        .expect("expected userns_options to be set");
+    assert_eq!(userns.mode, NamespaceMode::Pod as i32);
+    assert_eq!(userns.uids.len(), 1);
+    assert_eq!(userns.uids[0].host_id, 100_000);
+    assert_eq!(userns.uids[0].container_id, 0);
+    assert_eq!(userns.uids[0].length, 65_536);
+    assert_eq!(userns.gids.len(), 1);
+    assert_eq!(userns.gids[0].host_id, 100_000);
+}
+
+#[test]
+fn no_userns_mapping_means_no_userns_options_at_all() {
+    let cfg = sandbox_config(&id("ns", "myapp", "u", false), None);
+    assert!(cfg.linux.is_none());
 }

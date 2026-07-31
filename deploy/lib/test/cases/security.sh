@@ -109,6 +109,47 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_host_users_false_gets_a_real_user_namespace() {
+    # Round 25: spec.hostUsers: false should get an exclusive host UID/GID
+    # range, not the host's own UID space. /proc/self/uid_map inside a real
+    # user namespace shows a remapped range ("0 <host_base> <length>");
+    # outside one it shows the host's full identity range
+    # ("0 0 4294967295").
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="hostusers-false-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  hostUsers: false
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "cat /proc/self/uid_map > /shared/uid_map.txt; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted) or a RunPodSandbox error (runtime doesn't support CRI's userns_options at all, e.g. too old containerd)"
+    fi
+
+    local uid_map
+    uid_map="$(wait_for_check_file "$name" shared uid_map.txt 30)"
+    assert_not_empty "$uid_map" "/proc/self/uid_map should have content"
+    if echo "$uid_map" | grep -q "^\s*0\s\+0\s\+4294967295"; then
+        delete_pod_if_exists "$name"
+        die "uid_map shows the host's own full identity range ('0 0 4294967295') — this container is NOT in a user namespace at all; check runtime/cri.rs's userns_mapping wiring and that the CRI runtime actually honors LinuxSandboxSecurityContext.namespace_options.userns_options"
+    fi
+    delete_pod_if_exists "$name"
+}
+
 register_test test_run_as_user_is_applied
 register_test test_read_only_root_filesystem_is_enforced
 register_test test_without_read_only_root_filesystem_writes_succeed
+register_test test_host_users_false_gets_a_real_user_namespace

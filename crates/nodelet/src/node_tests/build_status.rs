@@ -47,6 +47,9 @@ fn cfg() -> Config {
         cpu_manager_static: false,
         topology_manager_policy: "none".to_string(),
         memory_manager_static: false,
+        userns_base_uid: 100_000,
+        userns_length: 65_536,
+        userns_max_pods: 1024,
     }
 }
 

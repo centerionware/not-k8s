@@ -29,3 +29,5 @@ pub mod static_pods;
 pub mod svc;
 #[cfg(feature = "cri")]
 pub mod topology;
+#[cfg(feature = "cri")]
+pub mod userns;

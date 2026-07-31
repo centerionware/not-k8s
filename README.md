@@ -67,6 +67,8 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
                        Guaranteed-QoS containers (feature `cri`).
   src/topology.rs      Topology Manager: NUMA-aware coordination between CPU
                        Manager, Memory Manager, and device plugins (feature `cri`).
+  src/userns.rs        User namespace allocation for spec.hostUsers: false
+                       (feature `cri`).
   src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`): pod/init
                        container lifecycle, resource limits, securityContext,
                        DNS, private registry auth.
@@ -189,8 +191,11 @@ termination-log file is now bind-mounted and read back into
 pre-existing gap along the way — regular/init containers never reported
 a real `terminated` state at all before this round, always
 `Waiting: ContainerCreating` forever once exited. `FallbackToLogsOnError`
-is a documented, deliberate simplification not implemented. Full status
-list in `docs/GAP_CLOSURE.md`.
+is a documented, deliberate simplification not implemented. Also closed
+(round 25): **user namespaces** (`spec.hostUsers: false`, `src/userns.rs`)
+— each such pod gets an exclusive host UID/GID range via CRI's
+`userns_options`, a fixed-length allocator (not upstream's variable-length
+pool) with in-memory-only state. Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -695,6 +700,15 @@ Two layers, and they're not substitutes for each other:
   round-trips into `state.terminated.message` — proof of both the
   termination-log bind mount and the read-back.
 
+  `security.sh` gained a real automated test (round 25): a pod with
+  `hostUsers: false` writes `/proc/self/uid_map` to a shared `emptyDir`,
+  and the test asserts it does *not* show the host's own full identity
+  range (`"0 0 4294967295"`) — genuine proof a user namespace is actually
+  in effect. Needs a CRI runtime version that actually supports CRI's
+  `userns_options` (containerd ≥ 1.7 with a matching runc build) — this
+  suite can't verify that independently, so the test's failure message
+  calls it out as a specific thing to check.
+
 ## Configuration (environment variables)
 
 | Variable | Default | Meaning |
@@ -740,6 +754,9 @@ Two layers, and they're not substitutes for each other:
 | `NODELET_CPU_MANAGER_POLICY` | `none` | `none` or `static` (`cri` only) — pins Guaranteed-QoS containers requesting a whole number of CPUs to exclusive cores. See [Status](#status). |
 | `NODELET_MEMORY_MANAGER_POLICY` | `none` | `none` or `static` (`cri` only) — pins Guaranteed-QoS containers with a memory limit to a single NUMA node. See [Status](#status). |
 | `NODELET_TOPOLOGY_MANAGER_POLICY` | `none` | `none`, `best-effort`, `restricted`, or `single-numa-node` (`cri` only) — coordinates CPU Manager, Memory Manager, and device plugins by NUMA node. See [Status](#status). |
+| `NODELET_USERNS_BASE_UID` | `100000` | Base host UID/GID for `spec.hostUsers: false` pods' exclusive ID ranges (`cri` only). See [Status](#status). |
+| `NODELET_USERNS_LENGTH` | `65536` | Size of each pod's exclusive UID/GID range (`cri` only). |
+| `NODELET_USERNS_MAX_PODS` | `1024` | How many concurrent `hostUsers: false` pods this node's allocator supports (`cri` only). |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---

@@ -64,6 +64,7 @@ use v1::{
     StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest, ReopenContainerLogRequest,
     ExecRequest, AttachRequest, PortForwardRequest, ListPodSandboxStatsRequest,
     UpdateContainerResourcesRequest, security_profile::ProfileType, SecurityProfile,
+    IdMapping, UserNamespace,
 };
 
 /// Where ConfigMap/Secret volume contents get materialized on the host, one
@@ -153,6 +154,11 @@ pub struct CriRuntime {
     /// (`termination_message_host_path()`), which is keyed by pod uid, not
     /// sandbox id.
     pod_uids: Mutex<HashMap<String, String>>,
+    /// Exclusive per-pod UID/GID range allocator for `spec.hostUsers: false`
+    /// (round 25; see `userns.rs`) — keyed by pod uid, released alongside
+    /// `pod_uids`/`restart_policies` on pod removal/orphan GC/stale-sandbox
+    /// recreation.
+    userns: crate::userns::UsernsAllocator,
     /// `"sandbox_id/container_name" -> cumulative restart count`, mirroring
     /// `PodStatus.containerStatuses[].restartCount`. Side table for the same
     /// reason `restart_policies` is one: CRI's `ListContainers` has no
@@ -219,6 +225,10 @@ struct PodId {
     name: String,
     uid: String,
     host_network: bool,
+    /// `spec.hostUsers` — `true` (the default, matching upstream) means no
+    /// user namespace at all; only an explicit `false` triggers an
+    /// exclusive UID/GID range allocation (see `userns.rs`, round 25).
+    host_users: bool,
 }
 
 fn pod_id(pod: &Pod) -> PodId {
@@ -230,7 +240,8 @@ fn pod_id(pod: &Pod) -> PodId {
         .clone()
         .unwrap_or_else(|| format!("{namespace}_{name}"));
     let host_network = pod.spec.as_ref().and_then(|s| s.host_network).unwrap_or(false);
-    PodId { namespace, name, uid, host_network }
+    let host_users = pod.spec.as_ref().and_then(|s| s.host_users).unwrap_or(true);
+    PodId { namespace, name, uid, host_network, host_users }
 }
 
 /// What ensure_container() should do about an already-existing container
@@ -1195,6 +1206,7 @@ impl CriRuntime {
         memory_manager: Option<crate::memory_manager::MemoryManager>,
         topology_policy: crate::topology::TopologyManagerPolicy,
         numa_topology: BTreeMap<u32, BTreeSet<u32>>,
+        userns: crate::userns::UsernsAllocator,
     ) -> Result<Self> {
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
@@ -1222,6 +1234,7 @@ impl CriRuntime {
             rx: Mutex::new(Some(rx)),
             restart_policies: Mutex::new(HashMap::new()),
             pod_uids: Mutex::new(HashMap::new()),
+            userns,
             restart_counts: Mutex::new(HashMap::new()),
             csi,
             device_plugins,
@@ -1758,7 +1771,24 @@ impl CriRuntime {
         overhead: Option<LinuxContainerResources>,
     ) -> Result<String> {
         let mut rt = self.rt.clone();
-        let mut config = sandbox_config(id);
+        // spec.hostUsers: false (round 25) — allocate this pod an exclusive
+        // host UID/GID range (keyed by pod uid, stable across reconciles/
+        // retries; sandbox_id doesn't exist yet at this point). Allocation
+        // failure (pool exhausted) falls back to no user namespace with a
+        // warning rather than failing pod creation outright — the same
+        // graceful-degradation posture CPU/Memory Manager already have.
+        let userns_mapping = if !id.host_users {
+            match self.userns.allocate(&id.uid) {
+                Some(mapping) => Some(mapping),
+                None => {
+                    warn!(pod = %format!("{}/{}", id.namespace, id.name), "user namespace: no free UID/GID range available; falling back to the host user namespace");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut config = sandbox_config(id, userns_mapping);
         config.dns_config = dns;
         let linux = config.linux.get_or_insert_with(LinuxPodSandboxConfig::default);
         linux.cgroup_parent = cgroup_parent;
@@ -2090,7 +2120,7 @@ impl CriRuntime {
         img.pull_image(PullImageRequest {
             image: Some(image_spec.clone()),
             auth,
-            sandbox_config: Some(sandbox_config(id)),
+            sandbox_config: Some(sandbox_config(id, None)),
         })
         .await
         .context("pulling image")?;
@@ -2325,7 +2355,7 @@ impl CriRuntime {
             .create_container(CreateContainerRequest {
                 pod_sandbox_id: sandbox_id.to_string(),
                 config: Some(config),
-                sandbox_config: Some(sandbox_config(id)),
+                sandbox_config: Some(sandbox_config(id, None)),
             })
             .await
         {
@@ -2569,7 +2599,9 @@ impl CriRuntime {
                 warn!(sandbox = %sandbox_id, error = ?e, "gc: failed to remove orphaned sandbox");
             }
             self.restart_policies.lock().unwrap().remove(&sandbox_id);
-            self.pod_uids.lock().unwrap().remove(&sandbox_id);
+            if let Some(pod_uid) = self.pod_uids.lock().unwrap().remove(&sandbox_id) {
+                self.userns.release(&pod_uid);
+            }
             self.clear_restart_counts(&sandbox_id);
             self.release_sandbox_devices(&sandbox_id).await;
         }
@@ -2949,7 +2981,9 @@ impl PodRuntime for CriRuntime {
                 .await
                 .context("RemovePodSandbox")?;
             self.restart_policies.lock().unwrap().remove(&sandbox_id);
-            self.pod_uids.lock().unwrap().remove(&sandbox_id);
+            if let Some(pod_uid) = self.pod_uids.lock().unwrap().remove(&sandbox_id) {
+                self.userns.release(&pod_uid);
+            }
             self.clear_restart_counts(&sandbox_id);
             self.release_sandbox_devices(&sandbox_id).await;
         }
@@ -3270,13 +3304,27 @@ fn container_labels(id: &PodId, container_name: &str, kind: ContainerKind) -> Ha
     l
 }
 
-fn sandbox_config(id: &PodId) -> PodSandboxConfig {
+/// `userns_mapping`, if `Some((host_id_base, length))`, means this pod's
+/// sandbox already has an exclusive UID/GID range allocated for it
+/// (`spec.hostUsers: false` — see `userns.rs`, round 25); the caller
+/// (`run_sandbox()`) is responsible for the actual allocation since this
+/// function stays pure/side-effect-free for testability. `None` (the
+/// overwhelmingly common case, `hostUsers` unset or `true`) means no user
+/// namespace at all — identical to this function's pre-round-25 behavior.
+fn sandbox_config(id: &PodId, userns_mapping: Option<(u32, u32)>) -> PodSandboxConfig {
     // Host-network pods set the network namespace to NODE, which makes the CRI
-    // runtime skip CNI entirely (no pod network to set up).
-    let linux = id.host_network.then(|| LinuxPodSandboxConfig {
+    // runtime skip CNI entirely (no pod network to set up). A user-namespace
+    // mapping also needs a `linux` block even for an otherwise-default pod,
+    // so either condition forces one into existence.
+    let userns_options = userns_mapping.map(|(host_id, length)| {
+        let mapping = |container_id| IdMapping { host_id, container_id, length };
+        UserNamespace { mode: NamespaceMode::Pod as i32, uids: vec![mapping(0)], gids: vec![mapping(0)] }
+    });
+    let linux = (id.host_network || userns_options.is_some()).then(|| LinuxPodSandboxConfig {
         security_context: Some(LinuxSandboxSecurityContext {
             namespace_options: Some(NamespaceOption {
-                network: NamespaceMode::Node as i32,
+                network: if id.host_network { NamespaceMode::Node as i32 } else { NamespaceMode::Pod as i32 },
+                userns_options,
                 ..Default::default()
             }),
             ..Default::default()

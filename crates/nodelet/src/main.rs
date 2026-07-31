@@ -146,6 +146,7 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                 let memory_manager = cfg
                     .memory_manager_static
                     .then(|| nodelet::memory_manager::MemoryManager::new(nodelet::topology::read_numa_memory(std::path::Path::new("/sys/devices/system/node"))));
+                let userns = nodelet::userns::UsernsAllocator::new(cfg.userns_base_uid, cfg.userns_length, cfg.userns_max_pods);
                 let rt = runtime::cri::CriRuntime::connect(
                     &cfg.cri_endpoint,
                     client,
@@ -159,6 +160,7 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                     memory_manager,
                     topology_policy,
                     numa_topology,
+                    userns,
                 )
                 .await
                 .context("connecting to CRI endpoint")?;

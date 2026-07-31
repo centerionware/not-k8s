@@ -178,6 +178,22 @@ pub struct Config {
     /// memory limit to a single NUMA node instead of leaving memory
     /// placement unconstrained.
     pub memory_manager_static: bool,
+    /// Base host UID/GID for the per-pod exclusive user-namespace ranges
+    /// allocated to pods with `spec.hostUsers: false` (`cri` only; see
+    /// `userns.rs`) — the container's whole 0-65535 ID space remaps into
+    /// `[base + slot*length, base + slot*length + length)` on the host, one
+    /// exclusive slot per such pod. Default `100000`, matching the
+    /// conventional `/etc/subuid` starting offset most rootless-container
+    /// tooling already uses on Linux.
+    pub userns_base_uid: u32,
+    /// Size of each pod's exclusive ID range — default `65536`, covering a
+    /// container's entire possible UID/GID space (0-65535) with room to
+    /// spare, matching upstream kubelet's own default length.
+    pub userns_length: u32,
+    /// How many concurrent `hostUsers: false` pods this node can support at
+    /// once (bounds the allocator, not a hard OS limit) — default `1024`,
+    /// far more than any single edge node would realistically run.
+    pub userns_max_pods: u32,
 }
 
 impl Config {
@@ -317,6 +333,10 @@ impl Config {
             ),
         };
 
+        let userns_base_uid = env_u64("NODELET_USERNS_BASE_UID", 100_000)? as u32;
+        let userns_length = env_u64("NODELET_USERNS_LENGTH", 65_536)? as u32;
+        let userns_max_pods = env_u64("NODELET_USERNS_MAX_PODS", 1024)? as u32;
+
         let memory_manager_static = match std::env::var("NODELET_MEMORY_MANAGER_POLICY").as_deref() {
             Ok("static") => true,
             Ok("none") | Err(_) => false,
@@ -365,6 +385,9 @@ impl Config {
             cpu_manager_static,
             topology_manager_policy,
             memory_manager_static,
+            userns_base_uid,
+            userns_length,
+            userns_max_pods,
         })
     }
 }

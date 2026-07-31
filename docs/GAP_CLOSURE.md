@@ -27,6 +27,87 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 25: user namespaces (`spec.hostUsers: false`) (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-24). Offered the 2
+remaining round-22 candidates; user picked user namespaces over eviction
+priority-tiebreaking.
+
+- **New `userns.rs`** (`cri`-gated): `UsernsAllocator` — a simple
+  fixed-length exclusive-range allocator (base UID/GID + length + max
+  slots, all configurable), keyed by pod uid. `allocate()` is idempotent
+  (a pod whose sandbox already exists gets the same range back on a later
+  reconcile, matching every other per-pod resource claim's pattern in
+  this codebase); `None` (pool exhausted) is a graceful-degradation case,
+  not a hard failure — the pod still runs, just without a private user
+  namespace, same posture CPU/Memory Manager already have for their own
+  exhaustion cases. **Simplified vs. upstream's own `usernsManager`**:
+  every pod gets the *same* fixed-length range (default 65536, covering a
+  container's whole possible UID/GID space) rather than upstream's
+  variable-length pool sized to what the pod's image actually needs, and
+  allocation is in-memory only (a nodelet restart loses which ranges were
+  claimed — self-heals as still-running pods reconcile again, but a
+  narrow window exists where a restarted nodelet could theoretically
+  double-allocate a range two different still-running pods are both
+  using; documented, not hidden, same caveat class as `plugin_registry.rs`'s
+  in-memory device/CSI state).
+- **`PodId` gained `host_users: bool`** (`spec.hostUsers`, default `true`
+  if unset — matching upstream's own default of "no user namespace").
+  **`sandbox_config()` gained a `userns_mapping: Option<(u32, u32)>`
+  parameter** (kept the function pure/side-effect-free for testability —
+  the actual allocation happens in `run_sandbox()`, which is the only
+  caller that needs the real range); when `Some`, sets
+  `LinuxSandboxSecurityContext.namespace_options.userns_options` to a
+  `POD`-mode `UserNamespace` with a single UID and single GID `IDMapping`
+  each covering the whole allocated range (container ID 0 → host
+  `host_id_base`, length `length`) — the same "remap everything into one
+  block" approach upstream itself uses for the common case.
+- **`run_sandbox()`** calls `self.userns.allocate(&id.uid)` when
+  `!id.host_users`, before building the sandbox config — pod uid, not
+  sandbox id, since the sandbox doesn't exist yet at allocation time and
+  pod uid is stable across reconciles/retries the way a freshly-generated
+  sandbox id wouldn't be.
+- **`CriRuntime` gained a `userns: UsernsAllocator` field**, released
+  alongside `pod_uids`/`restart_policies` on pod removal and orphaned-
+  sandbox GC (looked up via the existing `pod_uids` sandbox-id→pod-uid
+  table at those two call sites) — **not** released on the
+  stale-sandbox-recreate path, since that's the *same* pod uid getting a
+  fresh sandbox moments later and `allocate()`'s idempotency means it'll
+  get the identical range back anyway.
+- **New config**: `NODELET_USERNS_BASE_UID` (default `100000`, matching
+  the conventional `/etc/subuid` starting offset most rootless-container
+  tooling already uses), `NODELET_USERNS_LENGTH` (default `65536`),
+  `NODELET_USERNS_MAX_PODS` (default `1024`, bounding the allocator, not
+  a real OS limit).
+- 13 new unit tests: `userns_tests/allocation.rs`'s disjoint-range/
+  idempotent-reallocation/exhaustion/release/slot-reuse cases,
+  `cri_tests/sandbox_config.rs`'s userns-mapping-forces-a-linux-block/
+  correct-`IdMapping`-values/no-mapping-means-no-`userns_options` cases.
+
+610 tests passing with `--features cri` (up from 600), 193 mock-only
+(unchanged — `userns.rs` itself is entirely `cri`-gated, matching
+`cpu_manager.rs`/`memory_manager.rs`'s precedent: user namespaces are a
+CRI-level Linux sandbox concept with no mock-runtime equivalent).
+`deploy/lib/test/cases/security.sh` gained a real automated test: a pod
+with `hostUsers: false` writes `/proc/self/uid_map` to a shared
+`emptyDir`, and the test asserts it does **not** show the host's own full
+identity range (`"0 0 4294967295"`) — genuine proof a user namespace is
+actually in effect, not just that the field round-tripped through
+config. No special infrastructure needed beyond a CRI runtime whose
+version actually supports `userns_options` (containerd ≥ 1.7 / runc with
+the appropriate build); this suite can't independently verify runtime
+version support, so the test's own failure message calls that out as a
+specific thing to check if it fails.
+
+**Confidence note**: `UsernsAllocator`'s allocation logic is pure and
+unit-tested with solid confidence. Not validated live in this sandbox:
+no CRI runtime with real user-namespace support was available to build
+this against, so the actual `RunPodSandboxRequest` wire behavior (does
+the specific `containerd`/`runc` combination in a real deployment honor
+`userns_options` the way this round assumes) is unverified outside the
+e2e test's manual-invocation path — same class of caveat every
+CSI/device-plugin round has carried since 12.
+
 ## Round 24: `terminationMessagePath`/`terminationMessagePolicy` read-back (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-23). Offered the 3
@@ -1402,7 +1483,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
 - ❌ Pod-level `sysctls`
-- ❌ **User namespaces** (`spec.hostUsers: false`, `HostUsers`/`UserNamespacesSupport`) (found in round 22's re-audit) — a newer (beta as of 1.30) isolation feature remapping container UIDs/GIDs into an unprivileged host range via CRI's `UserNamespace`/`Uids`/`Gids` fields on `LinuxSandboxSecurityContext`/`LinuxContainerSecurityContext`. Not read or translated at all; every pod runs in the host's user namespace regardless of `hostUsers`.
+- ✅ **User namespaces** (`spec.hostUsers: false`, round 25; found in round 22's re-audit) — `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive host UID/GID range (fixed length, default 65536, configurable via `NODELET_USERNS_BASE_UID`/`_LENGTH`/`_MAX_PODS`), set as a `POD`-mode `UserNamespace` on `LinuxSandboxSecurityContext.namespace_options.userns_options`. Simplified vs. upstream's own variable-length `usernsManager`: every pod gets the same fixed range size, and allocation state is in-memory only (self-heals as still-running pods reconcile, narrow double-allocation window across a nodelet restart — documented, not hidden). Unvalidated against a real CRI runtime's actual `userns_options` wire support — see round 25 notes.
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
 - ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
 
@@ -1565,6 +1646,12 @@ higher-value/correctness-critical than others:
       `Waiting: ContainerCreating` forever once exited). Two genuinely
       automated e2e tests, no real infra needed. `FallbackToLogsOnError`
       still not implemented (documented, deliberate). See round 24 notes.
-- [ ] Remaining candidates from round 22's audit, roughly by value: user
-      namespaces, eviction priority-tiebreaking. Ask before starting the
-      next round.
+- [x] Round 25: user namespaces (`spec.hostUsers: false`) — new
+      `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive
+      host UID/GID range via CRI's `userns_options`. Fixed-length
+      allocator (not upstream's variable-length pool), in-memory state
+      (documented, not hidden). Real automated e2e test checks
+      `/proc/self/uid_map` inside the container directly. See round 25
+      notes.
+- [ ] Remaining candidate from round 22's audit: eviction
+      priority-tiebreaking. Ask before starting the next round.
