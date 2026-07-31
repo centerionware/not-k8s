@@ -122,6 +122,20 @@ pub struct CriRuntime {
     /// statically configured. `Arc` so `CriRuntime::connect()` can hand the
     /// same instance to the plugin-registry watcher task it spawns.
     csi: Arc<crate::runtime::csi::CsiDrivers>,
+    /// Device plugin inventory/allocation state (see `device_plugins.rs`)
+    /// — populated entirely via dynamic registration (no static-config
+    /// equivalent to `NODELET_CSI_DRIVERS`; a device plugin always needs
+    /// its own `ListAndWatch` stream to report device health, which a
+    /// static socket path alone can't provide).
+    device_plugins: Arc<crate::device_plugins::DevicePlugins>,
+    /// `"sandbox_id/container_name" -> [(resource_name, device_ids)]` for
+    /// every device-plugin allocation currently backing a container — the
+    /// counterpart to `restart_counts`'s side table, needed so a
+    /// container's devices can be released back to the pool when it's
+    /// removed/restarted, without re-deriving which devices it held from
+    /// anywhere else (CRI itself has no concept of device-plugin resources
+    /// to ask back).
+    device_allocations: Mutex<HashMap<String, Vec<(String, Vec<String>)>>>,
 }
 
 /// Identity extracted from a Pod object.
@@ -359,6 +373,22 @@ fn parse_quantity(s: &str) -> Option<f64> {
         }
     }
     s.parse::<f64>().ok()
+}
+
+/// Every non-cpu/memory resource in `limits`, as `(name, count)` — a pure
+/// extraction so "does this container ask for an extended resource" is
+/// unit-testable without a live `DevicePlugins` registry. Whether nodelet
+/// actually has a driver for a given name (and so whether it's really a
+/// device-plugin resource, as opposed to something with no kubelet-side
+/// meaning at all) is decided by the caller via
+/// `DevicePlugins::resource_configured()`.
+fn extended_resource_requests(limits: Option<&BTreeMap<String, Quantity>>) -> Vec<(String, u64)> {
+    let Some(limits) = limits else { return Vec::new() };
+    limits
+        .iter()
+        .filter(|(name, _)| name.as_str() != "cpu" && name.as_str() != "memory")
+        .filter_map(|(name, q)| parse_quantity(&q.0).map(|v| (name.clone(), v.round().max(0.0) as u64)))
+        .collect()
 }
 
 /// A cpu Quantity as millicores: `"500m"` -> 500, `"2"` -> 2000, `"0.5"` -> 500.
@@ -1055,12 +1085,12 @@ impl CriRuntime {
         tokio::spawn(event_loop(channel, tx));
 
         let csi = Arc::new(crate::runtime::csi::CsiDrivers::new(csi_drivers));
-        // Dynamic CSI driver discovery: watches plugin_registry_path for a
-        // driver's registrar socket, same protocol real kubelet's own
-        // plugin watcher speaks (see plugin_registry.rs) — a no-op loop
-        // wrapper around whatever's already in `csi` if nothing ever
-        // registers there.
-        tokio::spawn(crate::plugin_registry::run(csi.clone(), plugin_registry_path, plugin_registry_sync_interval));
+        let device_plugins = Arc::new(crate::device_plugins::DevicePlugins::new());
+        // Dynamic CSI driver / device plugin discovery: watches
+        // plugin_registry_path for a plugin's registrar socket, same
+        // protocol real kubelet's own plugin watcher speaks (see
+        // plugin_registry.rs) — a no-op loop if nothing ever registers there.
+        tokio::spawn(crate::plugin_registry::run(csi.clone(), device_plugins.clone(), plugin_registry_path, plugin_registry_sync_interval));
 
         Ok(Self {
             rt,
@@ -1072,6 +1102,8 @@ impl CriRuntime {
             restart_policies: Mutex::new(HashMap::new()),
             restart_counts: Mutex::new(HashMap::new()),
             csi,
+            device_plugins,
+            device_allocations: Mutex::new(HashMap::new()),
         })
     }
 
@@ -1639,6 +1671,7 @@ impl CriRuntime {
                 // problem instead of masking it here.
                 if let Some(c) = existing_ctr {
                     self.bump_restart_count(sandbox_id, &container.name);
+                    self.release_container_devices(sandbox_id, &container.name);
                     let mut rt = self.rt.clone();
                     let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
                 }
@@ -1744,6 +1777,52 @@ impl CriRuntime {
         None
     }
 
+    /// Record which devices ended up backing a container, keyed the same
+    /// way `restart_counts` is — so a later restart/removal can find and
+    /// release them without re-deriving anything.
+    fn record_device_allocations(&self, sandbox_id: &str, container_name: &str, allocations: Vec<(String, Vec<String>)>) {
+        if allocations.is_empty() {
+            return;
+        }
+        self.device_allocations.lock().unwrap().insert(restart_count_key(sandbox_id, container_name), allocations);
+    }
+
+    /// Give back every device allocation this list represents — used both
+    /// when a just-attempted allocation needs to be unwound (container
+    /// creation/start failed after devices were already picked) and as the
+    /// shared tail end of `release_container_devices()`/
+    /// `release_sandbox_devices()` below.
+    fn release_devices(&self, allocations: &[(String, Vec<String>)]) {
+        for (resource_name, device_ids) in allocations {
+            self.device_plugins.release(resource_name, device_ids);
+        }
+    }
+
+    /// Release and forget every device allocation recorded for one
+    /// container — call before recreating a container (restart-on-exit) or
+    /// removing it outright, so its devices go back to the pool instead of
+    /// being stranded as permanently "in use."
+    fn release_container_devices(&self, sandbox_id: &str, container_name: &str) {
+        let key = restart_count_key(sandbox_id, container_name);
+        if let Some(allocations) = self.device_allocations.lock().unwrap().remove(&key) {
+            self.release_devices(&allocations);
+        }
+    }
+
+    /// Same, for every container in a sandbox that's being torn down —
+    /// mirrors `clear_restart_counts()`'s prefix-based sweep.
+    fn release_sandbox_devices(&self, sandbox_id: &str) {
+        let prefix = format!("{sandbox_id}/");
+        let removed: Vec<Vec<(String, Vec<String>)>> = {
+            let mut table = self.device_allocations.lock().unwrap();
+            let keys: Vec<String> = table.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+            keys.into_iter().filter_map(|k| table.remove(&k)).collect()
+        };
+        for allocations in removed {
+            self.release_devices(&allocations);
+        }
+    }
+
     /// The actual pull+create+start, shared by app containers
     /// (`ensure_container`) and init containers (`ensure_init_containers`) —
     /// they differ only in *when* to call this and what to do with an
@@ -1788,6 +1867,46 @@ impl CriRuntime {
             security_context: Some(linux_security_context(pod_sc, container.security_context.as_ref())),
         });
 
+        // Device plugin resources (nvidia.com/gpu and similar): allocate
+        // specific devices for any extended resource this container's
+        // limits name that a registered device plugin actually backs, and
+        // merge in whatever envs/mounts/device-nodes/annotations the
+        // plugin's Allocate() RPC says to inject. Best-effort per
+        // resource — a plugin failure means the container starts without
+        // that device rather than failing the whole pod, logged clearly
+        // either way.
+        let limits = container.resources.as_ref().and_then(|r| r.limits.as_ref());
+        let mut envs = envs.to_vec();
+        let mut devices = Vec::new();
+        let mut annotations = HashMap::new();
+        let mut allocated_devices: Vec<(String, Vec<String>)> = Vec::new();
+        for (resource_name, count) in extended_resource_requests(limits) {
+            if !self.device_plugins.resource_configured(&resource_name) {
+                continue;
+            }
+            match self.device_plugins.allocate(&resource_name, count).await {
+                Ok((device_ids, resp)) => {
+                    envs.extend(resp.envs.into_iter().map(|(key, value)| KeyValue { key, value: value.into_bytes() }));
+                    mounts.extend(resp.mounts.into_iter().map(|m| Mount {
+                        container_path: m.container_path,
+                        host_path: m.host_path,
+                        readonly: m.read_only,
+                        ..Default::default()
+                    }));
+                    devices.extend(resp.devices.into_iter().map(|d| v1::Device {
+                        container_path: d.container_path,
+                        host_path: d.host_path,
+                        permissions: d.permissions,
+                    }));
+                    annotations.extend(resp.annotations);
+                    allocated_devices.push((resource_name, device_ids));
+                }
+                Err(e) => {
+                    warn!(container = %container.name, resource = %resource_name, error = ?e, "device plugin Allocate() failed; container will start without this device");
+                }
+            }
+        }
+
         let mut rt = self.rt.clone();
         let config = ContainerConfig {
             metadata: Some(ContainerMetadata { name: container.name.clone(), attempt }),
@@ -1795,27 +1914,36 @@ impl CriRuntime {
             command: container.command.clone().unwrap_or_default(),
             args: container.args.clone().unwrap_or_default(),
             working_dir: container.working_dir.clone().unwrap_or_default(),
-            envs: envs.to_vec(),
+            envs,
             mounts,
+            devices,
+            annotations,
             labels: container_labels(id, &container.name, kind),
             log_path: format!("{}_{}.log", container.name, attempt),
             linux,
             ..Default::default()
         };
 
-        let created = rt
+        let created = match rt
             .create_container(CreateContainerRequest {
                 pod_sandbox_id: sandbox_id.to_string(),
                 config: Some(config),
                 sandbox_config: Some(sandbox_config(id)),
             })
             .await
-            .context("creating container")?
-            .into_inner();
+        {
+            Ok(resp) => resp.into_inner(),
+            Err(e) => {
+                self.release_devices(&allocated_devices);
+                return Err(e).context("creating container");
+            }
+        };
+        self.record_device_allocations(sandbox_id, &container.name, allocated_devices);
 
-        rt.start_container(StartContainerRequest { container_id: created.container_id.clone() })
-            .await
-            .context("starting container")?;
+        if let Err(e) = rt.start_container(StartContainerRequest { container_id: created.container_id.clone() }).await {
+            self.release_container_devices(sandbox_id, &container.name);
+            return Err(e).context("starting container");
+        }
 
         // postStart runs after the container is started; a failing hook
         // should kill+restart the container per real kubelet, but that's a
@@ -1983,6 +2111,7 @@ impl CriRuntime {
                     // stream) sees no existing container and creates a fresh one.
                     let c = existing_ctr.expect("Retry only reached when a container exists");
                     self.bump_restart_count(sandbox_id, &container.name);
+                    self.release_container_devices(sandbox_id, &container.name);
                     let mut rt = self.rt.clone();
                     let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
                     return Ok(InitProgress::Waiting);
@@ -2018,6 +2147,7 @@ impl CriRuntime {
             }
             self.restart_policies.lock().unwrap().remove(&sandbox_id);
             self.clear_restart_counts(&sandbox_id);
+            self.release_sandbox_devices(&sandbox_id);
         }
         Ok(())
     }
@@ -2203,6 +2333,7 @@ impl PodRuntime for CriRuntime {
                 let _ = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
                 self.restart_policies.lock().unwrap().remove(&stale_id);
                 self.clear_restart_counts(&stale_id);
+                self.release_sandbox_devices(&stale_id);
                 self.run_sandbox(&id, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
             }
             SandboxDecision::CreateFresh => {
@@ -2327,6 +2458,7 @@ impl PodRuntime for CriRuntime {
                 .context("RemovePodSandbox")?;
             self.restart_policies.lock().unwrap().remove(&sandbox_id);
             self.clear_restart_counts(&sandbox_id);
+            self.release_sandbox_devices(&sandbox_id);
         }
         self.unmount_csi_volumes(pod, &id).await;
         Ok(())
@@ -2526,6 +2658,10 @@ impl PodRuntime for CriRuntime {
             .into_inner()
             .stats;
         Ok(stats.iter().filter_map(pod_usage_from_sandbox_stats).collect())
+    }
+
+    fn device_plugin_capacity(&self) -> BTreeMap<String, u64> {
+        self.device_plugins.capacity_map()
     }
 }
 
@@ -2849,6 +2985,9 @@ mod tests_service_account_token;
 #[cfg(test)]
 #[path = "cri_tests/resource_list_to_linux_resources.rs"]
 mod tests_resource_list_to_linux_resources;
+#[cfg(test)]
+#[path = "cri_tests/extended_resource_requests.rs"]
+mod tests_extended_resource_requests;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

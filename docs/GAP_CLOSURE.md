@@ -27,6 +27,85 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 14: device plugins (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-13). Offered device
+plugins, the CPU/Memory/Topology managers, and CSI's Controller service
+(attach/detach); user picked device plugins, reasoning that it reuses
+round 13's plugin-registration infrastructure directly (the registration
+client already had to *reject* `DevicePlugin` registrations before this
+round — now it accepts and routes them) rather than opening entirely new
+surface, and has real value for edge devices with attached accelerators.
+
+- **New `device_plugins.rs`** (`cri`-gated): the kubelet-side client for
+  the Device Plugin API (`k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1`),
+  vendoring a cleaned `proto/deviceplugin.proto` (gogoproto import/options
+  and per-field `[(gogoproto.customname)]` annotations stripped — third
+  proto this project has needed that treatment for, after `cri.proto` and
+  `pluginregistration.proto`). Three responsibilities: **inventory**
+  (holds each registered plugin's `ListAndWatch` stream open for the life
+  of its registration, tracking device health as it changes — a
+  reconnect loop, same 5s-retry shape as other background loops in this
+  codebase, handles a plugin process restarting); **capacity
+  advertisement** (`capacity_map()` — healthy device counts); **allocation**
+  (`allocate()` — picks specific healthy, not-already-allocated device
+  IDs and calls the plugin's `Allocate` RPC for them).
+- **`plugin_registry.rs` now routes by `PluginInfo.type`** instead of only
+  accepting `"CSIPlugin"` — `"DevicePlugin"` registrations go to the new
+  `DevicePlugins` registry via the identical `GetInfo`/
+  `NotifyRegistrationStatus` handshake CSI drivers already used. Anything
+  else still gets a real rejection response, not silence.
+- **`Node.status.capacity`/`.allocatable` gained real plumbing** for
+  extended resources — `node.rs::build_status()` now takes an
+  `extra_capacity: &BTreeMap<String, u64>` parameter, threaded from a new
+  `PodRuntime::device_plugin_capacity()` trait method (default: empty, so
+  the mock runtime and any future runtime implementation are unaffected).
+  This meant widening `node::register()`/`push_status()`'s signatures and
+  `main.rs::heartbeat_loop()` to carry the runtime through — a real
+  (small) refactor, not just additive.
+- **`Allocate()` wired into `runtime/cri.rs::create_and_start_container()`**
+  — a new pure `extended_resource_requests()` extracts every non-cpu/
+  memory key from a container's `resources.limits`; any of those a
+  registered device plugin actually backs gets allocated, and the
+  response's envs/mounts/device-nodes/annotations are merged into the
+  `ContainerConfig` right alongside everything else already built there
+  (CRI's own `ContainerConfig.devices` field turned out to match the
+  device plugin API's `DeviceSpec` message almost field-for-field —
+  no translation gap to bridge).
+- **New side table `device_allocations`** (`"sandbox_id/container_name" ->
+  [(resource_name, device_ids)]`, same key shape `restart_counts` already
+  uses) — so a container's devices get released back to the pool on
+  restart-on-exit, init-container retry, sandbox GC, or pod removal,
+  instead of being permanently stranded as "in use." Devices are also
+  released immediately if `CreateContainer`/`StartContainer` fails after
+  allocation succeeded — a failed container must not strand hardware.
+- 30 new unit tests: `device_plugins.rs`'s `pick_devices` (the pure
+  selection logic), capacity/registration-state transitions (register/
+  deregister/re-register, stale-endpoint rejection); `node.rs`'s
+  `build_status()` extra-capacity merge; `runtime/cri.rs`'s
+  `extended_resource_requests()`.
+
+477 tests passing with `--features cri` (up from 447), 179 mock-only (up
+from 174 — `node.rs::build_status()`'s new tests are mock-buildable since
+`node.rs` itself isn't `cri`-gated).
+`deploy/lib/test/cases/device_plugins.sh` added: confirms the shared
+registration directory exists (proves the watcher started), plus a
+manual-note for the full flow — this suite has no GPU/FPGA hardware, and
+a real device plugin binary isn't something to bundle in a test harness.
+Noted as a natural future improvement: a small hand-rolled fake gRPC
+device plugin (`GetInfo`/`ListAndWatch`/`Allocate` are all easy to fake
+without real hardware) would make this fully automatable, unlike CSI's
+`csi_pvc.sh`, which genuinely needs a real storage backend.
+
+**Same confidence caveat as rounds 12/13**: no real device plugin was
+reachable in the environment that built this — verified against the
+vendored proto and real kubelet's documented Device Plugin API behavior,
+not a live handshake. All failure modes (allocation failure, stream
+disconnect, malformed registration) are logged warnings with the
+container starting without that device (or, if a plugin's `Allocate`
+genuinely can't be satisfied, that one extended-resource request being
+silently dropped) — never a crash or a stuck reconcile loop.
+
 ## Round 13: dynamic CSI driver discovery + per-volume secrets (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-12). Offered "deepen
@@ -661,7 +740,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ❌ CPU Manager (`static` policy, exclusive core pinning) — advanced/optional in real kubelet
 - ❌ Memory Manager — advanced/optional
 - ❌ Topology Manager — advanced/optional
-- ❌ Device plugins (GPU/FPGA/etc. hardware resources)
+- 🟡 **Device plugins** (`device_plugins.rs`, GPU/FPGA/etc. hardware resources) — discovered via the same dynamic plugin-registration protocol CSI drivers use (`plugin_registry.rs`, round 13); tracks live device inventory/health per resource name via `ListAndWatch`, advertises healthy counts on `Node.status.capacity`/`.allocatable`, and calls `Allocate()` during container creation to inject the envs/mounts/device-nodes/annotations a plugin returns. Not implemented: `GetPreferredAllocation` (always does its own first-healthy-unallocated pick) and `PreStartContainer`. Unvalidated against a real device plugin — see round 14 notes.
 - ❌ In-place pod resource resize (newer, still-maturing upstream feature)
 
 ### Security context
@@ -773,7 +852,12 @@ higher-value/correctness-critical than others:
 - [x] Round 13: dynamic CSI driver discovery (plugin_registry.rs) +
       nodeStageSecretRef/nodePublishSecretRef — see round 13 notes, same
       unvalidated-against-a-real-driver caveat as round 12
+- [x] Round 14: device plugins (device_plugins.rs) — discovery,
+      Node.status.capacity/allocatable advertisement, Allocate() wired into
+      container creation. See round 14 notes; same unvalidated-against-
+      real-hardware caveat as rounds 12/13's driver-dependent pieces.
 - [ ] Everything else in the responsibility list above — biggest remaining
-      single items: CPU/Memory/Topology managers, device plugins, plus
-      deepening PVC/CSI further (Controller service/attach — the one CSI
-      capability still entirely missing). Ask before starting the next round.
+      single items: CPU/Memory/Topology managers, device plugin
+      GetPreferredAllocation/PreStartContainer, plus deepening PVC/CSI
+      further (Controller service/attach — the one CSI capability still
+      entirely missing). Ask before starting the next round.

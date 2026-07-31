@@ -19,14 +19,15 @@
 //! notification dependency for something that only needs to react within a
 //! few seconds, not instantly).
 //!
-//! **Scope**: only `PluginInfo.type == "CSIPlugin"` is handled — device
-//! plugins use this exact same protocol but nodelet doesn't implement the
-//! DevicePlugin gRPC API itself (see docs/GAP_CLOSURE.md), so a device
-//! plugin's registration attempt is explicitly rejected via
-//! `NotifyRegistrationStatus{plugin_registered: false, ...}` rather than
-//! silently ignored — the plugin gets a real answer either way, matching
-//! what a registrar sidecar actually expects to receive.
+//! Handles both `PluginInfo.type` values real kubelet's plugin watcher
+//! does: `"CSIPlugin"` routes to `runtime::csi::CsiDrivers` (round 12/13),
+//! `"DevicePlugin"` routes to `device_plugins::DevicePlugins` (round 14).
+//! Anything else gets a real `NotifyRegistrationStatus{plugin_registered:
+//! false, ...}` rather than being silently ignored — the plugin gets an
+//! answer either way, matching what a registrar sidecar actually expects
+//! to receive.
 
+use crate::device_plugins::DevicePlugins;
 use crate::runtime::csi::CsiDrivers;
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -45,6 +46,15 @@ use v1::registration_client::RegistrationClient;
 use v1::{InfoRequest, RegistrationStatus};
 
 const CSI_PLUGIN_TYPE: &str = "CSIPlugin";
+const DEVICE_PLUGIN_TYPE: &str = "DevicePlugin";
+
+/// Which backend a registered socket belongs to — tracked alongside its
+/// name so a socket's disappearance can be routed to the right
+/// `deregister()`.
+enum PluginKind {
+    Csi,
+    Device,
+}
 
 /// Dial a plugin's registration socket — same connector shape as
 /// `runtime/cri.rs::connect_uds`/`runtime/csi.rs::connect_uds`, a third
@@ -85,21 +95,25 @@ fn scan_registry_dir(dir: &Path) -> Vec<PathBuf> {
 /// track it for deregistration later), `None` for a plugin type nodelet
 /// doesn't support (already told no via `NotifyRegistrationStatus`, not
 /// silently dropped).
-async fn register_one(csi: &CsiDrivers, socket_path: &Path) -> Result<Option<String>> {
+async fn register_one(csi: &Arc<CsiDrivers>, devices: &Arc<DevicePlugins>, socket_path: &Path) -> Result<Option<(PluginKind, String)>> {
     let channel = connect_uds(socket_path).await?;
     let mut client = RegistrationClient::new(channel);
     let info = client.get_info(InfoRequest {}).await.context("GetInfo")?.into_inner();
 
-    if info.r#type != CSI_PLUGIN_TYPE {
-        let _ = client
-            .notify_registration_status(RegistrationStatus {
-                plugin_registered: false,
-                error: format!("nodelet only supports {CSI_PLUGIN_TYPE} registrations, got '{}'", info.r#type),
-            })
-            .await;
-        info!(plugin = %info.name, plugin_type = %info.r#type, "plugin registry: rejecting non-CSI plugin (device plugins aren't implemented)");
-        return Ok(None);
-    }
+    let kind = match info.r#type.as_str() {
+        CSI_PLUGIN_TYPE => PluginKind::Csi,
+        DEVICE_PLUGIN_TYPE => PluginKind::Device,
+        other => {
+            let _ = client
+                .notify_registration_status(RegistrationStatus {
+                    plugin_registered: false,
+                    error: format!("nodelet only supports {CSI_PLUGIN_TYPE}/{DEVICE_PLUGIN_TYPE} registrations, got '{other}'"),
+                })
+                .await;
+            info!(plugin = %info.name, plugin_type = %other, "plugin registry: rejecting unsupported plugin type");
+            return Ok(None);
+        }
+    };
     if info.name.is_empty() || info.endpoint.is_empty() {
         let _ = client
             .notify_registration_status(RegistrationStatus {
@@ -110,40 +124,50 @@ async fn register_one(csi: &CsiDrivers, socket_path: &Path) -> Result<Option<Str
         anyhow::bail!("PluginInfo missing name or endpoint");
     }
 
-    csi.register(info.name.clone(), info.endpoint.clone());
+    match kind {
+        PluginKind::Csi => csi.register(info.name.clone(), info.endpoint.clone()),
+        PluginKind::Device => devices.register(info.name.clone(), info.endpoint.clone()),
+    }
     client
         .notify_registration_status(RegistrationStatus { plugin_registered: true, error: String::new() })
         .await
         .context("NotifyRegistrationStatus")?;
-    info!(driver = %info.name, endpoint = %info.endpoint, "plugin registry: CSI driver registered");
-    Ok(Some(info.name))
+    info!(name = %info.name, endpoint = %info.endpoint, plugin_type = %info.r#type, "plugin registry: plugin registered");
+    Ok(Some((kind, info.name)))
 }
 
 /// Watch `registry_path` forever, registering/deregistering CSI drivers
-/// with `csi` as their sockets appear/disappear. Never returns under
-/// normal operation. If `registry_path` can't even be created, logs once
-/// and returns — dynamic discovery is simply unavailable for this run
-/// (static `NODELET_CSI_DRIVERS` config still works either way).
-pub async fn run(csi: Arc<CsiDrivers>, registry_path: String, sync_interval: Duration) {
+/// (with `csi`) and device plugins (with `devices`) as their sockets
+/// appear/disappear. Never returns under normal operation. If
+/// `registry_path` can't even be created, logs once and returns — dynamic
+/// discovery is simply unavailable for this run (static
+/// `NODELET_CSI_DRIVERS` config still works either way; there's no static
+/// equivalent for device plugins, so a failure here means device plugins
+/// don't work at all for this run).
+pub async fn run(csi: Arc<CsiDrivers>, devices: Arc<DevicePlugins>, registry_path: String, sync_interval: Duration) {
     let dir = PathBuf::from(&registry_path);
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        warn!(path = %dir.display(), error = ?e, "plugin registry: couldn't create the registry directory; dynamic CSI driver discovery disabled for this run");
+        warn!(path = %dir.display(), error = ?e, "plugin registry: couldn't create the registry directory; dynamic plugin discovery disabled for this run");
         return;
     }
-    info!(path = %dir.display(), "plugin registry: watching for CSI driver registrations");
+    info!(path = %dir.display(), "plugin registry: watching for CSI driver / device plugin registrations");
 
-    // socket path -> driver name, so a socket's disappearance can
-    // deregister the right driver without re-dialing it.
-    let mut known: HashMap<PathBuf, String> = HashMap::new();
+    // socket path -> (which backend, plugin name), so a socket's
+    // disappearance can be routed to the right deregister() without
+    // re-dialing it.
+    let mut known: HashMap<PathBuf, (PluginKind, String)> = HashMap::new();
 
     loop {
         let present: HashSet<PathBuf> = scan_registry_dir(&dir).into_iter().collect();
 
         let gone: Vec<PathBuf> = known.keys().filter(|p| !present.contains(*p)).cloned().collect();
         for path in gone {
-            if let Some(driver) = known.remove(&path) {
-                info!(driver, path = %path.display(), "plugin registry: socket disappeared; deregistering");
-                csi.deregister(&driver);
+            if let Some((kind, name)) = known.remove(&path) {
+                info!(name, path = %path.display(), "plugin registry: socket disappeared; deregistering");
+                match kind {
+                    PluginKind::Csi => csi.deregister(&name),
+                    PluginKind::Device => devices.deregister(&name),
+                }
             }
         }
 
@@ -151,9 +175,9 @@ pub async fn run(csi: Arc<CsiDrivers>, registry_path: String, sync_interval: Dur
             if known.contains_key(path) {
                 continue;
             }
-            match register_one(&csi, path).await {
-                Ok(Some(driver)) => {
-                    known.insert(path.clone(), driver);
+            match register_one(&csi, &devices, path).await {
+                Ok(Some(entry)) => {
+                    known.insert(path.clone(), entry);
                 }
                 Ok(None) => {} // logged inside register_one — not a supported plugin type
                 Err(e) => warn!(path = %path.display(), error = ?e, "plugin registry: registration attempt failed"),

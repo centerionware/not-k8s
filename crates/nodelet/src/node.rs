@@ -190,8 +190,11 @@ fn build_node(cfg: &Config) -> Node {
     }
 }
 
-fn build_status(cfg: &Config, ready: bool) -> NodeStatus {
-    let cap = capacity_map(cfg);
+fn build_status(cfg: &Config, ready: bool, extra_capacity: &BTreeMap<String, u64>) -> NodeStatus {
+    let mut cap = capacity_map(cfg);
+    for (name, count) in extra_capacity {
+        cap.insert(name.clone(), Quantity(count.to_string()));
+    }
     let pressure = crate::metrics::read_pressure(
         &cfg.disk_path,
         cfg.memory_pressure_threshold_bytes,
@@ -224,11 +227,11 @@ fn build_status(cfg: &Config, ready: bool) -> NodeStatus {
 }
 
 /// Register the node (idempotent server-side apply) and seed its status + lease.
-pub async fn register(client: &Client, cfg: &Config) -> Result<()> {
+pub async fn register(client: &Client, cfg: &Config, extra_capacity: &BTreeMap<String, u64>) -> Result<()> {
     let api: Api<Node> = Api::all(client.clone());
     let pp = PatchParams::apply(FIELD_MANAGER).force();
     api.patch(&cfg.node_name, &pp, &Patch::Apply(&build_node(cfg))).await?;
-    push_status(client, cfg, true).await?;
+    push_status(client, cfg, true, extra_capacity).await?;
     renew_lease(client, cfg).await?;
 
     // k3s's cloud-node-lifecycle-controller adds this taint asynchronously
@@ -281,9 +284,9 @@ async fn clear_cloudprovider_taint(client: Client, node_name: String) {
 }
 
 /// Push the (heavy, infrequent) node status.
-pub async fn push_status(client: &Client, cfg: &Config, ready: bool) -> Result<()> {
+pub async fn push_status(client: &Client, cfg: &Config, ready: bool, extra_capacity: &BTreeMap<String, u64>) -> Result<()> {
     let api: Api<Node> = Api::all(client.clone());
-    let status = build_status(cfg, ready);
+    let status = build_status(cfg, ready, extra_capacity);
     let patch = serde_json::json!({ "status": status });
     api.patch_status(&cfg.node_name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
     Ok(())
@@ -311,6 +314,9 @@ mod tests_build_node;
 #[cfg(test)]
 #[path = "node_tests/allocatable_map.rs"]
 mod tests_allocatable_map;
+#[cfg(test)]
+#[path = "node_tests/build_status.rs"]
+mod tests_build_status;
 
 /// Renew the node Lease (the cheap, frequent liveness signal).
 pub async fn renew_lease(client: &Client, cfg: &Config) -> Result<()> {

@@ -57,8 +57,10 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
   src/runtime/mock.rs  In-memory runtime: reports pods Running, zero engine overhead.
   src/runtime/csi.rs   Minimal CSI Node-service client for PersistentVolumeClaim
                        volumes (feature `cri`).
-  src/plugin_registry.rs  Dynamic CSI driver discovery: the client side of the
-                       CSI/DevicePlugin plugin-registration protocol (feature `cri`).
+  src/plugin_registry.rs  Dynamic CSI driver / device plugin discovery: the client side
+                       of the CSI/DevicePlugin plugin-registration protocol (feature `cri`).
+  src/device_plugins.rs  Device Plugin API client: inventory, Node capacity
+                       advertisement, and Allocate() (feature `cri`).
   src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`): pod/init
                        container lifecycle, resource limits, securityContext,
                        DNS, private registry auth.
@@ -131,8 +133,15 @@ real kubelet's own plugin watcher — and `nodeStageSecretRef`/
 `nodePublishSecretRef` are resolved and passed through. Still no
 Controller service (attach/detach — not kubelet's job upstream either) —
 **unvalidated against a real CSI driver**, see `docs/GAP_CLOSURE.md`'s
-round 12/13 notes. Still missing: CPU/Memory/Topology managers, device
-plugins, and CSI's Controller service — full list in `docs/GAP_CLOSURE.md`.
+round 12/13 notes. Also **device plugins** (`device_plugins.rs`,
+GPU/FPGA/etc. hardware) — discovered via the same dynamic registration
+protocol as CSI drivers, advertised on `Node.status.capacity`/
+`.allocatable`, and allocated into requesting containers'
+envs/mounts/device-nodes via the plugin's `Allocate()` RPC —
+**unvalidated against real hardware**, see round 14 notes. Still missing:
+CPU/Memory/Topology managers, CSI's Controller service, and device
+plugins' `GetPreferredAllocation`/`PreStartContainer` — full list in
+`docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -576,6 +585,13 @@ Two layers, and they're not substitutes for each other:
   `NODELET_PLUGIN_REGISTRY_PATH`) — `csi_pvc.sh` run *without*
   `NODELET_CSI_DRIVERS` set is the actual end-to-end proof that dynamic
   discovery works, once that's set up.
+
+  `device_plugins.sh` checks the same shared registry directory, plus a
+  manual-note for the full device-allocation flow — this suite has no
+  GPU/FPGA hardware to test against and a real device plugin binary isn't
+  something to bundle here (unlike CSI, a fake gRPC device plugin needs no
+  real hardware to build, so this is flagged as a natural next step rather
+  than attempted in this round).
 
 ## Configuration (environment variables)
 

@@ -202,6 +202,15 @@ pub trait PodRuntime: Send + Sync {
     async fn pod_usage_stats(&self) -> anyhow::Result<Vec<PodUsage>> {
         Ok(Vec::new())
     }
+
+    /// Extended-resource name (e.g. `nvidia.com/gpu`) -> healthy device
+    /// count, from any registered device plugins (`cri` feature only —
+    /// see `device_plugins.rs`). Feeds `Node.status.capacity`/`.allocatable`
+    /// (`node.rs::build_status`). Default: empty (mock has no device
+    /// plugins to query).
+    fn device_plugin_capacity(&self) -> std::collections::BTreeMap<String, u64> {
+        std::collections::BTreeMap::new()
+    }
 }
 
 /// CPU/memory usage numbers in the same shape CRI's `CpuUsage`/`MemoryUsage`
