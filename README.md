@@ -216,8 +216,12 @@ non-gRPC listener) are unit-tested, the success path is unvalidated (no
 gRPC server available to test against live). Also closed (round 30):
 **`emptyDir.medium: Memory`** — `resolve_volumes()` now mounts real
 tmpfs (`mount -t tmpfs`) for it, honoring `sizeLimit`, and `remove_pod()`
-unmounts it again on teardown (a real RAM leak otherwise). Full status
-list in `docs/GAP_CLOSURE.md`.
+unmounts it again on teardown (a real RAM leak otherwise). Also closed
+(round 31): **generic ephemeral volumes** (`spec.volumes[].ephemeral`) —
+resolves the ephemeral-volume controller's deterministic-named
+(`<pod name>-<volume name>`) PVC, with an ownership safety check by UID,
+then reuses all of CSI's existing mount machinery. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 ---
 

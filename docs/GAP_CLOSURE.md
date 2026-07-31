@@ -27,6 +27,62 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 31: generic ephemeral volumes (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-30). Offered the 3
+remaining round-27 candidates; user picked generic ephemeral volumes —
+highest real-world value of the three.
+
+`spec.volumes[].ephemeral` behaves exactly like a normal
+`persistentVolumeClaim` reference once its backing PVC exists — the PVC
+itself is auto-created (and owned) by the **ephemeral-volume controller**,
+a `kube-controller-manager` component, at the deterministic name
+`<pod name>-<volume name>`. Same "not kubelet's job" boundary already
+established for dynamic provisioning and CSI attach coordination
+(rounds 12, 19) — nodelet never creates that PVC, only reads it once the
+controller has.
+
+- **New pure helpers**: `ephemeral_pvc_name(pod_name, volume_name)` (the
+  documented `<pod name>-<volume name>` convention) and
+  `pvc_owned_by_pod(pvc, pod_uid)` — the safety check
+  `EphemeralVolumeSource`'s own API doc comment describes: a same-named
+  PVC that isn't actually owned by this pod (checked by UID, not just
+  name) is never used, even if bound and otherwise valid, to avoid
+  adopting an unrelated volume by mistake (e.g. a naming collision or a
+  leftover PVC from a previous pod).
+- **`resolve_ephemeral_source()`** does the ownership check, then
+  delegates to the existing `resolve_csi_source()` for everything past
+  it — reusing all of CSI's Node-service mount/driver-resolution/
+  secrets-handling machinery from rounds 12/13/19 rather than
+  duplicating any of it. Unlike `resolve_csi_source()` (used for a direct
+  `persistentVolumeClaim` reference, where a missing PVC usually means a
+  real misconfiguration worth surfacing as an error), a missing PVC here
+  is the *expected*, normal state immediately after pod creation — the
+  controller hasn't gotten to it yet — so this checks existence itself
+  and treats "doesn't exist yet" as a graceful retry, not a warning-level
+  error.
+- **`unmount_csi_volumes()`** (teardown) extended to also recognize
+  `.ephemeral` volumes, computing the same deterministic claim name.
+- 5 new unit tests: `cri_tests/ephemeral_volume.rs`'s naming-convention
+  case and the ownership-check's trusted/no-owner/wrong-uid/
+  multiple-owners cases.
+
+644 tests passing with `--features cri` (up from 639), 211 mock-only
+(unchanged — this reuses the entirely-`cri`-gated CSI module).
+`deploy/lib/test/cases/ephemeral_volumes.sh` added — same infrastructure
+dependency `csi_pvc.sh` already has (`TEST_CSI_STORAGE_CLASS`, a working
+external-provisioner and CSI driver), *plus* a cluster whose
+`kube-controller-manager` actually runs the ephemeral-volume controller;
+skips cleanly with a specific reason if the expected PVC never appears at
+all (controller not enabled) versus never becomes Bound (provisioner
+issue) versus the pod never mounting it (nodelet-side issue) — three
+distinct, diagnosable failure points.
+
+**Confidence note**: `ephemeral_pvc_name()`/`pvc_owned_by_pod()` are pure
+and unit-tested with solid confidence. Unvalidated live, same as every
+CSI-adjacent round since 12: no real CSI driver or ephemeral-volume
+controller available in this sandbox to prove the end-to-end flow.
+
 ## Round 30: `emptyDir.medium: Memory` (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-29). Offered the 4
@@ -1765,7 +1821,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ❌ `emptyDir.sizeLimit` enforcement
 - ❌ subPath `$(VAR)` expansion
 - ✅ **`emptyDir.medium: Memory`** (round 30; found in round 27's re-audit) — `resolve_volumes()` now shells out to `mount -t tmpfs` (`mount_tmpfs_empty_dir()`) on the host directory for a `Memory`-medium `emptyDir`, honoring `sizeLimit` as `-o size=` when set. `remove_pod()` unmounts it again on teardown (a real RAM leak otherwise, unlike plain-disk `emptyDir`). Best-effort: falls back to the plain-disk directory (already created) on mount failure rather than failing the pod. Unvalidated against a real privileged mount in this sandbox — see round 30 notes.
-- ❌ **Generic ephemeral volumes** (`volumeSource.ephemeral`, GA since 1.23, found in round 27's re-audit) — a volume that auto-creates (and owns the lifecycle of) a `PersistentVolumeClaim` from an inline template, then behaves exactly like a normal PVC reference. Not implemented at all — `resolve_volumes()` has no `ephemeral` branch, so a pod using one gets the generic "volume type not supported yet" warning and no mount.
+- ✅ **Generic ephemeral volumes** (round 31; `volumeSource.ephemeral`, found in round 27's re-audit) — `resolve_volumes()` now recognizes `.ephemeral`, resolving the deterministic-named (`<pod name>-<volume name>`) PVC the ephemeral-volume controller (a `kube-controller-manager` component — not nodelet's job, same as dynamic provisioning) auto-creates, with an ownership safety check (by UID) before trusting it, then reuses all of CSI's existing mount machinery. Unvalidated against a real CSI driver/ephemeral-volume controller — see round 31 notes.
 - ❌ **Image volume source** (`volumeSource.image`, OCI-artifact volumes, KEP-4639, still beta, found in round 27's re-audit) — mounting an OCI image/artifact as a read-only volume. Not implemented. Lower priority given its immaturity upstream too.
 - ❌ **`Node.status.volumesInUse`/`.volumesAttached`** (found in round 27's re-audit) — coordination fields for the legacy in-tree attach/detach controller path. Not populated. Low value: this project's actual PVC story is CSI-first (rounds 12, 13, 19), and CSI's own attach coordination (round 19) doesn't read these fields at all.
 
@@ -1942,8 +1998,12 @@ higher-value/correctness-critical than others:
       honoring `sizeLimit`; `remove_pod()` unmounts it again on teardown.
       Real automated e2e test checks the host mountpoint's actual
       filesystem type. See round 30 notes.
-- [ ] Remaining candidates from round 27's audit, roughly by value:
-      generic ephemeral volumes, then the three lower-priority items
-      (image volume source, `Node.status.images`,
-      `volumesInUse`/`volumesAttached`). Ask before
+- [x] Round 31: generic ephemeral volumes — `resolve_volumes()` resolves
+      the ephemeral-volume controller's deterministic-named PVC (with an
+      ownership safety check), reusing all of CSI's existing mount
+      machinery. Unvalidated against a real CSI driver/controller. See
+      round 31 notes.
+- [ ] Remaining candidates from round 27's audit — the three
+      lower-priority items: image volume source, `Node.status.images`,
+      `volumesInUse`/`volumesAttached`. Ask before
       starting the next round.

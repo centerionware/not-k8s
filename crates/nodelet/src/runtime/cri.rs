@@ -923,6 +923,26 @@ fn pod_field_value(pod: &Pod, field_path: &str) -> Option<String> {
     }
 }
 
+/// The deterministic name a generic ephemeral volume's (`spec.volumes[].ephemeral`)
+/// auto-created `PersistentVolumeClaim` gets — `<pod name>-<volume name>`,
+/// exactly as documented on `EphemeralVolumeSource` itself (round 31).
+/// Pure so the naming convention is unit-testable without a cluster.
+fn ephemeral_pvc_name(pod_name: &str, volume_name: &str) -> String {
+    format!("{pod_name}-{volume_name}")
+}
+
+/// Whether `pvc` is genuinely owned by the pod with uid `pod_uid` — the
+/// safety check real kubelet itself does before trusting a same-named
+/// PVC for a generic ephemeral volume (round 31; see
+/// `EphemeralVolumeSource`'s own doc comment: "An existing PVC with that
+/// name that is not owned by the pod will *not* be used ... to avoid
+/// using an unrelated volume by mistake"). Checked by UID, not just
+/// name/kind — a stale or coincidentally-named PVC must never be
+/// silently adopted.
+fn pvc_owned_by_pod(pvc: &PersistentVolumeClaim, pod_uid: &str) -> bool {
+    pvc.metadata.owner_references.as_deref().unwrap_or(&[]).iter().any(|o| o.uid == pod_uid)
+}
+
 /// Whether an `emptyDir` volume wants `medium: Memory` (tmpfs-backed,
 /// round 30) rather than the default (unset, or explicitly `""`) —
 /// regular disk. Pure so the decision is unit-testable without touching
@@ -1432,6 +1452,31 @@ impl CriRuntime {
                     }
                     Err(e) => warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "failed to resolve PersistentVolumeClaim"),
                 }
+            } else if v.ephemeral.is_some() {
+                // Generic ephemeral volume (round 31): the actual PVC is
+                // created by the ephemeral-volume controller (a
+                // kube-controller-manager component), not nodelet — same
+                // "not kubelet's job" boundary as dynamic provisioning
+                // elsewhere in this file. Once that controller has created
+                // it, it behaves exactly like a normal PVC reference, so
+                // this reuses resolve_csi_source() for everything past the
+                // ownership safety check.
+                let claim_name = ephemeral_pvc_name(&id.name, &v.name);
+                match self.resolve_ephemeral_source(&id.namespace, &claim_name, &id.uid).await {
+                    Ok(Some(source)) => match self.csi.mount(&source, &vol_dir, &id.uid).await {
+                        Ok(()) => {
+                            out.insert(v.name.clone(), vol_dir);
+                        }
+                        Err(e) => warn!(volume = %v.name, claim = %claim_name, error = ?e, "failed to mount CSI volume for generic ephemeral volume"),
+                    },
+                    Ok(None) => {
+                        // Not yet created by the ephemeral-volume
+                        // controller, not owned by this pod, or otherwise
+                        // unresolvable — resolve_ephemeral_source() already
+                        // warned with the specific reason.
+                    }
+                    Err(e) => warn!(volume = %v.name, claim = %claim_name, error = ?e, "failed to resolve generic ephemeral volume's PersistentVolumeClaim"),
+                }
             } else {
                 warn!(
                     volume = %v.name,
@@ -1532,6 +1577,48 @@ impl CriRuntime {
             }
         }
         Ok(())
+    }
+
+    /// Resolve a `spec.volumes[].ephemeral` (generic ephemeral) volume to
+    /// its CSI source (round 31). Real kubelet doesn't create the backing
+    /// PVC itself — that's the ephemeral-volume controller's job (a
+    /// kube-controller-manager component), same "not kubelet's job"
+    /// boundary as dynamic provisioning elsewhere in this file — so this
+    /// only ever *reads* whatever that controller has already created at
+    /// the deterministic name `ephemeral_pvc_name()` computes.
+    ///
+    /// Unlike `resolve_csi_source()` (used for a direct
+    /// `persistentVolumeClaim` reference, where a missing PVC usually
+    /// means a typo/misconfiguration worth surfacing as an error), a
+    /// missing PVC here is the *expected*, normal state immediately after
+    /// pod creation — the controller hasn't gotten to it yet — so this
+    /// checks existence itself first and treats "doesn't exist yet" as a
+    /// graceful `Ok(None)` retry, not a warning-level error.
+    ///
+    /// Also does the safety check `EphemeralVolumeSource`'s own API doc
+    /// comment describes: a same-named PVC that isn't actually owned by
+    /// this pod (checked by UID) is never used, even if bound and
+    /// otherwise valid — avoids adopting an unrelated volume by mistake
+    /// (e.g. a naming collision, or a leftover PVC from a previous pod).
+    async fn resolve_ephemeral_source(
+        &self,
+        namespace: &str,
+        claim_name: &str,
+        pod_uid: &str,
+    ) -> Result<Option<crate::runtime::csi::CsiVolumeSource>> {
+        let pvc = match Api::<PersistentVolumeClaim>::namespaced(self.client.clone(), namespace).get_opt(claim_name).await {
+            Ok(Some(pvc)) => pvc,
+            Ok(None) => {
+                warn!(claim = %claim_name, "generic ephemeral volume: PersistentVolumeClaim doesn't exist yet — waiting for the ephemeral-volume controller to create it; will retry next reconcile");
+                return Ok(None);
+            }
+            Err(e) => return Err(e).with_context(|| format!("fetching PersistentVolumeClaim {claim_name}")),
+        };
+        if !pvc_owned_by_pod(&pvc, pod_uid) {
+            warn!(claim = %claim_name, "generic ephemeral volume: a PersistentVolumeClaim with the expected name exists but isn't owned by this pod; refusing to use it (matches real kubelet's own safety check)");
+            return Ok(None);
+        }
+        self.resolve_csi_source(namespace, claim_name).await
     }
 
     /// Resolve a `PersistentVolumeClaim` (by name, in `namespace`) to its
@@ -1659,12 +1746,20 @@ impl CriRuntime {
         let pod_dir = PathBuf::from(VOLUME_ROOT).join(&id.uid).join("volumes");
 
         for v in volumes {
-            let Some(pvc_source) = &v.persistent_volume_claim else { continue };
-            let source = match self.resolve_csi_source(&id.namespace, &pvc_source.claim_name).await {
+            let claim_name = if let Some(pvc_source) = &v.persistent_volume_claim {
+                pvc_source.claim_name.clone()
+            } else if v.ephemeral.is_some() {
+                // Generic ephemeral volume (round 31) — same deterministic
+                // name ensure_pod()'s resolve_volumes() derives it by.
+                ephemeral_pvc_name(&id.name, &v.name)
+            } else {
+                continue;
+            };
+            let source = match self.resolve_csi_source(&id.namespace, &claim_name).await {
                 Ok(Some(source)) => source,
                 Ok(None) => continue, // already logged why in resolve_csi_source()
                 Err(e) => {
-                    warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "CSI teardown: failed to resolve PersistentVolumeClaim; volume left mounted");
+                    warn!(volume = %v.name, claim = %claim_name, error = ?e, "CSI teardown: failed to resolve PersistentVolumeClaim; volume left mounted");
                     continue;
                 }
             };
@@ -3631,6 +3726,9 @@ mod tests_termination_message;
 #[cfg(test)]
 #[path = "cri_tests/tmpfs_empty_dir.rs"]
 mod tests_tmpfs_empty_dir;
+#[cfg(test)]
+#[path = "cri_tests/ephemeral_volume.rs"]
+mod tests_ephemeral_volume;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.
