@@ -21,6 +21,13 @@ fn main() {
                 .build_client(true)
                 .compile_protos(&["proto/csi.proto"], &["proto"])
                 .expect("failed to compile CSI proto");
+
+            println!("cargo:rerun-if-changed=proto/pluginregistration.proto");
+            tonic_prost_build::configure()
+                .build_server(false)
+                .build_client(true)
+                .compile_protos(&["proto/pluginregistration.proto"], &["proto"])
+                .expect("failed to compile plugin registration proto");
         }
     }
 }

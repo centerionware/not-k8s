@@ -45,6 +45,8 @@ fn cfg() -> Config {
         kube_reserved_memory_bytes: 0,
         cgroup_fs_root: "/sys/fs/cgroup".to_string(),
         csi_drivers: Default::default(),
+        plugin_registry_path: "/tmp".to_string(),
+        plugin_registry_sync_interval: Duration::from_secs(10),
     }
 }
 

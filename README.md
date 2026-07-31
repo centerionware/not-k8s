@@ -56,7 +56,9 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
   src/shutdown.rs      Graceful node shutdown: systemd-logind inhibitor lock + pod drain (feature `cri`).
   src/runtime/mock.rs  In-memory runtime: reports pods Running, zero engine overhead.
   src/runtime/csi.rs   Minimal CSI Node-service client for PersistentVolumeClaim
-                       volumes, first-slice scope (feature `cri`).
+                       volumes (feature `cri`).
+  src/plugin_registry.rs  Dynamic CSI driver discovery: the client side of the
+                       CSI/DevicePlugin plugin-registration protocol (feature `cri`).
   src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`): pod/init
                        container lifecycle, resource limits, securityContext,
                        DNS, private registry auth.
@@ -119,15 +121,18 @@ default) — **the cgroup v2 writes are unvalidated against a real
 `/sys/fs/cgroup`**, best-effort/logged-not-fatal on failure, see
 `docs/GAP_CLOSURE.md`'s round 11 notes. `RuntimeClass.overhead` is wired
 through too, closed alongside this round's cgroup work. Also
-**PersistentVolumeClaim/CSI** (`runtime/csi.rs`) — a first slice, not full
-CSI: a bound PVC's CSI-backed `PersistentVolume` gets staged/published via
-a CSI driver's Node service and bind-mounted into the container like any
-other volume, but driver discovery is static (`NODELET_CSI_DRIVERS`, no
-dynamic plugin registration) and there's no Controller service (attach/
-detach — not kubelet's job upstream either) or per-volume secret support
-yet — **unvalidated against a real CSI driver**, see `docs/GAP_CLOSURE.md`'s
-round 12 notes. Still missing: CPU/Memory/Topology managers, device
-plugins, and deepening PVC/CSI itself — full list in `docs/GAP_CLOSURE.md`.
+**PersistentVolumeClaim/CSI** (`runtime/csi.rs`, `plugin_registry.rs`) —
+a bound PVC's CSI-backed `PersistentVolume` gets staged/published via a
+CSI driver's Node service and bind-mounted into the container like any
+other volume. Driver discovery is both static (`NODELET_CSI_DRIVERS`) and
+dynamic — a driver's `node-driver-registrar` sidecar can register itself
+against `NODELET_PLUGIN_REGISTRY_PATH`, the same protocol it'd use against
+real kubelet's own plugin watcher — and `nodeStageSecretRef`/
+`nodePublishSecretRef` are resolved and passed through. Still no
+Controller service (attach/detach — not kubelet's job upstream either) —
+**unvalidated against a real CSI driver**, see `docs/GAP_CLOSURE.md`'s
+round 12/13 notes. Still missing: CPU/Memory/Topology managers, device
+plugins, and CSI's Controller service — full list in `docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -565,6 +570,13 @@ Two layers, and they're not substitutes for each other:
   piece: no CSI driver socket was reachable in the environment that built
   `runtime/csi.rs` (see `docs/GAP_CLOSURE.md`'s round 12 notes).
 
+  `csi_plugin_registration.sh` checks the dynamic-discovery registry
+  directory actually gets created, plus a manual-note for the full
+  registration handshake (needs a real CSI driver's registrar pointed at
+  `NODELET_PLUGIN_REGISTRY_PATH`) — `csi_pvc.sh` run *without*
+  `NODELET_CSI_DRIVERS` set is the actual end-to-end proof that dynamic
+  discovery works, once that's set up.
+
 ## Configuration (environment variables)
 
 | Variable | Default | Meaning |
@@ -604,7 +616,9 @@ Two layers, and they're not substitutes for each other:
 | `NODELET_KUBE_RESERVED_CPU_MILLICORES` | `0` | CPU reserved for nodelet/the container runtime itself. |
 | `NODELET_KUBE_RESERVED_MEMORY_BYTES` | `0` | Same, for memory bytes. |
 | `NODELET_CGROUP_FS_ROOT` | `/sys/fs/cgroup` | Where the host's cgroup v2 unified hierarchy is mounted (`cri` only) — used to create/cap the top-level `kubepods` cgroup at `Node.status.allocatable`. |
-| `NODELET_CSI_DRIVERS` | (none) | Comma-separated `driver-name=unix:///path/to/socket` pairs mapping a CSI driver name to its Node-service socket (`cri` only) — see [Status](#status). Unset means `PersistentVolumeClaim` volumes are skipped with a warning. |
+| `NODELET_CSI_DRIVERS` | (none) | Comma-separated `driver-name=unix:///path/to/socket` pairs mapping a CSI driver name to its Node-service socket (`cri` only) — see [Status](#status). Unset means `PersistentVolumeClaim` volumes are skipped with a warning unless a driver registers itself dynamically (below). |
+| `NODELET_PLUGIN_REGISTRY_PATH` | `/var/lib/nodelet/plugins_registry` | Directory watched for CSI driver registration sockets (`cri` only) — point a driver's `node-driver-registrar` `--kubelet-registration-path` here for dynamic discovery. |
+| `NODELET_PLUGIN_REGISTRY_SYNC_SECS` | `10` | How often that directory is rescanned for new/removed sockets. |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---

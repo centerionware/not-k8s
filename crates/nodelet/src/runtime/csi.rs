@@ -105,15 +105,6 @@ fn mount_capability(fs_type: &str, read_only: bool) -> VolumeCapability {
 }
 
 /// One CSI volume actually in use — enough to unpublish/unstage it again
-/// on pod removal without re-resolving the PVC->PV chain (which may no
-/// longer resolve by then, e.g. the PVC was deleted around the same time
-/// as the pod).
-#[derive(Clone, Debug)]
-pub struct CsiVolumeRef {
-    pub driver: String,
-    pub volume_handle: String,
-}
-
 /// Everything needed to mount a `PersistentVolumeClaim` volume, resolved
 /// from the bound `PersistentVolume`'s `.spec.csi` — pulled out as its own
 /// type so `runtime/cri.rs`'s PVC resolution and this module's mount/unmount
@@ -124,14 +115,24 @@ pub struct CsiVolumeSource {
     pub fs_type: String,
     pub read_only: bool,
     pub volume_attributes: HashMap<String, String>,
+    /// From `.spec.csi.nodeStageSecretRef`, resolved to key/value pairs —
+    /// empty if unset or the driver doesn't need one.
+    pub node_stage_secrets: HashMap<String, String>,
+    /// From `.spec.csi.nodePublishSecretRef`.
+    pub node_publish_secrets: HashMap<String, String>,
 }
 
 pub struct CsiDrivers {
-    /// driver name -> Node-service unix socket endpoint, from
-    /// `NODELET_CSI_DRIVERS`. Empty (the default) means no CSI driver is
-    /// configured at all — every PVC volume is then skipped with a warning,
-    /// same treatment any other unresolvable volume already gets.
-    endpoints: BTreeMap<String, String>,
+    /// driver name -> Node-service unix socket endpoint. Seeded from
+    /// `NODELET_CSI_DRIVERS` at startup, and kept up to date afterwards by
+    /// `plugin_registry.rs`'s dynamic registration watcher (a driver whose
+    /// DaemonSet registers itself overrides/adds to the static config; one
+    /// that deregisters or whose socket disappears is removed again). A
+    /// `Mutex`, not a plain map, precisely because it's live-updated —
+    /// empty (the default, before any driver has registered) means every
+    /// PVC volume is skipped with a warning, same treatment any other
+    /// unresolvable volume already gets.
+    endpoints: Mutex<BTreeMap<String, String>>,
     /// Per-driver `STAGE_UNSTAGE_VOLUME` capability, fetched once and
     /// cached — real kubelet does the same rather than calling
     /// `NodeGetCapabilities` on every single mount.
@@ -151,23 +152,42 @@ pub struct CsiDrivers {
 
 impl CsiDrivers {
     pub fn new(endpoints: BTreeMap<String, String>) -> Self {
-        Self { endpoints, stage_capable: Mutex::new(HashMap::new()), refs: Mutex::new(HashMap::new()) }
+        Self { endpoints: Mutex::new(endpoints), stage_capable: Mutex::new(HashMap::new()), refs: Mutex::new(HashMap::new()) }
     }
 
     pub fn driver_configured(&self, driver: &str) -> bool {
-        self.endpoints.contains_key(driver)
+        self.endpoints.lock().unwrap().contains_key(driver)
     }
 
-    fn endpoint_for(&self, driver: &str) -> Result<&str> {
+    /// Add (or update, if the driver re-registers with a new endpoint) a
+    /// dynamically-discovered driver. Called by `plugin_registry.rs` when a
+    /// CSI driver's registrar announces itself.
+    pub fn register(&self, driver: String, endpoint: String) {
+        self.endpoints.lock().unwrap().insert(driver, endpoint);
+    }
+
+    /// Remove a driver — its registration socket disappeared, so its
+    /// Node-service socket should no longer be assumed reachable either.
+    /// Also drops any cached capability for it, so a re-registration under
+    /// the same name gets a fresh `NodeGetCapabilities` call rather than a
+    /// stale cached answer.
+    pub fn deregister(&self, driver: &str) {
+        self.endpoints.lock().unwrap().remove(driver);
+        self.stage_capable.lock().unwrap().remove(driver);
+    }
+
+    fn endpoint_for(&self, driver: &str) -> Result<String> {
         self.endpoints
+            .lock()
+            .unwrap()
             .get(driver)
-            .map(|s| s.as_str())
-            .with_context(|| format!("no CSI driver configured for '{driver}' — set NODELET_CSI_DRIVERS"))
+            .cloned()
+            .with_context(|| format!("no CSI driver configured for '{driver}' — set NODELET_CSI_DRIVERS or wait for it to register"))
     }
 
     async fn client_for(&self, driver: &str) -> Result<NodeClient<Channel>> {
         let endpoint = self.endpoint_for(driver)?;
-        let channel = connect_uds(endpoint).await?;
+        let channel = connect_uds(&endpoint).await?;
         Ok(NodeClient::new(channel))
     }
 
@@ -216,7 +236,7 @@ impl CsiDrivers {
                     publish_context: Default::default(),
                     staging_target_path: staging_target_path.clone(),
                     volume_capability: Some(capability.clone()),
-                    secrets: Default::default(),
+                    secrets: source.node_stage_secrets.clone(),
                     volume_context: volume_context.clone(),
                 })
                 .await
@@ -232,7 +252,7 @@ impl CsiDrivers {
                 target_path: target_path.to_string_lossy().into_owned(),
                 volume_capability: Some(capability),
                 readonly: source.read_only,
-                secrets: Default::default(),
+                secrets: source.node_publish_secrets.clone(),
                 volume_context,
             })
             .await
@@ -297,3 +317,6 @@ mod tests_staging_path;
 #[cfg(test)]
 #[path = "csi_tests/mount_capability.rs"]
 mod tests_mount_capability;
+#[cfg(test)]
+#[path = "csi_tests/dynamic_registration.rs"]
+mod tests_dynamic_registration;

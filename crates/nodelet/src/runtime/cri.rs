@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{
     ConfigMap, Container, EnvFromSource, EnvVarSource, EphemeralContainer, LifecycleHandler,
     PersistentVolume, PersistentVolumeClaim, Pod, PodSecurityContext, ResourceRequirements, Secret,
-    SecurityContext, Service, Volume,
+    SecretReference, SecurityContext, Service, Volume,
 };
 use k8s_openapi::api::node::v1::RuntimeClass;
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
@@ -29,7 +29,7 @@ use tokio::net::TcpStream;
 use kube::api::{Api, ListParams};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tonic::transport::{Channel, Endpoint, Uri};
@@ -116,10 +116,12 @@ pub struct CriRuntime {
     /// each restart is a brand-new container id, so nodelet has to count.
     restart_counts: Mutex<HashMap<String, u32>>,
     /// CSI Node-service clients for `PersistentVolumeClaim` volumes (see
-    /// `runtime/csi.rs`) — empty (`NODELET_CSI_DRIVERS` unset) means every
-    /// PVC volume is skipped with a warning, same treatment any other
-    /// unresolvable volume already gets.
-    csi: crate::runtime::csi::CsiDrivers,
+    /// `runtime/csi.rs`) — empty at startup (unless seeded via
+    /// `NODELET_CSI_DRIVERS`) means every PVC volume is skipped with a
+    /// warning until a driver registers (see `plugin_registry.rs`) or is
+    /// statically configured. `Arc` so `CriRuntime::connect()` can hand the
+    /// same instance to the plugin-registry watcher task it spawns.
+    csi: Arc<crate::runtime::csi::CsiDrivers>,
 }
 
 /// Identity extracted from a Pod object.
@@ -1041,6 +1043,8 @@ impl CriRuntime {
         cluster_dns: Vec<String>,
         cluster_domain: String,
         csi_drivers: BTreeMap<String, String>,
+        plugin_registry_path: String,
+        plugin_registry_sync_interval: Duration,
     ) -> Result<Self> {
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
@@ -1049,6 +1053,14 @@ impl CriRuntime {
         // Spawn the event subscriber (event-driven status, no polling).
         let (tx, rx) = unbounded_channel();
         tokio::spawn(event_loop(channel, tx));
+
+        let csi = Arc::new(crate::runtime::csi::CsiDrivers::new(csi_drivers));
+        // Dynamic CSI driver discovery: watches plugin_registry_path for a
+        // driver's registrar socket, same protocol real kubelet's own
+        // plugin watcher speaks (see plugin_registry.rs) — a no-op loop
+        // wrapper around whatever's already in `csi` if nothing ever
+        // registers there.
+        tokio::spawn(crate::plugin_registry::run(csi.clone(), plugin_registry_path, plugin_registry_sync_interval));
 
         Ok(Self {
             rt,
@@ -1059,7 +1071,7 @@ impl CriRuntime {
             rx: Mutex::new(Some(rx)),
             restart_policies: Mutex::new(HashMap::new()),
             restart_counts: Mutex::new(HashMap::new()),
-            csi: crate::runtime::csi::CsiDrivers::new(csi_drivers),
+            csi,
         })
     }
 
@@ -1293,13 +1305,44 @@ impl CriRuntime {
             return Ok(None);
         }
 
+        let node_stage_secrets = self.resolve_csi_secret_ref(csi.node_stage_secret_ref.as_ref(), namespace).await;
+        let node_publish_secrets = self.resolve_csi_secret_ref(csi.node_publish_secret_ref.as_ref(), namespace).await;
+
         Ok(Some(crate::runtime::csi::CsiVolumeSource {
             driver: csi.driver.clone(),
             volume_handle: csi.volume_handle.clone(),
             fs_type: csi.fs_type.clone().unwrap_or_default(),
             read_only: csi.read_only.unwrap_or(false),
             volume_attributes: csi.volume_attributes.clone().unwrap_or_default().into_iter().collect(),
+            node_stage_secrets,
+            node_publish_secrets,
         }))
+    }
+
+    /// Resolve a CSI `SecretReference` (`nodeStageSecretRef`/
+    /// `nodePublishSecretRef`) to key/value pairs for the CSI request's
+    /// `secrets` map. Empty (not an error) if `reference` is `None` — most
+    /// drivers don't need one at all. `SecretReference.namespace` is
+    /// itself optional (PVs are cluster-scoped, so unlike every other
+    /// Secret reference in this file there's no natural pod namespace to
+    /// default to) — falls back to `default_namespace` (the PVC's own
+    /// namespace) when unset, matching what most CSI driver docs assume.
+    async fn resolve_csi_secret_ref(&self, reference: Option<&SecretReference>, default_namespace: &str) -> HashMap<String, String> {
+        let Some(reference) = reference else { return HashMap::new() };
+        let Some(name) = reference.name.as_deref() else { return HashMap::new() };
+        let namespace = reference.namespace.as_deref().unwrap_or(default_namespace);
+        match Api::<Secret>::namespaced(self.client.clone(), namespace).get(name).await {
+            Ok(secret) => secret
+                .data
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, v)| (k, String::from_utf8_lossy(&v.0).into_owned()))
+                .collect(),
+            Err(e) => {
+                warn!(secret = %name, namespace, error = ?e, "CSI: failed to fetch a nodeStageSecretRef/nodePublishSecretRef Secret; proceeding without it");
+                HashMap::new()
+            }
+        }
     }
 
     /// Unpublish (and, if this was the last pod using it, unstage) every

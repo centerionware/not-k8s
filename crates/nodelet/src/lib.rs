@@ -11,6 +11,8 @@ pub mod gc;
 pub mod metrics;
 pub mod node;
 pub mod pods;
+#[cfg(feature = "cri")]
+pub mod plugin_registry;
 pub mod probes;
 pub mod runtime;
 #[cfg(feature = "cri")]

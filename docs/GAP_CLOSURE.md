@@ -27,6 +27,75 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 13: dynamic CSI driver discovery + per-volume secrets (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-12). Offered "deepen
+PVC/CSI" (round 12's two flagged gaps) against the CPU/Memory/Topology
+managers and device plugins; user picked deepening what already exists
+over opening new surface.
+
+- **New `plugin_registry.rs`** (`cri`-feature-gated): the client-side half
+  of the CSI/DevicePlugin plugin-registration protocol, vendoring a
+  cleaned-up `proto/pluginregistration.proto` (from
+  `k8s.io/kubelet/pkg/apis/pluginregistration/v1/api.proto` — stripped the
+  upstream file's `gogoproto` import/options, which are Go-codegen-only and
+  have no prost equivalent, same treatment `cri.proto` already got for a
+  protoc-version-specific field option). **The protocol is inverted from
+  what the name suggests**: the *plugin* (a CSI driver's
+  `node-driver-registrar` sidecar) runs the gRPC server, on a socket it
+  creates in a shared watched directory; nodelet is the *client* — it polls
+  the directory for new sockets (poll-based, matching `static_pods.rs`/log
+  rotation's style rather than pulling in a filesystem-notification
+  dependency), dials each one, calls `GetInfo()` to learn the driver's
+  name/type/endpoint, and `NotifyRegistrationStatus()` to confirm or
+  reject it.
+- **`CsiDrivers`'s endpoint map is now mutable** (`Mutex<BTreeMap<...>>`,
+  was a plain immutable map seeded once at construction) — new
+  `register()`/`deregister()` methods the watcher calls as sockets appear/
+  disappear. `NODELET_CSI_DRIVERS` still works exactly as before, as a
+  seed for the same map a dynamic registration can now also populate or
+  override.
+- **Explicit rejection of non-CSI registrations** — device plugins use
+  this *exact same* protocol, but nodelet doesn't implement the
+  DevicePlugin gRPC API itself. Rather than silently ignore a device
+  plugin's registration attempt (which would leave its registrar hanging/
+  retrying forever without ever knowing why), `plugin_registry.rs` replies
+  with a real `NotifyRegistrationStatus{plugin_registered: false, error:
+  "..."}` — same courtesy real kubelet gives a plugin type it doesn't
+  support.
+- **`nodeStageSecretRef`/`nodePublishSecretRef`** — `runtime/cri.rs`'s
+  `resolve_csi_source()` now resolves both (a new
+  `resolve_csi_secret_ref()` helper) and threads them through to the CSI
+  requests' `secrets` map, closing round 12's other explicitly-flagged
+  simplification. `SecretReference.namespace` (optional, since
+  `PersistentVolume` is cluster-scoped and has no natural pod namespace to
+  inherit) falls back to the PVC's own namespace when unset.
+- 6 new unit tests for `plugin_registry.rs`'s `scan_registry_dir()` (real
+  `UnixListener` sockets in a scratch directory — genuinely exercises "is
+  this actually a socket file," not a mock) and 6 for `CsiDrivers`'
+  register/deregister/re-register state transitions.
+
+447 tests passing with `--features cri` (up from 435), 174 mock-only
+(unchanged — both additions are `cri`-gated).
+`deploy/lib/test/cases/csi_plugin_registration.sh` added: an automated
+check that the registry directory actually gets created (proves the
+watcher started without erroring) plus a manual-note for the full
+registration handshake, which needs a real CSI driver's registrar
+pointed at nodelet instead of kubelet — not something this suite can
+deploy on the cluster's behalf. `csi_pvc.sh` (round 12) now also
+implicitly exercises this: run it *without* `NODELET_CSI_DRIVERS` set,
+against a driver whose registrar is pointed at
+`NODELET_PLUGIN_REGISTRY_PATH`, and it proves dynamic discovery end to
+end if it still passes.
+
+**Same confidence caveat as round 12, unchanged**: no CSI driver (or its
+registrar sidecar) was reachable in the environment that built this — the
+registration protocol implementation was verified against the vendored
+proto and real kubelet's documented behavior, not a live handshake. Same
+failure mode as always: a warning, not a crash, and static
+`NODELET_CSI_DRIVERS` config keeps working regardless of whether dynamic
+discovery ever succeeds.
+
 ## Round 12: PersistentVolumeClaim / CSI, first slice (2026-07-31, same day)
 
 Explicitly asked again (same reasoning as round 11 — everything left is
@@ -615,7 +684,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ ConfigMap / Secret / emptyDir (materialized to host paths)
 - ✅ **Projected volumes** — `configMap`/`secret`/`downwardAPI`, and now `serviceAccountToken` too (mints a real token via the `TokenRequest` API — `resolve_service_account_token()`; needs nodelet's client to have `create` on `serviceaccounts/token` in the namespace, a real RBAC requirement) merge into the volume dir, with `items`/`KeyToPath` key-selection-and-rename support. `clusterTrustBundle` sources are still skipped with a warning.
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
-- 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **First-slice scope, not full CSI**: static `NODELET_CSI_DRIVERS` driver-name→socket config instead of dynamic plugin registration (see the module doc comment for why), no Controller service (attach/detach — not kubelet's job upstream either), no `nodeStageSecretRef`/`nodePublishSecretRef` credential support. Unvalidated against a real CSI driver — see round 12 notes.
+- 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`, `plugin_registry.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **Dynamic CSI driver discovery** (round 13) — a driver's `node-driver-registrar` sidecar can register itself against `NODELET_PLUGIN_REGISTRY_PATH` the same protocol it'd use against real kubelet's plugin watcher, no static config needed; `NODELET_CSI_DRIVERS` still works too, as a seed/override. **`nodeStageSecretRef`/`nodePublishSecretRef`** (round 13) — resolved to real Secret data and passed through to the driver. Still out of scope: the Controller service (attach/detach — not kubelet's job upstream either), device-plugin registrations (the same registration protocol, explicitly rejected with a real `NotifyRegistrationStatus{plugin_registered: false}` rather than ignored). Unvalidated against a real CSI driver — see rounds 12 and 13 notes.
 - ❌ hostPath (explicitly unsupported today, logged and dropped)
 - ❌ `emptyDir.sizeLimit` enforcement
 - ❌ subPath `$(VAR)` expansion
@@ -701,7 +770,10 @@ higher-value/correctness-critical than others:
       config, no Controller service — see round 12 notes; unvalidated
       against a real CSI driver, same confidence caveat pattern as rounds
       9 and 11)
+- [x] Round 13: dynamic CSI driver discovery (plugin_registry.rs) +
+      nodeStageSecretRef/nodePublishSecretRef — see round 13 notes, same
+      unvalidated-against-a-real-driver caveat as round 12
 - [ ] Everything else in the responsibility list above — biggest remaining
       single items: CPU/Memory/Topology managers, device plugins, plus
-      deepening PVC/CSI itself (dynamic plugin registration, Controller
-      service/attach, per-volume secrets). Ask before starting the next round.
+      deepening PVC/CSI further (Controller service/attach — the one CSI
+      capability still entirely missing). Ask before starting the next round.

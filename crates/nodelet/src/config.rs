@@ -149,6 +149,18 @@ pub struct Config {
     /// doesn't implement (see the module doc comment on `runtime/csi.rs`);
     /// this is the deliberately simpler static alternative.
     pub csi_drivers: BTreeMap<String, String>,
+    /// Directory watched for CSI driver registration sockets (`cri` only;
+    /// see `plugin_registry.rs`) — a driver's `node-driver-registrar`
+    /// sidecar creates a socket here to announce itself, the same protocol
+    /// real kubelet's own plugin watcher speaks. Distinct from real
+    /// kubelet's conventional `/var/lib/kubelet/plugins_registry` since
+    /// nodelet isn't kubelet — a driver's DaemonSet needs
+    /// `--kubelet-registration-path` (or equivalent) pointed at this path
+    /// instead.
+    pub plugin_registry_path: String,
+    /// How often the registry directory is rescanned for new/removed
+    /// sockets.
+    pub plugin_registry_sync_interval: Duration,
 }
 
 impl Config {
@@ -270,6 +282,10 @@ impl Config {
             }
         }
 
+        let plugin_registry_path = std::env::var("NODELET_PLUGIN_REGISTRY_PATH")
+            .unwrap_or_else(|_| "/var/lib/nodelet/plugins_registry".to_string());
+        let plugin_registry_sync_interval = Duration::from_secs(env_u64("NODELET_PLUGIN_REGISTRY_SYNC_SECS", 10)?);
+
         Ok(Self {
             node_name,
             runtime,
@@ -307,6 +323,8 @@ impl Config {
             kube_reserved_memory_bytes,
             cgroup_fs_root,
             csi_drivers,
+            plugin_registry_path,
+            plugin_registry_sync_interval,
         })
     }
 }

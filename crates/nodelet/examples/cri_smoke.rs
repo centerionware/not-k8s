@@ -37,6 +37,8 @@ async fn main() -> Result<()> {
         Vec::new(),
         "cluster.local".to_string(),
         Default::default(),
+        "/tmp/nodelet-cri-smoke-plugins-registry".to_string(),
+        std::time::Duration::from_secs(10),
     )
     .await
     .context("connect to containerd")?;
