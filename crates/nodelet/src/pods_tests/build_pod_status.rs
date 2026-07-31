@@ -287,6 +287,16 @@ fn host_ip_is_always_set_from_the_argument() {
 }
 
 #[test]
+fn host_ips_plural_mirrors_the_singular_host_ip() {
+    // Round 56: real kubelet always sets hostIPs alongside hostIP, even
+    // on a single-stack node.
+    let status = bps("192.168.1.50", &running_status(), None);
+    let host_ips = status.host_ips.as_ref().unwrap();
+    assert_eq!(host_ips.len(), 1);
+    assert_eq!(host_ips[0].ip, "192.168.1.50");
+}
+
+#[test]
 fn pod_ip_and_pod_ips_are_populated_when_present() {
     let status = bps("10.0.0.1", &running_status(), None);
     assert_eq!(status.pod_ip.as_deref(), Some("10.42.0.2"));

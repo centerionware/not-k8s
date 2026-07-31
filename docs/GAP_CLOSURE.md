@@ -27,6 +27,36 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 56: `PodStatus.hostIPs` (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-55). Offered the 2
+remaining round-54 findings; user picked this one over the
+`containerID` scheme prefix (which needs a new CRI RPC call and cached
+state, more involved).
+
+Before this round, only the singular `PodStatus.hostIP` was populated
+— the plural `hostIPs` (dual-stack-ready) field was never set at all,
+even though this same struct's `podIP`/`podIPs` singular/plural split
+was already handled correctly.
+
+- **`build_pod_status()`** now also sets `host_ips: Some(vec![HostIP {
+  ip: host_ip.to_string() }])` alongside the existing `host_ip` field —
+  real kubelet sets this unconditionally, even on a single-stack node
+  (a one-element list containing the same address `hostIP` has), so
+  there's no dual-stack detection needed, just mirroring the one
+  address nodelet already has into the plural shape.
+- No new env vars, no new proto surface — pure logic, one new field on
+  an existing struct literal.
+- 1 new unit test (`pods_tests/build_pod_status.rs`): `hostIPs[0].ip`
+  matches the singular `hostIP` exactly.
+- New e2e test (`deploy/lib/test/cases/lifecycle.sh`):
+  `test_pod_status_reports_host_ips_plural` — asserts a real pod's
+  `status.hostIPs[0].ip` equals its `status.hostIP`.
+
+**Confidence note**: minimal, low-risk change — a single new field
+derived directly from a value nodelet already computes, both unit- and
+e2e-tested. High confidence.
+
 ## Round 55: `PodStatus.qosClass` (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-54). Offered the 3
@@ -3313,7 +3343,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Pod `readinessGates`** (round 23; found in round 22's re-audit) — `spec.readinessGates` lets an external controller contribute additional `PodCondition`s that must all be `True` (alongside the built-in `ContainersReady`) before kubelet reports the pod's own `Ready` condition as `True`. `build_pod_status()`'s `Ready` computation now checks every gate's named condition against `prev`'s conditions; a missing condition counts as not-satisfied, matching upstream. Fixing this also required (and fixed) a real pre-existing bug: nodelet's JSON-Merge-Patch status writes were silently deleting any condition an external controller had set, since the whole `conditions` array got replaced wholesale — now foreign conditions are copied forward on every write. See round 23 notes.
 - ✅ **Startup probe failure triggers a restart** (round 47; found in round 45's re-audit) — the startup-probe loop now checks the new public `ProbeTracker.failures` count against `failureThreshold` on every non-passing iteration, calling `restart_container()` (reusing round 44's `probe_grace_period_seconds()` unchanged — it was already generic over which probe called it) and resetting the tracker, then continuing to loop (the supervisor task lives for the container's whole lifetime, so it must keep re-attempting startup probing against the recreated instance rather than giving up). Genuinely automated e2e test (a marker file that's never created, so the probe can only ever fail — a nonzero restart count is direct proof). See round 47 notes.
 - ✅ **`PodStatus.qosClass`** (round 55; found in round 54's re-audit) — new `QosClass::as_str()` matches real kubelet's exact API constants; `build_pod_status()`/`write_status()` gained a `qos` parameter, computed via the existing `eviction::qos_class()` and threaded in from all 4 `Pod`-derived status call sites, the same pattern round 23 already established for `readiness_gates`. Fixing this also required updating a pre-existing test whose premise ("qosClass is server-owned, nodelet doesn't touch it") no longer held — switched to `nominatedNodeName`, a field that's genuinely still server-owned. Genuinely automated e2e test (a real `Guaranteed` pod). See round 55 notes.
-- ❌ **`PodStatus.hostIPs`** (plural, dual-stack; found in round 54's re-audit) — only the singular `hostIP` is populated; real kubelet sets `hostIPs` alongside it unconditionally, even on a single-stack node, mirroring how `podIPs` (plural) already coexists with `podIP` (singular) in this same struct — which nodelet already gets right for pod IPs, just not host IPs.
+- ✅ **`PodStatus.hostIPs`** (round 56; plural, dual-stack; found in round 54's re-audit) — `build_pod_status()` now sets `hostIPs` alongside the existing singular `hostIP` unconditionally (a one-element list, matching real kubelet's own single-stack behavior), mirroring how `podIPs`/`podIP` already coexist correctly in this same struct. Genuinely automated e2e test. See round 56 notes.
 - ❌ **`ContainerStatus.containerID` missing its `<runtime>://` scheme prefix** (found in round 54's re-audit) — real kubelet always formats this as `<runtimeName>://<id>` (e.g. `containerd://1234abcd...`), built from CRI's own `Version` RPC's `runtime_name` field; nodelet reports the bare CRI container ID with no prefix. CRI's `Version` RPC (distinct from the `Status` RPC round 53 wired up) has never been called anywhere in this codebase either. Not the same finding as round 52's `imageID` — that field is *not* scheme-prefixed by real kubelet, so round 52's implementation needs no revisiting.
 
 ### Resource management
@@ -3737,6 +3767,9 @@ higher-value/correctness-critical than others:
       fixed a pre-existing test whose "qosClass is server-owned"
       premise no longer held. Genuinely automated e2e test. See round
       55 notes.
-- [ ] Candidates for the next round: `PodStatus.hostIPs`,
-      `ContainerStatus.containerID` scheme prefix. Ask before starting
-      the next round.
+- [x] Round 56: `PodStatus.hostIPs` — `build_pod_status()` now sets
+      the plural `hostIPs` alongside the existing singular `hostIP`
+      unconditionally, mirroring the already-correct `podIP`/`podIPs`
+      split. Genuinely automated e2e test. See round 56 notes.
+- [ ] `ContainerStatus.containerID` scheme prefix is the only remaining
+      item from round 54's audit. Ask before starting the next round.

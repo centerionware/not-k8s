@@ -15,7 +15,7 @@ use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
     ConfigMap, ContainerState, ContainerStateRunning, ContainerStateTerminated, ContainerStateWaiting,
-    ContainerStatus, Pod, PodCondition, PodIP, PodStatus, Secret, Volume,
+    ContainerStatus, HostIP, Pod, PodCondition, PodIP, PodStatus, Secret, Volume,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{ListParams, Patch, PatchParams};
@@ -631,6 +631,11 @@ fn build_pod_status(
         init_container_statuses: (!init_container_statuses.is_empty()).then_some(init_container_statuses),
         ephemeral_container_statuses: (!ephemeral_container_statuses.is_empty()).then_some(ephemeral_container_statuses),
         host_ip: Some(host_ip.to_string()),
+        // Round 56 (found in round 54's re-audit): real kubelet always
+        // sets the plural `hostIPs` alongside the singular `hostIP`, even
+        // on a single-stack node — mirrors the `podIP`/`podIPs` split
+        // this file already gets right.
+        host_ips: Some(vec![HostIP { ip: host_ip.to_string() }]),
         pod_ip: rt.pod_ip.clone(),
         pod_ips,
         start_time: rt.started_at.map(Time),

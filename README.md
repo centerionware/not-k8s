@@ -339,8 +339,10 @@ is never set, and `ContainerStatus.containerID` is missing its
 `<runtime>://` scheme prefix real kubelet always includes. Round 55
 closed the first: **`PodStatus.qosClass`** is now reported, reusing
 the `eviction::qos_class()` computation nodelet already had internally
-for eviction ranking since round 7. Full status list in
-`docs/GAP_CLOSURE.md`.
+for eviction ranking since round 7. Round 56 closed the next: the
+plural **`PodStatus.hostIPs`** is now set alongside the existing
+singular `hostIP`, mirroring the already-correct `podIP`/`podIPs`
+split. Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 
