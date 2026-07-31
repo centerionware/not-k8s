@@ -191,10 +191,16 @@ impl CriRuntime {
         resp.status.map(|s| s.token).context("TokenRequest response had no status.token")
     }
 
-    pub(crate) async fn resolve_pull_auth(&self, namespace: &str, pull_secrets: &[String], image: &str) -> Option<AuthConfig> {
+    /// `imagePullSecrets` are tried first (explicit, pod-declared intent);
+    /// only if none of them resolve does this fall back to a configured
+    /// image credential provider (round 71) — automatic discovery yields
+    /// to an operator's own explicit configuration, not the other way
+    /// around, since getting that backwards would be the more
+    /// surprising direction to be wrong in.
+    pub(crate) async fn resolve_pull_auth(&self, id: &PodId, pull_secrets: &[String], image: &str) -> Option<AuthConfig> {
         let registry_host = registry_host_for_image(image);
         for name in pull_secrets {
-            let Ok(secret) = Api::<Secret>::namespaced(self.client.clone(), namespace).get(name).await else {
+            let Ok(secret) = Api::<Secret>::namespaced(self.client.clone(), &id.namespace).get(name).await else {
                 continue;
             };
             let Some(bytes) = secret.data.as_ref().and_then(|d| d.get(".dockerconfigjson")).map(|b| b.0.clone())
@@ -205,7 +211,66 @@ impl CriRuntime {
                 return Some(AuthConfig { username, password, ..Default::default() });
             }
         }
-        None
+        self.resolve_credential_provider_auth(id, &registry_host, image).await
+    }
+
+    /// Round 71: image credential providers. `None` immediately if the
+    /// feature isn't configured, or no provider's `matchImages` matches
+    /// this image at all — the common case, costing nothing beyond one
+    /// in-memory pattern check. A `tokenAttributes`-configured provider
+    /// gets a real, audience-scoped `ServiceAccount` token (reusing the
+    /// same `TokenRequest` machinery projected `serviceAccountToken`
+    /// volumes already use) only after fetching the live `ServiceAccount`
+    /// object and confirming `requireServiceAccount`/
+    /// `requiredServiceAccountAnnotationKeys` are actually satisfied —
+    /// this module's own `credential_provider.rs` deliberately doesn't
+    /// touch the apiserver itself, keeping the exec-plugin protocol
+    /// logic decoupled from nodelet's own kube client.
+    async fn resolve_credential_provider_auth(&self, id: &PodId, registry_host: &str, image: &str) -> Option<AuthConfig> {
+        let providers = self.credential_providers.as_ref()?;
+        let provider = providers.first_match(image)?;
+
+        let sa_ctx = if let Some(token_attrs) = &provider.token_attributes {
+            match Api::<ServiceAccount>::namespaced(self.client.clone(), &id.namespace).get(&id.service_account_name).await {
+                Ok(sa) => {
+                    let sa_annotations = sa.metadata.annotations.clone().unwrap_or_default().into_iter().collect::<std::collections::BTreeMap<_, _>>();
+                    let missing_required = token_attrs.required_service_account_annotation_keys.iter().any(|k| !sa_annotations.contains_key(k));
+                    if missing_required {
+                        warn!(provider = %provider.name, service_account = %id.service_account_name, "credential provider: ServiceAccount missing a required annotation key; skipping token mint");
+                        None
+                    } else {
+                        let audiences = vec![token_attrs.service_account_token_audience.clone()];
+                        match self.resolve_service_account_token(&id.namespace, &id.service_account_name, &audiences, None).await {
+                            Ok(token) => Some(crate::credential_provider::ServiceAccountContext {
+                                pod_name: id.name.clone(),
+                                pod_namespace: id.namespace.clone(),
+                                pod_uid: id.uid.clone(),
+                                pod_annotations: Default::default(),
+                                service_account_name: id.service_account_name.clone(),
+                                service_account_uid: sa.metadata.uid.clone().unwrap_or_default(),
+                                service_account_annotations: sa_annotations,
+                                token,
+                            }),
+                            Err(e) => {
+                                warn!(provider = %provider.name, error = ?e, "credential provider: failed to mint ServiceAccount token");
+                                None
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    if token_attrs.require_service_account {
+                        warn!(provider = %provider.name, service_account = %id.service_account_name, error = ?e, "credential provider: requireServiceAccount set but the ServiceAccount couldn't be fetched; skipping this provider");
+                        return None;
+                    }
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        providers.resolve(image, registry_host, sa_ctx.as_ref()).await
     }
 
     /// Pull `source.reference` (respecting the pod's `imagePullSecrets`,
@@ -218,12 +283,12 @@ impl CriRuntime {
     /// value, which is then set to the `ImageSpec.image` field").
     pub(crate) async fn pull_image_volume(
         &self,
-        namespace: &str,
+        id: &PodId,
         pull_secrets: &[String],
         source: &k8s_openapi::api::core::v1::ImageVolumeSource,
     ) -> Result<ResolvedVolume> {
         let reference = source.reference.clone().filter(|r| !r.is_empty()).context("image volume has no .reference set")?;
-        let auth = self.resolve_pull_auth(namespace, pull_secrets, &reference).await;
+        let auth = self.resolve_pull_auth(id, pull_secrets, &reference).await;
         let mut img = self.img.clone();
         let resp = img
             .pull_image(PullImageRequest {

@@ -175,7 +175,7 @@ impl CriRuntime {
         claim_devices: &HashMap<String, PreparedPodClaim>,
     ) -> Result<()> {
         let image = container.image.clone().unwrap_or_default();
-        let auth = self.resolve_pull_auth(&id.namespace, pull_secrets, &image).await;
+        let auth = self.resolve_pull_auth(id, pull_secrets, &image).await;
         let image_spec = ImageSpec { image: image.clone(), ..Default::default() };
 
         // imagePullPolicy (round 51; found in round 50's re-audit): `Always`

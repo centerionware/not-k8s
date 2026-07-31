@@ -422,7 +422,15 @@ policy (`NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT`/`_LOW_THRESHOLD_PERCENT`/
 `_MIN_AGE_SECS`, matching upstream's own flags) replaces the previous
 unconditional every-cycle unreferenced-image sweep — an unreferenced
 image is now left alone until disk usage actually crosses the high
-threshold, then removed oldest-unreferenced-first. Full status list in
+threshold, then removed oldest-unreferenced-first. Round 71 closed
+**image credential providers** (`--image-credential-provider-config`/
+`-bin-dir`, ServiceAccount token integration beta/default-on in k8s
+1.34): a `CredentialProviderConfig` YAML lists exec-plugin binaries and
+`matchImages` glob patterns; on a pull that no `imagePullSecret` resolves,
+nodelet execs the first matching provider, optionally minting it an
+audience-scoped `ServiceAccount` token (reusing the same `TokenRequest`
+machinery projected `serviceAccountToken` volumes already use) when the
+provider declares `tokenAttributes`. Full status list in
 `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
@@ -971,6 +979,8 @@ Two layers, and they're not substitutes for each other:
 | `NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT` | `85` | Image GC only starts reclaiming space once disk usage on `NODELET_DISK_PATH` reaches this percent (`cri` only). See [Status](#status). |
 | `NODELET_IMAGE_GC_LOW_THRESHOLD_PERCENT` | `80` | Image removal (oldest-unreferenced first) stops once usage drops to this percent, or nothing eligible remains. |
 | `NODELET_IMAGE_GC_MIN_AGE_SECS` | `120` | An unreferenced image must have been unreferenced for at least this long before it's eligible for removal. |
+| `NODELET_IMAGE_CREDENTIAL_PROVIDER_CONFIG` | — | Path to a `CredentialProviderConfig` YAML file (kubelet's `--image-credential-provider-config`); unset disables image credential providers entirely (`cri` only). See [Status](#status). |
+| `NODELET_IMAGE_CREDENTIAL_PROVIDER_BIN_DIR` | — | Directory holding the credential-provider binaries the config's `providers[].name` refers to (kubelet's `--image-credential-provider-bin-dir`). |
 | `NODELET_CLUSTER_DNS` | — | Comma-separated cluster DNS server IPs, injected into `dnsPolicy: ClusterFirst` pods (real kubelet's `--cluster-dns`). Unset means pods fall back to the host's own resolv.conf. |
 | `NODELET_CLUSTER_DOMAIN` | `cluster.local` | Base domain for a ClusterFirst pod's DNS search list (`--cluster-domain`). |
 | `NODELET_EVICTION_CHECK_SECS` | `10` | How often node-pressure eviction re-checks and evicts one eligible pod under pressure — see [Status](#status). |

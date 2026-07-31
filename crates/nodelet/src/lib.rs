@@ -9,6 +9,8 @@ pub mod config;
 #[cfg(feature = "cri")]
 pub mod cpu_manager;
 #[cfg(feature = "cri")]
+pub mod credential_provider;
+#[cfg(feature = "cri")]
 pub mod device_plugins;
 #[cfg(feature = "cri")]
 pub mod dra;

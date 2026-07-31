@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{
     ConfigMap, Container, ContainerResizePolicy, EnvFromSource, EnvVarSource, EphemeralContainer, LifecycleHandler,
     PersistentVolume, PersistentVolumeClaim, Pod, PodSecurityContext, ResourceRequirements, Secret,
-    SecretReference, SecurityContext, Service, Volume,
+    SecretReference, SecurityContext, Service, ServiceAccount, Volume,
 };
 use k8s_openapi::api::node::v1::RuntimeClass;
 use k8s_openapi::api::resource::v1beta1::ResourceClaim as DraResourceClaim;
@@ -230,6 +230,11 @@ pub struct CriRuntime {
     /// vs. upstream's own richer access-time tracking); a newly-unreferenced
     /// id is inserted with the current time.
     image_unreferenced_since: Mutex<HashMap<String, u64>>,
+    /// `NODELET_IMAGE_CREDENTIAL_PROVIDER_CONFIG`/`_BIN_DIR` (round 71) —
+    /// `None` when unconfigured (the default), meaning `resolve_pull_auth()`
+    /// only ever tries `imagePullSecrets`, exactly the pre-round-71
+    /// behavior.
+    credential_providers: Option<crate::credential_provider::CredentialProviders>,
     /// This CRI runtime's own name (e.g. `"containerd"`), from a one-time
     /// `Version` RPC call made in `connect()` (round 57; found in round
     /// 54's re-audit) — real kubelet always formats `ContainerStatus.containerID`/
@@ -367,6 +372,8 @@ impl CriRuntime {
         image_gc_high_threshold_percent: u8,
         image_gc_low_threshold_percent: u8,
         image_gc_min_age_secs: u64,
+        image_credential_provider_config: String,
+        image_credential_provider_bin_dir: String,
     ) -> Result<Self> {
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
@@ -388,6 +395,21 @@ impl CriRuntime {
         // Spawn the event subscriber (event-driven status, no polling).
         let (tx, rx) = unbounded_channel();
         tokio::spawn(event_loop(channel, tx));
+
+        // Best-effort: a malformed/unreadable CredentialProviderConfig
+        // shouldn't block startup any more than a missing one does —
+        // logged loudly (real misconfiguration, worth noticing) and
+        // falls back to "feature off" rather than failing connect().
+        let credential_providers = match crate::credential_provider::CredentialProviders::load(
+            &image_credential_provider_config,
+            &image_credential_provider_bin_dir,
+        ) {
+            Ok(cp) => cp,
+            Err(e) => {
+                warn!(error = ?e, "failed to load CredentialProviderConfig; image credential providers disabled for this run");
+                None
+            }
+        };
 
         let csi = Arc::new(crate::runtime::csi::CsiDrivers::new(csi_drivers));
         let device_plugins = Arc::new(crate::device_plugins::DevicePlugins::new());
@@ -425,6 +447,7 @@ impl CriRuntime {
             image_gc_low_threshold_percent,
             image_gc_min_age_secs,
             image_unreferenced_since: Mutex::new(HashMap::new()),
+            credential_providers,
             runtime_name,
             restart_counts: Mutex::new(HashMap::new()),
             csi,

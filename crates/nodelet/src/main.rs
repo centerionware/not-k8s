@@ -178,6 +178,8 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                     cfg.image_gc_high_threshold_percent,
                     cfg.image_gc_low_threshold_percent,
                     cfg.image_gc_min_age_secs,
+                    cfg.image_credential_provider_config.clone(),
+                    cfg.image_credential_provider_bin_dir.clone(),
                 )
                 .await
                 .context("connecting to CRI endpoint")?;

@@ -18,6 +18,12 @@ pub(crate) struct PodId {
     /// shares one PID namespace instead of each getting its own. Ignored
     /// (moot) when `host_pid` is also true.
     pub(crate) share_process_namespace: bool,
+    /// `spec.serviceAccountName` (defaulted to `"default"` same as
+    /// `pod_service_account_name()`), round 71 — needed to mint a
+    /// `tokenAttributes`-scoped token for a credential provider without
+    /// threading the whole `Pod` object through the image-pull call
+    /// chain, same reasoning every other `PodId` field already exists for.
+    pub(crate) service_account_name: String,
 }
 
 
@@ -35,7 +41,18 @@ pub(crate) fn pod_id(pod: &Pod) -> PodId {
     let host_pid = spec.and_then(|s| s.host_pid).unwrap_or(false);
     let host_ipc = spec.and_then(|s| s.host_ipc).unwrap_or(false);
     let share_process_namespace = spec.and_then(|s| s.share_process_namespace).unwrap_or(false);
-    PodId { namespace, name, uid, host_network, host_users, host_pid, host_ipc, share_process_namespace }
+    let service_account_name = pod_service_account_name(pod);
+    PodId {
+        namespace,
+        name,
+        uid,
+        host_network,
+        host_users,
+        host_pid,
+        host_ipc,
+        share_process_namespace,
+        service_account_name,
+    }
 }
 
 

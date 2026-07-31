@@ -27,6 +27,75 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 71: image credential providers (2026-07-31, same day)
+
+Closes the round 69 audit's other flagged gap: kubelet's
+`--image-credential-provider-config`/`--image-credential-provider-bin-dir`
+exec-plugin protocol for obtaining registry credentials dynamically (cloud
+workload-identity federation for ECR/GCR/ACR, among others), including the
+newer ServiceAccount token integration (`tokenAttributes`, beta/default-on
+in k8s 1.34) that lets a provider request an audience-scoped, pod-bound
+token instead of relying only on static `imagePullSecrets`.
+
+- New module `credential_provider.rs`: parses a `CredentialProviderConfig`
+  YAML (`NODELET_IMAGE_CREDENTIAL_PROVIDER_CONFIG`) listing providers
+  (binary name resolved under `NODELET_IMAGE_CREDENTIAL_PROVIDER_BIN_DIR`,
+  `matchImages` glob patterns, `defaultCacheDuration`, `args`, `env`,
+  optional `tokenAttributes`). No gRPC involved here, unlike every other
+  plugin protocol elsewhere in this codebase (CSI/device-plugin/DRA all
+  register over a Unix socket) — matches kubelet's own design: a plain
+  subprocess exec per pull, `CredentialProviderRequest` JSON on stdin,
+  `CredentialProviderResponse` JSON on stdout.
+- `image_matches_pattern()`: real kubelet's own documented glob rules —
+  domain segments (split by `.`) must have equal count between pattern and
+  image, `*` matches exactly one segment (never spans dots — `*.io` does
+  NOT match `foo.k8s.io`), a pattern's port must match exactly if
+  specified, and the pattern's path must be a prefix of the image's path.
+  11 unit tests cover this, including the ECR-style multi-glob case and
+  the "glob never spans segments" case explicitly.
+- `CredentialProviders::resolve()`: 3-tier response caching (`Image`/
+  `Registry`/`Global`, per the response's own `cacheKeyType`), with a
+  30-second exec timeout and cache duration parsed from the response's
+  `cacheDuration` (falling back to the provider's own
+  `defaultCacheDuration`, then a 5-minute default) via a narrow
+  `parse_go_duration()` (`"12h"`/`"15m"`/`"90s"` only — not a general
+  Go-duration parser, documented as such).
+- ServiceAccount token minting: `resolve_credential_provider_auth()` (in
+  `container_support.rs`) fetches the live `ServiceAccount` object,
+  checks `requireServiceAccount`/`requiredServiceAccountAnnotationKeys`
+  are satisfied, then reuses the pre-existing `resolve_service_account_token()`
+  (the same `TokenRequest` machinery projected `serviceAccountToken`
+  volumes already use) to mint an audience-scoped token — only for
+  providers that actually declare `tokenAttributes`; a provider that
+  doesn't ask for one never sees one.
+- `PodId` (the denormalized per-pod identity struct threaded through the
+  CRI runtime's deep call chains) gained a `service_account_name` field so
+  the credential-provider path has it without threading a full `&Pod`
+  through every layer — the same established pattern as every other
+  `PodId` field.
+- **Two deliberate, documented scope-narrowing decisions**: (1) only the
+  *first* matching provider (config order) is tried per image, not a full
+  multi-provider merge like real kubelet — non-overlapping `matchImages`
+  per cloud registry is the overwhelmingly common real-world shape; (2)
+  `resolve_pull_auth()` tries `imagePullSecrets` first, only falling back
+  to credential providers if no secret resolves — explicit pod-declared
+  intent wins over automatic discovery, since getting that backwards
+  would be the more surprising direction to be wrong in.
+- 21 unit tests total (`credential_provider_tests/`): glob matching (11),
+  `parse_go_duration()` edge cases (6, including the documented
+  compound-form limitation), and `CredentialProviders::load()` (4: feature
+  off via empty path, nonexistent path is an error, malformed YAML is an
+  error not a panic, and a valid two-provider config correctly resolves
+  `first_match()` for each).
+- New e2e test file `credential_provider.sh`: automates the
+  "feature stays off by default" regression check (the one this round
+  most needed to guard — a config-loading bug silently switching every
+  image pull onto a provider path would break every plain
+  `imagePullSecrets`-only deployment); a real exec-plugin fetch (needing
+  an actual cloud vendor binary and live registry) joins the existing
+  `dra.sh`/`device_plugins.sh`-style manual-procedure group, for the same
+  reason those can't be automated in this bash-only harness.
+
 ## Round 70: image GC watermark policy (2026-07-31, same day)
 
 Closes a long-tracked partial gap: image GC previously swept *every*
@@ -4133,7 +4202,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`spec.hostname`/`spec.subdomain`/`setHostnameAsFQDN`** (round 38; found in round 35's re-audit) — new pure `resolve_pod_hostname()` mirrors real kubelet's `GeneratePodHostNameAndDomain`/`ShouldSetHostnameAsFQDN`: `spec.hostname` overrides the short hostname (default the pod name); `setHostnameAsFQDN` (only meaningful with `spec.subdomain` also set) makes the sandbox's actual hostname the full `<hostname>.<subdomain>.<namespace>.svc.<cluster-domain>` FQDN instead of just the short name, rejecting (`Err`, same retry-and-report path as any other `ensure_pod()` failure) an FQDN over Linux's 64-byte `sethostname(2)` limit rather than silently truncating it. Genuinely automated e2e tests (a real container's own `hostname` output). See round 38 notes.
 
 ### Images
-- ✅ **Private registry auth** — `imagePullSecrets` (`kubernetes.io/dockerconfigjson`) → CRI `AuthConfig` (`resolve_pull_auth()`). Not yet: legacy `kubernetes.io/dockercfg`, ServiceAccount-linked pull secrets, credential-provider exec plugins.
+- ✅ **Private registry auth** — `imagePullSecrets` (`kubernetes.io/dockerconfigjson`) → CRI `AuthConfig` (`resolve_pull_auth()`), tried first; falling back to an **image credential provider** (round 71; found in round 69's re-audit) — `--image-credential-provider-config`/`-bin-dir` exec-plugin protocol (`credential_provider.rs`), including ServiceAccount token integration (`tokenAttributes`, beta/default-on in k8s 1.34) reusing the same `TokenRequest` machinery projected `serviceAccountToken` volumes use. Not yet: legacy `kubernetes.io/dockercfg`, ServiceAccount-linked pull secrets, multi-provider merge (only the first matching provider is tried).
 - ✅ **Image garbage collection** (found in round 69's fresh gap re-audit; closed round 70) — real kubelet's disk-pressure-triggered high/low watermark policy: `NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT`/`_LOW_THRESHOLD_PERCENT`/`_MIN_AGE_SECS` (defaults 85/80/120s, matching `--image-gc-high-threshold`/`-low-threshold`/`--image-minimum-gc-age`) drive new pure `should_start_image_gc()`/`images_to_reclaim_space()` — an unreferenced image is left alone entirely until disk usage crosses the high threshold, then removed oldest-unreferenced-first down to the low threshold. Replaces the previous unconditional every-cycle sweep — a real behavior change, not just an addition.
 - ✅ **Container log rotation** — running containers' log files are rotated past `NODELET_CONTAINER_LOG_MAX_SIZE_BYTES`, keeping `NODELET_CONTAINER_LOG_MAX_FILES` (`rotate_log_file()` + CRI `ReopenContainerLog`)
 - ✅ **`Node.status.images`** (round 33; found in round 27's re-audit) — `node.rs::select_node_images()` sorts CRI's `ListImages` results (via the new `PodRuntime::node_images()` trait method) largest-first and caps at 50, matching real kubelet's own `--node-status-max-images` default. Genuinely automated e2e test. See round 33 notes.
@@ -4705,8 +4774,19 @@ accordingly; see those files' own updated framing.
       survives a GC cycle below the watermark), with actual
       watermark-triggered removal joining the manual-procedure group.
       See round 70 notes.
-- [ ] Candidates for the next round: ServiceAccount token credential
-      providers (beta/default-on in k8s 1.34 — bigger, needs the
-      credential-provider exec-plugin protocol; worth a scope discussion
-      before committing, not a default pick), or another fresh gap
-      re-audit. Ask before starting the next round.
+- [x] Round 71: image credential providers — kubelet's
+      `--image-credential-provider-config`/`-bin-dir` exec-plugin
+      protocol, including ServiceAccount token integration
+      (`tokenAttributes`, beta/default-on in k8s 1.34). New
+      `credential_provider.rs` module: config parsing, `matchImages` glob
+      matching (real kubelet's own segment/port/path rules), 3-tier
+      response caching, and subprocess exec of the first matching
+      provider. `resolve_pull_auth()` tries `imagePullSecrets` first,
+      falling back to a credential provider only if no secret resolves.
+      21 new unit tests; a new e2e test file automates the
+      feature-off-by-default regression check, with real exec-plugin
+      fetches joining the manual-procedure group (needs a real cloud
+      vendor binary + live registry). See round 71 notes.
+- [ ] Candidates for the next round: a fresh gap re-audit is the natural
+      next step — every audit-flagged item from round 65's list is now
+      closed. Ask before starting the next round.

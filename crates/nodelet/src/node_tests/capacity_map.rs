@@ -35,6 +35,8 @@ fn cfg(cpu: u64, mem: u64, pods: u64) -> Config {
         image_gc_high_threshold_percent: 85,
         image_gc_low_threshold_percent: 80,
         image_gc_min_age_secs: 120,
+        image_credential_provider_config: String::new(),
+        image_credential_provider_bin_dir: String::new(),
         cluster_dns: Vec::new(),
         cluster_domain: "cluster.local".to_string(),
         eviction_check_interval: Duration::from_secs(10),

@@ -98,6 +98,15 @@ pub struct Config {
     /// least this long, even under high-watermark pressure (avoids
     /// evicting an image mid-rollout that's about to be reused).
     pub image_gc_min_age_secs: u64,
+    /// `--image-credential-provider-config` (round 71; found in round
+    /// 69's fresh gap re-audit) — path to a `CredentialProviderConfig`
+    /// YAML file. Empty means the feature is off entirely (no config, no
+    /// providers), matching upstream's own behavior when the flag isn't
+    /// set.
+    pub image_credential_provider_config: String,
+    /// `--image-credential-provider-bin-dir` — directory containing the
+    /// provider executables named in the config file's `providers[].name`.
+    pub image_credential_provider_bin_dir: String,
     /// Cluster DNS server IPs, injected into a pod's `resolv.conf` when its
     /// `dnsPolicy` is `ClusterFirst` (the default) — real kubelet's
     /// `--cluster-dns`. Empty means "no cluster DNS configured", in which
@@ -326,6 +335,10 @@ impl Config {
             Err(_) => 80u8,
         };
         let image_gc_min_age_secs = env_u64("NODELET_IMAGE_GC_MIN_AGE_SECS", 120)?;
+        let image_credential_provider_config =
+            std::env::var("NODELET_IMAGE_CREDENTIAL_PROVIDER_CONFIG").unwrap_or_default();
+        let image_credential_provider_bin_dir =
+            std::env::var("NODELET_IMAGE_CREDENTIAL_PROVIDER_BIN_DIR").unwrap_or_default();
 
         let cluster_dns: Vec<String> = std::env::var("NODELET_CLUSTER_DNS")
             .ok()
@@ -414,6 +427,8 @@ impl Config {
             image_gc_high_threshold_percent,
             image_gc_low_threshold_percent,
             image_gc_min_age_secs,
+            image_credential_provider_config,
+            image_credential_provider_bin_dir,
             cluster_dns,
             cluster_domain,
             eviction_check_interval,

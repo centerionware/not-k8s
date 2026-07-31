@@ -156,7 +156,7 @@ impl CriRuntime {
                 // pod's imagePullSecrets, same as any container image) and
                 // pass the runtime's resolved image_ref through; the
                 // runtime does the actual mounting.
-                match self.pull_image_volume(&id.namespace, pull_secrets, image_source).await {
+                match self.pull_image_volume(id, pull_secrets, image_source).await {
                     Ok(resolved) => {
                         out.insert(v.name.clone(), resolved);
                     }

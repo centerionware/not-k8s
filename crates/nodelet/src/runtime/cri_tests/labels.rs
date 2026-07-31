@@ -14,6 +14,7 @@ fn id(ns: &str, name: &str, uid: &str) -> PodId {
         host_pid: false,
         host_ipc: false,
         share_process_namespace: false,
+        service_account_name: "default".to_string(),
     }
 }
 
