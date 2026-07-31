@@ -430,8 +430,13 @@ threshold, then removed oldest-unreferenced-first. Round 71 closed
 nodelet execs the first matching provider, optionally minting it an
 audience-scoped `ServiceAccount` token (reusing the same `TokenRequest`
 machinery projected `serviceAccountToken` volumes already use) when the
-provider declares `tokenAttributes`. Full status list in
-`docs/GAP_CLOSURE.md`.
+provider declares `tokenAttributes`. A fresh gap re-audit (round 72)
+found crash-loop backoff missing entirely — closed round 73: a container
+that keeps exiting is now throttled with an exponentially growing delay
+(10s base, doubling, capped at 5 minutes, matching real kubelet's own
+constants) instead of being recreated as fast as this event-driven
+controller's own status-write-triggers-another-watch-event feedback loop
+otherwise allows. Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

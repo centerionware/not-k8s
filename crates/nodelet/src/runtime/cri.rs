@@ -249,6 +249,17 @@ pub struct CriRuntime {
     /// concept of "how many times has this logical container restarted" —
     /// each restart is a brand-new container id, so nodelet has to count.
     restart_counts: Mutex<HashMap<String, u32>>,
+    /// `"sandbox_id/container_name" -> (unix seconds of the last restart
+    /// attempt, the backoff delay in seconds that was required before
+    /// that attempt)` — crash-loop backoff state (round 73; found in
+    /// round 72's re-audit). Without this, a container stuck exiting
+    /// immediately after every start gets recreated as fast as the
+    /// runtime allows, since this codebase's own status-write-triggers-
+    /// another-watch-event feedback loop re-drives `reconcile()` far
+    /// faster than any human-perceptible interval. See
+    /// `container_state.rs`'s `crash_loop_backoff_secs()`/
+    /// `crash_loop_backoff_ready()`.
+    restart_backoff: Mutex<HashMap<String, (u64, u64)>>,
     /// CSI Node-service clients for `PersistentVolumeClaim` volumes (see
     /// `runtime/csi.rs`) — empty at startup (unless seeded via
     /// `NODELET_CSI_DRIVERS`) means every PVC volume is skipped with a
@@ -450,6 +461,7 @@ impl CriRuntime {
             credential_providers,
             runtime_name,
             restart_counts: Mutex::new(HashMap::new()),
+            restart_backoff: Mutex::new(HashMap::new()),
             csi,
             device_plugins,
             device_allocations: Mutex::new(HashMap::new()),
@@ -526,6 +538,9 @@ mod tests_termination_grace;
 #[cfg(test)]
 #[path = "cri_tests/restart_count.rs"]
 mod tests_restart_count;
+#[cfg(test)]
+#[path = "cri_tests/crash_loop_backoff.rs"]
+mod tests_crash_loop_backoff;
 #[cfg(test)]
 #[path = "cri_tests/downward_api_volume.rs"]
 mod tests_downward_api_volume;

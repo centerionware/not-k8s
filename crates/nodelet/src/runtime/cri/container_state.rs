@@ -203,6 +203,55 @@ pub(crate) fn clear_restart_counts_in(counts: &mut HashMap<String, u32>, sandbox
 }
 
 
+/// Crash-loop backoff (round 73; found in round 72's re-audit). Base
+/// delay and cap match real kubelet's own `flowcontrol.Backoff` defaults
+/// exactly (10s base, doubling, capped at 5 minutes); the reset-to-base
+/// threshold (10 minutes of no restart attempt) mirrors upstream's own
+/// "twice the max backoff" reset rule.
+pub(crate) const CRASH_LOOP_BACKOFF_BASE_SECS: u64 = 10;
+pub(crate) const CRASH_LOOP_BACKOFF_MAX_SECS: u64 = 300;
+pub(crate) const CRASH_LOOP_BACKOFF_RESET_SECS: u64 = 2 * CRASH_LOOP_BACKOFF_MAX_SECS;
+
+
+/// The backoff delay (in seconds) to require before the *next* restart
+/// attempt, given the delay required before the restart attempt that
+/// just happened (`prev_backoff_secs`, `None` if this is the very first
+/// restart ever recorded for this container) and how long ago that prior
+/// attempt actually was (`elapsed_since_prev_secs`). Doubles on a
+/// still-failing container, capped at the max; resets back to the base
+/// delay once the container has gone long enough without needing another
+/// restart attempt to count as having stabilized.
+pub(crate) fn crash_loop_backoff_secs(prev_backoff_secs: Option<u64>, elapsed_since_prev_secs: Option<u64>) -> u64 {
+    let should_reset = match (prev_backoff_secs, elapsed_since_prev_secs) {
+        (Some(_), Some(elapsed)) => elapsed >= CRASH_LOOP_BACKOFF_RESET_SECS,
+        _ => true,
+    };
+    if should_reset {
+        CRASH_LOOP_BACKOFF_BASE_SECS
+    } else {
+        (prev_backoff_secs.unwrap() * 2).min(CRASH_LOOP_BACKOFF_MAX_SECS)
+    }
+}
+
+
+/// Whether enough time has passed since the last restart attempt
+/// (`last_restart_unix`, `None` if this container has never been
+/// restarted before) to allow another one now, given the backoff delay
+/// that was required after that last attempt.
+pub(crate) fn crash_loop_backoff_ready(last_restart_unix: Option<u64>, required_backoff_secs: u64, now_unix: u64) -> bool {
+    match last_restart_unix {
+        None => true,
+        Some(t) => now_unix.saturating_sub(t) >= required_backoff_secs,
+    }
+}
+
+
+pub(crate) fn clear_restart_backoff_in(backoff: &mut HashMap<String, (u64, u64)>, sandbox_id: &str) {
+    let prefix = format!("{sandbox_id}/");
+    backoff.retain(|k, _| !k.starts_with(&prefix));
+}
+
+
 /// Real kubelet default when `terminationGracePeriodSeconds` is unset (or
 /// explicitly negative, which the API otherwise allows through): 30s.
 pub(crate) fn termination_grace_seconds(pod: &Pod) -> i64 {
@@ -232,4 +281,42 @@ impl CriRuntime {
         bump_restart_count_in(&mut self.restart_counts.lock().unwrap(), sandbox_id, container_name)
     }
 
+    /// Drop crash-loop backoff state for a sandbox that's gone, same
+    /// reason/lifecycle as `clear_restart_counts()`.
+    pub(crate) fn clear_restart_backoff(&self, sandbox_id: &str) {
+        clear_restart_backoff_in(&mut self.restart_backoff.lock().unwrap(), sandbox_id);
+    }
+
+    /// Whether a container due for a restart is allowed to restart right
+    /// now, per crash-loop backoff. Read-only — does NOT record this
+    /// attempt; call `record_restart_backoff()` once the restart actually
+    /// happens (a caller that decides to skip the restart this time
+    /// leaves the recorded state untouched, so the same backoff window
+    /// keeps counting down rather than being pushed back out).
+    pub(crate) fn restart_backoff_ready(&self, sandbox_id: &str, container_name: &str) -> bool {
+        let key = restart_count_key(sandbox_id, container_name);
+        let now = now_unix_secs();
+        let table = self.restart_backoff.lock().unwrap();
+        match table.get(&key) {
+            Some((last_restart_unix, required_backoff_secs)) => crash_loop_backoff_ready(Some(*last_restart_unix), *required_backoff_secs, now),
+            None => true,
+        }
+    }
+
+    /// Record that a restart attempt just happened, computing the backoff
+    /// delay required before the *next* one is allowed.
+    pub(crate) fn record_restart_backoff(&self, sandbox_id: &str, container_name: &str) {
+        let key = restart_count_key(sandbox_id, container_name);
+        let now = now_unix_secs();
+        let mut table = self.restart_backoff.lock().unwrap();
+        let prev = table.get(&key).copied();
+        let elapsed = prev.map(|(last, _)| now.saturating_sub(last));
+        let new_backoff = crash_loop_backoff_secs(prev.map(|(_, b)| b), elapsed);
+        table.insert(key, (now, new_backoff));
+    }
+}
+
+
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }

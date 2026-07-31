@@ -27,6 +27,68 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 73: crash-loop backoff (2026-07-31, same day)
+
+Closes the biggest finding from round 72's fresh gap re-audit — user
+picked it directly over the PodResources API and
+`allocatedResourcesStatus`, the only other candidates offered.
+
+- Root cause, worth remembering: this codebase is entirely event-driven
+  (`pods.rs`'s own doc comment: "no periodic relist and no per-second
+  polling"). A container's `ContainerExited` CRI event only triggers
+  `on_runtime_event()`, which re-reads status and writes it back — but
+  that write is itself a Pod object modification, which the same
+  controller's own `watcher()` stream observes as another `Apply` event,
+  triggering another `reconcile()` → `ensure_pod()` → restart. This
+  feedback loop has no natural rate limit at all: a container that exits
+  in well under a second gets recreated as fast as the runtime can
+  physically create+start it.
+- New pure functions in `container_state.rs`: `crash_loop_backoff_secs()`
+  (given the delay required before the restart attempt that just
+  happened and how long ago that was, returns the delay required before
+  the *next* one — doubles on a still-failing container up to a 5-minute
+  cap, resets to a 10-second base after a 10-minute gap with no restart
+  attempt, matching real kubelet's own `flowcontrol.Backoff` constants
+  exactly) and `crash_loop_backoff_ready()` (whether enough time has
+  elapsed since the last attempt).
+- New `CriRuntime.restart_backoff: Mutex<HashMap<String, (u64, u64)>>`
+  side table (`"sandbox_id/container_name" -> (last restart attempt unix
+  seconds, backoff delay that was required before it)`), same
+  lifecycle/pattern as the pre-existing `restart_counts` table — cleared
+  alongside it on sandbox removal/recreation (`clear_restart_backoff()`).
+- `ensure_container()`'s `NeedsRestart` path now checks
+  `restart_backoff_ready()` before actually removing the stale container
+  and recreating it — if not ready yet, it simply returns `Ok(())`,
+  leaving the exited container in place until the next trigger (another
+  status-write echo, or a genuine watch event) re-evaluates it, matching
+  this controller's existing "react to the next edge, don't poll"
+  posture rather than adding a new timer loop. **Scoped precisely**: only
+  a genuine exit-triggered restart is subject to backoff — a
+  resize-triggered restart (`ResizeDecision::RequiresRestart`, an
+  operator-driven event on an otherwise-healthy running container) is a
+  completely different kind of restart and must never be throttled by
+  this, tracked via a separate `is_crash_restart` flag rather than
+  reusing the existing `needs_restart` bool for both.
+- **Documented, not silently cut**: the `CrashLoopBackOff` status string
+  itself isn't reported — `ContainerStatus.lastState` isn't tracked at
+  all in this codebase yet (a separate, larger pre-existing gap this
+  round didn't take on), so a backing-off container's status still shows
+  its real `Terminated` state (accurate exit code/reason) during the
+  backoff window rather than kubectl's familiar `Waiting:
+  CrashLoopBackOff` + `lastState: Terminated` pairing. The actual
+  behavior fix (the restart *rate* itself) is real regardless.
+- 10 new unit tests (`cri_tests/crash_loop_backoff.rs`): first-restart-
+  is-immediate, backoff doubling, cap enforcement, reset-after-a-long-gap,
+  no-reset-just-under-the-threshold, ready/not-ready boundary checks,
+  and a saturating-subtraction no-panic check for a clock-looks-backwards
+  edge case.
+- New e2e test `test_crash_loop_backoff_throttles_immediate_restarts`
+  (`lifecycle.sh`): a container that exits immediately (`exit 1`, no
+  sleep at all) is given a 20-second window, then asserts its restart
+  count is low (between 1 and 3) — without backoff, an immediate-exit
+  tight loop could rack up dozens of restarts in that window; with the
+  10-second base delay in effect, it can't.
+
 ## Round 72: fresh gap re-audit (2026-07-31, same day)
 
 No code changed. Grepped the codebase directly for a handful of specific
@@ -4194,7 +4256,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Pod & container lifecycle
 - ✅ Pod sandbox + container create/start/stop/remove via CRI
-- 🟡 Restart-on-exit honoring `restartPolicy`. **Missing: crash-loop backoff** (found in round 72's re-audit) — a container that keeps exiting is restarted immediately on every reconcile, with no exponential delay and no `CrashLoopBackOff` status reason ever reported. Real kubelet backs off 10s/20s/40s/.../capped at 5 minutes, resetting after ~10 minutes of stable running. Nodelet's event-driven architecture (a `ContainerExited` event triggers an immediate reconcile) makes this a genuine tight-loop risk, not just a cosmetic status-string gap — a truly crash-looping container currently gets restarted as fast as the runtime can create+start it.
+- 🟡 **Restart-on-exit honoring `restartPolicy`, now with crash-loop backoff** (round 73; found in round 72's re-audit) — `restart_backoff_ready()`/`record_restart_backoff()` (new `restart_backoff` side table on `CriRuntime`) gate the actual restart, not just its status reporting: the first restart after any exit is always immediate, but a container that keeps exiting is throttled with an exponentially growing delay (10s base, doubling, capped at 5 minutes — matching real kubelet's own `flowcontrol.Backoff` constants exactly), resetting back to the base delay after ~10 minutes without needing another restart attempt. This closes the real behavior gap, not just the missing status string — nodelet's event-driven architecture (every status write is itself a Pod modification that re-triggers this controller's own watch stream, feeding right back into another reconcile) meant a crash-looping container was previously recreated as fast as the runtime could physically create+start it, with zero throttle. **Still not implemented**: the `CrashLoopBackOff` `state.waiting.reason` string itself — `ContainerStatus` has no `lastState` tracking at all yet (a separate, larger pre-existing gap this round didn't take on), so during the backoff window the container's status still shows its real `Terminated` state (accurate exit code/reason) rather than kubectl's familiar `Waiting: CrashLoopBackOff` + `lastState: Terminated` pairing.
 - ✅ **Init containers** — run to completion, in order, before app containers (`ensure_init_containers`)
 - ✅ **Native sidecar containers** (round 36; `initContainers[].restartPolicy: "Always"`, GA since 1.29, found in round 35's re-audit) — `sidecar_init_decision()` routes a sidecar-marked init container through its own decision matrix: doesn't block later init/app containers on its own exit (only on having started at all), restarts on exit like a normal container for the pod's whole lifetime, and its real probe-based readiness folds into the pod's overall `Ready`/`ContainersReady` (`pods.rs::build_pod_status()`). Genuinely automated e2e tests. **Documented simplification**: sidecars aren't stopped strictly *after* app containers on teardown (one pass instead), unlike upstream's exact ordering. See round 36 notes.
 - ✅ **Ephemeral containers** (`kubectl debug`) — `spec.ephemeralContainers` started once (never restarted) via `ensure_ephemeral_container()`, reported in `PodStatus.ephemeralContainerStatuses`, excluded from pod phase/readiness. Exit codes not tracked (always reported `0`) — see Round 8 notes.
@@ -4841,8 +4903,25 @@ accordingly; see those files' own updated framing.
       tooling depends on it), and `allocatedResourcesStatus`/
       ResourceHealthStatus (alpha/beta, lower priority). See round 72
       notes.
-- [ ] Candidates for the next round, ranked: crash-loop backoff (highest
-      value — real resource-protection gap), PodResources API (real
-      external-tooling value, low implementation risk), then
-      `allocatedResourcesStatus` (alpha/beta upstream, lower urgency).
-      Ask before starting the next round.
+- [x] Round 73: crash-loop backoff — `restart_backoff_ready()`/
+      `record_restart_backoff()` (new `restart_backoff` side table on
+      `CriRuntime`) throttle the actual restart, not just its status: a
+      container that keeps exiting now waits an exponentially growing
+      delay (10s base, doubling, capped at 5 minutes, resetting after
+      10 minutes stable — matching real kubelet's own constants) instead
+      of being recreated as fast as this event-driven controller's own
+      status-write-triggers-another-watch-event feedback loop allows.
+      Scoped precisely to genuine exit-triggered restarts only (a
+      resize-triggered restart is never throttled). 10 new unit tests +
+      a genuinely automated e2e test proving a low restart count over a
+      20s window for an immediately-exiting container. **Still open**:
+      the `CrashLoopBackOff` status string itself, since
+      `ContainerStatus.lastState` isn't tracked at all yet. See round 73
+      notes.
+- [ ] Candidates for the next round, ranked: PodResources API (real
+      external-tooling value, low implementation risk since
+      cpu_manager.rs/memory_manager.rs/device_plugins.rs already track
+      the underlying state), `allocatedResourcesStatus` (alpha/beta
+      upstream, lower urgency), or `ContainerStatus.lastState` tracking
+      (would unlock the `CrashLoopBackOff` status string this round
+      deliberately left out). Ask before starting the next round.

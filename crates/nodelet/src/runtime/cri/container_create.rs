@@ -46,6 +46,12 @@ impl CriRuntime {
             .find(|c| c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false));
 
         let needs_restart;
+        // Only a genuine "container exited on its own, restartPolicy
+        // allows retrying it" restart is subject to crash-loop backoff
+        // (round 73) -- an in-place-resize-triggered restart of an
+        // otherwise-healthy running container is a completely different,
+        // operator-driven event and must never be throttled by it.
+        let mut is_crash_restart = false;
         match restart_decision(existing_ctr.map(|c| c.state), running_v, restart_policy) {
             RestartDecision::LeaveTerminated => return Ok(()),
             RestartDecision::AlreadyRunning => {
@@ -97,7 +103,25 @@ impl CriRuntime {
                     return Ok(()); // nothing recorded yet (shouldn't happen for a running container) — nothing to compare against
                 }
             }
-            RestartDecision::NeedsRestart => needs_restart = true,
+            RestartDecision::NeedsRestart => {
+                needs_restart = true;
+                is_crash_restart = existing_ctr.is_some();
+            }
+        }
+
+        // Crash-loop backoff (round 73; found in round 72's re-audit): a
+        // container that keeps exiting doesn't get recreated as fast as
+        // this event-driven controller can react (every status write is
+        // itself a Pod modification that re-triggers a watch event and
+        // another reconcile -- without this gate that feedback loop has
+        // no natural rate limit at all). The exited container is simply
+        // left in place until the backoff window elapses; the next
+        // trigger (another status-write echo, a future watch event, or
+        // this same pod's own probe/eviction paths) re-evaluates it, same
+        // "no periodic poll, just react to the next edge" posture the
+        // rest of this controller already has.
+        if is_crash_restart && !self.restart_backoff_ready(sandbox_id, &container.name) {
+            return Ok(());
         }
 
         if needs_restart {
@@ -110,6 +134,9 @@ impl CriRuntime {
             // it here.
             if let Some(c) = existing_ctr {
                 self.bump_restart_count(sandbox_id, &container.name);
+                if is_crash_restart {
+                    self.record_restart_backoff(sandbox_id, &container.name);
+                }
                 self.release_container_devices(sandbox_id, &container.name).await;
                 let mut rt = self.rt.clone();
                 let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;

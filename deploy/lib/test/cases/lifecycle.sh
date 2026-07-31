@@ -158,6 +158,47 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_crash_loop_backoff_throttles_immediate_restarts() {
+    # Round 73: before this, a container that exits immediately (no
+    # sleep at all) had NO restart throttle whatsoever — every status
+    # write is itself a Pod modification that re-triggers this
+    # controller's own watch stream, feeding back into another
+    # reconcile/restart with no natural rate limit. Without backoff, a
+    # container that exits in well under a second could restart dozens
+    # of times within this test's own wait window; with it, the very
+    # first restart is immediate but every one after that is throttled
+    # (10s, doubling), so the count should still be small.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="crash-loop-backoff"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "exit 1"]
+EOF
+    # Give it a real window to (mis)behave in before checking: long
+    # enough that an unthrottled tight loop would rack up many restarts,
+    # short enough that even a single 10s backoff window keeps a
+    # correctly-throttled count very low.
+    sleep 20
+    local restart_count
+    restart_count="$(pod_container_restart_count "$name" app)"
+    delete_pod_if_exists "$name"
+    # A high count here means restarts aren't being throttled at all —
+    # check restart_backoff_ready()/record_restart_backoff() in
+    # runtime/cri/container_create.rs. The very first restart is never
+    # throttled, so at least 1 is expected; anything past low single
+    # digits within 20s under a 10s base backoff delay means the gate
+    # isn't doing anything.
+    assert_true test "$restart_count" -ge 1
+    assert_true test "$restart_count" -le 3
+}
+
 test_restart_policy_never_exit_zero_is_succeeded() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="never-succeed"
@@ -446,6 +487,7 @@ register_test test_native_sidecar_container_starts_before_app_container_and_keep
 register_test test_native_sidecar_container_restarts_on_crash
 register_test test_init_container_failure_blocks_app_container_under_restart_policy_never
 register_test test_crashing_container_restarts_and_increments_restart_count
+register_test test_crash_loop_backoff_throttles_immediate_restarts
 register_test test_restart_policy_never_exit_zero_is_succeeded
 register_test test_restart_policy_never_exit_nonzero_is_failed
 register_test test_exited_container_reports_terminated_state_with_exit_code

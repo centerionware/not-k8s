@@ -43,6 +43,7 @@ impl PodRuntime for CriRuntime {
                 self.pod_uids.lock().unwrap().remove(&stale_id);
                 self.sidecar_names.lock().unwrap().remove(&stale_id);
                 self.clear_restart_counts(&stale_id);
+                self.clear_restart_backoff(&stale_id);
                 self.release_sandbox_devices(&stale_id).await;
                 self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref())).await.context("RunPodSandbox")?
             }
@@ -191,6 +192,7 @@ impl PodRuntime for CriRuntime {
             }
             self.sidecar_names.lock().unwrap().remove(&sandbox_id);
             self.clear_restart_counts(&sandbox_id);
+            self.clear_restart_backoff(&sandbox_id);
             self.release_sandbox_devices(&sandbox_id).await;
         }
         self.unmount_csi_volumes(pod, &id).await;

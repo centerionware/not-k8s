@@ -173,6 +173,7 @@ impl CriRuntime {
             }
             self.sidecar_names.lock().unwrap().remove(&sandbox_id);
             self.clear_restart_counts(&sandbox_id);
+            self.clear_restart_backoff(&sandbox_id);
             self.release_sandbox_devices(&sandbox_id).await;
         }
         Ok(())
