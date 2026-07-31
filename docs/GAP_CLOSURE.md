@@ -27,6 +27,55 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 54: fresh gap re-audit (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 22/27/35/39/45/50). All
+4 prior audit lists (rounds 35, 39, 45, 50) were fully closed as of
+round 53; user picked another re-audit. No code changed this round —
+audit-only.
+
+This pass checked `PodStatus`'s own top-level fields directly against
+the API type definition (rather than a specific feature area), plus
+CRI's `Version` RPC (like round 50's `Status` RPC check, another
+runtime-level CRI call that turned out to have never been called at
+all). Found 3 previously-untracked items:
+
+- **`PodStatus.qosClass` is never set** — real kubelet always reports
+  this (`BestEffort`/`Burstable`/`Guaranteed`) on every pod status;
+  `kubectl describe pod`, dashboards, and various controllers read it
+  directly rather than recomputing QoS themselves. Nodelet already
+  computes exactly this value internally (`eviction::qos_class()`, used
+  for eviction ranking since round 7) — it's just never surfaced into
+  `PodStatus` itself. Likely the cheapest of this round's 3 findings:
+  no new computation needed, just threading an existing pure function's
+  result into `build_pod_status()` the same way round 23 already
+  threads `readiness_gates` in from `reconcile()` (which has the `Pod`
+  object `build_pod_status()` itself doesn't).
+- **`PodStatus.hostIPs` (plural, dual-stack) is never set** — only the
+  singular `hostIP` is populated today. Real kubelet sets this
+  alongside `hostIP` unconditionally, even on a single-stack node
+  (`hostIPs: [{ip: <the same address hostIP has>}]`) — mirrors how
+  `podIPs` (plural) already coexists with `podIP` (singular) in this
+  same struct, which nodelet already gets right.
+- **`ContainerStatus.containerID` is missing its `<runtime>://` scheme
+  prefix** — real kubelet always formats this as `<runtimeName>://<id>`
+  (e.g. `containerd://1234abcd...`), built from CRI's own `Version`
+  RPC's `runtime_name` field; nodelet reports the bare CRI container ID
+  with no prefix at all. Confirmed via grep: CRI's `Version` RPC
+  (distinct from the `Status` RPC round 53 just wired up) has never
+  been called anywhere in this codebase either. Tooling that parses
+  this field's scheme to identify the runtime (or that expects the
+  standard format at all) could misbehave against nodelet's bare IDs.
+  **Not the same finding as round 52's `imageID`** — that field is
+  *not* scheme-prefixed by real kubelet either (confirmed by checking
+  upstream's own conversion code), so round 52's bare-digest
+  implementation was already correct and needs no revisiting.
+
+**Not re-flagging**: everything already tracked in the responsibility
+list below, including the still-open low-priority items from rounds 35
+(none left) and the `emptyDir.sizeLimit`/`subPath` items noted in
+earlier rounds.
+
 ## Round 53: `Node.status.runtimeHandlers` (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-52). This closes
@@ -3213,6 +3262,9 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`terminationMessagePath`/`terminationMessagePolicy`** (round 24; found in round 22's re-audit) — `create_and_start_container()` bind-mounts an empty host file at the container's `terminationMessagePath` (default `/dev/termination-log`) for App/Init containers, same approach real kubelet uses; `build_status()` reads it back (capped at 4096 bytes, keeping the last bytes if larger) into `ContainerStatus.state.terminated.message` for every exited container. Closing this also surfaced and fixed a bigger pre-existing gap: regular/init containers never reported a `terminated` state at all before this round (always `Waiting: ContainerCreating` forever once exited) — see round 24 notes. Still not implemented: `FallbackToLogsOnError` (documented, deliberate — nodelet always behaves as `File` policy, a strict subset of correct behavior, never wrong/misleading).
 - ✅ **Pod `readinessGates`** (round 23; found in round 22's re-audit) — `spec.readinessGates` lets an external controller contribute additional `PodCondition`s that must all be `True` (alongside the built-in `ContainersReady`) before kubelet reports the pod's own `Ready` condition as `True`. `build_pod_status()`'s `Ready` computation now checks every gate's named condition against `prev`'s conditions; a missing condition counts as not-satisfied, matching upstream. Fixing this also required (and fixed) a real pre-existing bug: nodelet's JSON-Merge-Patch status writes were silently deleting any condition an external controller had set, since the whole `conditions` array got replaced wholesale — now foreign conditions are copied forward on every write. See round 23 notes.
 - ✅ **Startup probe failure triggers a restart** (round 47; found in round 45's re-audit) — the startup-probe loop now checks the new public `ProbeTracker.failures` count against `failureThreshold` on every non-passing iteration, calling `restart_container()` (reusing round 44's `probe_grace_period_seconds()` unchanged — it was already generic over which probe called it) and resetting the tracker, then continuing to loop (the supervisor task lives for the container's whole lifetime, so it must keep re-attempting startup probing against the recreated instance rather than giving up). Genuinely automated e2e test (a marker file that's never created, so the probe can only ever fail — a nonzero restart count is direct proof). See round 47 notes.
+- ❌ **`PodStatus.qosClass`** (found in round 54's re-audit) — never set. `eviction::qos_class()` already computes exactly this value (used for eviction ranking since round 7); it's just never surfaced into `PodStatus` itself, which `kubectl describe pod`/dashboards/various controllers read directly rather than recomputing. Likely the cheapest fix of round 54's 3 findings — needs threading the existing pure function's result in from `reconcile()` (which has the `Pod` object) the same way round 23 already threads `readiness_gates` into `build_pod_status()`.
+- ❌ **`PodStatus.hostIPs`** (plural, dual-stack; found in round 54's re-audit) — only the singular `hostIP` is populated; real kubelet sets `hostIPs` alongside it unconditionally, even on a single-stack node, mirroring how `podIPs` (plural) already coexists with `podIP` (singular) in this same struct — which nodelet already gets right for pod IPs, just not host IPs.
+- ❌ **`ContainerStatus.containerID` missing its `<runtime>://` scheme prefix** (found in round 54's re-audit) — real kubelet always formats this as `<runtimeName>://<id>` (e.g. `containerd://1234abcd...`), built from CRI's own `Version` RPC's `runtime_name` field; nodelet reports the bare CRI container ID with no prefix. CRI's `Version` RPC (distinct from the `Status` RPC round 53 wired up) has never been called anywhere in this codebase either. Not the same finding as round 52's `imageID` — that field is *not* scheme-prefixed by real kubelet, so round 52's implementation needs no revisiting.
 
 ### Resource management
 - ✅ **Container resource requests/limits** — translated to CRI `LinuxContainerResources` (cpu shares/quota/period, memory limit; `linux_resources()`)
@@ -3618,6 +3670,16 @@ higher-value/correctness-critical than others:
       `images`/`mounted_csi_volumes`-shaped plumbing rounds 33/34
       already established. Genuinely automated e2e test. See round 53
       notes.
-- [ ] All 4 audit lists to date (rounds 35, 39, 45, 50) are now fully
-      closed. A fresh gap re-audit is the natural next step. Ask before
-      starting the next round.
+- [x] Round 54: fresh gap re-audit (no code change) — found 3
+      previously-untracked items: **`PodStatus.qosClass` never set**
+      (nodelet already computes this internally via
+      `eviction::qos_class()`, just never surfaces it — likely the
+      cheapest fix), **`PodStatus.hostIPs` (plural) never set** (only
+      singular `hostIP` today, mirrors the already-correct
+      `podIP`/`podIPs` singular/plural split), and
+      **`ContainerStatus.containerID` missing its `<runtime>://`
+      scheme prefix** (CRI's `Version` RPC, distinct from round 53's
+      `Status` RPC, has never been called either). See round 54 notes.
+- [ ] Candidates for the next round, by value: `PodStatus.qosClass`
+      (cheapest), `PodStatus.hostIPs`, `ContainerStatus.containerID`
+      scheme prefix. Ask before starting the next round.

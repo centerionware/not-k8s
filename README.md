@@ -330,8 +330,14 @@ digested image reference, already fetched every reconcile) is now
 carried through instead of always reporting the empty string. Round 53
 closed the last item: **`Node.status.runtimeHandlers`** now reports
 the discovered RuntimeClass handlers via CRI's runtime-level `Status`
-RPC (never called before this round) — all 4 audit lists to date are
-now fully closed. Full status list in `docs/GAP_CLOSURE.md`.
+RPC (never called before this round) — all 4 audit lists to date were
+fully closed as of that round. A fresh gap re-audit (round 54) found 3
+more gaps: **`PodStatus.qosClass` is never set** (nodelet already
+computes this internally for eviction ranking, just never surfaces it
+— likely the cheapest fix), `PodStatus.hostIPs` (plural, dual-stack)
+is never set, and `ContainerStatus.containerID` is missing its
+`<runtime>://` scheme prefix real kubelet always includes. Full status
+list in `docs/GAP_CLOSURE.md`.
 
 ---
 
