@@ -142,6 +142,11 @@ pub struct CriRuntime {
     /// unset/`none` (the default), meaning every container's `cpuset_cpus`
     /// is left unset ("unconstrained"), exactly the pre-round-15 behavior.
     cpu_manager: Option<crate::cpu_manager::CpuManager>,
+    /// NUMA memory pinning for Guaranteed-QoS containers (see
+    /// `memory_manager.rs`) — `None` when `NODELET_MEMORY_MANAGER_POLICY`
+    /// is unset/`none` (the default), meaning every container's
+    /// `cpuset_mems` is left unset ("unconstrained").
+    memory_manager: Option<crate::memory_manager::MemoryManager>,
     /// `"sandbox_id/container_name" -> (container_id, last-applied
     /// LinuxContainerResources)` for every currently-running container,
     /// kept only so CPU Manager's retroactive shared-pool refresh
@@ -1103,6 +1108,7 @@ impl CriRuntime {
         plugin_registry_path: String,
         plugin_registry_sync_interval: Duration,
         cpu_manager: Option<crate::cpu_manager::CpuManager>,
+        memory_manager: Option<crate::memory_manager::MemoryManager>,
         topology_policy: crate::topology::TopologyManagerPolicy,
         numa_topology: BTreeMap<u32, BTreeSet<u32>>,
     ) -> Result<Self> {
@@ -1135,6 +1141,7 @@ impl CriRuntime {
             device_plugins,
             device_allocations: Mutex::new(HashMap::new()),
             cpu_manager,
+            memory_manager,
             container_resources: Mutex::new(HashMap::new()),
             topology_policy,
             numa_topology,
@@ -1856,6 +1863,9 @@ impl CriRuntime {
                 self.refresh_shared_pool_cpusets().await;
             }
         }
+        if let Some(memory_manager) = &self.memory_manager {
+            memory_manager.release(&key);
+        }
     }
 
     /// Same, for every container in a sandbox that's being torn down —
@@ -1879,6 +1889,9 @@ impl CriRuntime {
             // held a claim before release_sandbox() below forgets that.
             cpu_manager.release_sandbox(sandbox_id);
             self.refresh_shared_pool_cpusets().await;
+        }
+        if let Some(memory_manager) = &self.memory_manager {
+            memory_manager.release_sandbox(sandbox_id);
         }
     }
 
@@ -1971,21 +1984,27 @@ impl CriRuntime {
         let mut resources = linux_resources(container.resources.as_ref());
         let limits = container.resources.as_ref().and_then(|r| r.limits.as_ref());
         let cpu_limit = limits.and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
+        let mem_limit = limits.and_then(|m| m.get("memory")).and_then(parse_memory_bytes);
         let wants_exclusive_cpus = crate::cpu_manager::wants_exclusive_cpus(qos, cpu_limit);
+        let wants_pinned_memory = crate::memory_manager::wants_pinned_memory(qos, mem_limit);
         let device_requests: Vec<(String, u64)> =
             extended_resource_requests(limits).into_iter().filter(|(name, _)| self.device_plugins.resource_configured(name)).collect();
 
         // Topology Manager (opt-in — see topology.rs): find a single NUMA
-        // node that can satisfy both this container's exclusive-CPU want
-        // (if any) and every device-plugin resource it needs (if any), so
-        // they don't end up scattered across nodes. A no-op (aligned =
-        // None, exactly pre-round-17 behavior) when the policy is `none`,
-        // or when this container has nothing for it to coordinate at all.
+        // node that can satisfy this container's exclusive-CPU want (if
+        // any), pinned-memory want (if any), and every device-plugin
+        // resource it needs (if any), so they don't end up scattered
+        // across nodes. A no-op (aligned = None, exactly pre-round-17
+        // behavior) when the policy is `none`, or when this container has
+        // nothing for it to coordinate at all.
         let mut aligned_numa_node: Option<u32> = None;
         if self.topology_policy != crate::topology::TopologyManagerPolicy::None {
             let mut hints = Vec::new();
             if let (Some(count), Some(cpu_manager)) = (wants_exclusive_cpus, &self.cpu_manager) {
                 hints.push(crate::topology::cpu_hint(&self.numa_topology, &cpu_manager.shared_pool(), count));
+            }
+            if let (Some(bytes), Some(memory_manager)) = (wants_pinned_memory, &self.memory_manager) {
+                hints.push(crate::topology::memory_hint(&memory_manager.free_per_node(), bytes));
             }
             for (resource_name, count) in &device_requests {
                 let available = self.device_plugins.available_device_numa_nodes(resource_name);
@@ -1998,7 +2017,7 @@ impl CriRuntime {
                     match self.topology_policy {
                         crate::topology::TopologyManagerPolicy::Restricted | crate::topology::TopologyManagerPolicy::SingleNumaNode => {
                             anyhow::bail!(
-                                "Topology Manager: no single NUMA node can satisfy container '{}'s CPU/device requests together",
+                                "Topology Manager: no single NUMA node can satisfy container '{}'s CPU/memory/device requests together",
                                 container.name
                             );
                         }
@@ -2036,6 +2055,28 @@ impl CriRuntime {
                 None => cpu_manager.shared_pool(),
             };
             resources.cpuset_cpus = crate::cpu_manager::format_cpuset(&cpuset);
+        }
+
+        // Memory Manager (static policy, opt-in — see memory_manager.rs):
+        // a Guaranteed-QoS container with a memory limit set gets its
+        // memory pinned to a single NUMA node (preferring the Topology
+        // Manager's aligned node, if any). Unlike CPU Manager, non-pinned
+        // containers are left with `cpuset_mems` unset ("unconstrained")
+        // rather than tracked in a shared pool — see memory_manager.rs's
+        // module doc comment for why. A no-op when the policy is disabled
+        // (self.memory_manager is None).
+        let mut memory_manager_key: Option<String> = None;
+        if let (Some(bytes), Some(memory_manager)) = (wants_pinned_memory, &self.memory_manager) {
+            let key = restart_count_key(sandbox_id, &container.name);
+            match memory_manager.allocate_preferring(&key, bytes, aligned_numa_node) {
+                Some(node) => {
+                    memory_manager_key = Some(key);
+                    resources.cpuset_mems = node.to_string();
+                }
+                None => {
+                    warn!(container = %container.name, wanted = bytes, "Memory Manager: no single NUMA node has enough free capacity; leaving memory unpinned");
+                }
+            }
         }
 
         let resources_for_record = resources.clone();
@@ -2110,6 +2151,9 @@ impl CriRuntime {
                 self.release_devices(&allocated_devices);
                 if let (Some(cpu_manager), Some(key)) = (&self.cpu_manager, &cpu_manager_key) {
                     cpu_manager.release(key);
+                }
+                if let (Some(memory_manager), Some(key)) = (&self.memory_manager, &memory_manager_key) {
+                    memory_manager.release(key);
                 }
                 return Err(e).context("creating container");
             }

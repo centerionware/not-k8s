@@ -62,6 +62,30 @@ fn device_hint_is_empty_when_fewer_devices_exist_than_requested() {
     assert!(device_hint(&devices, &all, 2).is_empty());
 }
 
+// --- memory_hint ---
+
+fn mem_map(pairs: &[(u32, u64)]) -> BTreeMap<u32, u64> {
+    pairs.iter().copied().collect()
+}
+
+#[test]
+fn memory_hint_picks_nodes_with_enough_free_bytes() {
+    let free = mem_map(&[(0, 1_000_000), (1, 500_000)]);
+    assert_eq!(memory_hint(&free, 800_000), set(&[0]));
+}
+
+#[test]
+fn memory_hint_includes_every_node_that_qualifies() {
+    let free = mem_map(&[(0, 1_000_000), (1, 2_000_000)]);
+    assert_eq!(memory_hint(&free, 800_000), set(&[0, 1]));
+}
+
+#[test]
+fn memory_hint_is_empty_when_no_node_has_enough() {
+    let free = mem_map(&[(0, 100), (1, 200)]);
+    assert!(memory_hint(&free, 1_000).is_empty());
+}
+
 // --- align ---
 
 #[test]

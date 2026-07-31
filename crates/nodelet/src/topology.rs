@@ -1,10 +1,12 @@
 //! Topology Manager: coordinates CPU Manager (`cpu_manager.rs`, rounds
-//! 15-16) and device plugins (`device_plugins.rs`, round 14) so a
-//! container's exclusive CPUs and allocated devices land on the *same*
-//! NUMA node instead of being picked independently — the whole point of
-//! pinning cores is defeated if the pod's GPU sits on a different NUMA
-//! node than its dedicated CPUs, since cross-node memory access is exactly
-//! the latency real kubelet's Topology Manager exists to avoid.
+//! 15-16), device plugins (`device_plugins.rs`, round 14), and Memory
+//! Manager (`memory_manager.rs`, round 18) so a container's exclusive
+//! CPUs, allocated devices, and pinned memory all land on the *same* NUMA
+//! node instead of being picked independently — the whole point of
+//! pinning cores is defeated if the pod's GPU (or its own memory) sits on
+//! a different NUMA node than its dedicated CPUs, since cross-node memory
+//! access is exactly the latency real kubelet's Topology Manager exists
+//! to avoid.
 //!
 //! Opt-in, matching upstream: `NODELET_TOPOLOGY_MANAGER_POLICY` defaults
 //! to `none` — this module isn't even consulted in that case.
@@ -25,8 +27,8 @@
 //! single node works) rather than upstream's wider multi-node allowance.
 //! Documented here rather than silently thin.
 //!
-//! No Memory Manager exists in this codebase, so memory is not a hint
-//! provider here — only CPU Manager and device plugins are coordinated.
+//! As of round 18, Memory Manager is a third hint provider alongside CPU
+//! Manager and device plugins — see `memory_hint()` below.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -96,6 +98,49 @@ pub fn read_numa_topology(sys_root: &Path) -> BTreeMap<u32, BTreeSet<u32>> {
     nodes
 }
 
+/// Read each NUMA node's total memory capacity from `sys_root` (real
+/// callers pass `/sys/devices/system/node`) — NUMA node ID -> bytes,
+/// parsed from `node*/meminfo`'s `"Node <id> MemTotal: <N> kB"` first
+/// line. Same failure posture as `read_numa_topology()`: an empty map on
+/// any read failure, never an error, so Memory Manager just finds no
+/// alignment/capacity rather than nodelet refusing to start.
+pub fn read_numa_memory(sys_root: &Path) -> BTreeMap<u32, u64> {
+    let Ok(entries) = std::fs::read_dir(sys_root) else { return BTreeMap::new() };
+    let mut nodes = BTreeMap::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(id_str) = name.strip_prefix("node") else { continue };
+        let Ok(id) = id_str.parse::<u32>() else { continue };
+        let meminfo_path = entry.path().join("meminfo");
+        let Ok(meminfo) = std::fs::read_to_string(&meminfo_path) else { continue };
+        if let Some(bytes) = parse_node_mem_total(&meminfo) {
+            nodes.insert(id, bytes);
+        }
+    }
+    nodes
+}
+
+/// Parse the `MemTotal` value (in bytes) out of one NUMA node's `meminfo`
+/// file content — pure so it's testable without a real `/sys` tree.
+fn parse_node_mem_total(meminfo: &str) -> Option<u64> {
+    for line in meminfo.lines() {
+        if let Some(rest) = line.split("MemTotal:").nth(1) {
+            let kb: u64 = rest.trim().strip_suffix("kB")?.trim().parse().ok()?;
+            return Some(kb * 1024);
+        }
+    }
+    None
+}
+
+/// Which NUMA nodes have at least `bytes` of memory still free — Memory
+/// Manager's hint-provider contribution, pure so it's testable without a
+/// live `MemoryManager`. `free_per_node` is the current unpinned capacity
+/// per node `MemoryManager::free_per_node()` reports.
+pub fn memory_hint(free_per_node: &BTreeMap<u32, u64>, bytes: u64) -> BTreeSet<u32> {
+    free_per_node.iter().filter(|(_, free)| **free >= bytes).map(|(node, _)| *node).collect()
+}
+
 /// Which NUMA nodes have at least `count` of `available` CPUs still free —
 /// CPU Manager's hint-provider contribution, pure so it's testable without
 /// a live `CpuManager`. `numa_topology` maps NUMA node -> every CPU it
@@ -153,6 +198,9 @@ mod tests_parse_cpulist;
 #[cfg(test)]
 #[path = "topology_tests/read_numa_topology.rs"]
 mod tests_read_numa_topology;
+#[cfg(test)]
+#[path = "topology_tests/read_numa_memory.rs"]
+mod tests_read_numa_memory;
 #[cfg(test)]
 #[path = "topology_tests/hints_and_align.rs"]
 mod tests_hints_and_align;

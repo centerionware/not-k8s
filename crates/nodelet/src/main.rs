@@ -143,6 +143,9 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                     _ => nodelet::topology::TopologyManagerPolicy::None,
                 };
                 let numa_topology = nodelet::topology::read_numa_topology(std::path::Path::new("/sys/devices/system/node"));
+                let memory_manager = cfg
+                    .memory_manager_static
+                    .then(|| nodelet::memory_manager::MemoryManager::new(nodelet::topology::read_numa_memory(std::path::Path::new("/sys/devices/system/node"))));
                 let rt = runtime::cri::CriRuntime::connect(
                     &cfg.cri_endpoint,
                     client,
@@ -152,6 +155,7 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                     cfg.plugin_registry_path.clone(),
                     cfg.plugin_registry_sync_interval,
                     cpu_manager,
+                    memory_manager,
                     topology_policy,
                     numa_topology,
                 )

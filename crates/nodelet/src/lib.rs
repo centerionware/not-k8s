@@ -12,6 +12,8 @@ pub mod cpu_manager;
 pub mod device_plugins;
 pub mod eviction;
 pub mod gc;
+#[cfg(feature = "cri")]
+pub mod memory_manager;
 pub mod metrics;
 pub mod node;
 pub mod pods;

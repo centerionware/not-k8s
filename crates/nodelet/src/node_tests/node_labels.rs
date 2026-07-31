@@ -46,6 +46,7 @@ fn cfg(labels: BTreeMap<String, String>) -> Config {
         plugin_registry_sync_interval: Duration::from_secs(10),
         cpu_manager_static: false,
         topology_manager_policy: "none".to_string(),
+        memory_manager_static: false,
     }
 }
 

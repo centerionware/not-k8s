@@ -63,8 +63,10 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
                        advertisement, and Allocate() (feature `cri`).
   src/cpu_manager.rs   CPU Manager static policy: exclusive core pinning for
                        Guaranteed-QoS containers (feature `cri`).
+  src/memory_manager.rs  Memory Manager static policy: NUMA memory pinning for
+                       Guaranteed-QoS containers (feature `cri`).
   src/topology.rs      Topology Manager: NUMA-aware coordination between CPU
-                       Manager and device plugins (feature `cri`).
+                       Manager, Memory Manager, and device plugins (feature `cri`).
   src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`): pod/init
                        container lifecycle, resource limits, securityContext,
                        DNS, private registry auth.
@@ -148,15 +150,20 @@ disabled by default) — Guaranteed-QoS containers requesting a whole
 number of CPUs get pinned to exclusive cores, and (round 16)
 already-running shared-pool containers get retroactively shrunk/grown via
 CRI's `UpdateContainerResources` as exclusive claims are made/released,
-matching real kubelet's bidirectional behavior. Also **Topology Manager**
+matching real kubelet's bidirectional behavior. Also **Memory Manager**
+(`memory_manager.rs`, `NODELET_MEMORY_MANAGER_POLICY=static`, disabled by
+default) — Guaranteed-QoS containers with a memory limit get pinned to a
+single NUMA node (never spans multiple nodes, no shared-pool tracking for
+non-pinned containers — see round 18 notes), and **Topology Manager**
 (`topology.rs`, `NODELET_TOPOLOGY_MANAGER_POLICY`, disabled by default) —
-coordinates CPU Manager and device plugins so a container's exclusive
-cores and allocated devices land on the same NUMA node; a single-node-only
-alignment algorithm (not upstream's full multi-node search — see round 17
-notes), reads real NUMA topology from `/sys/devices/system/node`. Still
-missing: Memory Manager, CSI's Controller service, and device plugins'
-`GetPreferredAllocation`/`PreStartContainer` — full list in
-`docs/GAP_CLOSURE.md`.
+coordinates CPU Manager, Memory Manager, and device plugins so a
+container's exclusive cores, pinned memory, and allocated devices all
+land on the same NUMA node; a single-node-only alignment algorithm (not
+upstream's full multi-node search — see round 17/18 notes), reads real
+NUMA topology from `/sys/devices/system/node`. Still missing: Topology
+Manager's multi-node `restricted` allowance, CSI's Controller service,
+and device plugins' `GetPreferredAllocation`/`PreStartContainer` — full
+list in `docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -624,6 +631,11 @@ Two layers, and they're not substitutes for each other:
   verification, which needs real multi-socket hardware or a NUMA-aware
   device plugin. Needs `TEST_TOPOLOGY_MANAGER_POLICY=single-numa-node`.
 
+  `memory_manager.sh` creates a Guaranteed pod with a memory limit and
+  checks its `cpuset.mems` cgroup file is non-empty (found by container
+  ID, same technique `cpu_manager.sh` uses). Needs
+  `TEST_MEMORY_MANAGER_STATIC=true`.
+
 ## Configuration (environment variables)
 
 | Variable | Default | Meaning |
@@ -667,7 +679,8 @@ Two layers, and they're not substitutes for each other:
 | `NODELET_PLUGIN_REGISTRY_PATH` | `/var/lib/nodelet/plugins_registry` | Directory watched for CSI driver registration sockets (`cri` only) — point a driver's `node-driver-registrar` `--kubelet-registration-path` here for dynamic discovery. |
 | `NODELET_PLUGIN_REGISTRY_SYNC_SECS` | `10` | How often that directory is rescanned for new/removed sockets. |
 | `NODELET_CPU_MANAGER_POLICY` | `none` | `none` or `static` (`cri` only) — pins Guaranteed-QoS containers requesting a whole number of CPUs to exclusive cores. See [Status](#status). |
-| `NODELET_TOPOLOGY_MANAGER_POLICY` | `none` | `none`, `best-effort`, `restricted`, or `single-numa-node` (`cri` only) — coordinates CPU Manager and device plugins by NUMA node. See [Status](#status). |
+| `NODELET_MEMORY_MANAGER_POLICY` | `none` | `none` or `static` (`cri` only) — pins Guaranteed-QoS containers with a memory limit to a single NUMA node. See [Status](#status). |
+| `NODELET_TOPOLOGY_MANAGER_POLICY` | `none` | `none`, `best-effort`, `restricted`, or `single-numa-node` (`cri` only) — coordinates CPU Manager, Memory Manager, and device plugins by NUMA node. See [Status](#status). |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---

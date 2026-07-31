@@ -172,6 +172,12 @@ pub struct Config {
     /// device plugins so a container's exclusive cores and allocated
     /// devices land on the same NUMA node.
     pub topology_manager_policy: String,
+    /// Real kubelet's `--memory-manager-policy` (`cri` only; see
+    /// `memory_manager.rs`) — `false`/`none` (default, matches upstream)
+    /// or `true`/`static`, which pins Guaranteed-QoS containers with a
+    /// memory limit to a single NUMA node instead of leaving memory
+    /// placement unconstrained.
+    pub memory_manager_static: bool,
 }
 
 impl Config {
@@ -311,6 +317,12 @@ impl Config {
             ),
         };
 
+        let memory_manager_static = match std::env::var("NODELET_MEMORY_MANAGER_POLICY").as_deref() {
+            Ok("static") => true,
+            Ok("none") | Err(_) => false,
+            Ok(other) => anyhow::bail!("unknown NODELET_MEMORY_MANAGER_POLICY '{other}' (want 'none' or 'static')"),
+        };
+
         Ok(Self {
             node_name,
             runtime,
@@ -352,6 +364,7 @@ impl Config {
             plugin_registry_sync_interval,
             cpu_manager_static,
             topology_manager_policy,
+            memory_manager_static,
         })
     }
 }
