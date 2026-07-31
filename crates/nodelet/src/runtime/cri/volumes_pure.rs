@@ -13,6 +13,75 @@ pub(crate) enum ResolvedVolume {
     Image { image_ref: String },
 }
 
+/// `volumes[].hostPath.type`'s validate-and-maybe-create semantics
+/// (round 65; found in a fresh gap re-audit) — matches real kubelet's own
+/// hostPath type checking: an unset/empty type performs no check at all
+/// (the pre-1.8 legacy behavior, still the default — the path is used
+/// exactly as given, whatever it turns out to be); `DirectoryOrCreate`/
+/// `FileOrCreate` create an empty directory (mode `0755`) / file (mode
+/// `0644`) only if nothing exists there yet, performing no check if
+/// something already does (matching upstream: existing content is never
+/// second-guessed); every other named type requires something of that
+/// exact kind to already exist, erroring otherwise rather than silently
+/// mounting the wrong thing. `Err` means the volume must not be used —
+/// the caller logs it and skips the volume rather than mounting it.
+pub(crate) fn validate_host_path(path: &std::path::Path, type_: Option<&str>) -> Result<(), String> {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+    let existing = std::fs::symlink_metadata(path).ok().map(|m| m.file_type());
+    let missing = |kind: &str| format!("hostPath: {} does not exist (type: {kind} requires it to already)", path.display());
+    let wrong_kind = |kind: &str| format!("hostPath: {} exists but is not {kind}", path.display());
+    match type_.unwrap_or("") {
+        "" => Ok(()),
+        "DirectoryOrCreate" => match existing {
+            Some(ft) if ft.is_dir() => Ok(()),
+            Some(_) => Err(wrong_kind("a directory")),
+            None => {
+                std::fs::create_dir_all(path).map_err(|e| format!("hostPath: failed to create directory {}: {e}", path.display()))?;
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+                Ok(())
+            }
+        },
+        "Directory" => match existing {
+            Some(ft) if ft.is_dir() => Ok(()),
+            Some(_) => Err(wrong_kind("a directory")),
+            None => Err(missing("Directory")),
+        },
+        "FileOrCreate" => match existing {
+            Some(ft) if ft.is_file() => Ok(()),
+            Some(_) => Err(wrong_kind("a regular file")),
+            None => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| format!("hostPath: failed to create parent directory for {}: {e}", path.display()))?;
+                }
+                std::fs::File::create(path).map_err(|e| format!("hostPath: failed to create file {}: {e}", path.display()))?;
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644));
+                Ok(())
+            }
+        },
+        "File" => match existing {
+            Some(ft) if ft.is_file() => Ok(()),
+            Some(_) => Err(wrong_kind("a regular file")),
+            None => Err(missing("File")),
+        },
+        "Socket" => match existing {
+            Some(ft) if ft.is_socket() => Ok(()),
+            Some(_) => Err(wrong_kind("a socket")),
+            None => Err(missing("Socket")),
+        },
+        "CharDevice" => match existing {
+            Some(ft) if ft.is_char_device() => Ok(()),
+            Some(_) => Err(wrong_kind("a character device")),
+            None => Err(missing("CharDevice")),
+        },
+        "BlockDevice" => match existing {
+            Some(ft) if ft.is_block_device() => Ok(()),
+            Some(_) => Err(wrong_kind("a block device")),
+            None => Err(missing("BlockDevice")),
+        },
+        other => Err(format!("hostPath: unrecognized type '{other}'")),
+    }
+}
+
 
 /// Build CRI `Mount` entries for a container's volumeMounts against the
 /// pod's already-resolved volume name -> mount source map (see

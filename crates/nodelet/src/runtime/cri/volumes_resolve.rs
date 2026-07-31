@@ -6,11 +6,12 @@ impl CriRuntime {
     /// ConfigMap/Secret keys become individual files inside that directory
     /// (matching how a real kubelet lays them out, and how a Corefile-style
     /// single-key mount ends up as e.g. `.../Corefile`). Volume kinds this
-    /// doesn't understand yet (projected/serviceAccountToken, hostPath,
-    /// downwardAPI, ...) are skipped with a warning rather than silently
-    /// producing an empty mount — a container that needs one of those still
-    /// won't get it, but at least it's visible in the logs why, instead of
-    /// looking identical to the ConfigMap bug this fixes.
+    /// doesn't understand at all (`iscsi`, `nfs`, `fc`, and similar
+    /// in-tree volume plugin types nodelet has no driver story for) are
+    /// skipped with a warning rather than silently producing an empty
+    /// mount — a container that needs one of those still won't get it,
+    /// but at least it's visible in the logs why, instead of looking
+    /// identical to the ConfigMap bug this fixes.
     pub(crate) async fn resolve_volumes(&self, pod: &Pod, id: &PodId, pull_secrets: &[String]) -> HashMap<String, ResolvedVolume> {
         let mut out = HashMap::new();
         let Some(volumes) = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()) else {
@@ -160,6 +161,20 @@ impl CriRuntime {
                         out.insert(v.name.clone(), resolved);
                     }
                     Err(e) => warn!(volume = %v.name, reference = %image_source.reference.as_deref().unwrap_or(""), error = ?e, "failed to pull image for image volume"),
+                }
+            } else if let Some(hp) = &v.host_path {
+                // hostPath (round 65; found in a fresh gap re-audit): unlike
+                // every other volume kind above, this isn't materialized
+                // under nodelet's own VOLUME_ROOT — it's the host's own
+                // existing path, used directly, exactly matching upstream's
+                // "no ownership, no cleanup on pod deletion" semantics for
+                // this volume type.
+                let path = PathBuf::from(&hp.path);
+                match validate_host_path(&path, hp.type_.as_deref()) {
+                    Ok(()) => {
+                        out.insert(v.name.clone(), ResolvedVolume::HostPath(path));
+                    }
+                    Err(e) => warn!(volume = %v.name, path = %hp.path, host_path_type = %hp.type_.as_deref().unwrap_or(""), error = %e, "hostPath volume failed validation; container(s) mounting it won't get this path"),
                 }
             } else {
                 warn!(

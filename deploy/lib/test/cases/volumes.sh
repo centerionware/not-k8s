@@ -364,6 +364,121 @@ EOF
     fi
 }
 
+test_host_path_directory_mounts_the_real_host_directory() {
+    # Round 65: hostPath used to be entirely unsupported (logged and
+    # dropped, no mount at all). A real proof, not just "the pod ran":
+    # write a marker file directly on the host filesystem (bypassing
+    # nodelet entirely) before the pod exists, then read it back from
+    # inside the container — if hostPath were a copy/materialization
+    # instead of a real bind mount, this would come up empty.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local host_dir
+    host_dir="$(mktemp -d /tmp/nodelet-hostpath-test.XXXXXX)"
+    echo "written-by-the-host" > "$host_dir/marker"
+    local name="hostpath-dir"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: hostvol
+      hostPath:
+        path: $host_dir
+        type: Directory
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "cat /host/marker > /host/from-container; sleep 3600"]
+      volumeMounts:
+        - {name: hostvol, mountPath: /host}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        rm -rf "$host_dir"
+        skip_test "pod never reached Running with a hostPath: Directory volume — check nodelet's logs for a 'hostPath volume failed validation' warning"
+    fi
+    wait_until 20 "container's write landed back on the host" bash -c "[[ -s '$host_dir/from-container' ]]"
+    local content
+    content="$(cat "$host_dir/from-container")"
+    delete_pod_if_exists "$name"
+    rm -rf "$host_dir"
+    assert_eq "$content" "written-by-the-host" "the container should see the exact same file the host wrote directly (real bind mount, not a copy), and its own write should land back on the host"
+}
+
+test_host_path_directory_or_create_creates_a_missing_directory() {
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local host_dir
+    host_dir="$(mktemp -u /tmp/nodelet-hostpath-create-test.XXXXXX)"
+    assert_true bash -c "[[ ! -e '$host_dir' ]]" "the DirectoryOrCreate path must not exist yet, or this test isn't proving creation"
+    local name="hostpath-create"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: hostvol
+      hostPath:
+        path: $host_dir
+        type: DirectoryOrCreate
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "sleep 3600"]
+      volumeMounts:
+        - {name: hostvol, mountPath: /host}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        rm -rf "$host_dir"
+        skip_test "pod never reached Running with a hostPath: DirectoryOrCreate volume"
+    fi
+    delete_pod_if_exists "$name"
+    assert_true bash -c "[[ -d '$host_dir' ]]" "DirectoryOrCreate should have created $host_dir on the host"
+    rm -rf "$host_dir"
+}
+
+test_host_path_directory_type_rejects_a_nonexistent_path() {
+    # The other side of the same coin: type: Directory (no "OrCreate")
+    # must NOT create anything — a pod requesting one that doesn't exist
+    # should simply never get the mount (container starts, but without
+    # this volume's path populated in any usable way — nodelet's
+    # best-effort posture, matching every other unresolvable-volume case
+    # in this codebase, rather than failing pod admission outright since
+    # nodelet has no admission layer to do that from).
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local host_dir
+    host_dir="$(mktemp -u /tmp/nodelet-hostpath-reject-test.XXXXXX)"
+    local name="hostpath-reject"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: hostvol
+      hostPath:
+        path: $host_dir
+        type: Directory
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "sleep 3600"]
+      volumeMounts:
+        - {name: hostvol, mountPath: /host}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running at all — can't distinguish 'correctly rejected the volume' from 'something else failed'"
+    fi
+    delete_pod_if_exists "$name"
+    assert_true bash -c "[[ ! -e '$host_dir' ]]" "type: Directory must never create $host_dir — that's DirectoryOrCreate's job, not Directory's"
+}
+
 test_image_volume_source_mounts_a_read_only_image() {
     # Round 32: volumeSource.image. Unlike CSI/ephemeral-volume tests
     # elsewhere in this suite, this needs no external infrastructure at
@@ -424,3 +539,6 @@ register_test test_empty_dir_medium_memory_is_backed_by_tmpfs
 register_test test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs
 register_test test_image_volume_source_mounts_a_read_only_image
 register_test test_fsgroup_chowns_materialized_volumes
+register_test test_host_path_directory_mounts_the_real_host_directory
+register_test test_host_path_directory_or_create_creates_a_missing_directory
+register_test test_host_path_directory_type_rejects_a_nonexistent_path

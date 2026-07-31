@@ -494,6 +494,9 @@ mod tests_hugetlbfs_empty_dir;
 #[path = "cri_tests/dra_claim_devices.rs"]
 mod tests_dra_claim_devices;
 #[cfg(test)]
+#[path = "cri_tests/host_path.rs"]
+mod tests_host_path;
+#[cfg(test)]
 #[path = "cri_tests/ephemeral_volume.rs"]
 mod tests_ephemeral_volume;
 #[cfg(test)]

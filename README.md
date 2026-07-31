@@ -390,7 +390,13 @@ safety check kubelet performs, correcting round 63's docs which
 mistakenly said kubelet writes that field (it's scheduler-written,
 kubelet-read). No genuinely automated e2e test exists yet — it needs a
 real DRA driver binary this project's bash-only test harness can't stand
-up. Full status list in `docs/GAP_CLOSURE.md`.
+up. A fresh gap re-audit (round 65) found **hostPath volumes** were still
+explicitly unsupported (silently dropped) since early on — closed:
+`spec.volumes[].hostPath` now mounts the host's own real path directly,
+with full `type` validation (`DirectoryOrCreate`/`FileOrCreate`/
+`Directory`/`File`/`Socket`/`CharDevice`/`BlockDevice`) matching real
+kubelet's own create-vs-require-existing semantics. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

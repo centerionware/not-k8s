@@ -27,6 +27,50 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 65: hostPath volumes (2026-07-31, same day)
+
+Closes a long-standing gap this doc has tracked since early rounds:
+`spec.volumes[].hostPath` was explicitly unsupported — a pod requesting
+one got a `warn!` and nothing mounted at all. Found again in a fresh gap
+re-audit (this round's own audit, not carried from round 58) — arguably
+the single most commonly-needed volume type for a single-device/edge
+kubelet target (host directories, device files, sockets), so a natural
+pick once surfaced.
+
+- `runtime/cri/volumes_resolve.rs`'s `resolve_volumes()` gained a
+  `v.host_path` branch, reusing the existing `ResolvedVolume::HostPath`
+  variant directly — unlike every other volume kind, this one resolves
+  to the host's *own* existing path (`PathBuf::from(&hp.path)`), not
+  something materialized under nodelet's `VOLUME_ROOT`. `subPath`/
+  `readOnly` handling in `build_mounts()` needed zero changes since it
+  already worked generically against any `ResolvedVolume::HostPath`.
+- New pure `validate_host_path()` in `volumes_pure.rs` implements real
+  kubelet's own `hostPath.type` semantics exactly: unset/`""` performs no
+  check at all (the legacy default); `DirectoryOrCreate`/`FileOrCreate`
+  create an empty directory (mode `0755`) / file (mode `0644`) only if
+  nothing exists there yet, and perform no check if something already
+  does; `Directory`/`File`/`Socket`/`CharDevice`/`BlockDevice` all
+  require something of that exact kind to already exist, erroring
+  otherwise (checked via `std::os::unix::fs::FileTypeExt`). A validation
+  failure is logged and the volume skipped — nodelet's existing
+  best-effort posture for every other unresolvable volume kind, not a
+  hard pod-admission rejection (nodelet has no admission layer to do
+  that from at all).
+- 10 new unit tests covering every `type` value's create/no-create/
+  wrong-kind/missing paths against a real synthetic scratch directory
+  (the syscalls themselves aren't mockable, but the branching per `type`
+  value is exactly what's worth verifying).
+- 3 genuinely automated e2e tests in `deploy/lib/test/cases/volumes.sh`:
+  a real proof-by-construction test that writes a marker file directly
+  on the host filesystem (bypassing nodelet entirely) *before* the pod
+  exists, reads it back from inside the container, and writes something
+  back that must land on the host — proving a real bind mount, not a
+  copy; a `DirectoryOrCreate` test proving the directory actually gets
+  created; and a `Directory` (no `OrCreate`) test proving the *opposite*
+  — that it does NOT create anything for a path that doesn't exist.
+- **Still open, unchanged from before this round**: `emptyDir.sizeLimit`
+  enforcement, subPath `$(VAR)` expansion.
+
 ## Round 64: DRA follow-ups — reservedFor gating + RPC batching (2026-07-31, same day)
 
 Closes both known scope limitations round 63 flagged, and corrects a
@@ -3840,7 +3884,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Projected volumes** — `configMap`/`secret`/`downwardAPI`, and now `serviceAccountToken` too (mints a real token via the `TokenRequest` API — `resolve_service_account_token()`; needs nodelet's client to have `create` on `serviceaccounts/token` in the namespace, a real RBAC requirement) merge into the volume dir, with `items`/`KeyToPath` key-selection-and-rename support. `clusterTrustBundle` sources are still skipped with a warning.
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
 - 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`, `plugin_registry.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **Dynamic CSI driver discovery** (round 13) — a driver's `node-driver-registrar` sidecar can register itself against `NODELET_PLUGIN_REGISTRY_PATH` the same protocol it'd use against real kubelet's plugin watcher, no static config needed; `NODELET_CSI_DRIVERS` still works too, as a seed/override. **`nodeStageSecretRef`/`nodePublishSecretRef`** (round 13) — resolved to real Secret data and passed through to the driver. **Attach coordination** (round 19) — checks `CSIDriver.spec.attachRequired`, and for drivers that need it, waits on the matching `VolumeAttachment.status.attached` before Stage/Publish, threading `status.attachmentMetadata` through as `publish_context`. Calling the Controller service itself (`ControllerPublishVolume`/`ControllerUnpublishVolume`) stays out of scope — that's external-attacher's job upstream too, not kubelet's, confirmed against docs in round 19. Still out of scope: device-plugin registrations against this module (the same registration protocol, explicitly rejected with a real `NotifyRegistrationStatus{plugin_registered: false}` rather than ignored — that's `device_plugins.rs`'s job instead). Unvalidated against a real CSI driver — see rounds 12, 13, and 19 notes.
-- ❌ hostPath (explicitly unsupported today, logged and dropped)
+- ✅ **hostPath** (found in a fresh gap re-audit; closed round 65) — `spec.volumes[].hostPath` resolves directly to the host's own existing path (not materialized under `VOLUME_ROOT` like every other volume kind), with real `type` validation (`DirectoryOrCreate`/`FileOrCreate`/`Directory`/`File`/`Socket`/`CharDevice`/`BlockDevice`) matching real kubelet's own create-vs-require-existing semantics exactly. A validation failure is logged and the volume skipped, same best-effort posture as every other unresolvable volume kind.
 - ❌ `emptyDir.sizeLimit` enforcement
 - ❌ subPath `$(VAR)` expansion
 - 🟡 **CSI ephemeral (inline) volumes** (round 46; found in round 45's re-audit) — `volumes[].csi` specified directly (not via a PVC or the generic `ephemeral` templated form, round 31), via new `resolve_csi_ephemeral_source()` and a synthetic `csi_ephemeral_volume_handle()` (`"<pod_uid>-<volume_name>"`, since there's no PV/PVC to derive one from). `CsiDrivers::mount()`/`unmount()` gained an `ephemeral: bool` param that skips `NodeStageVolume`/`NodeUnstageVolume` and any attach concept entirely, regardless of what the driver otherwise reports supporting — the CSI spec itself says neither applies to the inline form. Reuses all of the CSI Node-service plumbing built in rounds 12/13/19 as-is. Genuinely automated e2e test, gated behind a `TEST_CSI_INLINE_DRIVER` env var (same pattern as the PVC path's `TEST_CSI_STORAGE_CLASS`) since it needs a real driver. Unvalidated against a real CSI driver — same caveat every prior CSI round has carried. See round 46 notes.
@@ -4331,10 +4375,27 @@ accordingly; see those files' own updated framing.
       driver owns for a pod into one RPC instead of one call per claim,
       via new pure `map_prepare_results()`/`map_unprepare_results()`. 13
       new unit tests. See round 64 notes.
-- [ ] Candidates for the next round: a fresh gap re-audit (kubernetes.io
-      docs + CRI/K8s API struct fields directly), similar to round 58's,
-      is the natural next step — a lot has closed since then (HugePages,
-      supplementalGroupsPolicy, DRA) and the project's own scope expanded
-      (no longer single-node-only after round 62), so previously
-      out-of-scope or unnoticed gaps are worth a fresh look. Ask before
-      starting the next round.
+- [x] Fresh gap re-audit (2026-07-31): checked kubernetes.io docs + CRI/
+      K8s API struct fields directly, similar to round 58's. Found:
+      **hostPath** volumes (tracked ❌ since early rounds, still open —
+      picked for round 65), **`lifecycle.stopSignal`** (GA 1.33, CRI
+      already has native `Signal stop_signal` support, newly found —
+      not yet picked), **swap support** (`memorySwap.swapBehavior`, GA
+      1.34, CRI already has `memory_swap_limit_in_bytes`, newly found —
+      not yet picked), and confirmed `emptyDir.sizeLimit` enforcement
+      is still open (already tracked). User picked hostPath.
+- [x] Round 65: hostPath volumes — `spec.volumes[].hostPath` resolves to
+      the host's own existing path directly, with real `type` validation
+      (`DirectoryOrCreate`/`FileOrCreate`/`Directory`/`File`/`Socket`/
+      `CharDevice`/`BlockDevice`) via new pure `validate_host_path()`.
+      10 new unit tests + 3 genuinely automated e2e tests (real
+      bind-mount proof via a host-written marker file, `DirectoryOrCreate`
+      actually creating, `Directory` NOT creating). See round 65 notes.
+- [ ] Candidates for the next round, from this round's fresh audit:
+      `lifecycle.stopSignal` (cheap — CRI has direct native support,
+      similar shape to round 59's `hugepage_limits`), swap support
+      (`memorySwap.swapBehavior`, bigger — a new `NODELET_MEMORY_SWAP_BEHAVIOR`
+      knob, Burstable-QoS-only allowance per upstream rules, similar
+      shape/scope to CPU/Memory Manager), or `emptyDir.sizeLimit`
+      enforcement (older tracked gap, still open). Ask before starting
+      the next round.
