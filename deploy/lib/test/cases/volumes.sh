@@ -212,9 +212,51 @@ EOF
     kctl delete configmap "$name-cm" --ignore-not-found >/dev/null
 }
 
+test_empty_dir_medium_memory_is_backed_by_tmpfs() {
+    # Round 30: emptyDir.medium: Memory used to be silently ignored,
+    # materialized on regular disk exactly like the default. Checks the
+    # host mountpoint's actual filesystem type — real proof of tmpfs, not
+    # just that the pod started successfully.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="empty-dir-memory"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: ramdisk
+      emptyDir:
+        medium: Memory
+        sizeLimit: 32Mi
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "echo hello > /ram/marker; sleep 3600"]
+      volumeMounts:
+        - {name: ramdisk, mountPath: /ram}
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local dir
+    dir="$(pod_volume_host_path "$name" ramdisk)"
+    if ! wait_until 20 "ramdisk mounted" bash -c "[[ -d '$dir' ]]"; then
+        delete_pod_if_exists "$name"
+        skip_test "no $dir on the host — check nodelet's logs for 'failed to mount tmpfs'"
+    fi
+
+    local fstype
+    fstype="$(stat -f -c %T "$dir" 2>/dev/null || true)"
+    delete_pod_if_exists "$name"
+    if [[ "$fstype" != "tmpfs" ]]; then
+        die "emptyDir with medium: Memory is not backed by tmpfs (stat -f reports '$fstype') — check mount_tmpfs_empty_dir()/tmpfs_mount_args() in runtime/cri.rs, and that 'mount' is available and this process has permission to mount tmpfs (needs root/CAP_SYS_ADMIN)"
+    fi
+}
+
 register_test test_configmap_and_secret_volumes_are_materialized
 register_test test_downward_api_volume_writes_pod_metadata
 register_test test_projected_volume_merges_configmap_and_downward_api
 register_test test_service_account_token_projected_volume_mints_a_real_token
 register_test test_host_aliases_are_written_to_etc_hosts
+register_test test_empty_dir_medium_memory_is_backed_by_tmpfs
 register_test test_fsgroup_chowns_materialized_volumes

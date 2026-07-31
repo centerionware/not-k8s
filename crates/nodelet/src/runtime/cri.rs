@@ -923,6 +923,77 @@ fn pod_field_value(pod: &Pod, field_path: &str) -> Option<String> {
     }
 }
 
+/// Whether an `emptyDir` volume wants `medium: Memory` (tmpfs-backed,
+/// round 30) rather than the default (unset, or explicitly `""`) —
+/// regular disk. Pure so the decision is unit-testable without touching
+/// the filesystem.
+fn is_memory_medium_empty_dir(source: &k8s_openapi::api::core::v1::EmptyDirVolumeSource) -> bool {
+    source.medium.as_deref() == Some("Memory")
+}
+
+/// Build `mount -t tmpfs [-o size=<bytes>] tmpfs <path>`'s arguments —
+/// pure so the command construction is unit-testable without actually
+/// mounting anything. No `sizeLimit` set means no `-o size=`, matching
+/// tmpfs's own kernel default (half of physical RAM) rather than nodelet
+/// inventing a cap upstream doesn't itself impose in that case.
+fn tmpfs_mount_args(path: &std::path::Path, size_limit_bytes: Option<i64>) -> Vec<String> {
+    let mut args = vec!["-t".to_string(), "tmpfs".to_string()];
+    if let Some(bytes) = size_limit_bytes.filter(|b| *b > 0) {
+        args.push("-o".to_string());
+        args.push(format!("size={bytes}"));
+    }
+    args.push("tmpfs".to_string());
+    args.push(path.to_string_lossy().into_owned());
+    args
+}
+
+/// Mount a `Memory`-medium `emptyDir` volume's directory as tmpfs — the
+/// same approach real kubelet itself uses (kubelet mounts tmpfs directly
+/// on the host path it hands the container runtime as a bind-mount
+/// source; this isn't a CRI-level concept, CRI's `Mount` struct only
+/// binds an *existing* host path, it doesn't control the filesystem type
+/// backing it). Shells out to `mount(8)` — same "use the host's own
+/// tools rather than raw syscalls" approach `svc.rs` already takes for
+/// `nft`. Best-effort: a failure here is logged and the (already-created,
+/// plain-disk) directory is used as a fallback rather than failing the
+/// whole pod — the same graceful-degradation posture used everywhere
+/// else a host-level operation might not be available (e.g. no root, no
+/// tmpfs support at all).
+fn mount_tmpfs_empty_dir(dir: &std::path::Path, size_limit_bytes: Option<i64>) -> Result<()> {
+    let status = std::process::Command::new("mount")
+        .args(tmpfs_mount_args(dir, size_limit_bytes))
+        .status()
+        .context("running mount(8)")?;
+    if !status.success() {
+        anyhow::bail!("mount -t tmpfs exited with {status}");
+    }
+    Ok(())
+}
+
+/// Unmount every `Memory`-medium `emptyDir` this pod declared — called on
+/// pod teardown (`remove_pod()`) since a tmpfs mount is real RAM that
+/// must be given back, unlike a plain-disk `emptyDir` directory (left in
+/// place today regardless of medium — a pre-existing simplification, see
+/// `docs/GAP_CLOSURE.md`). Re-derives volume names/paths from the Pod
+/// object rather than tracking mount state separately, the same approach
+/// `unmount_csi_volumes()` already takes. Best-effort per volume — one
+/// already-gone mount (e.g. the pod directory was already cleaned up some
+/// other way) must not stop the rest of teardown.
+fn unmount_memory_backed_empty_dirs(pod: &Pod, id: &PodId) {
+    let Some(volumes) = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()) else { return };
+    let pod_dir = PathBuf::from(VOLUME_ROOT).join(&id.uid).join("volumes");
+    for v in volumes {
+        let Some(source) = &v.empty_dir else { continue };
+        if !is_memory_medium_empty_dir(source) {
+            continue;
+        }
+        let vol_dir = pod_dir.join(&v.name);
+        if let Err(e) = std::process::Command::new("umount").arg(&vol_dir).status() {
+            warn!(volume = %v.name, path = %vol_dir.display(), error = ?e, "failed to run umount for a Memory-medium emptyDir volume");
+        }
+    }
+}
+
 /// Write a ConfigMap/Secret's keys out as individual files under `dir`
 /// (creating it if needed) — text values from `.data`/`.stringData`, binary
 /// values from `.binaryData`/`.data` (Secret's `.data` is base64 in the wire
@@ -1317,10 +1388,16 @@ impl CriRuntime {
                     Err(_) if optional => {}
                     Err(e) => warn!(volume = %v.name, secret = %name, error = ?e, "failed to fetch Secret for volume"),
                 }
-            } else if v.empty_dir.is_some() {
+            } else if let Some(empty_dir) = &v.empty_dir {
                 if let Err(e) = std::fs::create_dir_all(&vol_dir) {
                     warn!(volume = %v.name, error = ?e, "failed to create emptyDir volume");
                     continue;
+                }
+                if is_memory_medium_empty_dir(empty_dir) {
+                    let size_limit_bytes = empty_dir.size_limit.as_ref().and_then(parse_memory_bytes);
+                    if let Err(e) = mount_tmpfs_empty_dir(&vol_dir, size_limit_bytes) {
+                        warn!(volume = %v.name, error = ?e, "failed to mount tmpfs for a Memory-medium emptyDir volume; falling back to a plain disk directory");
+                    }
                 }
                 out.insert(v.name.clone(), vol_dir);
             } else if let Some(downward) = &v.downward_api {
@@ -3002,6 +3079,7 @@ impl PodRuntime for CriRuntime {
             self.release_sandbox_devices(&sandbox_id).await;
         }
         self.unmount_csi_volumes(pod, &id).await;
+        unmount_memory_backed_empty_dirs(pod, &id);
         Ok(())
     }
 
@@ -3550,6 +3628,9 @@ mod tests_csi_attach;
 #[cfg(test)]
 #[path = "cri_tests/termination_message.rs"]
 mod tests_termination_message;
+#[cfg(test)]
+#[path = "cri_tests/tmpfs_empty_dir.rs"]
+mod tests_tmpfs_empty_dir;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

@@ -213,8 +213,11 @@ signal — closing a real gap in this project's own eviction-manager story
 `grpc.health.v1.Health/Check` protocol via a vendored client
 (`proto/health.proto`, `cri`-gated); failure paths (timeout, refused,
 non-gRPC listener) are unit-tested, the success path is unvalidated (no
-gRPC server available to test against live). Full status list in
-`docs/GAP_CLOSURE.md`.
+gRPC server available to test against live). Also closed (round 30):
+**`emptyDir.medium: Memory`** — `resolve_volumes()` now mounts real
+tmpfs (`mount -t tmpfs`) for it, honoring `sizeLimit`, and `remove_pod()`
+unmounts it again on teardown (a real RAM leak otherwise). Full status
+list in `docs/GAP_CLOSURE.md`.
 
 ---
 

@@ -27,6 +27,61 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 30: `emptyDir.medium: Memory` (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-29). Offered the 4
+remaining round-27 candidates; user picked `emptyDir.medium: Memory` —
+highest real-world value of the remaining options.
+
+Real kubelet mounts tmpfs directly on the host path it hands the
+container runtime as a bind-mount source for a `Memory`-medium
+`emptyDir` — this isn't a CRI-level concept at all (CRI's `Mount` struct
+only binds an *existing* host path; it has no filesystem-type control),
+matching the same "kubelet materializes it, CRI just bind-mounts what's
+already there" pattern this project's ConfigMap/Secret/downwardAPI/
+projected volumes (and now the `terminationMessagePath` file, round 24)
+already use.
+
+- **New pure helpers**: `is_memory_medium_empty_dir()` (checks
+  `.medium == Some("Memory")`) and `tmpfs_mount_args()` (builds
+  `mount -t tmpfs [-o size=<bytes>] tmpfs <path>`'s arguments — no
+  `-o size=` at all when `sizeLimit` is unset, matching tmpfs's own
+  kernel default rather than nodelet inventing a cap upstream doesn't
+  impose in that case either).
+- **`mount_tmpfs_empty_dir()`** shells out to `mount(8)` — the same
+  "use the host's own tools rather than raw syscalls" approach `svc.rs`
+  already takes for `nft`. Best-effort: a failure (no root, no tmpfs
+  support) is logged and the already-created plain-disk directory is
+  used as a fallback rather than failing the whole pod, the same
+  graceful-degradation posture used throughout this codebase.
+- **`unmount_memory_backed_empty_dirs()`** is new, called from
+  `remove_pod()` — a *real* gap this round had to close that plain-disk
+  `emptyDir` never needed: a tmpfs mount is actual RAM that must be
+  given back on pod teardown, unlike a plain directory (left in place
+  today regardless of medium, a separate pre-existing simplification).
+  Re-derives volume names/paths from the Pod object rather than tracking
+  mount state separately, the same approach `unmount_csi_volumes()`
+  already takes.
+- 8 new unit tests (`cri_tests/tmpfs_empty_dir.rs`): medium detection
+  (including case-sensitivity and the empty-string-vs-unset distinction),
+  mount-args construction with/without a size limit, zero/negative size
+  limits treated as unset.
+
+639 tests passing with `--features cri` (up from 631), 211 mock-only
+(unchanged — this entire feature is `cri`-gated, consistent with every
+other real-container-materialization feature in this codebase).
+`deploy/lib/test/cases/volumes.sh` gained a real automated test: creates
+a pod with a `Memory`-medium `emptyDir`, then checks the host
+mountpoint's actual filesystem type via `stat -f -c %T` — genuine proof
+of tmpfs, not just that the pod started successfully.
+
+**Confidence note**: the pure medium-detection/mount-arg-construction
+logic is unit-tested with solid confidence. The actual `mount`/`umount`
+subprocess calls are unvalidated in this sandbox (no root/`CAP_SYS_ADMIN`
+available to actually mount tmpfs here) — the e2e test is the real proof
+once run against a live cluster with appropriate privileges, same
+confidence tier as the cgroup-v2-dependent tests in `resources.sh`.
+
 ## Round 29: gRPC probes (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-28). Offered the 3
@@ -1709,7 +1764,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ❌ hostPath (explicitly unsupported today, logged and dropped)
 - ❌ `emptyDir.sizeLimit` enforcement
 - ❌ subPath `$(VAR)` expansion
-- ❌ **`emptyDir.medium: Memory`** (tmpfs-backed emptyDir, found in round 27's re-audit) — `resolve_volumes()` only checks `v.empty_dir.is_some()`, ignoring `.medium` entirely; a `Memory`-medium `emptyDir` is materialized on regular disk exactly like the default, losing both the performance characteristic and the "counts against the pod's memory limit" semantics upstream gives it.
+- ✅ **`emptyDir.medium: Memory`** (round 30; found in round 27's re-audit) — `resolve_volumes()` now shells out to `mount -t tmpfs` (`mount_tmpfs_empty_dir()`) on the host directory for a `Memory`-medium `emptyDir`, honoring `sizeLimit` as `-o size=` when set. `remove_pod()` unmounts it again on teardown (a real RAM leak otherwise, unlike plain-disk `emptyDir`). Best-effort: falls back to the plain-disk directory (already created) on mount failure rather than failing the pod. Unvalidated against a real privileged mount in this sandbox — see round 30 notes.
 - ❌ **Generic ephemeral volumes** (`volumeSource.ephemeral`, GA since 1.23, found in round 27's re-audit) — a volume that auto-creates (and owns the lifecycle of) a `PersistentVolumeClaim` from an inline template, then behaves exactly like a normal PVC reference. Not implemented at all — `resolve_volumes()` has no `ephemeral` branch, so a pod using one gets the generic "volume type not supported yet" warning and no mount.
 - ❌ **Image volume source** (`volumeSource.image`, OCI-artifact volumes, KEP-4639, still beta, found in round 27's re-audit) — mounting an OCI image/artifact as a read-only volume. Not implemented. Lower priority given its immaturity upstream too.
 - ❌ **`Node.status.volumesInUse`/`.volumesAttached`** (found in round 27's re-audit) — coordination fields for the legacy in-tree attach/detach controller path. Not populated. Low value: this project's actual PVC story is CSI-first (rounds 12, 13, 19), and CSI's own attach coordination (round 19) doesn't read these fields at all.
@@ -1882,8 +1937,13 @@ higher-value/correctness-critical than others:
       (`proto/health.proto`), `cri`-gated. Failure paths unit-tested with
       solid confidence; the success path is unvalidated (no gRPC server
       available in this sandbox). See round 29 notes.
+- [x] Round 30: `emptyDir.medium: Memory` — `resolve_volumes()` mounts
+      real tmpfs (`mount -t tmpfs`) for a `Memory`-medium `emptyDir`,
+      honoring `sizeLimit`; `remove_pod()` unmounts it again on teardown.
+      Real automated e2e test checks the host mountpoint's actual
+      filesystem type. See round 30 notes.
 - [ ] Remaining candidates from round 27's audit, roughly by value:
-      `emptyDir.medium: Memory`, generic ephemeral volumes, then the
-      three lower-priority items (image volume source,
-      `Node.status.images`, `volumesInUse`/`volumesAttached`). Ask before
+      generic ephemeral volumes, then the three lower-priority items
+      (image volume source, `Node.status.images`,
+      `volumesInUse`/`volumesAttached`). Ask before
       starting the next round.
