@@ -55,7 +55,7 @@ fn cfg() -> Config {
 
 #[test]
 fn no_extra_capacity_leaves_only_the_standard_three_resources() {
-    let status = build_status(&cfg(), true, &BTreeMap::new());
+    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new());
     let cap = status.capacity.unwrap();
     assert_eq!(cap.len(), 3);
 }
@@ -64,7 +64,7 @@ fn no_extra_capacity_leaves_only_the_standard_three_resources() {
 fn device_plugin_resources_are_added_to_capacity() {
     let mut extra = BTreeMap::new();
     extra.insert("nvidia.com/gpu".to_string(), 2u64);
-    let status = build_status(&cfg(), true, &extra);
+    let status = build_status(&cfg(), true, &extra, Vec::new());
     let cap = status.capacity.unwrap();
     assert_eq!(cap.get("nvidia.com/gpu").unwrap().0, "2");
     assert_eq!(cap.len(), 4);
@@ -74,7 +74,7 @@ fn device_plugin_resources_are_added_to_capacity() {
 fn device_plugin_resources_also_appear_in_allocatable() {
     let mut extra = BTreeMap::new();
     extra.insert("nvidia.com/gpu".to_string(), 2u64);
-    let status = build_status(&cfg(), true, &extra);
+    let status = build_status(&cfg(), true, &extra, Vec::new());
     let alloc = status.allocatable.unwrap();
     assert_eq!(alloc.get("nvidia.com/gpu").unwrap().0, "2");
 }
@@ -84,7 +84,7 @@ fn multiple_extended_resources_all_appear() {
     let mut extra = BTreeMap::new();
     extra.insert("nvidia.com/gpu".to_string(), 1u64);
     extra.insert("example.com/fpga".to_string(), 3u64);
-    let status = build_status(&cfg(), true, &extra);
+    let status = build_status(&cfg(), true, &extra, Vec::new());
     let cap = status.capacity.unwrap();
     assert_eq!(cap.get("nvidia.com/gpu").unwrap().0, "1");
     assert_eq!(cap.get("example.com/fpga").unwrap().0, "3");
@@ -94,6 +94,49 @@ fn multiple_extended_resources_all_appear() {
 fn zero_healthy_devices_still_reports_the_resource_as_zero() {
     let mut extra = BTreeMap::new();
     extra.insert("nvidia.com/gpu".to_string(), 0u64);
-    let status = build_status(&cfg(), true, &extra);
+    let status = build_status(&cfg(), true, &extra, Vec::new());
     assert_eq!(status.capacity.unwrap().get("nvidia.com/gpu").unwrap().0, "0");
+}
+
+// --- images (round 33) ---
+
+fn img(names: &[&str], size_bytes: u64) -> crate::runtime::NodeImage {
+    crate::runtime::NodeImage { names: names.iter().map(|s| s.to_string()).collect(), size_bytes }
+}
+
+#[test]
+fn no_images_at_all_produces_an_empty_but_present_list() {
+    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new());
+    assert!(status.images.unwrap().is_empty());
+}
+
+#[test]
+fn images_are_reported_largest_first() {
+    let images = vec![img(&["small:latest"], 100), img(&["big:latest"], 900), img(&["medium:latest"], 500)];
+    let status = build_status(&cfg(), true, &BTreeMap::new(), images);
+    let reported = status.images.unwrap();
+    assert_eq!(reported.len(), 3);
+    assert_eq!(reported[0].names.as_ref().unwrap()[0], "big:latest");
+    assert_eq!(reported[1].names.as_ref().unwrap()[0], "medium:latest");
+    assert_eq!(reported[2].names.as_ref().unwrap()[0], "small:latest");
+}
+
+#[test]
+fn image_names_and_size_round_trip() {
+    let images = vec![img(&["repo:v1", "repo@sha256:abc"], 12345)];
+    let status = build_status(&cfg(), true, &BTreeMap::new(), images);
+    let reported = status.images.unwrap();
+    assert_eq!(reported[0].names.as_ref().unwrap(), &vec!["repo:v1".to_string(), "repo@sha256:abc".to_string()]);
+    assert_eq!(reported[0].size_bytes, Some(12345));
+}
+
+#[test]
+fn more_than_fifty_images_are_capped_to_the_fifty_largest() {
+    let images: Vec<_> = (0..75).map(|i| img(&["x"], i)).collect();
+    let status = build_status(&cfg(), true, &BTreeMap::new(), images);
+    let reported = status.images.unwrap();
+    assert_eq!(reported.len(), 50);
+    // The 50 largest of 0..75 are 25..75, so the smallest kept is 74.
+    assert_eq!(reported[0].size_bytes, Some(74));
+    assert_eq!(reported[49].size_bytes, Some(25));
 }

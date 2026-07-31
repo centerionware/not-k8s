@@ -27,6 +27,51 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 33: `Node.status.images` (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-32). Offered the 2
+remaining round-27 candidates (both explicitly lowest-priority); user
+picked `Node.status.images` over `volumesInUse`/`volumesAttached`.
+
+- **`PodRuntime` trait gained `async fn node_images(&self) -> Result<Vec<NodeImage>>`**
+  (default: empty, matching `device_plugin_capacity()`'s existing
+  mock-default pattern) — a new `NodeImage { names: Vec<String>,
+  size_bytes: u64 }` type in `runtime/mod.rs`, kept independent of the
+  generated CRI proto type so the trait itself doesn't need a `cri`
+  feature bound.
+- **`CriRuntime::node_images()`** calls CRI's `ListImages` (already used
+  by `gc_unreferenced_images()`, round 4) and combines each image's
+  `repo_tags`/`repo_digests` into the single `names` list
+  `Node.status.images[].names` expects, via a new pure
+  `node_image_from_cri()`.
+- **`node.rs` gained `select_node_images()`** — sorts largest-first and
+  caps at `NODE_STATUS_MAX_IMAGES = 50`, matching real kubelet's own
+  `--node-status-max-images` default (sizing/ordering is `node.rs`'s job,
+  not the runtime's, so `node_images()` itself just reports everything
+  it has). `build_status()`/`register()`/`push_status()` all gained an
+  `images: Vec<NodeImage>` parameter; both call sites in `main.rs` fetch
+  it from the runtime right before calling either.
+- 4 new unit tests (`node_tests/build_status.rs`): empty-list case,
+  largest-first ordering, names/size round-trip, the 50-image cap.
+
+651 tests passing with `--features cri` (up from 647), 215 mock-only (up
+from 211 — `node.rs`'s new logic isn't `cri`-gated, only
+`CriRuntime::node_images()`'s real implementation is).
+`deploy/lib/test/cases/node_status.sh` gained a **genuinely automated**
+test — every other test in this suite that runs a pod already pulls
+`$TEST_IMAGE` onto the node, so this just confirms it shows up in
+`Node.status.images` with a real nonzero `sizeBytes`, no extra
+infrastructure needed.
+
+**Confidence note**: real automated e2e coverage, no manual-note
+placeholder — same tier as round 32's image volume source test, a rare
+case among the volume/image-adjacent rounds in this effort.
+
+This closes the second-to-last round-27 candidate; only
+`volumesInUse`/`volumesAttached` (explicitly the lowest-priority item,
+legacy in-tree attach/detach coordination this CSI-first project doesn't
+otherwise need) remains untouched from that audit.
+
 ## Round 32: image volume source (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-31). Offered the 3
@@ -1876,7 +1921,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Private registry auth** — `imagePullSecrets` (`kubernetes.io/dockerconfigjson`) → CRI `AuthConfig` (`resolve_pull_auth()`). Not yet: legacy `kubernetes.io/dockercfg`, ServiceAccount-linked pull secrets, credential-provider exec plugins.
 - 🟡 Image garbage collection — unreferenced-image sweep exists but not the real kubelet policy (disk-pressure-triggered high/low watermark GC, `--image-gc-high-threshold`/`--image-gc-low-threshold`)
 - ✅ **Container log rotation** — running containers' log files are rotated past `NODELET_CONTAINER_LOG_MAX_SIZE_BYTES`, keeping `NODELET_CONTAINER_LOG_MAX_FILES` (`rotate_log_file()` + CRI `ReopenContainerLog`)
-- ❌ **`Node.status.images`** (found in round 27's re-audit) — real kubelet reports up to the 50 largest cached images (names + sizes), which the scheduler's `ImageLocality` scoring plugin uses. Not populated. Lower value for nodelet's single-node-per-cluster target — there's no second node for image locality to meaningfully differentiate between.
+- ✅ **`Node.status.images`** (round 33; found in round 27's re-audit) — `node.rs::select_node_images()` sorts CRI's `ListImages` results (via the new `PodRuntime::node_images()` trait method) largest-first and caps at 50, matching real kubelet's own `--node-status-max-images` default. Genuinely automated e2e test. See round 33 notes.
 
 ### Volumes
 - ✅ ConfigMap / Secret / emptyDir (materialized to host paths)
@@ -2073,6 +2118,9 @@ higher-value/correctness-critical than others:
       used directly (no host-path materialization needed). Genuinely
       automated e2e test, no external infra needed (any pullable image
       works). See round 32 notes.
-- [ ] Remaining candidates from round 27's audit — the two
-      lowest-priority items: `Node.status.images`,
+- [x] Round 33: `Node.status.images` — `select_node_images()` reports
+      CRI's cached images, largest-first, capped at 50. Genuinely
+      automated e2e test, no external infra needed. See round 33 notes.
+- [ ] Remaining candidate from round 27's audit — the last, lowest-
+      priority item: `volumesInUse`/`volumesAttached`. Ask before
       starting the next round.

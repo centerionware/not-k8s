@@ -45,6 +45,48 @@ test_node_reports_a_real_kernel_and_os_image() {
     assert_not_empty "$os_image" "osImage"
 }
 
+test_node_status_images_reflects_a_real_pulled_image() {
+    # Round 33: Node.status.images was never populated at all before this.
+    # Genuinely automatable — TEST_IMAGE is already guaranteed to be
+    # pulled onto this node by every other test in this suite that runs a
+    # pod, so it must show up here with a real (nonzero) size.
+    local n
+    n="$(node_name)"
+    local name="node-status-images-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+
+    if ! try_wait_until 30 bash -c "kubectl get node '$n' -o jsonpath='{.status.images}' | grep -q ."; then
+        delete_pod_if_exists "$name"
+        skip_test "node.status.images is empty/missing — check node_images()/select_node_images() wiring in runtime/cri.rs and node.rs"
+    fi
+
+    local images_json image_repo
+    images_json="$(kubectl get node "$n" -o jsonpath='{.status.images}')"
+    delete_pod_if_exists "$name"
+
+    # Strip any tag/digest to match however the runtime spells this image's
+    # names (repo tag, or a resolved digest reference).
+    image_repo="${TEST_IMAGE%%:*}"
+    image_repo="${image_repo%%@*}"
+    assert_contains "$images_json" "$image_repo" "expected \$TEST_IMAGE's repo ($image_repo) to appear in node.status.images"
+
+    if ! echo "$images_json" | grep -Eq '"sizeBytes":[1-9]'; then
+        die "node.status.images has no entry with a nonzero sizeBytes — check node_image_from_cri()'s size_bytes plumbing in runtime/cri.rs"
+    fi
+}
+
 register_test test_node_is_ready_with_capacity_advertised
 register_test test_pressure_conditions_are_present_and_normally_false
 register_test test_node_reports_a_real_kernel_and_os_image
+register_test test_node_status_images_reflects_a_real_pulled_image

@@ -3452,6 +3452,21 @@ impl PodRuntime for CriRuntime {
     fn device_plugin_capacity(&self) -> BTreeMap<String, u64> {
         self.device_plugins.capacity_map()
     }
+
+    async fn node_images(&self) -> Result<Vec<crate::runtime::NodeImage>> {
+        let mut img = self.img.clone();
+        let images = img.list_images(ListImagesRequest { filter: None }).await?.into_inner().images;
+        Ok(images.into_iter().map(node_image_from_cri).collect())
+    }
+}
+
+/// CRI's `Image` (`repo_tags`/`repo_digests`/`size`) -> `Node.status.images`'
+/// shape (`names` combining both, `size_bytes`) — pure so the combination
+/// is unit-testable without a real image cache.
+fn node_image_from_cri(image: v1::Image) -> crate::runtime::NodeImage {
+    let mut names = image.repo_tags;
+    names.extend(image.repo_digests);
+    crate::runtime::NodeImage { names, size_bytes: image.size }
 }
 
 fn u64_value(v: &Option<v1::UInt64Value>) -> Option<u64> {

@@ -233,6 +233,16 @@ pub trait PodRuntime: Send + Sync {
     fn device_plugin_capacity(&self) -> std::collections::BTreeMap<String, u64> {
         std::collections::BTreeMap::new()
     }
+
+    /// Cached images this runtime currently has on disk — feeds
+    /// `Node.status.images` (`node.rs::build_status`, round 33). Real
+    /// kubelet caps this at 50 (`--node-status-max-images`) and sorts
+    /// largest-first; both are `node.rs`'s job, not the runtime's, so
+    /// this just reports everything it has. Default: empty (mock has no
+    /// real image cache to report).
+    async fn node_images(&self) -> anyhow::Result<Vec<NodeImage>> {
+        Ok(Vec::new())
+    }
 }
 
 /// CPU/memory usage numbers in the same shape CRI's `CpuUsage`/`MemoryUsage`
@@ -262,4 +272,14 @@ pub struct PodUsage {
     pub uid: String,
     pub pod: UsageStats,
     pub containers: Vec<ContainerUsage>,
+}
+
+/// One cached image, in the shape `Node.status.images` needs (round 33)
+/// — `names` combines CRI's own `repo_tags`/`repo_digests` (every name
+/// this image is known by), matching upstream's own `ContainerImage.names`
+/// field.
+#[derive(Clone, Debug)]
+pub struct NodeImage {
+    pub names: Vec<String>,
+    pub size_bytes: u64,
 }

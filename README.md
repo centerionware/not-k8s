@@ -224,7 +224,9 @@ then reuses all of CSI's existing mount machinery. Also closed (round
 32): **image volume source** (`volumeSource.image`) — uses CRI's native
 `Mount.image`/`image_sub_path` fields directly after a `PullImage` call,
 no host-path materialization needed (unlike every other volume kind);
-always read-only, per the KEP. Full status list in
+always read-only, per the KEP. Also closed (round 33):
+**`Node.status.images`** — reports CRI's cached images, largest-first,
+capped at 50 (matching real kubelet's own default). Full status list in
 `docs/GAP_CLOSURE.md`.
 
 ---

@@ -11,8 +11,8 @@ use anyhow::Result;
 use k8s_openapi::jiff::Timestamp;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::api::core::v1::{
-    DaemonEndpoint, Node, NodeAddress, NodeCondition, NodeDaemonEndpoints, NodeSpec, NodeStatus,
-    NodeSystemInfo, Taint,
+    ContainerImage, DaemonEndpoint, Node, NodeAddress, NodeCondition, NodeDaemonEndpoints, NodeSpec,
+    NodeStatus, NodeSystemInfo, Taint,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta, Time};
@@ -190,7 +190,19 @@ fn build_node(cfg: &Config) -> Node {
     }
 }
 
-fn build_status(cfg: &Config, ready: bool, extra_capacity: &BTreeMap<String, u64>) -> NodeStatus {
+/// Real kubelet's own `--node-status-max-images` default (round 33).
+const NODE_STATUS_MAX_IMAGES: usize = 50;
+
+/// Sort `images` largest-first and cap at `NODE_STATUS_MAX_IMAGES`,
+/// matching real kubelet's own reporting policy — pure so the selection/
+/// ordering logic is unit-testable without a runtime.
+fn select_node_images(mut images: Vec<crate::runtime::NodeImage>) -> Vec<ContainerImage> {
+    images.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    images.truncate(NODE_STATUS_MAX_IMAGES);
+    images.into_iter().map(|i| ContainerImage { names: Some(i.names), size_bytes: Some(i.size_bytes as i64) }).collect()
+}
+
+fn build_status(cfg: &Config, ready: bool, extra_capacity: &BTreeMap<String, u64>, images: Vec<crate::runtime::NodeImage>) -> NodeStatus {
     let mut cap = capacity_map(cfg);
     for (name, count) in extra_capacity {
         cap.insert(name.clone(), Quantity(count.to_string()));
@@ -211,6 +223,7 @@ fn build_status(cfg: &Config, ready: bool, extra_capacity: &BTreeMap<String, u64
         allocatable: Some(allocatable),
         conditions: Some(conditions(ready, &pressure)),
         node_info: Some(system_info(cfg)),
+        images: Some(select_node_images(images)),
         addresses: Some(vec![
             NodeAddress { type_: "InternalIP".to_string(), address: detect_internal_ip() },
             NodeAddress { type_: "Hostname".to_string(), address: cfg.node_name.clone() },
@@ -227,11 +240,16 @@ fn build_status(cfg: &Config, ready: bool, extra_capacity: &BTreeMap<String, u64
 }
 
 /// Register the node (idempotent server-side apply) and seed its status + lease.
-pub async fn register(client: &Client, cfg: &Config, extra_capacity: &BTreeMap<String, u64>) -> Result<()> {
+pub async fn register(
+    client: &Client,
+    cfg: &Config,
+    extra_capacity: &BTreeMap<String, u64>,
+    images: Vec<crate::runtime::NodeImage>,
+) -> Result<()> {
     let api: Api<Node> = Api::all(client.clone());
     let pp = PatchParams::apply(FIELD_MANAGER).force();
     api.patch(&cfg.node_name, &pp, &Patch::Apply(&build_node(cfg))).await?;
-    push_status(client, cfg, true, extra_capacity).await?;
+    push_status(client, cfg, true, extra_capacity, images).await?;
     renew_lease(client, cfg).await?;
 
     // k3s's cloud-node-lifecycle-controller adds this taint asynchronously
@@ -284,9 +302,15 @@ async fn clear_cloudprovider_taint(client: Client, node_name: String) {
 }
 
 /// Push the (heavy, infrequent) node status.
-pub async fn push_status(client: &Client, cfg: &Config, ready: bool, extra_capacity: &BTreeMap<String, u64>) -> Result<()> {
+pub async fn push_status(
+    client: &Client,
+    cfg: &Config,
+    ready: bool,
+    extra_capacity: &BTreeMap<String, u64>,
+    images: Vec<crate::runtime::NodeImage>,
+) -> Result<()> {
     let api: Api<Node> = Api::all(client.clone());
-    let status = build_status(cfg, ready, extra_capacity);
+    let status = build_status(cfg, ready, extra_capacity, images);
     let patch = serde_json::json!({ "status": status });
     api.patch_status(&cfg.node_name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
     Ok(())
