@@ -294,7 +294,13 @@ likely cheap given the CSI Node-service plumbing already exists),
 **startup probe failure never triggers a restart** (retries forever
 instead of killing/restarting past `failureThreshold`), and **local
 ephemeral storage isn't tracked anywhere** (capacity, requests/limits,
-or eviction). Full status list in `docs/GAP_CLOSURE.md`.
+or eviction). Round 46 closed **CSI ephemeral (inline) volumes**
+(`volumes[].csi` specified directly, no PVC at all — the form drivers
+like `secrets-store-csi-driver` use) by reusing all of the existing
+CSI Node-service plumbing (rounds 12/13/19) as-is; `CsiDrivers::mount()`/
+`unmount()` now correctly skip staging/attach entirely for this volume
+kind, per the CSI spec's own rule rather than a driver-capability
+check. Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 

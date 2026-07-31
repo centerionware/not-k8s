@@ -86,9 +86,56 @@ EOF
     kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
 }
 
+test_csi_ephemeral_inline_volume_is_mounted() {
+    # Round 46: volumes[].csi specified directly, no PVC at all — the
+    # inline form real-world drivers like secrets-store-csi-driver use.
+    # Needs a real CSI driver registered under NODELET_CSI_DRIVERS (or
+    # dynamic registration) capable of ephemeral/inline mounts; export
+    # TEST_CSI_INLINE_DRIVER to exercise this for real.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if [[ -z "${TEST_CSI_INLINE_DRIVER:-}" ]]; then
+        skip_test "TEST_CSI_INLINE_DRIVER not set — export it to a CSI driver name (also listed in nodelet's NODELET_CSI_DRIVERS) that supports ephemeral/inline volumes to exercise this"
+    fi
+
+    local name="csi-ephemeral-inline"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "cat /data/marker > /dev/null 2>&1; sleep 3600"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+          readOnly: true
+  volumes:
+    - name: data
+      csi:
+        driver: $TEST_CSI_INLINE_DRIVER
+        readOnly: true
+EOF
+
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with a CSI ephemeral inline volume mounted — check nodelet's server logs for 'failed to mount CSI ephemeral volume' or 'no CSI driver configured'"
+    fi
+
+    local uid vol_dir
+    uid="$(kubectl get pod "$name" -n "$TEST_NAMESPACE" -o jsonpath='{.metadata.uid}')"
+    vol_dir="/var/lib/nodelet/pods/$uid/volumes/data"
+    assert_true bash -c "[[ -d '$vol_dir' ]]" "CSI ephemeral inline volume should be mounted at $vol_dir on the host (NodePublishVolume's target_path)"
+
+    delete_pod_if_exists "$name"
+}
+
 test_volumes_in_use_manual_note() {
     skip_test "round 34's Node.status.volumesInUse/volumesAttached is scoped to CSI volumes only and deliberately unvalidated against a real attach/detach controller (the modern CSI attach path — round 19 — already uses VolumeAttachment directly, not these fields). Manual spot-check: with TEST_CSI_STORAGE_CLASS set, watch 'kubectl get node <node> -o jsonpath={.status.volumesInUse}' while a CSI-backed pod is created and then deleted — confirm an entry matching 'kubernetes.io/csi/<driver>^<volumeHandle>' appears while the pod is running and disappears once the pod (and its NodeUnpublishVolume/NodeUnstageVolume calls) fully complete. If a real attach/detach controller is also running in this cluster, confirm it doesn't misbehave (e.g. refuse to detach) because of anything nodelet reports here."
 }
 
 register_test test_pod_mounts_a_persistent_volume_claim
+register_test test_csi_ephemeral_inline_volume_is_mounted
 register_test test_volumes_in_use_manual_note

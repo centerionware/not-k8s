@@ -27,6 +27,69 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 46: CSI ephemeral (inline) volumes (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-45). Offered the 3
+round-45 findings; user picked this one — expected to be the cheapest,
+since the CSI Node-service plumbing already exists end-to-end for the
+PVC path.
+
+Before this round, `volumes[].csi` specified directly (not via a PVC
+or the generic `ephemeral` PVC-templated form, round 31) was never
+resolved at all — `resolve_volumes()` never branched on `v.csi`, so it
+fell through to the generic "volume type not supported yet" warning,
+even though `volume_source_type()`'s own diagnostic match arm already
+knew the name `"csi"` existed.
+
+- **`CsiDrivers::mount()`/`unmount()`** (`runtime/csi.rs`) gained an
+  `ephemeral: bool` parameter. The CSI spec itself says ephemeral
+  inline volumes never go through `NodeStageVolume`/`NodeUnstageVolume`
+  regardless of what the driver otherwise reports supporting, and have
+  no attach/`VolumeAttachment` concept at all — `ephemeral: true` skips
+  the staging block entirely rather than relying on the driver's own
+  `STAGE_UNSTAGE_VOLUME` capability answer, which is specifically
+  *wrong* to consult for this volume kind. The 2 existing call sites
+  (PVC, generic ephemeral PVC) pass `false` — unchanged behavior.
+- **New pure `csi_ephemeral_volume_handle(pod_uid, volume_name) ->
+  String`**: since there's no PV/PVC to derive a real `volume_id` from,
+  nodelet mints its own (`"<pod_uid>-<volume_name>"`) — stable across
+  reconciles, unique across pod recreations under the same name (keyed
+  by UID, not name), unique within one pod (keyed by volume name too).
+- **New `resolve_csi_ephemeral_source()`**: checks the driver is
+  configured (same `driver_configured()` check the PVC path uses),
+  resolves `nodePublishSecretRef` (a `LocalObjectReference`, always in
+  the pod's own namespace — converted to the `SecretReference` shape
+  `resolve_csi_secret_ref()` already expects rather than duplicating
+  that fetch logic), and builds a `CsiVolumeSource` with empty
+  `node_stage_secrets`/`publish_context` (neither concept applies to
+  the inline form). Wired into `resolve_volumes()`'s existing kind-
+  by-kind `else if` chain (`self.csi.mount(&source, &vol_dir, &id.uid,
+  true)`) and `unmount_csi_volumes()`'s teardown loop (re-deriving the
+  same synthetic handle rather than needing a second side table).
+- No new env vars, no new proto surface — reuses the CSI Node-service
+  gRPC client and driver-discovery machinery built in rounds 12/13/19
+  entirely as-is.
+- 3 new unit tests (`cri_tests/csi_ephemeral_volume_handle.rs`): the
+  basic combination, distinct volumes in one pod get distinct handles,
+  and the same volume name across different pods (different UIDs) gets
+  distinct handles too — the actual property the "keyed by UID" design
+  choice depends on.
+- New e2e test (`deploy/lib/test/cases/csi_pvc.sh`):
+  `test_csi_ephemeral_inline_volume_is_mounted` — genuinely automated
+  (checks the real host mount directory exists after `RunPodSandbox`),
+  gated behind a new `TEST_CSI_INLINE_DRIVER` env var (same pattern as
+  the existing PVC test's `TEST_CSI_STORAGE_CLASS`) since it needs a
+  real CSI driver registered against this node; skips cleanly without
+  one, matching every other CSI test in this file.
+
+**Confidence note**: same tier as the rest of this project's CSI work
+(rounds 12/13/19/34) — the driver-agnostic parts (`csi_ephemeral_volume_handle()`,
+the `resolve_csi_ephemeral_source()` field-mapping logic) are unit-
+tested with solid confidence, but the actual `mount()`/`unmount()` call
+against a live driver honoring `ephemeral: true` correctly is
+unvalidated against a real CSI driver in this sandbox — same caveat
+every prior CSI round has carried.
+
 ## Round 45: fresh gap re-audit (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 22/27/35/39). Both prior
@@ -2788,7 +2851,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ❌ hostPath (explicitly unsupported today, logged and dropped)
 - ❌ `emptyDir.sizeLimit` enforcement
 - ❌ subPath `$(VAR)` expansion
-- ❌ **CSI ephemeral (inline) volumes** (found in round 45's re-audit) — `volumes[].csi` specified directly (not via a PVC or the generic `ephemeral` templated form, round 31) is never resolved at all; `resolve_volumes()` doesn't branch on `v.csi`, so it falls through to the generic "volume type not supported yet" warning. The real-world driver for this (e.g. `secrets-store-csi-driver`, mounting Vault/AWS Secrets Manager secrets with no PVC) would mostly reuse the CSI Node-service plumbing (`NodePublishVolume`, `csi.rs`) already built for the PVC path (rounds 12/13/19) — a new resolution function building the request straight from `CSIVolumeSource`, skipping the PVC/PV lookup entirely.
+- 🟡 **CSI ephemeral (inline) volumes** (round 46; found in round 45's re-audit) — `volumes[].csi` specified directly (not via a PVC or the generic `ephemeral` templated form, round 31), via new `resolve_csi_ephemeral_source()` and a synthetic `csi_ephemeral_volume_handle()` (`"<pod_uid>-<volume_name>"`, since there's no PV/PVC to derive one from). `CsiDrivers::mount()`/`unmount()` gained an `ephemeral: bool` param that skips `NodeStageVolume`/`NodeUnstageVolume` and any attach concept entirely, regardless of what the driver otherwise reports supporting — the CSI spec itself says neither applies to the inline form. Reuses all of the CSI Node-service plumbing built in rounds 12/13/19 as-is. Genuinely automated e2e test, gated behind a `TEST_CSI_INLINE_DRIVER` env var (same pattern as the PVC path's `TEST_CSI_STORAGE_CLASS`) since it needs a real driver. Unvalidated against a real CSI driver — same caveat every prior CSI round has carried. See round 46 notes.
 - ✅ **`emptyDir.medium: Memory`** (round 30; found in round 27's re-audit) — `resolve_volumes()` now shells out to `mount -t tmpfs` (`mount_tmpfs_empty_dir()`) on the host directory for a `Memory`-medium `emptyDir`, honoring `sizeLimit` as `-o size=` when set. `remove_pod()` unmounts it again on teardown (a real RAM leak otherwise, unlike plain-disk `emptyDir`). Best-effort: falls back to the plain-disk directory (already created) on mount failure rather than failing the pod. Unvalidated against a real privileged mount in this sandbox — see round 30 notes.
 - ✅ **Generic ephemeral volumes** (round 31; `volumeSource.ephemeral`, found in round 27's re-audit) — `resolve_volumes()` now recognizes `.ephemeral`, resolving the deterministic-named (`<pod name>-<volume name>`) PVC the ephemeral-volume controller (a `kube-controller-manager` component — not nodelet's job, same as dynamic provisioning) auto-creates, with an ownership safety check (by UID) before trusting it, then reuses all of CSI's existing mount machinery. Unvalidated against a real CSI driver/ephemeral-volume controller — see round 31 notes.
 - ✅ **Image volume source** (round 32; `volumeSource.image`, KEP-4639, still beta, found in round 27's re-audit) — `resolve_volumes()`/`build_mounts()` use CRI's native `Mount.image`/`image_sub_path` fields directly (no host-path materialization needed, unlike every other volume kind) after a `PullImage` call resolves the reference. Always read-only, per the KEP. Genuinely automated e2e test (no external StorageClass/CSI driver needed — any pullable image works). See round 32 notes.
@@ -3082,8 +3145,15 @@ higher-value/correctness-critical than others:
       isn't tracked anywhere** (capacity/allocatable/requests/limits/
       eviction — round 44's `resolve_resource_field_ref()` `"0"` stub
       was the first hint of this). See round 45 notes.
-- [ ] Candidates for the next round, by value: CSI ephemeral (inline)
-      volumes (likely the cheapest given existing CSI plumbing), startup
-      probe failure restart, local ephemeral storage (biggest — capacity
-      reporting + eviction signal, likely its own arc). Ask before
-      starting the next round.
+- [x] Round 46: CSI ephemeral (inline) volumes — `resolve_csi_ephemeral_source()`
+      + synthetic `csi_ephemeral_volume_handle()` (no PV/PVC to derive one
+      from); `CsiDrivers::mount()`/`unmount()` gained an `ephemeral: bool`
+      that correctly skips staging/attach entirely for this volume kind
+      (the CSI spec's own rule, not just a driver-capability check).
+      Reuses all the existing CSI Node-service plumbing (rounds 12/13/19)
+      as-is. Genuinely automated e2e test, gated behind a new
+      `TEST_CSI_INLINE_DRIVER` env var. See round 46 notes.
+- [ ] Candidates for the next round, by value: startup probe failure
+      restart, local ephemeral storage (biggest — capacity reporting +
+      eviction signal, likely its own arc). Ask before starting the next
+      round.

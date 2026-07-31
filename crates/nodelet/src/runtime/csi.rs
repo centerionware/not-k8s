@@ -240,7 +240,14 @@ impl CsiDrivers {
     /// bind-mounted into a container the same way every other volume kind
     /// already is. Idempotent per the CSI spec — safe to call again for a
     /// pod that already has this volume mounted (e.g. every reconcile).
-    pub async fn mount(&self, source: &CsiVolumeSource, target_path: &Path, pod_uid: &str) -> Result<()> {
+    /// `ephemeral` (round 46) — `true` for a CSI *ephemeral inline* volume
+    /// (`volumes[].csi` specified directly, no PV/PVC at all): the CSI spec
+    /// itself says ephemeral inline volumes never go through
+    /// `NodeStageVolume`/`NodeUnstageVolume`, regardless of whether the
+    /// driver otherwise reports that capability — there's no
+    /// `VolumeAttachment`/central attach-detach concept for them either,
+    /// only a direct `NodePublishVolume`.
+    pub async fn mount(&self, source: &CsiVolumeSource, target_path: &Path, pod_uid: &str, ephemeral: bool) -> Result<()> {
         let key = (source.driver.clone(), source.volume_handle.clone());
         {
             let mut refs = self.refs.lock().unwrap();
@@ -253,7 +260,7 @@ impl CsiDrivers {
 
         let staging = staging_path(&source.driver, &source.volume_handle);
         let mut staging_target_path = String::new();
-        if self.supports_stage_unstage(&source.driver).await {
+        if !ephemeral && self.supports_stage_unstage(&source.driver).await {
             std::fs::create_dir_all(&staging).context("creating CSI staging directory")?;
             staging_target_path = staging.to_string_lossy().into_owned();
             client
@@ -292,7 +299,7 @@ impl CsiDrivers {
     /// removal) shouldn't fail the whole teardown over a CSI driver error —
     /// same treatment `graceful_stop_containers` already gives a failing
     /// `preStop` hook.
-    pub async fn unmount(&self, driver: &str, volume_handle: &str, target_path: &Path, pod_uid: &str) -> Result<()> {
+    pub async fn unmount(&self, driver: &str, volume_handle: &str, target_path: &Path, pod_uid: &str, ephemeral: bool) -> Result<()> {
         let mut client = self.client_for(driver).await?;
         client
             .node_unpublish_volume(NodeUnpublishVolumeRequest {
@@ -318,7 +325,7 @@ impl CsiDrivers {
             }
         };
 
-        if last_reference && self.supports_stage_unstage(driver).await {
+        if last_reference && !ephemeral && self.supports_stage_unstage(driver).await {
             let staging = staging_path(driver, volume_handle);
             client
                 .node_unstage_volume(NodeUnstageVolumeRequest {

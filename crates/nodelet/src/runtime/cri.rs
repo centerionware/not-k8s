@@ -1219,6 +1219,15 @@ fn ephemeral_pvc_name(pod_name: &str, volume_name: &str) -> String {
     format!("{pod_name}-{volume_name}")
 }
 
+/// Synthetic `volume_id` for a CSI *ephemeral inline* volume (round 46) —
+/// there's no PV/PVC to derive a real one from, so nodelet mints its own,
+/// scoped by pod UID (stable across reconciles, unique across pod
+/// recreations even under the same name) and volume name (unique within
+/// one pod).
+fn csi_ephemeral_volume_handle(pod_uid: &str, volume_name: &str) -> String {
+    format!("{pod_uid}-{volume_name}")
+}
+
 /// Whether `pvc` is genuinely owned by the pod with uid `pod_uid` — the
 /// safety check real kubelet itself does before trusting a same-named
 /// PVC for a generic ephemeral volume (round 31; see
@@ -1729,7 +1738,7 @@ impl CriRuntime {
                 match self.resolve_csi_source(&id.namespace, &pvc_source.claim_name).await {
                     Ok(Some(mut source)) => {
                         source.read_only |= pvc_source.read_only.unwrap_or(false);
-                        match self.csi.mount(&source, &vol_dir, &id.uid).await {
+                        match self.csi.mount(&source, &vol_dir, &id.uid, false).await {
                             Ok(()) => {
                                 out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
                             }
@@ -1756,7 +1765,7 @@ impl CriRuntime {
                 // ownership safety check.
                 let claim_name = ephemeral_pvc_name(&id.name, &v.name);
                 match self.resolve_ephemeral_source(&id.namespace, &claim_name, &id.uid).await {
-                    Ok(Some(source)) => match self.csi.mount(&source, &vol_dir, &id.uid).await {
+                    Ok(Some(source)) => match self.csi.mount(&source, &vol_dir, &id.uid, false).await {
                         Ok(()) => {
                             out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
                         }
@@ -1769,6 +1778,23 @@ impl CriRuntime {
                         // warned with the specific reason.
                     }
                     Err(e) => warn!(volume = %v.name, claim = %claim_name, error = ?e, "failed to resolve generic ephemeral volume's PersistentVolumeClaim"),
+                }
+            } else if let Some(csi_source) = &v.csi {
+                // CSI ephemeral (inline) volume (round 46; found in round
+                // 45's re-audit) — no PV/PVC at all, just this volume's own
+                // CSIVolumeSource fields (e.g. secrets-store-csi-driver's
+                // "mount a Secret from Vault directly" pattern).
+                match self.resolve_csi_ephemeral_source(&id.namespace, csi_source, &id.uid, &v.name).await {
+                    Some(source) => match self.csi.mount(&source, &vol_dir, &id.uid, true).await {
+                        Ok(()) => {
+                            out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
+                        }
+                        Err(e) => warn!(volume = %v.name, driver = %csi_source.driver, error = ?e, "failed to mount CSI ephemeral volume"),
+                    },
+                    None => {
+                        // No driver configured — resolve_csi_ephemeral_source()
+                        // already warned with the specific reason.
+                    }
                 }
             } else if let Some(image_source) = &v.image {
                 // volumeSource.image (round 32, KEP-4639): CRI has direct
@@ -2042,6 +2068,47 @@ impl CriRuntime {
         }
     }
 
+    /// Resolve a CSI *ephemeral inline* volume (`volumes[].csi` specified
+    /// directly — round 46; found in round 45's re-audit) — distinct from
+    /// both the PVC path (`resolve_csi_source()`) and the generic
+    /// `ephemeral` (PVC-templated) path (round 31): there's no PV/PVC
+    /// object at all here, just the volume's own `CSIVolumeSource` fields.
+    /// Real-world drivers like `secrets-store-csi-driver` use this form to
+    /// mount secrets from an external store with no PVC involved.
+    async fn resolve_csi_ephemeral_source(
+        &self,
+        namespace: &str,
+        csi: &k8s_openapi::api::core::v1::CSIVolumeSource,
+        pod_uid: &str,
+        volume_name: &str,
+    ) -> Option<crate::runtime::csi::CsiVolumeSource> {
+        if !self.csi.driver_configured(&csi.driver) {
+            warn!(driver = %csi.driver, volume = %volume_name, "CSI ephemeral volume: no CSI driver configured — set NODELET_CSI_DRIVERS or wait for it to register");
+            return None;
+        }
+        let node_publish_secrets = match &csi.node_publish_secret_ref {
+            Some(local_ref) => {
+                let secret_ref = SecretReference { name: Some(local_ref.name.clone()), namespace: None };
+                self.resolve_csi_secret_ref(Some(&secret_ref), namespace).await
+            }
+            None => HashMap::new(),
+        };
+
+        Some(crate::runtime::csi::CsiVolumeSource {
+            driver: csi.driver.clone(),
+            volume_handle: csi_ephemeral_volume_handle(pod_uid, volume_name),
+            fs_type: csi.fs_type.clone().unwrap_or_default(),
+            read_only: csi.read_only.unwrap_or(false),
+            volume_attributes: csi.volume_attributes.clone().unwrap_or_default().into_iter().collect(),
+            // Ephemeral inline volumes never stage (no NodeStageVolume) and
+            // have no attach concept (no VolumeAttachment) — see
+            // `CsiDrivers::mount()`'s `ephemeral` parameter.
+            node_stage_secrets: HashMap::new(),
+            node_publish_secrets,
+            publish_context: HashMap::new(),
+        })
+    }
+
     /// Unpublish (and, if this was the last pod using it, unstage) every
     /// CSI-backed `PersistentVolumeClaim` volume this pod referenced.
     /// Best-effort per volume — one failing CSI driver call must not stop
@@ -2056,6 +2123,17 @@ impl CriRuntime {
         let pod_dir = PathBuf::from(VOLUME_ROOT).join(&id.uid).join("volumes");
 
         for v in volumes {
+            if let Some(csi_source) = &v.csi {
+                // CSI ephemeral inline volume (round 46) — no PVC to
+                // resolve; re-derive the same synthetic volume_handle
+                // resolve_volumes() minted at mount time.
+                let vol_dir = pod_dir.join(&v.name);
+                let volume_handle = csi_ephemeral_volume_handle(&id.uid, &v.name);
+                if let Err(e) = self.csi.unmount(&csi_source.driver, &volume_handle, &vol_dir, &id.uid, true).await {
+                    warn!(volume = %v.name, driver = %csi_source.driver, error = ?e, "CSI teardown: failed to unmount ephemeral inline volume");
+                }
+                continue;
+            }
             let claim_name = if let Some(pvc_source) = &v.persistent_volume_claim {
                 pvc_source.claim_name.clone()
             } else if v.ephemeral.is_some() {
@@ -2074,7 +2152,7 @@ impl CriRuntime {
                 }
             };
             let vol_dir = pod_dir.join(&v.name);
-            if let Err(e) = self.csi.unmount(&source.driver, &source.volume_handle, &vol_dir, &id.uid).await {
+            if let Err(e) = self.csi.unmount(&source.driver, &source.volume_handle, &vol_dir, &id.uid, false).await {
                 warn!(volume = %v.name, driver = %source.driver, error = ?e, "CSI teardown: failed to unmount volume");
             }
         }
@@ -4295,6 +4373,9 @@ mod tests_resize_decision;
 #[cfg(test)]
 #[path = "cri_tests/resource_field_ref.rs"]
 mod tests_resource_field_ref;
+#[cfg(test)]
+#[path = "cri_tests/csi_ephemeral_volume_handle.rs"]
+mod tests_csi_ephemeral_volume_handle;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.
