@@ -7,6 +7,8 @@
 pub mod cgroup;
 pub mod config;
 #[cfg(feature = "cri")]
+pub mod cpu_manager;
+#[cfg(feature = "cri")]
 pub mod device_plugins;
 pub mod eviction;
 pub mod gc;

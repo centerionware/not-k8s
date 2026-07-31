@@ -39,6 +39,7 @@ async fn main() -> Result<()> {
         Default::default(),
         "/tmp/nodelet-cri-smoke-plugins-registry".to_string(),
         std::time::Duration::from_secs(10),
+        None,
     )
     .await
     .context("connect to containerd")?;

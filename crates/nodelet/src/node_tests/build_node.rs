@@ -47,6 +47,7 @@ fn cfg() -> Config {
         csi_drivers: Default::default(),
         plugin_registry_path: "/tmp".to_string(),
         plugin_registry_sync_interval: Duration::from_secs(10),
+        cpu_manager_static: false,
     }
 }
 

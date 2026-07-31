@@ -130,6 +130,12 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
             #[cfg(feature = "cri")]
             {
                 info!(endpoint = %cfg.cri_endpoint, "using CRI runtime (containerd)");
+                let cpu_manager = cfg.cpu_manager_static.then(|| {
+                    nodelet::cpu_manager::CpuManager::new(
+                        cfg.cpu_cores,
+                        cfg.system_reserved_cpu_millicores + cfg.kube_reserved_cpu_millicores,
+                    )
+                });
                 let rt = runtime::cri::CriRuntime::connect(
                     &cfg.cri_endpoint,
                     client,
@@ -138,6 +144,7 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                     cfg.csi_drivers.clone(),
                     cfg.plugin_registry_path.clone(),
                     cfg.plugin_registry_sync_interval,
+                    cpu_manager,
                 )
                 .await
                 .context("connecting to CRI endpoint")?;

@@ -1,0 +1,76 @@
+use super::*;
+
+#[test]
+fn shared_pool_excludes_reserved_cpus() {
+    // 4 cores, 1000m reserved -> cpu 0 reserved, 1-3 shared.
+    let mgr = CpuManager::new(4, 1000);
+    assert_eq!(mgr.shared_pool(), [1, 2, 3].into_iter().collect());
+}
+
+#[test]
+fn allocating_removes_cpus_from_the_shared_pool() {
+    let mgr = CpuManager::new(4, 0);
+    let picked = mgr.allocate("sandbox/app", 2).unwrap();
+    assert_eq!(picked, [0, 1].into_iter().collect());
+    assert_eq!(mgr.shared_pool(), [2, 3].into_iter().collect());
+}
+
+#[test]
+fn releasing_returns_cpus_to_the_shared_pool() {
+    let mgr = CpuManager::new(4, 0);
+    mgr.allocate("sandbox/app", 2).unwrap();
+    mgr.release("sandbox/app");
+    assert_eq!(mgr.shared_pool(), [0, 1, 2, 3].into_iter().collect());
+}
+
+#[test]
+fn releasing_an_unknown_key_is_a_harmless_no_op() {
+    let mgr = CpuManager::new(4, 0);
+    mgr.release("never-allocated");
+    assert_eq!(mgr.shared_pool(), [0, 1, 2, 3].into_iter().collect());
+}
+
+#[test]
+fn cannot_allocate_more_than_the_shared_pool_has() {
+    let mgr = CpuManager::new(2, 0);
+    assert!(mgr.allocate("sandbox/a", 3).is_none());
+    // A failed allocation must not partially claim CPUs.
+    assert_eq!(mgr.shared_pool(), [0, 1].into_iter().collect());
+}
+
+#[test]
+fn two_containers_get_disjoint_exclusive_sets() {
+    let mgr = CpuManager::new(4, 0);
+    let a = mgr.allocate("sandbox/a", 2).unwrap();
+    let b = mgr.allocate("sandbox/b", 2).unwrap();
+    assert!(a.is_disjoint(&b));
+    assert!(mgr.shared_pool().is_empty());
+}
+
+#[test]
+fn release_sandbox_frees_every_container_in_it() {
+    let mgr = CpuManager::new(4, 0);
+    mgr.allocate("sandbox-1/a", 1).unwrap();
+    mgr.allocate("sandbox-1/b", 1).unwrap();
+    mgr.allocate("sandbox-2/c", 1).unwrap();
+    mgr.release_sandbox("sandbox-1");
+    // sandbox-1's two cores are back; sandbox-2's one core is still claimed.
+    assert_eq!(mgr.shared_pool().len(), 3);
+}
+
+#[test]
+fn release_sandbox_does_not_touch_other_sandboxes() {
+    let mgr = CpuManager::new(4, 0);
+    let c = mgr.allocate("sandbox-2/c", 1).unwrap();
+    mgr.allocate("sandbox-1/a", 1).unwrap();
+    mgr.release_sandbox("sandbox-1");
+    assert!(!mgr.shared_pool().contains(c.iter().next().unwrap()));
+}
+
+#[test]
+fn reserved_cpus_are_never_handed_out() {
+    let mgr = CpuManager::new(2, 1000); // cpu 0 reserved, only cpu 1 available
+    let picked = mgr.allocate("sandbox/a", 1).unwrap();
+    assert_eq!(picked, [1].into_iter().collect());
+    assert!(mgr.allocate("sandbox/b", 1).is_none()); // nothing left
+}

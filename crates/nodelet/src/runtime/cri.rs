@@ -14,6 +14,7 @@
 
 use super::{ContainerRuntimeStatus, Phase, PodRuntime, RuntimeStatus};
 use anyhow::{Context, Result};
+use crate::eviction::QosClass;
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{
     ConfigMap, Container, EnvFromSource, EnvVarSource, EphemeralContainer, LifecycleHandler,
@@ -136,6 +137,11 @@ pub struct CriRuntime {
     /// anywhere else (CRI itself has no concept of device-plugin resources
     /// to ask back).
     device_allocations: Mutex<HashMap<String, Vec<(String, Vec<String>)>>>,
+    /// Exclusive CPU pinning for Guaranteed-QoS containers (see
+    /// `cpu_manager.rs`) — `None` when `NODELET_CPU_MANAGER_POLICY` is
+    /// unset/`none` (the default), meaning every container's `cpuset_cpus`
+    /// is left unset ("unconstrained"), exactly the pre-round-15 behavior.
+    cpu_manager: Option<crate::cpu_manager::CpuManager>,
 }
 
 /// Identity extracted from a Pod object.
@@ -1075,6 +1081,7 @@ impl CriRuntime {
         csi_drivers: BTreeMap<String, String>,
         plugin_registry_path: String,
         plugin_registry_sync_interval: Duration,
+        cpu_manager: Option<crate::cpu_manager::CpuManager>,
     ) -> Result<Self> {
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
@@ -1104,6 +1111,7 @@ impl CriRuntime {
             csi,
             device_plugins,
             device_allocations: Mutex::new(HashMap::new()),
+            cpu_manager,
         })
     }
 
@@ -1653,6 +1661,7 @@ impl CriRuntime {
         volumes: &HashMap<String, PathBuf>,
         pull_secrets: &[String],
         envs: &[KeyValue],
+        qos: QosClass,
     ) -> Result<()> {
         let running_v = ContainerState::ContainerRunning as i32;
         let existing = self.list_pod_containers(sandbox_id).await?;
@@ -1680,7 +1689,7 @@ impl CriRuntime {
 
         let attempt = self.restart_count(sandbox_id, &container.name);
         self.create_and_start_container(
-            sandbox_id, id, container, pod_sc, volumes, pull_secrets, envs, ContainerKind::App, attempt,
+            sandbox_id, id, container, pod_sc, volumes, pull_secrets, envs, ContainerKind::App, attempt, qos,
         )
         .await
     }
@@ -1710,8 +1719,9 @@ impl CriRuntime {
             return Ok(());
         }
         let envs = self.resolve_container_env(pod, id, container, service_env).await?;
+        let qos = crate::eviction::qos_class(pod);
         self.create_and_start_container(
-            sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Ephemeral, 0,
+            sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Ephemeral, 0, qos,
         )
         .await
     }
@@ -1798,14 +1808,18 @@ impl CriRuntime {
         }
     }
 
-    /// Release and forget every device allocation recorded for one
-    /// container — call before recreating a container (restart-on-exit) or
-    /// removing it outright, so its devices go back to the pool instead of
-    /// being stranded as permanently "in use."
+    /// Release and forget every device-plugin allocation *and* CPU Manager
+    /// exclusive claim recorded for one container — call before recreating
+    /// a container (restart-on-exit) or removing it outright, so both go
+    /// back to their respective pools instead of being stranded as
+    /// permanently "in use."
     fn release_container_devices(&self, sandbox_id: &str, container_name: &str) {
         let key = restart_count_key(sandbox_id, container_name);
         if let Some(allocations) = self.device_allocations.lock().unwrap().remove(&key) {
             self.release_devices(&allocations);
+        }
+        if let Some(cpu_manager) = &self.cpu_manager {
+            cpu_manager.release(&key);
         }
     }
 
@@ -1820,6 +1834,9 @@ impl CriRuntime {
         };
         for allocations in removed {
             self.release_devices(&allocations);
+        }
+        if let Some(cpu_manager) = &self.cpu_manager {
+            cpu_manager.release_sandbox(sandbox_id);
         }
     }
 
@@ -1838,6 +1855,7 @@ impl CriRuntime {
         envs: &[KeyValue],
         kind: ContainerKind,
         attempt: u32,
+        qos: QosClass,
     ) -> Result<()> {
         let image = container.image.clone().unwrap_or_default();
         let auth = self.resolve_pull_auth(&id.namespace, pull_secrets, &image).await;
@@ -1862,8 +1880,36 @@ impl CriRuntime {
                 ..Default::default()
             });
         }
+        let mut resources = linux_resources(container.resources.as_ref());
+
+        // CPU Manager (static policy, opt-in — see cpu_manager.rs): a
+        // Guaranteed-QoS container requesting a whole number of CPUs gets
+        // pinned to exclusive cores; every other container gets the
+        // current shared pool (everything except reserved + exclusively-
+        // claimed cores) instead of being left unconstrained. Both are
+        // no-ops when the policy is disabled (self.cpu_manager is None).
+        let mut cpu_manager_key: Option<String> = None;
+        if let Some(cpu_manager) = &self.cpu_manager {
+            let cpu_limit = container.resources.as_ref().and_then(|r| r.limits.as_ref()).and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
+            let key = restart_count_key(sandbox_id, &container.name);
+            let cpuset = match crate::cpu_manager::wants_exclusive_cpus(qos, cpu_limit) {
+                Some(count) => match cpu_manager.allocate(&key, count) {
+                    Some(cpus) => {
+                        cpu_manager_key = Some(key);
+                        cpus
+                    }
+                    None => {
+                        warn!(container = %container.name, wanted = count, "CPU Manager: not enough exclusive CPUs available; falling back to the shared pool");
+                        cpu_manager.shared_pool()
+                    }
+                },
+                None => cpu_manager.shared_pool(),
+            };
+            resources.cpuset_cpus = crate::cpu_manager::format_cpuset(&cpuset);
+        }
+
         let linux = Some(LinuxContainerConfig {
-            resources: Some(linux_resources(container.resources.as_ref())),
+            resources: Some(resources),
             security_context: Some(linux_security_context(pod_sc, container.security_context.as_ref())),
         });
 
@@ -1935,6 +1981,9 @@ impl CriRuntime {
             Ok(resp) => resp.into_inner(),
             Err(e) => {
                 self.release_devices(&allocated_devices);
+                if let (Some(cpu_manager), Some(key)) = (&self.cpu_manager, &cpu_manager_key) {
+                    cpu_manager.release(key);
+                }
                 return Err(e).context("creating container");
             }
         };
@@ -2073,6 +2122,7 @@ impl CriRuntime {
         volumes: &HashMap<String, PathBuf>,
         pull_secrets: &[String],
         service_env: &BTreeMap<String, Vec<u8>>,
+        qos: QosClass,
     ) -> Result<InitProgress> {
         let running_v = ContainerState::ContainerRunning as i32;
         let exited_v = ContainerState::ContainerExited as i32;
@@ -2093,7 +2143,7 @@ impl CriRuntime {
                     let envs = self.resolve_container_env(pod, id, container, service_env).await?;
                     let attempt = self.restart_count(sandbox_id, &container.name);
                     self.create_and_start_container(
-                        sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt,
+                        sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt, qos,
                     )
                     .await?;
                     return Ok(InitProgress::Waiting);
@@ -2317,7 +2367,8 @@ impl PodRuntime for CriRuntime {
         // fact), overhead so a RuntimeClass with declared overhead
         // (gVisor/Kata's userspace kernel cost) gets it accounted into the
         // sandbox's own resources.
-        let cgroup_parent = crate::cgroup::cgroup_parent_for(crate::eviction::qos_class(pod), &id.uid);
+        let qos = crate::eviction::qos_class(pod);
+        let cgroup_parent = crate::cgroup::cgroup_parent_for(qos, &id.uid);
         let overhead = pod.spec.as_ref().and_then(|s| s.overhead.as_ref()).map(|list| resource_list_to_linux_resources(list));
         let sandbox_id = match sandbox_reuse_decision(found.as_ref().map(|(_, s)| *s), ready_state) {
             SandboxDecision::Reuse => found.unwrap().0,
@@ -2381,6 +2432,7 @@ impl PodRuntime for CriRuntime {
                     &volumes,
                     &pull_secrets,
                     &service_env,
+                    qos,
                 )
                 .await?;
             match progress {
@@ -2421,7 +2473,7 @@ impl PodRuntime for CriRuntime {
         if let Some(spec) = pod.spec.as_ref() {
             for c in &spec.containers {
                 let envs = self.resolve_container_env(pod, &id, c, &service_env).await?;
-                self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs)
+                self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs, qos)
                     .await?;
             }
             // Added post-hoc via the `ephemeralcontainers` subresource (e.g.

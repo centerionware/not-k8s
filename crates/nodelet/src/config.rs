@@ -161,6 +161,11 @@ pub struct Config {
     /// How often the registry directory is rescanned for new/removed
     /// sockets.
     pub plugin_registry_sync_interval: Duration,
+    /// Real kubelet's `--cpu-manager-policy` (`cri` only; see
+    /// `cpu_manager.rs`) — `false` (default `none`, matches upstream) or
+    /// `true` (`static`), which pins Guaranteed-QoS containers requesting
+    /// a whole number of CPUs to exclusive cores instead of the shared pool.
+    pub cpu_manager_static: bool,
 }
 
 impl Config {
@@ -286,6 +291,12 @@ impl Config {
             .unwrap_or_else(|_| "/var/lib/nodelet/plugins_registry".to_string());
         let plugin_registry_sync_interval = Duration::from_secs(env_u64("NODELET_PLUGIN_REGISTRY_SYNC_SECS", 10)?);
 
+        let cpu_manager_static = match std::env::var("NODELET_CPU_MANAGER_POLICY").as_deref() {
+            Ok("static") => true,
+            Ok("none") | Err(_) => false,
+            Ok(other) => anyhow::bail!("unknown NODELET_CPU_MANAGER_POLICY '{other}' (want 'none' or 'static')"),
+        };
+
         Ok(Self {
             node_name,
             runtime,
@@ -325,6 +336,7 @@ impl Config {
             csi_drivers,
             plugin_registry_path,
             plugin_registry_sync_interval,
+            cpu_manager_static,
         })
     }
 }

@@ -27,6 +27,69 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 15: CPU Manager (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-14). Offered CPU/Memory/
+Topology managers, CSI's Controller service, and device plugins' remaining
+gaps; user picked the managers category as "the last major unaddressed
+category," and within it, CPU Manager was chosen as the most tractable and
+valuable specific piece — CPU pinning matters for edge/latency-sensitive
+workloads, Memory Manager is the least commonly used of the three upstream,
+and Topology Manager only has something to coordinate once CPU Manager
+(and ideally Memory Manager) exist to coordinate between.
+
+- **New `cpu_manager.rs`** (`cri`-gated): implements real kubelet's
+  `--cpu-manager-policy=static` — a Guaranteed-QoS container requesting a
+  whole number of CPUs (`cpu` request == limit == an integer, the same
+  rule upstream uses) gets exclusive cores via CRI's `cpuset_cpus`, picked
+  ascending from the current shared pool (total cores minus reserved
+  minus already-exclusively-claimed). Opt-in: `NODELET_CPU_MANAGER_POLICY`
+  defaults to `none` (upstream's own default) — `cpu_manager` is `None` on
+  `CriRuntime` in that case, and every container's `cpuset_cpus` is left
+  unset exactly as before this round, a true no-op.
+- **Reserved CPUs derived from existing config** — `reserved_cpu_count()`
+  reuses `system_reserved_cpu_millicores + kube_reserved_cpu_millicores`
+  (round 11), rounded up to a whole core, rather than adding a third
+  reservation config just for this. No `--reserved-cpus`-equivalent flag.
+- **Every container now gets an explicit `cpuset_cpus`, not just exclusive
+  ones** — when the policy is enabled, a container that *doesn't* qualify
+  for exclusive cores gets the current shared pool set explicitly (instead
+  of an empty/unconstrained cpuset), so newly-created shared-pool
+  containers correctly exclude whatever's already exclusively claimed.
+- **Deliberately scoped as a first slice, documented in the module's own
+  doc comment**: real kubelet's static policy is *bidirectional* — when a
+  new exclusive claim is made, every already-running shared-pool
+  container gets retroactively shrunk via `UpdateContainerResources`, and
+  grown back on release. This round only sets `cpuset_cpus` at
+  container-*creation* time; a shared-pool container that was already
+  running before a later exclusive claim keeps its original (wider)
+  cpuset. Still delivers the core guarantee (an exclusive container's
+  cores are never *newly* handed to something else after the fact), just
+  not full retroactive isolation from whatever was already running.
+  Retroactive `UpdateContainerResources` sweeping, topology/socket-aware
+  core selection, and Topology/Memory Manager are explicitly left for a
+  future round.
+- **New `device_allocations`-shaped side table folded into the existing
+  release helpers** — `release_container_devices()`/`release_sandbox_devices()`
+  (round 14) now also release any CPU Manager exclusive claim for the
+  same key, so one release call at each restart/retry/GC/removal site
+  handles both device-plugin and CPU-pinning cleanup instead of needing a
+  second parallel set of call sites.
+- 26 new unit tests: `wants_exclusive_cpus` (the QoS/whole-CPU eligibility
+  rule), `format_cpuset`/`reserved_cpu_count` (cgroup-string rendering and
+  reservation rounding), and a full `CpuManager` allocation/release/
+  disjointness/reserved-exclusion suite.
+
+497 tests passing with `--features cri` (up from 477), 179 mock-only
+(unchanged — this round is entirely `cri`-gated).
+`deploy/lib/test/cases/cpu_manager.sh` added — unlike device plugins, this
+one *is* fully automatable without special hardware: it creates two
+Guaranteed 1-CPU pods and asserts their `cpuset.cpus` cgroup files (found
+by container ID under the cgroup tree, tolerant of driver naming) are
+non-empty and disjoint. Needs `TEST_CPU_MANAGER_STATIC=true` telling the
+suite the running nodelet actually has the policy enabled (same opt-in-
+config pattern `static_pods.sh`/`log_rotation.sh` already use).
+
 ## Round 14: device plugins (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-13). Offered device
@@ -737,9 +800,9 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **QoS cgroup hierarchy** (`--cgroups-per-qos`) — every pod sandbox now gets a `cgroup_parent` scoped by QoS class (`cgroup.rs::cgroup_parent_for`): `/kubepods/pod<uid>` for Guaranteed, `/kubepods/burstable/pod<uid>` / `/kubepods/besteffort/pod<uid>` otherwise, wired into `runtime/cri.rs::ensure_pod`.
 - ✅ **cgroup driver — no detection needed.** CRI's own `LinuxPodSandboxConfig.cgroup_parent` proto contract specifies the cgroupfs-style syntax is always sent, with "the container runtime can convert it to systemd semantics if needed" — nodelet always builds the cgroupfs-style path and lets the runtime do any systemd-unit-naming conversion, matching that contract exactly. No `--cgroup-driver`-equivalent config needed.
 - ✅ **Node allocatable enforcement** (`--enforce-node-allocatable=pods`, its own upstream default) — `cgroup.rs::enforce_node_allocatable`, called once at startup, creates and caps the top-level `kubepods` cgroup (cpu.max/memory.max) at `Node.status.allocatable` so pods collectively can never exceed it. `Node.status.allocatable` itself is now `capacity - (system-reserved + kube-reserved)` (`node.rs::allocatable_map`) rather than always equal to capacity — a real correctness fix, not just the enforcement mechanism (`NODELET_SYSTEM_RESERVED_CPU_MILLICORES`/`_MEMORY_BYTES`, `NODELET_KUBE_RESERVED_CPU_MILLICORES`/`_MEMORY_BYTES`, all default `0`). Best-effort: needs root + cgroup v2 (cgroup v1 unsupported, matching modern kubelet defaults), logs and continues on failure rather than blocking startup — **unvalidated against a real cgroup v2 hierarchy**, no writable `/sys/fs/cgroup` in the sandbox that built this; see `deploy/lib/test/cases/cgroup_hierarchy.sh` for the live-cluster check.
-- ❌ CPU Manager (`static` policy, exclusive core pinning) — advanced/optional in real kubelet
+- 🟡 **CPU Manager** (`cpu_manager.rs`, `static` policy) — Guaranteed-QoS containers requesting a whole number of CPUs get pinned to exclusive cores (`cpuset_cpus`); every other container gets the current shared pool (total minus reserved minus exclusively-claimed) instead of being left unconstrained. Opt-in (`NODELET_CPU_MANAGER_POLICY`, default `none` matching upstream). **First-slice scope**: only sets `cpuset_cpus` at container-*creation* time — an already-running shared-pool container isn't retroactively shrunk when a later exclusive claim is made (real kubelet's policy is bidirectional via `UpdateContainerResources`); CPU selection is simple ascending-ID, not topology/socket-aware. See round 15 notes.
 - ❌ Memory Manager — advanced/optional
-- ❌ Topology Manager — advanced/optional
+- ❌ Topology Manager (NUMA-aware coordination between CPU Manager, device plugins, and Memory Manager) — advanced/optional; device plugins' `TopologyInfo` field is parsed by the vendored proto but not acted on
 - 🟡 **Device plugins** (`device_plugins.rs`, GPU/FPGA/etc. hardware resources) — discovered via the same dynamic plugin-registration protocol CSI drivers use (`plugin_registry.rs`, round 13); tracks live device inventory/health per resource name via `ListAndWatch`, advertises healthy counts on `Node.status.capacity`/`.allocatable`, and calls `Allocate()` during container creation to inject the envs/mounts/device-nodes/annotations a plugin returns. Not implemented: `GetPreferredAllocation` (always does its own first-healthy-unallocated pick) and `PreStartContainer`. Unvalidated against a real device plugin — see round 14 notes.
 - ❌ In-place pod resource resize (newer, still-maturing upstream feature)
 
@@ -856,8 +919,12 @@ higher-value/correctness-critical than others:
       Node.status.capacity/allocatable advertisement, Allocate() wired into
       container creation. See round 14 notes; same unvalidated-against-
       real-hardware caveat as rounds 12/13's driver-dependent pieces.
+- [x] Round 15: CPU Manager static policy (cpu_manager.rs) — first slice,
+      no retroactive UpdateContainerResources sweep, no topology/socket
+      awareness. See round 15 notes.
 - [ ] Everything else in the responsibility list above — biggest remaining
-      single items: CPU/Memory/Topology managers, device plugin
+      single items: Memory/Topology managers, CPU Manager's retroactive
+      shared-pool updates, device plugin
       GetPreferredAllocation/PreStartContainer, plus deepening PVC/CSI
       further (Controller service/attach — the one CSI capability still
       entirely missing). Ask before starting the next round.

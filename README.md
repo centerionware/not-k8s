@@ -61,6 +61,8 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
                        of the CSI/DevicePlugin plugin-registration protocol (feature `cri`).
   src/device_plugins.rs  Device Plugin API client: inventory, Node capacity
                        advertisement, and Allocate() (feature `cri`).
+  src/cpu_manager.rs   CPU Manager static policy: exclusive core pinning for
+                       Guaranteed-QoS containers (feature `cri`).
   src/runtime/cri.rs   Real containerd/CRI runtime (feature `cri`): pod/init
                        container lifecycle, resource limits, securityContext,
                        DNS, private registry auth.
@@ -138,10 +140,15 @@ GPU/FPGA/etc. hardware) — discovered via the same dynamic registration
 protocol as CSI drivers, advertised on `Node.status.capacity`/
 `.allocatable`, and allocated into requesting containers'
 envs/mounts/device-nodes via the plugin's `Allocate()` RPC —
-**unvalidated against real hardware**, see round 14 notes. Still missing:
-CPU/Memory/Topology managers, CSI's Controller service, and device
-plugins' `GetPreferredAllocation`/`PreStartContainer` — full list in
-`docs/GAP_CLOSURE.md`.
+**unvalidated against real hardware**, see round 14 notes. Also **CPU
+Manager** (`cpu_manager.rs`, `NODELET_CPU_MANAGER_POLICY=static`,
+disabled by default) — Guaranteed-QoS containers requesting a whole
+number of CPUs get pinned to exclusive cores; a first slice that sets
+`cpuset_cpus` at container-creation time only (no retroactive shrink/grow
+of already-running shared-pool containers, no topology/socket awareness),
+see round 15 notes. Still missing: Memory/Topology managers, CSI's
+Controller service, and device plugins' `GetPreferredAllocation`/
+`PreStartContainer` — full list in `docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -593,6 +600,13 @@ Two layers, and they're not substitutes for each other:
   real hardware to build, so this is flagged as a natural next step rather
   than attempted in this round).
 
+  `cpu_manager.sh` creates two Guaranteed 1-CPU pods and checks their
+  `cpuset.cpus` cgroup files (found by container ID, tolerant of driver
+  naming) are non-empty and disjoint — unlike device plugins, this needs
+  no special hardware, so it's a real automated check. Needs
+  `TEST_CPU_MANAGER_STATIC=true` telling the suite the running nodelet has
+  `NODELET_CPU_MANAGER_POLICY=static` set.
+
 ## Configuration (environment variables)
 
 | Variable | Default | Meaning |
@@ -635,6 +649,7 @@ Two layers, and they're not substitutes for each other:
 | `NODELET_CSI_DRIVERS` | (none) | Comma-separated `driver-name=unix:///path/to/socket` pairs mapping a CSI driver name to its Node-service socket (`cri` only) — see [Status](#status). Unset means `PersistentVolumeClaim` volumes are skipped with a warning unless a driver registers itself dynamically (below). |
 | `NODELET_PLUGIN_REGISTRY_PATH` | `/var/lib/nodelet/plugins_registry` | Directory watched for CSI driver registration sockets (`cri` only) — point a driver's `node-driver-registrar` `--kubelet-registration-path` here for dynamic discovery. |
 | `NODELET_PLUGIN_REGISTRY_SYNC_SECS` | `10` | How often that directory is rescanned for new/removed sockets. |
+| `NODELET_CPU_MANAGER_POLICY` | `none` | `none` or `static` (`cri` only) — pins Guaranteed-QoS containers requesting a whole number of CPUs to exclusive cores. See [Status](#status). |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---
