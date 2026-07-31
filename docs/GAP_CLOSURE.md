@@ -27,6 +27,66 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 27: fresh gap re-audit (2026-07-31, same day)
+
+Explicitly asked again (same pattern as round 22, offered as this
+round's option since every round-22 finding closed as of round 26); user
+picked another re-audit. No code changed this round — audit-only.
+
+Grepped the codebase against a wider set of candidate kubelet features
+than round 22 covered (that pass used the CLI reference doc; this pass
+looked at specific PodSpec/CRI fields directly) and found 7 items not
+previously tracked anywhere in this doc:
+
+- **gRPC probes** (`probe.grpc`, GA since 1.27) — `probes.rs::probe_check()`
+  handles `httpGet`/`tcpSocket`/`exec` but falls through to
+  `ProbeCheck::None` for a `grpc` probe (the standard
+  `grpc.health.v1.Health/Check` protocol many cloud-native services
+  already expose). High real-world value — a genuinely common probe type
+  this silently can't check at all.
+- **`oom_score_adj`** — real kubelet sets CRI's
+  `LinuxContainerResources.oom_score_adj` per QoS class (Guaranteed:
+  `-998`, BestEffort: `1000`, Burstable: scaled by memory request) so the
+  kernel OOM killer's own choices are QoS-aware. Not set at all —
+  `linux_resources()` never touches this field. High value specifically
+  *because* this project already has its own eviction-manager story
+  (rounds 7, 26): without this, a real kernel OOM kill (which can happen
+  faster than `eviction_loop()`'s own check interval reacts) has zero
+  signal about which process should die first, undermining the
+  QoS-protection guarantee eviction.rs otherwise provides.
+- **`emptyDir.medium: Memory`** (tmpfs-backed emptyDir) — `resolve_volumes()`
+  only checks `v.empty_dir.is_some()`, ignoring `.medium` entirely; a
+  `Memory`-medium `emptyDir` gets materialized on regular disk exactly
+  like the default, losing both the performance characteristic and the
+  "counts against the pod's memory limit" semantics upstream gives it.
+- **Generic ephemeral volumes** (`volumeSource.ephemeral`, GA since 1.23)
+  — a volume that auto-creates (and owns the lifecycle of) a
+  `PersistentVolumeClaim` from an inline template, then behaves exactly
+  like a normal PVC reference. Not implemented at all — `resolve_volumes()`
+  has no `ephemeral` branch, so a pod using one gets the generic
+  "volume type not supported yet" warning and no mount.
+- **`Node.status.images`** — real kubelet reports up to the 50 largest
+  cached images (names + sizes), which the scheduler's `ImageLocality`
+  scoring plugin uses. Not populated. Lower value for nodelet's
+  single-node-per-cluster target — there's no second node for image
+  locality to meaningfully differentiate between.
+- **`Node.status.volumesInUse`/`.volumesAttached`** — coordination fields
+  for the legacy in-tree attach/detach controller path. Not populated.
+  Low value: this project's actual PVC story is CSI-first (rounds 12,
+  13, 19), and CSI's own attach coordination (round 19) doesn't read
+  these fields at all.
+- **Image volume source** (`volumeSource.image`, OCI-artifact volumes,
+  KEP-4639, still beta) — mounting an OCI image/artifact as a read-only
+  volume. Not implemented. Newer/beta feature, lower priority given its
+  immaturity upstream too.
+
+All seven added to the responsibility list at their appropriate section
+so they show up in the normal ✅/🟡/❌ scan future rounds already do.
+Ranked roughly by value for the next round to pick from: `oom_score_adj`,
+gRPC probes, `emptyDir.medium: Memory`, generic ephemeral volumes, then
+the three lower-priority items (image volume source, `Node.status.images`,
+`volumesInUse`/`volumesAttached`).
+
 ## Round 26: eviction priority-tiebreaking (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-25). Offered the last
@@ -1524,6 +1584,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Topology Manager** (`topology.rs`) — coordinates CPU Manager, Memory Manager (as of round 18), and device plugins so a container's exclusive cores, pinned memory, and allocated devices land on the same NUMA node. Opt-in (`NODELET_TOPOLOGY_MANAGER_POLICY`, default `none`); `best-effort` prefers alignment without rejecting, `single-numa-node` rejects the container outright if no single NUMA node satisfies every hint provider. **`restricted`** (round 20) gets a real, bounded multi-node relaxation instead — `spread()` places each hint provider on its own best node independently when no single node works for everyone, rejecting only if some provider's request can't be placed anywhere at all. **Single-node-only alignment, not upstream's full bitmask/permutation combination search** — `align()`/`spread()` reach the same answer as upstream whenever a single node can satisfy everything or every provider individually has *some* home, but don't search for upstream's genuinely joint cross-provider multi-node splits. See round 17/18/20 notes.
 - ✅ **Device plugins** (`device_plugins.rs`, GPU/FPGA/etc. hardware resources) — discovered via the same dynamic plugin-registration protocol CSI drivers use (`plugin_registry.rs`, round 13); tracks live device inventory/health per resource name via `ListAndWatch`, advertises healthy counts on `Node.status.capacity`/`.allocatable`, and calls `Allocate()` during container creation to inject the envs/mounts/device-nodes/annotations a plugin returns. **`GetPreferredAllocation`/`PreStartContainer`** (round 21) — a plugin's `DevicePluginOptions` (fetched once via `GetDevicePluginOptions`) says whether either applies; `GetPreferredAllocation`'s response is validated (`is_valid_preferred_allocation()`) before being trusted, falling back to nodelet's own first-healthy-unallocated pick otherwise; `PreStartContainer` is called right after `Allocate()` succeeds when required, a failure there releasing devices and failing the allocation. Unvalidated against a real device plugin — see rounds 14 and 21 notes.
 - ❌ In-place pod resource resize (newer, still-maturing upstream feature)
+- ❌ **`oom_score_adj`** (found in round 27's re-audit) — real kubelet sets CRI's `LinuxContainerResources.oom_score_adj` per QoS class (Guaranteed `-998`, BestEffort `1000`, Burstable scaled by memory request) so the kernel OOM killer's choices are QoS-aware. Not set at all — `linux_resources()` never touches this field. High value specifically because this project already has its own eviction-manager story (rounds 7, 26): without this, a real kernel OOM kill (which can happen faster than `eviction_loop()`'s own check interval reacts) has zero QoS signal, undermining the protection guarantee eviction.rs otherwise provides.
+- ❌ **gRPC probes** (`probe.grpc`, found in round 27's re-audit) — `probes.rs::probe_check()` handles `httpGet`/`tcpSocket`/`exec` but falls through to `ProbeCheck::None` for a `grpc` probe (the standard `grpc.health.v1.Health/Check` protocol, GA since 1.27). High real-world value — a genuinely common probe type for cloud-native gRPC services this silently can't check at all.
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
@@ -1541,6 +1603,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Private registry auth** — `imagePullSecrets` (`kubernetes.io/dockerconfigjson`) → CRI `AuthConfig` (`resolve_pull_auth()`). Not yet: legacy `kubernetes.io/dockercfg`, ServiceAccount-linked pull secrets, credential-provider exec plugins.
 - 🟡 Image garbage collection — unreferenced-image sweep exists but not the real kubelet policy (disk-pressure-triggered high/low watermark GC, `--image-gc-high-threshold`/`--image-gc-low-threshold`)
 - ✅ **Container log rotation** — running containers' log files are rotated past `NODELET_CONTAINER_LOG_MAX_SIZE_BYTES`, keeping `NODELET_CONTAINER_LOG_MAX_FILES` (`rotate_log_file()` + CRI `ReopenContainerLog`)
+- ❌ **`Node.status.images`** (found in round 27's re-audit) — real kubelet reports up to the 50 largest cached images (names + sizes), which the scheduler's `ImageLocality` scoring plugin uses. Not populated. Lower value for nodelet's single-node-per-cluster target — there's no second node for image locality to meaningfully differentiate between.
 
 ### Volumes
 - ✅ ConfigMap / Secret / emptyDir (materialized to host paths)
@@ -1550,6 +1613,10 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ❌ hostPath (explicitly unsupported today, logged and dropped)
 - ❌ `emptyDir.sizeLimit` enforcement
 - ❌ subPath `$(VAR)` expansion
+- ❌ **`emptyDir.medium: Memory`** (tmpfs-backed emptyDir, found in round 27's re-audit) — `resolve_volumes()` only checks `v.empty_dir.is_some()`, ignoring `.medium` entirely; a `Memory`-medium `emptyDir` is materialized on regular disk exactly like the default, losing both the performance characteristic and the "counts against the pod's memory limit" semantics upstream gives it.
+- ❌ **Generic ephemeral volumes** (`volumeSource.ephemeral`, GA since 1.23, found in round 27's re-audit) — a volume that auto-creates (and owns the lifecycle of) a `PersistentVolumeClaim` from an inline template, then behaves exactly like a normal PVC reference. Not implemented at all — `resolve_volumes()` has no `ephemeral` branch, so a pod using one gets the generic "volume type not supported yet" warning and no mount.
+- ❌ **Image volume source** (`volumeSource.image`, OCI-artifact volumes, KEP-4639, still beta, found in round 27's re-audit) — mounting an OCI image/artifact as a read-only volume. Not implemented. Lower priority given its immaturity upstream too.
+- ❌ **`Node.status.volumesInUse`/`.volumesAttached`** (found in round 27's re-audit) — coordination fields for the legacy in-tree attach/detach controller path. Not populated. Low value: this project's actual PVC story is CSI-first (rounds 12, 13, 19), and CSI's own attach coordination (round 19) doesn't read these fields at all.
 
 ### Node-pressure eviction
 - ✅ MemoryPressure/DiskPressure *conditions* reflect real reads
@@ -1703,5 +1770,14 @@ higher-value/correctness-critical than others:
       `PriorityClass` lookup needed) before falling back to usage,
       matching real kubelet's own `rankMemoryPressure` ordering. Closes
       the last item from round 22's audit. See round 26 notes.
-- [ ] No specific known gap currently tracked. Ask before starting the
-      next round (a fresh re-audit is one option, same as round 22).
+- [x] Round 27: fresh gap re-audit (no code change) — found 7
+      previously-untracked items: `oom_score_adj` not set, gRPC probes
+      unimplemented, `emptyDir.medium: Memory` ignored, generic ephemeral
+      volumes unimplemented, `Node.status.images` not populated,
+      `volumesInUse`/`volumesAttached` not populated, image volume
+      source unimplemented. See round 27 notes.
+- [ ] Next candidates from round 27's audit, roughly by value:
+      `oom_score_adj`, gRPC probes, `emptyDir.medium: Memory`, generic
+      ephemeral volumes, then the three lower-priority items (image
+      volume source, `Node.status.images`, `volumesInUse`/`volumesAttached`).
+      Ask before starting the next round.
