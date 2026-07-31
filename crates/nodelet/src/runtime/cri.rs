@@ -59,7 +59,7 @@ use v1::{
     KeyValue, LinuxContainerConfig, LinuxContainerResources, LinuxContainerSecurityContext,
     LinuxPodSandboxConfig, LinuxSandboxSecurityContext, ListContainersRequest, ListImagesRequest,
     ListPodSandboxRequest, NamespaceMode, NamespaceOption, PodSandboxConfig, PodSandboxFilter,
-    PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest, Mount, RemoveContainerRequest,
+    PodSandboxMetadata, PodSandboxStatusRequest, PullImageRequest, Mount, RemoveContainerRequest, StatusRequest,
     RemoveImageRequest, RemovePodSandboxRequest, RunPodSandboxRequest, StartContainerRequest,
     StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest, ReopenContainerLogRequest,
     ExecRequest, AttachRequest, PortForwardRequest, ListPodSandboxStatsRequest,
@@ -4042,6 +4042,12 @@ impl PodRuntime for CriRuntime {
     fn mounted_csi_volumes(&self) -> Vec<(String, String)> {
         self.csi.mounted_volumes()
     }
+
+    async fn runtime_handlers(&self) -> Result<Vec<crate::runtime::RuntimeHandlerInfo>> {
+        let mut rt = self.rt.clone();
+        let handlers = rt.status(StatusRequest { verbose: false }).await?.into_inner().runtime_handlers;
+        Ok(handlers.into_iter().map(runtime_handler_from_cri).collect())
+    }
 }
 
 /// CRI's `Image` (`repo_tags`/`repo_digests`/`size`) -> `Node.status.images`'
@@ -4051,6 +4057,18 @@ fn node_image_from_cri(image: v1::Image) -> crate::runtime::NodeImage {
     let mut names = image.repo_tags;
     names.extend(image.repo_digests);
     crate::runtime::NodeImage { names, size_bytes: image.size }
+}
+
+/// CRI's `RuntimeHandler` -> `Node.status.runtimeHandlers`' shape (round
+/// 53) — pure so the field mapping is unit-testable without a real CRI
+/// socket.
+fn runtime_handler_from_cri(h: v1::RuntimeHandler) -> crate::runtime::RuntimeHandlerInfo {
+    let features = h.features.unwrap_or_default();
+    crate::runtime::RuntimeHandlerInfo {
+        name: h.name,
+        recursive_read_only_mounts: features.recursive_read_only_mounts,
+        user_namespaces: features.user_namespaces,
+    }
 }
 
 fn u64_value(v: &Option<v1::UInt64Value>) -> Option<u64> {
@@ -4482,6 +4500,9 @@ mod tests_directory_usage_bytes;
 #[cfg(test)]
 #[path = "cri_tests/image_pull_policy.rs"]
 mod tests_image_pull_policy;
+#[cfg(test)]
+#[path = "cri_tests/runtime_handler_from_cri.rs"]
+mod tests_runtime_handler_from_cri;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

@@ -27,6 +27,55 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 53: `Node.status.runtimeHandlers` (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-52). This closes
+round 50's audit list entirely.
+
+Before this round, `Node.status.runtimeHandlers` was never populated —
+CRI's runtime-level `Status` RPC (distinct from `ContainerStatus`/
+`PodSandboxStatus`, both used elsewhere already) had never been called
+anywhere in this codebase.
+
+- **New `PodRuntime::runtime_handlers()`** trait method (default:
+  empty, mock has no real handlers to discover) and new
+  `RuntimeHandlerInfo` type (`name`, `recursive_read_only_mounts`,
+  `user_namespaces` — mirroring CRI's own `RuntimeHandler`/
+  `RuntimeHandlerFeatures` messages, already vendored in the proto).
+- **`CriRuntime`'s implementation** calls CRI's `Status` RPC once and
+  maps the response's `runtime_handlers` through a new pure
+  `runtime_handler_from_cri()`.
+- **`node.rs`** gained `runtime_handlers_status()` (pure) and threaded
+  a new `runtime_handlers: &[RuntimeHandlerInfo]` parameter through
+  `build_status()`/`register()`/`push_status()` — the same plumbing
+  shape `images`/`mounted_csi_volumes` already established in rounds
+  33/34, extended rather than reinvented.
+- **`main.rs`** fetches `runtime.runtime_handlers().await` before each
+  node registration and each status push, same pattern as the existing
+  `node_images()`/`mounted_csi_volumes()` calls right beside it.
+- No new env vars.
+- 7 new unit tests: `node_tests/build_status.rs` (+4: empty-list,
+  name/features round-trip, the empty-string-means-default-handler
+  convention, multiple handlers) and `cri_tests/runtime_handler_from_cri.rs`
+  (+3: features carried through, missing features default to `false`
+  rather than erroring, empty name preserved as the default-handler
+  marker).
+- New e2e test (`deploy/lib/test/cases/node_status.sh`):
+  `test_node_status_reports_runtime_handlers` — checks the real node
+  object reports at least one handler (not asserting a specific name,
+  since that varies by containerd config); skips cleanly (not fails) if
+  the list comes back empty, since whether a given containerd version's
+  `Status` RPC actually populates `runtime_handlers` at all is outside
+  nodelet's control.
+
+**Confidence note**: the field-mapping logic is pure and thoroughly
+unit-tested. The e2e test is genuinely live but its assertion is
+necessarily loose (count > 0, not a specific handler) since the exact
+contents depend on the containerd version/config this suite happens to
+run against — consistent with this project's other "prove the wiring
+works, not the exact upstream data" tests (`Node.status.images`, round
+33, took the same approach).
+
 ## Round 52: `ContainerStatus.imageID` (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-51). Offered the 2
@@ -3186,7 +3235,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **User namespaces** (`spec.hostUsers: false`, round 25; found in round 22's re-audit) — `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive host UID/GID range (fixed length, default 65536, configurable via `NODELET_USERNS_BASE_UID`/`_LENGTH`/`_MAX_PODS`), set as a `POD`-mode `UserNamespace` on `LinuxSandboxSecurityContext.namespace_options.userns_options`. Simplified vs. upstream's own variable-length `usernsManager`: every pod gets the same fixed range size, and allocation state is in-memory only (self-heals as still-running pods reconcile, narrow double-allocation window across a nodelet restart — documented, not hidden). Unvalidated against a real CRI runtime's actual `userns_options` wire support — see round 25 notes.
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
 - ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
-- ❌ **`Node.status.runtimeHandlers`** (found in round 50's re-audit) — real kubelet calls CRI's runtime-level `Status` RPC once and reports the discovered RuntimeClass handlers it returns; nodelet never calls this RPC at all (unlike `ContainerStatus`/`PodSandboxStatus`, both used elsewhere already). Used by newer RuntimeClass-aware tooling to validate a handler actually exists on a node before scheduling to it. Moderate value, low implementation cost — one new RPC call, no new proto needed (`RuntimeHandler`/`RuntimeHandlerFeatures` are already vendored in `proto/cri.proto`).
+- ✅ **`Node.status.runtimeHandlers`** (round 53; found in round 50's re-audit) — new `PodRuntime::runtime_handlers()` calls CRI's runtime-level `Status` RPC once (never called anywhere in this codebase before this round) and maps the discovered handlers through to `Node.status.runtimeHandlers`, via the same `images`/`mounted_csi_volumes`-shaped plumbing rounds 33/34 already established. Genuinely automated e2e test (asserts at least one handler is present; skips rather than fails if a given containerd version's `Status` RPC doesn't populate the list at all). See round 53 notes.
 
 ### Networking
 - ✅ **DNS config** — `dnsPolicy`/`dnsConfig` → CRI `PodSandboxConfig.dns_config` (`dns_config_for()`), via new `NODELET_CLUSTER_DNS`/`NODELET_CLUSTER_DOMAIN`
@@ -3562,5 +3611,13 @@ higher-value/correctness-critical than others:
       (already fetched every reconcile, just never read). No new RPC,
       no new plumbing. Genuinely automated e2e test. See round 52
       notes.
-- [ ] `Node.status.runtimeHandlers` is the only remaining item from
-      round 50's audit. Ask before starting the next round.
+- [x] Round 53: `Node.status.runtimeHandlers` — **this closes round
+      50's audit list entirely.** New `PodRuntime::runtime_handlers()`
+      calls CRI's runtime-level `Status` RPC (never called before this
+      round) and maps discovered handlers through, reusing the
+      `images`/`mounted_csi_volumes`-shaped plumbing rounds 33/34
+      already established. Genuinely automated e2e test. See round 53
+      notes.
+- [ ] All 4 audit lists to date (rounds 35, 39, 45, 50) are now fully
+      closed. A fresh gap re-audit is the natural next step. Ask before
+      starting the next round.

@@ -12,7 +12,7 @@ use k8s_openapi::jiff::Timestamp;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::api::core::v1::{
     AttachedVolume, ContainerImage, DaemonEndpoint, Node, NodeAddress, NodeCondition, NodeDaemonEndpoints,
-    NodeSpec, NodeStatus, NodeSystemInfo, Taint,
+    NodeRuntimeHandler, NodeRuntimeHandlerFeatures, NodeSpec, NodeStatus, NodeSystemInfo, Taint,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta, Time};
@@ -228,12 +228,28 @@ fn csi_unique_volume_name(driver: &str, volume_handle: &str) -> String {
     format!("kubernetes.io/csi/{driver}^{volume_handle}")
 }
 
+/// `PodRuntime::runtime_handlers()` -> `Node.status.runtimeHandlers`
+/// (round 53) — pure so the mapping is unit-testable without a cluster.
+fn runtime_handlers_status(handlers: &[crate::runtime::RuntimeHandlerInfo]) -> Vec<NodeRuntimeHandler> {
+    handlers
+        .iter()
+        .map(|h| NodeRuntimeHandler {
+            name: Some(h.name.clone()),
+            features: Some(NodeRuntimeHandlerFeatures {
+                recursive_read_only_mounts: Some(h.recursive_read_only_mounts),
+                user_namespaces: Some(h.user_namespaces),
+            }),
+        })
+        .collect()
+}
+
 fn build_status(
     cfg: &Config,
     ready: bool,
     extra_capacity: &BTreeMap<String, u64>,
     images: Vec<crate::runtime::NodeImage>,
     mounted_csi_volumes: &[(String, String)],
+    runtime_handlers: &[crate::runtime::RuntimeHandlerInfo],
 ) -> NodeStatus {
     let mut cap = capacity_map(cfg);
     for (name, count) in extra_capacity {
@@ -256,6 +272,7 @@ fn build_status(
         conditions: Some(conditions(ready, &pressure)),
         node_info: Some(system_info(cfg)),
         images: Some(select_node_images(images)),
+        runtime_handlers: Some(runtime_handlers_status(runtime_handlers)),
         volumes_in_use: Some(
             mounted_csi_volumes.iter().map(|(driver, handle)| csi_unique_volume_name(driver, handle)).collect(),
         ),
@@ -290,11 +307,12 @@ pub async fn register(
     extra_capacity: &BTreeMap<String, u64>,
     images: Vec<crate::runtime::NodeImage>,
     mounted_csi_volumes: &[(String, String)],
+    runtime_handlers: &[crate::runtime::RuntimeHandlerInfo],
 ) -> Result<()> {
     let api: Api<Node> = Api::all(client.clone());
     let pp = PatchParams::apply(FIELD_MANAGER).force();
     api.patch(&cfg.node_name, &pp, &Patch::Apply(&build_node(cfg))).await?;
-    push_status(client, cfg, true, extra_capacity, images, mounted_csi_volumes).await?;
+    push_status(client, cfg, true, extra_capacity, images, mounted_csi_volumes, runtime_handlers).await?;
     renew_lease(client, cfg).await?;
 
     // k3s's cloud-node-lifecycle-controller adds this taint asynchronously
@@ -354,9 +372,10 @@ pub async fn push_status(
     extra_capacity: &BTreeMap<String, u64>,
     images: Vec<crate::runtime::NodeImage>,
     mounted_csi_volumes: &[(String, String)],
+    runtime_handlers: &[crate::runtime::RuntimeHandlerInfo],
 ) -> Result<()> {
     let api: Api<Node> = Api::all(client.clone());
-    let status = build_status(cfg, ready, extra_capacity, images, mounted_csi_volumes);
+    let status = build_status(cfg, ready, extra_capacity, images, mounted_csi_volumes, runtime_handlers);
     let patch = serde_json::json!({ "status": status });
     api.patch_status(&cfg.node_name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
     Ok(())

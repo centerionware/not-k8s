@@ -55,7 +55,7 @@ fn cfg() -> Config {
 
 #[test]
 fn no_extra_capacity_leaves_only_the_standard_four_resources() {
-    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &[]);
+    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &[], &[]);
     let cap = status.capacity.unwrap();
     assert_eq!(cap.len(), 4);
 }
@@ -64,7 +64,7 @@ fn no_extra_capacity_leaves_only_the_standard_four_resources() {
 fn device_plugin_resources_are_added_to_capacity() {
     let mut extra = BTreeMap::new();
     extra.insert("nvidia.com/gpu".to_string(), 2u64);
-    let status = build_status(&cfg(), true, &extra, Vec::new(), &[]);
+    let status = build_status(&cfg(), true, &extra, Vec::new(), &[], &[]);
     let cap = status.capacity.unwrap();
     assert_eq!(cap.get("nvidia.com/gpu").unwrap().0, "2");
     assert_eq!(cap.len(), 5);
@@ -74,7 +74,7 @@ fn device_plugin_resources_are_added_to_capacity() {
 fn device_plugin_resources_also_appear_in_allocatable() {
     let mut extra = BTreeMap::new();
     extra.insert("nvidia.com/gpu".to_string(), 2u64);
-    let status = build_status(&cfg(), true, &extra, Vec::new(), &[]);
+    let status = build_status(&cfg(), true, &extra, Vec::new(), &[], &[]);
     let alloc = status.allocatable.unwrap();
     assert_eq!(alloc.get("nvidia.com/gpu").unwrap().0, "2");
 }
@@ -84,7 +84,7 @@ fn multiple_extended_resources_all_appear() {
     let mut extra = BTreeMap::new();
     extra.insert("nvidia.com/gpu".to_string(), 1u64);
     extra.insert("example.com/fpga".to_string(), 3u64);
-    let status = build_status(&cfg(), true, &extra, Vec::new(), &[]);
+    let status = build_status(&cfg(), true, &extra, Vec::new(), &[], &[]);
     let cap = status.capacity.unwrap();
     assert_eq!(cap.get("nvidia.com/gpu").unwrap().0, "1");
     assert_eq!(cap.get("example.com/fpga").unwrap().0, "3");
@@ -94,7 +94,7 @@ fn multiple_extended_resources_all_appear() {
 fn zero_healthy_devices_still_reports_the_resource_as_zero() {
     let mut extra = BTreeMap::new();
     extra.insert("nvidia.com/gpu".to_string(), 0u64);
-    let status = build_status(&cfg(), true, &extra, Vec::new(), &[]);
+    let status = build_status(&cfg(), true, &extra, Vec::new(), &[], &[]);
     assert_eq!(status.capacity.unwrap().get("nvidia.com/gpu").unwrap().0, "0");
 }
 
@@ -106,14 +106,14 @@ fn img(names: &[&str], size_bytes: u64) -> crate::runtime::NodeImage {
 
 #[test]
 fn no_images_at_all_produces_an_empty_but_present_list() {
-    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &[]);
+    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &[], &[]);
     assert!(status.images.unwrap().is_empty());
 }
 
 #[test]
 fn images_are_reported_largest_first() {
     let images = vec![img(&["small:latest"], 100), img(&["big:latest"], 900), img(&["medium:latest"], 500)];
-    let status = build_status(&cfg(), true, &BTreeMap::new(), images, &[]);
+    let status = build_status(&cfg(), true, &BTreeMap::new(), images, &[], &[]);
     let reported = status.images.unwrap();
     assert_eq!(reported.len(), 3);
     assert_eq!(reported[0].names.as_ref().unwrap()[0], "big:latest");
@@ -124,7 +124,7 @@ fn images_are_reported_largest_first() {
 #[test]
 fn image_names_and_size_round_trip() {
     let images = vec![img(&["repo:v1", "repo@sha256:abc"], 12345)];
-    let status = build_status(&cfg(), true, &BTreeMap::new(), images, &[]);
+    let status = build_status(&cfg(), true, &BTreeMap::new(), images, &[], &[]);
     let reported = status.images.unwrap();
     assert_eq!(reported[0].names.as_ref().unwrap(), &vec!["repo:v1".to_string(), "repo@sha256:abc".to_string()]);
     assert_eq!(reported[0].size_bytes, Some(12345));
@@ -133,7 +133,7 @@ fn image_names_and_size_round_trip() {
 #[test]
 fn more_than_fifty_images_are_capped_to_the_fifty_largest() {
     let images: Vec<_> = (0..75).map(|i| img(&["x"], i)).collect();
-    let status = build_status(&cfg(), true, &BTreeMap::new(), images, &[]);
+    let status = build_status(&cfg(), true, &BTreeMap::new(), images, &[], &[]);
     let reported = status.images.unwrap();
     assert_eq!(reported.len(), 50);
     // The 50 largest of 0..75 are 25..75, so the smallest kept is 74.
@@ -145,7 +145,7 @@ fn more_than_fifty_images_are_capped_to_the_fifty_largest() {
 
 #[test]
 fn no_mounted_csi_volumes_produces_empty_but_present_lists() {
-    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &[]);
+    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &[], &[]);
     assert!(status.volumes_in_use.unwrap().is_empty());
     assert!(status.volumes_attached.unwrap().is_empty());
 }
@@ -153,7 +153,7 @@ fn no_mounted_csi_volumes_produces_empty_but_present_lists() {
 #[test]
 fn a_mounted_csi_volume_appears_in_both_lists_with_the_kubelet_naming_scheme() {
     let mounted = vec![("csi.example.com".to_string(), "vol-1".to_string())];
-    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &mounted);
+    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &mounted, &[]);
     let expected = "kubernetes.io/csi/csi.example.com^vol-1".to_string();
     assert_eq!(status.volumes_in_use.unwrap(), vec![expected.clone()]);
     let attached = status.volumes_attached.unwrap();
@@ -166,7 +166,51 @@ fn a_mounted_csi_volume_appears_in_both_lists_with_the_kubelet_naming_scheme() {
 fn multiple_mounted_volumes_all_appear() {
     let mounted =
         vec![("driver-a".to_string(), "vol-a".to_string()), ("driver-b".to_string(), "vol-b".to_string())];
-    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &mounted);
+    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &mounted, &[]);
     assert_eq!(status.volumes_in_use.unwrap().len(), 2);
     assert_eq!(status.volumes_attached.unwrap().len(), 2);
+}
+
+// --- runtimeHandlers (round 53) ---
+
+#[test]
+fn no_runtime_handlers_produces_an_empty_but_present_list() {
+    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &[], &[]);
+    assert!(status.runtime_handlers.unwrap().is_empty());
+}
+
+#[test]
+fn a_runtime_handler_carries_its_name_and_features_through() {
+    let handlers = vec![crate::runtime::RuntimeHandlerInfo {
+        name: "kata".to_string(),
+        recursive_read_only_mounts: true,
+        user_namespaces: false,
+    }];
+    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &[], &handlers);
+    let reported = status.runtime_handlers.unwrap();
+    assert_eq!(reported.len(), 1);
+    assert_eq!(reported[0].name.as_deref(), Some("kata"));
+    let features = reported[0].features.as_ref().unwrap();
+    assert_eq!(features.recursive_read_only_mounts, Some(true));
+    assert_eq!(features.user_namespaces, Some(false));
+}
+
+#[test]
+fn the_default_handler_has_an_empty_name() {
+    // Empty string denotes the default handler, matching both CRI's and
+    // the Kubernetes API's own convention for this field.
+    let handlers =
+        vec![crate::runtime::RuntimeHandlerInfo { name: String::new(), recursive_read_only_mounts: false, user_namespaces: false }];
+    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &[], &handlers);
+    assert_eq!(status.runtime_handlers.unwrap()[0].name.as_deref(), Some(""));
+}
+
+#[test]
+fn multiple_runtime_handlers_all_appear() {
+    let handlers = vec![
+        crate::runtime::RuntimeHandlerInfo { name: "runc".to_string(), recursive_read_only_mounts: true, user_namespaces: true },
+        crate::runtime::RuntimeHandlerInfo { name: "kata".to_string(), recursive_read_only_mounts: false, user_namespaces: false },
+    ];
+    let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &[], &handlers);
+    assert_eq!(status.runtime_handlers.unwrap().len(), 2);
 }

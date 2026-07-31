@@ -327,8 +327,11 @@ refuses to pull at all instead of silently doing so, and
 is cached, both real wins for genuinely offline edge operation. Round 52 closed
 **`ContainerStatus.imageID`** — CRI's own `Container.image_ref` (a
 digested image reference, already fetched every reconcile) is now
-carried through instead of always reporting the empty string. Full
-status list in `docs/GAP_CLOSURE.md`.
+carried through instead of always reporting the empty string. Round 53
+closed the last item: **`Node.status.runtimeHandlers`** now reports
+the discovered RuntimeClass handlers via CRI's runtime-level `Status`
+RPC (never called before this round) — all 4 audit lists to date are
+now fully closed. Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 

@@ -289,6 +289,26 @@ pub trait PodRuntime: Send + Sync {
     fn mounted_csi_volumes(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+
+    /// RuntimeClass handlers this runtime has discovered — feeds
+    /// `Node.status.runtimeHandlers` (round 53; found in round 50's
+    /// re-audit), via CRI's own runtime-level `Status` RPC. Used by
+    /// RuntimeClass-aware tooling to confirm a handler actually exists on
+    /// a node before scheduling to it. Default: empty (mock has no real
+    /// runtime handlers to discover).
+    async fn runtime_handlers(&self) -> anyhow::Result<Vec<RuntimeHandlerInfo>> {
+        Ok(Vec::new())
+    }
+}
+
+/// One CRI runtime handler, in the shape `Node.status.runtimeHandlers`
+/// needs (round 53) — `name` empty denotes the default handler, matching
+/// both CRI's and the Kubernetes API's own convention for this field.
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeHandlerInfo {
+    pub name: String,
+    pub recursive_read_only_mounts: bool,
+    pub user_namespaces: bool,
 }
 
 /// CPU/memory usage numbers in the same shape CRI's `CpuUsage`/`MemoryUsage`

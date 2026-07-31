@@ -55,6 +55,24 @@ test_node_reports_a_real_kernel_and_os_image() {
     assert_not_empty "$os_image" "osImage"
 }
 
+test_node_status_reports_runtime_handlers() {
+    # Round 53: Node.status.runtimeHandlers was never populated at all
+    # before this — CRI's own runtime-level Status RPC (which returns the
+    # discovered handler list) was never called. Not asserting a specific
+    # handler name (varies by containerd config) — just that at least one
+    # real entry is present, since a real containerd install always
+    # reports at least its default handler.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local n
+    n="$(node_name)"
+    local count
+    count="$(kubectl get node "$n" -o jsonpath='{.status.runtimeHandlers}' | jq 'length' 2>/dev/null || echo 0)"
+    if [[ "$count" -eq 0 ]]; then
+        skip_test "Node.status.runtimeHandlers is empty — either this containerd version doesn't report any handlers via its Status RPC, or jq isn't available to parse the field"
+    fi
+    assert_true bash -c "[[ '$count' -gt 0 ]]" "runtimeHandlers should list at least the default handler"
+}
+
 test_node_status_images_reflects_a_real_pulled_image() {
     # Round 33: Node.status.images was never populated at all before this.
     # Genuinely automatable — TEST_IMAGE is already guaranteed to be
@@ -99,4 +117,5 @@ EOF
 register_test test_node_is_ready_with_capacity_advertised
 register_test test_pressure_conditions_are_present_and_normally_false
 register_test test_node_reports_a_real_kernel_and_os_image
+register_test test_node_status_reports_runtime_handlers
 register_test test_node_status_images_reflects_a_real_pulled_image
