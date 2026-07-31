@@ -143,12 +143,14 @@ envs/mounts/device-nodes via the plugin's `Allocate()` RPC —
 **unvalidated against real hardware**, see round 14 notes. Also **CPU
 Manager** (`cpu_manager.rs`, `NODELET_CPU_MANAGER_POLICY=static`,
 disabled by default) — Guaranteed-QoS containers requesting a whole
-number of CPUs get pinned to exclusive cores; a first slice that sets
-`cpuset_cpus` at container-creation time only (no retroactive shrink/grow
-of already-running shared-pool containers, no topology/socket awareness),
-see round 15 notes. Still missing: Memory/Topology managers, CSI's
-Controller service, and device plugins' `GetPreferredAllocation`/
-`PreStartContainer` — full list in `docs/GAP_CLOSURE.md`.
+number of CPUs get pinned to exclusive cores, and (round 16)
+already-running shared-pool containers get retroactively shrunk/grown via
+CRI's `UpdateContainerResources` as exclusive claims are made/released,
+matching real kubelet's bidirectional behavior. Not topology/socket-aware
+yet (simple ascending-CPU-ID selection) — that's Topology Manager's job.
+Still missing: Memory/Topology managers, CSI's Controller service, and
+device plugins' `GetPreferredAllocation`/`PreStartContainer` — full list
+in `docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -602,10 +604,13 @@ Two layers, and they're not substitutes for each other:
 
   `cpu_manager.sh` creates two Guaranteed 1-CPU pods and checks their
   `cpuset.cpus` cgroup files (found by container ID, tolerant of driver
-  naming) are non-empty and disjoint — unlike device plugins, this needs
-  no special hardware, so it's a real automated check. Needs
-  `TEST_CPU_MANAGER_STATIC=true` telling the suite the running nodelet has
-  `NODELET_CPU_MANAGER_POLICY=static` set.
+  naming) are non-empty and disjoint, plus (round 16) a second test that
+  creates a BestEffort pod first and asserts its cpuset actually *changes*
+  once a later Guaranteed pod claims an exclusive core — proving the
+  retroactive shared-pool update, not just disjoint assignment. Unlike
+  device plugins, this needs no special hardware, so it's a real automated
+  check. Needs `TEST_CPU_MANAGER_STATIC=true` telling the suite the
+  running nodelet has `NODELET_CPU_MANAGER_POLICY=static` set.
 
 ## Configuration (environment variables)
 

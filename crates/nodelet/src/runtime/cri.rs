@@ -62,7 +62,7 @@ use v1::{
     RemoveImageRequest, RemovePodSandboxRequest, RunPodSandboxRequest, StartContainerRequest,
     StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest, ReopenContainerLogRequest,
     ExecRequest, AttachRequest, PortForwardRequest, ListPodSandboxStatsRequest,
-    security_profile::ProfileType, SecurityProfile,
+    UpdateContainerResourcesRequest, security_profile::ProfileType, SecurityProfile,
 };
 
 /// Where ConfigMap/Secret volume contents get materialized on the host, one
@@ -142,6 +142,15 @@ pub struct CriRuntime {
     /// unset/`none` (the default), meaning every container's `cpuset_cpus`
     /// is left unset ("unconstrained"), exactly the pre-round-15 behavior.
     cpu_manager: Option<crate::cpu_manager::CpuManager>,
+    /// `"sandbox_id/container_name" -> (container_id, last-applied
+    /// LinuxContainerResources)` for every currently-running container,
+    /// kept only so CPU Manager's retroactive shared-pool refresh
+    /// (`refresh_shared_pool_cpusets()`) can call `UpdateContainerResources`
+    /// with everything unchanged except `cpuset_cpus` — CRI's `ListContainers`
+    /// doesn't expose a container's currently-applied resources in any
+    /// structured, cross-runtime way, so this is nodelet's own record of
+    /// "what did I last tell the runtime this container's resources were."
+    container_resources: Mutex<HashMap<String, (String, LinuxContainerResources)>>,
 }
 
 /// Identity extracted from a Pod object.
@@ -1112,6 +1121,7 @@ impl CriRuntime {
             device_plugins,
             device_allocations: Mutex::new(HashMap::new()),
             cpu_manager,
+            container_resources: Mutex::new(HashMap::new()),
         })
     }
 
@@ -1680,7 +1690,7 @@ impl CriRuntime {
                 // problem instead of masking it here.
                 if let Some(c) = existing_ctr {
                     self.bump_restart_count(sandbox_id, &container.name);
-                    self.release_container_devices(sandbox_id, &container.name);
+                    self.release_container_devices(sandbox_id, &container.name).await;
                     let mut rt = self.rt.clone();
                     let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
                 }
@@ -1812,20 +1822,29 @@ impl CriRuntime {
     /// exclusive claim recorded for one container — call before recreating
     /// a container (restart-on-exit) or removing it outright, so both go
     /// back to their respective pools instead of being stranded as
-    /// permanently "in use."
-    fn release_container_devices(&self, sandbox_id: &str, container_name: &str) {
+    /// permanently "in use." Also drops the container from
+    /// `container_resources` (it's gone, nothing left to refresh) and, if
+    /// it held an exclusive CPU claim, sweeps the shared pool so its cores
+    /// are actually usable by whatever's already running rather than just
+    /// theoretically free.
+    async fn release_container_devices(&self, sandbox_id: &str, container_name: &str) {
         let key = restart_count_key(sandbox_id, container_name);
         if let Some(allocations) = self.device_allocations.lock().unwrap().remove(&key) {
             self.release_devices(&allocations);
         }
+        self.container_resources.lock().unwrap().remove(&key);
         if let Some(cpu_manager) = &self.cpu_manager {
+            let was_exclusive = cpu_manager.is_exclusive(&key);
             cpu_manager.release(&key);
+            if was_exclusive {
+                self.refresh_shared_pool_cpusets().await;
+            }
         }
     }
 
     /// Same, for every container in a sandbox that's being torn down —
     /// mirrors `clear_restart_counts()`'s prefix-based sweep.
-    fn release_sandbox_devices(&self, sandbox_id: &str) {
+    async fn release_sandbox_devices(&self, sandbox_id: &str) {
         let prefix = format!("{sandbox_id}/");
         let removed: Vec<Vec<(String, Vec<String>)>> = {
             let mut table = self.device_allocations.lock().unwrap();
@@ -1835,8 +1854,61 @@ impl CriRuntime {
         for allocations in removed {
             self.release_devices(&allocations);
         }
+        self.container_resources.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));
         if let Some(cpu_manager) = &self.cpu_manager {
+            // Unconditionally refresh (unlike release_container_devices,
+            // which only bothers when it knows a single container was
+            // exclusive) — a sandbox can hold several containers, cheaper
+            // to just always sweep once than track whether any of them
+            // held a claim before release_sandbox() below forgets that.
             cpu_manager.release_sandbox(sandbox_id);
+            self.refresh_shared_pool_cpusets().await;
+        }
+    }
+
+    /// CPU Manager's retroactive half: bring every currently-tracked,
+    /// non-exclusively-pinned container's `cpuset_cpus` in line with the
+    /// current shared pool, via CRI's `UpdateContainerResources`. Called
+    /// after any exclusive claim or release changes what the shared pool
+    /// actually is. No-op if the policy is disabled. Best-effort per
+    /// container — one runtime error updating a stale/gone container must
+    /// not stop the rest from being refreshed; `container_resources` is
+    /// only updated for entries that were actually applied successfully,
+    /// so a failed update gets retried on the next pool change instead of
+    /// nodelet believing it already happened.
+    async fn refresh_shared_pool_cpusets(&self) {
+        let Some(cpu_manager) = &self.cpu_manager else { return };
+        let shared = crate::cpu_manager::format_cpuset(&cpu_manager.shared_pool());
+
+        let entries: Vec<(String, String, LinuxContainerResources)> = self
+            .container_resources
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(key, (container_id, resources))| (key.clone(), container_id.clone(), resources.clone()))
+            .collect();
+
+        let mut rt = self.rt.clone();
+        for (key, container_id, mut resources) in entries {
+            if cpu_manager.is_exclusive(&key) || resources.cpuset_cpus == shared {
+                continue; // exclusively-pinned containers keep their own dedicated set; already-correct ones need no call
+            }
+            resources.cpuset_cpus = shared.clone();
+            match rt
+                .update_container_resources(UpdateContainerResourcesRequest {
+                    container_id: container_id.clone(),
+                    linux: Some(resources.clone()),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(_) => {
+                    self.container_resources.lock().unwrap().insert(key, (container_id, resources));
+                }
+                Err(e) => {
+                    warn!(container_id, error = ?e, "CPU Manager: failed to refresh a shared-pool container's cpuset; will retry on the next pool change");
+                }
+            }
         }
     }
 
@@ -1908,6 +1980,7 @@ impl CriRuntime {
             resources.cpuset_cpus = crate::cpu_manager::format_cpuset(&cpuset);
         }
 
+        let resources_for_record = resources.clone();
         let linux = Some(LinuxContainerConfig {
             resources: Some(resources),
             security_context: Some(linux_security_context(pod_sc, container.security_context.as_ref())),
@@ -1990,8 +2063,19 @@ impl CriRuntime {
         self.record_device_allocations(sandbox_id, &container.name, allocated_devices);
 
         if let Err(e) = rt.start_container(StartContainerRequest { container_id: created.container_id.clone() }).await {
-            self.release_container_devices(sandbox_id, &container.name);
+            self.release_container_devices(sandbox_id, &container.name).await;
             return Err(e).context("starting container");
+        }
+
+        // Record this container's own resources so a later shared-pool
+        // refresh (triggered by some *other* container's exclusive claim/
+        // release) can find and update it, and — if this container itself
+        // just took a new exclusive claim — sweep every other already-
+        // running shared-pool container to exclude these cores now.
+        let key = restart_count_key(sandbox_id, &container.name);
+        self.container_resources.lock().unwrap().insert(key, (created.container_id.clone(), resources_for_record));
+        if cpu_manager_key.is_some() {
+            self.refresh_shared_pool_cpusets().await;
         }
 
         // postStart runs after the container is started; a failing hook
@@ -2161,7 +2245,7 @@ impl CriRuntime {
                     // stream) sees no existing container and creates a fresh one.
                     let c = existing_ctr.expect("Retry only reached when a container exists");
                     self.bump_restart_count(sandbox_id, &container.name);
-                    self.release_container_devices(sandbox_id, &container.name);
+                    self.release_container_devices(sandbox_id, &container.name).await;
                     let mut rt = self.rt.clone();
                     let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;
                     return Ok(InitProgress::Waiting);
@@ -2197,7 +2281,7 @@ impl CriRuntime {
             }
             self.restart_policies.lock().unwrap().remove(&sandbox_id);
             self.clear_restart_counts(&sandbox_id);
-            self.release_sandbox_devices(&sandbox_id);
+            self.release_sandbox_devices(&sandbox_id).await;
         }
         Ok(())
     }
@@ -2384,7 +2468,7 @@ impl PodRuntime for CriRuntime {
                 let _ = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
                 self.restart_policies.lock().unwrap().remove(&stale_id);
                 self.clear_restart_counts(&stale_id);
-                self.release_sandbox_devices(&stale_id);
+                self.release_sandbox_devices(&stale_id).await;
                 self.run_sandbox(&id, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
             }
             SandboxDecision::CreateFresh => {
@@ -2510,7 +2594,7 @@ impl PodRuntime for CriRuntime {
                 .context("RemovePodSandbox")?;
             self.restart_policies.lock().unwrap().remove(&sandbox_id);
             self.clear_restart_counts(&sandbox_id);
-            self.release_sandbox_devices(&sandbox_id);
+            self.release_sandbox_devices(&sandbox_id).await;
         }
         self.unmount_csi_volumes(pod, &id).await;
         Ok(())

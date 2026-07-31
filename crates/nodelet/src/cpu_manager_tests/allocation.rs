@@ -74,3 +74,27 @@ fn reserved_cpus_are_never_handed_out() {
     assert_eq!(picked, [1].into_iter().collect());
     assert!(mgr.allocate("sandbox/b", 1).is_none()); // nothing left
 }
+
+#[test]
+fn is_exclusive_reflects_a_live_claim() {
+    let mgr = CpuManager::new(4, 0);
+    assert!(!mgr.is_exclusive("sandbox/a"));
+    mgr.allocate("sandbox/a", 1).unwrap();
+    assert!(mgr.is_exclusive("sandbox/a"));
+}
+
+#[test]
+fn is_exclusive_is_false_again_after_release() {
+    let mgr = CpuManager::new(4, 0);
+    mgr.allocate("sandbox/a", 1).unwrap();
+    mgr.release("sandbox/a");
+    assert!(!mgr.is_exclusive("sandbox/a"));
+}
+
+#[test]
+fn is_exclusive_is_false_for_a_shared_pool_only_container() {
+    // A container that never called allocate() (BestEffort/Burstable, or a
+    // Guaranteed pod with a fractional CPU request) never appears here.
+    let mgr = CpuManager::new(4, 0);
+    assert!(!mgr.is_exclusive("sandbox/never-allocated"));
+}

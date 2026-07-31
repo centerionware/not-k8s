@@ -9,21 +9,20 @@
 //! Opt-in, matching upstream: `NODELET_CPU_MANAGER_POLICY` defaults to
 //! `none` (kubelet's own default) — `static` turns this on.
 //!
-//! **Scoped as a first slice, not the full static policy.** Real kubelet's
-//! CPU Manager is bidirectional: when a container claims exclusive cores,
-//! every *other already-running* shared-pool container gets its
-//! `cpuset.cpus` retroactively shrunk (via `UpdateContainerResources`) to
-//! exclude them, and grown back when the claim is released. This
-//! implementation only sets `cpuset_cpus` **at container-creation time** —
-//! every container created *after* an exclusive claim correctly excludes
-//! those cores from its own shared-pool cpuset, but a container that was
-//! already running before the claim keeps whatever cpuset it started
-//! with. This still delivers the core guarantee (an exclusive container's
-//! cores are never *newly* handed to something else), just not full
-//! retroactive isolation from whatever happened to already be running.
-//! Documented here rather than silently thin — see docs/GAP_CLOSURE.md.
+//! **Bidirectional, matching real kubelet's static policy** (closed round
+//! 16's gap from the initial round-15 slice): when a container claims
+//! exclusive cores, every *other already-running* shared-pool container
+//! gets its `cpuset.cpus` retroactively shrunk to exclude them — and
+//! grown back when the claim is released — via CRI's
+//! `UpdateContainerResources` (`runtime/cri.rs::refresh_shared_pool_cpusets()`,
+//! called after every `allocate()`/`release()`). This module itself only
+//! tracks *which* CPUs are claimed by *which* key; it has no CRI client of
+//! its own — the actual `UpdateContainerResources` calls, and the
+//! "what were this container's other resource fields" bookkeeping needed
+//! to avoid clobbering them, live in `runtime/cri.rs` since only it has
+//! the CRI connection and per-container state.
 //!
-//! Also not implemented: Topology Manager (NUMA-aware coordination between
+//! Not implemented: Topology Manager (NUMA-aware coordination between
 //! this, device plugins' `TopologyInfo`, and memory placement) and Memory
 //! Manager. CPU selection here is simple ascending-CPU-ID, not topology-
 //! aware core/socket packing.
@@ -130,9 +129,9 @@ impl CpuManager {
     }
 
     /// Release `key`'s exclusive claim, if it has one — back into the
-    /// shared pool for the *next* container created after this call
-    /// (existing shared-pool containers aren't retroactively grown; see
-    /// the module doc comment).
+    /// shared pool. The caller (`runtime/cri.rs`) is responsible for then
+    /// calling `refresh_shared_pool_cpusets()` so already-running
+    /// shared-pool containers actually get grown back onto these cores.
     pub fn release(&self, key: &str) {
         self.exclusive.lock().unwrap().remove(key);
     }
@@ -142,6 +141,13 @@ impl CpuManager {
     pub fn release_sandbox(&self, sandbox_id: &str) {
         let prefix = format!("{sandbox_id}/");
         self.exclusive.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));
+    }
+
+    /// Whether `key` currently holds an exclusive claim — `runtime/cri.rs`'s
+    /// `refresh_shared_pool_cpusets()` uses this to skip exclusively-pinned
+    /// containers when sweeping the shared pool across everything else.
+    pub fn is_exclusive(&self, key: &str) -> bool {
+        self.exclusive.lock().unwrap().contains_key(key)
     }
 }
 
