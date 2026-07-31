@@ -27,6 +27,61 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 48: local ephemeral storage, slice 1 — capacity/allocatable (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-47). Local ephemeral
+storage was the last open item from round 45's audit; user picked
+starting the arc over a fresh re-audit.
+
+**Scope of this slice**: `Node.status.capacity`/`.allocatable`
+reporting only. Explicitly **out of scope for this round** (left for a
+follow-up slice, matching the resize arc's rounds 42/43 pattern): an
+eviction-manager signal for `nodefs`/`imagefs` disk pressure tied to
+this resource, and any request/limit enforcement on it.
+
+Before this round, `ephemeral-storage` appeared nowhere in
+`Node.status.capacity`/`.allocatable` at all — `capacity_map()` only
+ever reported `cpu`/`memory`/`pods`.
+
+- **New `ephemeral_storage_capacity_bytes(cfg) -> u64`**: reuses
+  `metrics.rs`'s existing `read_disk_info(&cfg.disk_path)` — the exact
+  same `statvfs(2)` call `DiskPressure` already makes — rather than
+  adding any new syscall plumbing. Real kubelet's own
+  `ephemeral-storage` capacity is likewise just the total size of the
+  filesystem backing its root dir. `0` on a read failure (an
+  unreadable/misconfigured `disk_path`), matching `read_disk_info()`'s
+  own "fail open to unknown, never assume pressure" contract — reported
+  as a real `0`, not an omitted field.
+- **`capacity_map()`** gained the new `"ephemeral-storage"` key.
+  **`allocatable_map()`** needed no code change at all: it only ever
+  touches the `"cpu"`/`"memory"` keys explicitly, so `ephemeral-storage`
+  (like `pods`) passes through from capacity untouched — correct
+  default behavior, since this project has no
+  `--system-reserved`/`--kube-reserved`-equivalent knob for this
+  resource (documented, not a code gap).
+- No new env vars — reuses the existing `NODELET_DISK_PATH`-configured
+  `disk_path` that already backs `DiskPressure`.
+- 4 new/updated unit tests (`node_tests/capacity_map.rs`): the "exactly
+  three keys" test became "exactly four", a new positive-byte-count
+  check against the real filesystem (`cfg().disk_path` is `/tmp` in
+  tests, which always exists), and a new "unreadable path fails open to
+  0" case. `node_tests/build_status.rs`'s two capacity-length
+  assertions (no-extra-capacity, device-plugin-resources-added) bumped
+  by one each to account for the new key.
+- New e2e assertions (`deploy/lib/test/cases/node_status.sh`, extending
+  the existing capacity test rather than adding a new one): a real
+  positive `status.capacity.ephemeral-storage` byte count, and
+  `status.allocatable.ephemeral-storage` equaling capacity exactly (no
+  reservation applied).
+
+**Confidence note**: `ephemeral_storage_capacity_bytes()` is pure and
+unit-tested against both a real path (this sandbox's own `/tmp`) and a
+deliberately-broken one; the e2e assertions are genuine live proof
+against whatever `NODELET_DISK_PATH` the real deployment actually uses.
+High confidence — this slice is a small, direct reuse of already-
+validated machinery (`DiskPressure`'s own `statvfs(2)` read, live since
+an earlier round), not new ground.
+
 ## Round 47: startup probe failure restart (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-46). Offered the 2
@@ -2872,7 +2927,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **In-place pod vertical scaling** (`resize` subresource, GA 1.33; found in round 39's re-audit, mechanism round 42, status reporting round 43) — new pure `resize_decision()` compares an already-running container's *actual* last-applied resources (reusing `container_resources`, tracked since round 16 for CPU Manager) against the pod spec's *desired* ones, applying a change in-place via the existing `UpdateContainerResources` RPC when `resizePolicy` allows it (default `NotRequired`), or funneling into the existing restart machinery when it demands `RestartContainer`. `containerStatuses[].resources`/`.allocatedResources` (app containers only) and a `PodResizeInProgress` condition are now reported (round 43), computed purely from two new side tables tracking "actually applied" vs. "currently requested" resources. Genuinely automated e2e tests (`kubectl exec` reads the container's own live cgroup file and the reported status fields, before/after `kubectl patch --subresource resize`). **Still open**: `PodResizePending` isn't implemented — nodelet has no admission/node-fitting layer that could ever *defer* a resize, so there's no real state for it to represent (intentional non-goal, documented, not an oversight); no admission-time rejection of a resize that would change a pod's QoS class (same pre-existing no-admission-layer boundary); init/ephemeral containers don't participate in resize at all yet. See rounds 42-43 notes.
 - ✅ **`oom_score_adj`** (round 28; found in round 27's re-audit) — `linux_resources()` now sets CRI's `LinuxContainerResources.oom_score_adj` per container via `eviction::oom_score_adj()`: Guaranteed `-998`, BestEffort `1000`, Burstable scaled by that container's own memory *request* against node capacity (`1000 - 1000*request/capacity`, clamped `[2, 999]`), matching real kubelet's formula exactly. Gives the kernel OOM killer QoS-aware signal, closing a real gap in this project's own eviction-manager story (rounds 7, 26) — a kernel OOM kill can happen faster than `eviction_loop()`'s check interval reacts. See round 28 notes.
 - ✅ **gRPC probes** (round 29; found in round 27's re-audit) — `probes.rs::probe_check()` now handles `probe.grpc` too, via a vendored `grpc.health.v1` client (`proto/health.proto`) calling the standard `Health/Check` RPC. `cri`-gated (needs `tonic`'s transport); a mock-only build's `check_grpc()` always returns `false`. Unit-tested failure paths (timeout, refused, non-gRPC listener) with solid confidence; the success path (a real passing `Health/Check`) is unvalidated — no gRPC server available in this sandbox to prove it live. See round 29 notes.
-- ❌ **Local ephemeral storage** (found in round 45's re-audit) — no `ephemeral-storage` anywhere: not in `Node.status.capacity`/`.allocatable`, no request/limit enforcement, no eviction-manager signal for `nodefs`/`imagefs` disk pressure at all (`eviction.rs`/`node.rs` both have zero references). First surfaced implicitly by round 44's `resolve_resource_field_ref()`, which had to resolve `limits.ephemeral-storage`/`requests.ephemeral-storage` to a documented `"0"` stub rather than a real value. Ties into this project's own pre-existing eviction-manager story (rounds 7, 26, 28) the same way `oom_score_adj` (round 28) did.
+- 🟡 **Local ephemeral storage** (found in round 45's re-audit; capacity/allocatable closed round 48) — `Node.status.capacity`/`.allocatable["ephemeral-storage"]` now reports the real total size of the filesystem backing `disk_path`, reusing the same `statvfs(2)` read `DiskPressure` already makes. **Still open**: no request/limit enforcement on this resource, and no eviction-manager signal for `nodefs`/`imagefs` disk pressure tied to it (`eviction.rs` still has zero references) — round 48 was deliberately scoped to capacity reporting only, matching the resize arc's slice-1/slice-2 pattern. First surfaced implicitly by round 44's `resolve_resource_field_ref()`, which had to resolve `limits.ephemeral-storage`/`requests.ephemeral-storage` to a documented `"0"` stub rather than a real value. See round 48 notes.
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
@@ -3213,8 +3268,17 @@ higher-value/correctness-critical than others:
       against the recreated instance rather than looping forever with
       no restart at all. Genuinely automated e2e test. See round 47
       notes.
-- [ ] Local ephemeral storage remains the only open item from round
-      45's audit — likely its own multi-round arc (capacity/allocatable
-      reporting is one piece, an eviction-manager signal a separate
-      one). A fresh gap re-audit is also reasonable at this point. Ask
-      before starting the next round.
+- [x] Round 48: local ephemeral storage, slice 1 — new
+      `ephemeral_storage_capacity_bytes()` reuses `DiskPressure`'s
+      existing `statvfs(2)` read against `disk_path` to populate
+      `Node.status.capacity`/`.allocatable["ephemeral-storage"]`
+      (`allocatable_map()` needed no change — the key passes through
+      untouched, matching `pods`). Genuinely automated e2e assertions.
+      **Deliberately still open** (next slice): request/limit
+      enforcement and an eviction-manager signal for `nodefs`/`imagefs`
+      disk pressure. See round 48 notes.
+- [ ] Candidates for the next round: the ephemeral-storage
+      eviction-manager slice (the deliberately-deferred rest of round
+      48's arc), or a fresh gap re-audit — round 45's list is now fully
+      closed except for that one still-open piece. Ask before starting
+      the next round.

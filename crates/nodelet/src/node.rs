@@ -33,20 +33,36 @@ fn now_micro() -> MicroTime {
     MicroTime(Timestamp::now())
 }
 
+/// Local ephemeral storage capacity (round 48; found in round 45's
+/// re-audit) — real kubelet's `Node.status.capacity["ephemeral-storage"]`
+/// is the total size of the filesystem backing its root dir (where
+/// container writable layers/logs/emptyDir volumes actually land), read
+/// via the same `statvfs(2)` call `metrics.rs`'s `DiskPressure` condition
+/// already makes against `cfg.disk_path` — no new syscall plumbing needed.
+/// `0` on read failure (matching `read_disk_info()`'s own "unknown, fail
+/// open" contract) rather than omitting the field entirely, so it's still
+/// present and simply reads as "nothing left," not silently absent.
+fn ephemeral_storage_capacity_bytes(cfg: &Config) -> u64 {
+    crate::metrics::read_disk_info(&cfg.disk_path).map(|d| d.total_bytes).unwrap_or(0)
+}
+
 fn capacity_map(cfg: &Config) -> BTreeMap<String, Quantity> {
     let mut m = BTreeMap::new();
     m.insert("cpu".to_string(), Quantity(cfg.cpu_cores.to_string()));
     m.insert("memory".to_string(), Quantity(cfg.memory_bytes.to_string()));
     m.insert("pods".to_string(), Quantity(cfg.max_pods.to_string()));
+    m.insert("ephemeral-storage".to_string(), Quantity(ephemeral_storage_capacity_bytes(cfg).to_string()));
     m
 }
 
 /// `Node.status.allocatable` = capacity minus `system-reserved` +
 /// `kube-reserved` (real kubelet's formula; eviction-hard reservations
 /// aren't subtracted here — nodelet's pressure-eviction thresholds already
-/// serve that purpose separately, see `metrics.rs`). `pods` is left
-/// untouched: real kubelet doesn't reduce the pod-count allocatable for
-/// cpu/memory reservations either. Reservations only ever reduce
+/// serve that purpose separately, see `metrics.rs`). `pods` and
+/// `ephemeral-storage` are left untouched: real kubelet doesn't reduce the
+/// pod-count allocatable for cpu/memory reservations either, and this
+/// project has no `--system-reserved`/`--kube-reserved`-equivalent knob
+/// for ephemeral storage (round 48). Reservations only ever reduce
 /// allocatable, never below zero.
 fn allocatable_map(capacity: &BTreeMap<String, Quantity>, reserved_cpu_millicores: u64, reserved_memory_bytes: u64) -> BTreeMap<String, Quantity> {
     let mut m = capacity.clone();

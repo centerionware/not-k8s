@@ -74,12 +74,13 @@ fn reports_max_pods() {
 }
 
 #[test]
-fn has_exactly_the_three_expected_keys() {
+fn has_exactly_the_four_expected_keys() {
     let m = capacity_map(&cfg(1, 1, 1));
-    assert_eq!(m.len(), 3);
+    assert_eq!(m.len(), 4);
     assert!(m.contains_key("cpu"));
     assert!(m.contains_key("memory"));
     assert!(m.contains_key("pods"));
+    assert!(m.contains_key("ephemeral-storage"));
 }
 
 #[test]
@@ -88,4 +89,23 @@ fn zero_values_are_reported_as_zero_not_omitted() {
     assert_eq!(m.get("cpu").unwrap().0, "0");
     assert_eq!(m.get("memory").unwrap().0, "0");
     assert_eq!(m.get("pods").unwrap().0, "0");
+}
+
+#[test]
+fn reports_ephemeral_storage_from_the_disk_path_filesystem() {
+    // Round 48: real kubelet's Node.status.capacity["ephemeral-storage"]
+    // is the total size of the filesystem backing its root dir — nodelet
+    // reuses the same statvfs(2) read DiskPressure already makes against
+    // cfg.disk_path (here "/tmp", which always exists in a test sandbox).
+    let m = capacity_map(&cfg(1, 1, 1));
+    let bytes: u64 = m.get("ephemeral-storage").unwrap().0.parse().unwrap();
+    assert!(bytes > 0, "a real filesystem's total size must be a positive byte count, got {bytes}");
+}
+
+#[test]
+fn unreadable_disk_path_reports_zero_not_a_missing_field() {
+    let mut c = cfg(1, 1, 1);
+    c.disk_path = "/nonexistent/path/for/testing".to_string();
+    let m = capacity_map(&c);
+    assert_eq!(m.get("ephemeral-storage").unwrap().0, "0", "an unreadable path fails open to 0, matching read_disk_info()'s own contract");
 }

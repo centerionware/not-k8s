@@ -303,8 +303,13 @@ kind, per the CSI spec's own rule rather than a driver-capability
 check. Round 47 closed **startup probe failure restart** — a startup
 probe failing past its own `failureThreshold` now kills and restarts
 the container, matching real kubelet's liveness-probe-like behavior,
-instead of retrying forever with no restart at all. Full status list
-in `docs/GAP_CLOSURE.md`.
+instead of retrying forever with no restart at all. Round 48 started
+the **local ephemeral storage** arc: `Node.status.capacity`/
+`.allocatable["ephemeral-storage"]` now reports the real filesystem
+size backing the node's disk path, reusing the same `statvfs(2)` read
+`DiskPressure` already makes — request/limit enforcement and an
+eviction-manager signal are left for a follow-up slice. Full status
+list in `docs/GAP_CLOSURE.md`.
 
 ---
 

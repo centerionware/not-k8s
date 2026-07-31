@@ -7,13 +7,23 @@ test_node_is_ready_with_capacity_advertised() {
     assert_not_empty "$n" "node name"
     assert_eq "$(node_condition_status Ready)" "True" "node Ready condition"
 
-    local cpu mem pods
+    local cpu mem pods ephemeral_storage
     cpu="$(kubectl get node "$n" -o jsonpath='{.status.capacity.cpu}')"
     mem="$(kubectl get node "$n" -o jsonpath='{.status.capacity.memory}')"
     pods="$(kubectl get node "$n" -o jsonpath='{.status.capacity.pods}')"
+    ephemeral_storage="$(kubectl get node "$n" -o jsonpath='{.status.capacity.ephemeral-storage}')"
     assert_not_empty "$cpu" "node cpu capacity"
     assert_not_empty "$mem" "node memory capacity"
     assert_not_empty "$pods" "node pods capacity"
+    # Round 48: real filesystem size (statvfs on NODELET_DISK_PATH), not a
+    # hardcoded/omitted field — assert it's a real positive byte count, not
+    # just present.
+    assert_not_empty "$ephemeral_storage" "node ephemeral-storage capacity"
+    assert_true bash -c "[[ '$ephemeral_storage' -gt 0 ]]" "ephemeral-storage capacity should be a real positive byte count (got $ephemeral_storage)"
+
+    local ephemeral_storage_alloc
+    ephemeral_storage_alloc="$(kubectl get node "$n" -o jsonpath='{.status.allocatable.ephemeral-storage}')"
+    assert_eq "$ephemeral_storage_alloc" "$ephemeral_storage" "ephemeral-storage allocatable should equal capacity (no reservation knob for it yet)"
 }
 
 test_pressure_conditions_are_present_and_normally_false() {

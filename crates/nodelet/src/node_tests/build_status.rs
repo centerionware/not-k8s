@@ -54,10 +54,10 @@ fn cfg() -> Config {
 }
 
 #[test]
-fn no_extra_capacity_leaves_only_the_standard_three_resources() {
+fn no_extra_capacity_leaves_only_the_standard_four_resources() {
     let status = build_status(&cfg(), true, &BTreeMap::new(), Vec::new(), &[]);
     let cap = status.capacity.unwrap();
-    assert_eq!(cap.len(), 3);
+    assert_eq!(cap.len(), 4);
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn device_plugin_resources_are_added_to_capacity() {
     let status = build_status(&cfg(), true, &extra, Vec::new(), &[]);
     let cap = status.capacity.unwrap();
     assert_eq!(cap.get("nvidia.com/gpu").unwrap().0, "2");
-    assert_eq!(cap.len(), 4);
+    assert_eq!(cap.len(), 5);
 }
 
 #[test]
