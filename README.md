@@ -256,7 +256,12 @@ makes the sandbox's actual hostname the full
 `<hostname>.<subdomain>.<namespace>.svc.<cluster-domain>` FQDN instead
 of just the short name — rejecting, not silently truncating, an FQDN
 over Linux's 64-byte hostname limit, matching real kubelet's own hard
-failure there. Full status list in `docs/GAP_CLOSURE.md`.
+failure there. A fresh gap re-audit (round 39) found 4 more gaps, the
+highest-value being **in-place pod vertical scaling** (the `resize`
+subresource, GA in 1.33) — editing a running pod's CPU/memory request
+or limit today does nothing at all, not even a container restart;
+`hostPID`/`hostIPC`/`shareProcessNamespace` and `securityContext.sysctls`
+are also unset. Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 

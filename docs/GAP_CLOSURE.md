@@ -27,6 +27,74 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 39: fresh gap re-audit (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 22/27/35). Round 35's own
+list was down to its 2 lowest-priority items; user picked another
+re-audit rather than one of those. No code changed this round —
+audit-only.
+
+This pass grepped for a different set of fields/behaviors than rounds
+22, 27, or 35 covered: Linux namespace sharing (`hostPID`/`hostIPC`/
+`shareProcessNamespace`), `securityContext.sysctls`, and — prompted by
+noticing `ensure_container()`'s `AlreadyRunning` branch just returns
+`Ok(())` unconditionally, never comparing the container's current
+resources against the pod spec's — in-place pod vertical scaling
+(the "resize" feature, GA in 1.33). Found 4 previously-untracked items:
+
+- **In-place pod vertical scaling** (`resize` subresource, GA 1.33) —
+  by far the highest-value find. `ensure_container()`'s `restart_decision()`
+  match only ever looks at CRI *state* (running/exited/missing), never
+  at whether the live container's actual resources still match
+  `container.resources` in the `Pod` object nodelet was just handed.
+  Today, editing a running pod's CPU/memory request or limit does
+  **nothing at all** — not even the pre-1.27 "recreate the container"
+  fallback behavior kubelet itself used to have. CRI's
+  `UpdateContainerResources` RPC (already used elsewhere in this
+  codebase, by CPU Manager's shared-pool cpuset refresh) is exactly
+  the mechanism a real fix would reuse for `resizePolicy: NoRestart`
+  resources; a `RestartRequired` resource would still need the
+  create/remove/create path a real restart already takes elsewhere.
+  Real kubelet also reports `containerStatuses[].resources` (what's
+  actually running) and `.allocatedResources` (what's been admitted)
+  separately, and a `PodResizePending`/`PodResizeInProgress` condition —
+  none of which nodelet's `pods.rs::build_pod_status()` currently sets.
+  A substantial, multi-part feature, not a small polish item.
+- **`hostPID`/`hostIPC`** — `PodId`/`sandbox_config()` only ever set
+  `NamespaceOption.network` (plus `userns_options`); `pid`/`ipc` are
+  never touched at all. CRI's `NamespaceOption` message has dedicated
+  `pid`/`ipc` fields sitting right next to `network` — real kubelet
+  sets `NamespaceMode::Node` for either when the matching `spec.hostPID`/
+  `spec.hostIPC` is `true`. A real, common debugging/monitoring
+  workload pattern (host-PID sidecars) is currently silently ignored
+  rather than honored or rejected.
+- **`shareProcessNamespace`** — closely related to the above but a
+  distinct field: `NamespaceMode::Pod` for the PID namespace so every
+  container in the pod can see each other's processes (the well-known
+  "sidecar that `kill -SIGHUP`s the main container's process" or
+  "debug container attaches via `/proc`" pattern). The CRI proto's own
+  comment on `NamespaceOption.pid` is worth noting directly: *"the CRI
+  default is POD, but the v1.PodSpec default is CONTAINER"* — meaning
+  nodelet's current total silence on this field isn't a neutral no-op,
+  it's actively relying on whatever containerd's own CRI-level default
+  is (POD-shared), which is the **opposite** of real Kubernetes' actual
+  default (CONTAINER-scoped, i.e. every container gets its own PID
+  namespace unless `shareProcessNamespace: true`). This is a
+  correctness bug hiding inside an audit finding, not just a missing
+  feature — worth flagging as higher-urgency than a typical "unset
+  field" gap.
+- **`securityContext.sysctls`** — CRI's `LinuxPodSandboxConfig` has a
+  dedicated `sysctls` map field (`map<string, string>`) sitting right
+  next to the fields nodelet already populates (`cgroup_parent`,
+  `overhead`, `security_context`) — completely unread today. Moderate
+  value: a real, if less common, per-pod kernel-tuning mechanism
+  (e.g. `net.core.somaxconn` for high-throughput services).
+
+**Not re-flagging**: everything rounds 22/27/35 already found and this
+project has since closed, plus the 2 items still open from round 35
+(env `resourceFieldRef`, probe-level `terminationGracePeriodSeconds`) —
+still real, still open, just lower value than the 4 above.
+
 ## Round 38: spec.hostname/subdomain/setHostnameAsFQDN (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-37). Offered the
@@ -2227,13 +2295,15 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Memory Manager** (`memory_manager.rs`, `static` policy) — Guaranteed-QoS containers with a memory limit get pinned to a single NUMA node (`cpuset_mems`). Opt-in (`NODELET_MEMORY_MANAGER_POLICY`, default `none`). **First-slice scope**: never spans multiple NUMA nodes (falls back to unconstrained if no single node has enough free capacity, rather than upstream's multi-node spanning); no shared-pool tracking or `UpdateContainerResources` retroactive sweep for non-pinned containers (unlike CPU Manager) — they're simply left unconstrained; no per-NUMA-node `--reserved-memory`-equivalent reservation. See round 18 notes.
 - ✅ **Topology Manager** (`topology.rs`) — coordinates CPU Manager, Memory Manager (as of round 18), and device plugins so a container's exclusive cores, pinned memory, and allocated devices land on the same NUMA node. Opt-in (`NODELET_TOPOLOGY_MANAGER_POLICY`, default `none`); `best-effort` prefers alignment without rejecting, `single-numa-node` rejects the container outright if no single NUMA node satisfies every hint provider. **`restricted`** (round 20) gets a real, bounded multi-node relaxation instead — `spread()` places each hint provider on its own best node independently when no single node works for everyone, rejecting only if some provider's request can't be placed anywhere at all. **Single-node-only alignment, not upstream's full bitmask/permutation combination search** — `align()`/`spread()` reach the same answer as upstream whenever a single node can satisfy everything or every provider individually has *some* home, but don't search for upstream's genuinely joint cross-provider multi-node splits. See round 17/18/20 notes.
 - ✅ **Device plugins** (`device_plugins.rs`, GPU/FPGA/etc. hardware resources) — discovered via the same dynamic plugin-registration protocol CSI drivers use (`plugin_registry.rs`, round 13); tracks live device inventory/health per resource name via `ListAndWatch`, advertises healthy counts on `Node.status.capacity`/`.allocatable`, and calls `Allocate()` during container creation to inject the envs/mounts/device-nodes/annotations a plugin returns. **`GetPreferredAllocation`/`PreStartContainer`** (round 21) — a plugin's `DevicePluginOptions` (fetched once via `GetDevicePluginOptions`) says whether either applies; `GetPreferredAllocation`'s response is validated (`is_valid_preferred_allocation()`) before being trusted, falling back to nodelet's own first-healthy-unallocated pick otherwise; `PreStartContainer` is called right after `Allocate()` succeeds when required, a failure there releasing devices and failing the allocation. Unvalidated against a real device plugin — see rounds 14 and 21 notes.
-- ❌ In-place pod resource resize (newer, still-maturing upstream feature)
+- ❌ **In-place pod vertical scaling** (`resize` subresource, GA 1.33; found in round 39's re-audit) — by far round 39's highest-value finding. `ensure_container()`'s `restart_decision()` only ever inspects CRI *state* (running/exited/missing), never compares the live container's actual resources against the `Pod` object's current `container.resources` — so editing a running pod's CPU/memory today does **nothing at all**, not even the pre-1.27 "recreate the container" fallback. A real implementation would reuse CRI's `UpdateContainerResources` (already used by CPU Manager's shared-pool cpuset refresh) for `resizePolicy: NoRestart` resources, and the existing create/remove/create path for `RestartRequired` ones; would also need `containerStatuses[].resources`/`.allocatedResources` and a `PodResizePending`/`PodResizeInProgress` condition in `pods.rs::build_pod_status()`, none of which exist yet. Multi-part; not a small polish item.
 - ✅ **`oom_score_adj`** (round 28; found in round 27's re-audit) — `linux_resources()` now sets CRI's `LinuxContainerResources.oom_score_adj` per container via `eviction::oom_score_adj()`: Guaranteed `-998`, BestEffort `1000`, Burstable scaled by that container's own memory *request* against node capacity (`1000 - 1000*request/capacity`, clamped `[2, 999]`), matching real kubelet's formula exactly. Gives the kernel OOM killer QoS-aware signal, closing a real gap in this project's own eviction-manager story (rounds 7, 26) — a kernel OOM kill can happen faster than `eviction_loop()`'s check interval reacts. See round 28 notes.
 - ✅ **gRPC probes** (round 29; found in round 27's re-audit) — `probes.rs::probe_check()` now handles `probe.grpc` too, via a vendored `grpc.health.v1` client (`proto/health.proto`) calling the standard `Health/Check` RPC. `cri`-gated (needs `tonic`'s transport); a mock-only build's `check_grpc()` always returns `false`. Unit-tested failure paths (timeout, refused, non-gRPC listener) with solid confidence; the success path (a real passing `Health/Check`) is unvalidated — no gRPC server available in this sandbox to prove it live. See round 29 notes.
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
-- ❌ Pod-level `sysctls`
+- ❌ **`securityContext.sysctls`** (found in round 39's re-audit) — CRI's `LinuxPodSandboxConfig` has a dedicated `sysctls` map field sitting right next to `cgroup_parent`/`overhead`/`security_context`, which `sandbox_config()` already populates — completely unread today. Moderate value: real, if less common, per-pod kernel tuning (e.g. `net.core.somaxconn`).
+- ❌ **`hostPID`/`hostIPC`** (found in round 39's re-audit) — `PodId`/`sandbox_config()` only ever set `NamespaceOption.network` (plus `userns_options`); the same message's `pid`/`ipc` fields are never touched. A real, common debugging/monitoring pattern (host-PID sidecars) is silently ignored rather than honored.
+- ❌ **`shareProcessNamespace`** (found in round 39's re-audit) — the well-known "sidecar signals/inspects the main container's process via `/proc`" pattern, via `NamespaceMode::Pod` on the PID namespace. **Correctness note, not just a missing feature**: CRI's own proto comment on `NamespaceOption.pid` says *"the CRI default is POD, but the v1.PodSpec default is CONTAINER"* — since nodelet never sets this field at all today, containers are actually getting whatever containerd's own CRI-level default is (POD-shared PID), the **opposite** of real Kubernetes' actual default (CONTAINER-scoped unless `shareProcessNamespace: true`). Higher-urgency than a typical unset-field gap.
 - ✅ **User namespaces** (`spec.hostUsers: false`, round 25; found in round 22's re-audit) — `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive host UID/GID range (fixed length, default 65536, configurable via `NODELET_USERNS_BASE_UID`/`_LENGTH`/`_MAX_PODS`), set as a `POD`-mode `UserNamespace` on `LinuxSandboxSecurityContext.namespace_options.userns_options`. Simplified vs. upstream's own variable-length `usernsManager`: every pod gets the same fixed range size, and allocation state is in-memory only (self-heals as still-running pods reconcile, narrow double-allocation window across a nodelet restart — documented, not hidden). Unvalidated against a real CRI runtime's actual `userns_options` wire support — see round 25 notes.
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
 - ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
@@ -2483,7 +2553,19 @@ higher-value/correctness-critical than others:
       FQDN over Linux's 64-byte hostname limit. Genuinely automated e2e
       tests (a real container's own `hostname` output). See round 38
       notes.
-- [ ] Remaining candidates from round 35's audit, the two lower-priority
-      items: env `resourceFieldRef`, probe-level
-      `terminationGracePeriodSeconds`. Ask before starting the next
+- [x] Round 39: fresh gap re-audit (no code change) — found 4
+      previously-untracked items: **in-place pod vertical scaling**
+      (`resize` subresource, GA 1.33 — highest value, `ensure_container()`
+      never compares live resources against the current pod spec at
+      all), `hostPID`/`hostIPC` unset, `shareProcessNamespace` unset
+      (with a correctness note: nodelet's total silence on
+      `NamespaceOption.pid` means containers get containerd's own
+      CRI-level POD-shared default, the *opposite* of real Kubernetes'
+      CONTAINER-scoped default), and `securityContext.sysctls`
+      (CRI has a dedicated field, unread). See round 39 notes.
+- [ ] Candidates for the next round, roughly by value: in-place pod
+      vertical scaling, `hostPID`/`hostIPC`/`shareProcessNamespace`,
+      `securityContext.sysctls`, then round 35's 2 remaining low-priority
+      items (env `resourceFieldRef`, probe-level
+      `terminationGracePeriodSeconds`). Ask before starting the next
       round.
