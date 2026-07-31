@@ -3518,6 +3518,7 @@ impl CriRuntime {
             crs.push(ContainerRuntimeStatus {
                 name: name.clone(),
                 image: c.image.as_ref().map(|i| i.image.clone()).unwrap_or_default(),
+                image_id: c.image_ref.clone(),
                 ready: running,
                 running,
                 container_id: Some(c.id.clone()),
@@ -3614,6 +3615,7 @@ impl CriRuntime {
                     restart_count: self.restart_count(sandbox_id, &name),
                     name,
                     image: c.image.as_ref().map(|i| i.image.clone()).unwrap_or_default(),
+                    image_id: c.image_ref.clone(),
                     ready: running,
                     running,
                     container_id: Some(c.id.clone()),

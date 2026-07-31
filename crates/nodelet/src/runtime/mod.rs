@@ -50,6 +50,13 @@ impl Phase {
 pub struct ContainerRuntimeStatus {
     pub name: String,
     pub image: String,
+    /// CRI's own `Container.image_ref` (round 52; found in round 50's
+    /// re-audit) — a digested reference to the image actually in use
+    /// (e.g. `docker.io/library/nginx@sha256:...`), mapped to
+    /// `containerStatuses[].imageID`. Empty when the runtime hasn't
+    /// reported one (matches upstream's own "no image ID known yet"
+    /// state — never fabricated).
+    pub image_id: String,
     pub ready: bool,
     pub running: bool,
     pub container_id: Option<String>,

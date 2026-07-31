@@ -513,7 +513,7 @@ fn build_pod_status(
         .map(|c| ContainerStatus {
             name: c.name.clone(),
             image: c.image.clone(),
-            image_id: String::new(),
+            image_id: c.image_id.clone(),
             ready: container_ready(c),
             restart_count: c.restart_count as i32,
             started: Some(c.running),
@@ -543,7 +543,7 @@ fn build_pod_status(
         .map(|c| ContainerStatus {
             name: c.name.clone(),
             image: c.image.clone(),
-            image_id: String::new(),
+            image_id: c.image_id.clone(),
             // Native sidecars (round 36) get real probe-based readiness,
             // same as app containers — a regular (one-shot) init
             // container's readiness is just "is it currently running,"
@@ -578,7 +578,7 @@ fn build_pod_status(
         .map(|c| ContainerStatus {
             name: c.name.clone(),
             image: c.image.clone(),
-            image_id: String::new(),
+            image_id: c.image_id.clone(),
             ready: c.running,
             restart_count: c.restart_count as i32,
             started: Some(c.running),

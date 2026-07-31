@@ -27,6 +27,42 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 52: `ContainerStatus.imageID` (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-51). Offered the 2
+remaining round-50 findings; user picked this one — round 50's own
+prediction that it'd be the cheapest of the three, confirmed correct
+in practice: no new RPC, no new plumbing, just reading a field that
+was already there.
+
+Before this round, `pods.rs`'s 3 `ContainerStatus` construction sites
+(app/init/ephemeral containers) all hardcoded `image_id: String::new()`.
+
+- **`ContainerRuntimeStatus` gained `image_id: String`**, populated
+  directly from CRI's own `Container.image_ref` (already present on the
+  exact lightweight `Container` message `list_pod_containers()` already
+  fetches every reconcile — a "digested reference to the image in use,"
+  e.g. `docker.io/library/nginx@sha256:...`) at both existing
+  construction sites in `runtime/cri.rs` (`build_status()`'s
+  app-container loop, `build_labeled_container_statuses()`'s
+  init/ephemeral one). No new RPC call needed at all — this data was
+  already being fetched and simply never read.
+- `pods.rs`'s 3 `ContainerStatus` sites now copy `c.image_id` straight
+  through to `imageID` instead of hardcoding empty.
+- No new env vars, no new proto surface.
+- 2 new unit tests (`pods_tests/build_pod_status.rs`): the field flows
+  through correctly, and an empty runtime-reported value is still
+  reported as empty rather than fabricated.
+- New e2e test (`deploy/lib/test/cases/lifecycle.sh`):
+  `test_container_status_reports_a_real_image_id` — asserts a real
+  pod's `containerStatuses[0].imageID` is non-empty after reaching
+  `Running` (not asserting an exact digest format, which varies by
+  registry/runtime).
+
+**Confidence note**: this is about as low-risk a round as this project
+gets — a direct field copy from data already fetched every reconcile,
+both unit- and e2e-tested. High confidence.
+
 ## Round 51: imagePullPolicy enforcement (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-50). Offered the 3
@@ -3164,7 +3200,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Container log rotation** — running containers' log files are rotated past `NODELET_CONTAINER_LOG_MAX_SIZE_BYTES`, keeping `NODELET_CONTAINER_LOG_MAX_FILES` (`rotate_log_file()` + CRI `ReopenContainerLog`)
 - ✅ **`Node.status.images`** (round 33; found in round 27's re-audit) — `node.rs::select_node_images()` sorts CRI's `ListImages` results (via the new `PodRuntime::node_images()` trait method) largest-first and caps at 50, matching real kubelet's own `--node-status-max-images` default. Genuinely automated e2e test. See round 33 notes.
 - ✅ **`imagePullPolicy` enforcement** (round 51; found in round 50's re-audit) — new pure `effective_pull_policy()` (an explicit policy always wins; otherwise real kubelet's own default heuristic — `Always` for untagged/`:latest`, `IfNotPresent` for a specific tag *or* a digest reference) plus a new `ImageStatus` RPC call (vendored, never used before) to check local presence whenever the policy isn't `Always`. `Never` without local presence now `bail!`s a real error (surfaces via `ensure_pod()`'s existing retry-and-report path) instead of silently pulling anyway; `IfNotPresent` skips `PullImage` entirely when already cached. Genuinely automated e2e test for `Never`'s refusal behavior (a real, valid image/tag this suite never otherwise pulls — a fake tag wouldn't distinguish "correctly refused" from "ignored but failed anyway upstream"); `IfNotPresent`'s registry-round-trip-skipping is unit-tested only (needs nodelet's own logs to observe live). See round 51 notes.
-- ❌ **`ContainerStatus.imageID`** (found in round 50's re-audit) — always the empty string at all 3 `pods.rs` construction sites; CRI's own `ContainerStatus.image_ref` ("digested reference to the image in use") is already available on the exact struct `container_status_details()` returns elsewhere in this file — a read-an-already-available-field fix, not new plumbing. Lets a user confirm exactly which image digest is running, catching `:latest`-tag drift.
+- ✅ **`ContainerStatus.imageID`** (round 52; found in round 50's re-audit) — `ContainerRuntimeStatus` gained `image_id`, populated directly from CRI's own `Container.image_ref` (already fetched every reconcile by `list_pod_containers()`, just never read) — a "read-an-already-available-field" fix, no new RPC or plumbing. Lets a user confirm exactly which image digest is running, catching `:latest`-tag drift. Genuinely automated e2e test. See round 52 notes.
 
 ### Volumes
 - ✅ ConfigMap / Secret / emptyDir (materialized to host paths)
@@ -3521,7 +3557,10 @@ higher-value/correctness-critical than others:
       cached. Genuinely automated e2e test for `Never`'s refusal
       (a real image/tag, not a fake one, to actually distinguish
       correct from buggy behavior). See round 51 notes.
-- [ ] Candidates for the next round, by value: `ContainerStatus.imageID`
-      (cheapest — an already-available field, no new plumbing),
-      `Node.status.runtimeHandlers`. Ask before starting the next
-      round.
+- [x] Round 52: `ContainerStatus.imageID` — `ContainerRuntimeStatus`
+      gained `image_id`, populated from CRI's own `Container.image_ref`
+      (already fetched every reconcile, just never read). No new RPC,
+      no new plumbing. Genuinely automated e2e test. See round 52
+      notes.
+- [ ] `Node.status.runtimeHandlers` is the only remaining item from
+      round 50's audit. Ask before starting the next round.

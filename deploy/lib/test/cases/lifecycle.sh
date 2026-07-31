@@ -251,6 +251,33 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_container_status_reports_a_real_image_id() {
+    # Round 52: containerStatuses[].imageID used to always be the empty
+    # string; CRI's own Container.image_ref (a digested image reference)
+    # is now carried through. Not asserting the exact digest format
+    # (varies by registry/runtime) — just that it's real and non-empty.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="image-id-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local image_id
+    wait_until 20 "$name containerStatuses[0].imageID to be populated" bash -c \
+        "[[ -n \"\$(kctl get pod '$name' -o jsonpath='{.status.containerStatuses[0].imageID}')\" ]]"
+    image_id="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].imageID}')"
+    assert_not_empty "$image_id" "containerStatuses[0].imageID"
+    delete_pod_if_exists "$name"
+}
+
 test_image_pull_policy_never_fails_when_image_is_absent() {
     # Round 51: imagePullPolicy: Never must refuse to pull at all. Uses a
     # real, valid, pullable image/tag this suite never otherwise
@@ -294,5 +321,6 @@ register_test test_restart_policy_never_exit_zero_is_succeeded
 register_test test_restart_policy_never_exit_nonzero_is_failed
 register_test test_exited_container_reports_terminated_state_with_exit_code
 register_test test_termination_message_path_is_read_back_into_container_status
+register_test test_container_status_reports_a_real_image_id
 register_test test_image_pull_policy_never_fails_when_image_is_absent
 register_test test_image_pull_policy_if_not_present_manual_note

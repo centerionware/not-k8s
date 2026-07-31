@@ -310,6 +310,23 @@ fn zero_restarts_reports_zero() {
 }
 
 #[test]
+fn image_id_mirrors_the_runtime_status() {
+    // Round 52: CRI's own Container.image_ref (a digested image
+    // reference) must be carried through to containerStatuses[].imageID,
+    // not hardcoded empty.
+    let mut running = running_status();
+    running.containers[0].image_id = "docker.io/library/busybox@sha256:deadbeef".to_string();
+    let status = bps("10.0.0.1", &running, None);
+    assert_eq!(status.container_statuses.as_ref().unwrap()[0].image_id, "docker.io/library/busybox@sha256:deadbeef");
+}
+
+#[test]
+fn empty_image_id_is_reported_as_empty_not_fabricated() {
+    let status = bps("10.0.0.1", &running_status(), None);
+    assert_eq!(status.container_statuses.as_ref().unwrap()[0].image_id, "");
+}
+
+#[test]
 fn initialized_condition_mirrors_runtime_status_by_default_true() {
     // No init containers -> initialized: true (set by every RuntimeStatus
     // constructor for a pod with none) -> Initialized condition True.

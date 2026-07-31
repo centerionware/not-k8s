@@ -324,7 +324,10 @@ RPC is never called). Round 51 closed the first: `imagePullPolicy`
 real kubelet's own default-policy heuristic when unset — `Never`
 refuses to pull at all instead of silently doing so, and
 `IfNotPresent` skips the registry round-trip entirely once an image
-is cached, both real wins for genuinely offline edge operation. Full
+is cached, both real wins for genuinely offline edge operation. Round 52 closed
+**`ContainerStatus.imageID`** — CRI's own `Container.image_ref` (a
+digested image reference, already fetched every reconcile) is now
+carried through instead of always reporting the empty string. Full
 status list in `docs/GAP_CLOSURE.md`.
 
 ---
