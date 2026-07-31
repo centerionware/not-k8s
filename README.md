@@ -248,7 +248,15 @@ change, overwriting the already-live bind-mounted host files with no
 pod/container restart needed — the well-known "edit a ConfigMap, the
 mounted file updates live" behavior. Deliberately scoped to
 volume-mounted references only, not env vars (`envFrom`/`valueFrom...Ref`),
-matching real kubelet exactly. Full status list in `docs/GAP_CLOSURE.md`.
+matching real kubelet exactly. Round 38 closed **`spec.hostname`/
+`subdomain`/`setHostnameAsFQDN`** — the CRI sandbox's hostname now
+honors an explicit `spec.hostname` override (default the pod name), and
+`setHostnameAsFQDN` (only meaningful with `spec.subdomain` also set)
+makes the sandbox's actual hostname the full
+`<hostname>.<subdomain>.<namespace>.svc.<cluster-domain>` FQDN instead
+of just the short name — rejecting, not silently truncating, an FQDN
+over Linux's 64-byte hostname limit, matching real kubelet's own hard
+failure there. Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 

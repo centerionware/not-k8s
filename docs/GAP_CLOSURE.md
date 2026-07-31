@@ -27,6 +27,66 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 38: spec.hostname/subdomain/setHostnameAsFQDN (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-37). Offered the
+remaining round-35 candidates; user picked `spec.hostname`/`subdomain`/
+`setHostnameAsFQDN` — the highest-value remaining item, a simple,
+common override for friendlier in-container hostnames.
+
+Before this round, `sandbox_config()` always set the CRI sandbox's
+`hostname` field to the pod's own name, unconditionally, never honoring
+an explicit `spec.hostname` override, `spec.subdomain`, or
+`setHostnameAsFQDN`.
+
+- **New `resolve_pod_hostname(hostname, subdomain, set_hostname_as_fqdn,
+  pod_name, namespace, cluster_domain) -> Result<String>`** (pure) —
+  mirrors real kubelet's `GeneratePodHostNameAndDomain` +
+  `ShouldSetHostnameAsFQDN`: `spec.hostname` overrides the short
+  hostname (default the pod name); `setHostnameAsFQDN` only takes effect
+  when `spec.subdomain` is also set (matching upstream — there's no
+  domain to form an FQDN from otherwise), producing
+  `<hostname>.<subdomain>.<namespace>.svc.<cluster-domain>` as the
+  sandbox's actual hostname instead of just the short name. Linux's
+  `sethostname(2)` rejects anything over `HOST_NAME_MAX` (64 bytes) —
+  this returns `Err` in that case rather than silently truncating,
+  matching real kubelet's own hard failure here; `ensure_pod()`'s
+  existing error path (log + scheduled retry) handles it with no new
+  failure mechanism needed, the same way a repeatedly-failing pod
+  behaves upstream too.
+- **`sandbox_config()`** gained a `hostname: &str` parameter (used
+  verbatim for non-host-network pods; host-network pods still always
+  get an empty hostname — unchanged, runc rejects setting one when
+  sharing the host UTS namespace). `ensure_pod()` computes the resolved
+  hostname once via `resolve_pod_hostname()` and threads it through
+  `run_sandbox()` into the real `RunPodSandbox` call. The two other
+  `sandbox_config()` call sites (`PullImageRequest`/`CreateContainerRequest`'s
+  own `sandbox_config` field, used only as pull/create context, not the
+  actual sandbox) keep passing the pod's own name — unaffected by this
+  change, since the real sandbox hostname is only meaningful at
+  `RunPodSandbox` time.
+- No new env vars, no new CRI/proto surface — pure logic plus one
+  new/one widened function signature in `runtime/cri.rs`.
+- 6 new unit tests (`cri_tests/pod_hostname.rs`): default-to-pod-name,
+  explicit override, subdomain-alone-is-a-no-op, setHostnameAsFQDN-
+  without-subdomain-is-a-no-op, the full-FQDN case, and the >64-byte
+  rejection. `cri_tests/sandbox_config.rs` gained a case confirming
+  `sandbox_config()` itself just uses whatever hostname string it's
+  given (the override logic lives entirely in `resolve_pod_hostname()`).
+- New e2e tests (`deploy/lib/test/cases/dns.sh`):
+  `test_spec_hostname_overrides_the_container_hostname` (a container
+  running `hostname` reports the overridden name, not the pod name) and
+  `test_set_hostname_as_fqdn_reports_the_full_fqdn` (with `subdomain` +
+  `setHostnameAsFQDN: true`, `hostname` reports the full
+  `<name>.<subdomain>.<namespace>.svc.cluster.local` FQDN) — both
+  genuinely automated, no special infrastructure needed.
+
+**Confidence note**: `resolve_pod_hostname()` is pure and thoroughly
+unit-tested, and the two e2e tests are genuinely live proof (a real
+container's own `hostname` output, not just a status field). High
+confidence overall — this is a small, self-contained, well-specified
+piece of upstream behavior with no ambiguous edge cases left unhandled.
+
 ## Round 37: ConfigMap/Secret live-update (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-36). Offered the
@@ -2182,7 +2242,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **DNS config** — `dnsPolicy`/`dnsConfig` → CRI `PodSandboxConfig.dns_config` (`dns_config_for()`), via new `NODELET_CLUSTER_DNS`/`NODELET_CLUSTER_DOMAIN`
 - ✅ **`hostAliases`** — generates a pod-specific `/etc/hosts` (`write_etc_hosts()`) and bind-mounts it in, exactly how real kubelet does it (CRI has no dedicated field for this)
 - ✅ Service/ClusterIP/NodePort routing (nftables — pre-existing, kube-proxy's job but already reimplemented here)
-- ❌ **`spec.hostname`/`spec.subdomain`/`setHostnameAsFQDN`** (found in round 35's re-audit) — `sandbox_config()` always sets the CRI sandbox's hostname to the pod's own name, never honoring an explicit `spec.hostname` override, `spec.subdomain` (combined with hostname for headless-Service DNS), or `setHostnameAsFQDN` (whether `hostname -f` inside the container reports the full FQDN). Moderate value — a common, simple override for friendlier in-container hostnames.
+- ✅ **`spec.hostname`/`spec.subdomain`/`setHostnameAsFQDN`** (round 38; found in round 35's re-audit) — new pure `resolve_pod_hostname()` mirrors real kubelet's `GeneratePodHostNameAndDomain`/`ShouldSetHostnameAsFQDN`: `spec.hostname` overrides the short hostname (default the pod name); `setHostnameAsFQDN` (only meaningful with `spec.subdomain` also set) makes the sandbox's actual hostname the full `<hostname>.<subdomain>.<namespace>.svc.<cluster-domain>` FQDN instead of just the short name, rejecting (`Err`, same retry-and-report path as any other `ensure_pod()` failure) an FQDN over Linux's 64-byte `sethostname(2)` limit rather than silently truncating it. Genuinely automated e2e tests (a real container's own `hostname` output). See round 38 notes.
 
 ### Images
 - ✅ **Private registry auth** — `imagePullSecrets` (`kubernetes.io/dockerconfigjson`) → CRI `AuthConfig` (`resolve_pull_auth()`). Not yet: legacy `kubernetes.io/dockercfg`, ServiceAccount-linked pull secrets, credential-provider exec plugins.
@@ -2416,8 +2476,14 @@ higher-value/correctness-critical than others:
       existing idempotent materialization path. Deliberately excludes
       env var references (matches real kubelet). Genuinely automated
       e2e test, no external infra needed. See round 37 notes.
-- [ ] Remaining candidates from round 35's audit, roughly by value:
-      `spec.hostname`/`subdomain`/`setHostnameAsFQDN`, then the two
-      lower-priority items (env `resourceFieldRef`, probe-level
-      `terminationGracePeriodSeconds`). Ask before starting the next
+- [x] Round 38: `spec.hostname`/`subdomain`/`setHostnameAsFQDN` — new
+      pure `resolve_pod_hostname()` mirrors real kubelet's hostname/FQDN
+      resolution, threaded through `sandbox_config()`/`run_sandbox()`
+      into the real `RunPodSandbox` call; rejects (not truncates) an
+      FQDN over Linux's 64-byte hostname limit. Genuinely automated e2e
+      tests (a real container's own `hostname` output). See round 38
+      notes.
+- [ ] Remaining candidates from round 35's audit, the two lower-priority
+      items: env `resourceFieldRef`, probe-level
+      `terminationGracePeriodSeconds`. Ask before starting the next
       round.

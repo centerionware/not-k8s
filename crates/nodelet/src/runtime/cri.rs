@@ -13,7 +13,7 @@
 #![allow(clippy::needless_question_mark)]
 
 use super::{ContainerRuntimeStatus, Phase, PodRuntime, RuntimeStatus};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use crate::eviction::QosClass;
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{
@@ -781,6 +781,39 @@ fn dns_config_for(pod: &Pod, cluster_dns: &[String], cluster_domain: &str) -> Op
     } else {
         Some(DnsConfig { servers, searches, options })
     }
+}
+
+/// Real kubelet's `GeneratePodHostNameAndDomain` + `ShouldSetHostnameAsFQDN`
+/// logic (round 38; found in round 35's re-audit): `spec.hostname` overrides
+/// the sandbox hostname (defaults to the pod name); `spec.subdomain`
+/// combines with the namespace/cluster domain to form the pod's headless-
+/// Service search domain; `setHostnameAsFQDN` (only meaningful when
+/// `subdomain` is also set) makes the *hostname itself* the full FQDN
+/// instead of just the short name. Linux's `sethostname(2)` rejects
+/// anything over `HOST_NAME_MAX` (64 bytes) — real kubelet fails the pod
+/// rather than silently truncating, so this does too (via `Err`, which
+/// `ensure_pod()`'s existing retry-and-report-failure path already handles,
+/// no new failure mechanism needed).
+fn resolve_pod_hostname(
+    hostname: Option<&str>,
+    subdomain: Option<&str>,
+    set_hostname_as_fqdn: bool,
+    pod_name: &str,
+    namespace: &str,
+    cluster_domain: &str,
+) -> Result<String> {
+    let short = hostname.unwrap_or(pod_name);
+    let Some(subdomain) = subdomain.filter(|s| !s.is_empty()) else {
+        return Ok(short.to_string());
+    };
+    if !set_hostname_as_fqdn {
+        return Ok(short.to_string());
+    }
+    let fqdn = format!("{short}.{subdomain}.{namespace}.svc.{cluster_domain}");
+    if fqdn.len() > 64 {
+        bail!("setHostnameAsFQDN: FQDN '{fqdn}' is {} bytes, longer than the 64-byte Linux hostname limit", fqdn.len());
+    }
+    Ok(fqdn)
 }
 
 /// Return the Kubernetes VolumeSource variant for diagnostics. A volume's
@@ -2035,6 +2068,7 @@ impl CriRuntime {
     async fn run_sandbox(
         &self,
         id: &PodId,
+        hostname: &str,
         dns: Option<DnsConfig>,
         runtime_handler: String,
         cgroup_parent: String,
@@ -2058,7 +2092,7 @@ impl CriRuntime {
         } else {
             None
         };
-        let mut config = sandbox_config(id, userns_mapping);
+        let mut config = sandbox_config(id, userns_mapping, hostname);
         config.dns_config = dns;
         let linux = config.linux.get_or_insert_with(LinuxPodSandboxConfig::default);
         linux.cgroup_parent = cgroup_parent;
@@ -2419,7 +2453,7 @@ impl CriRuntime {
         img.pull_image(PullImageRequest {
             image: Some(image_spec.clone()),
             auth,
-            sandbox_config: Some(sandbox_config(id, None)),
+            sandbox_config: Some(sandbox_config(id, None, &id.name)),
         })
         .await
         .context("pulling image")?;
@@ -2654,7 +2688,7 @@ impl CriRuntime {
             .create_container(CreateContainerRequest {
                 pod_sandbox_id: sandbox_id.to_string(),
                 config: Some(config),
-                sandbox_config: Some(sandbox_config(id, None)),
+                sandbox_config: Some(sandbox_config(id, None, &id.name)),
             })
             .await
         {
@@ -3187,6 +3221,15 @@ impl PodRuntime for CriRuntime {
         let ready_state = v1::PodSandboxState::SandboxReady as i32;
         let dns = dns_config_for(pod, &self.cluster_dns, &self.cluster_domain);
         let runtime_handler = self.resolve_runtime_handler(pod).await;
+        let spec = pod.spec.as_ref();
+        let hostname = resolve_pod_hostname(
+            spec.and_then(|s| s.hostname.as_deref()),
+            spec.and_then(|s| s.subdomain.as_deref()),
+            spec.and_then(|s| s.set_hostname_as_fqdn).unwrap_or(false),
+            &id.name,
+            &id.namespace,
+            &self.cluster_domain,
+        )?;
         // Real kubelet computes both of these before RunPodSandbox too —
         // cgroup_parent so the sandbox lands in the right QoS-scoped cgroup
         // from the start (not something CRI lets you change after the
@@ -3213,10 +3256,10 @@ impl PodRuntime for CriRuntime {
                 self.sidecar_names.lock().unwrap().remove(&stale_id);
                 self.clear_restart_counts(&stale_id);
                 self.release_sandbox_devices(&stale_id).await;
-                self.run_sandbox(&id, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, &hostname, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
             }
             SandboxDecision::CreateFresh => {
-                self.run_sandbox(&id, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, &hostname, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
             }
         };
 
@@ -3701,7 +3744,7 @@ fn container_labels(id: &PodId, container_name: &str, kind: ContainerKind) -> Ha
 /// function stays pure/side-effect-free for testability. `None` (the
 /// overwhelmingly common case, `hostUsers` unset or `true`) means no user
 /// namespace at all — identical to this function's pre-round-25 behavior.
-fn sandbox_config(id: &PodId, userns_mapping: Option<(u32, u32)>) -> PodSandboxConfig {
+fn sandbox_config(id: &PodId, userns_mapping: Option<(u32, u32)>, hostname: &str) -> PodSandboxConfig {
     // Host-network pods set the network namespace to NODE, which makes the CRI
     // runtime skip CNI entirely (no pod network to set up). A user-namespace
     // mapping also needs a `linux` block even for an otherwise-default pod,
@@ -3731,7 +3774,7 @@ fn sandbox_config(id: &PodId, userns_mapping: Option<(u32, u32)>) -> PodSandboxC
         }),
         // Host-network sandboxes share the host UTS namespace, so a hostname
         // cannot be set (runc rejects it). Real kubelets leave it empty too.
-        hostname: if id.host_network { String::new() } else { id.name.clone() },
+        hostname: if id.host_network { String::new() } else { hostname.to_string() },
         log_directory: format!("/var/log/pods/{}_{}_{}", id.namespace, id.name, id.uid),
         labels: sandbox_labels(id),
         linux,
@@ -3935,6 +3978,9 @@ mod tests_tmpfs_empty_dir;
 #[cfg(test)]
 #[path = "cri_tests/ephemeral_volume.rs"]
 mod tests_ephemeral_volume;
+#[cfg(test)]
+#[path = "cri_tests/pod_hostname.rs"]
+mod tests_pod_hostname;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.
