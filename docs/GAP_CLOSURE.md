@@ -27,6 +27,65 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 34: `Node.status.volumesInUse`/`.volumesAttached` (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-33) — but with an extra
+step first this time: before writing any code, explicitly surfaced to
+the user that for CSI volumes (this project's only real PVC path, since
+round 12), the modern external-attacher + `VolumeAttachment` mechanism
+(round 19) is what real `kube-controller-manager`'s attach/detach logic
+actually relies on today — these two fields mainly matter for the
+*legacy* in-tree volume plugin path, which this project has never
+supported (`hostPath` is explicitly out of scope everywhere else in this
+doc), and getting the exact volume-naming scheme right with no real A/D
+controller available to test against risked producing plausible-looking
+but wrong data, which is worse than reporting nothing. Asked whether to
+implement a best-effort version anyway or treat "document why this is
+skipped" as the round's outcome instead; user chose to implement it.
+
+- **`PodRuntime` trait gained `fn mounted_csi_volumes(&self) -> Vec<(String, String)>`**
+  (default: empty, same mock-default pattern as `device_plugin_capacity()`)
+  — `(driver, volume_handle)` pairs for every CSI volume currently
+  mounted by a pod on this node. **`CsiDrivers` already tracked exactly
+  this** (`refs`, the per-node-per-pod mount reference-counting round 12
+  built for `NodeUnstageVolume` timing) — `CsiDrivers::mounted_volumes()`
+  just exposes it, no new tracking needed.
+- **`node.rs` gained `csi_unique_volume_name()`** — real kubelet's own
+  scheme (`pkg/volume/util`'s `GetUniqueVolumeName`):
+  `kubernetes.io/csi/<driver>^<volume_handle>`. `build_status()` now sets
+  `volumes_in_use` (the plain string list) and `volumes_attached`
+  (`AttachedVolume{name, device_path: ""}` — nodelet only ever
+  filesystem-mounts CSI volumes via Stage/Publish, never raw block mode,
+  so there's no real device path to report).
+- 3 new unit tests (`node_tests/build_status.rs`): empty case, a single
+  mounted volume's exact naming scheme, multiple volumes.
+
+654 tests passing with `--features cri` (up from 651), 218 mock-only (up
+from 215 — `csi_unique_volume_name()`/`build_status()`'s handling isn't
+`cri`-gated, only the real CSI mount-tracking is).
+`deploy/lib/test/cases/csi_pvc.sh` extended: its existing (already-
+infrastructure-gated) CSI test now also checks for a
+`kubernetes.io/csi/` entry in `Node.status.volumesInUse` while the pod's
+volume is mounted — a warning, not a hard failure, since the exact
+string match is the piece this round is least confident about; a new
+manual-note test describes the full live spot-check (confirming the
+entry both appears and disappears at the right times, and that a real
+A/D controller if present doesn't misbehave because of it).
+
+**Confidence note**: unlike most rounds in this series, this one is
+**explicitly, deliberately lower-confidence by design**, not just by
+sandbox limitation — `CsiDrivers::mounted_volumes()`'s plumbing reuses
+already-tested reference-counting state, and `csi_unique_volume_name()`'s
+naming scheme is unit-tested against the documented upstream convention,
+but whether a real attach/detach controller (or any other consumer of
+these fields) is actually satisfied by nodelet's version has never been
+checked against one, and this doc says so plainly rather than implying
+otherwise. Scoped to CSI volumes only, matching this project's CSI-first
+design throughout.
+
+This closes the last remaining candidate from round 27's fresh gap
+re-audit — no specific known gap is currently tracked as of this round.
+
 ## Round 33: `Node.status.images` (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-32). Offered the 2
@@ -1934,7 +1993,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`emptyDir.medium: Memory`** (round 30; found in round 27's re-audit) — `resolve_volumes()` now shells out to `mount -t tmpfs` (`mount_tmpfs_empty_dir()`) on the host directory for a `Memory`-medium `emptyDir`, honoring `sizeLimit` as `-o size=` when set. `remove_pod()` unmounts it again on teardown (a real RAM leak otherwise, unlike plain-disk `emptyDir`). Best-effort: falls back to the plain-disk directory (already created) on mount failure rather than failing the pod. Unvalidated against a real privileged mount in this sandbox — see round 30 notes.
 - ✅ **Generic ephemeral volumes** (round 31; `volumeSource.ephemeral`, found in round 27's re-audit) — `resolve_volumes()` now recognizes `.ephemeral`, resolving the deterministic-named (`<pod name>-<volume name>`) PVC the ephemeral-volume controller (a `kube-controller-manager` component — not nodelet's job, same as dynamic provisioning) auto-creates, with an ownership safety check (by UID) before trusting it, then reuses all of CSI's existing mount machinery. Unvalidated against a real CSI driver/ephemeral-volume controller — see round 31 notes.
 - ✅ **Image volume source** (round 32; `volumeSource.image`, KEP-4639, still beta, found in round 27's re-audit) — `resolve_volumes()`/`build_mounts()` use CRI's native `Mount.image`/`image_sub_path` fields directly (no host-path materialization needed, unlike every other volume kind) after a `PullImage` call resolves the reference. Always read-only, per the KEP. Genuinely automated e2e test (no external StorageClass/CSI driver needed — any pullable image works). See round 32 notes.
-- ❌ **`Node.status.volumesInUse`/`.volumesAttached`** (found in round 27's re-audit) — coordination fields for the legacy in-tree attach/detach controller path. Not populated. Low value: this project's actual PVC story is CSI-first (rounds 12, 13, 19), and CSI's own attach coordination (round 19) doesn't read these fields at all.
+- 🟡 **`Node.status.volumesInUse`/`.volumesAttached`** (round 34; found in round 27's re-audit) — `CsiDrivers::mounted_volumes()` exposes the mount reference-counting round 12 already tracked; `node.rs::csi_unique_volume_name()` builds real kubelet's `kubernetes.io/csi/<driver>^<volume_handle>` naming. Scoped to CSI volumes only (this project's actual PVC story, rounds 12/13/19); CSI's own attach coordination (round 19) doesn't read these fields itself. **Deliberately lower-confidence by design**: whether a real attach/detach controller is satisfied by this is unvalidated, not just unvalidated by sandbox limitation. See round 34 notes.
 
 ### Node-pressure eviction
 - ✅ MemoryPressure/DiskPressure *conditions* reflect real reads
@@ -2121,6 +2180,10 @@ higher-value/correctness-critical than others:
 - [x] Round 33: `Node.status.images` — `select_node_images()` reports
       CRI's cached images, largest-first, capped at 50. Genuinely
       automated e2e test, no external infra needed. See round 33 notes.
-- [ ] Remaining candidate from round 27's audit — the last, lowest-
-      priority item: `volumesInUse`/`volumesAttached`. Ask before
-      starting the next round.
+- [x] Round 34: `Node.status.volumesInUse`/`.volumesAttached` — scoped to
+      CSI volumes only, reusing round 12's existing mount reference-
+      counting. Deliberately lower-confidence by design (unvalidated
+      against a real attach/detach controller, not just sandbox-limited).
+      Closes the last round-27 candidate. See round 34 notes.
+- [ ] No specific known gap currently tracked. Ask before starting the
+      next round (a fresh re-audit is one option, same as rounds 22/27).

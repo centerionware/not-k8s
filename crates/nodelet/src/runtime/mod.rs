@@ -243,6 +243,22 @@ pub trait PodRuntime: Send + Sync {
     async fn node_images(&self) -> anyhow::Result<Vec<NodeImage>> {
         Ok(Vec::new())
     }
+
+    /// Every `(driver, volume_handle)` pair a CSI volume currently
+    /// mounted by a pod on this node is backed by (round 34) — feeds
+    /// `Node.status.volumesInUse`/`.volumesAttached`
+    /// (`node.rs::build_status`). **Scoped to CSI volumes only** — this
+    /// project has never supported the legacy in-tree volume plugins
+    /// these fields originally existed for (`hostPath` is explicitly
+    /// unsupported elsewhere), and CSI's own attach coordination (round
+    /// 19) already uses `VolumeAttachment` objects directly rather than
+    /// reading these fields back — so this is purely for *other*
+    /// components (an older-style attach/detach controller path) that
+    /// might read them, not something nodelet's own CSI logic depends
+    /// on. Default: empty (mock has no CSI volumes to report).
+    fn mounted_csi_volumes(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 /// CPU/memory usage numbers in the same shape CRI's `CpuUsage`/`MemoryUsage`

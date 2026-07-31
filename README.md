@@ -226,7 +226,13 @@ then reuses all of CSI's existing mount machinery. Also closed (round
 no host-path materialization needed (unlike every other volume kind);
 always read-only, per the KEP. Also closed (round 33):
 **`Node.status.images`** — reports CRI's cached images, largest-first,
-capped at 50 (matching real kubelet's own default). Full status list in
+capped at 50 (matching real kubelet's own default). Also closed (round
+34, the last round-27 candidate): **`Node.status.volumesInUse`/
+`.volumesAttached`** — scoped to CSI volumes only, reusing the mount
+reference-counting round 12 already tracked; deliberately
+lower-confidence by design since whether a real attach/detach controller
+is satisfied by this is unvalidated (the modern CSI attach path, round
+19, doesn't read these fields itself). Full status list in
 `docs/GAP_CLOSURE.md`.
 
 ---

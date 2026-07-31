@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
 
     // Register the node and seed status + lease before we start reconciling pods.
     let images = runtime.node_images().await.unwrap_or_default();
-    node::register(&client, &cfg, &runtime.device_plugin_capacity(), images)
+    node::register(&client, &cfg, &runtime.device_plugin_capacity(), images, &runtime.mounted_csi_volumes())
         .await
         .context("registering node with the apiserver")?;
     info!(node = %cfg.node_name, "node registered and Ready");
@@ -314,7 +314,7 @@ async fn heartbeat_loop(client: kube::Client, cfg: Config, runtime: Arc<dyn PodR
 
         if last_status.elapsed() >= cfg.status_interval {
             let images = runtime.node_images().await.unwrap_or_default();
-            match node::push_status(&client, &cfg, true, &runtime.device_plugin_capacity(), images).await {
+            match node::push_status(&client, &cfg, true, &runtime.device_plugin_capacity(), images, &runtime.mounted_csi_volumes()).await {
                 Ok(()) => info!("node status pushed"),
                 Err(e) => warn!(error = ?e, "node status push failed"),
             }

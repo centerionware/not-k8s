@@ -173,6 +173,18 @@ impl CsiDrivers {
         self.endpoints.lock().unwrap().contains_key(driver)
     }
 
+    /// Every `(driver, volume_handle)` pair currently mounted by at least
+    /// one pod on this node (round 34) — feeds
+    /// `Node.status.volumesInUse`/`.volumesAttached`. Real kubelet tracks
+    /// this via its own volume manager's actual-state-of-world; nodelet
+    /// already has the same information here via `mount()`/`unmount()`'s
+    /// existing per-pod reference counting (`refs` only ever holds a key
+    /// while at least one pod still references it — see `unmount()`), so
+    /// this just exposes it rather than tracking it a second time.
+    pub fn mounted_volumes(&self) -> Vec<(String, String)> {
+        self.refs.lock().unwrap().keys().cloned().collect()
+    }
+
     /// Add (or update, if the driver re-registers with a new endpoint) a
     /// dynamically-discovered driver. Called by `plugin_registry.rs` when a
     /// CSI driver's registrar announces itself.

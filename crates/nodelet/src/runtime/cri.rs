@@ -3458,6 +3458,10 @@ impl PodRuntime for CriRuntime {
         let images = img.list_images(ListImagesRequest { filter: None }).await?.into_inner().images;
         Ok(images.into_iter().map(node_image_from_cri).collect())
     }
+
+    fn mounted_csi_volumes(&self) -> Vec<(String, String)> {
+        self.csi.mounted_volumes()
+    }
 }
 
 /// CRI's `Image` (`repo_tags`/`repo_digests`/`size`) -> `Node.status.images`'

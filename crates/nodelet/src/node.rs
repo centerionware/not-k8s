@@ -11,8 +11,8 @@ use anyhow::Result;
 use k8s_openapi::jiff::Timestamp;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::api::core::v1::{
-    ContainerImage, DaemonEndpoint, Node, NodeAddress, NodeCondition, NodeDaemonEndpoints, NodeSpec,
-    NodeStatus, NodeSystemInfo, Taint,
+    AttachedVolume, ContainerImage, DaemonEndpoint, Node, NodeAddress, NodeCondition, NodeDaemonEndpoints,
+    NodeSpec, NodeStatus, NodeSystemInfo, Taint,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta, Time};
@@ -202,7 +202,23 @@ fn select_node_images(mut images: Vec<crate::runtime::NodeImage>) -> Vec<Contain
     images.into_iter().map(|i| ContainerImage { names: Some(i.names), size_bytes: Some(i.size_bytes as i64) }).collect()
 }
 
-fn build_status(cfg: &Config, ready: bool, extra_capacity: &BTreeMap<String, u64>, images: Vec<crate::runtime::NodeImage>) -> NodeStatus {
+/// Real kubelet's unique-volume-name scheme for a CSI volume
+/// (`pkg/volume/util`'s `GetUniqueVolumeName`, round 34) —
+/// `<plugin name>/<driver>^<volume handle>`. Pure so the naming
+/// convention is unit-testable without a cluster. **Unvalidated against
+/// a real attach/detach controller** — see the module doc note on
+/// `PodRuntime::mounted_csi_volumes()`.
+fn csi_unique_volume_name(driver: &str, volume_handle: &str) -> String {
+    format!("kubernetes.io/csi/{driver}^{volume_handle}")
+}
+
+fn build_status(
+    cfg: &Config,
+    ready: bool,
+    extra_capacity: &BTreeMap<String, u64>,
+    images: Vec<crate::runtime::NodeImage>,
+    mounted_csi_volumes: &[(String, String)],
+) -> NodeStatus {
     let mut cap = capacity_map(cfg);
     for (name, count) in extra_capacity {
         cap.insert(name.clone(), Quantity(count.to_string()));
@@ -224,6 +240,18 @@ fn build_status(cfg: &Config, ready: bool, extra_capacity: &BTreeMap<String, u64
         conditions: Some(conditions(ready, &pressure)),
         node_info: Some(system_info(cfg)),
         images: Some(select_node_images(images)),
+        volumes_in_use: Some(
+            mounted_csi_volumes.iter().map(|(driver, handle)| csi_unique_volume_name(driver, handle)).collect(),
+        ),
+        volumes_attached: Some(
+            mounted_csi_volumes
+                .iter()
+                .map(|(driver, handle)| AttachedVolume {
+                    name: csi_unique_volume_name(driver, handle),
+                    device_path: String::new(), // filesystem-mounted CSI volumes have no block device path
+                })
+                .collect(),
+        ),
         addresses: Some(vec![
             NodeAddress { type_: "InternalIP".to_string(), address: detect_internal_ip() },
             NodeAddress { type_: "Hostname".to_string(), address: cfg.node_name.clone() },
@@ -245,11 +273,12 @@ pub async fn register(
     cfg: &Config,
     extra_capacity: &BTreeMap<String, u64>,
     images: Vec<crate::runtime::NodeImage>,
+    mounted_csi_volumes: &[(String, String)],
 ) -> Result<()> {
     let api: Api<Node> = Api::all(client.clone());
     let pp = PatchParams::apply(FIELD_MANAGER).force();
     api.patch(&cfg.node_name, &pp, &Patch::Apply(&build_node(cfg))).await?;
-    push_status(client, cfg, true, extra_capacity, images).await?;
+    push_status(client, cfg, true, extra_capacity, images, mounted_csi_volumes).await?;
     renew_lease(client, cfg).await?;
 
     // k3s's cloud-node-lifecycle-controller adds this taint asynchronously
@@ -308,9 +337,10 @@ pub async fn push_status(
     ready: bool,
     extra_capacity: &BTreeMap<String, u64>,
     images: Vec<crate::runtime::NodeImage>,
+    mounted_csi_volumes: &[(String, String)],
 ) -> Result<()> {
     let api: Api<Node> = Api::all(client.clone());
-    let status = build_status(cfg, ready, extra_capacity, images);
+    let status = build_status(cfg, ready, extra_capacity, images, mounted_csi_volumes);
     let patch = serde_json::json!({ "status": status });
     api.patch_status(&cfg.node_name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
     Ok(())
