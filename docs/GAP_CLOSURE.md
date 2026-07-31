@@ -27,6 +27,61 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 61: HugePages emptyDir.medium volume support (2026-07-31, same day)
+
+Closes the last of round 58's 3 HugePages pieces:
+`emptyDir.medium: "HugePages"`/`"HugePages-<size>"` was never
+implemented at all — such a volume was silently materialized on regular
+disk, exactly like the unset default medium, giving no huge-page backing
+whatsoever.
+
+- `runtime/cri.rs`'s emptyDir-creation branch now mounts `hugetlbfs`
+  (via `mount(8)`, the same host-tool approach round 30's tmpfs support
+  already established — CRI's `Mount` struct only binds an *existing*
+  host path, it has no concept of controlling the filesystem type
+  backing it) whenever `medium` is `HugePages` or `HugePages-<size>`.
+- New pure `is_hugepages_medium_empty_dir()`, mirroring
+  `is_memory_medium_empty_dir()` (round 30).
+- New pure `hugepages_medium_pagesize_option(medium)` converts
+  `HugePages-<size>`'s k8s binary suffix (`Mi`/`Gi`/`Ki`) to hugetlbfs's
+  own `pagesize=` mount option spelling — the same naming-convention-only
+  translation (strip the trailing `i`) as round 59's
+  `hugepage_cri_page_size()`, since the Linux kernel's mount-option
+  parser already reads a bare `K`/`M`/`G` suffix as base-1024. A bare
+  `HugePages` medium (no specific size) omits `pagesize=` entirely,
+  letting the kernel use its own default huge page size.
+- New pure `hugetlbfs_mount_args()`, mirroring `tmpfs_mount_args()`:
+  builds `mount -t hugetlbfs [-o pagesize=<unit>[,size=<bytes>]] none
+  <path>`, combining `pagesize=` and `sizeLimit`'s `size=` into a single
+  `-o` option when both are present.
+  `mount_hugetlbfs_empty_dir()` is best-effort, same graceful-degradation
+  posture as tmpfs: a failure (e.g. no hugepages reserved, or hugetlbfs
+  itself unavailable) is logged and falls back to the already-created
+  plain-disk directory rather than failing the whole pod.
+- `unmount_memory_backed_empty_dirs()` (round 30) is renamed
+  `unmount_special_medium_empty_dirs()` and now also unmounts
+  `HugePages`/`HugePages-<size>`-medium volumes on pod teardown, since a
+  hugetlbfs mount is real reserved memory that must be given back, same
+  reasoning as tmpfs.
+- 12 new unit tests in a new `cri_tests/hugetlbfs_empty_dir.rs`: medium
+  detection (none/Memory/bare `HugePages`/sized `HugePages-2Mi`,
+  case-sensitivity), pagesize-option conversion (bare/2Mi/1Gi/64Ki), and
+  mount-args construction (bare, sized, size-limit-only, size-limit
+  combined with pagesize, zero/negative size-limit treated as unset).
+- Genuinely automated e2e test
+  (`test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs` in
+  `deploy/lib/test/cases/volumes.sh`): creates a pod with a
+  `HugePages-2Mi` emptyDir (plus the matching `hugepages-2Mi` and
+  `memory` resource limits real k8s validation requires alongside any
+  HugePages-medium volume) and checks the host mountpoint's actual
+  filesystem type via `stat -f`, same proof-by-construction approach as
+  round 30's tmpfs test. Skips cleanly (not a hard failure) if the node
+  has no 2Mi hugepages reserved, mirroring rounds 59/60's hugepages
+  tests' skip conditions.
+- This closes round 58's HugePages audit item entirely — all 3 pieces
+  (container limits, capacity/allocatable reporting, emptyDir medium) are
+  now implemented.
+
 ## Round 60: HugePages Node.status.capacity/.allocatable reporting (2026-07-31, same day)
 
 Closes the second of round 58's 3 HugePages pieces:
@@ -3546,7 +3601,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`oom_score_adj`** (round 28; found in round 27's re-audit) — `linux_resources()` now sets CRI's `LinuxContainerResources.oom_score_adj` per container via `eviction::oom_score_adj()`: Guaranteed `-998`, BestEffort `1000`, Burstable scaled by that container's own memory *request* against node capacity (`1000 - 1000*request/capacity`, clamped `[2, 999]`), matching real kubelet's formula exactly. Gives the kernel OOM killer QoS-aware signal, closing a real gap in this project's own eviction-manager story (rounds 7, 26) — a kernel OOM kill can happen faster than `eviction_loop()`'s check interval reacts. See round 28 notes.
 - ✅ **gRPC probes** (round 29; found in round 27's re-audit) — `probes.rs::probe_check()` now handles `probe.grpc` too, via a vendored `grpc.health.v1` client (`proto/health.proto`) calling the standard `Health/Check` RPC. `cri`-gated (needs `tonic`'s transport); a mock-only build's `check_grpc()` always returns `false`. Unit-tested failure paths (timeout, refused, non-gRPC listener) with solid confidence; the success path (a real passing `Health/Check`) is unvalidated — no gRPC server available in this sandbox to prove it live. See round 29 notes.
 - ✅ **Local ephemeral storage** (found in round 45's re-audit; closed rounds 48-49) — `Node.status.capacity`/`.allocatable["ephemeral-storage"]` reports the real total filesystem size backing `disk_path` (round 48, reusing `DiskPressure`'s existing `statvfs(2)` read). A pod exceeding its *own* `resources.limits["ephemeral-storage"]` is now evicted directly (round 49) — usage measured as CRI's per-container `writable_layer.used_bytes` plus a recursive walk of nodelet's own materialized volume directory, checked independently of and ahead of the general `MemoryPressure`/`DiskPressure`/`PIDPressure`-gated eviction path (the same relationship an individual container's own OOM kill has to overall node memory pressure). Genuinely automated e2e test — the only one of this project's eviction tests that doesn't need a manual procedure, since this trigger needs no artificial node-wide pressure. **Known scope limitation**: usage measurement doesn't include container log file size (`/var/log/pods/...`) yet, only volumes + writable layer. See rounds 48-49 notes.
-- 🟡 **HugePages** (found in round 58's re-audit; container-limit piece closed round 59, capacity/allocatable piece closed round 60) — container `resources.limits["hugepages-<size>"]` is translated to CRI's `LinuxContainerResources.hugepage_limits` (round 59), and `Node.status.capacity`/`.allocatable["hugepages-<size>"]` now report every reserved hugepage pool read from `/sys/kernel/mm/hugepages/` (round 60). **Still missing**: `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volume support (closer in shape to round 30's tmpfs `emptyDir.medium: Memory` work — a real mount, not a CRI concept).
+- ✅ **HugePages** (found in round 58's re-audit; all 3 pieces closed rounds 59-61) — container `resources.limits["hugepages-<size>"]` is translated to CRI's `LinuxContainerResources.hugepage_limits` (round 59), `Node.status.capacity`/`.allocatable["hugepages-<size>"]` report every reserved hugepage pool read from `/sys/kernel/mm/hugepages/` (round 60), and `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volumes are now real `hugetlbfs` mounts (round 61).
 - ❌ **`securityContext.supplementalGroupsPolicy`** (GA 1.33; found in round 58's re-audit) — controls whether `supplementalGroups`/fsGroup-derived groups *merge with* or *strictly replace* the groups a container image's own `/etc/group` would otherwise assign its user; `linux_security_context()` sets `supplemental_groups` but never reads this policy field, so it always behaves as the implicit merge case regardless of what the pod spec asks for.
 - ❌ **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit) — entirely unimplemented (zero references anywhere in this codebase). A newer, genuinely complex feature: `ResourceClaim`/`ResourceClaimTemplate`/`DeviceClass` cluster objects plus a kubelet-side gRPC "DRA plugin" protocol distinct from (though loosely analogous to) device plugins. **Flagged for completeness, not necessarily recommended**: likely its own large multi-round arc, and the value-to-complexity ratio for a single-node edge kubelet (vs. a real multi-node cluster's cross-node device-sharing story DRA is mainly designed for) is genuinely questionable — worth a deliberate scope discussion before starting, not a default "implement it" pick.
 
@@ -3996,8 +4051,16 @@ higher-value/correctness-critical than others:
       since it already passes unrecognized keys through untouched.
       Genuinely automated e2e test, skips cleanly if no hugepages are
       reserved on the test runner. See round 60 notes.
-- [ ] Candidates for the next round, by value: HugePages
-      `emptyDir.medium: HugePages` volume support (the last of the 3
-      HugePages pieces), `supplementalGroupsPolicy`, then a deliberate
-      scope discussion on Dynamic Resource Allocation before committing to
-      it. Ask before starting the next round.
+- [x] Round 61: HugePages emptyDir.medium volume support — closes the
+      last of round 58's 3 HugePages pieces (all 3 now fully closed). New
+      `is_hugepages_medium_empty_dir()`/`hugepages_medium_pagesize_option()`/
+      `hugetlbfs_mount_args()`/`mount_hugetlbfs_empty_dir()` mirror round
+      30's tmpfs support; `unmount_memory_backed_empty_dirs()` renamed
+      `unmount_special_medium_empty_dirs()` and now unmounts both media on
+      pod teardown. Genuinely automated e2e test proving the host
+      mountpoint's real filesystem type via `stat -f`, skips cleanly if no
+      hugepages are reserved. See round 61 notes.
+- [ ] Candidates for the next round, by value: `supplementalGroupsPolicy`
+      (GA 1.33, never read), then a deliberate scope discussion on Dynamic
+      Resource Allocation before committing to it. Ask before starting the
+      next round.

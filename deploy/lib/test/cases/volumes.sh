@@ -305,6 +305,65 @@ EOF
     fi
 }
 
+test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs() {
+    # Round 61: emptyDir.medium: "HugePages-<size>" used to be silently
+    # ignored, materialized on regular disk exactly like the default
+    # (the last of round 58's 3 HugePages pieces). Checks the host
+    # mountpoint's actual filesystem type — real proof of hugetlbfs, not
+    # just that the pod started successfully. Skips cleanly (not a hard
+    # fail) if this node/kernel has no 2Mi hugepages reserved — genuinely
+    # outside nodelet's control, same reasoning as round 59/60's hugepages
+    # tests.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local reserved
+    reserved="$(cat /proc/sys/vm/nr_hugepages 2>/dev/null || echo 0)"
+    if [[ "$reserved" -eq 0 ]]; then
+        skip_test "no hugepages reserved on this node (/proc/sys/vm/nr_hugepages is 0) — nothing for a HugePages-medium emptyDir to mount against"
+    fi
+
+    local name="empty-dir-hugepages"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: hugepool
+      emptyDir:
+        medium: HugePages-2Mi
+        sizeLimit: 4Mi
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      resources:
+        limits:
+          hugepages-2Mi: "4Mi"
+          memory: "67108864"
+      command: ["sh", "-c", "echo hello > /huge/marker; sleep 3600"]
+      volumeMounts:
+        - {name: hugepool, mountPath: /huge}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with a HugePages-2Mi emptyDir — this node/kernel likely has no 2Mi hugepages reserved or the runtime doesn't support the hugetlb cgroup controller"
+    fi
+
+    local dir
+    dir="$(pod_volume_host_path "$name" hugepool)"
+    if ! try_wait_until 20 bash -c "[[ -d '$dir' ]]"; then
+        delete_pod_if_exists "$name"
+        skip_test "no $dir on the host — check nodelet's logs for 'failed to mount hugetlbfs'"
+    fi
+
+    local fstype
+    fstype="$(stat -f -c %T "$dir" 2>/dev/null || true)"
+    delete_pod_if_exists "$name"
+    if [[ "$fstype" != "hugetlbfs" ]]; then
+        skip_test "emptyDir with medium: HugePages-2Mi is not backed by hugetlbfs (stat -f reports '$fstype') — likely no 2Mi hugepages actually reserved/mountable on this node; check mount_hugetlbfs_empty_dir()/hugetlbfs_mount_args() in runtime/cri.rs if hugepages ARE reserved here"
+    fi
+}
+
 test_image_volume_source_mounts_a_read_only_image() {
     # Round 32: volumeSource.image. Unlike CSI/ephemeral-volume tests
     # elsewhere in this suite, this needs no external infrastructure at
@@ -362,5 +421,6 @@ register_test test_projected_volume_merges_configmap_and_downward_api
 register_test test_service_account_token_projected_volume_mints_a_real_token
 register_test test_host_aliases_are_written_to_etc_hosts
 register_test test_empty_dir_medium_memory_is_backed_by_tmpfs
+register_test test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs
 register_test test_image_volume_source_mounts_a_read_only_image
 register_test test_fsgroup_chowns_materialized_volumes

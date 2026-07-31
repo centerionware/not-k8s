@@ -1358,26 +1358,85 @@ fn mount_tmpfs_empty_dir(dir: &std::path::Path, size_limit_bytes: Option<i64>) -
     Ok(())
 }
 
-/// Unmount every `Memory`-medium `emptyDir` this pod declared — called on
-/// pod teardown (`remove_pod()`) since a tmpfs mount is real RAM that
-/// must be given back, unlike a plain-disk `emptyDir` directory (left in
-/// place today regardless of medium — a pre-existing simplification, see
-/// `docs/GAP_CLOSURE.md`). Re-derives volume names/paths from the Pod
-/// object rather than tracking mount state separately, the same approach
-/// `unmount_csi_volumes()` already takes. Best-effort per volume — one
-/// already-gone mount (e.g. the pod directory was already cleaned up some
-/// other way) must not stop the rest of teardown.
-fn unmount_memory_backed_empty_dirs(pod: &Pod, id: &PodId) {
+/// Whether an `emptyDir` volume wants a `HugePages`/`HugePages-<size>`
+/// medium (round 61; the last of round 58's 3 HugePages pieces) —
+/// `HugePages` alone means "the kernel's default huge page size", while
+/// `HugePages-<size>` (e.g. `HugePages-2Mi`) pins a specific size, mirroring
+/// `resources.limits["hugepages-<size>"]`'s own naming (round 59/60). Pure,
+/// same reasoning as `is_memory_medium_empty_dir()`.
+fn is_hugepages_medium_empty_dir(source: &k8s_openapi::api::core::v1::EmptyDirVolumeSource) -> bool {
+    source.medium.as_deref().is_some_and(|m| m == "HugePages" || m.starts_with("HugePages-"))
+}
+
+/// `HugePages-<size>`'s k8s binary-unit suffix (`Mi`/`Gi`/`Ki`) -> the unit
+/// spelling `hugetlbfs`'s own `pagesize=` mount option expects. Linux's
+/// kernel option parser (`memparse()`) reads a bare `K`/`M`/`G` suffix as
+/// base-1024 already — exactly the same naming-convention-only
+/// translation as round 59's `hugepage_cri_page_size()` (strip the
+/// trailing `i`, no numeric rescaling of the value itself).
+fn hugepages_medium_pagesize_option(medium: &str) -> Option<String> {
+    medium.strip_prefix("HugePages-")?.strip_suffix('i').map(|s| format!("pagesize={s}"))
+}
+
+/// Build `mount -t hugetlbfs [-o pagesize=<unit>[,size=<bytes>]] none
+/// <path>`'s arguments — pure, mirroring `tmpfs_mount_args()`. `medium ==
+/// "HugePages"` (no specific size) omits `pagesize=` entirely, letting the
+/// kernel use its own default huge page size, same "don't invent a cap
+/// upstream doesn't impose" reasoning as tmpfs's unset `sizeLimit`.
+fn hugetlbfs_mount_args(path: &std::path::Path, medium: &str, size_limit_bytes: Option<i64>) -> Vec<String> {
+    let mut args = vec!["-t".to_string(), "hugetlbfs".to_string()];
+    let mut opts: Vec<String> = hugepages_medium_pagesize_option(medium).into_iter().collect();
+    if let Some(bytes) = size_limit_bytes.filter(|b| *b > 0) {
+        opts.push(format!("size={bytes}"));
+    }
+    if !opts.is_empty() {
+        args.push("-o".to_string());
+        args.push(opts.join(","));
+    }
+    args.push("none".to_string());
+    args.push(path.to_string_lossy().into_owned());
+    args
+}
+
+/// Mount a `HugePages`/`HugePages-<size>`-medium `emptyDir` volume's
+/// directory as `hugetlbfs` — same host-mount approach as
+/// `mount_tmpfs_empty_dir()` and for the same reason: this isn't a CRI-level
+/// concept, CRI's `Mount` only binds an *existing* host path. Best-effort:
+/// logged and falls back to the already-created plain-disk directory on
+/// failure (e.g. no hugepages reserved on this node, or the hugetlbfs
+/// filesystem isn't available), same graceful-degradation posture as tmpfs.
+fn mount_hugetlbfs_empty_dir(dir: &std::path::Path, medium: &str, size_limit_bytes: Option<i64>) -> Result<()> {
+    let status = std::process::Command::new("mount")
+        .args(hugetlbfs_mount_args(dir, medium, size_limit_bytes))
+        .status()
+        .context("running mount(8)")?;
+    if !status.success() {
+        anyhow::bail!("mount -t hugetlbfs exited with {status}");
+    }
+    Ok(())
+}
+
+/// Unmount every `Memory`- or `HugePages`/`HugePages-<size>`-medium
+/// `emptyDir` this pod declared — called on pod teardown (`remove_pod()`)
+/// since both are real reserved memory that must be given back, unlike a
+/// plain-disk `emptyDir` directory (left in place today regardless of
+/// medium — a pre-existing simplification, see `docs/GAP_CLOSURE.md`).
+/// Re-derives volume names/paths from the Pod object rather than tracking
+/// mount state separately, the same approach `unmount_csi_volumes()`
+/// already takes. Best-effort per volume — one already-gone mount (e.g. the
+/// pod directory was already cleaned up some other way) must not stop the
+/// rest of teardown.
+fn unmount_special_medium_empty_dirs(pod: &Pod, id: &PodId) {
     let Some(volumes) = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()) else { return };
     let pod_dir = PathBuf::from(VOLUME_ROOT).join(&id.uid).join("volumes");
     for v in volumes {
         let Some(source) = &v.empty_dir else { continue };
-        if !is_memory_medium_empty_dir(source) {
+        if !is_memory_medium_empty_dir(source) && !is_hugepages_medium_empty_dir(source) {
             continue;
         }
         let vol_dir = pod_dir.join(&v.name);
         if let Err(e) = std::process::Command::new("umount").arg(&vol_dir).status() {
-            warn!(volume = %v.name, path = %vol_dir.display(), error = ?e, "failed to run umount for a Memory-medium emptyDir volume");
+            warn!(volume = %v.name, path = %vol_dir.display(), error = ?e, "failed to run umount for a Memory/HugePages-medium emptyDir volume");
         }
     }
 }
@@ -1804,6 +1863,11 @@ impl CriRuntime {
                     let size_limit_bytes = empty_dir.size_limit.as_ref().and_then(parse_memory_bytes);
                     if let Err(e) = mount_tmpfs_empty_dir(&vol_dir, size_limit_bytes) {
                         warn!(volume = %v.name, error = ?e, "failed to mount tmpfs for a Memory-medium emptyDir volume; falling back to a plain disk directory");
+                    }
+                } else if let Some(medium) = empty_dir.medium.as_deref().filter(|_| is_hugepages_medium_empty_dir(empty_dir)) {
+                    let size_limit_bytes = empty_dir.size_limit.as_ref().and_then(parse_memory_bytes);
+                    if let Err(e) = mount_hugetlbfs_empty_dir(&vol_dir, medium, size_limit_bytes) {
+                        warn!(volume = %v.name, error = ?e, "failed to mount hugetlbfs for a HugePages-medium emptyDir volume; falling back to a plain disk directory");
                     }
                 }
                 out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
@@ -3877,7 +3941,7 @@ impl PodRuntime for CriRuntime {
             self.release_sandbox_devices(&sandbox_id).await;
         }
         self.unmount_csi_volumes(pod, &id).await;
-        unmount_memory_backed_empty_dirs(pod, &id);
+        unmount_special_medium_empty_dirs(pod, &id);
         Ok(())
     }
 
@@ -4536,6 +4600,9 @@ mod tests_termination_message;
 #[cfg(test)]
 #[path = "cri_tests/tmpfs_empty_dir.rs"]
 mod tests_tmpfs_empty_dir;
+#[cfg(test)]
+#[path = "cri_tests/hugetlbfs_empty_dir.rs"]
+mod tests_hugetlbfs_empty_dir;
 #[cfg(test)]
 #[path = "cri_tests/ephemeral_volume.rs"]
 mod tests_ephemeral_volume;

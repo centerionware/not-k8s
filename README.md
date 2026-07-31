@@ -364,8 +364,11 @@ the next HugePages piece: **`Node.status.capacity`/`.allocatable
 ["hugepages-<size>"]`** now report every hugepage pool actually reserved
 on the node, read straight from `/sys/kernel/mm/hugepages/` (no CRI RPC
 involved) — unreserved pool sizes are omitted entirely rather than
-reported as zero, matching real kubelet. Still open: the
-`emptyDir.medium: HugePages` volume form. Full status list in
+reported as zero, matching real kubelet. Round 61 closed the last
+HugePages piece: **`emptyDir.medium: "HugePages"`/`"HugePages-<size>"`**
+volumes are now real `hugetlbfs` mounts (via `mount(8)`, the same
+host-tool approach round 30's tmpfs support already established),
+closing round 58's HugePages audit item entirely. Full status list in
 `docs/GAP_CLOSURE.md`.
 
 ---
