@@ -85,6 +85,11 @@ impl PodController {
         if tasks.contains_key(&key) {
             return;
         }
+        // Round 44 (found in round 35's re-audit): the pod's own
+        // terminationGracePeriodSeconds, used when a liveness probe's own
+        // override isn't set — same default (30) real kubelet applies.
+        let pod_grace_period_seconds =
+            pod.spec.as_ref().and_then(|s| s.termination_grace_period_seconds).filter(|s| *s >= 0).unwrap_or(30);
         let handle = probes::spawn(
             self.runtime.clone(),
             self.health.clone(),
@@ -92,6 +97,7 @@ impl PodController {
             name.to_string(),
             containers,
             pod_ip.to_string(),
+            pod_grace_period_seconds,
         );
         tasks.insert(key, handle);
     }

@@ -46,6 +46,7 @@ async fn main() -> Result<()> {
         Default::default(),
         nodelet::userns::UsernsAllocator::new(100_000, 65_536, 1024),
         4 * 1024 * 1024 * 1024,
+        4_000,
     )
     .await
     .context("connect to containerd")?;

@@ -159,9 +159,13 @@ pub trait PodRuntime: Send + Sync {
     /// Kill just this one container (liveness-probe-triggered restart). The
     /// next `ensure_pod()` call recreates it via the runtime's normal
     /// "missing container -> create fresh" path, so this only needs to make
-    /// the old one gone. Default: no-op — nothing real to restart (mock).
-    async fn restart_container(&self, namespace: &str, name: &str, container: &str) -> anyhow::Result<()> {
-        let _ = (namespace, name, container);
+    /// the old one gone. `grace_period_seconds` (round 44; found in round
+    /// 35's re-audit) is the probe's own `terminationGracePeriodSeconds`
+    /// override if set, else the pod's own — computed by the caller
+    /// (`probes.rs`), which has the `Probe`/`Pod` objects this trait-level
+    /// method doesn't. Default: no-op — nothing real to restart (mock).
+    async fn restart_container(&self, namespace: &str, name: &str, container: &str, grace_period_seconds: i64) -> anyhow::Result<()> {
+        let _ = (namespace, name, container, grace_period_seconds);
         Ok(())
     }
 

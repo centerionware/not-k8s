@@ -8,7 +8,7 @@ use super::*;
 use crate::runtime::{PodRuntime, RuntimeStatus};
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{Container, ExecAction, Pod, Probe};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -16,11 +16,16 @@ use tokio::sync::mpsc::UnboundedReceiver;
 struct FakeRuntime {
     exec_ok: AtomicBool,
     restart_count: AtomicUsize,
+    last_grace_period_seconds: AtomicI64,
 }
 
 impl FakeRuntime {
     fn new(initially_ok: bool) -> Arc<Self> {
-        Arc::new(Self { exec_ok: AtomicBool::new(initially_ok), restart_count: AtomicUsize::new(0) })
+        Arc::new(Self {
+            exec_ok: AtomicBool::new(initially_ok),
+            restart_count: AtomicUsize::new(0),
+            last_grace_period_seconds: AtomicI64::new(-1),
+        })
     }
 }
 
@@ -41,8 +46,9 @@ impl PodRuntime for FakeRuntime {
     async fn exec(&self, _ns: &str, _name: &str, _container: &str, _command: &[String]) -> anyhow::Result<bool> {
         Ok(self.exec_ok.load(Ordering::SeqCst))
     }
-    async fn restart_container(&self, _ns: &str, _name: &str, _container: &str) -> anyhow::Result<()> {
+    async fn restart_container(&self, _ns: &str, _name: &str, _container: &str, grace_period_seconds: i64) -> anyhow::Result<()> {
         self.restart_count.fetch_add(1, Ordering::SeqCst);
+        self.last_grace_period_seconds.store(grace_period_seconds, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -74,6 +80,7 @@ async fn readiness_starts_false_and_flips_true_once_the_exec_probe_passes() {
         "web".to_string(),
         container,
         "10.0.0.5".to_string(),
+        30,
     ));
 
     // Give the loop a moment to seed "not ready" before the probe has run at all.
@@ -104,6 +111,7 @@ async fn liveness_failure_past_threshold_triggers_a_container_restart() {
         "web".to_string(),
         container,
         "10.0.0.5".to_string(),
+        30,
     ));
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -114,6 +122,45 @@ async fn liveness_failure_past_threshold_triggers_a_container_restart() {
     assert!(
         runtime.restart_count.load(Ordering::SeqCst) >= 1,
         "two consecutive liveness failures must trigger restart_container"
+    );
+    assert_eq!(
+        runtime.last_grace_period_seconds.load(Ordering::SeqCst),
+        30,
+        "with no probe-level override, restart_container should get the pod's own grace period (30, passed in above)"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn liveness_probes_own_termination_grace_period_overrides_the_pods() {
+    // Round 44: a liveness probe's own terminationGracePeriodSeconds wins
+    // over the pod's — real kubelet's own documented override rule.
+    let runtime = FakeRuntime::new(true);
+    let health = new_health_map();
+    let mut probe = exec_probe("live-check", 1);
+    probe.termination_grace_period_seconds = Some(5);
+    let container = Container { name: "app".to_string(), liveness_probe: Some(probe), ..Default::default() };
+
+    let handle = tokio::spawn(probe_container(
+        runtime.clone(),
+        health.clone(),
+        "default".to_string(),
+        "web".to_string(),
+        container,
+        "10.0.0.5".to_string(),
+        30, // pod's own grace period — must be overridden by the probe's 5
+    ));
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    runtime.exec_ok.store(false, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+
+    assert!(runtime.restart_count.load(Ordering::SeqCst) >= 1, "liveness failure must trigger a restart");
+    assert_eq!(
+        runtime.last_grace_period_seconds.load(Ordering::SeqCst),
+        5,
+        "the probe's own terminationGracePeriodSeconds (5) must win over the pod's (30)"
     );
 
     handle.abort();
@@ -137,6 +184,7 @@ async fn startup_probe_gates_readiness_until_it_passes() {
         "web".to_string(),
         container,
         "10.0.0.5".to_string(),
+        30,
     ));
 
     tokio::time::sleep(Duration::from_millis(200)).await;

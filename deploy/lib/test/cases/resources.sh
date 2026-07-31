@@ -229,8 +229,51 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_env_resource_field_ref_reports_the_containers_own_limits() {
+    # Round 44: env valueFrom.resourceFieldRef previously bail!ed
+    # "not supported yet" unconditionally. limits.cpu with no divisor
+    # rounds UP to whole cores (real kubelet's well-known default-divisor
+    # quirk); limits.memory with a 1Mi divisor is the classic JVM
+    # heap-sizing use case.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="resource-field-ref"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      resources:
+        limits:
+          cpu: "1500m"
+          memory: "536870912"
+      command: ["sh", "-c", "sleep 3600"]
+      env:
+        - name: CPU_LIMIT_CORES
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.cpu
+        - name: MEM_LIMIT_MI
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.memory
+              divisor: 1Mi
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local cpu_env mem_env
+    cpu_env="$(kctl exec "$name" -- sh -c 'echo $CPU_LIMIT_CORES' 2>/dev/null || true)"
+    mem_env="$(kctl exec "$name" -- sh -c 'echo $MEM_LIMIT_MI' 2>/dev/null || true)"
+    assert_eq "$cpu_env" "2" "CPU_LIMIT_CORES should round 1500m UP to 2 whole cores (no divisor given)"
+    assert_eq "$mem_env" "512" "MEM_LIMIT_MI should report 512 (536870912 bytes / 1Mi)"
+    delete_pod_if_exists "$name"
+}
+
 register_test test_memory_limit_is_enforced_via_cgroup
 register_test test_in_place_resize_updates_memory_limit_without_restarting
+register_test test_env_resource_field_ref_reports_the_containers_own_limits
 register_test test_cpu_limit_is_enforced_via_cgroup
 register_test test_besteffort_pod_gets_no_cgroup_limit
 register_test test_besteffort_pod_gets_the_certain_death_oom_score

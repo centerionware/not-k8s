@@ -56,6 +56,45 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_liveness_probes_own_grace_period_overrides_the_pods() {
+    # Round 44: a liveness probe's own terminationGracePeriodSeconds must
+    # win over the pod's own (real kubelet's documented override rule) —
+    # previously restart_container() always used a hardcoded 10s
+    # regardless of either. The container traps and ignores SIGTERM, so it
+    # can only actually die via the grace-period SIGKILL — if the probe's
+    # short override (3s) weren't honored and the pod's long one (60s) were
+    # used instead, this test's own wait_until would time out and fail.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="liveness-grace-override"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  terminationGracePeriodSeconds: 60
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "trap '' TERM; touch /tmp/alive; sleep 6; rm -f /tmp/alive; sleep 3600"]
+      livenessProbe:
+        exec:
+          command: ["test", "-f", "/tmp/alive"]
+        periodSeconds: 2
+        failureThreshold: 2
+        terminationGracePeriodSeconds: 3
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    # marker disappears ~6s in; two consecutive 2s-period failures trip
+    # liveness around t=8-10s; +3s grace = restart by roughly t=13s. 40s is
+    # a generous bound that's still nowhere near the pod's 60s default —
+    # timing out here is itself proof the pod's grace period leaked through
+    # instead of the probe's own.
+    wait_until 40 "restart count > 0 after liveness failure (probe's own grace period must be honored)" bash -c \
+        "[[ \"\$(pod_container_restart_count '$name' app)\" -gt 0 ]]"
+    delete_pod_if_exists "$name"
+}
+
 test_startup_probe_gates_liveness_and_readiness() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="startup-gate"
@@ -127,6 +166,7 @@ test_grpc_probe_manual_note() {
 
 register_test test_readiness_probe_gates_ready_condition
 register_test test_liveness_probe_failure_restarts_the_container
+register_test test_liveness_probes_own_grace_period_overrides_the_pods
 register_test test_startup_probe_gates_liveness_and_readiness
 register_test test_http_get_readiness_probe_against_a_real_server
 register_test test_grpc_probe_manual_note

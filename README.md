@@ -281,8 +281,13 @@ Round 43 finished the arc: `containerStatuses[].resources`/
 `.allocatedResources` (app containers) and a `PodResizeInProgress`
 condition now report what's actually happening — `PodResizePending`
 stays unimplemented on purpose, since nodelet has no admission/
-node-fitting layer that could ever *defer* a resize. Full status list
-in `docs/GAP_CLOSURE.md`.
+node-fitting layer that could ever *defer* a resize. Round 44 closed
+out the last two known audit findings: env `valueFrom.resourceFieldRef`
+(reproducing kubelet's "CPU reports whole cores, rounded up" quirk and
+the common JVM-heap-sizing memory-divisor pattern) and a liveness
+probe's own `terminationGracePeriodSeconds` override (previously a
+hardcoded 10s regardless of pod or probe settings). Full status list in
+`docs/GAP_CLOSURE.md`.
 
 ---
 

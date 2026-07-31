@@ -173,6 +173,15 @@ pub struct CriRuntime {
     /// (`config.rs::detect_memory_bytes()` / `NODELET_MEMORY_BYTES`), not
     /// re-read from `/proc/meminfo` independently.
     node_memory_bytes: i64,
+    /// Node CPU capacity in millicores (round 44; found in round 35's
+    /// re-audit) — the fallback value `resolve_env_var_source()`'s
+    /// `resourceFieldRef` handling uses for `limits.cpu` when the
+    /// container itself has no CPU limit set, matching real kubelet's own
+    /// documented behavior (an unset limit resolves to the *node's*
+    /// capacity, not zero/unlimited). Same source as
+    /// `Node.status.capacity.cpu` (`config.rs`'s `cpu_cores` /
+    /// `NODELET_CPU`).
+    node_cpu_millicores: i64,
     /// `"sandbox_id/container_name" -> cumulative restart count`, mirroring
     /// `PodStatus.containerStatuses[].restartCount`. Side table for the same
     /// reason `restart_policies` is one: CRI's `ListContainers` has no
@@ -648,6 +657,71 @@ fn parse_cpu_millicores(q: &Quantity) -> Option<i64> {
 /// A memory Quantity as bytes.
 fn parse_memory_bytes(q: &Quantity) -> Option<i64> {
     parse_quantity(&q.0).map(|b| b.round() as i64)
+}
+
+/// Real kubelet's `resourceFieldRef` output format (round 44; found in
+/// round 35's re-audit): the raw value (millicores for CPU, bytes for
+/// memory) is divided by the divisor (also in the same raw unit — a CPU
+/// divisor is itself converted to millicores, a memory divisor to bytes),
+/// then rounded **up** to a whole number of divisor-units and printed as a
+/// plain integer — this is why an unset (default `"1"`) CPU divisor
+/// famously reports whole cores, rounded up, rather than millicores. The
+/// same formula handles both resource kinds identically; only the caller's
+/// choice of raw unit and default divisor differs.
+fn format_resource_field_value(raw: i64, divisor: i64) -> String {
+    let divisor = divisor.max(1);
+    ((raw + divisor - 1) / divisor).to_string()
+}
+
+/// Resolve one `resourceFieldRef` (env var or downwardAPI volume form) to
+/// its plain-number string value. `limits.*` falls back to the node's own
+/// capacity when the container has no such limit set — real kubelet's own
+/// documented Downward API behavior (an unset limit is treated as "the
+/// whole node," not zero/unbounded). `requests.*` falls back to the
+/// container's own limit first (matching the general request-defaults-to-
+/// limit rule), then to the node's capacity as the final fallback.
+/// `ephemeral-storage` isn't tracked/enforced by nodelet at all (a
+/// separate, pre-existing gap — see `docs/GAP_CLOSURE.md`), so it always
+/// resolves to `"0"` rather than bailing.
+fn resolve_resource_field_ref(
+    reference: &k8s_openapi::api::core::v1::ResourceFieldSelector,
+    resources: Option<&ResourceRequirements>,
+    node_cpu_millicores: i64,
+    node_memory_bytes: i64,
+) -> Result<String> {
+    let requests = resources.and_then(|r| r.requests.as_ref());
+    let limits = resources.and_then(|r| r.limits.as_ref());
+    let divisor_cpu = reference.divisor.as_ref().and_then(parse_cpu_millicores).filter(|d| *d > 0).unwrap_or(1000);
+    let divisor_mem = reference.divisor.as_ref().and_then(parse_memory_bytes).filter(|d| *d > 0).unwrap_or(1);
+
+    match reference.resource.as_str() {
+        "limits.cpu" => {
+            let m = limits.and_then(|r| r.get("cpu")).and_then(parse_cpu_millicores).unwrap_or(node_cpu_millicores);
+            Ok(format_resource_field_value(m, divisor_cpu))
+        }
+        "requests.cpu" => {
+            let m = requests
+                .and_then(|r| r.get("cpu"))
+                .and_then(parse_cpu_millicores)
+                .or_else(|| limits.and_then(|r| r.get("cpu")).and_then(parse_cpu_millicores))
+                .unwrap_or(node_cpu_millicores);
+            Ok(format_resource_field_value(m, divisor_cpu))
+        }
+        "limits.memory" => {
+            let b = limits.and_then(|r| r.get("memory")).and_then(parse_memory_bytes).unwrap_or(node_memory_bytes);
+            Ok(format_resource_field_value(b, divisor_mem))
+        }
+        "requests.memory" => {
+            let b = requests
+                .and_then(|r| r.get("memory"))
+                .and_then(parse_memory_bytes)
+                .or_else(|| limits.and_then(|r| r.get("memory")).and_then(parse_memory_bytes))
+                .unwrap_or(node_memory_bytes);
+            Ok(format_resource_field_value(b, divisor_mem))
+        }
+        "limits.ephemeral-storage" | "requests.ephemeral-storage" => Ok("0".to_string()),
+        other => bail!("resourceFieldRef: unsupported resource {other:?}"),
+    }
 }
 
 /// kubelet's cpu.shares formula: `max(2, milliCPU * 1024 / 1000)`. No
@@ -1525,6 +1599,7 @@ impl CriRuntime {
         numa_topology: BTreeMap<u32, BTreeSet<u32>>,
         userns: crate::userns::UsernsAllocator,
         node_memory_bytes: i64,
+        node_cpu_millicores: i64,
     ) -> Result<Self> {
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
@@ -1555,6 +1630,7 @@ impl CriRuntime {
             sidecar_names: Mutex::new(HashMap::new()),
             userns,
             node_memory_bytes,
+            node_cpu_millicores,
             restart_counts: Mutex::new(HashMap::new()),
             csi,
             device_plugins,
@@ -2046,6 +2122,7 @@ impl CriRuntime {
         source: &EnvVarSource,
         pod: &Pod,
         id: &PodId,
+        container: &k8s_openapi::api::core::v1::Container,
     ) -> Result<Option<Vec<u8>>> {
         if let Some(reference) = &source.config_map_key_ref {
             let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &id.namespace);
@@ -2081,8 +2158,14 @@ impl CriRuntime {
             return Ok(Some(value.into_bytes()));
         }
 
-        if source.resource_field_ref.is_some() {
-            anyhow::bail!("resourceFieldRef is not supported yet");
+        if let Some(reference) = &source.resource_field_ref {
+            let value = resolve_resource_field_ref(
+                reference,
+                container.resources.as_ref(),
+                self.node_cpu_millicores,
+                self.node_memory_bytes,
+            )?;
+            return Ok(Some(value.into_bytes()));
         }
 
         Ok(None)
@@ -2105,7 +2188,7 @@ impl CriRuntime {
 
         for env in container.env.as_deref().unwrap_or(&[]) {
             if let Some(source) = &env.value_from {
-                if let Some(value) = self.resolve_env_var_source(source, pod, id).await? {
+                if let Some(value) = self.resolve_env_var_source(source, pod, id, container).await? {
                     values.insert(env.name.clone(), value);
                 }
             } else {
@@ -3647,7 +3730,7 @@ impl PodRuntime for CriRuntime {
         Ok(resp.exit_code == 0)
     }
 
-    async fn restart_container(&self, namespace: &str, name: &str, container: &str) -> Result<()> {
+    async fn restart_container(&self, namespace: &str, name: &str, container: &str, grace_period_seconds: i64) -> Result<()> {
         let Some((sandbox_id, _)) = self.find_sandbox(namespace, name).await? else {
             return Ok(()); // pod already gone; nothing to restart
         };
@@ -3658,8 +3741,12 @@ impl PodRuntime for CriRuntime {
         // Best-effort stop before remove: a container that's still alive
         // (this is a *liveness* failure, not necessarily a crash) needs to
         // actually be killed, not just have its CRI record dropped.
+        // `grace_period_seconds` (round 44) honors the probe's own
+        // `terminationGracePeriodSeconds` override if set, else the pod's
+        // own — previously this was always a hardcoded 10s regardless of
+        // either.
         let _ = rt
-            .stop_container(StopContainerRequest { container_id: container_id.clone(), timeout: 10 })
+            .stop_container(StopContainerRequest { container_id: container_id.clone(), timeout: grace_period_seconds.max(0) })
             .await;
         rt.remove_container(RemoveContainerRequest { container_id }).await.context("RemoveContainerRequest")?;
         Ok(())
@@ -4205,6 +4292,9 @@ mod tests_pod_sysctls;
 #[cfg(test)]
 #[path = "cri_tests/resize_decision.rs"]
 mod tests_resize_decision;
+#[cfg(test)]
+#[path = "cri_tests/resource_field_ref.rs"]
+mod tests_resource_field_ref;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

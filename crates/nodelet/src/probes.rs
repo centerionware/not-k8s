@@ -318,6 +318,7 @@ pub fn spawn(
     name: String,
     containers: Vec<Container>,
     pod_ip: String,
+    pod_grace_period_seconds: i64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tasks = Vec::new();
@@ -331,13 +332,22 @@ pub fn spawn(
             let name = name.clone();
             let pod_ip = pod_ip.clone();
             tasks.push(tokio::spawn(async move {
-                probe_container(runtime, health, ns, name, container, pod_ip).await;
+                probe_container(runtime, health, ns, name, container, pod_ip, pod_grace_period_seconds).await;
             }));
         }
         for t in tasks {
             let _ = t.await;
         }
     })
+}
+
+/// A probe's own `terminationGracePeriodSeconds` override (only meaningful
+/// on liveness/startup probes — readiness failures never kill a container)
+/// if set, else the pod's own (round 44; found in round 35's re-audit).
+/// Matches real kubelet's documented default: "If this value is nil, the
+/// pod's terminationGracePeriodSeconds will be used."
+fn probe_grace_period_seconds(probe: &Probe, pod_grace_period_seconds: i64) -> i64 {
+    probe.termination_grace_period_seconds.filter(|s| *s >= 0).unwrap_or(pod_grace_period_seconds)
 }
 
 async fn probe_container(
@@ -347,6 +357,7 @@ async fn probe_container(
     name: String,
     container: Container,
     pod_ip: String,
+    pod_grace_period_seconds: i64,
 ) {
     let cname = container.name.clone();
     let key = pod_key(&ns, &name);
@@ -400,8 +411,9 @@ async fn probe_container(
             let was_passing = tracker.passing;
             tracker.record(ok, t.success_threshold, t.failure_threshold);
             if was_passing && !tracker.passing {
-                warn!(pod = %key, container = %cname, "liveness probe failed; restarting container");
-                if let Err(e) = runtime.restart_container(&ns, &name, &cname).await {
+                let grace = probe_grace_period_seconds(container.liveness_probe.as_ref().unwrap(), pod_grace_period_seconds);
+                warn!(pod = %key, container = %cname, grace_period_seconds = grace, "liveness probe failed; restarting container");
+                if let Err(e) = runtime.restart_container(&ns, &name, &cname, grace).await {
                     warn!(pod = %key, container = %cname, error = ?e, "restart_container failed");
                 }
                 *tracker = ProbeTracker::new(true); // give the fresh container a clean slate
@@ -431,3 +443,6 @@ mod tests_network_checks;
 #[cfg(test)]
 #[path = "probes_tests/supervisor.rs"]
 mod tests_supervisor;
+#[cfg(test)]
+#[path = "probes_tests/grace_period.rs"]
+mod tests_grace_period;

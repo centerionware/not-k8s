@@ -27,6 +27,111 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 44: env resourceFieldRef + probe terminationGracePeriodSeconds (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-43). Round 39's audit
+was fully closed after round 43; the only known open items left from
+any prior audit were round 35's 2 lowest-priority findings. User picked
+both together for one round.
+
+**Env `valueFrom.resourceFieldRef`** — before this round,
+`resolve_env_var_source()`'s `resource_field_ref` branch unconditionally
+`bail!`ed "not supported yet," a distinct code path from the
+already-supported downwardAPI-*volume* form of the same concept.
+
+- **New `node_cpu_millicores: i64` field on `CriRuntime`** (threaded
+  through `connect()` from `cfg.cpu_cores`, same pattern as round 28's
+  `node_memory_bytes`) — the fallback value for `limits.cpu` when a
+  container has no CPU limit set.
+- **New pure `resolve_resource_field_ref(reference, resources,
+  node_cpu_millicores, node_memory_bytes) -> Result<String>`**:
+  `limits.cpu`/`limits.memory` fall back to the *node's own capacity*
+  when the container has no such limit — real kubelet's own documented
+  Downward API behavior (an unset limit means "the whole node," not
+  zero/unbounded). `requests.cpu`/`requests.memory` fall back to the
+  container's own limit first (the general request-defaults-to-limit
+  rule), then to the node's capacity. `limits.ephemeral-storage`/
+  `requests.ephemeral-storage` resolve to `"0"` rather than bailing —
+  nodelet doesn't track or enforce ephemeral-storage at all (a
+  separate, pre-existing gap), so there's nothing truthful to report.
+  An unrecognized `resource` name is still a real error, not silently
+  zero.
+- **New pure `format_resource_field_value(raw, divisor) -> String`**:
+  ceiling-divides the raw value (millicores for CPU, bytes for memory)
+  by the divisor (also converted to the same raw unit) and prints a
+  plain integer — this single formula reproduces real kubelet's
+  well-known "CPU limit env var reports whole cores, rounded up"
+  quirk (default CPU divisor is `"1"` = 1000 millicores) *and* the
+  common JVM-heap-sizing pattern (`divisor: 1Mi` on a memory
+  reference) identically, with no special-casing needed between the
+  two resource kinds.
+- `resolve_env_var_source()` gained a `container: &Container` parameter
+  so it can read the container's own `resources` — the one other call
+  site (`resolve_container_env()`) already had it in scope.
+- 11 new unit tests (`cri_tests/resource_field_ref.rs`): the rounding
+  formula directly, `limits.cpu` with/without a divisor, the
+  node-capacity fallback (with and without a container `resources`
+  block at all), `requests.cpu`'s limit-then-node-capacity fallback
+  chain, the JVM-heap-sizing memory-divisor case, `ephemeral-storage`
+  resolving to `"0"`, and an unsupported resource name still erroring.
+- New e2e test (`deploy/lib/test/cases/resources.sh`):
+  `test_env_resource_field_ref_reports_the_containers_own_limits` —
+  `kubectl exec` reads both env vars directly out of the running
+  container, proving the whole-cores-rounded-up and the Mi-divisor
+  cases live, not just in isolation.
+
+**Probe-level `terminationGracePeriodSeconds`** — before this round,
+`restart_container()` (the liveness-probe-triggered kill path) always
+used a hardcoded `10` for `StopContainer`'s timeout, honoring neither
+the pod's own `terminationGracePeriodSeconds` nor a probe's own
+override.
+
+- **`PodRuntime::restart_container`** gained a `grace_period_seconds:
+  i64` parameter; `CriRuntime`'s implementation now passes it straight
+  through to `StopContainerRequest.timeout` instead of the old
+  hardcoded `10`.
+- **New pure `probes::probe_grace_period_seconds(probe,
+  pod_grace_period_seconds) -> i64`**: the probe's own override if set
+  (and non-negative), else the pod's own — matching real kubelet's
+  documented rule exactly ("If this value is nil, the pod's
+  `terminationGracePeriodSeconds` will be used").
+- `pods.rs::ensure_probe_supervisor()` computes the pod's own grace
+  period (same default-30 logic `runtime/cri.rs`'s
+  `termination_grace_seconds()` already has, duplicated in this
+  non-`cri`-gated file rather than exposed across the feature
+  boundary — a small, deliberate duplication) and threads it through
+  `probes::spawn()` → `probe_container()`, which resolves the
+  effective per-probe value right before calling `restart_container()`.
+  **Scoped to liveness probes only this round** — the startup-probe
+  loop has no failure-threshold-triggered restart at all yet (a
+  separate, pre-existing simplification: it just retries forever until
+  it eventually passes), so there's no live startup-probe code path
+  needing this fix yet either.
+- 5 new unit tests: `probes_tests/grace_period.rs` (4 cases for the
+  pure function) plus a new integration-style case in
+  `probes_tests/supervisor.rs` proving the probe's own override (5)
+  wins over the pod's (30) through the *whole* `probe_container()`
+  loop, not just the pure function in isolation; the existing liveness
+  test also gained an assertion that the pod's own value flows through
+  correctly when no override is set.
+- New e2e test (`deploy/lib/test/cases/probes.sh`):
+  `test_liveness_probes_own_grace_period_overrides_the_pods` — a
+  container that traps and ignores `SIGTERM` (so it can only actually
+  die via the grace-period `SIGKILL`) with a probe override of 3s vs.
+  the pod's 60s; the test's own `wait_until` bound (40s) would time out
+  and fail if the pod's grace period leaked through instead of the
+  probe's — genuine proof by construction, not just "eventually
+  restarts."
+
+No new env vars, no new proto surface — both fixes are pure
+logic/plumbing.
+
+**Confidence note**: both new pure functions are thoroughly unit-tested.
+Both e2e tests are genuinely live proof — the resourceFieldRef one
+reads real env var values out of a running container; the grace-period
+one is constructed so a wrong value would cause an observable test
+failure (a timeout), not just an unverified assumption.
+
 ## Round 43: in-place pod vertical scaling, slice 2 — status reporting (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-42). Offered the
@@ -2564,7 +2669,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Native sidecar containers** (round 36; `initContainers[].restartPolicy: "Always"`, GA since 1.29, found in round 35's re-audit) — `sidecar_init_decision()` routes a sidecar-marked init container through its own decision matrix: doesn't block later init/app containers on its own exit (only on having started at all), restarts on exit like a normal container for the pod's whole lifetime, and its real probe-based readiness folds into the pod's overall `Ready`/`ContainersReady` (`pods.rs::build_pod_status()`). Genuinely automated e2e tests. **Documented simplification**: sidecars aren't stopped strictly *after* app containers on teardown (one pass instead), unlike upstream's exact ordering. See round 36 notes.
 - ✅ **Ephemeral containers** (`kubectl debug`) — `spec.ephemeralContainers` started once (never restarted) via `ensure_ephemeral_container()`, reported in `PodStatus.ephemeralContainerStatuses`, excluded from pod phase/readiness. Exit codes not tracked (always reported `0`) — see Round 8 notes.
 - ✅ **postStart / preStop lifecycle hooks** (`exec`/`httpGet`/`sleep`; not `tcpSocket`) — `run_lifecycle_hook()`. A failing `postStart` is logged, not (yet) turned into a container kill+restart like real kubelet does.
-- ❌ **Probe-level `terminationGracePeriodSeconds`** (added ~1.25, found in round 35's re-audit) — a `livenessProbe`/`startupProbe` can specify its own grace period for the container kill it triggers, distinct from the pod's own `terminationGracePeriodSeconds`. `probes.rs` doesn't read or apply this; a liveness-probe-triggered restart always uses whatever the general container-stop path already uses. Lower value — a niche override most workloads never set.
+- ✅ **Probe-level `terminationGracePeriodSeconds`** (round 44; added ~1.25, found in round 35's re-audit) — a `livenessProbe` can specify its own grace period for the container kill it triggers, distinct from the pod's own `terminationGracePeriodSeconds`; new pure `probes::probe_grace_period_seconds()` resolves the override (else the pod's own) and threads it into `PodRuntime::restart_container()`'s new `grace_period_seconds` parameter, replacing a previously-hardcoded `10`. Genuinely automated e2e test (a `SIGTERM`-trapping container that can only die via the grace-period kill, constructed so a wrong value causes an observable timeout). **Scoped to liveness probes only** — the startup-probe loop has no failure-threshold-triggered restart at all yet (pre-existing simplification: it retries forever until it passes), so there's no live code path for a startup-probe override to apply to yet either. See round 44 notes.
 - ✅ **Termination grace period** — `terminationGracePeriodSeconds` now drives `preStop` + a per-container `StopContainer` timeout before `StopPodSandbox` (`graceful_stop_containers()`), instead of an untimed sandbox stop.
 - ✅ **Container restart count** — real per-container counter (`restart_count_from`/`bump_restart_count_in`), threaded through `ContainerConfig.metadata.attempt` too (so restarted containers get distinct log files, not overwritten ones).
 - ✅ **Exit-code-aware phase computation** — `restartPolicy: Never` now reports `Failed` (not `Succeeded`) when a container exited nonzero (`compute_phase()`'s new `any_failed` parameter).
@@ -2607,7 +2712,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 ### Volumes
 - ✅ ConfigMap / Secret / emptyDir (materialized to host paths)
 - ✅ **ConfigMap/Secret live-update** (round 37; found in round 35's re-audit) — `PodController::run()` now watches ConfigMaps/Secrets cluster-wide (they have no node-scoping fieldSelector) alongside the existing node-scoped Pod watch; on a change, `referenced_configmap_names()`/`referenced_secret_names()` (pure) find every pod on this node whose volumes reference the changed object (direct or via `projected` sources) and re-`reconcile()`s them, reusing the existing idempotent `resolve_volumes()` materialization path to overwrite the bind-mounted host file content in place — no pod/container restart. Deliberately does NOT cover `envFrom`/`valueFrom.configMapKeyRef`/`secretKeyRef` — real kubelet captures those once at container start too. Genuinely automated e2e test proves the content updates AND the container's own restart count stays 0. See round 37 notes.
-- ❌ **`valueFrom.resourceFieldRef` in container env vars** (found in round 35's re-audit) — a distinct code path from the already-tracked downwardAPI-volume `resourceFieldRef` gap below: env var resolution's own `resourceFieldRef` branch explicitly `bail!`s "not supported yet" (visible, not silently dropped) rather than resolving a container's own actual CPU/memory limit, a common init-script pattern (e.g. JVM heap sizing off the container's own memory limit).
+- ✅ **`valueFrom.resourceFieldRef` in container env vars** (round 44; found in round 35's re-audit) — a distinct code path from the still-open downwardAPI-volume `resourceFieldRef` gap below: new pure `resolve_resource_field_ref()`/`format_resource_field_value()` resolve `limits.cpu`/`limits.memory`/`requests.cpu`/`requests.memory` (falling back to the node's own capacity when the container has no limit set, matching real kubelet's documented Downward API behavior, then to the container's own limit for `requests.*` before that), reproducing kubelet's well-known "CPU reports whole cores, rounded up" default-divisor quirk and the common JVM-heap-sizing memory-divisor pattern with one shared ceiling-division formula. `ephemeral-storage` resolves to `"0"` (not tracked/enforced by nodelet at all — separate pre-existing gap) rather than bailing. Genuinely automated e2e test (`kubectl exec` reads the real env var values). See round 44 notes.
 - ✅ **Projected volumes** — `configMap`/`secret`/`downwardAPI`, and now `serviceAccountToken` too (mints a real token via the `TokenRequest` API — `resolve_service_account_token()`; needs nodelet's client to have `create` on `serviceaccounts/token` in the namespace, a real RBAC requirement) merge into the volume dir, with `items`/`KeyToPath` key-selection-and-rename support. `clusterTrustBundle` sources are still skipped with a warning.
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
 - 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`, `plugin_registry.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **Dynamic CSI driver discovery** (round 13) — a driver's `node-driver-registrar` sidecar can register itself against `NODELET_PLUGIN_REGISTRY_PATH` the same protocol it'd use against real kubelet's plugin watcher, no static config needed; `NODELET_CSI_DRIVERS` still works too, as a seed/override. **`nodeStageSecretRef`/`nodePublishSecretRef`** (round 13) — resolved to real Secret data and passed through to the driver. **Attach coordination** (round 19) — checks `CSIDriver.spec.attachRequired`, and for drivers that need it, waits on the matching `VolumeAttachment.status.attached` before Stage/Publish, threading `status.attachmentMetadata` through as `publish_context`. Calling the Controller service itself (`ControllerPublishVolume`/`ControllerUnpublishVolume`) stays out of scope — that's external-attacher's job upstream too, not kubelet's, confirmed against docs in round 19. Still out of scope: device-plugin registrations against this module (the same registration protocol, explicitly rejected with a real `NotifyRegistrationStatus{plugin_registered: false}` rather than ignored — that's `device_plugins.rs`'s job instead). Unvalidated against a real CSI driver — see rounds 12, 13, and 19 notes.
@@ -2883,9 +2988,17 @@ higher-value/correctness-critical than others:
       produce that state). Genuinely automated e2e test extension. See
       round 43 notes. **This closes the in-place resize arc** (rounds
       42-43) opened by round 39's audit.
-- [ ] Candidates for the next round: round 35's 2 remaining low-priority
-      items (env `resourceFieldRef`, probe-level
-      `terminationGracePeriodSeconds`) — the only known open items left
-      from any prior audit. A fresh re-audit is also a reasonable next
-      step, since both prior audits' lists are now nearly or fully
-      exhausted. Ask before starting the next round.
+- [x] Round 44: env `resourceFieldRef` + probe-level
+      `terminationGracePeriodSeconds` — **this closes round 35's audit
+      list entirely.** New pure `resolve_resource_field_ref()`/
+      `format_resource_field_value()` resolve `limits.*`/`requests.*`
+      CPU/memory env references (falling back to node capacity, then
+      the container's own limit, matching real kubelet's documented
+      behavior), replacing an unconditional `bail!`. New pure
+      `probes::probe_grace_period_seconds()` resolves a liveness
+      probe's own override (else the pod's), replacing a hardcoded
+      `10` in `restart_container()`'s `StopContainer` timeout. Both
+      genuinely automated e2e tests. See round 44 notes.
+- [ ] Both round 35's and round 39's audit lists are now fully closed.
+      A fresh gap re-audit is the natural next step. Ask before
+      starting the next round.
