@@ -312,7 +312,14 @@ own `ephemeral-storage` limit (measured from CRI's per-container
 writable-layer usage plus a walk of nodelet's own materialized volume
 directory) is now evicted directly, independent of general node
 pressure — the same relationship an individual container's OOM kill
-has to overall node memory. Full status list in `docs/GAP_CLOSURE.md`.
+has to overall node memory. A fresh gap re-audit (round 50) found 3
+more gaps, the highest-value being **`imagePullPolicy` is completely
+unenforced** — every container's image gets pulled unconditionally
+regardless of `Always`/`IfNotPresent`/`Never`, which cuts against this
+project's own edge/offline-capable design goal; `ContainerStatus.imageID`
+is also always empty (CRI already returns the digest, just unread),
+and `Node.status.runtimeHandlers` is never reported (the CRI `Status`
+RPC is never called). Full status list in `docs/GAP_CLOSURE.md`.
 
 ---
 

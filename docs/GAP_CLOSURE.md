@@ -27,6 +27,65 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 50: fresh gap re-audit (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 22/27/35/39/45). All 3
+prior audit lists (rounds 35, 39, 45) were fully closed as of round 49;
+user picked another re-audit. No code changed this round — audit-only.
+
+This pass checked image lifecycle (pull policy enforcement, status
+reporting) and CRI's runtime-level `Status` RPC (never called at all so
+far — every other round's CRI calls are per-container/per-sandbox/
+per-image, not this one). Found 3 previously-untracked items:
+
+- **`imagePullPolicy` is completely unenforced** — by far this round's
+  highest-value finding, and arguably higher-priority than a typical
+  "unset field" gap because it cuts against this project's own core
+  design goal (edge/offline-capable operation, per `README.md`).
+  `create_and_start_container()` calls CRI's `PullImage` unconditionally
+  for every container, every time, regardless of `container.image_pull_policy`
+  — the comment there ("idempotent; containerd no-ops if present")
+  is true for the *container creation* outcome, but not for the
+  network round-trip itself: `Never` should refuse to pull at all
+  (failing the container if the image isn't already cached, not
+  silently pulling anyway), and `IfNotPresent` should skip the pull
+  entirely when already cached, rather than still contacting the
+  registry to check. On a genuinely offline edge device, this could
+  mean a pod that should start immediately from a pre-loaded image
+  instead blocks or fails on an unreachable registry call it should
+  never have made. The real default-policy heuristic when
+  `imagePullPolicy` is unset (`Always` for an untagged or `:latest`-
+  tagged image, `IfNotPresent` otherwise) also isn't implemented.
+- **`ContainerStatus.imageID` is always the empty string** —
+  `pods.rs`'s 3 `ContainerStatus` construction sites all hardcode
+  `image_id: String::new()`. CRI's own `ContainerStatus.image_ref`
+  ("digested reference to the image in use") is already available on
+  the exact struct `container_status_details()` (used elsewhere for
+  exit-code/reason/termination-message reporting) returns — this is
+  purely a "read a field that's already there" fix, not new plumbing.
+  Real value: lets a user confirm exactly which image digest is
+  actually running, catching `:latest`-tag drift between nodes.
+- **`Node.status.runtimeHandlers` unreported** — real kubelet calls
+  CRI's runtime-level `Status` RPC once and reports the discovered
+  RuntimeClass handlers it returns; nodelet never calls this RPC at
+  all (confirmed: zero references to `StatusRequest` anywhere in
+  `runtime/cri.rs`, unlike `ContainerStatusRequest`/
+  `PodSandboxStatusRequest`, both used elsewhere already). Used by
+  newer RuntimeClass-aware tooling to validate a handler actually
+  exists on a node before scheduling to it. Moderate value, low
+  implementation cost (one new RPC call, no new proto needed — CRI's
+  `RuntimeHandler`/`RuntimeHandlerFeatures` messages are already
+  vendored in `proto/cri.proto`).
+
+**Not re-flagging**: `terminationMessagePolicy: FallbackToLogsOnError`,
+`emptyDir.sizeLimit` (disk-backed), `subPath`/`subPathExpr`, raw-block
+`volumeDevices` (checked — only ever copied through for ephemeral
+containers, never actually translated into a CRI mount for regular
+containers, but this is the *same* pre-existing gap as `hostPath`
+volumes: nodelet has no in-tree raw-block-device support at all, not a
+new finding this round), and the still-open probe-level/env-var items
+from round 35 — all already tracked in the responsibility list below.
+
 ## Round 49: local ephemeral storage, slice 2 — eviction signal (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-48). This closes the
@@ -3017,6 +3076,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **User namespaces** (`spec.hostUsers: false`, round 25; found in round 22's re-audit) — `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive host UID/GID range (fixed length, default 65536, configurable via `NODELET_USERNS_BASE_UID`/`_LENGTH`/`_MAX_PODS`), set as a `POD`-mode `UserNamespace` on `LinuxSandboxSecurityContext.namespace_options.userns_options`. Simplified vs. upstream's own variable-length `usernsManager`: every pod gets the same fixed range size, and allocation state is in-memory only (self-heals as still-running pods reconcile, narrow double-allocation window across a nodelet restart — documented, not hidden). Unvalidated against a real CRI runtime's actual `userns_options` wire support — see round 25 notes.
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
 - ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
+- ❌ **`Node.status.runtimeHandlers`** (found in round 50's re-audit) — real kubelet calls CRI's runtime-level `Status` RPC once and reports the discovered RuntimeClass handlers it returns; nodelet never calls this RPC at all (unlike `ContainerStatus`/`PodSandboxStatus`, both used elsewhere already). Used by newer RuntimeClass-aware tooling to validate a handler actually exists on a node before scheduling to it. Moderate value, low implementation cost — one new RPC call, no new proto needed (`RuntimeHandler`/`RuntimeHandlerFeatures` are already vendored in `proto/cri.proto`).
 
 ### Networking
 - ✅ **DNS config** — `dnsPolicy`/`dnsConfig` → CRI `PodSandboxConfig.dns_config` (`dns_config_for()`), via new `NODELET_CLUSTER_DNS`/`NODELET_CLUSTER_DOMAIN`
@@ -3029,6 +3089,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - 🟡 Image garbage collection — unreferenced-image sweep exists but not the real kubelet policy (disk-pressure-triggered high/low watermark GC, `--image-gc-high-threshold`/`--image-gc-low-threshold`)
 - ✅ **Container log rotation** — running containers' log files are rotated past `NODELET_CONTAINER_LOG_MAX_SIZE_BYTES`, keeping `NODELET_CONTAINER_LOG_MAX_FILES` (`rotate_log_file()` + CRI `ReopenContainerLog`)
 - ✅ **`Node.status.images`** (round 33; found in round 27's re-audit) — `node.rs::select_node_images()` sorts CRI's `ListImages` results (via the new `PodRuntime::node_images()` trait method) largest-first and caps at 50, matching real kubelet's own `--node-status-max-images` default. Genuinely automated e2e test. See round 33 notes.
+- ❌ **`imagePullPolicy` enforcement** (found in round 50's re-audit) — `create_and_start_container()` calls CRI's `PullImage` unconditionally for every container regardless of `image_pull_policy`. `Never` should refuse to pull at all (failing the container if the image isn't already cached, not silently pulling anyway); `IfNotPresent` should skip the pull entirely when already cached rather than still contacting the registry. Cuts directly against this project's own edge/offline-capable design goal — a pod that should start immediately from a pre-loaded image could instead block/fail on an unreachable registry call it should never have made. The real default-policy heuristic when unset (`Always` for untagged/`:latest`, `IfNotPresent` otherwise) also isn't implemented.
+- ❌ **`ContainerStatus.imageID`** (found in round 50's re-audit) — always the empty string at all 3 `pods.rs` construction sites; CRI's own `ContainerStatus.image_ref` ("digested reference to the image in use") is already available on the exact struct `container_status_details()` returns elsewhere in this file — a read-an-already-available-field fix, not new plumbing. Lets a user confirm exactly which image digest is running, catching `:latest`-tag drift.
 
 ### Volumes
 - ✅ ConfigMap / Secret / emptyDir (materialized to host paths)
@@ -3369,7 +3431,16 @@ higher-value/correctness-critical than others:
       Genuinely automated e2e test (no artificial pressure needed).
       **This closes the local-ephemeral-storage arc (rounds 48-49) and,
       with it, round 45's audit list entirely.** See round 49 notes.
-- [ ] Both round 35's and round 45's audit lists are now fully closed
-      (round 39's was already closed after round 43). A fresh gap
-      re-audit is the natural next step. Ask before starting the next
-      round.
+- [x] Round 50: fresh gap re-audit (no code change) — found 3
+      previously-untracked items: **`imagePullPolicy` is completely
+      unenforced** (`PullImage` always called unconditionally,
+      regardless of `Always`/`IfNotPresent`/`Never` — highest value,
+      cuts against this project's own edge/offline design goal),
+      **`ContainerStatus.imageID` always empty** (CRI's own
+      `image_ref` is already available, just unread), and
+      **`Node.status.runtimeHandlers` unreported** (CRI's runtime-level
+      `Status` RPC is never called at all). See round 50 notes.
+- [ ] Candidates for the next round, by value: `imagePullPolicy`
+      enforcement, `ContainerStatus.imageID` (cheapest — an
+      already-available field, no new plumbing), `Node.status.runtimeHandlers`.
+      Ask before starting the next round.
