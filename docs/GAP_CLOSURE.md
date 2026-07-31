@@ -27,6 +27,71 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 35: fresh gap re-audit (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 22/27, offered alongside
+pause since round 27's list was fully closed as of round 34); user
+picked another re-audit. No code changed this round — audit-only.
+
+This pass grepped the codebase against a different set of candidate
+fields/behaviors than rounds 22 or 27 covered (pod lifecycle/hostname/env
+resolution edges, rather than CRI struct fields or the CLI reference).
+Found 5 previously-untracked items:
+
+- **Native sidecar containers** (`initContainers[].restartPolicy: "Always"`,
+  GA since 1.29) — `init_container_decision()`/`ensure_init_containers()`
+  key every decision off the *pod's* `restartPolicy`, never looking at a
+  per-container `restart_policy` on an init container itself (the field
+  exists on `k8s_openapi`'s `Container` type — used for regular
+  containers too, where it's always unset — but nodelet never reads it
+  for init containers specifically). A sidecar-marked init container
+  should start before later init/app containers rather than blocking on
+  its own exit, and should restart on its own like a normal container for
+  the pod's whole lifetime. **High real-world value** — this is the
+  modern, GA replacement for the old "hack a sidecar into every pod
+  manually" pattern (Istio/Envoy injection, log shippers, etc. increasingly
+  rely on it) and is completely unimplemented: every init container is
+  treated as one-shot regardless of this field.
+- **ConfigMap/Secret live-update** — `resolve_volumes()` materializes
+  ConfigMap/Secret volume content exactly once, at pod (re)creation time.
+  Real kubelet's config-map-manager watches the referenced objects and
+  refreshes mounted volume content within seconds of a change, with no
+  pod restart needed (the well-known "edit a ConfigMap, the mounted file
+  updates live" behavior most operators expect and many controllers
+  — e.g. cert-manager, external-secrets — actively rely on for
+  auto-rotation). **High real-world value**, not implemented at all —
+  currently the only way to pick up a ConfigMap/Secret change is deleting
+  and recreating the pod.
+- **`spec.hostname`/`spec.subdomain`/`setHostnameAsFQDN`** —
+  `sandbox_config()` always sets the CRI sandbox's `hostname` to the pod's
+  own name, never honoring an explicit `spec.hostname` override,
+  `spec.subdomain` (combined with hostname for headless-Service DNS), or
+  `setHostnameAsFQDN` (whether `hostname -f` inside the container reports
+  the full `<hostname>.<subdomain>.<ns>.svc.<cluster-domain>` FQDN instead
+  of just the short hostname). Moderate value — a common, simple
+  override for friendlier in-container hostnames.
+- **`valueFrom.resourceFieldRef` in container env vars** — a distinct
+  code path from the already-tracked downwardAPI-volume `resourceFieldRef`
+  gap: `resolve_env_value()`'s (env var resolution, not the volume path)
+  own `resourceFieldRef` branch explicitly `bail!`s "not supported yet" —
+  at least visible rather than silently dropped, but a real gap for any
+  container reading its own actual CPU/memory limit via an env var
+  (a common init-script pattern, e.g. `-Xmx$(MEM_LIMIT)`-style JVM
+  tuning).
+- **Probe-level `terminationGracePeriodSeconds` override** (added ~1.25)
+  — a `livenessProbe`/`startupProbe` can specify its own grace period for
+  the container kill it triggers, distinct from the pod's own
+  `terminationGracePeriodSeconds`. `probes.rs` doesn't read or apply
+  this at all; a liveness-probe-triggered restart always uses whatever
+  the general container-stop path already uses. Lower value — a niche
+  override most workloads never set.
+
+All five added to the responsibility list at their appropriate sections.
+Ranked roughly by value for the next round to pick from: native sidecar
+containers, ConfigMap/Secret live-update, `spec.hostname`/`subdomain`/
+`setHostnameAsFQDN`, then the two lower-priority items (env
+`resourceFieldRef`, probe-level `terminationGracePeriodSeconds`).
+
 ## Round 34: `Node.status.volumesInUse`/`.volumesAttached` (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-33) — but with an extra
@@ -1943,8 +2008,10 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ Pod sandbox + container create/start/stop/remove via CRI
 - ✅ Restart-on-exit honoring `restartPolicy`
 - ✅ **Init containers** — run to completion, in order, before app containers (`ensure_init_containers`)
+- ❌ **Native sidecar containers** (`initContainers[].restartPolicy: "Always"`, GA since 1.29, found in round 35's re-audit) — `init_container_decision()`/`ensure_init_containers()` key every decision off the *pod's* `restartPolicy`, never reading a per-container `restart_policy` on an init container (the field exists on `k8s_openapi`'s `Container` type, just never checked there). A sidecar-marked init container should start before later init/app containers rather than blocking on its own exit, and restart like a normal container for the pod's whole lifetime. High real-world value — the modern GA replacement for manually-injected sidecars (service mesh proxies, log shippers).
 - ✅ **Ephemeral containers** (`kubectl debug`) — `spec.ephemeralContainers` started once (never restarted) via `ensure_ephemeral_container()`, reported in `PodStatus.ephemeralContainerStatuses`, excluded from pod phase/readiness. Exit codes not tracked (always reported `0`) — see Round 8 notes.
 - ✅ **postStart / preStop lifecycle hooks** (`exec`/`httpGet`/`sleep`; not `tcpSocket`) — `run_lifecycle_hook()`. A failing `postStart` is logged, not (yet) turned into a container kill+restart like real kubelet does.
+- ❌ **Probe-level `terminationGracePeriodSeconds`** (added ~1.25, found in round 35's re-audit) — a `livenessProbe`/`startupProbe` can specify its own grace period for the container kill it triggers, distinct from the pod's own `terminationGracePeriodSeconds`. `probes.rs` doesn't read or apply this; a liveness-probe-triggered restart always uses whatever the general container-stop path already uses. Lower value — a niche override most workloads never set.
 - ✅ **Termination grace period** — `terminationGracePeriodSeconds` now drives `preStop` + a per-container `StopContainer` timeout before `StopPodSandbox` (`graceful_stop_containers()`), instead of an untimed sandbox stop.
 - ✅ **Container restart count** — real per-container counter (`restart_count_from`/`bump_restart_count_in`), threaded through `ContainerConfig.metadata.attempt` too (so restarted containers get distinct log files, not overwritten ones).
 - ✅ **Exit-code-aware phase computation** — `restartPolicy: Never` now reports `Failed` (not `Succeeded`) when a container exited nonzero (`compute_phase()`'s new `any_failed` parameter).
@@ -1975,6 +2042,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **DNS config** — `dnsPolicy`/`dnsConfig` → CRI `PodSandboxConfig.dns_config` (`dns_config_for()`), via new `NODELET_CLUSTER_DNS`/`NODELET_CLUSTER_DOMAIN`
 - ✅ **`hostAliases`** — generates a pod-specific `/etc/hosts` (`write_etc_hosts()`) and bind-mounts it in, exactly how real kubelet does it (CRI has no dedicated field for this)
 - ✅ Service/ClusterIP/NodePort routing (nftables — pre-existing, kube-proxy's job but already reimplemented here)
+- ❌ **`spec.hostname`/`spec.subdomain`/`setHostnameAsFQDN`** (found in round 35's re-audit) — `sandbox_config()` always sets the CRI sandbox's hostname to the pod's own name, never honoring an explicit `spec.hostname` override, `spec.subdomain` (combined with hostname for headless-Service DNS), or `setHostnameAsFQDN` (whether `hostname -f` inside the container reports the full FQDN). Moderate value — a common, simple override for friendlier in-container hostnames.
 
 ### Images
 - ✅ **Private registry auth** — `imagePullSecrets` (`kubernetes.io/dockerconfigjson`) → CRI `AuthConfig` (`resolve_pull_auth()`). Not yet: legacy `kubernetes.io/dockercfg`, ServiceAccount-linked pull secrets, credential-provider exec plugins.
@@ -1984,6 +2052,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Volumes
 - ✅ ConfigMap / Secret / emptyDir (materialized to host paths)
+- ❌ **ConfigMap/Secret live-update** (found in round 35's re-audit) — `resolve_volumes()` materializes ConfigMap/Secret volume content exactly once, at pod (re)creation time. Real kubelet's config-map-manager watches the referenced objects and refreshes mounted volume content within seconds of a change, no pod restart needed — the well-known "edit a ConfigMap, the mounted file updates live" behavior most operators expect, and several controllers (cert-manager, external-secrets) actively rely on for auto-rotation. High real-world value; currently the only way to pick up a change is deleting and recreating the pod.
+- ❌ **`valueFrom.resourceFieldRef` in container env vars** (found in round 35's re-audit) — a distinct code path from the already-tracked downwardAPI-volume `resourceFieldRef` gap below: env var resolution's own `resourceFieldRef` branch explicitly `bail!`s "not supported yet" (visible, not silently dropped) rather than resolving a container's own actual CPU/memory limit, a common init-script pattern (e.g. JVM heap sizing off the container's own memory limit).
 - ✅ **Projected volumes** — `configMap`/`secret`/`downwardAPI`, and now `serviceAccountToken` too (mints a real token via the `TokenRequest` API — `resolve_service_account_token()`; needs nodelet's client to have `create` on `serviceaccounts/token` in the namespace, a real RBAC requirement) merge into the volume dir, with `items`/`KeyToPath` key-selection-and-rename support. `clusterTrustBundle` sources are still skipped with a warning.
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
 - 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`, `plugin_registry.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **Dynamic CSI driver discovery** (round 13) — a driver's `node-driver-registrar` sidecar can register itself against `NODELET_PLUGIN_REGISTRY_PATH` the same protocol it'd use against real kubelet's plugin watcher, no static config needed; `NODELET_CSI_DRIVERS` still works too, as a seed/override. **`nodeStageSecretRef`/`nodePublishSecretRef`** (round 13) — resolved to real Secret data and passed through to the driver. **Attach coordination** (round 19) — checks `CSIDriver.spec.attachRequired`, and for drivers that need it, waits on the matching `VolumeAttachment.status.attached` before Stage/Publish, threading `status.attachmentMetadata` through as `publish_context`. Calling the Controller service itself (`ControllerPublishVolume`/`ControllerUnpublishVolume`) stays out of scope — that's external-attacher's job upstream too, not kubelet's, confirmed against docs in round 19. Still out of scope: device-plugin registrations against this module (the same registration protocol, explicitly rejected with a real `NotifyRegistrationStatus{plugin_registered: false}` rather than ignored — that's `device_plugins.rs`'s job instead). Unvalidated against a real CSI driver — see rounds 12, 13, and 19 notes.
@@ -2185,5 +2255,16 @@ higher-value/correctness-critical than others:
       counting. Deliberately lower-confidence by design (unvalidated
       against a real attach/detach controller, not just sandbox-limited).
       Closes the last round-27 candidate. See round 34 notes.
-- [ ] No specific known gap currently tracked. Ask before starting the
-      next round (a fresh re-audit is one option, same as rounds 22/27).
+- [x] Round 35: fresh gap re-audit (no code change) — found 5
+      previously-untracked items: native sidecar containers
+      (`initContainers[].restartPolicy: Always`) unimplemented,
+      ConfigMap/Secret live-update unimplemented, `spec.hostname`/
+      `subdomain`/`setHostnameAsFQDN` not honored, env `resourceFieldRef`
+      explicitly unsupported, probe-level `terminationGracePeriodSeconds`
+      not applied. See round 35 notes.
+- [ ] Next candidates from round 35's audit, roughly by value: native
+      sidecar containers, ConfigMap/Secret live-update,
+      `spec.hostname`/`subdomain`/`setHostnameAsFQDN`, then the two
+      lower-priority items (env `resourceFieldRef`, probe-level
+      `terminationGracePeriodSeconds`). Ask before starting the next
+      round.
