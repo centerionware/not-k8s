@@ -131,6 +131,30 @@ fn no_seccomp_profile_anywhere_leaves_it_unset() {
     assert_eq!(linux_security_context(None, None, NamespaceMode::Container).seccomp, None);
 }
 
+// --- supplementalGroupsPolicy (round 62) ---
+
+#[test]
+fn no_pod_security_context_defaults_to_merge() {
+    let sc = linux_security_context(None, None, NamespaceMode::Container);
+    assert_eq!(sc.supplemental_groups_policy, v1::SupplementalGroupsPolicy::Merge as i32);
+}
+
+#[test]
+fn explicit_strict_is_translated() {
+    let psc = PodSecurityContext { supplemental_groups_policy: Some("Strict".to_string()), ..Default::default() };
+    let sc = linux_security_context(Some(&psc), None, NamespaceMode::Container);
+    assert_eq!(sc.supplemental_groups_policy, v1::SupplementalGroupsPolicy::Strict as i32);
+}
+
+#[test]
+fn an_unrecognized_value_falls_back_to_merge() {
+    // Real k8s apiserver validation only ever allows "Merge"/"Strict", but
+    // this must fail open rather than panic/misbehave on anything else.
+    let psc = PodSecurityContext { supplemental_groups_policy: Some("Bogus".to_string()), ..Default::default() };
+    let sc = linux_security_context(Some(&psc), None, NamespaceMode::Container);
+    assert_eq!(sc.supplemental_groups_policy, v1::SupplementalGroupsPolicy::Merge as i32);
+}
+
 // --- pid namespace_options (round 40) ---
 
 #[test]

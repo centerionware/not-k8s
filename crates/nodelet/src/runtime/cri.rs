@@ -916,6 +916,24 @@ fn resource_list_to_linux_resources(list: &BTreeMap<String, Quantity>) -> LinuxC
     }
 }
 
+/// `securityContext.supplementalGroupsPolicy` (round 62; GA in k8s 1.33,
+/// found in round 58's re-audit) -> CRI's own `SupplementalGroupsPolicy`
+/// enum, which has direct native support for exactly this (both
+/// `LinuxSandboxSecurityContext.supplemental_groups_policy` and
+/// `LinuxContainerSecurityContext`'s own field of the same name) — no
+/// image inspection or `/etc/group` parsing needed on nodelet's side at
+/// all, the runtime does that. `None`/unset or anything other than the
+/// literal `"Strict"` maps to `Merge`, matching both the k8s API's own
+/// documented default ("If not specified, Merge is used") and CRI's
+/// proto doc comment for this exact field.
+fn supplemental_groups_policy_cri(policy: Option<&str>) -> v1::SupplementalGroupsPolicy {
+    if policy == Some("Strict") {
+        v1::SupplementalGroupsPolicy::Strict
+    } else {
+        v1::SupplementalGroupsPolicy::Merge
+    }
+}
+
 /// Translate pod- and container-level `securityContext` into CRI's
 /// `LinuxContainerSecurityContext`. Container-level fields override pod-level
 /// ones wherever Kubernetes defines both (matches real kubelet semantics).
@@ -954,6 +972,7 @@ fn linux_security_context(
         no_new_privs,
         capabilities,
         supplemental_groups,
+        supplemental_groups_policy: supplemental_groups_policy_cri(pod_sc.and_then(|s| s.supplemental_groups_policy.as_deref())) as i32,
         seccomp,
         namespace_options: Some(NamespaceOption { pid: pid_mode as i32, ..Default::default() }),
         ..Default::default()
@@ -2501,6 +2520,7 @@ impl CriRuntime {
         runtime_handler: String,
         cgroup_parent: String,
         overhead: Option<LinuxContainerResources>,
+        pod_sc: Option<&PodSecurityContext>,
     ) -> Result<String> {
         let mut rt = self.rt.clone();
         // spec.hostUsers: false (round 25) — allocate this pod an exclusive
@@ -2520,7 +2540,7 @@ impl CriRuntime {
         } else {
             None
         };
-        let mut config = sandbox_config(id, userns_mapping, hostname, sysctls);
+        let mut config = sandbox_config(id, userns_mapping, hostname, sysctls, pod_sc);
         config.dns_config = dns;
         let linux = config.linux.get_or_insert_with(LinuxPodSandboxConfig::default);
         linux.cgroup_parent = cgroup_parent;
@@ -2973,7 +2993,7 @@ impl CriRuntime {
             img.pull_image(PullImageRequest {
                 image: Some(image_spec.clone()),
                 auth,
-                sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new())),
+                sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new(), None)),
             })
             .await
             .context("pulling image")?;
@@ -3213,7 +3233,7 @@ impl CriRuntime {
             .create_container(CreateContainerRequest {
                 pod_sandbox_id: sandbox_id.to_string(),
                 config: Some(config),
-                sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new())),
+                sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new(), None)),
             })
             .await
         {
@@ -3796,10 +3816,10 @@ impl PodRuntime for CriRuntime {
                 self.sidecar_names.lock().unwrap().remove(&stale_id);
                 self.clear_restart_counts(&stale_id);
                 self.release_sandbox_devices(&stale_id).await;
-                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref())).await.context("RunPodSandbox")?
             }
             SandboxDecision::CreateFresh => {
-                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref())).await.context("RunPodSandbox")?
             }
         };
 
@@ -4360,6 +4380,7 @@ fn sandbox_config(
     userns_mapping: Option<(u32, u32)>,
     hostname: &str,
     sysctls: &HashMap<String, String>,
+    pod_sc: Option<&PodSecurityContext>,
 ) -> PodSandboxConfig {
     // Host-network pods set the network namespace to NODE, which makes the CRI
     // runtime skip CNI entirely (no pod network to set up). The `linux` block
@@ -4384,6 +4405,9 @@ fn sandbox_config(
                 userns_options,
                 ..Default::default()
             }),
+            supplemental_groups_policy: supplemental_groups_policy_cri(
+                pod_sc.and_then(|s| s.supplemental_groups_policy.as_deref()),
+            ) as i32,
             ..Default::default()
         }),
         sysctls: sysctls.clone(),

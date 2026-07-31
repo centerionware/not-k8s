@@ -283,8 +283,85 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_supplemental_groups_policy_strict_ignores_image_group_membership() {
+    # Round 62: securityContext.supplementalGroupsPolicy (GA 1.33) was
+    # never read at all before this. Rather than depend on whatever
+    # /etc/group happens to ship in $TEST_IMAGE (fragile, varies by
+    # image/tag), this test supplies its own /etc/passwd and /etc/group
+    # via a ConfigMap mounted with subPath — fully portable proof: a
+    # "testuser" (uid 2000, primary gid 3000) that the image's own
+    # /etc/group lists as an extra member of "imagegroup" (gid 4000), on
+    # top of an explicit securityContext.supplementalGroups: [5000].
+    # With Merge (the default), `id -G` must include both 4000 (from the
+    # image's own group file) and 5000 (explicit). With Strict, only the
+    # explicit groups (3000, 5000) — 4000 must NOT appear.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="sgp"
+    kctl create configmap "$name-etc" \
+        --from-literal=passwd="testuser:x:2000:3000::/home/testuser:/bin/sh" \
+        --from-literal=group="$(printf 'testgroup:x:3000:\nimagegroup:x:4000:testuser\n')" \
+        >/dev/null
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: shared
+      emptyDir: {}
+    - name: etc-override
+      configMap:
+        name: $name-etc
+  containers:
+    - name: merge
+      image: $TEST_IMAGE
+      securityContext:
+        runAsUser: 2000
+        runAsGroup: 3000
+        supplementalGroups: [5000]
+        supplementalGroupsPolicy: Merge
+      command: ["sh", "-c", "id -G > /shared/merge.txt; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+        - {name: etc-override, mountPath: /etc/passwd, subPath: passwd}
+        - {name: etc-override, mountPath: /etc/group, subPath: group}
+    - name: strict
+      image: $TEST_IMAGE
+      securityContext:
+        runAsUser: 2000
+        runAsGroup: 3000
+        supplementalGroups: [5000]
+        supplementalGroupsPolicy: Strict
+      command: ["sh", "-c", "id -G > /shared/strict.txt; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+        - {name: etc-override, mountPath: /etc/passwd, subPath: passwd}
+        - {name: etc-override, mountPath: /etc/group, subPath: group}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        kctl delete configmap "$name-etc" --ignore-not-found >/dev/null
+        skip_test "pod never reached Running with supplementalGroupsPolicy set — check nodelet's logs for a RunPodSandbox/CreateContainer error (runtime may not support CRI's SupplementalGroupsPolicy field at all, e.g. too old containerd)"
+    fi
+
+    local merge_groups strict_groups
+    merge_groups="$(wait_for_check_file "$name" shared merge.txt 30)"
+    strict_groups="$(wait_for_check_file "$name" shared strict.txt 20)"
+    delete_pod_if_exists "$name"
+    kctl delete configmap "$name-etc" --ignore-not-found >/dev/null
+
+    assert_contains "$merge_groups" "4000" "supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership"
+    assert_contains "$merge_groups" "5000" "supplementalGroupsPolicy: Merge should still include the explicit supplementalGroups entry (5000)"
+    assert_contains "$strict_groups" "5000" "supplementalGroupsPolicy: Strict should still include the explicit supplementalGroups entry (5000)"
+    if echo "$strict_groups" | grep -qw "4000"; then
+        die "supplementalGroupsPolicy: Strict must NOT include imagegroup's gid (4000) from image-defined /etc/group membership, but id -G reported: $strict_groups"
+    fi
+}
+
 register_test test_host_users_false_gets_a_real_user_namespace
 register_test test_containers_get_isolated_pid_namespaces_by_default
 register_test test_share_process_namespace_puts_every_container_in_one_pid_namespace
 register_test test_host_pid_sees_host_processes
 register_test test_sysctls_are_applied_to_the_sandbox
+register_test test_supplemental_groups_policy_strict_ignores_image_group_membership

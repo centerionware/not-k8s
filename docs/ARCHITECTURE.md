@@ -130,10 +130,13 @@ that agent with zero GC pauses, minimal RSS, and no runtime overhead.
    over the standard HTTPS endpoint.
 2. **apiserver** validates, admits, and persists the object to the kine/SQLite
    datastore.
-3. **scheduler** watches for unbound Pods, scores the single nodelet Node, and
-   writes the binding (`spec.nodeName`).
-4. **nodelet** has a watch open on Pods with `fieldSelector=spec.nodeName=<self>`.
-   It receives the new Pod event.
+3. **scheduler** watches for unbound Pods, scores every registered Node (in the
+   common single-device deployment, that's just the one nodelet Node; nothing
+   about this step is single-node-specific otherwise), and writes the binding
+   (`spec.nodeName`).
+4. **nodelet** (one instance per node, exactly like a real kubelet) has a watch
+   open on Pods with `fieldSelector=spec.nodeName=<self>`. It receives the new
+   Pod event addressed to its own node.
 5. **nodelet** calls its pluggable runtime (`mock` or `cri`) to "run" the pod.
 6. **nodelet** patches the Pod status to `Running` (or `Failed`, etc.) on the
    apiserver.
@@ -329,9 +332,20 @@ control-plane component's job (verified, not assumed — see GAP_CLOSURE.md's
 scope-boundary section), or a deliberate platform choice unrelated to
 kubelet parity.
 
-- **High availability / multi-node scheduling.** This is a single-device system.
-  The scheduler runs, but there's one node.
-- **etcd quorum.** kine/SQLite is the datastore.  No Raft, no peer election.
+- **Control-plane high availability / etcd quorum.** kine/SQLite is the
+  datastore. No Raft, no peer election, no multi-instance apiserver — this
+  remains a deliberate single-instance control-plane choice, unrelated to
+  kubelet parity. **This is a separate axis from multi-node support**:
+  `nodelet` itself has no architectural assumption limiting it to one
+  node. Each device runs its own independent `nodelet` instance and
+  registers its own `Node` object exactly like a real kubelet would;
+  nothing stops multiple `nodelet`-managed nodes from pointing at one
+  shared (single-instance) control plane, with the stock `kube-scheduler`
+  binding pods across all of them normally. A single edge device remains
+  the case this project is optimized for and tested hardest against (low
+  idle CPU, no cross-node coordination overhead) — but the goal is a
+  genuine drop-in kubelet replacement usable in ordinary multi-node
+  clusters too, not a single-node-only tool.
 - **Server-side apply.**  Client-side apply (`kubectl apply`) works via the
   stock apiserver.  SSA field management is supported by the apiserver itself;
   nodelet doesn't need to do anything special.

@@ -13,8 +13,11 @@ lean, event-driven Rust binary** — because that's where the idle CPU/RAM actua
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full rationale.
 The project's current goal is **100% kubelet feature parity while keeping
-this performance advantage** — see [`docs/GAP_CLOSURE.md`](docs/GAP_CLOSURE.md)
-for the live, verified checklist of what's done vs. still missing.
+this performance advantage** — nodelet is meant to be a genuine drop-in
+kubelet replacement, not just a single-node-only tool, even though a
+single edge device is where its low-idle-CPU design shines brightest. See
+[`docs/GAP_CLOSURE.md`](docs/GAP_CLOSURE.md) for the live, verified
+checklist of what's done vs. still missing.
 
 ## Quick start
 
@@ -368,8 +371,21 @@ reported as zero, matching real kubelet. Round 61 closed the last
 HugePages piece: **`emptyDir.medium: "HugePages"`/`"HugePages-<size>"`**
 volumes are now real `hugetlbfs` mounts (via `mount(8)`, the same
 host-tool approach round 30's tmpfs support already established),
-closing round 58's HugePages audit item entirely. Full status list in
-`docs/GAP_CLOSURE.md`.
+closing round 58's HugePages audit item entirely. Round 62 closed the
+`supplementalGroupsPolicy` item: **`securityContext.supplementalGroupsPolicy`**
+(`Merge`/`Strict`) now translates directly to CRI's own
+`SupplementalGroupsPolicy` enum, which had direct native support already.
+Full status list in `docs/GAP_CLOSURE.md`.
+
+**Scope note:** nodelet keeps its single-node-first design (this is where
+it shines — low idle CPU, no etcd/multi-node coordination overhead for
+the common edge case), but the project itself is no longer scoped to
+single-node deployments only: it's meant to be a genuine drop-in kubelet
+replacement usable in ordinary multi-node clusters too. That reopens
+scope for multi-node-relevant gaps previously deferred as "not worth it
+for a single-node edge kubelet" — most notably Dynamic Resource
+Allocation (`spec.resourceClaims`), now a real target rather than a
+flagged-for-completeness item.
 
 ---
 

@@ -27,6 +27,59 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 62: securityContext.supplementalGroupsPolicy (2026-07-31, same day)
+
+Closes the `supplementalGroupsPolicy` item from round 58's re-audit
+(GA in k8s 1.33): `securityContext.supplementalGroupsPolicy` was never
+read at all before this — every pod effectively got the `Merge` behavior
+regardless of what it actually asked for, with no way to opt into
+`Strict`.
+
+- CRI has direct native support for exactly this: both
+  `LinuxSandboxSecurityContext.supplemental_groups_policy` (pod/sandbox
+  level) and `LinuxContainerSecurityContext.supplemental_groups_policy`
+  (container level) — no image inspection or `/etc/group` parsing needed
+  on nodelet's side, the runtime does that itself.
+- New pure `supplemental_groups_policy_cri(policy: Option<&str>)`
+  translates the k8s API's `Option<String>` (`"Merge"`/`"Strict"`) to
+  CRI's own `SupplementalGroupsPolicy` enum. `None`/unset or anything
+  other than the literal `"Strict"` maps to `Merge`, matching both the
+  k8s API's documented default and CRI's own proto doc comment
+  ("If not specified, Merge is used") — fails open on garbage input
+  rather than erroring, same posture as other enum-shaped translations.
+- Wired into both `sandbox_config()` (which needed a new `pod_sc`
+  parameter threaded through `run_sandbox()` and its 2 callers in
+  `ensure_pod()`) and `linux_security_context()` (already had `pod_sc`).
+  The 2 throwaway `sandbox_config()` calls used only to route
+  `PullImageRequest.sandbox_config` pass `None` — irrelevant there, no
+  actual container is created from that config.
+- 6 new unit tests: 3 in `cri_tests/sandbox_config.rs` (no pod security
+  context defaults to Merge, explicit Strict/Merge both wired through
+  correctly) and 3 in `cri_tests/linux_security_context.rs` (default,
+  explicit Strict, and an unrecognized value falling back to Merge).
+- Genuinely automated e2e test
+  (`test_supplemental_groups_policy_strict_ignores_image_group_membership`
+  in `deploy/lib/test/cases/security.sh`): rather than depend on
+  `$TEST_IMAGE`'s own baked-in `/etc/group` (fragile across images/tags),
+  the test supplies its own `/etc/passwd`/`/etc/group` via a ConfigMap
+  mounted with `subPath` — a portable, image-independent proof. A
+  `testuser` (uid 2000, primary gid 3000) is listed as an extra member of
+  `imagegroup` (gid 4000) in the supplied `/etc/group`, on top of an
+  explicit `supplementalGroups: [5000]`. Two sibling containers (one
+  `Merge`, one `Strict`) both run `id -G`: `Merge` must include both 4000
+  (from the image's own group file) and 5000 (explicit); `Strict` must
+  include 5000 but must NOT include 4000. Skips cleanly if the pod never
+  reaches Running (older containerd without CRI's
+  `SupplementalGroupsPolicy` field support).
+- **Not translated**: CRI's `RuntimeHandlerFeatures.supplemental_groups_policy`
+  capability-advertisement flag (from the runtime's `Status` RPC) isn't
+  consulted before setting the field — same as every other CRI field
+  translation in this codebase, a runtime that doesn't support it is
+  expected to reject the RPC rather than nodelet pre-checking; there's
+  also no equivalent Node-API-facing field to surface it on even if it
+  were checked (`NodeRuntimeHandlerFeatures` only exposes
+  `recursiveReadOnlyMounts`/`userNamespaces`).
+
 ## Round 61: HugePages emptyDir.medium volume support (2026-07-31, same day)
 
 Closes the last of round 58's 3 HugePages pieces:
@@ -3602,7 +3655,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **gRPC probes** (round 29; found in round 27's re-audit) — `probes.rs::probe_check()` now handles `probe.grpc` too, via a vendored `grpc.health.v1` client (`proto/health.proto`) calling the standard `Health/Check` RPC. `cri`-gated (needs `tonic`'s transport); a mock-only build's `check_grpc()` always returns `false`. Unit-tested failure paths (timeout, refused, non-gRPC listener) with solid confidence; the success path (a real passing `Health/Check`) is unvalidated — no gRPC server available in this sandbox to prove it live. See round 29 notes.
 - ✅ **Local ephemeral storage** (found in round 45's re-audit; closed rounds 48-49) — `Node.status.capacity`/`.allocatable["ephemeral-storage"]` reports the real total filesystem size backing `disk_path` (round 48, reusing `DiskPressure`'s existing `statvfs(2)` read). A pod exceeding its *own* `resources.limits["ephemeral-storage"]` is now evicted directly (round 49) — usage measured as CRI's per-container `writable_layer.used_bytes` plus a recursive walk of nodelet's own materialized volume directory, checked independently of and ahead of the general `MemoryPressure`/`DiskPressure`/`PIDPressure`-gated eviction path (the same relationship an individual container's own OOM kill has to overall node memory pressure). Genuinely automated e2e test — the only one of this project's eviction tests that doesn't need a manual procedure, since this trigger needs no artificial node-wide pressure. **Known scope limitation**: usage measurement doesn't include container log file size (`/var/log/pods/...`) yet, only volumes + writable layer. See rounds 48-49 notes.
 - ✅ **HugePages** (found in round 58's re-audit; all 3 pieces closed rounds 59-61) — container `resources.limits["hugepages-<size>"]` is translated to CRI's `LinuxContainerResources.hugepage_limits` (round 59), `Node.status.capacity`/`.allocatable["hugepages-<size>"]` report every reserved hugepage pool read from `/sys/kernel/mm/hugepages/` (round 60), and `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volumes are now real `hugetlbfs` mounts (round 61).
-- ❌ **`securityContext.supplementalGroupsPolicy`** (GA 1.33; found in round 58's re-audit) — controls whether `supplementalGroups`/fsGroup-derived groups *merge with* or *strictly replace* the groups a container image's own `/etc/group` would otherwise assign its user; `linux_security_context()` sets `supplemental_groups` but never reads this policy field, so it always behaves as the implicit merge case regardless of what the pod spec asks for.
+- ✅ **`securityContext.supplementalGroupsPolicy`** (GA 1.33; found in round 58's re-audit; closed round 62) — `Merge`/`Strict` now translates directly to CRI's own `SupplementalGroupsPolicy` enum on both the sandbox- and container-level security context; genuinely automated e2e test proves `Strict` excludes image-defined `/etc/group` membership while `Merge` includes it, using a portable ConfigMap-subPath-supplied `/etc/passwd`/`/etc/group` rather than depending on `$TEST_IMAGE`'s own baked-in group file.
 - ❌ **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit) — entirely unimplemented (zero references anywhere in this codebase). A newer, genuinely complex feature: `ResourceClaim`/`ResourceClaimTemplate`/`DeviceClass` cluster objects plus a kubelet-side gRPC "DRA plugin" protocol distinct from (though loosely analogous to) device plugins. **Flagged for completeness, not necessarily recommended**: likely its own large multi-round arc, and the value-to-complexity ratio for a single-node edge kubelet (vs. a real multi-node cluster's cross-node device-sharing story DRA is mainly designed for) is genuinely questionable — worth a deliberate scope discussion before starting, not a default "implement it" pick.
 
 ### Security context
@@ -4060,7 +4113,30 @@ higher-value/correctness-critical than others:
       pod teardown. Genuinely automated e2e test proving the host
       mountpoint's real filesystem type via `stat -f`, skips cleanly if no
       hugepages are reserved. See round 61 notes.
-- [ ] Candidates for the next round, by value: `supplementalGroupsPolicy`
-      (GA 1.33, never read), then a deliberate scope discussion on Dynamic
-      Resource Allocation before committing to it. Ask before starting the
-      next round.
+- [x] Round 62: securityContext.supplementalGroupsPolicy — CRI has direct
+      native support (`SupplementalGroupsPolicy` enum on both sandbox- and
+      container-level security context); new pure
+      `supplemental_groups_policy_cri()` translates `Merge`/`Strict`,
+      failing open to `Merge` on anything else. `sandbox_config()` gained
+      a new `pod_sc` parameter threaded through `run_sandbox()`.
+      Genuinely automated e2e test using a portable ConfigMap-subPath
+      `/etc/passwd`/`/etc/group` (not dependent on `$TEST_IMAGE`'s own
+      baked-in group file) proves `Strict` excludes image-defined group
+      membership while `Merge` includes it. See round 62 notes.
+
+**Scope note (2026-07-31, after round 62):** the project's goal was
+re-stated by the user: nodelet should keep thriving as a single-node
+deployment, but the project itself is no longer scoped to single-node
+only — it's meant to be a full kubelet replacement usable in ordinary
+multi-node clusters too. This puts previously-deferred multi-node-
+relevant gaps back in scope, most notably **Dynamic Resource Allocation**
+(`spec.resourceClaims`) — no longer just "flagged for completeness,
+not necessarily recommended," but genuinely in scope now. Documentation
+(this file, `README.md`, `docs/ARCHITECTURE.md`) is being updated
+accordingly; see those files' own updated framing.
+
+- [ ] Candidates for the next round: **Dynamic Resource Allocation**
+      (`spec.resourceClaims`) is the next concrete item, now that the
+      single-node-only framing that made it questionable no longer
+      applies. Ask before starting the next round regardless — DRA is
+      large enough to warrant agreeing on an implementation slice first.
