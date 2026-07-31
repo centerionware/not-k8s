@@ -27,6 +27,50 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 28: `oom_score_adj` (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-27). Offered the 4
+implementable items round 27's audit found; user picked `oom_score_adj`
+— highest real-world value, and the one that ties directly into this
+project's existing eviction-manager story (rounds 7, 26).
+
+- **`eviction.rs` gained `oom_score_adj(qos, container_memory_request_bytes,
+  node_memory_capacity_bytes) -> i64`** — real kubelet's own formula
+  (`pkg/kubelet/qos/policy.go`'s `GetContainerOOMScoreAdjust`):
+  `Guaranteed` always `-998`, `BestEffort` always `1000`, `Burstable`
+  scaled by `1000 - (1000 * request / capacity)` and clamped to `[2, 999]`
+  so it never overlaps `Guaranteed`'s protected range or reaches
+  `BestEffort`'s certain-death value. A degenerate `capacity <= 0` falls
+  back to `999` rather than dividing by zero.
+- **`runtime/cri.rs::linux_resources()` gained `qos`/`node_memory_bytes`
+  parameters** and now sets `LinuxContainerResources.oom_score_adj` on
+  every container. Computed **per container**, using that container's own
+  memory *request* (not limit, not the pod's aggregate) — matching
+  upstream's own per-container computation exactly, which is why these
+  params thread through the existing per-container `linux_resources()`
+  call rather than being computed once per pod. `CriRuntime` gained a
+  `node_memory_bytes: i64` field (threaded through `connect()`, sourced
+  from `cfg.memory_bytes` — the same detected `/proc/meminfo` value
+  `Node.status.capacity.memory` already uses, not re-read independently).
+- 11 new unit tests: `eviction_tests/oom_score_adj.rs`'s fixed-value/
+  scaling/clamping/degenerate-capacity cases, `cri_tests/linux_resources.rs`'s
+  wiring cases (Guaranteed/BestEffort get their fixed values; Burstable
+  uses the container's own request, not its limit).
+
+626 tests passing with `--features cri` (up from 615), 206 mock-only (up
+from 198 — `eviction.rs`'s new function isn't `cri`-gated, `linux_resources()`'s
+wiring tests are). `deploy/lib/test/cases/resources.sh` gained two real
+automated tests: a BestEffort pod reads its own `/proc/self/oom_score_adj`
+and asserts `1000`; a Guaranteed pod asserts `-998` — genuinely
+automatable without any cgroup-v2 dependency (unlike this file's other
+tests), since `oom_score_adj` is a per-process kernel value readable
+regardless of cgroup version.
+
+**Confidence note**: like rounds 23/24/26, this has genuinely **high**
+live-validation confidence once run — the e2e tests need no special
+infrastructure, cgroup version, or manual spot-check, just a running CRI
+runtime.
+
 ## Round 27: fresh gap re-audit (2026-07-31, same day)
 
 Explicitly asked again (same pattern as round 22, offered as this
@@ -1584,7 +1628,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Topology Manager** (`topology.rs`) — coordinates CPU Manager, Memory Manager (as of round 18), and device plugins so a container's exclusive cores, pinned memory, and allocated devices land on the same NUMA node. Opt-in (`NODELET_TOPOLOGY_MANAGER_POLICY`, default `none`); `best-effort` prefers alignment without rejecting, `single-numa-node` rejects the container outright if no single NUMA node satisfies every hint provider. **`restricted`** (round 20) gets a real, bounded multi-node relaxation instead — `spread()` places each hint provider on its own best node independently when no single node works for everyone, rejecting only if some provider's request can't be placed anywhere at all. **Single-node-only alignment, not upstream's full bitmask/permutation combination search** — `align()`/`spread()` reach the same answer as upstream whenever a single node can satisfy everything or every provider individually has *some* home, but don't search for upstream's genuinely joint cross-provider multi-node splits. See round 17/18/20 notes.
 - ✅ **Device plugins** (`device_plugins.rs`, GPU/FPGA/etc. hardware resources) — discovered via the same dynamic plugin-registration protocol CSI drivers use (`plugin_registry.rs`, round 13); tracks live device inventory/health per resource name via `ListAndWatch`, advertises healthy counts on `Node.status.capacity`/`.allocatable`, and calls `Allocate()` during container creation to inject the envs/mounts/device-nodes/annotations a plugin returns. **`GetPreferredAllocation`/`PreStartContainer`** (round 21) — a plugin's `DevicePluginOptions` (fetched once via `GetDevicePluginOptions`) says whether either applies; `GetPreferredAllocation`'s response is validated (`is_valid_preferred_allocation()`) before being trusted, falling back to nodelet's own first-healthy-unallocated pick otherwise; `PreStartContainer` is called right after `Allocate()` succeeds when required, a failure there releasing devices and failing the allocation. Unvalidated against a real device plugin — see rounds 14 and 21 notes.
 - ❌ In-place pod resource resize (newer, still-maturing upstream feature)
-- ❌ **`oom_score_adj`** (found in round 27's re-audit) — real kubelet sets CRI's `LinuxContainerResources.oom_score_adj` per QoS class (Guaranteed `-998`, BestEffort `1000`, Burstable scaled by memory request) so the kernel OOM killer's choices are QoS-aware. Not set at all — `linux_resources()` never touches this field. High value specifically because this project already has its own eviction-manager story (rounds 7, 26): without this, a real kernel OOM kill (which can happen faster than `eviction_loop()`'s own check interval reacts) has zero QoS signal, undermining the protection guarantee eviction.rs otherwise provides.
+- ✅ **`oom_score_adj`** (round 28; found in round 27's re-audit) — `linux_resources()` now sets CRI's `LinuxContainerResources.oom_score_adj` per container via `eviction::oom_score_adj()`: Guaranteed `-998`, BestEffort `1000`, Burstable scaled by that container's own memory *request* against node capacity (`1000 - 1000*request/capacity`, clamped `[2, 999]`), matching real kubelet's formula exactly. Gives the kernel OOM killer QoS-aware signal, closing a real gap in this project's own eviction-manager story (rounds 7, 26) — a kernel OOM kill can happen faster than `eviction_loop()`'s check interval reacts. See round 28 notes.
 - ❌ **gRPC probes** (`probe.grpc`, found in round 27's re-audit) — `probes.rs::probe_check()` handles `httpGet`/`tcpSocket`/`exec` but falls through to `ProbeCheck::None` for a `grpc` probe (the standard `grpc.health.v1.Health/Check` protocol, GA since 1.27). High real-world value — a genuinely common probe type for cloud-native gRPC services this silently can't check at all.
 
 ### Security context
@@ -1776,8 +1820,13 @@ higher-value/correctness-critical than others:
       volumes unimplemented, `Node.status.images` not populated,
       `volumesInUse`/`volumesAttached` not populated, image volume
       source unimplemented. See round 27 notes.
-- [ ] Next candidates from round 27's audit, roughly by value:
-      `oom_score_adj`, gRPC probes, `emptyDir.medium: Memory`, generic
-      ephemeral volumes, then the three lower-priority items (image
-      volume source, `Node.status.images`, `volumesInUse`/`volumesAttached`).
-      Ask before starting the next round.
+- [x] Round 28: `oom_score_adj` — `linux_resources()` now sets CRI's
+      per-container `oom_score_adj` from real kubelet's own formula
+      (Guaranteed `-998`, BestEffort `1000`, Burstable scaled by request
+      vs. node capacity). Two genuinely automated e2e tests (no cgroup-v2
+      dependency, unlike most of `resources.sh`). See round 28 notes.
+- [ ] Remaining candidates from round 27's audit, roughly by value: gRPC
+      probes, `emptyDir.medium: Memory`, generic ephemeral volumes, then
+      the three lower-priority items (image volume source,
+      `Node.status.images`, `volumesInUse`/`volumesAttached`). Ask before
+      starting the next round.

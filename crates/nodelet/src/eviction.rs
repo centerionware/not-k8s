@@ -125,6 +125,33 @@ fn requested_memory_bytes(pod: &Pod) -> u64 {
         .max(0.0) as u64
 }
 
+/// Real kubelet's per-container OOM score adjustment
+/// (`pkg/kubelet/qos/policy.go`'s `GetContainerOOMScoreAdjust`, round 28)
+/// — how strongly the kernel OOM killer should prefer killing this
+/// container under real memory pressure, independent of and faster than
+/// `eviction_loop()`'s own check interval. `Guaranteed` and `BestEffort`
+/// get real kubelet's fixed values; `Burstable` is scaled by how much of
+/// the node's total memory this container's own request claims (a bigger
+/// share is less likely to be picked by the kernel first), clamped to
+/// `[2, 999]` so it never overlaps `Guaranteed`'s protected negative
+/// range or reaches `BestEffort`'s certain-death `1000`.
+/// `node_memory_capacity_bytes <= 0` (degenerate, shouldn't happen with a
+/// real `/proc/meminfo` read) falls back to `999` — the most-evictable
+/// value still inside Burstable's own range, not a panic.
+pub fn oom_score_adj(qos: QosClass, container_memory_request_bytes: i64, node_memory_capacity_bytes: i64) -> i64 {
+    match qos {
+        QosClass::Guaranteed => -998,
+        QosClass::BestEffort => 1000,
+        QosClass::Burstable => {
+            if node_memory_capacity_bytes <= 0 {
+                return 999;
+            }
+            let scaled = 1000 - (1000 * container_memory_request_bytes) / node_memory_capacity_bytes;
+            scaled.clamp(2, 999)
+        }
+    }
+}
+
 /// `spec.priority` — already a resolved numeric value by the time nodelet
 /// sees the Pod (the apiserver's Priority admission controller resolves
 /// `priorityClassName` into this field at admission time), so no
@@ -190,3 +217,6 @@ mod tests_qos_class;
 #[cfg(test)]
 #[path = "eviction_tests/pick_candidate.rs"]
 mod tests_pick_candidate;
+#[cfg(test)]
+#[path = "eviction_tests/oom_score_adj.rs"]
+mod tests_oom_score_adj;

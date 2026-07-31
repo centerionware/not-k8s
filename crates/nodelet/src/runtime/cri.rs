@@ -159,6 +159,12 @@ pub struct CriRuntime {
     /// `pod_uids`/`restart_policies` on pod removal/orphan GC/stale-sandbox
     /// recreation.
     userns: crate::userns::UsernsAllocator,
+    /// Node memory capacity in bytes (round 28) — the "machine memory
+    /// capacity" input to `eviction::oom_score_adj()`'s Burstable-QoS
+    /// scaling formula. Same source as `Node.status.capacity.memory`
+    /// (`config.rs::detect_memory_bytes()` / `NODELET_MEMORY_BYTES`), not
+    /// re-read from `/proc/meminfo` independently.
+    node_memory_bytes: i64,
     /// `"sandbox_id/container_name" -> cumulative restart count`, mirroring
     /// `PodStatus.containerStatuses[].restartCount`. Side table for the same
     /// reason `restart_policies` is one: CRI's `ListContainers` has no
@@ -546,12 +552,17 @@ fn cpu_shares_for(cpu_millicores: Option<i64>) -> i64 {
 /// request, matching kubelet); CPU quota/period and the memory limit come
 /// from limits only — a limit-less resource is left at CRI's "unspecified"
 /// zero value, which containerd/runc treat as unconstrained.
-fn linux_resources(resources: Option<&ResourceRequirements>) -> LinuxContainerResources {
+/// `qos`/`node_memory_bytes` (round 28) only feed `oom_score_adj` — see
+/// `eviction::oom_score_adj()`. Real kubelet computes this per container
+/// (not per pod), using each container's own memory *request*, which is
+/// why it's threaded through here rather than computed once per pod.
+fn linux_resources(resources: Option<&ResourceRequirements>, qos: QosClass, node_memory_bytes: i64) -> LinuxContainerResources {
     let requests = resources.and_then(|r| r.requests.as_ref());
     let limits = resources.and_then(|r| r.limits.as_ref());
     let cpu_request = requests.and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
     let cpu_limit = limits.and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
     let mem_limit = limits.and_then(|m| m.get("memory")).and_then(parse_memory_bytes);
+    let mem_request = requests.and_then(|m| m.get("memory")).and_then(parse_memory_bytes).unwrap_or(0);
 
     let (cpu_quota, cpu_period) = match cpu_limit {
         Some(m) if m > 0 => (CPU_CFS_QUOTA_PERIOD_US * m / 1000, CPU_CFS_QUOTA_PERIOD_US),
@@ -563,6 +574,7 @@ fn linux_resources(resources: Option<&ResourceRequirements>) -> LinuxContainerRe
         cpu_quota,
         cpu_period,
         memory_limit_in_bytes: mem_limit.unwrap_or(0),
+        oom_score_adj: crate::eviction::oom_score_adj(qos, mem_request, node_memory_bytes),
         ..Default::default()
     }
 }
@@ -1207,6 +1219,7 @@ impl CriRuntime {
         topology_policy: crate::topology::TopologyManagerPolicy,
         numa_topology: BTreeMap<u32, BTreeSet<u32>>,
         userns: crate::userns::UsernsAllocator,
+        node_memory_bytes: i64,
     ) -> Result<Self> {
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
@@ -1235,6 +1248,7 @@ impl CriRuntime {
             restart_policies: Mutex::new(HashMap::new()),
             pod_uids: Mutex::new(HashMap::new()),
             userns,
+            node_memory_bytes,
             restart_counts: Mutex::new(HashMap::new()),
             csi,
             device_plugins,
@@ -2154,7 +2168,7 @@ impl CriRuntime {
                 container.termination_message_path.clone().filter(|p| !p.is_empty()).unwrap_or_else(|| "/dev/termination-log".to_string());
             mounts.push(Mount { container_path, host_path: host_path.to_string_lossy().into_owned(), readonly: false, ..Default::default() });
         }
-        let mut resources = linux_resources(container.resources.as_ref());
+        let mut resources = linux_resources(container.resources.as_ref(), qos, self.node_memory_bytes);
         let limits = container.resources.as_ref().and_then(|r| r.limits.as_ref());
         let cpu_limit = limits.and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
         let mem_limit = limits.and_then(|m| m.get("memory")).and_then(parse_memory_bytes);

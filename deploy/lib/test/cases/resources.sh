@@ -4,6 +4,11 @@
 # this needs the container's own cooperation rather than a host-readable
 # path). Assumes cgroup v2 (the modern containerd default); skips cleanly
 # if that's not what this node uses rather than guessing at the v1 paths.
+#
+# oom_score_adj (round 28) doesn't need the cgroup-v2 caveat above — a
+# container can always read its own /proc/self/oom_score_adj regardless
+# of cgroup version, since it's a per-process kernel value, not a cgroup
+# controller file.
 
 test_memory_limit_is_enforced_via_cgroup() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
@@ -99,6 +104,65 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_besteffort_pod_gets_the_certain_death_oom_score() {
+    # Round 28: oom_score_adj wasn't set at all before this — every
+    # container got the kernel's own default, no QoS signal at all.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="oom-score-besteffort"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "cat /proc/self/oom_score_adj > /shared/oom.txt; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local value
+    value="$(wait_for_check_file "$name" shared oom.txt 30)"
+    assert_eq "$value" "1000" "BestEffort containers should get oom_score_adj=1000 (the kernel's most-likely-to-kill value), matching eviction::oom_score_adj()"
+    delete_pod_if_exists "$name"
+}
+
+test_guaranteed_pod_gets_the_protected_oom_score() {
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="oom-score-guaranteed"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      resources:
+        requests: { cpu: "100m", memory: "64Mi" }
+        limits: { cpu: "100m", memory: "64Mi" }
+      command: ["sh", "-c", "cat /proc/self/oom_score_adj > /shared/oom.txt; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local value
+    value="$(wait_for_check_file "$name" shared oom.txt 30)"
+    assert_eq "$value" "-998" "Guaranteed containers should get oom_score_adj=-998 (the kernel's least-likely-to-kill value), matching eviction::oom_score_adj()"
+    delete_pod_if_exists "$name"
+}
+
 register_test test_memory_limit_is_enforced_via_cgroup
 register_test test_cpu_limit_is_enforced_via_cgroup
 register_test test_besteffort_pod_gets_no_cgroup_limit
+register_test test_besteffort_pod_gets_the_certain_death_oom_score
+register_test test_guaranteed_pod_gets_the_protected_oom_score

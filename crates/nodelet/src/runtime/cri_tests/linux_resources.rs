@@ -8,6 +8,13 @@ use super::*;
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use std::collections::BTreeMap;
 
+/// These tests are all about cpu/memory translation, not oom_score_adj
+/// (see linux_resources_oom_score_adj.rs for that) — a fixed arbitrary
+/// QoS/node-memory pair keeps them unaffected by round 28's new params.
+fn lr(resources: Option<&ResourceRequirements>) -> LinuxContainerResources {
+    linux_resources(resources, QosClass::Burstable, 4_000_000_000)
+}
+
 fn resources(cpu_request: Option<&str>, cpu_limit: Option<&str>, mem_limit: Option<&str>) -> ResourceRequirements {
     let mut requests = BTreeMap::new();
     if let Some(c) = cpu_request {
@@ -29,7 +36,7 @@ fn resources(cpu_request: Option<&str>, cpu_limit: Option<&str>, mem_limit: Opti
 
 #[test]
 fn no_resources_at_all_gets_besteffort_minimum_shares_and_unlimited_cpu_and_memory() {
-    let r = linux_resources(None);
+    let r = lr(None);
     assert_eq!(r.cpu_shares, 2);
     assert_eq!(r.cpu_quota, 0);
     assert_eq!(r.cpu_period, 0);
@@ -39,33 +46,33 @@ fn no_resources_at_all_gets_besteffort_minimum_shares_and_unlimited_cpu_and_memo
 #[test]
 fn cpu_request_of_500m_gives_512_shares() {
     let res = resources(Some("500m"), None, None);
-    let r = linux_resources(Some(&res));
+    let r = lr(Some(&res));
     assert_eq!(r.cpu_shares, 512); // 500 * 1024 / 1000
 }
 
 #[test]
 fn cpu_request_of_one_whole_core_gives_1024_shares() {
     let res = resources(Some("1"), None, None);
-    assert_eq!(linux_resources(Some(&res)).cpu_shares, 1024);
+    assert_eq!(lr(Some(&res)).cpu_shares, 1024);
 }
 
 #[test]
 fn cpu_shares_floor_is_two_even_for_a_tiny_request() {
     let res = resources(Some("1m"), None, None);
-    assert_eq!(linux_resources(Some(&res)).cpu_shares, 2);
+    assert_eq!(lr(Some(&res)).cpu_shares, 2);
 }
 
 #[test]
 fn cpu_limit_without_request_still_derives_shares_from_the_limit() {
     let res = resources(None, Some("2"), None);
-    let r = linux_resources(Some(&res));
+    let r = lr(Some(&res));
     assert_eq!(r.cpu_shares, 2048);
 }
 
 #[test]
 fn cpu_limit_of_500m_yields_50ms_quota_over_the_100ms_period() {
     let res = resources(None, Some("500m"), None);
-    let r = linux_resources(Some(&res));
+    let r = lr(Some(&res));
     assert_eq!(r.cpu_period, 100_000);
     assert_eq!(r.cpu_quota, 50_000);
 }
@@ -73,7 +80,7 @@ fn cpu_limit_of_500m_yields_50ms_quota_over_the_100ms_period() {
 #[test]
 fn no_cpu_limit_leaves_quota_and_period_unset() {
     let res = resources(Some("100m"), None, None);
-    let r = linux_resources(Some(&res));
+    let r = lr(Some(&res));
     assert_eq!(r.cpu_quota, 0);
     assert_eq!(r.cpu_period, 0);
 }
@@ -81,13 +88,13 @@ fn no_cpu_limit_leaves_quota_and_period_unset() {
 #[test]
 fn memory_limit_binary_suffix_converts_to_bytes() {
     let res = resources(None, None, Some("256Mi"));
-    assert_eq!(linux_resources(Some(&res)).memory_limit_in_bytes, 256 * 1024 * 1024);
+    assert_eq!(lr(Some(&res)).memory_limit_in_bytes, 256 * 1024 * 1024);
 }
 
 #[test]
 fn memory_limit_decimal_suffix_converts_to_bytes() {
     let res = resources(None, None, Some("1G"));
-    assert_eq!(linux_resources(Some(&res)).memory_limit_in_bytes, 1_000_000_000);
+    assert_eq!(lr(Some(&res)).memory_limit_in_bytes, 1_000_000_000);
 }
 
 #[test]
@@ -97,7 +104,7 @@ fn memory_request_alone_does_not_set_a_limit() {
     let mut requests = BTreeMap::new();
     requests.insert("memory".to_string(), Quantity("128Mi".to_string()));
     let res = ResourceRequirements { requests: Some(requests), ..Default::default() };
-    assert_eq!(linux_resources(Some(&res)).memory_limit_in_bytes, 0);
+    assert_eq!(lr(Some(&res)).memory_limit_in_bytes, 0);
 }
 
 #[test]
@@ -108,4 +115,32 @@ fn parse_cpu_millicores_handles_bare_decimal_cores() {
 #[test]
 fn parse_memory_bytes_handles_bare_integer_bytes() {
     assert_eq!(parse_memory_bytes(&Quantity("500000000".to_string())), Some(500_000_000));
+}
+
+// --- oom_score_adj wiring (round 28) ---
+
+#[test]
+fn guaranteed_qos_gets_the_protected_oom_score() {
+    let res = resources(None, None, None);
+    assert_eq!(linux_resources(Some(&res), QosClass::Guaranteed, 4_000_000_000).oom_score_adj, -998);
+}
+
+#[test]
+fn besteffort_qos_gets_the_certain_death_oom_score() {
+    let res = resources(None, None, None);
+    assert_eq!(linux_resources(Some(&res), QosClass::BestEffort, 4_000_000_000).oom_score_adj, 1000);
+}
+
+#[test]
+fn burstable_qos_uses_the_containers_own_memory_request_not_its_limit() {
+    // memory REQUEST drives oom_score_adj (real kubelet uses Requests,
+    // not Limits) — a container with only a memory limit set, no
+    // request, must use 0 as the request value, same as memory_limit_in_bytes
+    // already treats "request alone sets no limit" as the mirror case.
+    let mut limits = BTreeMap::new();
+    limits.insert("memory".to_string(), Quantity("2Gi".to_string()));
+    let res = ResourceRequirements { limits: Some(limits), ..Default::default() };
+    let capacity = 4i64 * 1024 * 1024 * 1024;
+    // request=0 over a 4Gi node -> 1000 - 0 = 1000, clamped to 999.
+    assert_eq!(linux_resources(Some(&res), QosClass::Burstable, capacity).oom_score_adj, 999);
 }

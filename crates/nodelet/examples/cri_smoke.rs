@@ -45,6 +45,7 @@ async fn main() -> Result<()> {
         nodelet::topology::TopologyManagerPolicy::None,
         Default::default(),
         nodelet::userns::UsernsAllocator::new(100_000, 65_536, 1024),
+        4 * 1024 * 1024 * 1024,
     )
     .await
     .context("connect to containerd")?;

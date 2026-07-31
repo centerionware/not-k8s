@@ -200,7 +200,15 @@ priority-tiebreaking** — `pick_eviction_candidate()` now ranks by
 `spec.priority` (already resolved by the apiserver's own Priority
 admission controller, no `PriorityClass` lookup needed) before falling
 back to usage, matching real kubelet's own ordering; this closes every
-candidate round 22's fresh gap re-audit found. Full status list in
+candidate round 22's fresh gap re-audit found. A second re-audit (round
+27) found more gaps, and round 28 closed the highest-value one:
+**`oom_score_adj`** — `linux_resources()` now sets CRI's per-container
+`oom_score_adj` from real kubelet's own formula (Guaranteed `-998`,
+BestEffort `1000`, Burstable scaled by that container's own memory
+request against node capacity), giving the kernel OOM killer QoS-aware
+signal — closing a real gap in this project's own eviction-manager story
+(rounds 7, 26), since a kernel OOM kill can happen faster than
+`eviction_loop()`'s own check interval reacts. Full status list in
 `docs/GAP_CLOSURE.md`.
 
 ---

@@ -161,6 +161,7 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                     topology_policy,
                     numa_topology,
                     userns,
+                    cfg.memory_bytes as i64,
                 )
                 .await
                 .context("connecting to CRI endpoint")?;
