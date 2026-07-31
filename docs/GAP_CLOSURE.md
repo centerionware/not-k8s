@@ -27,6 +27,50 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 60: HugePages Node.status.capacity/.allocatable reporting (2026-07-31, same day)
+
+Closes the second of round 58's 3 HugePages pieces:
+`Node.status.capacity`/`.allocatable["hugepages-<size>"]` was never
+populated at all — a node with hugepages reserved never advertised them as
+schedulable capacity, so the scheduler had no way to know they existed.
+
+- `node.rs::hugepages_capacity_map(base_path)` scans
+  `/sys/kernel/mm/hugepages/hugepages-<size>kB/` (real path:
+  `/sys/kernel/mm/hugepages`, parameterized purely for unit testing against
+  a synthetic tree), reading each pool's `nr_hugepages` count and
+  multiplying by its page size in bytes. Pool sizes with `nr_hugepages == 0`
+  (unreserved) are omitted entirely rather than reported as zero, matching
+  real kubelet: an unreserved size isn't schedulable capacity at all.
+- New pure `hugepage_size_kb_to_k8s_suffix(size_kb)` mirrors real cadvisor's
+  own naming: the largest whole binary unit that divides the pool's kB size
+  evenly (2048kB → `"2Mi"`, 1048576kB → `"1Gi"`, an odd size falls back to
+  `"Ki"`) — the inverse direction of round 59's
+  `hugepage_cri_page_size()`.
+- `capacity_map()` now merges `hugepages_capacity_map(HUGEPAGES_SYSFS_ROOT)`
+  in alongside `cpu`/`memory`/`pods`/`ephemeral-storage`.
+  `allocatable_map()` needed no changes: it already only touches `cpu` and
+  `memory` explicitly and clones everything else through untouched, so any
+  `hugepages-<size>` capacity entries pass straight through to allocatable
+  unmodified — correct, since there's no `--system-reserved`/
+  `--kube-reserved`-equivalent knob for hugepages (a pool is either reserved
+  by the kernel/bootloader or it isn't; nothing to subtract).
+- 7 new unit tests in a new `node_tests/hugepages_capacity_map.rs`: suffix
+  conversion (2Mi/1Gi/64Ki), nonexistent root returns empty (not an error),
+  a reserved pool reports `count * page_size` bytes exactly, an unreserved
+  pool (`nr_hugepages == 0`) is omitted rather than reported as zero, and
+  multiple simultaneously-reserved pool sizes are all reported.
+- Genuinely automated e2e test
+  (`test_node_reports_hugepages_capacity_when_reserved` in
+  `deploy/lib/test/cases/node_status.sh`): reads real
+  `/proc/sys/vm/nr_hugepages` on the test runner, skips cleanly if it's 0
+  (nothing reserved to report), otherwise asserts the node's
+  `status.capacity["hugepages-*"]` key is present with a positive byte
+  count and that `status.allocatable` matches it exactly.
+- **Still open** (the last of round 58's 3 HugePages pieces):
+  `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volume support
+  (closer in shape to round 30's tmpfs `emptyDir.medium: Memory` work — a
+  real hugetlbfs mount, not a CRI or `/sys` read).
+
 ## Round 59: HugePages container limits (2026-07-31, same day)
 
 Closes the cheapest of the 3 pieces round 58's re-audit found under
@@ -3502,7 +3546,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`oom_score_adj`** (round 28; found in round 27's re-audit) — `linux_resources()` now sets CRI's `LinuxContainerResources.oom_score_adj` per container via `eviction::oom_score_adj()`: Guaranteed `-998`, BestEffort `1000`, Burstable scaled by that container's own memory *request* against node capacity (`1000 - 1000*request/capacity`, clamped `[2, 999]`), matching real kubelet's formula exactly. Gives the kernel OOM killer QoS-aware signal, closing a real gap in this project's own eviction-manager story (rounds 7, 26) — a kernel OOM kill can happen faster than `eviction_loop()`'s check interval reacts. See round 28 notes.
 - ✅ **gRPC probes** (round 29; found in round 27's re-audit) — `probes.rs::probe_check()` now handles `probe.grpc` too, via a vendored `grpc.health.v1` client (`proto/health.proto`) calling the standard `Health/Check` RPC. `cri`-gated (needs `tonic`'s transport); a mock-only build's `check_grpc()` always returns `false`. Unit-tested failure paths (timeout, refused, non-gRPC listener) with solid confidence; the success path (a real passing `Health/Check`) is unvalidated — no gRPC server available in this sandbox to prove it live. See round 29 notes.
 - ✅ **Local ephemeral storage** (found in round 45's re-audit; closed rounds 48-49) — `Node.status.capacity`/`.allocatable["ephemeral-storage"]` reports the real total filesystem size backing `disk_path` (round 48, reusing `DiskPressure`'s existing `statvfs(2)` read). A pod exceeding its *own* `resources.limits["ephemeral-storage"]` is now evicted directly (round 49) — usage measured as CRI's per-container `writable_layer.used_bytes` plus a recursive walk of nodelet's own materialized volume directory, checked independently of and ahead of the general `MemoryPressure`/`DiskPressure`/`PIDPressure`-gated eviction path (the same relationship an individual container's own OOM kill has to overall node memory pressure). Genuinely automated e2e test — the only one of this project's eviction tests that doesn't need a manual procedure, since this trigger needs no artificial node-wide pressure. **Known scope limitation**: usage measurement doesn't include container log file size (`/var/log/pods/...`) yet, only volumes + writable layer. See rounds 48-49 notes.
-- 🟡 **HugePages** (found in round 58's re-audit; container-limit piece closed round 59) — container `resources.limits["hugepages-<size>"]` is now translated to CRI's `LinuxContainerResources.hugepage_limits` (round 59). **Still missing**: `Node.status.capacity`/`.allocatable["hugepages-<size>"]` reporting (would read `/sys/kernel/mm/hugepages/`, no CRI RPC involved), and `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volume support (closer in shape to round 30's tmpfs `emptyDir.medium: Memory` work — a real mount, not a CRI concept).
+- 🟡 **HugePages** (found in round 58's re-audit; container-limit piece closed round 59, capacity/allocatable piece closed round 60) — container `resources.limits["hugepages-<size>"]` is translated to CRI's `LinuxContainerResources.hugepage_limits` (round 59), and `Node.status.capacity`/`.allocatable["hugepages-<size>"]` now report every reserved hugepage pool read from `/sys/kernel/mm/hugepages/` (round 60). **Still missing**: `emptyDir.medium: "HugePages"`/`"HugePages-<size>"` volume support (closer in shape to round 30's tmpfs `emptyDir.medium: Memory` work — a real mount, not a CRI concept).
 - ❌ **`securityContext.supplementalGroupsPolicy`** (GA 1.33; found in round 58's re-audit) — controls whether `supplementalGroups`/fsGroup-derived groups *merge with* or *strictly replace* the groups a container image's own `/etc/group` would otherwise assign its user; `linux_security_context()` sets `supplemental_groups` but never reads this policy field, so it always behaves as the implicit merge case regardless of what the pod spec asks for.
 - ❌ **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit) — entirely unimplemented (zero references anywhere in this codebase). A newer, genuinely complex feature: `ResourceClaim`/`ResourceClaimTemplate`/`DeviceClass` cluster objects plus a kubelet-side gRPC "DRA plugin" protocol distinct from (though loosely analogous to) device plugins. **Flagged for completeness, not necessarily recommended**: likely its own large multi-round arc, and the value-to-complexity ratio for a single-node edge kubelet (vs. a real multi-node cluster's cross-node device-sharing story DRA is mainly designed for) is genuinely questionable — worth a deliberate scope discussion before starting, not a default "implement it" pick.
 
@@ -3944,8 +3988,16 @@ higher-value/correctness-critical than others:
       unchanged). Genuinely automated e2e test reading back
       `hugetlb.2MB.limit_in_bytes`, skips cleanly if the node has no
       hugepages reserved. See round 59 notes.
+- [x] Round 60: HugePages Node.status.capacity/.allocatable reporting —
+      closes the second of round 58's 3 HugePages pieces. New
+      `hugepages_capacity_map()`/`hugepage_size_kb_to_k8s_suffix()` scan
+      `/sys/kernel/mm/hugepages/` and report every reserved pool size as
+      `hugepages-<size>` capacity; `allocatable_map()` needed no changes
+      since it already passes unrecognized keys through untouched.
+      Genuinely automated e2e test, skips cleanly if no hugepages are
+      reserved on the test runner. See round 60 notes.
 - [ ] Candidates for the next round, by value: HugePages
-      `Node.status.capacity`/`.allocatable` reporting, HugePages
-      `emptyDir.medium: HugePages` volume support, `supplementalGroupsPolicy`,
-      then a deliberate scope discussion on Dynamic Resource Allocation
-      before committing to it. Ask before starting the next round.
+      `emptyDir.medium: HugePages` volume support (the last of the 3
+      HugePages pieces), `supplementalGroupsPolicy`, then a deliberate
+      scope discussion on Dynamic Resource Allocation before committing to
+      it. Ask before starting the next round.

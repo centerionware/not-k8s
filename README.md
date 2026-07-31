@@ -359,9 +359,13 @@ questionable. Round 59 closed the cheapest HugePages piece: container
 already had, unused until now) via new `hugepage_limits()`/
 `hugepage_cri_page_size()` helpers — the latter a naming-convention
 translation only (k8s's `Mi`/`Gi`/`Ki` suffix to CRI's `MB`/`GB`/`KB`
-page_size string; the byte value itself is unchanged). Still open:
-`Node.status.capacity`/`.allocatable["hugepages-<size>"]` reporting and
-the `emptyDir.medium: HugePages` volume form. Full status list in
+page_size string; the byte value itself is unchanged). Round 60 closed
+the next HugePages piece: **`Node.status.capacity`/`.allocatable
+["hugepages-<size>"]`** now report every hugepage pool actually reserved
+on the node, read straight from `/sys/kernel/mm/hugepages/` (no CRI RPC
+involved) — unreserved pool sizes are omitted entirely rather than
+reported as zero, matching real kubelet. Still open: the
+`emptyDir.medium: HugePages` volume form. Full status list in
 `docs/GAP_CLOSURE.md`.
 
 ---

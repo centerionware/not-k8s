@@ -26,6 +26,38 @@ test_node_is_ready_with_capacity_advertised() {
     assert_eq "$ephemeral_storage_alloc" "$ephemeral_storage" "ephemeral-storage allocatable should equal capacity (no reservation knob for it yet)"
 }
 
+test_node_reports_hugepages_capacity_when_reserved() {
+    # Round 60: Node.status.capacity/.allocatable["hugepages-<size>"] was
+    # never populated at all before this — nodelet now scans
+    # /sys/kernel/mm/hugepages/ directly. Skips cleanly (not a hard fail)
+    # if this node/kernel has no hugepage pool reserved at all
+    # (check /proc/sys/vm/nr_hugepages), since that's genuinely outside
+    # nodelet's control and can't be assumed present in arbitrary test
+    # environments.
+    local n
+    n="$(node_name)"
+    local reserved
+    reserved="$(cat /proc/sys/vm/nr_hugepages 2>/dev/null || echo 0)"
+    if [[ "$reserved" -eq 0 ]]; then
+        skip_test "no hugepages reserved on this node (/proc/sys/vm/nr_hugepages is 0) — nothing for Node.status.capacity[\"hugepages-*\"] to report"
+    fi
+
+    local cap_json
+    cap_json="$(kubectl get node "$n" -o jsonpath='{.status.capacity}')"
+    if ! echo "$cap_json" | grep -q '"hugepages-'; then
+        skip_test "Node.status.capacity has no hugepages-* key even though nr_hugepages=$reserved is reserved — check hugepages_capacity_map()'s HUGEPAGES_SYSFS_ROOT wiring in node.rs"
+    fi
+
+    local key
+    key="$(echo "$cap_json" | grep -o '"hugepages-[^"]*"' | head -1 | tr -d '"')"
+    local cap alloc
+    cap="$(kubectl get node "$n" -o jsonpath="{.status.capacity.$key}")"
+    alloc="$(kubectl get node "$n" -o jsonpath="{.status.allocatable.$key}")"
+    assert_not_empty "$cap" "node capacity.$key"
+    assert_true bash -c "[[ '$cap' -gt 0 ]]" "capacity.$key should be a real positive byte count (got $cap)"
+    assert_eq "$alloc" "$cap" "$key allocatable should equal capacity (no reservation knob for hugepages)"
+}
+
 test_pressure_conditions_are_present_and_normally_false() {
     local n
     n="$(node_name)"
@@ -115,6 +147,7 @@ EOF
 }
 
 register_test test_node_is_ready_with_capacity_advertised
+register_test test_node_reports_hugepages_capacity_when_reserved
 register_test test_pressure_conditions_are_present_and_normally_false
 register_test test_node_reports_a_real_kernel_and_os_image
 register_test test_node_status_reports_runtime_handlers

@@ -46,12 +46,63 @@ fn ephemeral_storage_capacity_bytes(cfg: &Config) -> u64 {
     crate::metrics::read_disk_info(&cfg.disk_path).map(|d| d.total_bytes).unwrap_or(0)
 }
 
+const HUGEPAGES_SYSFS_ROOT: &str = "/sys/kernel/mm/hugepages";
+
+/// A hugepage size in kB -> the binary-unit suffix k8s uses in its
+/// `hugepages-<size>` resource name (round 60; found in round 58's
+/// re-audit, the second of the 3 HugePages pieces). Real kubelet's cadvisor
+/// picks the largest whole unit that divides the size evenly (2048kB ->
+/// `"2Mi"`, 1048576kB -> `"1Gi"`), which is exactly what the CRI page-size
+/// translation in `runtime/cri.rs` already reverses via
+/// `hugepage_cri_page_size()`.
+fn hugepage_size_kb_to_k8s_suffix(size_kb: u64) -> String {
+    if size_kb % (1024 * 1024) == 0 {
+        format!("{}Gi", size_kb / (1024 * 1024))
+    } else if size_kb % 1024 == 0 {
+        format!("{}Mi", size_kb / 1024)
+    } else {
+        format!("{size_kb}Ki")
+    }
+}
+
+/// `Node.status.capacity["hugepages-<size>"]` (round 60; found in round
+/// 58's re-audit) — real kubelet reads each reserved hugepage pool size
+/// under `/sys/kernel/mm/hugepages/hugepages-<size>kB/`, multiplying its
+/// `nr_hugepages` count by the pool's own page size. Only pools that
+/// actually exist (i.e. the kernel/bootloader reserved at least one page of
+/// that size) are reported, matching real kubelet: an unreserved pool size
+/// isn't advertised as schedulable capacity at all. `base_path` is
+/// parameterized (rather than hardcoded) purely for unit testing against a
+/// synthetic sysfs tree; production always calls it with
+/// `HUGEPAGES_SYSFS_ROOT`.
+fn hugepages_capacity_map(base_path: &str) -> BTreeMap<String, Quantity> {
+    let mut m = BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(base_path) else { return m };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else { continue };
+        let Some(size_kb_str) = name.strip_prefix("hugepages-").and_then(|s| s.strip_suffix("kB")) else { continue };
+        let Ok(size_kb) = size_kb_str.parse::<u64>() else { continue };
+        let nr_path = entry.path().join("nr_hugepages");
+        let Ok(nr_str) = std::fs::read_to_string(&nr_path) else { continue };
+        let Ok(nr_hugepages) = nr_str.trim().parse::<u64>() else { continue };
+        if nr_hugepages == 0 {
+            continue;
+        }
+        let bytes = size_kb * 1024 * nr_hugepages;
+        let suffix = hugepage_size_kb_to_k8s_suffix(size_kb);
+        m.insert(format!("hugepages-{suffix}"), Quantity(bytes.to_string()));
+    }
+    m
+}
+
 fn capacity_map(cfg: &Config) -> BTreeMap<String, Quantity> {
     let mut m = BTreeMap::new();
     m.insert("cpu".to_string(), Quantity(cfg.cpu_cores.to_string()));
     m.insert("memory".to_string(), Quantity(cfg.memory_bytes.to_string()));
     m.insert("pods".to_string(), Quantity(cfg.max_pods.to_string()));
     m.insert("ephemeral-storage".to_string(), Quantity(ephemeral_storage_capacity_bytes(cfg).to_string()));
+    m.extend(hugepages_capacity_map(HUGEPAGES_SYSFS_ROOT));
     m
 }
 
@@ -388,6 +439,9 @@ mod tests_taint_filter;
 #[cfg(test)]
 #[path = "node_tests/capacity_map.rs"]
 mod tests_capacity_map;
+#[cfg(test)]
+#[path = "node_tests/hugepages_capacity_map.rs"]
+mod tests_hugepages_capacity_map;
 #[cfg(test)]
 #[path = "node_tests/node_labels.rs"]
 mod tests_node_labels;
