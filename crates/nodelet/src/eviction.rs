@@ -39,6 +39,19 @@ pub enum QosClass {
     Guaranteed,
 }
 
+impl QosClass {
+    /// The exact string real kubelet reports on `PodStatus.qosClass`
+    /// (round 55; found in round 54's re-audit) — matches the Kubernetes
+    /// API's own `PodQOSClass` constants verbatim.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QosClass::BestEffort => "BestEffort",
+            QosClass::Burstable => "Burstable",
+            QosClass::Guaranteed => "Guaranteed",
+        }
+    }
+}
+
 /// Parse a `cpu`/`memory` Quantity string to a comparable numeric value.
 /// Good enough for QoS-class equality/presence checks — not a full
 /// arbitrary-precision Quantity parser.

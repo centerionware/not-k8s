@@ -238,7 +238,8 @@ impl PodController {
                 self.ensure_probe_supervisor(&pod, &ns, &name, status.pod_ip.as_deref());
                 let prev = pod.status.as_ref();
                 let gates = readiness_gate_types(&pod);
-                if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev, &gates, &self.health).await {
+                let qos = crate::eviction::qos_class(&pod);
+                if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev, &gates, &self.health, qos).await {
                     warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status");
                 }
             }
@@ -281,7 +282,8 @@ impl PodController {
                     debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured (retry)");
                     let prev = pod.status.as_ref();
                     let gates = readiness_gate_types(&pod);
-                    if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev, &gates, &health).await {
+                    let qos = crate::eviction::qos_class(&pod);
+                    if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev, &gates, &health, qos).await {
                         warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status (retry)");
                     }
                 }
@@ -318,8 +320,19 @@ impl PodController {
             Ok(Some(p)) => {
                 self.ensure_probe_supervisor(&p, ns, name, status.pod_ip.as_deref());
                 let gates = readiness_gate_types(&p);
-                if let Err(e) =
-                    write_status(&self.client, &self.host_ip, ns, name, &status, p.status.as_ref(), &gates, &self.health).await
+                let qos = crate::eviction::qos_class(&p);
+                if let Err(e) = write_status(
+                    &self.client,
+                    &self.host_ip,
+                    ns,
+                    name,
+                    &status,
+                    p.status.as_ref(),
+                    &gates,
+                    &self.health,
+                    qos,
+                )
+                .await
                 {
                     warn!(pod = %key, error = ?e, "failed to write pod status");
                 } else {
@@ -343,9 +356,10 @@ pub(crate) async fn write_status(
     prev: Option<&PodStatus>,
     readiness_gates: &[String],
     health: &HealthMap,
+    qos: crate::eviction::QosClass,
 ) -> Result<()> {
     let api: Api<Pod> = Api::namespaced(client.clone(), ns);
-    let status = build_pod_status(host_ip, ns, name, rt, prev, readiness_gates, health);
+    let status = build_pod_status(host_ip, ns, name, rt, prev, readiness_gates, health, qos);
     if !status_patch_changes(prev, &status) {
         debug!(pod = %format!("{ns}/{name}"), "skipped unchanged pod status patch");
         return Ok(());
@@ -456,6 +470,7 @@ fn build_pod_status(
     prev: Option<&PodStatus>,
     readiness_gates: &[String],
     health: &HealthMap,
+    qos: crate::eviction::QosClass,
 ) -> PodStatus {
     let running = rt.phase == Phase::Running;
     let prev_time = |type_: &str, status: &str| -> Option<Time> {
@@ -620,6 +635,7 @@ fn build_pod_status(
         pod_ips,
         start_time: rt.started_at.map(Time),
         message: rt.message.clone(),
+        qos_class: Some(qos.as_str().to_string()),
         ..Default::default()
     }
 }

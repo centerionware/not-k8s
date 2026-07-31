@@ -336,8 +336,11 @@ more gaps: **`PodStatus.qosClass` is never set** (nodelet already
 computes this internally for eviction ranking, just never surfaces it
 — likely the cheapest fix), `PodStatus.hostIPs` (plural, dual-stack)
 is never set, and `ContainerStatus.containerID` is missing its
-`<runtime>://` scheme prefix real kubelet always includes. Full status
-list in `docs/GAP_CLOSURE.md`.
+`<runtime>://` scheme prefix real kubelet always includes. Round 55
+closed the first: **`PodStatus.qosClass`** is now reported, reusing
+the `eviction::qos_class()` computation nodelet already had internally
+for eviction ranking since round 7. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 ---
 

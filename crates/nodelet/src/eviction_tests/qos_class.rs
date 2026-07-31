@@ -116,3 +116,11 @@ fn init_containers_count_toward_qos_too() {
     };
     assert_eq!(qos_class(&pod), QosClass::Burstable, "a besteffort init container disqualifies Guaranteed too");
 }
+
+#[test]
+fn as_str_matches_the_real_kubernetes_api_constants() {
+    // Round 55: PodStatus.qosClass reads these exact strings.
+    assert_eq!(QosClass::BestEffort.as_str(), "BestEffort");
+    assert_eq!(QosClass::Burstable.as_str(), "Burstable");
+    assert_eq!(QosClass::Guaranteed.as_str(), "Guaranteed");
+}

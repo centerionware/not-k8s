@@ -251,6 +251,37 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_pod_status_reports_qos_class() {
+    # Round 55: PodStatus.qosClass was never set at all before this;
+    # nodelet already computed this internally (eviction::qos_class(),
+    # round 7's eviction ranking) — this proves it's now surfaced for a
+    # real Guaranteed pod (equal request/limit on every resource).
+    local name="qos-class-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+      command: ["sleep", "3600"]
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local qos
+    qos="$(kctl get pod "$name" -o jsonpath='{.status.qosClass}')"
+    assert_eq "$qos" "Guaranteed" "status.qosClass for a pod with matching requests/limits on every resource"
+    delete_pod_if_exists "$name"
+}
+
 test_container_status_reports_a_real_image_id() {
     # Round 52: containerStatuses[].imageID used to always be the empty
     # string; CRI's own Container.image_ref (a digested image reference)
@@ -321,6 +352,7 @@ register_test test_restart_policy_never_exit_zero_is_succeeded
 register_test test_restart_policy_never_exit_nonzero_is_failed
 register_test test_exited_container_reports_terminated_state_with_exit_code
 register_test test_termination_message_path_is_read_back_into_container_status
+register_test test_pod_status_reports_qos_class
 register_test test_container_status_reports_a_real_image_id
 register_test test_image_pull_policy_never_fails_when_image_is_absent
 register_test test_image_pull_policy_if_not_present_manual_note

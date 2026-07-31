@@ -22,11 +22,11 @@ fn bps(host_ip: &str, rt: &RuntimeStatus, prev: Option<&PodStatus>) -> PodStatus
 }
 
 fn bps_with_gates(host_ip: &str, rt: &RuntimeStatus, prev: Option<&PodStatus>, readiness_gates: &[String]) -> PodStatus {
-    build_pod_status(host_ip, "default", "app", rt, prev, readiness_gates, &probes::new_health_map())
+    build_pod_status(host_ip, "default", "app", rt, prev, readiness_gates, &probes::new_health_map(), crate::eviction::QosClass::BestEffort)
 }
 
 fn bps_with_health(host_ip: &str, rt: &RuntimeStatus, health: &probes::HealthMap) -> PodStatus {
-    build_pod_status(host_ip, "default", "app", rt, None, &[], health)
+    build_pod_status(host_ip, "default", "app", rt, None, &[], health, crate::eviction::QosClass::BestEffort)
 }
 
 /// Directly seed the health map's entry for one container — `set_health()`
@@ -163,9 +163,19 @@ async fn unchanged_status_skips_the_http_patch() {
     let runtime = running_status();
     let previous = bps("10.0.0.1", &runtime, None);
 
-    write_status(&client, "10.0.0.1", "default", "app", &runtime, Some(&previous), &[], &probes::new_health_map())
-        .await
-        .unwrap();
+    write_status(
+        &client,
+        "10.0.0.1",
+        "default",
+        "app",
+        &runtime,
+        Some(&previous),
+        &[],
+        &probes::new_health_map(),
+        crate::eviction::QosClass::BestEffort,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(patches.load(Ordering::Relaxed), 0);
 }
@@ -174,9 +184,13 @@ async fn unchanged_status_skips_the_http_patch() {
 fn server_owned_status_fields_do_not_force_a_patch() {
     let runtime = running_status();
     let mut previous = bps("10.0.0.1", &runtime, None);
-    // The apiserver fills this field, but nodelet deliberately does not own
-    // it. A server-owned field must not make every later reconcile look dirty.
-    previous.qos_class = Some("Burstable".to_string());
+    // The scheduler (not nodelet) fills this field during preemption, and
+    // build_pod_status() never touches it. A server-owned field must not
+    // make every later reconcile look dirty. (Round 55: qosClass moved
+    // from "server-owned, nodelet leaves alone" to "nodelet's own,
+    // computed every reconcile" — see the qos_class tests below for that
+    // field's coverage now.)
+    previous.nominated_node_name = Some("other-node".to_string());
     let desired = bps("10.0.0.1", &runtime, Some(&previous));
 
     assert!(!status_patch_changes(Some(&previous), &desired));
@@ -197,6 +211,7 @@ async fn changed_status_still_sends_the_http_patch() {
         Some(&previous),
         &[],
         &probes::new_health_map(),
+        crate::eviction::QosClass::BestEffort,
     )
     .await
     .unwrap();
@@ -324,6 +339,17 @@ fn image_id_mirrors_the_runtime_status() {
 fn empty_image_id_is_reported_as_empty_not_fabricated() {
     let status = bps("10.0.0.1", &running_status(), None);
     assert_eq!(status.container_statuses.as_ref().unwrap()[0].image_id, "");
+}
+
+#[test]
+fn qos_class_is_reported_using_the_real_api_strings() {
+    // Round 55: PodStatus.qosClass was never set at all before this;
+    // eviction::qos_class() already computed the value internally for
+    // eviction ranking (round 7) — this just surfaces it.
+    for qos in [crate::eviction::QosClass::BestEffort, crate::eviction::QosClass::Burstable, crate::eviction::QosClass::Guaranteed] {
+        let status = build_pod_status("10.0.0.1", "default", "app", &running_status(), None, &[], &probes::new_health_map(), qos);
+        assert_eq!(status.qos_class.as_deref(), Some(qos.as_str()));
+    }
 }
 
 #[test]

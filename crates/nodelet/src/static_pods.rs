@@ -166,6 +166,7 @@ pub async fn run(client: Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
                 Ok(status) => {
                     let prev = api.get_opt(&mirror_name).await.ok().flatten().and_then(|p| p.status);
                     let gates = crate::pods::readiness_gate_types(&prepared_pod);
+                    let qos = crate::eviction::qos_class(&prepared_pod);
                     if let Err(e) = crate::pods::write_status(
                         &client,
                         &host_ip,
@@ -175,6 +176,7 @@ pub async fn run(client: Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
                         prev.as_ref(),
                         &gates,
                         &health,
+                        qos,
                     )
                     .await
                     {

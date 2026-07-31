@@ -27,6 +27,56 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 55: `PodStatus.qosClass` (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-54). Offered the 3
+round-54 findings; user picked this one — round 54's own prediction
+that it'd be the cheapest, confirmed correct in practice.
+
+Before this round, `PodStatus.qosClass` was never set at all —
+`eviction::qos_class()` already computed exactly this value internally
+(used for eviction ranking since round 7), it just never surfaced into
+the pod's own status.
+
+- **`QosClass` gained `as_str() -> &'static str`**, matching real
+  kubelet's exact `PodQOSClass` API constants (`"BestEffort"`/
+  `"Burstable"`/`"Guaranteed"`) verbatim.
+- **`build_pod_status()`/`write_status()`** gained a `qos:
+  crate::eviction::QosClass` parameter, set directly on
+  `PodStatus.qos_class`. Computed once per reconcile via the existing
+  `qos_class(&pod)` and threaded in from all 4 call sites that build a
+  `Pod`-derived status (`reconcile()`, `schedule_retry()`,
+  `on_runtime_event()` in `pods.rs`, and the static-pod mirror path in
+  `static_pods.rs`) — the exact same "compute from the `Pod` object
+  outside `build_pod_status()`, since the event-driven status path
+  doesn't have one" pattern round 23 already established for
+  `readiness_gates`.
+- **Caught and fixed a real pre-existing test that was testing the
+  wrong thing** during development: `server_owned_status_fields_do_not_force_a_patch`
+  used to set `previous.qos_class` to prove a "server-owned field
+  nodelet doesn't touch" doesn't force a spurious patch — but `qosClass`
+  *is* now nodelet's own field, so that premise no longer holds. Fixed
+  by switching the test to `nominatedNodeName` (a genuinely
+  still-server-owned field — the scheduler's, set during preemption,
+  which `build_pod_status()` never touches), preserving the test's
+  actual intent rather than deleting the coverage.
+- No new env vars, no new proto surface — pure logic, an existing
+  computation just gets surfaced.
+- 3 new unit tests: `eviction_tests/qos_class.rs` (+1: `as_str()`
+  matches the real API constants exactly) and
+  `pods_tests/build_pod_status.rs` (+1: all 3 QoS classes round-trip
+  through `build_pod_status()` correctly, plus the fixed
+  server-owned-field test above).
+- New e2e test (`deploy/lib/test/cases/lifecycle.sh`):
+  `test_pod_status_reports_qos_class` — a real pod with matching
+  requests/limits on every resource (genuinely `Guaranteed`) asserts
+  `status.qosClass` reads exactly `"Guaranteed"`, not just "present."
+
+**Confidence note**: about as low-risk a round as this project gets —
+an existing, already-tested pure computation surfaced into a field
+that was previously always empty, with both unit and e2e coverage.
+High confidence.
+
 ## Round 54: fresh gap re-audit (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 22/27/35/39/45/50). All
@@ -3262,7 +3312,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`terminationMessagePath`/`terminationMessagePolicy`** (round 24; found in round 22's re-audit) — `create_and_start_container()` bind-mounts an empty host file at the container's `terminationMessagePath` (default `/dev/termination-log`) for App/Init containers, same approach real kubelet uses; `build_status()` reads it back (capped at 4096 bytes, keeping the last bytes if larger) into `ContainerStatus.state.terminated.message` for every exited container. Closing this also surfaced and fixed a bigger pre-existing gap: regular/init containers never reported a `terminated` state at all before this round (always `Waiting: ContainerCreating` forever once exited) — see round 24 notes. Still not implemented: `FallbackToLogsOnError` (documented, deliberate — nodelet always behaves as `File` policy, a strict subset of correct behavior, never wrong/misleading).
 - ✅ **Pod `readinessGates`** (round 23; found in round 22's re-audit) — `spec.readinessGates` lets an external controller contribute additional `PodCondition`s that must all be `True` (alongside the built-in `ContainersReady`) before kubelet reports the pod's own `Ready` condition as `True`. `build_pod_status()`'s `Ready` computation now checks every gate's named condition against `prev`'s conditions; a missing condition counts as not-satisfied, matching upstream. Fixing this also required (and fixed) a real pre-existing bug: nodelet's JSON-Merge-Patch status writes were silently deleting any condition an external controller had set, since the whole `conditions` array got replaced wholesale — now foreign conditions are copied forward on every write. See round 23 notes.
 - ✅ **Startup probe failure triggers a restart** (round 47; found in round 45's re-audit) — the startup-probe loop now checks the new public `ProbeTracker.failures` count against `failureThreshold` on every non-passing iteration, calling `restart_container()` (reusing round 44's `probe_grace_period_seconds()` unchanged — it was already generic over which probe called it) and resetting the tracker, then continuing to loop (the supervisor task lives for the container's whole lifetime, so it must keep re-attempting startup probing against the recreated instance rather than giving up). Genuinely automated e2e test (a marker file that's never created, so the probe can only ever fail — a nonzero restart count is direct proof). See round 47 notes.
-- ❌ **`PodStatus.qosClass`** (found in round 54's re-audit) — never set. `eviction::qos_class()` already computes exactly this value (used for eviction ranking since round 7); it's just never surfaced into `PodStatus` itself, which `kubectl describe pod`/dashboards/various controllers read directly rather than recomputing. Likely the cheapest fix of round 54's 3 findings — needs threading the existing pure function's result in from `reconcile()` (which has the `Pod` object) the same way round 23 already threads `readiness_gates` into `build_pod_status()`.
+- ✅ **`PodStatus.qosClass`** (round 55; found in round 54's re-audit) — new `QosClass::as_str()` matches real kubelet's exact API constants; `build_pod_status()`/`write_status()` gained a `qos` parameter, computed via the existing `eviction::qos_class()` and threaded in from all 4 `Pod`-derived status call sites, the same pattern round 23 already established for `readiness_gates`. Fixing this also required updating a pre-existing test whose premise ("qosClass is server-owned, nodelet doesn't touch it") no longer held — switched to `nominatedNodeName`, a field that's genuinely still server-owned. Genuinely automated e2e test (a real `Guaranteed` pod). See round 55 notes.
 - ❌ **`PodStatus.hostIPs`** (plural, dual-stack; found in round 54's re-audit) — only the singular `hostIP` is populated; real kubelet sets `hostIPs` alongside it unconditionally, even on a single-stack node, mirroring how `podIPs` (plural) already coexists with `podIP` (singular) in this same struct — which nodelet already gets right for pod IPs, just not host IPs.
 - ❌ **`ContainerStatus.containerID` missing its `<runtime>://` scheme prefix** (found in round 54's re-audit) — real kubelet always formats this as `<runtimeName>://<id>` (e.g. `containerd://1234abcd...`), built from CRI's own `Version` RPC's `runtime_name` field; nodelet reports the bare CRI container ID with no prefix. CRI's `Version` RPC (distinct from the `Status` RPC round 53 wired up) has never been called anywhere in this codebase either. Not the same finding as round 52's `imageID` — that field is *not* scheme-prefixed by real kubelet, so round 52's implementation needs no revisiting.
 
@@ -3680,6 +3730,13 @@ higher-value/correctness-critical than others:
       **`ContainerStatus.containerID` missing its `<runtime>://`
       scheme prefix** (CRI's `Version` RPC, distinct from round 53's
       `Status` RPC, has never been called either). See round 54 notes.
-- [ ] Candidates for the next round, by value: `PodStatus.qosClass`
-      (cheapest), `PodStatus.hostIPs`, `ContainerStatus.containerID`
-      scheme prefix. Ask before starting the next round.
+- [x] Round 55: `PodStatus.qosClass` — new `QosClass::as_str()` plus a
+      new `qos` parameter threaded through `build_pod_status()`/
+      `write_status()` from all 4 `Pod`-derived status call sites,
+      reusing the existing `eviction::qos_class()` computation. Also
+      fixed a pre-existing test whose "qosClass is server-owned"
+      premise no longer held. Genuinely automated e2e test. See round
+      55 notes.
+- [ ] Candidates for the next round: `PodStatus.hostIPs`,
+      `ContainerStatus.containerID` scheme prefix. Ask before starting
+      the next round.
