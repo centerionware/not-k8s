@@ -41,6 +41,29 @@ fn capacity_map(cfg: &Config) -> BTreeMap<String, Quantity> {
     m
 }
 
+/// `Node.status.allocatable` = capacity minus `system-reserved` +
+/// `kube-reserved` (real kubelet's formula; eviction-hard reservations
+/// aren't subtracted here — nodelet's pressure-eviction thresholds already
+/// serve that purpose separately, see `metrics.rs`). `pods` is left
+/// untouched: real kubelet doesn't reduce the pod-count allocatable for
+/// cpu/memory reservations either. Reservations only ever reduce
+/// allocatable, never below zero.
+fn allocatable_map(capacity: &BTreeMap<String, Quantity>, reserved_cpu_millicores: u64, reserved_memory_bytes: u64) -> BTreeMap<String, Quantity> {
+    let mut m = capacity.clone();
+    if let Some(cpu) = m.get_mut("cpu") {
+        // capacity's cpu Quantity is always a bare whole-core count (see
+        // capacity_map above), so no Ki/Mi/m suffix parsing is needed here.
+        let cap_millicores = cpu.0.trim().parse::<f64>().unwrap_or(0.0) * 1000.0;
+        let alloc_millicores = (cap_millicores - reserved_cpu_millicores as f64).max(0.0);
+        *cpu = Quantity(format!("{}m", alloc_millicores.round() as i64));
+    }
+    if let Some(mem) = m.get_mut("memory") {
+        let cap_bytes = mem.0.trim().parse::<u64>().unwrap_or(0);
+        *mem = Quantity(cap_bytes.saturating_sub(reserved_memory_bytes).to_string());
+    }
+    m
+}
+
 pub(crate) fn detect_internal_ip() -> String {
     // No packets are sent; connecting a UDP socket just resolves the source
     // address the kernel would use for the default route. Works offline if a
@@ -175,9 +198,14 @@ fn build_status(cfg: &Config, ready: bool) -> NodeStatus {
         cfg.disk_pressure_percent,
         cfg.pid_pressure_percent,
     );
+    let allocatable = allocatable_map(
+        &cap,
+        cfg.system_reserved_cpu_millicores + cfg.kube_reserved_cpu_millicores,
+        cfg.system_reserved_memory_bytes + cfg.kube_reserved_memory_bytes,
+    );
     NodeStatus {
-        capacity: Some(cap.clone()),
-        allocatable: Some(cap),
+        capacity: Some(cap),
+        allocatable: Some(allocatable),
         conditions: Some(conditions(ready, &pressure)),
         node_info: Some(system_info(cfg)),
         addresses: Some(vec![
@@ -280,6 +308,9 @@ mod tests_read_trim;
 #[cfg(test)]
 #[path = "node_tests/build_node.rs"]
 mod tests_build_node;
+#[cfg(test)]
+#[path = "node_tests/allocatable_map.rs"]
+mod tests_allocatable_map;
 
 /// Renew the node Lease (the cheap, frequent liveness signal).
 pub async fn renew_lease(client: &Client, cfg: &Config) -> Result<()> {

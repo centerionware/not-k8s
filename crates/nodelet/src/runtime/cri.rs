@@ -403,6 +403,31 @@ fn linux_resources(resources: Option<&ResourceRequirements>) -> LinuxContainerRe
     }
 }
 
+/// Translate `spec.overhead` (a flat `ResourceList`, not a request/limit
+/// pair) into `LinuxContainerResources` for `LinuxPodSandboxConfig.overhead`
+/// — the per-sandbox cost a `RuntimeClass` declares on top of its
+/// containers' own resources (e.g. gVisor's userspace kernel). Treated the
+/// same as a limit for CPU-quota/memory-limit purposes, since overhead is
+/// an amount to reserve/cap against, not something with its own
+/// request/limit distinction.
+fn resource_list_to_linux_resources(list: &BTreeMap<String, Quantity>) -> LinuxContainerResources {
+    let cpu_millicores = list.get("cpu").and_then(parse_cpu_millicores);
+    let mem_bytes = list.get("memory").and_then(parse_memory_bytes);
+
+    let (cpu_quota, cpu_period) = match cpu_millicores {
+        Some(m) if m > 0 => (CPU_CFS_QUOTA_PERIOD_US * m / 1000, CPU_CFS_QUOTA_PERIOD_US),
+        _ => (0, 0),
+    };
+
+    LinuxContainerResources {
+        cpu_shares: cpu_shares_for(cpu_millicores),
+        cpu_quota,
+        cpu_period,
+        memory_limit_in_bytes: mem_bytes.unwrap_or(0),
+        ..Default::default()
+    }
+}
+
 /// Translate pod- and container-level `securityContext` into CRI's
 /// `LinuxContainerSecurityContext`. Container-level fields override pod-level
 /// ones wherever Kubernetes defines both (matches real kubelet semantics).
@@ -1384,10 +1409,20 @@ impl CriRuntime {
             .map(|c| c.id))
     }
 
-    async fn run_sandbox(&self, id: &PodId, dns: Option<DnsConfig>, runtime_handler: String) -> Result<String> {
+    async fn run_sandbox(
+        &self,
+        id: &PodId,
+        dns: Option<DnsConfig>,
+        runtime_handler: String,
+        cgroup_parent: String,
+        overhead: Option<LinuxContainerResources>,
+    ) -> Result<String> {
         let mut rt = self.rt.clone();
         let mut config = sandbox_config(id);
         config.dns_config = dns;
+        let linux = config.linux.get_or_insert_with(LinuxPodSandboxConfig::default);
+        linux.cgroup_parent = cgroup_parent;
+        linux.overhead = overhead;
         let resp = rt
             .run_pod_sandbox(RunPodSandboxRequest { config: Some(config), runtime_handler })
             .await?
@@ -2002,6 +2037,14 @@ impl PodRuntime for CriRuntime {
         let ready_state = v1::PodSandboxState::SandboxReady as i32;
         let dns = dns_config_for(pod, &self.cluster_dns, &self.cluster_domain);
         let runtime_handler = self.resolve_runtime_handler(pod).await;
+        // Real kubelet computes both of these before RunPodSandbox too —
+        // cgroup_parent so the sandbox lands in the right QoS-scoped cgroup
+        // from the start (not something CRI lets you change after the
+        // fact), overhead so a RuntimeClass with declared overhead
+        // (gVisor/Kata's userspace kernel cost) gets it accounted into the
+        // sandbox's own resources.
+        let cgroup_parent = crate::cgroup::cgroup_parent_for(crate::eviction::qos_class(pod), &id.uid);
+        let overhead = pod.spec.as_ref().and_then(|s| s.overhead.as_ref()).map(|list| resource_list_to_linux_resources(list));
         let sandbox_id = match sandbox_reuse_decision(found.as_ref().map(|(_, s)| *s), ready_state) {
             SandboxDecision::Reuse => found.unwrap().0,
             SandboxDecision::RecreateStale => {
@@ -2016,9 +2059,11 @@ impl PodRuntime for CriRuntime {
                 let _ = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
                 self.restart_policies.lock().unwrap().remove(&stale_id);
                 self.clear_restart_counts(&stale_id);
-                self.run_sandbox(&id, dns, runtime_handler).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
             }
-            SandboxDecision::CreateFresh => self.run_sandbox(&id, dns, runtime_handler).await.context("RunPodSandbox")?,
+            SandboxDecision::CreateFresh => {
+                self.run_sandbox(&id, dns, runtime_handler, cgroup_parent, overhead).await.context("RunPodSandbox")?
+            }
         };
 
         let restart_policy = pod
@@ -2656,6 +2701,9 @@ mod tests_log_rotation;
 #[cfg(test)]
 #[path = "cri_tests/service_account_token.rs"]
 mod tests_service_account_token;
+#[cfg(test)]
+#[path = "cri_tests/resource_list_to_linux_resources.rs"]
+mod tests_resource_list_to_linux_resources;
 
 /// Map a containerd container/sandbox id back to its pod (namespace, name) via
 /// the `nodelet.dev/*` labels we stamped on it.

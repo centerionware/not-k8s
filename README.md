@@ -50,6 +50,7 @@ crates/nodelet/        The node agent (Rust). Registers a Node, heartbeats a Lea
   src/metrics.rs        Real MemoryPressure/DiskPressure from /proc + statvfs.
   src/gc.rs            Orphaned-sandbox + unreferenced-image garbage collection.
   src/eviction.rs      Node-pressure eviction: QoS-ranked pod selection.
+  src/cgroup.rs        QoS-scoped cgroup_parent + node allocatable enforcement (feature `cri`).
   src/static_pods.rs   Static pod manifest directory + mirror pod reconciliation.
   src/server/          kubelet-style HTTP(S) server: logs/exec/attach/port-forward/stats/metrics (feature `cri`).
   src/shutdown.rs      Graceful node shutdown: systemd-logind inhibitor lock + pod drain (feature `cri`).
@@ -107,8 +108,17 @@ time budget before letting the host actually power off — **the D-Bus glue
 is unvalidated against a real systemd-logind**, see `docs/GAP_CLOSURE.md`'s
 round 9 notes. Also `/metrics/resource` (complete) and `/metrics/cadvisor`
 (a scoped-down subset — see round 10 notes), the Prometheus-text
-alternatives to `/stats/summary`. Still missing: PVC/CSI, and more — full
-list in `docs/GAP_CLOSURE.md`.
+alternatives to `/stats/summary`, and a **QoS-scoped cgroup hierarchy +
+node allocatable enforcement** — every pod sandbox now gets a
+`cgroup_parent` scoped by QoS class, and the top-level `kubepods` cgroup is
+created/capped at `Node.status.allocatable` (`capacity` minus
+`NODELET_SYSTEM_RESERVED_*`/`NODELET_KUBE_RESERVED_*`, both `0` by
+default) — **the cgroup v2 writes are unvalidated against a real
+`/sys/fs/cgroup`**, best-effort/logged-not-fatal on failure, see
+`docs/GAP_CLOSURE.md`'s round 11 notes. `RuntimeClass.overhead` is wired
+through too, closed alongside this round's cgroup work. Still missing:
+PVC/CSI, CPU/Memory/Topology managers, device plugins — full list in
+`docs/GAP_CLOSURE.md`.
 
 ---
 
@@ -528,6 +538,15 @@ Two layers, and they're not substitutes for each other:
   kubectl/apiserver is too old to support the `ephemeralcontainers`
   subresource.
 
+  `cgroup_hierarchy.sh` reads `/sys/fs/cgroup` directly (host state, not
+  reachable through the Kubernetes API) to check the top-level `kubepods`
+  cgroup exists with readable `cpu.max`/`memory.max`, and that a BestEffort
+  pod's own cgroup lands somewhere findable by UID underneath it — tolerant
+  of either cgroupfs or systemd driver naming. This is the piece to watch
+  most closely from round 11: the actual cgroup v2 writes were never
+  exercised against a real `/sys/fs/cgroup` (see `docs/GAP_CLOSURE.md`'s
+  round 11 notes).
+
 ## Configuration (environment variables)
 
 | Variable | Default | Meaning |
@@ -562,6 +581,11 @@ Two layers, and they're not substitutes for each other:
 | `NODELET_SERVER_CERT_DIR` | `/var/lib/nodelet/pki` | Where its self-signed TLS cert/key are generated/cached. |
 | `NODELET_SHUTDOWN_GRACE_PERIOD_SECS` | `0` (disabled) | Total time budget to gracefully terminate pods after systemd-logind signals an imminent shutdown, before releasing the inhibitor lock (`cri` only) — see [Status](#status). |
 | `NODELET_SHUTDOWN_GRACE_PERIOD_CRITICAL_SECS` | `0` | Sub-budget of the above reserved for `system-node-critical`/`system-cluster-critical` pods, terminated last; clamped to `NODELET_SHUTDOWN_GRACE_PERIOD_SECS`. |
+| `NODELET_SYSTEM_RESERVED_CPU_MILLICORES` | `0` | CPU reserved for non-Kubernetes host processes, subtracted from `Node.status.allocatable` (not `capacity`) — see [Status](#status). |
+| `NODELET_SYSTEM_RESERVED_MEMORY_BYTES` | `0` | Same, for memory bytes. |
+| `NODELET_KUBE_RESERVED_CPU_MILLICORES` | `0` | CPU reserved for nodelet/the container runtime itself. |
+| `NODELET_KUBE_RESERVED_MEMORY_BYTES` | `0` | Same, for memory bytes. |
+| `NODELET_CGROUP_FS_ROOT` | `/sys/fs/cgroup` | Where the host's cgroup v2 unified hierarchy is mounted (`cri` only) — used to create/cap the top-level `kubepods` cgroup at `Node.status.allocatable`. |
 | `RUST_LOG` | `info` | Tracing filter, e.g. `nodelet=debug`. |
 
 ---

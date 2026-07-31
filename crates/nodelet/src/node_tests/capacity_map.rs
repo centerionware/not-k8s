@@ -35,6 +35,11 @@ fn cfg(cpu: u64, mem: u64, pods: u64) -> Config {
         eviction_check_interval: Duration::from_secs(10),
         shutdown_grace_period_seconds: 0,
         shutdown_grace_period_critical_seconds: 0,
+        system_reserved_cpu_millicores: 0,
+        system_reserved_memory_bytes: 0,
+        kube_reserved_cpu_millicores: 0,
+        kube_reserved_memory_bytes: 0,
+        cgroup_fs_root: "/sys/fs/cgroup".to_string(),
     }
 }
 

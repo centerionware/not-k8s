@@ -57,6 +57,19 @@ async fn main() -> Result<()> {
         .context("registering node with the apiserver")?;
     info!(node = %cfg.node_name, "node registered and Ready");
 
+    // Node allocatable enforcement: caps the top-level "kubepods" cgroup at
+    // Node.status.allocatable (capacity minus system/kube-reserved) so pods
+    // collectively can never exceed it. Best-effort (needs root + cgroup
+    // v2) — see cgroup.rs for why a failure here doesn't block startup.
+    #[cfg(feature = "cri")]
+    if matches!(cfg.runtime, RuntimeKind::Cri) {
+        let allocatable_cpu_millicores = (cfg.cpu_cores * 1000)
+            .saturating_sub(cfg.system_reserved_cpu_millicores + cfg.kube_reserved_cpu_millicores);
+        let allocatable_memory_bytes =
+            cfg.memory_bytes.saturating_sub(cfg.system_reserved_memory_bytes + cfg.kube_reserved_memory_bytes);
+        nodelet::cgroup::enforce_node_allocatable(&cfg.cgroup_fs_root, allocatable_cpu_millicores, allocatable_memory_bytes);
+    }
+
     // Cheap, frequent liveness (Lease) decoupled from infrequent full status push.
     tokio::spawn(heartbeat_loop(client.clone(), cfg.clone()));
 

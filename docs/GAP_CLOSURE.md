@@ -27,6 +27,92 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 11: cgroup/QoS hierarchy + node allocatable enforcement (2026-07-31, same day)
+
+Unlike rounds 6–10 (picked autonomously, "you pick the path"/"continue"),
+this one was explicitly asked about first — the remaining list (PVC/CSI,
+this round's item, CPU/Memory/Topology managers, device plugins) is bigger
+and more invasive than recent rounds, so the user was asked to choose
+rather than assuming. They picked this: "a real correctness gap (pods can
+currently exceed what real kubelet would allow)" over PVC/CSI (bigger,
+multi-round scope) and the CPU/Memory/Topology managers + device plugins
+(lower value for nodelet's edge-device target).
+
+- **QoS-scoped `cgroup_parent`** (`cgroup.rs::cgroup_parent_for`) — every
+  pod sandbox now gets a real cgroup parent path scoped by QoS class
+  (`/kubepods/pod<uid>` Guaranteed, `/kubepods/burstable|besteffort/pod<uid>`
+  otherwise), wired into `runtime/cri.rs::ensure_pod` right alongside the
+  existing `runtime_handler` resolution. Before this, `LinuxPodSandboxConfig.linux`
+  was only ever populated for host-network pods — every other pod's
+  sandbox had no `cgroup_parent` at all, so pods landed wherever the
+  container runtime's own default happened to put them, with zero
+  relationship to QoS class.
+- **Key discovery that simplified this a lot**: CRI's own proto comment on
+  `cgroup_parent` says "the cgroupfs style syntax will be used, but the
+  container runtime can convert it to systemd semantics if needed" — so
+  nodelet doesn't need to detect or configure a cgroup driver at all (no
+  `NODELET_CGROUP_DRIVER`, unlike real kubelet's `--cgroup-driver` flag).
+  It always builds the cgroupfs-style path and trusts the runtime to
+  convert it if it's using systemd unit naming internally.
+- **Node allocatable enforcement** (`cgroup.rs::enforce_node_allocatable`,
+  called once at startup from `main.rs`) — creates and caps the top-level
+  `kubepods` cgroup (`cpu.max`/`memory.max`, cgroup v2 only) at the node's
+  allocatable resources, so pods collectively can never exceed it
+  regardless of what any individual pod's own limits say. This is the
+  actual "enforcement" real kubelet's `--enforce-node-allocatable=pods`
+  (its own default) gives.
+- **`Node.status.allocatable` is now a real computation, not `== capacity`**
+  (`node.rs::allocatable_map`) — `capacity - (system-reserved +
+  kube-reserved)`, new config: `NODELET_SYSTEM_RESERVED_CPU_MILLICORES`/
+  `_MEMORY_BYTES`, `NODELET_KUBE_RESERVED_CPU_MILLICORES`/`_MEMORY_BYTES`
+  (all default `0`, matching upstream — reservation is opt-in there too).
+  This is a correctness fix independent of the cgroup enforcement above:
+  even without cgroup v2 or root, the *reported* allocatable now reflects
+  reservations, same as real kubelet's status always has.
+- **Bonus, same code path**: `RuntimeClass.overhead` (`spec.overhead`)
+  now also gets wired through, via a new `resource_list_to_linux_resources()`
+  converting the flat `ResourceList` into `LinuxContainerResources` for
+  `LinuxPodSandboxConfig.overhead` — the field existed right next to
+  `cgroup_parent` in the same proto message, and the conversion logic was
+  a near-identical variant of the existing `linux_resources()`, so this
+  closed the previously-🟡 "RuntimeClass Overhead not implemented" note
+  from round 7 for free rather than leaving it for its own round.
+- 23 new unit tests: `cgroup_parent_for`, `cpu_max_line`/`memory_max_line`,
+  `enforce_node_allocatable` (pointed at a scratch directory — proves the
+  file layout/content, not real kernel cgroup semantics, see the caveat
+  below), `allocatable_map`, `resource_list_to_linux_resources`.
+
+423 tests passing with `--features cri` (up from 397), 174 mock-only (up
+from 168 — `allocatable_map` lives in `node.rs`, not `cri`-gated; the rest
+of this round's new code is in `cgroup.rs`, which is).
+`deploy/lib/test/cases/cgroup_hierarchy.sh` added for live-cluster
+validation — checks the `kubepods` cgroup exists with readable
+`cpu.max`/`memory.max`, and that a BestEffort pod's cgroup lands somewhere
+findable by UID under `kubepods` (tolerant of either cgroupfs or systemd
+driver naming, since it can't assume which one a given cluster uses).
+
+**Known limitation, honestly flagged, same treatment as round 9's D-Bus
+glue**: `enforce_node_allocatable`'s actual cgroup v2 writes were never
+exercised against a real `/sys/fs/cgroup` — this sandbox's cgroup v2 mount
+is read-only to a non-root user, so only the pure logic (path building,
+`cpu.max`/`memory.max` content formatting, and the file-creation flow
+against a scratch directory standing in for the real path) could be
+verified directly. The three things most likely to need a look on first
+real use: (1) whether `cgroup.subtree_control` on `cgroup_fs_root`'s
+top level already has `cpu`/`memory` delegated (a fresh systemd host
+usually does; a container without the host's cgroup mount bind-mounted in
+may not), (2) whether nodelet's own process has permission to write there
+at all (needs root, or an equivalent capability/cgroup namespace grant),
+(3) whether a systemd-driver containerd's own management of `kubepods.slice`
+conflicts with nodelet also writing directly to a cgroupfs path in the
+same tree (untested interaction — real kubelet with `--cgroup-driver=systemd`
+uses a `dbus`/`systemd-run` call to set the slice's properties instead of
+raw file writes for exactly this reason, which this round's simpler
+cgroupfs-direct-write approach doesn't replicate). All three fail safe: a
+logged warning, not a crash — `Node.status.allocatable` is still reported
+correctly regardless (that computation doesn't touch the filesystem at
+all), and pod scheduling/creation is entirely unaffected either way.
+
 ## Round 10: `/metrics/resource` + `/metrics/cadvisor` (2026-07-31, same day)
 
 Continued closing gaps ("continue" — no further scoping given). Picked
@@ -416,9 +502,9 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Resource management
 - ✅ **Container resource requests/limits** — translated to CRI `LinuxContainerResources` (cpu shares/quota/period, memory limit; `linux_resources()`)
-- ❌ QoS cgroup hierarchy (`--cgroups-per-qos`)
-- ❌ cgroup driver detection/consistency (cgroupfs vs systemd) with the container runtime
-- ❌ Node allocatable enforcement (`--enforce-node-allocatable`, system-reserved/kube-reserved cgroups)
+- ✅ **QoS cgroup hierarchy** (`--cgroups-per-qos`) — every pod sandbox now gets a `cgroup_parent` scoped by QoS class (`cgroup.rs::cgroup_parent_for`): `/kubepods/pod<uid>` for Guaranteed, `/kubepods/burstable/pod<uid>` / `/kubepods/besteffort/pod<uid>` otherwise, wired into `runtime/cri.rs::ensure_pod`.
+- ✅ **cgroup driver — no detection needed.** CRI's own `LinuxPodSandboxConfig.cgroup_parent` proto contract specifies the cgroupfs-style syntax is always sent, with "the container runtime can convert it to systemd semantics if needed" — nodelet always builds the cgroupfs-style path and lets the runtime do any systemd-unit-naming conversion, matching that contract exactly. No `--cgroup-driver`-equivalent config needed.
+- ✅ **Node allocatable enforcement** (`--enforce-node-allocatable=pods`, its own upstream default) — `cgroup.rs::enforce_node_allocatable`, called once at startup, creates and caps the top-level `kubepods` cgroup (cpu.max/memory.max) at `Node.status.allocatable` so pods collectively can never exceed it. `Node.status.allocatable` itself is now `capacity - (system-reserved + kube-reserved)` (`node.rs::allocatable_map`) rather than always equal to capacity — a real correctness fix, not just the enforcement mechanism (`NODELET_SYSTEM_RESERVED_CPU_MILLICORES`/`_MEMORY_BYTES`, `NODELET_KUBE_RESERVED_CPU_MILLICORES`/`_MEMORY_BYTES`, all default `0`). Best-effort: needs root + cgroup v2 (cgroup v1 unsupported, matching modern kubelet defaults), logs and continues on failure rather than blocking startup — **unvalidated against a real cgroup v2 hierarchy**, no writable `/sys/fs/cgroup` in the sandbox that built this; see `deploy/lib/test/cases/cgroup_hierarchy.sh` for the live-cluster check.
 - ❌ CPU Manager (`static` policy, exclusive core pinning) — advanced/optional in real kubelet
 - ❌ Memory Manager — advanced/optional
 - ❌ Topology Manager — advanced/optional
@@ -429,7 +515,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
 - ❌ Pod-level `sysctls`
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
-- 🟡 **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. Not yet: `Overhead.podFixed` accounting (nodelet doesn't do pod-level cgroups at all yet, so there's nowhere for pod overhead to plug into) — a missing/invalid RuntimeClass also isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
+- ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
 
 ### Networking
 - ✅ **DNS config** — `dnsPolicy`/`dnsConfig` → CRI `PodSandboxConfig.dns_config` (`dns_config_for()`), via new `NODELET_CLUSTER_DNS`/`NODELET_CLUSTER_DOMAIN`
@@ -523,7 +609,10 @@ higher-value/correctness-critical than others:
       unvalidated against a real logind — see the confidence note above)
 - [x] Round 10: `/metrics/resource` (complete) + `/metrics/cadvisor`
       (scoped-down subset — see round 10 notes)
+- [x] Round 11: cgroup/QoS hierarchy + node allocatable enforcement +
+      RuntimeClass Overhead (user-picked over PVC/CSI and the CPU/Memory/
+      Topology managers — see round 11 notes for the cgroup-write
+      confidence caveat)
 - [ ] Everything else in the responsibility list above — biggest remaining
-      single items: PVC/CSI, cgroup driver/QoS hierarchy/node allocatable
-      enforcement, CPU/Memory/Topology managers, device plugins, RuntimeClass
-      `Overhead` accounting. Ask before starting the next round.
+      single items: PVC/CSI, CPU/Memory/Topology managers, device plugins.
+      Ask before starting the next round.

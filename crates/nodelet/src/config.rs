@@ -120,6 +120,25 @@ pub struct Config {
     /// pods, which are terminated last so ordinary pods get first crack at
     /// a clean exit. Must be `<= shutdown_grace_period_seconds`; clamped if not.
     pub shutdown_grace_period_critical_seconds: u64,
+    /// Real kubelet's `--system-reserved=cpu=...`: CPU reserved for
+    /// non-Kubernetes host processes (sshd, systemd, etc.), subtracted from
+    /// `Node.status.allocatable` (but not `capacity`). Default `0`, matching
+    /// upstream: reservation is opt-in there too.
+    pub system_reserved_cpu_millicores: u64,
+    /// Same, for memory bytes.
+    pub system_reserved_memory_bytes: u64,
+    /// Real kubelet's `--kube-reserved=cpu=...`: CPU reserved for
+    /// Kubernetes system daemons themselves (kubelet/nodelet, the container
+    /// runtime). Default `0`.
+    pub kube_reserved_cpu_millicores: u64,
+    /// Same, for memory bytes.
+    pub kube_reserved_memory_bytes: u64,
+    /// Where the host's cgroup v2 unified hierarchy is mounted — used only
+    /// to create/cap the top-level `kubepods` cgroup at
+    /// `Node.status.allocatable` (`cri` only; see `cgroup.rs`). Configurable
+    /// mainly so tests can point this at a throwaway directory instead of
+    /// the real `/sys/fs/cgroup`.
+    pub cgroup_fs_root: String,
 }
 
 impl Config {
@@ -225,6 +244,12 @@ impl Config {
         let shutdown_grace_period_critical_seconds =
             env_u64("NODELET_SHUTDOWN_GRACE_PERIOD_CRITICAL_SECS", 0)?.min(shutdown_grace_period_seconds);
 
+        let system_reserved_cpu_millicores = env_u64("NODELET_SYSTEM_RESERVED_CPU_MILLICORES", 0)?;
+        let system_reserved_memory_bytes = env_u64("NODELET_SYSTEM_RESERVED_MEMORY_BYTES", 0)?;
+        let kube_reserved_cpu_millicores = env_u64("NODELET_KUBE_RESERVED_CPU_MILLICORES", 0)?;
+        let kube_reserved_memory_bytes = env_u64("NODELET_KUBE_RESERVED_MEMORY_BYTES", 0)?;
+        let cgroup_fs_root = std::env::var("NODELET_CGROUP_FS_ROOT").unwrap_or_else(|_| "/sys/fs/cgroup".to_string());
+
         Ok(Self {
             node_name,
             runtime,
@@ -256,6 +281,11 @@ impl Config {
             eviction_check_interval,
             shutdown_grace_period_seconds,
             shutdown_grace_period_critical_seconds,
+            system_reserved_cpu_millicores,
+            system_reserved_memory_bytes,
+            kube_reserved_cpu_millicores,
+            kube_reserved_memory_bytes,
+            cgroup_fs_root,
         })
     }
 }
