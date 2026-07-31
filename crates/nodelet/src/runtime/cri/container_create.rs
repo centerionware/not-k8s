@@ -215,7 +215,7 @@ impl CriRuntime {
             .context("pulling image")?;
         }
 
-        let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes);
+        let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes, envs);
         if let Some(ResolvedVolume::HostPath(hosts_path)) = volumes.get(ETC_HOSTS_VOLUME_KEY) {
             mounts.push(Mount {
                 container_path: "/etc/hosts".to_string(),

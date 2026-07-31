@@ -128,6 +128,54 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_sub_path_expr_expands_a_downward_api_env_var() {
+    # Round 69: volumeMounts[].subPathExpr was entirely unimplemented —
+    # $(VAR) references were never expanded, so the container would have
+    # gotten the whole emptyDir root mounted instead of the pod-name
+    # subdirectory it actually asked for. Real proof: the container
+    # writes a marker at $(POD_NAME)/marker, and the test reads it back
+    # directly from the EXPANDED host path (pod_volume_host_path's own
+    # directory, joined with the real pod name) — if expansion never
+    # happened, that specific path wouldn't have anything in it.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="subpathexpr-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef: {fieldPath: metadata.name}
+      command: ["sh", "-c", "echo expanded > /data/marker; sleep 3600"]
+      volumeMounts:
+        - name: shared
+          mountPath: /data
+          subPathExpr: \$(POD_NAME)
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with a subPathExpr volumeMount — check nodelet's logs for a dropped mount"
+    fi
+    local expanded_path="$(pod_volume_host_path "$name" shared)/$name/marker"
+    if ! try_wait_until 20 bash -c "[[ -s '$expanded_path' ]]"; then
+        delete_pod_if_exists "$name"
+        skip_test "no $expanded_path appeared — subPathExpr may not have expanded to the pod name as expected"
+    fi
+    local content
+    content="$(cat "$expanded_path")"
+    delete_pod_if_exists "$name"
+    assert_eq "$content" "expanded" "subPathExpr's \$(POD_NAME) should have expanded to the real pod name, landing the container's write at <volume>/<pod-name>/marker on the host"
+}
+
 test_projected_volume_merges_configmap_and_downward_api() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="projected-vol"
@@ -532,6 +580,7 @@ EOF
 register_test test_configmap_and_secret_volumes_are_materialized
 register_test test_configmap_volume_updates_live_without_pod_restart
 register_test test_downward_api_volume_writes_pod_metadata
+register_test test_sub_path_expr_expands_a_downward_api_env_var
 register_test test_projected_volume_merges_configmap_and_downward_api
 register_test test_service_account_token_projected_volume_mints_a_real_token
 register_test test_host_aliases_are_written_to_etc_hosts

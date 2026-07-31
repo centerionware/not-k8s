@@ -412,7 +412,11 @@ candidates, swap support (`memorySwap.swapBehavior`, GA 1.34): a new
 drives CRI's native `memory_swap_limit_in_bytes`, implementing upstream's
 KEP-2400 proportional-share formula exactly for `LimitedSwap` — with a
 genuinely automated e2e test proving the default `NoSwap` behavior's real
-cgroup effect. Full status list in `docs/GAP_CLOSURE.md`.
+cgroup effect. A fresh gap re-audit (round 69) found `volumeMounts[].subPathExpr`
+still unimplemented — closed: `$(VAR)` references now expand against a
+container's own resolved env (most commonly Downward API values like
+`$(POD_NAME)`), with an unresolvable reference dropping the mount rather
+than substituting a garbage path. Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

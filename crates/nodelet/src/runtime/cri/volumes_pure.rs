@@ -83,46 +83,93 @@ pub(crate) fn validate_host_path(path: &std::path::Path, type_: Option<&str>) ->
 }
 
 
+/// `volumeMounts[].subPathExpr`'s `$(VAR)` expansion (round 69; found in
+/// a fresh gap re-audit) against a container's own resolved env vars —
+/// real kubelet's documented use case is Downward API env vars (e.g.
+/// `$(POD_NAME)`), but the substitution itself works against any of the
+/// container's own env, matching upstream's actual implementation (which
+/// doesn't special-case which env vars are eligible). `$$` is a literal
+/// `$`, not the start of a reference — matches upstream's own escaping
+/// rule. `None` if any referenced variable isn't found among `envs`, or
+/// a `$(` is never closed — a real kubelet fails the whole container
+/// rather than silently substituting garbage into a filesystem path, so
+/// the caller drops the mount entirely on `None` (see `build_mounts()`).
+fn expand_sub_path_expr(expr: &str, envs: &[KeyValue]) -> Option<String> {
+    let mut out = String::with_capacity(expr.len());
+    let mut rest = expr;
+    while let Some(dollar) = rest.find('$') {
+        out.push_str(&rest[..dollar]);
+        rest = &rest[dollar..];
+        if let Some(after) = rest.strip_prefix("$$") {
+            out.push('$');
+            rest = after;
+        } else if let Some(after_paren) = rest.strip_prefix("$(") {
+            let close = after_paren.find(')')?;
+            let name = &after_paren[..close];
+            let value = envs.iter().find(|kv| kv.key == name)?;
+            out.push_str(&String::from_utf8_lossy(&value.value));
+            rest = &after_paren[close + 1..];
+        } else {
+            out.push('$');
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
 /// Build CRI `Mount` entries for a container's volumeMounts against the
 /// pod's already-resolved volume name -> mount source map (see
-/// resolve_volumes()). A mount naming a volume that isn't in the map
-/// (unsupported volume type, or the ConfigMap/Secret fetch failed) is
-/// silently dropped — pulled out as a pure function specifically to make
-/// that behavior, and subPath/readOnly handling, unit-testable without a
-/// real CRI socket.
+/// resolve_volumes()), and the container's own resolved env vars (for
+/// `subPathExpr` expansion, round 69). A mount naming a volume that
+/// isn't in the map (unsupported volume type, or the ConfigMap/Secret
+/// fetch failed), or whose `subPathExpr` fails to expand, is silently
+/// dropped — pulled out as a pure function specifically to make that
+/// behavior, and subPath/readOnly handling, unit-testable without a real
+/// CRI socket. `subPathExpr` wins over a plain `subPath` when both are
+/// somehow set (the API validates them as mutually exclusive, so this is
+/// purely a defensive tie-break, never expected to matter in practice).
 pub(crate) fn build_mounts(
     volume_mounts: &[k8s_openapi::api::core::v1::VolumeMount],
     volumes: &HashMap<String, ResolvedVolume>,
+    envs: &[KeyValue],
 ) -> Vec<Mount> {
     volume_mounts
         .iter()
-        .filter_map(|vm| match volumes.get(&vm.name)? {
-            ResolvedVolume::HostPath(host_dir) => {
-                let host_path = match &vm.sub_path {
-                    Some(sub) => host_dir.join(sub),
-                    None => host_dir.clone(),
-                };
-                Some(Mount {
+        .filter_map(|vm| {
+            let sub_path = match &vm.sub_path_expr {
+                Some(expr) => Some(expand_sub_path_expr(expr, envs)?),
+                None => vm.sub_path.clone(),
+            };
+            match volumes.get(&vm.name)? {
+                ResolvedVolume::HostPath(host_dir) => {
+                    let host_path = match &sub_path {
+                        Some(sub) => host_dir.join(sub),
+                        None => host_dir.clone(),
+                    };
+                    Some(Mount {
+                        container_path: vm.mount_path.clone(),
+                        host_path: host_path.to_string_lossy().into_owned(),
+                        readonly: vm.read_only.unwrap_or(false),
+                        ..Default::default()
+                    })
+                }
+                ResolvedVolume::Image { image_ref } => Some(Mount {
                     container_path: vm.mount_path.clone(),
-                    host_path: host_path.to_string_lossy().into_owned(),
-                    readonly: vm.read_only.unwrap_or(false),
+                    // Must stay empty — CRI's Mount.image and Mount.host_path
+                    // are mutually exclusive by the proto's own contract.
+                    host_path: String::new(),
+                    readonly: true, // image volumes are always read-only, matching the KEP
+                    image: Some(ImageSpec { image: image_ref.clone(), ..Default::default() }),
+                    // The container's own volumeMounts[].subPath/subPathExpr,
+                    // same field regular volumes already use to select a
+                    // subdirectory — for an image-backed volume it selects a
+                    // path *within* the mounted image instead (CRI's
+                    // `image_sub_path`).
+                    image_sub_path: sub_path.unwrap_or_default(),
                     ..Default::default()
-                })
+                }),
             }
-            ResolvedVolume::Image { image_ref } => Some(Mount {
-                container_path: vm.mount_path.clone(),
-                // Must stay empty — CRI's Mount.image and Mount.host_path
-                // are mutually exclusive by the proto's own contract.
-                host_path: String::new(),
-                readonly: true, // image volumes are always read-only, matching the KEP
-                image: Some(ImageSpec { image: image_ref.clone(), ..Default::default() }),
-                // The container's own volumeMounts[].subPath, same field
-                // regular volumes already use to select a subdirectory —
-                // for an image-backed volume it selects a path *within*
-                // the mounted image instead (CRI's `image_sub_path`).
-                image_sub_path: vm.sub_path.clone().unwrap_or_default(),
-                ..Default::default()
-            }),
         })
         .collect()
 }
