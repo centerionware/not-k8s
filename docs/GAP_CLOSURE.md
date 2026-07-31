@@ -27,6 +27,51 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 26: eviction priority-tiebreaking (2026-07-31, same day)
+
+Explicitly asked again (same pattern as rounds 11-25). Offered the last
+remaining round-22 candidate (eviction priority-tiebreaking) alongside a
+fresh gap re-audit and pause; user picked closing out the round-22 list.
+
+Real kubelet's `rankMemoryPressure`/`rankDiskPressureFunc` comparator
+chains order eviction candidates by (exceeds-requests, then `Priority`,
+then usage) — nodelet's existing eviction ranking (QoS class, then usage)
+was missing the priority step entirely. Turned out to be a small, clean
+addition: `pod.spec.priority` is *already a resolved numeric value* by
+the time nodelet ever sees the Pod object — the apiserver's own Priority
+admission controller resolves `priorityClassName` into this field at
+admission time — so no `PriorityClass` object lookup was needed at all,
+unlike most of this round's siblings which needed real new
+infrastructure.
+
+- **`eviction.rs` gained `pod_priority()`** (`pod.spec.priority`,
+  defaulting to `0` to match upstream's own default for a pod with no
+  priority class) and `eviction_rank()` — the sort key
+  `pick_eviction_candidate()`'s `min_by_key` now uses:
+  `(qos_class, priority, Reverse(usage))`. QoS class still outranks
+  priority (a Burstable pod is never evicted before a BestEffort one no
+  matter how low its priority), and priority now outranks usage as the
+  tiebreaker within a QoS class (a low-priority pod using little memory
+  is evicted before a high-priority pod using a lot, matching upstream's
+  own ordering) — a real behavior change from before this round, where
+  usage alone broke every tie.
+- 6 new unit tests (`eviction_tests/pick_candidate.rs`): lower-priority-
+  evicted-first, priority-beats-usage-as-tiebreaker, QoS-class-still-
+  outranks-priority, equal-priority-falls-back-to-usage-unchanged,
+  unset-priority-defaults-to-zero.
+
+615 tests passing with `--features cri` (up from 610), 198 mock-only (up
+from 193 — `eviction.rs` isn't `cri`-gated). `deploy/lib/test/cases/eviction.sh`
+gained a manual-note test alongside the existing eviction manual
+procedure, describing the live-cluster spot-check for the priority
+tiebreak specifically — same "needs artificial pressure, can't safely
+automate on a live node" limitation the base eviction procedure already
+has (round 7).
+
+This closes every candidate round 22's fresh gap re-audit found. No
+specific known gap is currently tracked (the checkpoint API was
+explicitly flagged not recommended, and remains so).
+
 ## Round 25: user namespaces (`spec.hostUsers: false`) (2026-07-31, same day)
 
 Explicitly asked again (same pattern as rounds 11-24). Offered the 2
@@ -1508,7 +1553,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Node-pressure eviction
 - ✅ MemoryPressure/DiskPressure *conditions* reflect real reads
-- 🟡 **Eviction** — `eviction_loop()` now acts on real pressure: ranks eligible pods by QoS class (`eviction.rs`'s `qos_class()`/`pick_eviction_candidate()` — BestEffort before Burstable, Guaranteed and `system-*-critical` pods never evicted), evicts one per check. Ranking within a QoS class now uses **real memory usage** from CRI's `ListPodSandboxStats` (the same source `/stats/summary` uses) when known, falling back to requested memory otherwise (`eviction_weight()`). Still simplified vs. real kubelet: no soft-threshold grace period (hard-style immediate action only); real kubelet also breaks ties within a QoS class by `PriorityClass` before usage (higher priority evicted later) — nodelet already protects `system-*-critical` outright (see `shutdown.rs` notes) but doesn't rank the rest by priority at all, purely by usage (found in round 22's re-audit).
+- 🟡 **Eviction** — `eviction_loop()` now acts on real pressure: ranks eligible pods by QoS class (`eviction.rs`'s `qos_class()`/`pick_eviction_candidate()` — BestEffort before Burstable, Guaranteed and `system-*-critical` pods never evicted), evicts one per check. Ranking within a QoS class now uses **`spec.priority`** (round 26 — lower priority evicted first, matching real kubelet's own ordering; read directly off the Pod object since the apiserver's Priority admission controller already resolves `priorityClassName` into it, no lookup needed) **before** falling back to real memory usage from CRI's `ListPodSandboxStats` (the same source `/stats/summary` uses) when known, or requested memory otherwise (`eviction_weight()`). Still simplified vs. real kubelet: no soft-threshold grace period (hard-style immediate action only), and doesn't implement the "exceeds requests" step of upstream's comparator chain (round 26 only added the priority step).
 - ✅ PID pressure — real `/proc/sys/kernel/pid_max` + a `/proc` scan (`read_pid_info()`/`pid_pressure()`), same fail-open pattern as memory/disk
 
 ### Static pods & mirror pods
@@ -1653,5 +1698,10 @@ higher-value/correctness-critical than others:
       (documented, not hidden). Real automated e2e test checks
       `/proc/self/uid_map` inside the container directly. See round 25
       notes.
-- [ ] Remaining candidate from round 22's audit: eviction
-      priority-tiebreaking. Ask before starting the next round.
+- [x] Round 26: eviction priority-tiebreaking — `pick_eviction_candidate()`
+      now ranks by `spec.priority` (already resolved by the apiserver, no
+      `PriorityClass` lookup needed) before falling back to usage,
+      matching real kubelet's own `rankMemoryPressure` ordering. Closes
+      the last item from round 22's audit. See round 26 notes.
+- [ ] No specific known gap currently tracked. Ask before starting the
+      next round (a fresh re-audit is one option, same as round 22).

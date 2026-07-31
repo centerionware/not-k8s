@@ -10,11 +10,19 @@
 //!     pods and anything with a `system-node-critical`/
 //!     `system-cluster-critical` priority class are never touched.
 //!   - Within the eligible pods, `BestEffort` goes before `Burstable`
-//!     (matches real kubelet's QoS-based ranking), and ties are broken by
-//!     real memory usage (from CRI's `ListPodSandboxStats`, the same source
+//!     (matches real kubelet's QoS-based ranking); ties within a QoS class
+//!     are broken by `spec.priority` (round 26 — lower priority evicted
+//!     first, matching real kubelet's own `priority` step in its
+//!     `rankMemoryPressure`/`rankDiskPressureFunc` comparator chains), and
+//!     ties within the *same* priority are broken by real memory usage
+//!     (from CRI's `ListPodSandboxStats`, the same source
 //!     `server::stats`'s `/stats/summary` uses) when known, falling back to
 //!     *requested* memory for any pod without live stats yet (e.g. the mock
-//!     runtime, or a pod too new for CRI to have measured).
+//!     runtime, or a pod too new for CRI to have measured). `spec.priority`
+//!     is read directly off the Pod object — the apiserver's own Priority
+//!     admission controller already resolves `priorityClassName` to a
+//!     numeric value there before nodelet ever sees the pod, so no
+//!     `PriorityClass` lookup is needed.
 //!   - One pod is evicted per check, not a mass cull — the next tick
 //!     re-measures pressure and decides again.
 
@@ -117,6 +125,15 @@ fn requested_memory_bytes(pod: &Pod) -> u64 {
         .max(0.0) as u64
 }
 
+/// `spec.priority` — already a resolved numeric value by the time nodelet
+/// sees the Pod (the apiserver's Priority admission controller resolves
+/// `priorityClassName` into this field at admission time), so no
+/// `PriorityClass` object lookup is needed. Defaults to `0`, matching
+/// upstream's own default for a pod with no priority class at all.
+fn pod_priority(pod: &Pod) -> i32 {
+    pod.spec.as_ref().and_then(|s| s.priority).unwrap_or(0)
+}
+
 /// `system-node-critical`/`system-cluster-critical` pods are never evicted —
 /// matches real kubelet's protection for cluster-essential workloads (e.g.
 /// its own kube-system add-ons), even though nodelet doesn't resolve
@@ -149,12 +166,22 @@ fn eviction_weight(pod: &Pod, usage_bytes_by_uid: &HashMap<String, u64>) -> u64 
         .unwrap_or_else(|| requested_memory_bytes(pod))
 }
 
+/// Sort key for `pick_eviction_candidate()` — `min_by_key` picks the
+/// smallest, so this is ordered "most evictable first": QoS class
+/// (`BestEffort` < `Burstable`), then `spec.priority` ascending (lower
+/// priority is more evictable — round 26), then usage descending via
+/// `Reverse` (higher usage is more evictable, the tie-breaker within the
+/// same QoS class *and* the same priority).
+fn eviction_rank(pod: &Pod, usage_bytes_by_uid: &HashMap<String, u64>) -> (QosClass, i32, Reverse<u64>) {
+    (qos_class(pod), pod_priority(pod), Reverse(eviction_weight(pod, usage_bytes_by_uid)))
+}
+
 pub fn pick_eviction_candidate<'a>(pods: &'a [Pod], usage_bytes_by_uid: &HashMap<String, u64>) -> Option<&'a Pod> {
     pods.iter()
         .filter(|p| {
             p.metadata.deletion_timestamp.is_none() && !is_critical(p) && qos_class(p) != QosClass::Guaranteed
         })
-        .min_by_key(|p| (qos_class(p), Reverse(eviction_weight(p, usage_bytes_by_uid))))
+        .min_by_key(|p| eviction_rank(p, usage_bytes_by_uid))
 }
 
 #[cfg(test)]

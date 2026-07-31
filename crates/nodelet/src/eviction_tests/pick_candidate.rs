@@ -111,3 +111,63 @@ fn pods_missing_from_the_usage_map_fall_back_to_requested_memory() {
     // Empty usage map — same outcome as the pure request-based test above.
     assert_eq!(name_of(pick_eviction_candidate(&pods, &HashMap::new())), Some("large"));
 }
+
+// --- spec.priority tiebreaking (round 26) ---
+
+fn pod_with_priority(name: &str, priority: i32, resources: ResourceRequirements) -> Pod {
+    let mut p = pod(name, resources);
+    p.spec.as_mut().unwrap().priority = Some(priority);
+    p
+}
+
+#[test]
+fn lower_priority_is_evicted_before_higher_priority_in_the_same_qos_class() {
+    // Same QoS class (both BestEffort), same requested memory — only
+    // priority differs. Real kubelet evicts the lower-priority pod first.
+    let low = pod_with_priority("low-priority", 0, ResourceRequirements::default());
+    let high = pod_with_priority("high-priority", 1000, ResourceRequirements::default());
+    let pods = vec![high, low];
+    assert_eq!(name_of(pick_eviction_candidate(&pods, &HashMap::new())), Some("low-priority"));
+}
+
+#[test]
+fn priority_beats_usage_as_a_tiebreaker() {
+    // "low-priority" uses far less memory than "high-priority" but has a
+    // lower priority — priority must win the tiebreak before usage does,
+    // matching real kubelet's rankMemoryPressure ordering (priority, then
+    // usage).
+    let low = pod_with_priority("low-priority", 0, resources(&[("memory", "64Mi")], &[]));
+    let high = pod_with_priority("high-priority", 1000, resources(&[("memory", "512Mi")], &[]));
+    let pods = vec![high, low];
+    assert_eq!(name_of(pick_eviction_candidate(&pods, &HashMap::new())), Some("low-priority"));
+}
+
+#[test]
+fn qos_class_still_outranks_priority() {
+    // A Burstable pod with a very high priority must still be evicted
+    // before a BestEffort pod with the default priority — QoS class is
+    // still the primary ranking key, priority only breaks ties within it.
+    let besteffort_default_priority = pod("besteffort", ResourceRequirements::default());
+    let burstable_high_priority = pod_with_priority("burstable", 1_000_000, resources(&[("cpu", "100m")], &[]));
+    let pods = vec![burstable_high_priority, besteffort_default_priority];
+    assert_eq!(name_of(pick_eviction_candidate(&pods, &HashMap::new())), Some("besteffort"));
+}
+
+#[test]
+fn equal_priority_falls_back_to_usage_as_before() {
+    let low_usage = pod_with_priority("small", 5, resources(&[("memory", "64Mi")], &[]));
+    let high_usage = pod_with_priority("large", 5, resources(&[("memory", "512Mi")], &[]));
+    let pods = vec![low_usage, high_usage];
+    assert_eq!(name_of(pick_eviction_candidate(&pods, &HashMap::new())), Some("large"));
+}
+
+#[test]
+fn unset_priority_defaults_to_zero() {
+    let unset = pod("unset", ResourceRequirements::default());
+    let explicit_zero = pod_with_priority("explicit-zero", 0, ResourceRequirements::default());
+    // Same effective priority (0) and same usage (default/empty) — this
+    // must not panic or behave inconsistently; either could legitimately
+    // be picked since they're now fully tied, so just confirm one is.
+    let pods = vec![unset, explicit_zero];
+    assert!(pick_eviction_candidate(&pods, &HashMap::new()).is_some());
+}

@@ -195,7 +195,13 @@ is a documented, deliberate simplification not implemented. Also closed
 (round 25): **user namespaces** (`spec.hostUsers: false`, `src/userns.rs`)
 — each such pod gets an exclusive host UID/GID range via CRI's
 `userns_options`, a fixed-length allocator (not upstream's variable-length
-pool) with in-memory-only state. Full status list in `docs/GAP_CLOSURE.md`.
+pool) with in-memory-only state. Also closed (round 26): **eviction
+priority-tiebreaking** — `pick_eviction_candidate()` now ranks by
+`spec.priority` (already resolved by the apiserver's own Priority
+admission controller, no `PriorityClass` lookup needed) before falling
+back to usage, matching real kubelet's own ordering; this closes every
+candidate round 22's fresh gap re-audit found. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 ---
 
