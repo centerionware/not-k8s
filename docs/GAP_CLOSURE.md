@@ -27,6 +27,59 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 86: fresh gap re-audit (2026-07-31, same day)
+
+No code changed. Per the user's own instruction, run after rounds 84/85
+closed round 83's `Mount.propagation`/`Mount.recursive_read_only` pair.
+Method: widened back out from the CRI-proto-Mount-field focus the last 3
+rounds shared, applying the same automated field-sweep technique (round
+83's own innovation) to the *Kubernetes API* side this time —
+enumerated every field on `PodSpec`, `Container`, and `PodStatus` (via
+the vendored `k8s-openapi` source directly) and checked which are never
+referenced anywhere in this codebase's own code.
+
+`PodSpec`/`Container` swept clean — every unreferenced field
+(`affinity`/`nodeSelector`/`preemptionPolicy`/`schedulerName`/
+`schedulingGates`/`tolerations`/`topologySpreadConstraints`/
+`automountServiceAccountToken`) is confirmed genuinely out of scope
+(scheduler or apiserver-admission-controller jobs, not kubelet's — the
+`ServiceAccount` admission controller injects the token volume into the
+pod spec before kubelet ever sees it, so `automountServiceAccountToken`
+was never kubelet's responsibility either).
+
+`PodStatus` surfaced 1 new finding (`nominatedNodeName` also came up
+unreferenced but is already correctly known server-owned, round 55's
+own note); a closer look at `PodCondition` (nested inside `PodStatus`)
+surfaced a second. Both confirmed via `gh search code` against upstream
+kubelet source, not assumed:
+
+1. **`PodCondition.observedGeneration`** — real kubelet stamps every
+   condition it writes (`Initialized`/`PodScheduled`/`ContainersReady`/
+   `Ready`/`DisruptionTarget`/...) with `pod.metadata.generation` at the
+   time that condition's status last actually changed
+   (`podutil.CalculatePodConditionObservedGeneration`, confirmed against
+   `pkg/kubelet/kubelet_pods.go`/`pkg/kubelet/status/generate.go`), so a
+   client can tell whether a condition reflects the pod's current spec
+   generation or a stale one from before the most recent update.
+   `build_pod_status()` (round 23's condition-building logic) never sets
+   this on any condition nodelet already owns and writes.
+2. **CRI `Mount.uidMappings`/`.gidMappings`** — per-volume idmap-mount
+   fields (distinct from the sandbox-level `userns_options` round 25
+   already wires up), for a `hostUsers: false` pod using a volume whose
+   on-disk ownership falls outside the pod's mapped UID/GID range.
+   Niche — most volume kinds a userns pod would realistically use are
+   nodelet-materialized (ConfigMap/Secret/emptyDir) and already get
+   correct ownership at materialization time; this would only matter for
+   an external volume (e.g. a CSI-backed PVC) with pre-existing
+   ownership outside the mapped range.
+
+Ranked by value: `observedGeneration` (broader, more foundational
+status-correctness gap — matches this project's historical
+"correctness gaps first" prioritization from round 2's original
+sequencing decision) over `Mount.uidMappings`/`.gidMappings` (a genuine
+but narrow edge case). Ask the user for sequencing again before
+starting the next round.
+
 ## Round 85: volumeMounts[].recursiveReadOnly (2026-07-31, same day)
 
 Closes the second finding from round 83's re-audit, per the user's
@@ -4848,6 +4901,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Pod & container lifecycle
 - ✅ Pod sandbox + container create/start/stop/remove via CRI
+- ❌ **`PodCondition.observedGeneration`** (found in round 86's re-audit) — real kubelet stamps every condition it writes (`Initialized`/`PodScheduled`/`ContainersReady`/`Ready`/`DisruptionTarget`/...) with `pod.metadata.generation` at the time that condition's status last actually changed (`podutil.CalculatePodConditionObservedGeneration`, confirmed via `gh search code` against `pkg/kubelet/kubelet_pods.go`/`pkg/kubelet/status/generate.go`), so a client can tell whether a condition reflects the *current* pod spec generation or a stale one from before the most recent spec update. Confirmed via grep that `observed_generation` is never referenced anywhere in this codebase — `build_pod_status()` (round 23's condition-building logic) never sets it on any of the conditions nodelet already owns and writes.
 - ✅ **Restart-on-exit honoring `restartPolicy`, with crash-loop backoff and `lastState`** (round 73 + round 75; found in round 72's re-audit) — `restart_backoff_ready()`/`record_restart_backoff()` (new `restart_backoff` side table on `CriRuntime`) gate the actual restart, not just its status reporting: the first restart after any exit is always immediate, but a container that keeps exiting is throttled with an exponentially growing delay (10s base, doubling, capped at 5 minutes — matching real kubelet's own `flowcontrol.Backoff` constants exactly), resetting back to the base delay after ~10 minutes without needing another restart attempt. Real behavior fix, not just a missing status string — nodelet's event-driven architecture (every status write is itself a Pod modification that re-triggers this controller's own watch stream, feeding right back into another reconcile) meant a crash-looping container was previously recreated as fast as the runtime could physically create+start it, with zero throttle. Round 75 closed the display gap round 73 deliberately left open: a new `last_terminated` side table on `CriRuntime` (`TerminatedInfo`, captured right before an old instance is removed for a fresh one) feeds `containerStatuses[].lastState`, and a backing-off container's *current* state now reports `Waiting{reason: CrashLoopBackOff}` (its real exit details moved into `lastState` instead) rather than `Terminated` — matching real kubectl's familiar display exactly. **Scoped to app containers only** — init/ephemeral containers have no backoff state or `lastState` tracking (a documented scope limitation both rounds share; `ensure_container()`'s restart path, not `ensure_init_containers()`'s, is the only one gated).
 - ✅ **Init containers** — run to completion, in order, before app containers (`ensure_init_containers`)
 - ✅ **Native sidecar containers** (round 36; `initContainers[].restartPolicy: "Always"`, GA since 1.29, found in round 35's re-audit) — `sidecar_init_decision()` routes a sidecar-marked init container through its own decision matrix: doesn't block later init/app containers on its own exit (only on having started at all), restarts on exit like a normal container for the pod's whole lifetime, and its real probe-based readiness folds into the pod's overall `Ready`/`ContainersReady` (`pods.rs::build_pod_status()`). Genuinely automated e2e tests. **Documented simplification**: sidecars aren't stopped strictly *after* app containers on teardown (one pass instead), unlike upstream's exact ordering. See round 36 notes.
@@ -4891,6 +4945,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`securityContext.sysctls`** (round 41; found in round 39's re-audit) — new pure `pod_sysctls()` flattens `spec.securityContext.sysctls` into CRI's `LinuxPodSandboxConfig.sysctls` map, threaded through `sandbox_config()`/`ensure_pod()` alongside the existing hostname resolution. No admission-time allowlisting of "safe" (namespaced) vs. unsafe (host-wide) sysctls — that's the apiserver's job upstream and nodelet has no admission layer at all; an unsupported sysctl simply surfaces as a real `RunPodSandbox` error from the CRI runtime. Genuinely automated e2e test (a real container's own `/proc/sys` read). See round 41 notes.
 - ✅ **`hostPID`/`hostIPC`/`shareProcessNamespace`** (round 40; found in round 39's re-audit) — new pure `pid_namespace_mode(host_pid, share_process_namespace) -> NamespaceMode` (`hostPID` wins → `Node`, else `shareProcessNamespace` → `Pod`, else `Container`) is now always applied, on both `sandbox_config()`'s `namespace_options.pid` and each container's own `linux_security_context()`'s `namespace_options.pid` (mirroring real kubelet setting it in both places). **Correctness fix, not just a missing feature**: CRI's own proto comment on `NamespaceOption.pid` says *"the CRI default is POD, but the v1.PodSpec default is CONTAINER"* — before this round nodelet never set the field at all, so every container was silently getting containerd's own POD-shared default, the **opposite** of real Kubernetes' actual default. `hostIPC` sets `namespace_options.ipc` to `Node` (else `Pod` — IPC has no `CONTAINER`-scope concept in the API at all, unlike PID). Genuinely automated e2e tests for `hostPID`/`shareProcessNamespace` (a container's own pid, structural proof); `hostIPC` is unit-tested only — no simple portable shell-level IPC probe in a minimal image, a documented scope limitation. See round 40 notes.
 - ✅ **User namespaces** (`spec.hostUsers: false`, round 25; found in round 22's re-audit) — `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive host UID/GID range (fixed length, default 65536, configurable via `NODELET_USERNS_BASE_UID`/`_LENGTH`/`_MAX_PODS`), set as a `POD`-mode `UserNamespace` on `LinuxSandboxSecurityContext.namespace_options.userns_options`. Simplified vs. upstream's own variable-length `usernsManager`: every pod gets the same fixed range size, and allocation state is in-memory only (self-heals as still-running pods reconcile, narrow double-allocation window across a nodelet restart — documented, not hidden). Unvalidated against a real CRI runtime's actual `userns_options` wire support — see round 25 notes.
+- ❌ **Per-volume `Mount.uidMappings`/`.gidMappings`** (found in round 86's re-audit) — CRI's own `Mount` message has dedicated `repeated IDMapping uidMappings`/`gidMappings` fields (distinct from the sandbox-level `userns_options` round 25 already wires up) for idmap-mounting a specific volume into a user-namespaced pod (`hostUsers: false`) when that volume's on-disk ownership falls outside the pod's mapped ID range — never referenced anywhere in this codebase, confirmed via grep. Niche in practice (most volume kinds a `hostUsers: false` pod would use — ConfigMap/Secret/emptyDir, all nodelet-materialized — already get their ownership set correctly for the pod's own mapped range at materialization time; this would only matter for a real external volume, e.g. a CSI-backed PVC, with pre-existing ownership outside that range).
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
 - ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
 - ✅ **`Node.status.runtimeHandlers`** (round 53; found in round 50's re-audit) — new `PodRuntime::runtime_handlers()` calls CRI's runtime-level `Status` RPC once (never called anywhere in this codebase before this round) and maps the discovered handlers through to `Node.status.runtimeHandlers`, via the same `images`/`mounted_csi_volumes`-shaped plumbing rounds 33/34 already established. Genuinely automated e2e test (asserts at least one handler is present; skips rather than fails if a given containerd version's `Status` RPC doesn't populate the list at all). See round 53 notes.
@@ -5615,5 +5670,15 @@ accordingly; see those files' own updated framing.
       simplification — no per-runtime-handler capability check yet). 10
       new unit tests + a genuinely automated e2e test + a manual-note for
       real recursiveness verification. See round 85 notes.
-- [ ] Round 86 (fresh gap re-audit) is next, per the user's "then another
-      gap audit and ask again" instruction.
+- [x] Round 86: fresh gap re-audit — no code change. Widened the
+      automated field-sweep technique (round 83's own innovation) from
+      CRI-proto `Mount` fields back out to the Kubernetes API itself
+      (`PodSpec`/`Container`/`PodStatus`). `PodSpec`/`Container` swept
+      clean (every candidate confirmed genuinely out of scope, not
+      kubelet's job). Found 2 new candidates: `PodCondition.observedGeneration`
+      (verified against upstream kubelet source via `gh search code`)
+      and CRI `Mount.uidMappings`/`.gidMappings` (niche per-volume idmap
+      case). See round 86 notes.
+- [ ] Candidates for the next round, ranked: `PodCondition.observedGeneration`
+      (broader, correctness-shaped) over `Mount.uidMappings`/`.gidMappings`
+      (narrow edge case). Ask before starting the next round.
