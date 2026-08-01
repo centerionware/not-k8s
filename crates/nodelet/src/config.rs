@@ -242,6 +242,8 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
+        apply_config_file_env()?;
+
         let node_name = env_or("NODELET_NODE_NAME", detect_hostname);
 
         let runtime = match std::env::var("NODELET_RUNTIME").as_deref() {
@@ -465,6 +467,109 @@ impl Config {
     }
 }
 
+/// `--config` file / drop-in config directory (round 94; the 3rd of 3
+/// remaining ❌ items the user picked, in this codebase's chosen order —
+/// after client cert auth and TLS bootstrap). Real kubelet's own
+/// `KubeletConfiguration` is a much larger, versioned API type
+/// (`kubelet.config.k8s.io/v1beta1`) with its own flag-name mapping —
+/// reimplementing that exact schema isn't attempted here (a documented
+/// scope simplification, same "lean subset, not a byte-for-byte port"
+/// posture this project has taken everywhere else, e.g. `--cgroup-driver`
+/// never needing a real implementation, round 11). Instead: a YAML file
+/// (or drop-in directory of them) mapping the *same* `NODELET_*` keys
+/// this codebase already reads from the environment — every existing
+/// config field works from a file with zero further plumbing, and
+/// nothing here needs updating when a new `NODELET_*` var is added
+/// elsewhere in this file.
+///
+/// Parses a YAML mapping's scalar values into their `NODELET_*` env-var
+/// string form. Non-scalar values (nested maps/sequences) are silently
+/// skipped — this codebase's own config surface is entirely flat
+/// key/value pairs, so there's nothing a nested structure could
+/// meaningfully map to.
+fn parse_config_yaml(contents: &str) -> Result<BTreeMap<String, String>> {
+    let value: serde_yaml::Value = serde_yaml::from_str(contents).context("parsing config file as YAML")?;
+    let Some(mapping) = value.as_mapping() else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(mapping
+        .iter()
+        .filter_map(|(k, v)| {
+            let key = k.as_str()?.to_string();
+            let value = match v {
+                serde_yaml::Value::String(s) => s.clone(),
+                serde_yaml::Value::Bool(b) => b.to_string(),
+                serde_yaml::Value::Number(n) => n.to_string(),
+                _ => return None,
+            };
+            Some((key, value))
+        })
+        .collect())
+}
+
+/// Layers config sources in real kubelet's own precedence order (most to
+/// least authoritative): explicit environment variables (this codebase's
+/// flag-equivalent) always win; a single named `--config` file overrides
+/// the drop-in directory; drop-in files override each other in filename
+/// sort order (later wins), matching `kubelet --config-dir`'s own
+/// alphabetical-merge behavior. Pure so the precedence logic is
+/// unit-testable without real files.
+fn merge_config_layers(drop_in: &[BTreeMap<String, String>], main_file: Option<&BTreeMap<String, String>>) -> BTreeMap<String, String> {
+    let mut merged = BTreeMap::new();
+    for layer in drop_in {
+        merged.extend(layer.clone());
+    }
+    if let Some(main_file) = main_file {
+        merged.extend(main_file.clone());
+    }
+    merged
+}
+
+/// Reads `NODELET_CONFIG_DIR` (a drop-in directory of `*.yaml`/`*.yml`
+/// files, merged in filename sort order) and `NODELET_CONFIG_FILE` (a
+/// single YAML file overriding the drop-in directory), and seeds any
+/// `NODELET_*` key they set into the process environment — but only for
+/// keys not *already* explicitly set, so a real environment variable
+/// always wins over the config file, matching upstream's own
+/// flag-beats-config-file precedence. Both are optional; if neither is
+/// set, this is a no-op (the common case, zero-config still works
+/// exactly as before this round).
+fn apply_config_file_env() -> Result<()> {
+    let mut drop_in = Vec::new();
+    if let Ok(dir) = std::env::var("NODELET_CONFIG_DIR") {
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .with_context(|| format!("reading NODELET_CONFIG_DIR '{dir}'"))?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| matches!(p.extension().and_then(|e| e.to_str()), Some("yaml") | Some("yml")))
+            .collect();
+        entries.sort();
+        for path in entries {
+            let contents = std::fs::read_to_string(&path).with_context(|| format!("reading config drop-in '{}'", path.display()))?;
+            drop_in.push(parse_config_yaml(&contents).with_context(|| format!("parsing config drop-in '{}'", path.display()))?);
+        }
+    }
+
+    let main_file = match std::env::var("NODELET_CONFIG_FILE") {
+        Ok(path) => {
+            let contents = std::fs::read_to_string(&path).with_context(|| format!("reading NODELET_CONFIG_FILE '{path}'"))?;
+            Some(parse_config_yaml(&contents).with_context(|| format!("parsing NODELET_CONFIG_FILE '{path}'"))?)
+        }
+        Err(_) => None,
+    };
+
+    let merged = merge_config_layers(&drop_in, main_file.as_ref());
+    for (key, value) in merged {
+        if std::env::var(&key).is_err() {
+            // SAFETY: called once, synchronously, at the very start of
+            // `main()` before any other thread exists to race a
+            // concurrent `env::var`/`env::set_var` call.
+            unsafe { std::env::set_var(key, value) };
+        }
+    }
+    Ok(())
+}
+
 fn env_or(key: &str, default: impl FnOnce() -> String) -> String {
     std::env::var(key).ok().filter(|s| !s.is_empty()).unwrap_or_else(default)
 }
@@ -552,4 +657,64 @@ fn detect_swap_bytes() -> u64 {
         }
     }
     0
+}
+
+/// `--config` file / drop-in config directory (round 94; found via the
+/// user's own remaining-❌-items pick, not a fresh audit finding).
+#[cfg(test)]
+mod tests_config_file {
+    use super::*;
+
+    #[test]
+    fn parse_config_yaml_reads_scalar_values() {
+        let parsed = parse_config_yaml("NODELET_NODE_NAME: edge-1\nNODELET_MAX_PODS: 42\nNODELET_SERVICE_PROXY: true\n").unwrap();
+        assert_eq!(parsed.get("NODELET_NODE_NAME"), Some(&"edge-1".to_string()));
+        assert_eq!(parsed.get("NODELET_MAX_PODS"), Some(&"42".to_string()));
+        assert_eq!(parsed.get("NODELET_SERVICE_PROXY"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn parse_config_yaml_skips_non_scalar_values() {
+        let parsed = parse_config_yaml("NODELET_NODE_NAME: edge-1\nnested:\n  a: b\nlist: [1, 2]\n").unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed.get("NODELET_NODE_NAME"), Some(&"edge-1".to_string()));
+    }
+
+    #[test]
+    fn parse_config_yaml_empty_file_is_empty_map() {
+        assert!(parse_config_yaml("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_config_yaml_rejects_non_mapping_top_level() {
+        // A scalar or list at the top level has no keys to extract --
+        // treated as an empty config, not an error, matching the "config
+        // file entirely absent" behavior.
+        assert!(parse_config_yaml("- just\n- a\n- list\n").unwrap().is_empty());
+    }
+
+    fn m(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn drop_in_files_merge_in_order_later_wins() {
+        let drop_in = vec![m(&[("A", "1"), ("B", "1")]), m(&[("B", "2")])];
+        let merged = merge_config_layers(&drop_in, None);
+        assert_eq!(merged.get("A"), Some(&"1".to_string()));
+        assert_eq!(merged.get("B"), Some(&"2".to_string()), "later drop-in file should win, matching kubelet's own --config-dir alphabetical merge");
+    }
+
+    #[test]
+    fn main_file_overrides_drop_in_directory() {
+        let drop_in = vec![m(&[("A", "from-drop-in")])];
+        let main_file = m(&[("A", "from-main-file")]);
+        let merged = merge_config_layers(&drop_in, Some(&main_file));
+        assert_eq!(merged.get("A"), Some(&"from-main-file".to_string()));
+    }
+
+    #[test]
+    fn no_layers_produces_empty_config() {
+        assert!(merge_config_layers(&[], None).is_empty());
+    }
 }

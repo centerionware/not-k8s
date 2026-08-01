@@ -496,7 +496,10 @@ volumes (matching upstream, which only ever honors this field for
 PV-backed volume types) and fixed a related latent gap along the way:
 `fsGroup` is no longer applied to real `hostPath` volumes at all,
 matching upstream's own no-ownership-management stance for that volume
-type. Full status list in `docs/GAP_CLOSURE.md`.
+type. Round 94 added `NODELET_CONFIG_FILE`/`NODELET_CONFIG_DIR` — a
+YAML file (or drop-in directory) mapping the same `NODELET_*` keys the
+environment already reads, as an alternative to env-var-only
+configuration. Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

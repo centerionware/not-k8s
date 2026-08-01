@@ -27,6 +27,52 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 94: `--config` file / drop-in config directory (2026-08-01, same day)
+
+The user picked all 3 remaining implementable ❌ items (client cert
+auth, TLS bootstrap, `--config` file — the Checkpoint API stays
+explicitly not recommended) to be done "in the order of your
+choosing"; this one first as the smallest and most self-contained.
+
+**Deliberate scope decision, documented not hidden**: real kubelet's
+`KubeletConfiguration` is a large, versioned API type
+(`kubelet.config.k8s.io/v1beta1`) with its own flag-name mapping —
+reimplementing that exact schema wasn't attempted (same "lean subset,
+not a byte-for-byte port" posture this project takes everywhere else).
+Instead: `NODELET_CONFIG_FILE` (a single YAML file) and
+`NODELET_CONFIG_DIR` (a drop-in directory of `*.yaml`/`*.yml` files,
+merged in filename sort order — later wins, matching `kubelet
+--config-dir`'s own alphabetical-merge behavior) both map the *same*
+`NODELET_*` keys this codebase already reads from the environment.
+This means every existing config field works from a file with zero
+further plumbing, and nothing needs updating here when a new
+`NODELET_*` var is added elsewhere in `config.rs`.
+
+New `apply_config_file_env()` (`config.rs`) runs once, synchronously,
+at the very start of `Config::from_env()` — reads the drop-in
+directory (if set), then the single config file (if set, overriding
+the drop-in directory), and seeds any key into the process environment
+*only if it isn't already explicitly set* — a real environment
+variable always wins over the file, matching upstream's own
+flag-beats-config-file precedence. New pure `parse_config_yaml()`
+(scalar values only — non-scalar YAML is silently skipped, since this
+codebase's entire config surface is flat key/value pairs) and
+`merge_config_layers()` keep the precedence logic unit-testable
+without real files.
+
+7 new unit tests (`config.rs`'s new `tests_config_file` module).
+`cargo test -p nodelet --features cri`: 1050 passed (+7); mock: 328
+passed (+7 — `config.rs` isn't `cri`-gated). New
+`deploy/lib/test/cases/config_file.sh` — a manual-note test (same
+`TEST_CPU_MANAGER_STATIC=true`-style limitation every opt-in
+`NODELET_*` setting already carries: this e2e suite runs against an
+already-started nodelet and can't control its own startup
+environment), since the actual load-and-apply behavior needs
+restarting the process with a real config file present.
+
+Next per the user's chosen order: client certificate authentication,
+then TLS bootstrap.
+
 ## Round 93: `PodSecurityContext.fsGroupChangePolicy` (2026-08-01, same day)
 
 Closed round 92's one finding — but with a real correction to that
@@ -5356,7 +5402,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Bootstrapping / config
 - ❌ TLS bootstrap (CSR-based initial client cert issuance) — nodelet currently expects to be handed a working kubeconfig directly; lower priority given the project's already-simplified config philosophy, but a real gap if "100%" includes it.
-- ❌ `--config` file / drop-in config directory (nodelet uses env vars only) — same caveat as above.
+- ✅ **`--config` file / drop-in config directory** (round 94) — `NODELET_CONFIG_FILE` (single YAML file) / `NODELET_CONFIG_DIR` (drop-in directory, filename-sort-order merge) map the same `NODELET_*` keys already read from the environment; a real environment variable always wins over the file, matching upstream's flag-beats-config-file precedence. **Documented scope simplification**: doesn't reimplement real kubelet's own versioned `KubeletConfiguration` (`kubelet.config.k8s.io/v1beta1`) schema — a `NODELET_*`-keyed YAML mapping instead, consistent with this project's own env-var naming everywhere else.
 
 ## Scale reality check
 
@@ -6086,5 +6132,17 @@ accordingly; see those files' own updated framing.
       which upstream never does. 8 new unit tests + a genuinely
       automated e2e test + a manual-note for the real CSI
       cross-pod-lifecycle skip behavior. See round 93 notes.
-- [ ] No candidates currently queued. Ask the user for sequencing
-      before starting the next round.
+- [x] Round 94: `--config` file / drop-in config directory —
+      `NODELET_CONFIG_FILE`/`NODELET_CONFIG_DIR` map the same
+      `NODELET_*` keys the environment already reads, with a real
+      environment variable always winning (matches upstream's
+      flag-beats-config-file precedence). Deliberately doesn't
+      reimplement real kubelet's own versioned `KubeletConfiguration`
+      schema. 7 new unit tests + a manual-note e2e test (needs
+      controlling nodelet's own startup environment, which this suite
+      can't do against an already-running process). See round 94 notes.
+- [ ] User picked all 3 remaining implementable ❌ items to be done in
+      sequence ("do all of them in the order of your choosing"):
+      `--config` file (round 94, done above), then client certificate
+      authentication, then TLS bootstrap (CSR-based cert issuance).
+      Checkpoint API remains explicitly not recommended.
