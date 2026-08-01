@@ -27,6 +27,55 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 81: spec.activeDeadlineSeconds (2026-07-31, same day)
+
+Closes the higher-value of round 80's 2 findings, per the user's
+"do both in order" instruction — `hostPort` is round 82.
+
+- New pure `active_deadline_exceeded(active_deadline_seconds:
+  Option<i64>, seconds_since_start: Option<i64>) -> bool` (`eviction.rs`)
+  — `false` whenever either input is unknown, never guessing a violation
+  from missing data, same posture `exceeds_ephemeral_storage_limit()`
+  already established.
+- Wired into `eviction_loop()` (`main.rs`) as a third "direct per-pod
+  violation, checked ahead of general node pressure" tier, alongside the
+  pre-existing ephemeral-storage/emptyDir checks — computes elapsed
+  seconds from `status.startTime` to now every cycle, terminates the
+  first pod found over its deadline, one per check (same posture the
+  other two tiers and general pressure-based eviction all share).
+  **Overrides `restartPolicy` entirely** — an `Always` pod that would
+  otherwise keep restarting forever is terminated once its deadline
+  passes regardless, matching real kubelet's own absolute (not
+  per-attempt) deadline semantics.
+- **Deliberate, documented simplification vs. upstream**: real kubelet
+  marks the pod `Failed`/`DeadlineExceeded` but leaves the object itself
+  for the owning controller to observe/react to, rather than deleting
+  it. Nodelet reuses the exact same terminate-and-delete `evict_pod()`
+  path every other kubelet-initiated pod termination in this codebase
+  already takes (ephemeral-storage/emptyDir limit violations,
+  node-pressure eviction) — there's no other "kill but never delete"
+  pattern anywhere else in this project to build a second, different one
+  on top of, and introducing one just for this case would be new,
+  untested state-tracking machinery (avoiding a resurrection loop
+  without deletion needs its own "don't reconcile this pod again"
+  mechanism kubelet has internally but this codebase doesn't) for a
+  single narrow feature.
+- `evict_pod()` itself generalized: previously took one `reason: &str`
+  baked into a hardcoded `"The node was low on resource: {reason}."`
+  message — that framing never fit `DeadlineExceeded` (not a resource
+  pressure event at all), so it now takes an explicit `status_reason`/
+  `message` pair, with all 4 existing call sites updated to build their
+  own full message text explicitly (no behavior change for them).
+- 7 new unit tests (`eviction_tests/active_deadline.rs`): past/at/under
+  the deadline, no-deadline-configured, no-recorded-start-time,
+  neither-set, and a zero-deadline-exceeds-immediately edge case.
+- New e2e test `test_pod_exceeding_its_active_deadline_is_terminated`
+  (`eviction.sh`) — genuinely automatable without faking node pressure,
+  same reasoning the ephemeral-storage/emptyDir tests already established;
+  deliberately left `restartPolicy: Always` as the default to prove the
+  deadline actually overrides it (an infinitely-restarting container that
+  still gets terminated on schedule).
+
 ## Round 80: fresh gap re-audit (2026-07-31, same day)
 
 No code changed. Every item tracked since round 72 was closed (rounds
@@ -4661,7 +4710,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
 - ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
 - ✅ **`Node.status.runtimeHandlers`** (round 53; found in round 50's re-audit) — new `PodRuntime::runtime_handlers()` calls CRI's runtime-level `Status` RPC once (never called anywhere in this codebase before this round) and maps the discovered handlers through to `Node.status.runtimeHandlers`, via the same `images`/`mounted_csi_volumes`-shaped plumbing rounds 33/34 already established. Genuinely automated e2e test (asserts at least one handler is present; skips rather than fails if a given containerd version's `Status` RPC doesn't populate the list at all). See round 53 notes.
-- ❌ **`spec.activeDeadlineSeconds`** (found in round 80's re-audit) — real kubelet's own job (not a controller's): once a pod has been running longer than this many seconds since its start, kubelet kills it and reports `phase: Failed` with `reason: DeadlineExceeded`, independent of `restartPolicy` (this overrides even `Always`/`OnFailure` — the deadline is absolute, not per-container-attempt). Confirmed via grep that `active_deadline_seconds` is never referenced anywhere in this codebase at all. Moderate value — genuinely used for bounded-runtime batch-style workloads (a common real-world pattern beyond just `Job`, which layers its own `activeDeadlineSeconds` semantics at the controller level independently of this pod-level field).
+- ✅ **`spec.activeDeadlineSeconds`** (round 81; found in round 80's re-audit) — new pure `active_deadline_exceeded()` compares elapsed time since `status.startTime` against the deadline, checked every `eviction_loop()` cycle ahead of node-pressure eviction (the same "direct per-pod violation, checked independently of general pressure" tier the ephemeral-storage/emptyDir checks already occupy) — overrides `restartPolicy` entirely, so an `Always` pod that would otherwise keep restarting forever is terminated once its deadline passes regardless. **Deliberate simplification vs. upstream, documented not hidden**: real kubelet marks the pod `Failed`/`DeadlineExceeded` but leaves the object itself for the owning controller to observe; nodelet reuses the same terminate-and-delete `evict_pod()` path every other kubelet-initiated termination in this codebase already takes (there's no other "kill but never delete" pattern anywhere else to build a second one on top of) — `evict_pod()` itself was generalized to take an explicit `status_reason`/`message` pair instead of a single hardcoded "node was low on resource" string, since that framing never fit this case.
 
 ### Networking
 - ✅ **DNS config** — `dnsPolicy`/`dnsConfig` → CRI `PodSandboxConfig.dns_config` (`dns_config_for()`), via new `NODELET_CLUSTER_DNS`/`NODELET_CLUSTER_DOMAIN`
@@ -5341,7 +5390,13 @@ accordingly; see those files' own updated framing.
       `spec.containers[].ports[].hostPort` (CRI's own `PortMapping`
       fields exist in the vendored proto but are never referenced in
       this codebase's code). See round 80 notes.
-- [ ] Candidates for the next round, ranked: `activeDeadlineSeconds`
-      (correctness-shaped gap, matches this project's historical
-      prioritization) over `hostPort` (real-world-relevant but purely
-      additive). Ask before starting the next round.
+- [x] Round 81: `spec.activeDeadlineSeconds` — new pure
+      `active_deadline_exceeded()` checked every `eviction_loop()` cycle
+      as a third "direct per-pod violation" tier alongside the existing
+      ephemeral-storage/emptyDir checks; overrides `restartPolicy`
+      entirely. `evict_pod()` generalized to take an explicit
+      `status_reason`/`message` instead of one hardcoded node-pressure
+      message. 7 new unit tests + a genuinely automated e2e test. See
+      round 81 notes.
+- [ ] Round 82 (`hostPort`) is next, per the user's "do both in order"
+      instruction, followed by a fresh gap re-audit.

@@ -85,6 +85,35 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_pod_exceeding_its_active_deadline_is_terminated() {
+    # Round 81 (found in round 80's re-audit): spec.activeDeadlineSeconds
+    # is real kubelet's own job, independent of node pressure and of
+    # restartPolicy -- genuinely automatable without faking pressure,
+    # same reasoning as the ephemeral-storage/emptyDir checks above. Set
+    # to 1s so this doesn't need a long wait; restartPolicy: Always is
+    # deliberately left as the default to prove the deadline overrides it
+    # (an Always pod would otherwise just keep restarting the
+    # long-sleeping container forever).
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="active-deadline-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  activeDeadlineSeconds: 1
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 30 "$name terminated for exceeding its activeDeadlineSeconds" bash -c \
+        "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.reason}')\" == 'DeadlineExceeded' ]]"
+    delete_pod_if_exists "$name"
+}
+
 register_test test_eviction_manual_procedure
 register_test test_eviction_priority_tiebreak_manual_procedure
 register_test test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted

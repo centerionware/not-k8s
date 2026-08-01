@@ -460,7 +460,11 @@ kubelet's own posture, with `Default` getting the standard masked/readonly
 lists and `Unmasked` getting genuinely empty ones. Round 79 closed
 `allocatedResourcesStatus` (KEP-4680): `containerStatuses[]` now reports
 live per-device health for device-plugin allocations, closing the last
-item from round 72's fresh gap re-audit. Full status list in
+item from round 72's fresh gap re-audit. A fresh gap re-audit (round 80)
+found `spec.activeDeadlineSeconds` never implemented — closed round 81:
+a pod running past its own deadline is now terminated regardless of
+`restartPolicy`, checked as a direct per-pod violation alongside the
+existing ephemeral-storage/emptyDir eviction tiers. Full status list in
 `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where

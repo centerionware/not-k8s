@@ -202,6 +202,18 @@ pub fn exceeds_ephemeral_storage_limit(usage_bytes: Option<u64>, limit_bytes: Op
     matches!((usage_bytes, limit_bytes), (Some(usage), Some(limit)) if usage > limit)
 }
 
+/// `spec.activeDeadlineSeconds` (round 81; found in round 80's re-audit)
+/// — real kubelet's own job (not a controller's), independent of both
+/// eviction and `restartPolicy`: once a pod has been running longer than
+/// this many seconds since it started, it's terminated regardless of
+/// whether it would otherwise keep restarting under `Always`/`OnFailure`.
+/// `seconds_since_start` is `None` whenever the pod hasn't recorded a
+/// `status.startTime` yet — never treated as "already exceeded" from
+/// missing data, same posture `exceeds_ephemeral_storage_limit()` takes.
+pub fn active_deadline_exceeded(active_deadline_seconds: Option<i64>, seconds_since_start: Option<i64>) -> bool {
+    matches!((active_deadline_seconds, seconds_since_start), (Some(deadline), Some(elapsed)) if elapsed >= deadline)
+}
+
 /// Every `emptyDir` volume with `sizeLimit` set, as `(volume name, limit
 /// bytes)` (round 67; found in round 65's fresh gap re-audit) — real
 /// kubelet enforces this per-volume, distinct from the whole-pod
@@ -313,3 +325,6 @@ mod tests_ephemeral_storage;
 #[cfg(test)]
 #[path = "eviction_tests/empty_dir_size_limit.rs"]
 mod tests_empty_dir_size_limit;
+#[cfg(test)]
+#[path = "eviction_tests/active_deadline.rs"]
+mod tests_active_deadline;

@@ -240,22 +240,32 @@ async fn gc_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: Config
 /// MemoryPressure or DiskPressure is active, evict exactly one eligible pod
 /// (see `nodelet::eviction`) — never a mass cull; the next tick re-measures
 /// and decides again, same as real kubelet's eviction manager.
-/// Evict one pod: best-effort `Evicted`/`Failed` status patch (surfacing
-/// why, same as real kubelet — but the delete is what actually reclaims
-/// anything, so a failed status patch must never block it), then a
-/// zero-grace delete.
-async fn evict_pod(client: &kube::Client, ns: &str, name: &str, reason: &str) {
+/// Terminate one pod on nodelet's own initiative (node-pressure eviction,
+/// a per-pod ephemeral-storage/emptyDir limit violation, or — round 81 —
+/// `activeDeadlineSeconds`): best-effort `Failed` status patch with the
+/// given `status_reason`/`message` (surfacing why, same as real kubelet —
+/// but the delete is what actually reclaims anything or stops a
+/// past-deadline pod for good, so a failed status patch must never block
+/// it), then a zero-grace delete. **Deliberate simplification vs.
+/// upstream for the `activeDeadlineSeconds` case specifically**: real
+/// kubelet marks the pod `Failed`/`DeadlineExceeded` but leaves the
+/// object itself for the owning controller to observe/react to, rather
+/// than deleting it outright — nodelet has no other "kill but never
+/// delete" pattern anywhere else in this codebase to build a second one
+/// on top of, so this reuses the same terminate-and-delete path every
+/// other kubelet-initiated termination here already takes.
+async fn evict_pod(client: &kube::Client, ns: &str, name: &str, status_reason: &str, message: &str) {
     use kube::api::{Api, DeleteParams, Patch, PatchParams};
     let pod_api: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client.clone(), ns);
     let status_patch = serde_json::json!({
-        "status": { "phase": "Failed", "reason": "Evicted", "message": format!("The node was low on resource: {reason}.") }
+        "status": { "phase": "Failed", "reason": status_reason, "message": message }
     });
     let _ = pod_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch)).await;
 
     let dp = DeleteParams { grace_period_seconds: Some(0), ..Default::default() };
     match pod_api.delete(name, &dp).await {
-        Ok(_) => info!(pod = %format!("{ns}/{name}"), reason, "evicted pod"),
-        Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to delete pod"),
+        Ok(_) => info!(pod = %format!("{ns}/{name}"), status_reason, "terminated pod"),
+        Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "terminate: failed to delete pod"),
     }
 }
 
@@ -316,7 +326,7 @@ async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: 
         });
         if let Some(victim) = over_limit {
             if let (Some(ns), Some(name)) = (victim.metadata.namespace.as_deref(), victim.metadata.name.as_deref()) {
-                evict_pod(&client, ns, name, "Ephemeral storage limit exceeded").await;
+                evict_pod(&client, ns, name, "Evicted", "The node was low on resource: Ephemeral storage limit exceeded.").await;
             }
             continue; // one pod per check, matching the pressure-based path below
         }
@@ -339,7 +349,37 @@ async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: 
         });
         if let Some((victim, volume)) = over_empty_dir_limit {
             if let (Some(ns), Some(name)) = (victim.metadata.namespace.as_deref(), victim.metadata.name.as_deref()) {
-                evict_pod(&client, ns, name, &format!("emptyDir volume '{volume}' exceeded its sizeLimit")).await;
+                evict_pod(&client, ns, name, "Evicted", &format!("The node was low on resource: emptyDir volume '{volume}' exceeded its sizeLimit.")).await;
+            }
+            continue; // one pod per check, matching the pressure-based path below
+        }
+
+        // spec.activeDeadlineSeconds (round 81; found in round 80's
+        // re-audit): real kubelet's own job, independent of node
+        // pressure and of restartPolicy — a pod running past its own
+        // deadline is terminated regardless of whether it would
+        // otherwise keep restarting under Always/OnFailure. Reuses the
+        // same evict_pod() status-patch-then-delete path every other
+        // kubelet-initiated termination in this codebase already uses
+        // (ephemeral-storage/emptyDir limits above, node-pressure
+        // eviction below) — a deliberate simplification vs. upstream,
+        // which marks the pod Failed/DeadlineExceeded but leaves the
+        // object itself for the owning controller to observe, since
+        // nodelet has no other "kill but never delete" pattern anywhere
+        // else to build a second one on top of.
+        let now = k8s_openapi::jiff::Timestamp::now();
+        let over_active_deadline = pods.iter().find(|p| {
+            if p.metadata.deletion_timestamp.is_some() {
+                return false;
+            }
+            let active_deadline_seconds = p.spec.as_ref().and_then(|s| s.active_deadline_seconds).map(i64::from);
+            let seconds_since_start =
+                p.status.as_ref().and_then(|s| s.start_time.as_ref()).map(|t| (now - t.0).get_seconds());
+            nodelet::eviction::active_deadline_exceeded(active_deadline_seconds, seconds_since_start)
+        });
+        if let Some(victim) = over_active_deadline {
+            if let (Some(ns), Some(name)) = (victim.metadata.namespace.as_deref(), victim.metadata.name.as_deref()) {
+                evict_pod(&client, ns, name, "DeadlineExceeded", "Pod was active on the node longer than the specified deadline").await;
             }
             continue; // one pod per check, matching the pressure-based path below
         }
@@ -367,7 +407,7 @@ async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: 
         let (Some(ns), Some(name)) = (victim.metadata.namespace.as_deref(), victim.metadata.name.as_deref()) else {
             continue;
         };
-        evict_pod(&client, ns, name, reason).await;
+        evict_pod(&client, ns, name, "Evicted", &format!("The node was low on resource: {reason}.")).await;
     }
 }
 
