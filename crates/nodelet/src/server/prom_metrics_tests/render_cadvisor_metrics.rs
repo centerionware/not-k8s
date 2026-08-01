@@ -14,12 +14,13 @@ fn pod_with_one_container(stats: UsageStats) -> PodUsage {
 
 #[test]
 fn includes_help_and_type_lines_for_every_metric() {
-    let out = render_cadvisor_metrics(&[]);
+    let out = render_cadvisor_metrics(&[], 0);
     for name in [
         "container_cpu_usage_seconds_total",
         "container_memory_usage_bytes",
         "container_memory_working_set_bytes",
         "container_memory_rss",
+        "container_last_seen",
     ] {
         assert!(out.contains(&format!("# HELP {name} ")), "missing HELP for {name}");
         assert!(out.contains(&format!("# TYPE {name} ")), "missing TYPE for {name}");
@@ -32,7 +33,7 @@ fn container_cpu_is_converted_from_nanoseconds_to_seconds() {
         cpu_usage_core_nano_seconds: Some(3_000_000_000),
         ..Default::default()
     })];
-    let out = render_cadvisor_metrics(&pods);
+    let out = render_cadvisor_metrics(&pods, 0);
     assert!(out.contains("container_cpu_usage_seconds_total{namespace=\"default\",pod=\"web\",container=\"app\"} 3"));
 }
 
@@ -44,21 +45,46 @@ fn distinguishes_usage_working_set_and_rss() {
         memory_rss_bytes: Some(1000),
         ..Default::default()
     })];
-    let out = render_cadvisor_metrics(&pods);
+    let out = render_cadvisor_metrics(&pods, 0);
     assert!(out.contains("container_memory_usage_bytes{namespace=\"default\",pod=\"web\",container=\"app\"} 3000"));
     assert!(out.contains("container_memory_working_set_bytes{namespace=\"default\",pod=\"web\",container=\"app\"} 2000"));
     assert!(out.contains("container_memory_rss{namespace=\"default\",pod=\"web\",container=\"app\"} 1000"));
 }
 
 #[test]
-fn all_empty_usage_produces_headers_with_no_sample_lines() {
+fn all_empty_usage_still_reports_last_seen_but_no_other_sample_lines() {
+    // container_last_seen is unconditional (round 100) -- a container's
+    // mere presence in the snapshot means it was observed right now,
+    // independent of whether any usage numbers were measured. Every
+    // other metric here stays gated on Some(value), same as before.
     let pods = vec![pod_with_one_container(UsageStats::default())];
-    let out = render_cadvisor_metrics(&pods);
-    assert!(!out.contains("container=\"app\""));
+    let out = render_cadvisor_metrics(&pods, 12345);
+    assert!(!out.contains("container_cpu_usage_seconds_total{"));
+    assert!(!out.contains("container_memory_usage_bytes{"));
+    assert!(!out.contains("container_memory_working_set_bytes{"));
+    assert!(!out.contains("container_memory_rss{"));
+    assert!(out.contains("container_last_seen{namespace=\"default\",pod=\"web\",container=\"app\"} 12345"));
 }
 
 #[test]
 fn empty_pod_list_still_renders_headers() {
-    let out = render_cadvisor_metrics(&[]);
+    let out = render_cadvisor_metrics(&[], 0);
     assert!(out.contains("# HELP container_cpu_usage_seconds_total"));
+}
+
+#[test]
+fn last_seen_reports_the_supplied_current_time_for_every_container() {
+    let pods = vec![
+        pod_with_one_container(UsageStats::default()),
+        PodUsage {
+            namespace: "kube-system".to_string(),
+            name: "coredns".to_string(),
+            uid: "def-456".to_string(),
+            containers: vec![ContainerUsage { name: "coredns".to_string(), stats: UsageStats::default() }],
+            ..Default::default()
+        },
+    ];
+    let out = render_cadvisor_metrics(&pods, 999_999);
+    assert!(out.contains("container_last_seen{namespace=\"default\",pod=\"web\",container=\"app\"} 999999"));
+    assert!(out.contains("container_last_seen{namespace=\"kube-system\",pod=\"coredns\",container=\"coredns\"} 999999"));
 }

@@ -71,6 +71,11 @@ EOF
 
     assert_contains "$body" "# TYPE container_cpu_usage_seconds_total counter" "container_cpu_usage_seconds_total TYPE line present"
     assert_contains "$body" "container=\"app\"" "the running container appears in the cadvisor metrics"
+    # Round 100: container_last_seen is unconditional (not gated on any
+    # usage number being measurable), so it should show up for this
+    # container regardless of what CRI has reported stats-wise yet.
+    assert_contains "$body" "# TYPE container_last_seen gauge" "container_last_seen TYPE line present"
+    assert_contains "$body" "container_last_seen{namespace=" "container_last_seen has a sample line, not just headers"
     delete_pod_if_exists "$name"
 }
 

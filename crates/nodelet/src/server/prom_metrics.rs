@@ -15,17 +15,29 @@
 //!   `pod_cpu_usage_seconds_total`, `pod_memory_working_set_bytes`. This one
 //!   is a complete, accurate implementation of that spec.
 //! - **`/metrics/cadvisor`** is real cAdvisor's much larger, less strictly
-//!   specified legacy metric catalog (network/disk I/O, per-cpu-core
-//!   breakdowns, `container_last_seen`, spec/limit metrics, and more) —
-//!   implementing all of it isn't worth the weight for an edge agent that's
-//!   otherwise deliberately lean. This implements the four metrics most
-//!   dashboards/scrapers built against cAdvisor actually read
+//!   specified legacy metric catalog — implementing all of it isn't worth
+//!   the weight for an edge agent that's otherwise deliberately lean.
+//!   This implements the five metrics most dashboards/scrapers built
+//!   against cAdvisor actually read: the four usage gauges/counter
 //!   (`container_cpu_usage_seconds_total`, `container_memory_usage_bytes`,
-//!   `container_memory_working_set_bytes`, `container_memory_rss`) with a
+//!   `container_memory_working_set_bytes`, `container_memory_rss`) plus
+//!   `container_last_seen` (round 100 — trivial and genuinely useful: a
+//!   scraper uses it to detect a container that's vanished since the last
+//!   scrape, and every container in a fresh `ListPodSandboxStats` result
+//!   is, by definition, being seen *right now*, so no new data collection
+//!   is needed to report it honestly). All five carry a
 //!   `{namespace, pod, container}` label set — real cAdvisor also labels
 //!   with `id`/`name`/`image` (the container's cgroup path, runtime name,
 //!   and image ref), which aren't tracked anywhere in nodelet's `PodUsage`
-//!   today and are dropped here rather than faked.
+//!   today and are dropped here rather than faked. **Still out of scope,
+//!   deliberately** (round 100 re-confirmed, not just carried over):
+//!   network/disk I/O and per-cpu-core breakdowns need CRI data this
+//!   codebase doesn't collect *at all* today (a real new collection path,
+//!   not a formatting gap like `container_last_seen` was), and spec/limit
+//!   metrics (`container_spec_memory_limit_bytes` etc.) would need
+//!   cross-referencing every container against its Pod's resource spec on
+//!   every scrape — real functionality, but a bigger, separate piece of
+//!   work than this round's scope.
 
 use super::{text_response, BoxedBody, ServerState};
 use crate::runtime::PodUsage;
@@ -122,7 +134,11 @@ pub fn render_resource_metrics(
     out
 }
 
-pub fn render_cadvisor_metrics(pods: &[PodUsage]) -> String {
+/// `now_unix_seconds` is a parameter (not read internally via
+/// `SystemTime::now()`) so this stays a pure function unit-testable
+/// without mocking the clock — the caller (`handle_metrics_cadvisor`)
+/// supplies the real value.
+pub fn render_cadvisor_metrics(pods: &[PodUsage], now_unix_seconds: u64) -> String {
     let mut out = String::new();
 
     push_help_type(&mut out, "container_cpu_usage_seconds_total", "Cumulative cpu time consumed by the container in core-seconds", "counter");
@@ -181,6 +197,22 @@ pub fn render_cadvisor_metrics(pods: &[PodUsage]) -> String {
         }
     }
 
+    // container_last_seen (round 100): every container in this snapshot is,
+    // by definition, being observed right now — a scraper uses this to
+    // detect a container that's vanished since the last scrape (its
+    // last_seen value stops advancing).
+    push_help_type(&mut out, "container_last_seen", "Last time a container was seen by the exporter", "gauge");
+    for pod in pods {
+        for c in &pod.containers {
+            push_metric(
+                &mut out,
+                "container_last_seen",
+                &[("namespace", &pod.namespace), ("pod", &pod.name), ("container", &c.name)],
+                now_unix_seconds as f64,
+            );
+        }
+    }
+
     out
 }
 
@@ -207,7 +239,9 @@ pub async fn handle_metrics_cadvisor(state: &ServerState) -> Response<BoxedBody>
         Ok(u) => u,
         Err(e) => return text_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
     };
-    prom_response(render_cadvisor_metrics(&usages))
+    let now_unix_seconds =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    prom_response(render_cadvisor_metrics(&usages, now_unix_seconds))
 }
 
 #[cfg(test)]

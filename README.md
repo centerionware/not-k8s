@@ -524,7 +524,12 @@ the one gap round 88 itself had flagged. Round 99 gave node-pressure
 eviction real kubelet's actual primary ranking criterion — whether a
 pod's usage exceeds its own memory request — as a tie-break ahead of
 `spec.priority`, closing the specific gap round 26's own notes
-flagged. Full status list in `docs/GAP_CLOSURE.md`.
+flagged. Round 100 added `container_last_seen` to `/metrics/cadvisor`
+(a container's presence in a stats snapshot already proves it's being
+observed right now, so no new data collection was needed) — the last
+of 4 documented partial features the user asked to push closer to
+full parity in one continuous pass (rounds 97-100). Full status list
+in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

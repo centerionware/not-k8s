@@ -27,6 +27,56 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 100: `/metrics/cadvisor` gains `container_last_seen` (2026-08-01, same day)
+
+Last of the 4 closeable 🟡 items ("do them all, let's get it
+done" — rounds 97-100). `render_cadvisor_metrics()` (`server::prom_metrics`)
+gains a fifth metric, `container_last_seen`, alongside its existing
+four. Unlike the other four (each gated on `Some(value)` — a real,
+possibly-missing measurement), `container_last_seen` is unconditional:
+a container's mere presence in a fresh `ListPodSandboxStats` snapshot
+already proves it was observed *right now*, so reporting the current
+wall-clock time for every container needs no new data collection at
+all — a scraper uses this to detect a container that's vanished since
+the last scrape (its `last_seen` stops advancing), real cAdvisor's own
+actual use for the metric.
+
+`render_cadvisor_metrics()` took `now_unix_seconds: u64` as a new
+parameter rather than reading `SystemTime::now()` internally, keeping
+it a pure, clock-independent function unit-testable without mocking
+time — `handle_metrics_cadvisor()` supplies the real value the same
+`SystemTime::now().duration_since(UNIX_EPOCH)` pattern already used
+elsewhere in this codebase (`container_state.rs`, `events_gc.rs`).
+
+**Re-confirmed, not just carried over, that network/disk I/O and
+per-cpu-core breakdowns stay out of scope**: unlike `container_last_seen`
+(a pure formatting/framing gap — the data to report it already
+existed implicitly), those need CRI data this codebase genuinely
+doesn't collect anywhere today, and spec/limit metrics would need
+cross-referencing every container against its Pod's resource spec on
+every scrape — both real, separate pieces of work, not something this
+round's "closeable" characterization was claiming to cover. The
+`/metrics/cadvisor` bullet stays 🟡, correctly.
+
+1 new unit test plus one existing test updated for the new
+unconditional metric and the new function signature
+(`prom_metrics_tests/render_cadvisor_metrics.rs`). Existing
+`test_metrics_cadvisor_returns_real_container_usage`
+(`deploy/lib/test/cases/prom_metrics.sh`) extended with
+`container_last_seen` TYPE-line and sample-line assertions — no new
+test needed since it already stands up a real pod and scrapes the
+live endpoint.
+
+This closes all 4 of the user's "do them all" closeable 🟡 items
+(rounds 97-100). Remaining below full ✅: the explicitly-not-
+recommended Checkpoint API (❌), the 5 DRA/CSI-driver-validation 🟡
+items (genuinely infra-blocked, not missing code — the new `e2e.yml`
+GitHub Actions workflow, added mid-round-97, gives a path to
+eventually closing those for real once a suitable test driver is
+wired into it), and whatever narrower simplifications remain within
+Eviction/`/metrics/cadvisor`/DRA/PVC-CSI's own 🟡 bullets that this
+round's specifically-named sub-gaps didn't claim to fully resolve.
+
 ## Round 99: eviction's `exceedMemoryRequests` comparator step (2026-08-01, same day)
 
 Third of the 4 closeable 🟡 items. Closes the specific gap round
@@ -5646,7 +5696,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ `Node.status.daemonEndpoints.kubeletEndpoint.port` now advertised (was never set before — without it the apiserver has no route to proxy exec/logs/attach/port-forward requests to at all, regardless of whether a server is listening).
 - ✅ **`/stats/summary`** (`server::stats`) — built from CRI's `ListPodSandboxStats` (one call gets per-pod *and* per-container CPU/memory usage, no cgroup-path guessing needed). Real caveat, not a nodelet limitation: `kubectl top` itself needs metrics-server (or another `metrics.k8s.io` implementation) deployed and configured to scrape this — implementing the endpoint is necessary but not sufficient for `kubectl top` on its own. Node-level CPU usage isn't populated in this endpoint's JSON shape (unlike `/metrics/resource` below, which does report it) — only memory comes from `/proc/meminfo` here.
 - ✅ **`/metrics/resource`** (`server::prom_metrics`) — full [KEP-2371](https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/2371-cri-pod-container-stats) metric set, including real node-wide CPU usage from a new `/proc/stat` parser (`metrics.rs::read_node_cpu_seconds`).
-- 🟡 **`/metrics/cadvisor`** (`server::prom_metrics`) — a deliberately scoped-down subset of real cAdvisor's much larger legacy catalog: `container_cpu_usage_seconds_total`, `container_memory_usage_bytes`, `container_memory_working_set_bytes`, `container_memory_rss`, labeled `{namespace,pod,container}` only (no `id`/`name`/`image` — not tracked in `PodUsage`). Missing: network/disk I/O, per-cpu-core breakdowns, `container_last_seen`, spec/limit metrics.
+- 🟡 **`/metrics/cadvisor`** (`server::prom_metrics`) — a deliberately scoped-down subset of real cAdvisor's much larger legacy catalog: `container_cpu_usage_seconds_total`, `container_memory_usage_bytes`, `container_memory_working_set_bytes`, `container_memory_rss`, and (round 100) `container_last_seen` — unconditional per container, since every container in a fresh `ListPodSandboxStats` snapshot is by definition being observed right now, needing no new data collection — labeled `{namespace,pod,container}` only (no `id`/`name`/`image` — not tracked in `PodUsage`). Still missing, re-confirmed deliberately out of scope round 100: network/disk I/O and per-cpu-core breakdowns (need real new CRI data collection this codebase doesn't do at all today, not a formatting gap), and spec/limit metrics (would need cross-referencing every container against its Pod's resource spec on every scrape — real functionality, bigger than this round's scope).
 - ✅ **Client certificate authentication** (round 95) — `NODELET_CLIENT_CA_FILE` (empty by default, disabled) holds a CA bundle; a request with a cert chaining to it authenticates directly off the verified peer cert's Subject CN (username) / Organization values (groups), matching the real apiserver's generic x509 authenticator convention — no `TokenReview` needed. Optional, not required: no cert still falls back to the existing bearer-token path unchanged; an untrusted cert fails the TLS handshake itself (rustls, before nodelet code runs).
 - ❌ **Checkpoint API** (`/checkpoint/{namespace}/{pod}/{container}`) (found in round 22's re-audit) — a forensic/debugging endpoint (CRIU-based container checkpointing, still alpha upstream) not implemented at all. Low value for nodelet's edge-device target and CRIU itself is a real external dependency (kernel + userspace tooling) beyond anything else this project needs — noted here rather than silently missing, not currently recommended for implementation.
 
@@ -6453,3 +6503,11 @@ accordingly; see those files' own updated framing.
       key design and Guaranteed-pod exemption stay deliberately
       unchanged (already documented as conservative). Third of 4
       closeable 🟡 items. See round 99 notes.
+- [x] Round 100: `/metrics/cadvisor` gains `container_last_seen` —
+      unconditional per container (presence in the snapshot proves
+      it's being observed now, no new data collection needed).
+      Network/disk I/O, per-cpu-core, and spec/limit metrics
+      re-confirmed genuinely out of scope (real new collection work,
+      not a formatting gap). Fourth and last of the 4 closeable 🟡
+      items — closes the "do them all, let's get it done" instruction
+      in full. See round 100 notes.
