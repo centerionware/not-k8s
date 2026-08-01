@@ -91,9 +91,19 @@ impl CriRuntime {
                 match self.resolve_csi_source(&id.namespace, &pvc_source.claim_name).await {
                     Ok(Some(mut source)) => {
                         source.read_only |= pvc_source.read_only.unwrap_or(false);
+                        let block = source.block;
                         match self.csi.mount(&source, &vol_dir, &id.uid, false).await {
                             Ok(()) => {
-                                out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
+                                // Raw block volumes (round 77): the exact
+                                // same host path mount() just published to
+                                // -- for Block mode it's a device-node
+                                // bind-mount FILE, not a directory, so it's
+                                // resolved to BlockDevice instead of
+                                // HostPath (build_devices() picks it up for
+                                // volumeDevices; build_mounts() explicitly
+                                // ignores this variant).
+                                let resolved = if block { ResolvedVolume::BlockDevice(vol_dir) } else { ResolvedVolume::HostPath(vol_dir) };
+                                out.insert(v.name.clone(), resolved);
                             }
                             Err(e) => warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "failed to mount CSI volume"),
                         }
@@ -118,12 +128,16 @@ impl CriRuntime {
                 // ownership safety check.
                 let claim_name = ephemeral_pvc_name(&id.name, &v.name);
                 match self.resolve_ephemeral_source(&id.namespace, &claim_name, &id.uid).await {
-                    Ok(Some(source)) => match self.csi.mount(&source, &vol_dir, &id.uid, false).await {
-                        Ok(()) => {
-                            out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
+                    Ok(Some(source)) => {
+                        let block = source.block;
+                        match self.csi.mount(&source, &vol_dir, &id.uid, false).await {
+                            Ok(()) => {
+                                let resolved = if block { ResolvedVolume::BlockDevice(vol_dir) } else { ResolvedVolume::HostPath(vol_dir) };
+                                out.insert(v.name.clone(), resolved);
+                            }
+                            Err(e) => warn!(volume = %v.name, claim = %claim_name, error = ?e, "failed to mount CSI volume for generic ephemeral volume"),
                         }
-                        Err(e) => warn!(volume = %v.name, claim = %claim_name, error = ?e, "failed to mount CSI volume for generic ephemeral volume"),
-                    },
+                    }
                     Ok(None) => {
                         // Not yet created by the ephemeral-volume
                         // controller, not owned by this pod, or otherwise
@@ -383,6 +397,11 @@ impl CriRuntime {
         let node_stage_secrets = self.resolve_csi_secret_ref(csi.node_stage_secret_ref.as_ref(), namespace).await;
         let node_publish_secrets = self.resolve_csi_secret_ref(csi.node_publish_secret_ref.as_ref(), namespace).await;
 
+        // Raw block volumes (round 77; found in round 76's re-audit):
+        // PersistentVolume.spec.volumeMode == "Block" (default
+        // "Filesystem" when unset, matching the API's own default).
+        let block = pv.spec.as_ref().and_then(|s| s.volume_mode.as_deref()) == Some("Block");
+
         Ok(Some(crate::runtime::csi::CsiVolumeSource {
             driver: csi.driver.clone(),
             volume_handle: csi.volume_handle.clone(),
@@ -392,6 +411,7 @@ impl CriRuntime {
             node_stage_secrets,
             node_publish_secrets,
             publish_context,
+            block,
         }))
     }
 
@@ -473,6 +493,9 @@ impl CriRuntime {
             node_stage_secrets: HashMap::new(),
             node_publish_secrets,
             publish_context: HashMap::new(),
+            // CSI ephemeral inline volumes have no `volumeMode` concept in
+            // the API at all — always Filesystem-shaped.
+            block: false,
         })
     }
 

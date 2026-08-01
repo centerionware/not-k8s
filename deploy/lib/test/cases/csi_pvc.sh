@@ -132,10 +132,88 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_pod_uses_a_raw_block_volume() {
+    # Round 77 (found in round 76's re-audit): spec.containers[].volumeDevices
+    # + a PV/PVC's volumeMode: Block. Needs a StorageClass whose bound PV
+    # actually comes back Block-mode (most CSI drivers require explicit
+    # opt-in for this, hence a separate env var from
+    # TEST_CSI_STORAGE_CLASS rather than reusing it) whose driver is also
+    # listed in nodelet's NODELET_CSI_DRIVERS — skips cleanly without it.
+    # Structural proof only (the host-side bind-mount target must be a
+    # FILE, not a directory, matching the CSI spec's own block-volume
+    # convention) — actually reading/writing the raw device needs a tool
+    # like `dd` this suite doesn't assume every $TEST_IMAGE has.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if [[ -z "${TEST_CSI_BLOCK_STORAGE_CLASS:-}" ]]; then
+        skip_test "TEST_CSI_BLOCK_STORAGE_CLASS not set — export it to a StorageClass whose driver supports volumeMode: Block (and is also listed in nodelet's NODELET_CSI_DRIVERS) to exercise this"
+    fi
+
+    local name="csi-block-check"
+    local claim="csi-block-check-claim"
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: $claim
+spec:
+  accessModes: ["ReadWriteOnce"]
+  volumeMode: Block
+  storageClassName: $TEST_CSI_BLOCK_STORAGE_CLASS
+  resources:
+    requests:
+      storage: 64Mi
+EOF
+
+    if ! try_wait_until 60 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
+        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_BLOCK_STORAGE_CLASS ($TEST_CSI_BLOCK_STORAGE_CLASS)"
+    fi
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+      volumeDevices:
+        - name: raw
+          devicePath: /dev/xvda
+  volumes:
+    - name: raw
+      persistentVolumeClaim:
+        claimName: $claim
+EOF
+
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        skip_test "pod never reached Running with a raw block volumeDevice — check nodelet's logs for 'failed to mount CSI volume' or build_devices()/ResolvedVolume::BlockDevice wiring in runtime/cri/volumes_pure.rs"
+    fi
+
+    local uid target_path
+    uid="$(kubectl get pod "$name" -n "$TEST_NAMESPACE" -o jsonpath='{.metadata.uid}')"
+    target_path="/var/lib/nodelet/pods/$uid/volumes/raw"
+    if ! try_wait_until 15 bash -c "[[ -e '$target_path' ]]"; then
+        delete_pod_if_exists "$name"
+        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        die "no bind-mount target ever appeared at $target_path on the host — NodePublishVolume's target_path may not match what nodelet expects for a Block-mode volume"
+    fi
+    assert_true bash -c "[[ ! -d '$target_path' ]]" # must be a file (or device node), never a directory, for Block mode
+
+    delete_pod_if_exists "$name"
+    kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+}
+
 test_volumes_in_use_manual_note() {
     skip_test "round 34's Node.status.volumesInUse/volumesAttached is scoped to CSI volumes only and deliberately unvalidated against a real attach/detach controller (the modern CSI attach path — round 19 — already uses VolumeAttachment directly, not these fields). Manual spot-check: with TEST_CSI_STORAGE_CLASS set, watch 'kubectl get node <node> -o jsonpath={.status.volumesInUse}' while a CSI-backed pod is created and then deleted — confirm an entry matching 'kubernetes.io/csi/<driver>^<volumeHandle>' appears while the pod is running and disappears once the pod (and its NodeUnpublishVolume/NodeUnstageVolume calls) fully complete. If a real attach/detach controller is also running in this cluster, confirm it doesn't misbehave (e.g. refuse to detach) because of anything nodelet reports here."
 }
 
 register_test test_pod_mounts_a_persistent_volume_claim
 register_test test_csi_ephemeral_inline_volume_is_mounted
+register_test test_pod_uses_a_raw_block_volume
 register_test test_volumes_in_use_manual_note

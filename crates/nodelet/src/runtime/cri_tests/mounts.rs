@@ -37,6 +37,19 @@ fn mount_naming_an_unresolved_volume_is_dropped_not_errored() {
 }
 
 #[test]
+fn a_mount_naming_a_block_device_volume_is_dropped_defensively() {
+    // Round 77: a raw block volume is only ever referenced via
+    // volumeDevices, never volumeMounts -- the API itself should prevent
+    // this combination, but build_mounts() stays defensive rather than
+    // trusting that (same posture build_devices() takes for the opposite
+    // mismatch).
+    let mut volumes = HashMap::new();
+    volumes.insert("raw-disk".to_string(), ResolvedVolume::BlockDevice(PathBuf::from("/host/raw-disk")));
+    let mounts = build_mounts(&[vm("raw-disk", "/mnt/raw-disk")], &volumes, &[]);
+    assert!(mounts.is_empty());
+}
+
+#[test]
 fn sub_path_is_joined_onto_the_volume_directory() {
     let mut volumes = HashMap::new();
     volumes.insert("config-volume".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/config-volume")));

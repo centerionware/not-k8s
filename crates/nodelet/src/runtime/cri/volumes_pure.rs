@@ -11,6 +11,14 @@ use super::*;
 pub(crate) enum ResolvedVolume {
     HostPath(PathBuf),
     Image { image_ref: String },
+    /// A raw block device node on the host (round 77; found in round 76's
+    /// re-audit) — a CSI driver bind-mounted the real block device onto
+    /// this path during `NodePublishVolume` (`volumeMode: Block`). Unlike
+    /// every other volume kind, this is never referenced by a container's
+    /// `volumeMounts` at all — only `volumeDevices` (see `build_devices()`),
+    /// which injects it via CRI's `ContainerConfig.devices` instead of
+    /// `Mount`.
+    BlockDevice(PathBuf),
 }
 
 /// `volumes[].hostPath.type`'s validate-and-maybe-create semantics
@@ -169,7 +177,36 @@ pub(crate) fn build_mounts(
                     image_sub_path: sub_path.unwrap_or_default(),
                     ..Default::default()
                 }),
+                // A raw block device is only ever referenced via
+                // volumeDevices (see build_devices()) — a volumeMounts
+                // entry naming one is a spec the API itself should have
+                // rejected (mutually exclusive by field), so this is
+                // purely defensive: silently dropped, same treatment
+                // every other unresolvable mount already gets.
+                ResolvedVolume::BlockDevice(_) => None,
             }
+        })
+        .collect()
+}
+
+/// Build CRI `Device` entries for a container's `volumeDevices` (round
+/// 77; found in round 76's re-audit) against the pod's already-resolved
+/// volume name -> source map — the `volumeDevices` counterpart to
+/// `build_mounts()`'s `volumeMounts` handling. A device naming a volume
+/// that isn't in the map, or that resolved to anything other than a
+/// `BlockDevice` (e.g. a regular filesystem volume referenced by mistake —
+/// the API itself should prevent this, but this stays defensive rather
+/// than trusting it), is silently dropped. `"rwm"` permissions (read,
+/// write, mknod) matches the same cgroup-device-permission convention CRI
+/// device-plugin injection already uses elsewhere in this codebase.
+pub(crate) fn build_devices(volume_devices: &[k8s_openapi::api::core::v1::VolumeDevice], volumes: &HashMap<String, ResolvedVolume>) -> Vec<v1::Device> {
+    volume_devices
+        .iter()
+        .filter_map(|vd| match volumes.get(&vd.name)? {
+            ResolvedVolume::BlockDevice(host_path) => {
+                Some(v1::Device { container_path: vd.device_path.clone(), host_path: host_path.to_string_lossy().into_owned(), permissions: "rwm".to_string() })
+            }
+            ResolvedVolume::HostPath(_) | ResolvedVolume::Image { .. } => None,
         })
         .collect()
 }

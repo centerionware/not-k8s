@@ -510,6 +510,9 @@ mod tests_sidecar_init_decision;
 #[path = "cri_tests/mounts.rs"]
 mod tests_mounts;
 #[cfg(test)]
+#[path = "cri_tests/devices.rs"]
+mod tests_devices;
+#[cfg(test)]
 #[path = "cri_tests/volume_type.rs"]
 mod tests_volume_type;
 #[cfg(test)]

@@ -446,8 +446,13 @@ limitation). Round 75 closed the display gap round 73 deliberately left
 open: `containerStatuses[].lastState` is now tracked, so a backing-off
 container's current state reports `Waiting{reason: CrashLoopBackOff}`
 (its real exit details moved into `lastState` instead) rather than
-`Terminated` — matching kubectl's familiar display. Full status list in
-`docs/GAP_CLOSURE.md`.
+`Terminated` — matching kubectl's familiar display. A fresh gap re-audit
+(round 76) found raw block volumes never wired up — closed round 77:
+`spec.containers[].volumeDevices` + a PV's `volumeMode: Block` now inject
+the raw device via CRI's `ContainerConfig.devices` (the same mechanism
+device-plugin device-node injection already uses), with CSI's own
+`AccessType::Block` and a file-shaped bind-mount target instead of the
+usual directory. Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

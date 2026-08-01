@@ -27,6 +27,61 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 77: raw block volumes (2026-07-31, same day)
+
+Closes the higher-value of round 76's 2 findings — user picked it
+directly over `procMount: Unmasked`.
+
+- New `ResolvedVolume::BlockDevice(PathBuf)` variant (`volumes_pure.rs`)
+  alongside the existing `HostPath`/`Image` — a raw block device node
+  the CSI driver bind-mounted onto the host during `NodePublishVolume`.
+  New pure `build_devices()`, the `volumeDevices` counterpart to the
+  existing `build_mounts()`'s `volumeMounts` handling: maps
+  `container.volume_devices` entries against the resolved-volumes map,
+  producing CRI `Device{container_path, host_path, permissions: "rwm"}`
+  entries — the exact same field device-plugin device-node injection
+  (round 14) already populates, just a second, independent source of
+  entries for it. `build_mounts()`/`build_devices()` are each other's
+  mirror image: a mount naming a `BlockDevice` (or a device naming a
+  `HostPath`/`Image`) is silently dropped — defensive, since the API
+  itself should prevent the mismatch, but neither trusts that blindly.
+- `runtime/csi.rs`: `CsiVolumeSource` gained `block: bool`;
+  `mount_capability()` now takes a `block` param and produces
+  `AccessType::Block(BlockVolume {})` instead of `AccessType::Mount`
+  when set (`fs_type` is meaningless for block volumes per the CSI spec
+  itself). `mount()`'s target-path creation branches on it too — a block
+  volume's bind-mount target must be a pre-existing plain **file** (the
+  driver bind-mounts the real device node onto it), never a directory
+  like every other volume kind's target.
+- `resolve_csi_source()` (`volumes_resolve.rs`) reads
+  `PersistentVolume.spec.volumeMode == "Block"` (default `"Filesystem"`
+  when unset, matching the API's own default) into the new field;
+  `resolve_volumes()`'s PVC branch (and the generic-ephemeral branch,
+  which reuses the same resolution path) now resolves to
+  `ResolvedVolume::BlockDevice` instead of `HostPath` when `block` is
+  set, using the exact same host path `mount()` just published to.
+- **Deliberately out of scope**: CSI ephemeral *inline* volumes
+  (`volumes[].csi` specified directly) always resolve `block: false` —
+  the `CSIVolumeSource` inline type has no `volumeMode` field in the API
+  at all, so there's nothing to check.
+- 11 new unit tests: `build_devices()`'s own matrix (5:
+  resolve-to-host-path-with-rwm-perms, unresolved-volume-dropped,
+  wrong-resolved-kind-dropped-defensively, multiple-devices-independent,
+  empty-list), `build_mounts()`'s new drop case for a `BlockDevice`
+  wrongly referenced by `volumeMounts` (1), and `mount_capability()`'s
+  `block: true` behavior (2 existing tests' call sites updated for the
+  new parameter, plus 2 new: `Block` access type regardless of `fs_type`,
+  read-only still respected under `Block`).
+- New e2e test `test_pod_uses_a_raw_block_volume` (`csi_pvc.sh`, gated
+  behind `TEST_CSI_BLOCK_STORAGE_CLASS` — a separate env var from the
+  existing `TEST_CSI_STORAGE_CLASS` since most CSI drivers need explicit
+  opt-in for block-mode support, unlike ordinary filesystem PVCs):
+  structural proof only (the host bind-mount target is a file, never a
+  directory) — actually reading/writing the raw device needs a tool like
+  `dd` this suite doesn't assume every `$TEST_IMAGE` has. Unvalidated
+  against a real CSI driver's block-mode support — same caveat every
+  prior CSI round has carried.
+
 ## Round 76: fresh gap re-audit (2026-07-31, same day)
 
 No code changed. User picked re-audit again (offered alongside
@@ -4492,7 +4547,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Generic ephemeral volumes** (round 31; `volumeSource.ephemeral`, found in round 27's re-audit) — `resolve_volumes()` now recognizes `.ephemeral`, resolving the deterministic-named (`<pod name>-<volume name>`) PVC the ephemeral-volume controller (a `kube-controller-manager` component — not nodelet's job, same as dynamic provisioning) auto-creates, with an ownership safety check (by UID) before trusting it, then reuses all of CSI's existing mount machinery. Unvalidated against a real CSI driver/ephemeral-volume controller — see round 31 notes.
 - ✅ **Image volume source** (round 32; `volumeSource.image`, KEP-4639, still beta, found in round 27's re-audit) — `resolve_volumes()`/`build_mounts()` use CRI's native `Mount.image`/`image_sub_path` fields directly (no host-path materialization needed, unlike every other volume kind) after a `PullImage` call resolves the reference. Always read-only, per the KEP. Genuinely automated e2e test (no external StorageClass/CSI driver needed — any pullable image works). See round 32 notes.
 - 🟡 **`Node.status.volumesInUse`/`.volumesAttached`** (round 34; found in round 27's re-audit) — `CsiDrivers::mounted_volumes()` exposes the mount reference-counting round 12 already tracked; `node.rs::csi_unique_volume_name()` builds real kubelet's `kubernetes.io/csi/<driver>^<volume_handle>` naming. Scoped to CSI volumes only (this project's actual PVC story, rounds 12/13/19); CSI's own attach coordination (round 19) doesn't read these fields itself. **Deliberately lower-confidence by design**: whether a real attach/detach controller is satisfied by this is unvalidated, not just unvalidated by sandbox limitation. See round 34 notes.
-- ❌ **Raw block volumes** (`spec.containers[].volumeDevices` + a PV/PVC's `volumeMode: Block`; found in round 76's re-audit, correcting round 48's stale "same gap as hostPath" framing — hostPath itself closed round 65, this never did) — confirmed via grep that `volumeDevices` is referenced exactly once in this whole codebase, in `sandbox.rs`'s `ephemeral_to_container()`, a plain struct-field copy converting an `EphemeralContainer` to a `Container` — never actually read by `resolve_volumes()`/`build_mounts()`/`create_and_start_container()` for *any* container kind. CRI's own `ContainerConfig.devices` field (already used for device-plugin device-node injection, round 14) is the exact mechanism a Block-mode PVC would need, just never wired for this case. A pod requesting `volumeMode: Block` today silently gets no device at all rather than a real error or the expected raw block device.
+- 🟡 **Raw block volumes** (`spec.containers[].volumeDevices` + a PV/PVC's `volumeMode: Block`; round 77, found in round 76's re-audit, correcting round 48's stale "same gap as hostPath" framing — hostPath itself closed round 65, this never did) — new `ResolvedVolume::BlockDevice` variant and `build_devices()` (the `volumeDevices` counterpart to `build_mounts()`'s `volumeMounts` handling) inject the raw device via CRI's `ContainerConfig.devices` field (`"rwm"` permissions — the same mechanism device-plugin device-node injection, round 14, already uses). `CsiDrivers` gained a `block: bool` on `CsiVolumeSource` (from `PersistentVolume.spec.volumeMode == "Block"`) driving CSI's own `AccessType::Block` instead of `Mount`, and a bind-mount-target **file** instead of a directory (the CSI spec's own convention every driver expects for block volumes) — `mount()` branches on this for target-path creation. Scoped to PVC-referenced (and generic-ephemeral, which reuses the same resolution path) volumes only — CSI ephemeral *inline* volumes have no `volumeMode` concept in the API at all, so always Filesystem-shaped. Unvalidated against a real CSI driver's block-mode support — same caveat every prior CSI round has carried.
 
 ### Node-pressure eviction
 - ✅ MemoryPressure/DiskPressure *conditions* reflect real reads
@@ -5106,8 +5161,16 @@ accordingly; see those files' own updated framing.
       stale round-48 framing), and `securityContext.procMount: Unmasked`
       (CRI's own `masked_paths`/`readonly_paths` fields exist in the
       vendored proto but are never used). See round 76 notes.
-- [ ] Candidates for the next round, ranked: raw block volumes (more
-      complete, more real-world-relevant), `securityContext.procMount:
+- [x] Round 77: raw block volumes — new `ResolvedVolume::BlockDevice`
+      variant and `build_devices()` (the `volumeDevices` counterpart to
+      `build_mounts()`) inject the raw device via CRI's
+      `ContainerConfig.devices`, the same mechanism device-plugin
+      device-node injection already uses. `CsiVolumeSource` gained
+      `block: bool` (from `PersistentVolume.spec.volumeMode`), driving
+      `AccessType::Block` and a file- (not directory-) shaped bind-mount
+      target. 11 new unit tests + a genuinely automated e2e test (gated
+      behind `TEST_CSI_BLOCK_STORAGE_CLASS`). See round 77 notes.
+- [ ] Candidates for the next round, ranked: `securityContext.procMount:
       Unmasked` (narrower/more niche), or `allocatedResourcesStatus`
-      (alpha/beta upstream, lowest urgency of the three). Ask before
-      starting the next round.
+      (alpha/beta upstream, lowest urgency of the two remaining). Ask
+      before starting the next round.

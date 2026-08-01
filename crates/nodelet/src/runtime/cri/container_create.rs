@@ -459,7 +459,12 @@ impl CriRuntime {
         // plugin failure means the container starts without that device
         // rather than failing the whole pod, logged clearly either way.
         let mut envs = envs.to_vec();
-        let mut devices = Vec::new();
+        // Raw block volumes (round 77; found in round 76's re-audit):
+        // volumeDevices entries resolve straight to CRI device injection,
+        // the same ContainerConfig.devices field device-plugin
+        // allocations below also feed — no gating needed (a container
+        // with none just gets an empty Vec).
+        let mut devices = build_devices(container.volume_devices.as_deref().unwrap_or(&[]), volumes);
         let mut annotations = HashMap::new();
         let mut allocated_devices: Vec<(String, Vec<String>)> = Vec::new();
         for (resource_name, count) in device_requests {

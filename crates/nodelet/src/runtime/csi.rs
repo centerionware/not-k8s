@@ -47,7 +47,7 @@ pub mod v1 {
 }
 
 use v1::node_client::NodeClient;
-use v1::volume_capability::{access_mode, AccessMode, AccessType, MountVolume};
+use v1::volume_capability::{access_mode, AccessMode, AccessType, BlockVolume, MountVolume};
 use v1::{
     NodeGetCapabilitiesRequest, NodePublishVolumeRequest, NodeStageVolumeRequest,
     NodeUnpublishVolumeRequest, NodeUnstageVolumeRequest, NodeServiceCapability, VolumeCapability,
@@ -97,16 +97,18 @@ fn staging_path(driver: &str, volume_handle: &str) -> std::path::PathBuf {
         .join("globalmount")
 }
 
-fn mount_capability(fs_type: &str, read_only: bool) -> VolumeCapability {
+/// `block`: raw block volumes (round 77; `volumeMode: Block`, found in
+/// round 76's re-audit) skip the filesystem entirely — `AccessType::Block`
+/// instead of `Mount`, and `fs_type` is meaningless for it (the CSI spec
+/// itself doesn't define a `fs_type` for block volumes).
+fn mount_capability(fs_type: &str, read_only: bool, block: bool) -> VolumeCapability {
     let mode = if read_only { access_mode::Mode::MultiNodeReaderOnly } else { access_mode::Mode::SingleNodeWriter };
-    VolumeCapability {
-        access_mode: Some(AccessMode { mode: mode as i32 }),
-        access_type: Some(AccessType::Mount(MountVolume {
-            fs_type: fs_type.to_string(),
-            mount_flags: Vec::new(),
-            volume_mount_group: String::new(),
-        })),
-    }
+    let access_type = if block {
+        AccessType::Block(BlockVolume {})
+    } else {
+        AccessType::Mount(MountVolume { fs_type: fs_type.to_string(), mount_flags: Vec::new(), volume_mount_group: String::new() })
+    };
+    VolumeCapability { access_mode: Some(AccessMode { mode: mode as i32 }), access_type: Some(access_type) }
 }
 
 /// One CSI volume actually in use — enough to unpublish/unstage it again
@@ -134,6 +136,12 @@ pub struct CsiVolumeSource {
     /// case for node-local/edge storage) — never populated in that case
     /// since there's no VolumeAttachment to read it from.
     pub publish_context: HashMap<String, String>,
+    /// Round 77 (found in round 76's re-audit): `PersistentVolume.spec.volumeMode
+    /// == "Block"` — the volume is published as a raw block device node
+    /// rather than a mounted filesystem. `target_path` for a block volume
+    /// must be a bind-mount-target *file*, not a directory (the CSI spec's
+    /// own convention every driver expects), so `mount()` branches on this.
+    pub block: bool,
 }
 
 pub struct CsiDrivers {
@@ -255,7 +263,7 @@ impl CsiDrivers {
         }
 
         let mut client = self.client_for(&source.driver).await?;
-        let capability = mount_capability(&source.fs_type, source.read_only);
+        let capability = mount_capability(&source.fs_type, source.read_only, source.block);
         let volume_context: std::collections::HashMap<String, String> = source.volume_attributes.clone();
 
         let staging = staging_path(&source.driver, &source.volume_handle);
@@ -276,7 +284,19 @@ impl CsiDrivers {
                 .context("NodeStageVolume")?;
         }
 
-        std::fs::create_dir_all(target_path).context("creating CSI publish target directory")?;
+        // A block volume's bind-mount target must be an existing plain
+        // FILE (the driver bind-mounts the real block device node onto
+        // it) — every other volume kind's target is a directory.
+        if source.block {
+            if let Some(parent) = target_path.parent() {
+                std::fs::create_dir_all(parent).context("creating CSI publish target's parent directory")?;
+            }
+            if !target_path.exists() {
+                std::fs::File::create(target_path).context("creating CSI block volume publish target file")?;
+            }
+        } else {
+            std::fs::create_dir_all(target_path).context("creating CSI publish target directory")?;
+        }
         client
             .node_publish_volume(NodePublishVolumeRequest {
                 volume_id: source.volume_handle.clone(),
