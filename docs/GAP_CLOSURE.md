@@ -27,6 +27,55 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 89: fresh gap re-audit (2026-07-31, same day)
+
+No code changed. Per the user's own instruction, run after rounds 87/88
+closed round 86's `observedGeneration`/`Mount.uidMappings` pair. Method:
+continued the automated field-sweep technique against
+`ContainerStatus`'s full field list (the natural next target after
+`PodSpec`/`Container`/`PodStatus` swept clean in round 86) — enumerated
+every field in the vendored `k8s-openapi` source, checked which are
+never referenced anywhere in this codebase.
+
+Found 2 new, confirmed gaps — both newer `ContainerStatus` fields, and
+both traceable to the exact same CRI-level data source and the exact
+same open design question:
+
+1. **`ContainerStatus.user`** — reports the resolved UID/GID/
+   `supplementalGroups` a container's first process *actually* started
+   with (`ContainerUser`/`LinuxContainerUser`), most useful precisely
+   when `runAsUser`/`runAsGroup` are unset and left to the image's own
+   baked-in default. CRI's own `ContainerStatus` response already
+   carries the identical `ContainerUser`/`LinuxContainerUser` messages
+   (already vendored in `proto/cri.proto`, field `user`) —
+   `container_status_details()` could read it directly, no new proto
+   work needed at all.
+2. **`ContainerStatus.volumeMounts[].recursiveReadOnly` reporting** — the
+   API's own `VolumeMountStatus.recursiveReadOnly` doc comment is
+   explicit that an `IfPossible` request must be reported back as
+   `Disabled` or `Enabled` depending on what actually happened. This is
+   the exact missing reporting half of round 85's own documented
+   `IfPossible` simplification. CRI's `ContainerStatus` response also
+   already carries a `mounts: repeated Mount` field with the
+   runtime-reported actual `Mount.recursive_read_only` value.
+
+**Both findings share the same real, undecided design question**,
+flagged rather than silently assumed either way: `container_status_details()`
+is deliberately only ever called for *exited* containers today (round
+24's "zero extra RPCs for a healthy container" design principle), but
+both of these fields are most valuable for a *running* container
+(confirming the resolved user, or the actual mount-readonly outcome,
+right when it starts) — populating either would need a genuine
+trade-off decision about whether/how to extend that RPC-cost boundary,
+not just wiring an already-vendored field through. Worth deciding for
+both together if either is picked up, since they'd share the same
+extended `ContainerStatus` fetch.
+
+Ranked by value: roughly equal — both are cheap (no new proto/vendoring)
+but share the identical open RPC-cost question, so neither is clearly
+ahead of the other on its own merits. Ask the user for sequencing again
+before starting the next round.
+
 ## Round 88: per-volume Mount.uidMappings/.gidMappings (2026-07-31, same day)
 
 Closes the second finding from round 86's re-audit, per the user's
@@ -5035,6 +5084,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
+- ❌ **`ContainerStatus.user`** (found in round 89's re-audit) — reports the resolved UID/GID/`supplementalGroups` a container's first process *actually* started with (`k8s.io/api/core/v1`'s `ContainerUser`/`LinuxContainerUser`), most useful exactly when `runAsUser`/`runAsGroup` are *unset* and left to the image's own baked-in default — CRI's own `ContainerStatus` response already carries the identical `ContainerUser`/`LinuxContainerUser` messages (`proto/cri.proto`, field `user`, already vendored) `container_status_details()` could read directly, no new proto work needed. Never referenced anywhere in this codebase, confirmed via grep. **Real design question for whichever round implements this**: this is most valuable for a *running* container (confirming the resolved user right when it starts), but nodelet's `container_status_details()` is deliberately only ever called for *exited* containers today (round 24's "zero extra RPCs for a healthy container" design principle) — populating this for running containers would need a real, documented trade-off decision, not just wiring an existing field through.
 - ✅ **`securityContext.procMount`** (round 78; found in round 76's re-audit) — new pure `proc_mount_paths()` mirrors real kubelet's own `ConvertToRuntimeMaskedPaths()`/`ConvertToRuntimeReadonlyPaths()` (`pkg/securitycontext/util.go`) exactly: `Default`/unset gets the standard Docker/OCI-recommended masked (`/proc/acpi`, `/proc/kcore`, `/sys/firmware`, ...) and readonly (`/proc/sys`, `/proc/irq`, ...) path lists, `Unmasked` gets two genuinely empty lists — wired into `linux_security_context()`'s `masked_paths`/`readonly_paths`. **This closes a real, if subtle, security gap wider than "Unmasked doesn't work"**: nodelet previously never set either field at all (always proto3-absent), which on a modern containerd (`disable_proc_mount: false`, the common default config) applies **no `/proc` masking whatsoever regardless of the pod's own `procMount` setting** — confirmed by reading containerd's own CRI test suite (`internal/cri/server/container_create_linux_test.go`'s `TestMaskedAndReadonlyPaths`). Real kubelet's own always-explicit-never-implicit posture (it never relies on the runtime's own default either) is why this round matches it exactly rather than only fixing the narrower `Unmasked` case. Genuinely automated e2e tests for both `Default` (masked) and `Unmasked` (readable) using `/proc/kcore`'s distinct byte-count behavior — `warn`s rather than hard-fails, since honoring `masked_paths` at all is ultimately the CRI runtime's own choice (containerd's `disable_proc_mount` config affects this).
 - ✅ **`securityContext.sysctls`** (round 41; found in round 39's re-audit) — new pure `pod_sysctls()` flattens `spec.securityContext.sysctls` into CRI's `LinuxPodSandboxConfig.sysctls` map, threaded through `sandbox_config()`/`ensure_pod()` alongside the existing hostname resolution. No admission-time allowlisting of "safe" (namespaced) vs. unsafe (host-wide) sysctls — that's the apiserver's job upstream and nodelet has no admission layer at all; an unsupported sysctl simply surfaces as a real `RunPodSandbox` error from the CRI runtime. Genuinely automated e2e test (a real container's own `/proc/sys` read). See round 41 notes.
 - ✅ **`hostPID`/`hostIPC`/`shareProcessNamespace`** (round 40; found in round 39's re-audit) — new pure `pid_namespace_mode(host_pid, share_process_namespace) -> NamespaceMode` (`hostPID` wins → `Node`, else `shareProcessNamespace` → `Pod`, else `Container`) is now always applied, on both `sandbox_config()`'s `namespace_options.pid` and each container's own `linux_security_context()`'s `namespace_options.pid` (mirroring real kubelet setting it in both places). **Correctness fix, not just a missing feature**: CRI's own proto comment on `NamespaceOption.pid` says *"the CRI default is POD, but the v1.PodSpec default is CONTAINER"* — before this round nodelet never set the field at all, so every container was silently getting containerd's own POD-shared default, the **opposite** of real Kubernetes' actual default. `hostIPC` sets `namespace_options.ipc` to `Node` (else `Pod` — IPC has no `CONTAINER`-scope concept in the API at all, unlike PID). Genuinely automated e2e tests for `hostPID`/`shareProcessNamespace` (a container's own pid, structural proof); `hostIPC` is unit-tested only — no simple portable shell-level IPC probe in a minimal image, a documented scope limitation. See round 40 notes.
@@ -5068,6 +5118,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
 - ✅ **`volumeMounts[].mountPropagation`** (round 84; found in round 83's re-audit) — new pure `mount_propagation_cri()` (`volumes_pure.rs`) maps `HostToContainer`/`Bidirectional` (and `None`/unset, and any unrecognized value) onto CRI's `MountPropagation` enum, wired into both branches of `build_mounts()` (regular `HostPath` and image-backed mounts alike). Unset/unrecognized both fall back to `PRIVATE` — the same zero-value default this codebase already produced by omission before this round, so every mount that never set this field behaves identically to before. Genuinely automated e2e test proves wiring this newly-touched field on *every* mount didn't break the common (unset) case; the actual live propagation behavior (a new host-side mount becoming visible inside a running `HostToContainer` container without a restart) needs a real `mount(2)` syscall on the host after the pod is already running — a manual spot-check procedure, same honest-limitation treatment this project gives anything needing genuine root-level host mount operations mid-test.
 - 🟡 **`volumeMounts[].recursiveReadOnly`** (round 85; GA 1.33, KEP-3116; found in round 83's re-audit) — new pure `recursive_read_only_cri()` translates the API's ternary (`Disabled`/`IfPossible`/`Enabled`, `None` treated as `Disabled`) into CRI's plain boolean `Mount.recursive_read_only`, defensively enforcing the CRI proto's own contract (`recursive_read_only: true` requires `readonly: true` and `propagation` to resolve to `Private`) rather than trusting the caller — never sends a contract-violating combination, silently downgrading to `false` instead. **Documented scope simplification**: `IfPossible` is currently treated identically to `Enabled` (both resolve to `true` when the preconditions hold) — a genuine best-effort fallback would need to know whether the resolved runtime handler actually advertises `recursiveReadOnlyMounts` support (already surfaced to `Node.status.runtimeHandlers`, round 53) before deciding whether to ask for it at all; that capability isn't threaded down into the per-mount translation path this round, so an unsupporting runtime is left to reject or ignore the request per its own CRI implementation, same treatment this codebase already gives an unsupported `sysctl` (round 41).
+- ❌ **`ContainerStatus.volumeMounts[].recursiveReadOnly` reporting** (found in round 89's re-audit) — the API's own `VolumeMountStatus.recursiveReadOnly` doc comment is explicit: *"An `IfPossible` value in the original VolumeMount must be translated to `Disabled` or `Enabled`, depending on the mount result."* This is the exact missing half of round 85's own documented `IfPossible` simplification — real kubelet is supposed to report back, per mount, what actually happened, even before implementing genuine best-effort runtime-capability-aware behavior. CRI's own `ContainerStatus` response already carries a `mounts: repeated Mount` field (the *actual*, runtime-reported `Mount.recursive_read_only` value) `container_status_details()` could read directly. Same running-vs-exited-container RPC-cost design question as `ContainerStatus.user` above applies here too — these two findings share the same underlying trade-off, worth deciding together rather than separately.
 - 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`, `plugin_registry.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **Dynamic CSI driver discovery** (round 13) — a driver's `node-driver-registrar` sidecar can register itself against `NODELET_PLUGIN_REGISTRY_PATH` the same protocol it'd use against real kubelet's plugin watcher, no static config needed; `NODELET_CSI_DRIVERS` still works too, as a seed/override. **`nodeStageSecretRef`/`nodePublishSecretRef`** (round 13) — resolved to real Secret data and passed through to the driver. **Attach coordination** (round 19) — checks `CSIDriver.spec.attachRequired`, and for drivers that need it, waits on the matching `VolumeAttachment.status.attached` before Stage/Publish, threading `status.attachmentMetadata` through as `publish_context`. Calling the Controller service itself (`ControllerPublishVolume`/`ControllerUnpublishVolume`) stays out of scope — that's external-attacher's job upstream too, not kubelet's, confirmed against docs in round 19. Still out of scope: device-plugin registrations against this module (the same registration protocol, explicitly rejected with a real `NotifyRegistrationStatus{plugin_registered: false}` rather than ignored — that's `device_plugins.rs`'s job instead). Unvalidated against a real CSI driver — see rounds 12, 13, and 19 notes.
 - ✅ **hostPath** (found in a fresh gap re-audit; closed round 65) — `spec.volumes[].hostPath` resolves directly to the host's own existing path (not materialized under `VOLUME_ROOT` like every other volume kind), with real `type` validation (`DirectoryOrCreate`/`FileOrCreate`/`Directory`/`File`/`Socket`/`CharDevice`/`BlockDevice`) matching real kubelet's own create-vs-require-existing semantics exactly. A validation failure is logged and the volume skipped, same best-effort posture as every other unresolvable volume kind.
 - ✅ **`emptyDir.sizeLimit` enforcement** (found in round 65's fresh gap re-audit; closed round 67) — a plain-disk `emptyDir` volume exceeding its own `sizeLimit` now evicts the pod, checked independently of (and ahead of) both the whole-pod ephemeral-storage limit (round 49) and general node-pressure eviction — new `PodUsage.empty_dir_usage_bytes` (per-volume, same `directory_usage_bytes()` walk round 49 already uses) plus new pure `empty_dir_size_limits()`/`first_empty_dir_over_limit()` in `eviction.rs`. Scoped to plain-disk `emptyDir` only — `Memory`/`HugePages`-medium `sizeLimit` is already a real kernel-enforced cap at mount time (rounds 30/61), nothing for measurement-based eviction to add there.
@@ -5788,5 +5839,16 @@ accordingly; see those files' own updated framing.
       not nodelet's own auxiliary bind mounts). 7 new unit tests + a
       genuinely automated e2e test + a manual-note for real ownership-
       translation verification. See round 88 notes.
-- [ ] Round 89 (fresh gap re-audit) is next, per the user's "then
-      another audit" instruction.
+- [x] Round 89: fresh gap re-audit — no code change. Continued the
+      automated field-sweep against `ContainerStatus`'s full field list.
+      Found 2 new candidates, both traceable to the same already-vendored
+      CRI `ContainerStatus` data and the same open design question
+      (running-vs-exited-container RPC cost): `ContainerStatus.user` and
+      `ContainerStatus.volumeMounts[].recursiveReadOnly` reporting (the
+      exact missing half of round 85's own `IfPossible` simplification).
+      See round 89 notes.
+- [ ] Candidates for the next round: `ContainerStatus.user` or
+      `ContainerStatus.volumeMounts[].recursiveReadOnly` reporting —
+      roughly equal value, both share the same open RPC-cost design
+      question worth deciding once for both. Ask before starting the
+      next round.
