@@ -332,6 +332,13 @@ impl CriRuntime {
         self.container_users.lock().unwrap().get(&restart_count_key(sandbox_id, container_name)).cloned()
     }
 
+    /// `containerStatuses[].volumeMounts` (round 91) — a plain table
+    /// read, no RPC; the actual computation happens once at
+    /// container-creation time in `create_and_start_container()`.
+    pub(crate) fn container_volume_mount_statuses_for(&self, sandbox_id: &str, container_name: &str) -> Vec<(String, String, bool, Option<String>)> {
+        self.container_volume_mount_statuses.lock().unwrap().get(&restart_count_key(sandbox_id, container_name)).cloned().unwrap_or_default()
+    }
+
     /// `containerStatuses[].allocatedResourcesStatus` (round 79;
     /// `ResourceHealthStatus`, found in round 72's re-audit) — live
     /// per-device health for every device-plugin allocation currently
@@ -384,6 +391,7 @@ impl CriRuntime {
         self.applied_resources.lock().unwrap().remove(&key);
         self.spec_resources.lock().unwrap().remove(&key);
         self.container_users.lock().unwrap().remove(&key);
+        self.container_volume_mount_statuses.lock().unwrap().remove(&key);
         if let Some(cpu_manager) = &self.cpu_manager {
             let was_exclusive = cpu_manager.is_exclusive(&key);
             cpu_manager.release(&key);

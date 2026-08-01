@@ -66,6 +66,47 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_container_status_reports_recursive_read_only() {
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="container-status-rro"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: ro-vol
+      emptyDir: {}
+    - name: rw-vol
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+      volumeMounts:
+        - {name: ro-vol, mountPath: /ro, readOnly: true, recursiveReadOnly: Enabled}
+        - {name: rw-vol, mountPath: /rw}
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    # Round 91 (found in round 89's re-audit, the missing reporting half
+    # of round 85's IfPossible-treated-as-Enabled simplification):
+    # containerStatuses[].volumeMounts[].recursiveReadOnly is computed
+    # from the container's own volumeMounts spec at container-creation
+    # time (same as CRI mount-request time) -- no live-runtime wait
+    # needed beyond Running, but a moment for the status write to land.
+    local ro_status rw_status rw_read_only
+    wait_until 20 "$name containerStatuses[0].volumeMounts to be populated" bash -c \
+        "[[ -n \"\$(kctl get pod '$name' -o jsonpath='{.status.containerStatuses[0].volumeMounts}')\" ]]"
+    ro_status="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].volumeMounts[?(@.name=="ro-vol")].recursiveReadOnly}')"
+    rw_status="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].volumeMounts[?(@.name=="rw-vol")].recursiveReadOnly}')"
+    rw_read_only="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].volumeMounts[?(@.name=="rw-vol")].readOnly}')"
+    assert_eq "$ro_status" "Enabled" "ro-vol's recursiveReadOnly: Enabled must be reported back as Enabled"
+    assert_eq "$rw_status" "" "rw-vol is not read-only, so recursiveReadOnly must stay unspecified"
+    assert_eq "$rw_read_only" "false" "rw-vol readOnly should reflect the container's actual mount"
+    delete_pod_if_exists "$name"
+}
+
 test_read_only_root_filesystem_is_enforced() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="readonly-rootfs"

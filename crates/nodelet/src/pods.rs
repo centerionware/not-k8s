@@ -16,7 +16,7 @@ use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
     ConfigMap, ContainerState, ContainerStateRunning, ContainerStateTerminated, ContainerStateWaiting,
     ContainerStatus, ContainerUser, HostIP, LinuxContainerUser, Pod, PodCondition, PodIP, PodStatus, ResourceHealth,
-    ResourceStatus, Secret, Volume,
+    ResourceStatus, Secret, Volume, VolumeMountStatus,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{ListParams, Patch, PatchParams};
@@ -526,6 +526,26 @@ fn container_user_field(user: Option<&(i64, i64, Vec<i64>)>) -> Option<Container
     })
 }
 
+/// `containerStatuses[].volumeMounts` (round 91; found in round 89's
+/// re-audit) — `None` if the container has no `volumeMounts` at all,
+/// `Some` (one entry per mount) otherwise.
+fn volume_mount_statuses_field(mounts: &[(String, String, bool, Option<String>)]) -> Option<Vec<VolumeMountStatus>> {
+    if mounts.is_empty() {
+        return None;
+    }
+    Some(
+        mounts
+            .iter()
+            .map(|(name, mount_path, read_only, recursive_read_only)| VolumeMountStatus {
+                name: name.clone(),
+                mount_path: mount_path.clone(),
+                read_only: Some(*read_only),
+                recursive_read_only: recursive_read_only.clone(),
+            })
+            .collect(),
+    )
+}
+
 fn last_container_state(last: Option<&crate::runtime::TerminatedInfo>) -> ContainerState {
     match last {
         Some(info) => ContainerState {
@@ -627,6 +647,7 @@ fn build_pod_status(
             allocated_resources: c.allocated_resources.clone(),
             allocated_resources_status: allocated_resources_status_field(&c.allocated_resources_status),
             user: container_user_field(c.container_user.as_ref()),
+            volume_mounts: volume_mount_statuses_field(&c.volume_mount_statuses),
             stop_signal: c.stop_signal.clone(),
             ..Default::default()
         })
@@ -664,6 +685,7 @@ fn build_pod_status(
             state: Some(container_state(c, None, "PodInitializing")),
             allocated_resources_status: allocated_resources_status_field(&c.allocated_resources_status),
             user: container_user_field(c.container_user.as_ref()),
+            volume_mounts: volume_mount_statuses_field(&c.volume_mount_statuses),
             stop_signal: c.stop_signal.clone(),
             ..Default::default()
         })
@@ -703,6 +725,7 @@ fn build_pod_status(
             }),
             allocated_resources_status: allocated_resources_status_field(&c.allocated_resources_status),
             user: container_user_field(c.container_user.as_ref()),
+            volume_mounts: volume_mount_statuses_field(&c.volume_mount_statuses),
             stop_signal: c.stop_signal.clone(),
             ..Default::default()
         })

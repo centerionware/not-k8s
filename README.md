@@ -486,8 +486,12 @@ applies to volumes too, not just the sandbox itself. Round 90 closed
 `containerStatuses[].user`: the resolved UID/GID/`supplementalGroups` a
 container's first process actually started with is fetched once, right
 after the container starts, and cached — no extra RPCs on a healthy
-container's ongoing reconciles. Full status list in
-`docs/GAP_CLOSURE.md`.
+container's ongoing reconciles. Round 91 closed
+`containerStatuses[].volumeMounts[].recursiveReadOnly`: what an
+`IfPossible`/`Enabled` mount actually resolved to, computed once at
+container-creation time straight from the spec (no RPC at all, matching
+real kubelet's own approach — CRI has no volume-name concept to read
+this back from). Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

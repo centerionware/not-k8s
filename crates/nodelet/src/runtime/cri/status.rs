@@ -306,6 +306,7 @@ impl CriRuntime {
                 waiting_reason_override,
                 allocated_resources_status: self.allocated_resources_status(sandbox_id, &name),
                 container_user: self.container_user_for(sandbox_id, &name),
+                volume_mount_statuses: self.container_volume_mount_statuses_for(sandbox_id, &name),
             });
         }
 
@@ -390,6 +391,7 @@ impl CriRuntime {
                 };
                 let allocated_resources_status = self.allocated_resources_status(sandbox_id, &name);
                 let container_user = self.container_user_for(sandbox_id, &name);
+                let volume_mount_statuses = self.container_volume_mount_statuses_for(sandbox_id, &name);
                 out.push(ContainerRuntimeStatus {
                     restart_count: self.restart_count(sandbox_id, &name),
                     name,
@@ -418,6 +420,7 @@ impl CriRuntime {
                     waiting_reason_override: None,
                     allocated_resources_status,
                     container_user,
+                    volume_mount_statuses,
                 });
         }
         Ok(out)

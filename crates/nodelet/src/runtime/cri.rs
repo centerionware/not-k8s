@@ -323,6 +323,14 @@ pub struct CriRuntime {
     /// re-fetches, since a new instance could resolve to a different
     /// user (e.g. if the image itself changed).
     container_users: Mutex<HashMap<String, (i64, i64, Vec<i64>)>>,
+    /// `"sandbox_id/container_name" -> [(volume name, mount path, read_only,
+    /// recursive_read_only)]` (round 91; found in round 89's re-audit) —
+    /// `containerStatuses[].volumeMounts`. Unlike `container_users` above,
+    /// this needs no RPC at all: it's entirely derived from the container's
+    /// own `volumeMounts` spec, which is already in hand right where
+    /// `build_mounts()` is called at container-creation time — computed and
+    /// cached there once, read back by `build_status()` via plain lookup.
+    container_volume_mount_statuses: Mutex<HashMap<String, Vec<(String, String, bool, Option<String>)>>>,
     /// Resize status reporting (round 43; the deferred half of round 42's
     /// arc). Same `"sandbox_id/container_name"` key as `container_resources`
     /// (and the same reasoning: `build_status()`'s event-driven path has no
@@ -489,6 +497,7 @@ impl CriRuntime {
             memory_manager,
             container_resources: Mutex::new(HashMap::new()),
             container_users: Mutex::new(HashMap::new()),
+            container_volume_mount_statuses: Mutex::new(HashMap::new()),
             applied_resources: Mutex::new(HashMap::new()),
             spec_resources: Mutex::new(HashMap::new()),
             topology_policy,
@@ -666,3 +675,6 @@ mod tests_format_container_id;
 #[cfg(test)]
 #[path = "cri_tests/hugepage_cri_page_size.rs"]
 mod tests_hugepage_cri_page_size;
+#[cfg(test)]
+#[path = "cri_tests/volume_mount_status_tuples.rs"]
+mod tests_volume_mount_status_tuples;

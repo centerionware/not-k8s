@@ -279,6 +279,14 @@ impl CriRuntime {
         // level (round 25); read-only here, never allocates.
         let userns_mapping = (!id.host_users).then(|| self.userns.assigned(&id.uid)).flatten();
         let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes, envs, userns_mapping);
+        // `containerStatuses[].volumeMounts` (round 91; found in round 89's
+        // re-audit): entirely derived from the spec, no RPC needed — cached
+        // here (same key shape as `container_users`) for `build_status()`
+        // to read back via plain lookup.
+        self.container_volume_mount_statuses.lock().unwrap().insert(
+            restart_count_key(sandbox_id, &container.name),
+            volume_mount_status_tuples(container.volume_mounts.as_deref().unwrap_or(&[])),
+        );
         if let Some(ResolvedVolume::HostPath(hosts_path)) = volumes.get(ETC_HOSTS_VOLUME_KEY) {
             mounts.push(Mount {
                 container_path: "/etc/hosts".to_string(),

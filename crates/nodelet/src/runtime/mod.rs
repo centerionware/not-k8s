@@ -134,6 +134,12 @@ pub struct ContainerRuntimeStatus {
     /// cached for the rest of that instance's life; `None` if it was
     /// never fetched (e.g. the mock runtime) or the fetch failed.
     pub container_user: Option<(i64, i64, Vec<i64>)>,
+    /// `containerStatuses[].volumeMounts` (round 91; found in round 89's
+    /// re-audit) — `(volume name, mount path, read_only,
+    /// recursive_read_only)` tuples, one per the container spec's own
+    /// `volumeMounts` entries; empty if the container has none (or on
+    /// the mock runtime, which doesn't track this).
+    pub volume_mount_statuses: Vec<(String, String, bool, Option<String>)>,
     /// Round 75; found in round 73's crash-loop backoff work. `Some` only
     /// while a container that keeps exiting is currently in its backoff
     /// window (`waiting_reason_override` below always `Some` alongside

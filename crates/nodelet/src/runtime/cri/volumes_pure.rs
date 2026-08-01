@@ -189,6 +189,40 @@ fn mount_id_mappings(userns_mapping: Option<(u32, u32)>) -> Vec<IdMapping> {
     userns_mapping.map(|(host_id, length)| vec![IdMapping { host_id, container_id: 0, length }]).unwrap_or_default()
 }
 
+/// `containerStatuses[].volumeMounts[].recursiveReadOnly` reporting
+/// (round 91; found in round 89's re-audit) — the exact missing
+/// reporting half of this file's own `recursive_read_only_cri()`
+/// above (round 85's documented `IfPossible`-treated-as-`Enabled`
+/// simplification applies here too, unchanged). Real kubelet computes
+/// this straight from the container's own `volumeMounts` spec at
+/// status-build time (`kubelet_pods.go`'s `resolveRecursiveReadOnly`),
+/// the SAME resolution used at CRI mount-request time — NOT read back
+/// from the runtime's own `ContainerStatus.mounts`, since CRI has no
+/// concept of a volume *name* to reconstruct `VolumeMountStatus.name`
+/// from. Every entry in `volume_mounts` is reported (never filtered,
+/// unlike `build_mounts()` — a volume that failed to resolve still had
+/// a real spec entry upstream reports). Returns
+/// `(name, mount_path, read_only, recursive_read_only)` tuples rather
+/// than the real `k8s_openapi::api::core::v1::VolumeMountStatus` type
+/// directly, matching this codebase's established "pure tuple DTO,
+/// converted to the real API type in `pods.rs`" pattern (round 90's
+/// `ContainerStatus.user` did the same) — keeps this function callable
+/// from a plain unit test without needing the `cri` feature's own
+/// vendored types pulled in just for the tuple shape.
+pub(crate) fn volume_mount_status_tuples(volume_mounts: &[k8s_openapi::api::core::v1::VolumeMount]) -> Vec<(String, String, bool, Option<String>)> {
+    volume_mounts
+        .iter()
+        .map(|vm| {
+            let readonly = vm.read_only.unwrap_or(false);
+            let propagation = mount_propagation_cri(vm.mount_propagation.as_deref());
+            let recursive_read_only = readonly.then(|| {
+                if recursive_read_only_cri(vm.recursive_read_only.as_deref(), readonly, propagation) { "Enabled" } else { "Disabled" }.to_string()
+            });
+            (vm.name.clone(), vm.mount_path.clone(), readonly, recursive_read_only)
+        })
+        .collect()
+}
+
 pub(crate) fn build_mounts(
     volume_mounts: &[k8s_openapi::api::core::v1::VolumeMount],
     volumes: &HashMap<String, ResolvedVolume>,
