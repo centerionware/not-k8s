@@ -21,7 +21,7 @@ default = []
 # attach/portForward) — it's meaningless without real containers to log/exec into.
 cri = [
     "dep:tonic", "dep:prost", "dep:prost-types", "dep:tonic-prost", "dep:tonic-prost-build",
-    "dep:tower", "dep:hyper-util", "dep:http", "dep:hyper", "dep:http-body-util", "dep:rcgen",
+    "dep:tower", "dep:hyper-util", "dep:http", "dep:hyper", "dep:http-body-util",
     "dep:percent-encoding", "dep:tokio-stream", "dep:tokio-rustls", "dep:zbus", "dep:x509-parser",
 ]
 
@@ -42,6 +42,8 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 libc = "0.2"
 base64 = "0.22"
+rcgen = "0.13"
+secrecy = "0.10"
 
 tonic = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
@@ -52,7 +54,6 @@ hyper-util = { workspace = true, features = ["tokio", "server", "server-auto", "
 http = { version = "1", optional = true }
 hyper = { version = "1", features = ["server", "http1"], optional = true }
 http-body-util = { version = "0.1", optional = true }
-rcgen = { version = "0.13", optional = true }
 percent-encoding = { version = "2", optional = true }
 tokio-stream = { version = "0.1", optional = true }
 tokio-rustls = { version = "0.26", optional = true }

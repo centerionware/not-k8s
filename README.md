@@ -505,7 +505,14 @@ chaining to the configured CA authenticates directly off its Subject
 CN/O (no `TokenReview` round-trip), matching real kubelet's own
 x509-then-bearer-token authenticator chain, while a request with no
 cert still falls back to the existing bearer-token path unchanged.
-Full status list in `docs/GAP_CLOSURE.md`.
+Round 96 added TLS bootstrap (`NODELET_BOOTSTRAP_KUBECONFIG`): given a
+low-privilege bootstrap credential, nodelet generates a keypair,
+submits a `certificates.k8s.io/v1` CertificateSigningRequest for its
+own node identity, and — once the apiserver's own node-authorizer
+approves and signs it — writes a real client-cert kubeconfig for all
+further apiserver traffic, the same `--bootstrap-kubeconfig` flow real
+kubelet uses instead of always needing a working kubeconfig handed to
+it directly. Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

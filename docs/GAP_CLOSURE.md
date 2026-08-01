@@ -27,6 +27,72 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 96: TLS bootstrap — CSR-based initial client cert issuance (2026-08-01, same day)
+
+Last of the user's 3 chosen ❌ items ("do all of them in the order of
+your choosing": `--config` file → round 94, client certificate
+authentication → round 95, this one last). Analogous to real
+kubelet's own `--bootstrap-kubeconfig` flow, but on the *client* side
+of nodelet's own apiserver connection — round 95 was about the
+server side (who's allowed to call *into* nodelet); this is about how
+nodelet itself first gets a real credential to call *out* to the
+apiserver, instead of always being handed a working kubeconfig
+directly.
+
+New `NODELET_BOOTSTRAP_KUBECONFIG` (empty by default — disabled,
+identical to every pre-round-96 behavior: nodelet resolves its
+apiserver identity exactly as before via
+`kube::Client::try_default()`) points at a low-privilege kubeconfig
+(typically authenticating via a bootstrap token) that can only create
+`certificates.k8s.io/v1` `CertificateSigningRequest` objects. New
+`bootstrap.rs` (not `cri`-gated — this is runtime-independent apiserver
+identity plumbing, same as the rest of `main.rs`'s startup sequence):
+generates a keypair and a real PKCS#10 CSR via `rcgen`'s
+`CertificateParams::serialize_request()` (distinct from the
+self-signed-cert path `server/tls.rs` already used for the *server*
+cert), with Subject CN=`system:node:<node-name>`/O=`system:nodes` —
+the exact identity convention the apiserver's node-authorizer expects.
+Submits it with `signerName: kubernetes.io/kube-apiserver-client-kubelet`,
+then polls (`status.certificate`/`status.conditions`) until it's
+issued, denied, or times out (~5 minutes). **Nodelet never
+self-approves** — approval is entirely the apiserver's own
+node-authorizer/csrapproving controller's job, matching upstream
+exactly; nodelet only creates the CSR object and waits.
+
+Once issued, writes a new kubeconfig (same cluster/server/CA the
+bootstrap kubeconfig pointed at, new user authenticating with the
+issued client cert) to `NODELET_KUBECONFIG` (default
+`/var/lib/nodelet/kubeconfig`), then sets `$KUBECONFIG` so the
+existing `kube::Client::try_default()` call picks it up unchanged —
+zero changes needed to how the rest of nodelet talks to the
+apiserver. **Documented scope simplification**: no automatic
+certificate rotation before expiry yet — an already-non-empty
+`NODELET_KUBECONFIG` file is treated as "already bootstrapped" and
+reused forever, matching this project's existing "initial issuance
+over full lifecycle management" posture for TLS material generally
+(`server/tls.rs`'s self-signed server cert is likewise never
+auto-rotated).
+
+`rcgen` and `secrecy` moved from `cri`-feature-gated optional
+dependencies to plain always-available ones (bootstrap needs them
+regardless of runtime; `server/tls.rs`'s own use of `rcgen` stays
+implicitly `cri`-only since the whole `server` module is). 13 new
+unit tests (`bootstrap.rs`'s new `tests_pure_functions` module —
+node identity convention, CSR object construction, the
+issued/denied/pending outcome decision, output-kubeconfig
+construction — all pure, no live apiserver needed). `cargo test -p
+nodelet --features cri`: 1070 passed (+13); mock: 341 passed (+13 —
+`bootstrap.rs` isn't `cri`-gated). New
+`deploy/lib/test/cases/bootstrap.sh` — a manual-note test (same
+"can't control this harness's already-started nodelet's own startup
+environment, or provide a CSR-approving cluster" limitation rounds 94
+and 95 both hit), with full steps to generate a bootstrap kubeconfig,
+approve the resulting CSR, and confirm both first-boot issuance and
+second-boot reuse.
+
+This closes all 3 of the user's chosen order-your-choosing items.
+Only the explicitly-not-recommended Checkpoint API remains ❌.
+
 ## Round 95: client certificate authentication (2026-08-01, same day)
 
 Second of the user's 3 chosen ❌ items ("do all of them in the order
@@ -5458,7 +5524,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Graceful node shutdown** (`shutdown.rs`) — a systemd-logind shutdown-delay inhibitor lock held via D-Bus, released once every pod's been driven through the normal `preStop`/`StopContainer` teardown path within a configurable time budget (`NODELET_SHUTDOWN_GRACE_PERIOD_SECS`, `0`/disabled by default matching upstream). Non-critical pods terminated first, `system-node-critical`/`system-cluster-critical` pods last, each pod's own `terminationGracePeriodSeconds` capped to whatever's left of the budget. **The D-Bus glue is unvalidated against a real systemd-logind** — no system bus in the environment that built it; see the round 9 notes below and `deploy/lib/test/cases/graceful_shutdown.sh`'s manual spot-check procedure.
 
 ### Bootstrapping / config
-- ❌ TLS bootstrap (CSR-based initial client cert issuance) — nodelet currently expects to be handed a working kubeconfig directly; lower priority given the project's already-simplified config philosophy, but a real gap if "100%" includes it.
+- ✅ **TLS bootstrap** (round 96) — `NODELET_BOOTSTRAP_KUBECONFIG` (empty by default, disabled) points at a low-privilege kubeconfig; nodelet generates a keypair, submits a `certificates.k8s.io/v1` CertificateSigningRequest (signerName `kubernetes.io/kube-apiserver-client-kubelet`, CN=`system:node:<node>`/O=`system:nodes`), waits for the apiserver's own node-authorizer to approve+issue it (nodelet never self-approves), then writes a real client-cert kubeconfig to `NODELET_KUBECONFIG` before the normal client is built. **Documented scope simplification**: no automatic rotation before expiry yet — an already-bootstrapped kubeconfig is reused forever.
 - ✅ **`--config` file / drop-in config directory** (round 94) — `NODELET_CONFIG_FILE` (single YAML file) / `NODELET_CONFIG_DIR` (drop-in directory, filename-sort-order merge) map the same `NODELET_*` keys already read from the environment; a real environment variable always wins over the file, matching upstream's flag-beats-config-file precedence. **Documented scope simplification**: doesn't reimplement real kubelet's own versioned `KubeletConfiguration` (`kubelet.config.k8s.io/v1beta1`) schema — a `NODELET_*`-keyed YAML mapping instead, consistent with this project's own env-var naming everywhere else.
 
 ## Scale reality check
@@ -6210,9 +6276,24 @@ accordingly; see those files' own updated framing.
       tests + a manual-note e2e test with full `openssl` steps (same
       "can't control this suite's already-started nodelet's startup
       environment" limitation as round 94). See round 95 notes.
-- [ ] User picked all 3 remaining implementable ❌ items to be done in
+- [x] Round 96: TLS bootstrap (CSR-based initial client cert
+      issuance) — `NODELET_BOOTSTRAP_KUBECONFIG` (empty/disabled by
+      default) points at a low-privilege kubeconfig; nodelet generates
+      a keypair + PKCS#10 CSR via `rcgen`'s `serialize_request()`
+      (CN=`system:node:<node>`/O=`system:nodes`), submits a
+      `certificates.k8s.io/v1` CertificateSigningRequest (signerName
+      `kubernetes.io/kube-apiserver-client-kubelet`), polls for
+      approval+issuance (never self-approves — that's the apiserver's
+      node-authorizer's job), then writes a real client-cert
+      kubeconfig to `NODELET_KUBECONFIG` and points `$KUBECONFIG` at
+      it before the existing `kube::Client::try_default()` call.
+      `rcgen`/`secrecy` moved from `cri`-gated to plain dependencies
+      (bootstrap is runtime-independent). Documented scope
+      simplification: no automatic rotation before expiry yet. 13 new
+      unit tests (new `bootstrap.rs`, not `cri`-gated) + a manual-note
+      e2e test. See round 96 notes.
+- [x] User picked all 3 remaining implementable ❌ items to be done in
       sequence ("do all of them in the order of your choosing"):
-      `--config` file (round 94, done), client certificate
-      authentication (round 95, done above), then TLS bootstrap
-      (CSR-based cert issuance) — the last of the 3. Checkpoint API
-      remains explicitly not recommended.
+      `--config` file (round 94), client certificate authentication
+      (round 95), TLS bootstrap (round 96) — all 3 now done. Only the
+      explicitly-not-recommended Checkpoint API remains ❌.

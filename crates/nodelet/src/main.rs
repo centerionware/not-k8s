@@ -42,6 +42,11 @@ async fn main() -> Result<()> {
         "starting nodelet"
     );
 
+    // TLS bootstrap: no-op unless NODELET_BOOTSTRAP_KUBECONFIG is set. On
+    // success this sets $KUBECONFIG to the freshly issued client-cert
+    // kubeconfig before the real client below is built.
+    nodelet::bootstrap::run(&cfg).await.context("TLS bootstrap")?;
+
     let client = kube::Client::try_default()
         .await
         .context("building kube client (is KUBECONFIG set and the apiserver reachable?)")?;

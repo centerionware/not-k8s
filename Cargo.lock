@@ -1318,6 +1318,7 @@ dependencies = [
  "prost-types",
  "rcgen",
  "rustls",
+ "secrecy",
  "serde",
  "serde_json",
  "serde_yaml",

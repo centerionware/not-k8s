@@ -156,6 +156,31 @@ pub struct Config {
     /// to this CA fails the TLS handshake outright (rustls's own
     /// verification, before nodelet's code ever sees the connection).
     pub client_ca_file: String,
+    /// `--bootstrap-kubeconfig` (round 96) — path to a low-privilege
+    /// kubeconfig (typically authenticating via a bootstrap token) that can
+    /// only create `CertificateSigningRequest` objects. Empty (default)
+    /// disables the whole TLS bootstrap flow: nodelet resolves its
+    /// apiserver identity exactly as before (`kube::Client::try_default()`
+    /// against `$KUBECONFIG`/in-cluster config), matching this codebase's
+    /// pre-round-96 behavior. When set, and `kubeconfig_out` doesn't exist
+    /// yet, nodelet generates a keypair, submits a CSR (signerName
+    /// `kubernetes.io/kube-apiserver-client-kubelet`, CN=`system:node:
+    /// <node-name>`, O=`system:nodes` — the same identity convention real
+    /// kubelet uses), waits for it to be approved and issued (by the
+    /// apiserver's own node-authorizer/csrapproving controller — nodelet
+    /// does not self-approve), and writes the resulting client-cert-backed
+    /// kubeconfig to `kubeconfig_out` before the normal client is built.
+    pub bootstrap_kubeconfig: String,
+    /// Where the TLS-bootstrap flow writes (and, on later starts, finds
+    /// already written) the real client-cert-backed kubeconfig. Only
+    /// consulted when `bootstrap_kubeconfig` is set. **Documented scope
+    /// simplification**: nodelet does not yet re-run this flow to rotate
+    /// the certificate before it expires (real kubelet does) — an already
+    /// non-empty file here is treated as "already bootstrapped" and reused
+    /// as-is, forever. Matches this project's existing "initial issuance
+    /// over full lifecycle management" posture for anything TLS-adjacent
+    /// (see `server/tls.rs`'s self-signed cert, also never auto-rotated).
+    pub kubeconfig_out: String,
     /// Real kubelet's `ShutdownGracePeriod` — total time budget to terminate
     /// pods after systemd-logind signals an imminent shutdown, before
     /// releasing the inhibitor lock and letting shutdown proceed. `0`
@@ -352,6 +377,8 @@ impl Config {
         let server_cert_dir =
             std::env::var("NODELET_SERVER_CERT_DIR").unwrap_or_else(|_| "/var/lib/nodelet/pki".to_string());
         let client_ca_file = std::env::var("NODELET_CLIENT_CA_FILE").unwrap_or_default();
+        let bootstrap_kubeconfig = std::env::var("NODELET_BOOTSTRAP_KUBECONFIG").unwrap_or_default();
+        let kubeconfig_out = std::env::var("NODELET_KUBECONFIG").unwrap_or_else(|_| "/var/lib/nodelet/kubeconfig".to_string());
         let gc_interval = Duration::from_secs(env_u64("NODELET_GC_INTERVAL_SECS", 300)?);
         let image_gc_high_threshold_percent = match std::env::var("NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT") {
             Ok(v) => v.parse().context("NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT must be an integer 0-100")?,
@@ -453,6 +480,8 @@ impl Config {
             server_port,
             server_cert_dir,
             client_ca_file,
+            bootstrap_kubeconfig,
+            kubeconfig_out,
             gc_interval,
             image_gc_high_threshold_percent,
             image_gc_low_threshold_percent,

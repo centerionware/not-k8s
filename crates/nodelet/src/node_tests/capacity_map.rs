@@ -32,6 +32,8 @@ fn cfg(cpu: u64, mem: u64, pods: u64) -> Config {
         server_port: 10250,
         server_cert_dir: "/tmp".to_string(),
         client_ca_file: String::new(),
+        bootstrap_kubeconfig: String::new(),
+        kubeconfig_out: String::new(),
         gc_interval: Duration::from_secs(300),
         image_gc_high_threshold_percent: 85,
         image_gc_low_threshold_percent: 80,

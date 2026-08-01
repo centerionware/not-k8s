@@ -3,6 +3,7 @@
 //! Library surface so integration tests / examples (e.g. the containerd smoke
 //! test) can drive the same code the binary runs. See `main.rs` for the agent.
 
+pub mod bootstrap;
 #[cfg(feature = "cri")]
 pub mod cgroup;
 pub mod config;
