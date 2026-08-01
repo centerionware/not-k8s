@@ -278,6 +278,44 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_host_aliases_still_work_under_host_users_false() {
+    # Round 98 (found in round 88's own documented follow-up): the
+    # /etc/hosts auxiliary bind-mount now carries the pod's userns id
+    # mapping too when hostUsers: false, same as every regular
+    # volumeMount already got in round 88. What's fully automatable:
+    # the mount still works and /etc/hosts still materializes correctly
+    # with the mapping applied, not that it broke the container's own
+    # hostAliases entries. Genuine ownership-translation proof needs the
+    # same root-required pre-chowned-file setup as
+    # test_host_users_volume_ownership_translation_manual_note.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="hostaliases-userns"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  hostUsers: false
+  hostAliases:
+    - ip: "10.1.2.3"
+      hostnames: ["custom.example.com"]
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with hostUsers: false and hostAliases together — check the aux_id_mappings wiring in runtime/cri/container_create.rs's /etc/hosts mount, or whether this runtime version rejects Mount.uidMappings/.gidMappings entirely"
+    fi
+    local hosts_path
+    hosts_path="$(pod_volume_host_path "$name" etc-hosts)"
+    wait_until 20 "hostAliases /etc/hosts materialized" bash -c "[[ -s '$hosts_path' ]]"
+    assert_contains "$(cat "$hosts_path")" "10.1.2.3	custom.example.com" "generated /etc/hosts under hostUsers: false"
+    delete_pod_if_exists "$name"
+}
+
 test_fsgroup_chowns_materialized_volumes() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="fsgroup"
@@ -625,6 +663,7 @@ register_test test_sub_path_expr_expands_a_downward_api_env_var
 register_test test_projected_volume_merges_configmap_and_downward_api
 register_test test_service_account_token_projected_volume_mints_a_real_token
 register_test test_host_aliases_are_written_to_etc_hosts
+register_test test_host_aliases_still_work_under_host_users_false
 register_test test_empty_dir_medium_memory_is_backed_by_tmpfs
 register_test test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs
 register_test test_image_volume_source_mounts_a_read_only_image

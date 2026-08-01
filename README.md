@@ -516,8 +516,12 @@ it directly. Round 97 gave `volumeMounts[].recursiveReadOnly: IfPossible`
 a real best-effort fallback: it now resolves to `true` only when the
 pod's resolved runtime handler actually advertises
 `recursiveReadOnlyMounts` support, falling back to a plain read-only
-mount otherwise, instead of always behaving like `Enabled`. Full
-status list in `docs/GAP_CLOSURE.md`.
+mount otherwise, instead of always behaving like `Enabled`. Round 98
+extended `hostUsers: false`'s per-volume `Mount.uidMappings`/
+`.gidMappings` (round 88) to nodelet's own auxiliary host-bind-mounts
+(`hostAliases`' `/etc/hosts`, `terminationMessagePath`) too, closing
+the one gap round 88 itself had flagged. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

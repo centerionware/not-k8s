@@ -291,11 +291,21 @@ impl CriRuntime {
             restart_count_key(sandbox_id, &container.name),
             volume_mount_status_tuples(container.volume_mounts.as_deref().unwrap_or(&[]), handler_supports_recursive_ro),
         );
+        // Round 98 (found in round 88's own documented follow-up): this
+        // pod's userns id mapping applies to nodelet's own auxiliary
+        // host-bind-mounts too, not just regular volumeMounts -- without
+        // it, /etc/hosts and the termination-message file would show up
+        // owned by the pod's unmapped host-range uid inside the
+        // container, unlike every other mount hostUsers: false already
+        // gets right.
+        let aux_id_mappings = mount_id_mappings(userns_mapping);
         if let Some(ResolvedVolume::HostPath(hosts_path)) = volumes.get(ETC_HOSTS_VOLUME_KEY) {
             mounts.push(Mount {
                 container_path: "/etc/hosts".to_string(),
                 host_path: hosts_path.to_string_lossy().into_owned(),
                 readonly: false,
+                uid_mappings: aux_id_mappings.clone(),
+                gid_mappings: aux_id_mappings.clone(),
                 ..Default::default()
             });
         }
@@ -317,7 +327,14 @@ impl CriRuntime {
             }
             let container_path =
                 container.termination_message_path.clone().filter(|p| !p.is_empty()).unwrap_or_else(|| "/dev/termination-log".to_string());
-            mounts.push(Mount { container_path, host_path: host_path.to_string_lossy().into_owned(), readonly: false, ..Default::default() });
+            mounts.push(Mount {
+                container_path,
+                host_path: host_path.to_string_lossy().into_owned(),
+                readonly: false,
+                uid_mappings: aux_id_mappings.clone(),
+                gid_mappings: aux_id_mappings.clone(),
+                ..Default::default()
+            });
         }
         let mut resources = linux_resources(container.resources.as_ref(), qos, self.node_memory_bytes, self.node_swap_bytes, self.memory_swap_limited);
         let limits = container.resources.as_ref().and_then(|r| r.limits.as_ref());

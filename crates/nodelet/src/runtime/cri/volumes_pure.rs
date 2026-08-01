@@ -196,7 +196,7 @@ pub(crate) fn recursive_read_only_cri(recursive_read_only: Option<&str>, readonl
 /// `userns_options` already satisfies at the sandbox level. `container_id`
 /// is always `0` — same single-range-covering-the-whole-container-ID-space
 /// shape `sandbox_config()`'s own `UserNamespace` mapping already uses.
-fn mount_id_mappings(userns_mapping: Option<(u32, u32)>) -> Vec<IdMapping> {
+pub(crate) fn mount_id_mappings(userns_mapping: Option<(u32, u32)>) -> Vec<IdMapping> {
     userns_mapping.map(|(host_id, length)| vec![IdMapping { host_id, container_id: 0, length }]).unwrap_or_default()
 }
 
