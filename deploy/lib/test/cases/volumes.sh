@@ -309,6 +309,47 @@ EOF
     gid="$(stat -c %g "$dir")"
     assert_eq "$gid" "4321" "fsGroup ownership on materialized volume"
     delete_pod_if_exists "$name"
+}
+
+test_fsgroup_never_applies_to_hostpath_volumes() {
+    # Round 93 (found in round 92's re-audit, verified against upstream
+    # kubelet source before implementing): real kubelet's hostPath plugin
+    # doesn't support ownership management at all -- fsGroup must never
+    # touch a hostPath volume's directory, since it's the host's own
+    # pre-existing path, not something the pod owns.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local host_dir
+    host_dir="$(mktemp -d /tmp/nodelet-fsgroup-hostpath-test.XXXXXX)"
+    local original_gid
+    original_gid="$(stat -c %g "$host_dir")"
+    local name="fsgroup-hostpath"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  securityContext:
+    fsGroup: 4322
+  volumes:
+    - name: hostvol
+      hostPath:
+        path: $host_dir
+        type: Directory
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+      volumeMounts:
+        - {name: hostvol, mountPath: /host}
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    sleep 2 # give resolve_volumes()'s fsGroup pass a moment, if it were (wrongly) going to run
+    local gid
+    gid="$(stat -c %g "$host_dir")"
+    delete_pod_if_exists "$name"
+    rm -rf "$host_dir"
+    assert_eq "$gid" "$original_gid" "fsGroup must never chown a real hostPath volume's directory (matches upstream: hostPath has no ownership-management support)"
     kctl delete configmap "$name-cm" --ignore-not-found >/dev/null
 }
 
@@ -588,6 +629,7 @@ register_test test_empty_dir_medium_memory_is_backed_by_tmpfs
 register_test test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs
 register_test test_image_volume_source_mounts_a_read_only_image
 register_test test_fsgroup_chowns_materialized_volumes
+register_test test_fsgroup_never_applies_to_hostpath_volumes
 test_mount_propagation_host_to_container_still_mounts_normally() {
     # Round 84 (found in round 83's re-audit): volumeMounts[].mountPropagation
     # was never set at all before this (every mount silently got CRI's

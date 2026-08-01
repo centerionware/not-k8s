@@ -27,6 +27,66 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 93: `PodSecurityContext.fsGroupChangePolicy` (2026-08-01, same day)
+
+Closed round 92's one finding — but with a real correction to that
+finding's own framing, found by checking upstream *before* implementing
+(`gh api` fetch of `pkg/volume/volume_linux.go` plus every in-tree
+volume plugin's own `NewVolumeOwnership` call site). Real kubelet
+hardcodes `fsGroupChangePolicy` to `nil` (always full recursive chown,
+ignoring whatever the pod actually asked for) for exactly the volume
+types this codebase's own `apply_fs_group()` (round 3) already reaches
+— ConfigMap/Secret/emptyDir/downwardAPI/projected. The field is only
+ever *honored* upstream for PersistentVolume-backed types (CSI/iSCSI/
+FC/local; CSI is the only one of those this codebase has a driver
+story for). So implementing the `OnRootMismatch` skip for nodelet's
+existing volume set would have been a deviation from upstream, not a
+fix — flagged to the user before proceeding; the user's own direction
+was to extend `fsGroup` reach to PV-backed (CSI) volumes and add the
+policy there, matching upstream's actual behavior.
+
+New pure `requires_fs_group_change()`/`skip_fs_group_change()`
+(`runtime/cri/volumes_pure.rs`) mirror upstream's own
+`requiresPermissionChange()` (GID + setgid-bit check; simplified vs.
+upstream by skipping the additional file-permission-mode superset
+check, since `apply_fs_group()` never touches permission modes at all).
+`resolve_volumes()` now tracks which resolved volume names came from a
+CSI mount (`csi_volume_names`, populated at all 3 CSI-mount call
+sites — PVC, generic ephemeral, CSI inline) — those get the
+`skip_fs_group_change()` gate; everything else materialized by nodelet
+keeps the pre-existing unconditional-chown behavior, matching
+upstream's hardcoded-`nil` treatment exactly.
+
+**Real correctness fix found and closed in the same round, not a
+separate one**: the fs_group loop previously applied `apply_fs_group()`
+to *every* `ResolvedVolume::HostPath` entry in `out`, including real
+`hostPath` volumes — but upstream's hostPath plugin has no ownership-
+management support at all (`fsGroup` never touches it, since it's the
+host's own pre-existing directory, not something the pod owns).
+Bulk-`chown`ing an arbitrary host directory the pod didn't create is a
+real safety concern this codebase shouldn't have had even latently.
+Fixed by tracking `host_path_volume_names` and excluding them from the
+loop entirely. The existing `docs/GAP_CLOSURE.md` `fsGroup` entry's own
+claim ("no real PV/hostPath for it to reach beyond that yet") was
+already stale before this round — CSI-mounted PVCs were already
+silently getting `fsGroup` applied (just without the policy gate); this
+round makes the doc match reality for both cases.
+
+8 new unit tests (`cri_tests/fs_group.rs`'s new `change_policy` module).
+`cargo test -p nodelet --features cri`: 1043 passed (+8); mock config
+unchanged at 321. New e2e test,
+`test_fsgroup_never_applies_to_hostpath_volumes` (`volumes.sh`): a real
+host directory's GID is unchanged after a pod with `fsGroup` set mounts
+it via `hostPath`. A manual-note test
+(`test_fsgroup_change_policy_manual_note`, `csi_pvc.sh`) covers the
+real end-to-end `OnRootMismatch`-skips-a-second-pod's-chown behavior,
+which needs a PVC surviving across two pod lifecycles — unautomatable
+without a real CSI driver in this sandbox, same limitation every CSI
+round since 12 has carried.
+
+This closes round 92's finding. Per the user's own instruction pattern,
+the next step is to ask where to go from here.
+
 ## Round 92: fresh gap re-audit (2026-08-01, same day)
 
 No code changed. Per the user's own instruction, run after rounds 90/91
@@ -5229,8 +5289,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`hostPID`/`hostIPC`/`shareProcessNamespace`** (round 40; found in round 39's re-audit) — new pure `pid_namespace_mode(host_pid, share_process_namespace) -> NamespaceMode` (`hostPID` wins → `Node`, else `shareProcessNamespace` → `Pod`, else `Container`) is now always applied, on both `sandbox_config()`'s `namespace_options.pid` and each container's own `linux_security_context()`'s `namespace_options.pid` (mirroring real kubelet setting it in both places). **Correctness fix, not just a missing feature**: CRI's own proto comment on `NamespaceOption.pid` says *"the CRI default is POD, but the v1.PodSpec default is CONTAINER"* — before this round nodelet never set the field at all, so every container was silently getting containerd's own POD-shared default, the **opposite** of real Kubernetes' actual default. `hostIPC` sets `namespace_options.ipc` to `Node` (else `Pod` — IPC has no `CONTAINER`-scope concept in the API at all, unlike PID). Genuinely automated e2e tests for `hostPID`/`shareProcessNamespace` (a container's own pid, structural proof); `hostIPC` is unit-tested only — no simple portable shell-level IPC probe in a minimal image, a documented scope limitation. See round 40 notes.
 - ✅ **User namespaces** (`spec.hostUsers: false`, round 25; found in round 22's re-audit) — `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive host UID/GID range (fixed length, default 65536, configurable via `NODELET_USERNS_BASE_UID`/`_LENGTH`/`_MAX_PODS`), set as a `POD`-mode `UserNamespace` on `LinuxSandboxSecurityContext.namespace_options.userns_options`. Simplified vs. upstream's own variable-length `usernsManager`: every pod gets the same fixed range size, and allocation state is in-memory only (self-heals as still-running pods reconcile, narrow double-allocation window across a nodelet restart — documented, not hidden). Unvalidated against a real CRI runtime's actual `userns_options` wire support — see round 25 notes.
 - 🟡 **Per-volume `Mount.uidMappings`/`.gidMappings`** (round 88; found in round 86's re-audit) — every `HostPath`-shaped volume mount for a `hostUsers: false` pod now carries the same UID/GID `IDMapping` (`host_id`/`container_id: 0`/`length`) `run_sandbox()` already applies at the sandbox level (round 25), via new pure `mount_id_mappings()` and a new `UsernsAllocator::assigned()` read-only lookup (no re-allocation — just reads back the range `run_sandbox()` already claimed for this pod uid). Without this, kernel-level idmapped-mounts translation (Linux 5.12+) only applies to mounts CRI is actually told to map — a file the host sees as owned by some in-range UID would otherwise show up wrong (`nobody`/overflow, or untranslated) inside the container's own view of that volume. **Deliberately scoped to `build_mounts()`'s regular `volumeMounts` only** — image-backed mounts (round 32) never go through the host bind-mount path idmapping applies to at all, and the auxiliary host-bind-mounts nodelet creates for itself (`hostAliases`' `/etc/hosts`, `terminationMessagePath`) are **not yet** id-mapped, a known follow-up if a future round revisits this area. Genuinely automated e2e test proves adding this to *every* `hostUsers: false` pod's *every* volume mount (not an opt-in feature) didn't break the mount itself; the actual ownership-translation behavior needs a host-side file pre-chowned into the pod's specific mapped range before the pod starts (root required) — a manual spot-check procedure.
-- ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
-- ❌ **`PodSecurityContext.fsGroupChangePolicy`** (found in round 92's re-audit) — GA since 1.20. `apply_fs_group()` (round 3) always walks and `chown()`s every file in a volume unconditionally whenever `fsGroup` is set; real kubelet uses this field's `OnRootMismatch` value to skip the (potentially expensive, on a large volume) recursive walk entirely when the top-level directory's ownership already matches, only ever forcing it for `Always` (the API's default). Correctness is identical either way — this is purely a startup-latency gap on volumes that don't actually need re-chowning.
+- ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`), *and* on CSI-mounted PVC/ephemeral volumes (`csi_volume_names`, round 93). Real `hostPath` volumes are deliberately excluded (round 93; matches upstream — that plugin has no ownership-management support at all).
+- ✅ **`PodSecurityContext.fsGroupChangePolicy`** (round 93; found in round 92's re-audit) — GA since 1.20. **Verified against upstream before implementing** (`gh api` fetch of `volume_linux.go` + every in-tree volume plugin's own call site): real kubelet hardcodes this to `nil` (always full chown) for exactly the ephemeral types `apply_fs_group()` already handled — it's only ever honored for PV-backed types. New `requires_fs_group_change()`/`skip_fs_group_change()` mirror upstream's `requiresPermissionChange()` gate (GID + setgid-bit check), applied only to CSI-mounted volumes; every other volume kind keeps the pre-existing unconditional chown, matching upstream exactly.
 - ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
 - ✅ **`Node.status.runtimeHandlers`** (round 53; found in round 50's re-audit) — new `PodRuntime::runtime_handlers()` calls CRI's runtime-level `Status` RPC once (never called anywhere in this codebase before this round) and maps the discovered handlers through to `Node.status.runtimeHandlers`, via the same `images`/`mounted_csi_volumes`-shaped plumbing rounds 33/34 already established. Genuinely automated e2e test (asserts at least one handler is present; skips rather than fails if a given containerd version's `Status` RPC doesn't populate the list at all). See round 53 notes.
 - ✅ **`spec.activeDeadlineSeconds`** (round 81; found in round 80's re-audit) — new pure `active_deadline_exceeded()` compares elapsed time since `status.startTime` against the deadline, checked every `eviction_loop()` cycle ahead of node-pressure eviction (the same "direct per-pod violation, checked independently of general pressure" tier the ephemeral-storage/emptyDir checks already occupy) — overrides `restartPolicy` entirely, so an `Always` pod that would otherwise keep restarting forever is terminated once its deadline passes regardless. **Deliberate simplification vs. upstream, documented not hidden**: real kubelet marks the pod `Failed`/`DeadlineExceeded` but leaves the object itself for the owning controller to observe; nodelet reuses the same terminate-and-delete `evict_pod()` path every other kubelet-initiated termination in this codebase already takes (there's no other "kill but never delete" pattern anywhere else to build a second one on top of) — `evict_pod()` itself was generalized to take an explicit `status_reason`/`message` pair instead of a single hardcoded "node was low on resource" string, since that framing never fit this case.
@@ -6015,7 +6075,16 @@ accordingly; see those files' own updated framing.
       unreferenced was already tracked, already closed, legacy/deprecated,
       or someone else's job (scheduler fields, Windows-only fields). See
       round 92 notes.
-- [ ] Candidate for the next round: `PodSecurityContext.fsGroupChangePolicy`
-      (a startup-latency gap, not a correctness one — `OnRootMismatch`
-      could skip `apply_fs_group()`'s recursive chown when unneeded). Ask
-      before starting.
+- [x] Round 93: `PodSecurityContext.fsGroupChangePolicy` — verified
+      against upstream first (`volume_linux.go` + per-plugin call
+      sites) and found the policy is only ever honored for PV-backed
+      volumes upstream, not the ephemeral types `apply_fs_group()`
+      already handled. New `requires_fs_group_change()`/
+      `skip_fs_group_change()`, gated to CSI-mounted volumes only.
+      Also fixed a related latent correctness gap found along the way:
+      `fsGroup` was being applied to real `hostPath` volumes too,
+      which upstream never does. 8 new unit tests + a genuinely
+      automated e2e test + a manual-note for the real CSI
+      cross-pod-lifecycle skip behavior. See round 93 notes.
+- [ ] No candidates currently queued. Ask the user for sequencing
+      before starting the next round.

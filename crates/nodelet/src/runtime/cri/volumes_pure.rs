@@ -671,10 +671,57 @@ pub(crate) fn set_setgid(dir: &std::path::Path) -> std::io::Result<()> {
 }
 
 
-/// Recursively chown a materialized volume directory to `fsGroup`. Only
-/// touches directories nodelet itself created (ConfigMap/Secret/emptyDir/
-/// downwardAPI/projected materializations) — there's no real PV/hostPath
-/// support yet for this to reach beyond that (see docs/GAP_CLOSURE.md).
+/// `securityContext.fsGroupChangePolicy` (round 93; found in round 92's
+/// re-audit) — mirrors real kubelet's own `requiresPermissionChange()`
+/// (`pkg/volume/volume_linux.go`): `true` if a recursive chown is still
+/// needed. **Verified against upstream before implementing** (`gh api`
+/// fetch of `volume_linux.go` and every in-tree volume plugin's own
+/// `ownershipChanger` call site): kubelet hardcodes this policy to `nil`
+/// (always full recursive chown, ignoring whatever the pod actually
+/// asked for) for exactly the volume types this codebase's own
+/// `apply_fs_group()` reaches for the ConfigMap/Secret/emptyDir/
+/// downwardAPI/projected case — it's only ever *honored* for
+/// PersistentVolume-backed types (CSI/iSCSI/FC/local upstream; CSI is
+/// the only one of those this codebase has a driver story for at all).
+/// **Simplified vs. upstream**: only checks ownership (GID + setgid
+/// bit), not upstream's *additional* file-permission-mode superset
+/// check — `apply_fs_group()` never touches permission modes at all
+/// (only ownership + setgid), so there's nothing else for that check to
+/// protect against here.
+pub(crate) fn requires_fs_group_change(gid: u32, is_setgid: bool, fs_group: u32) -> bool {
+    gid != fs_group || !is_setgid
+}
+
+/// Whether to skip `apply_fs_group()`'s recursive walk entirely for this
+/// (CSI/PV-backed) volume directory — `stat`s the root directory once
+/// and defers to `requires_fs_group_change()`. Any policy other than
+/// `"OnRootMismatch"` (including unset, matching the API's own default
+/// of `"Always"`) never skips. A `stat` failure never skips either —
+/// same fail-safe posture upstream takes ("performing recursive
+/// ownership change... because reading permissions of root volume
+/// failed").
+pub(crate) fn skip_fs_group_change(dir: &std::path::Path, fs_group: u32, policy: Option<&str>) -> bool {
+    if policy != Some("OnRootMismatch") {
+        return false;
+    }
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let Ok(meta) = std::fs::metadata(dir) else { return false };
+    let is_setgid = meta.permissions().mode() & 0o2000 != 0;
+    !requires_fs_group_change(meta.gid(), is_setgid, fs_group)
+}
+
+/// Recursively chown a materialized volume directory to `fsGroup`. Called
+/// unconditionally for volumes nodelet itself materializes (ConfigMap/
+/// Secret/emptyDir/downwardAPI/projected) — matching upstream's own
+/// hardcoded-`nil`-policy behavior for these exact types (see
+/// `requires_fs_group_change()`'s doc comment) — and gated by
+/// `skip_fs_group_change()` for CSI/PV-backed volumes, where
+/// `fsGroupChangePolicy` is actually honored upstream (round 93; found
+/// in round 92's re-audit). Real `hostPath` volumes are excluded
+/// entirely by the caller (`resolve_volumes()`) — upstream's hostPath
+/// plugin doesn't support ownership management at all, and bulk-`chown`ing
+/// an arbitrary host directory the pod didn't create is a real safety
+/// concern this codebase shouldn't introduce even by omission.
 pub(crate) fn apply_fs_group(dir: &std::path::Path, gid: u32) -> std::io::Result<()> {
     chown_gid(dir, gid)?;
     set_setgid(dir)?;

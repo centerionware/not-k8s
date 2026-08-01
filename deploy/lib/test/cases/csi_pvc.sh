@@ -213,7 +213,12 @@ test_volumes_in_use_manual_note() {
     skip_test "round 34's Node.status.volumesInUse/volumesAttached is scoped to CSI volumes only and deliberately unvalidated against a real attach/detach controller (the modern CSI attach path — round 19 — already uses VolumeAttachment directly, not these fields). Manual spot-check: with TEST_CSI_STORAGE_CLASS set, watch 'kubectl get node <node> -o jsonpath={.status.volumesInUse}' while a CSI-backed pod is created and then deleted — confirm an entry matching 'kubernetes.io/csi/<driver>^<volumeHandle>' appears while the pod is running and disappears once the pod (and its NodeUnpublishVolume/NodeUnstageVolume calls) fully complete. If a real attach/detach controller is also running in this cluster, confirm it doesn't misbehave (e.g. refuse to detach) because of anything nodelet reports here."
 }
 
+test_fsgroup_change_policy_manual_note() {
+    skip_test "round 93's fsGroupChangePolicy: OnRootMismatch skip (skip_fs_group_change() in runtime/cri/volumes_pure.rs) only ever applies to CSI/PV-backed volumes, matching upstream — the unit tests (cri_tests/fs_group.rs's change_policy module) prove the pure gid/setgid-bit logic directly, but the real end-to-end 'second pod start skips the recursive chown' behavior needs a real CSI volume that survives across two pod lifecycles (a PVC, not an ephemeral/inline CSI volume). Manual spot-check: with TEST_CSI_STORAGE_CLASS set, create a pod with securityContext.fsGroup and fsGroupChangePolicy: OnRootMismatch mounting a PVC, let it apply fsGroup once, delete the pod, create a second pod (same PVC) with the same fsGroup — enable debug logging and confirm the 'skipping fsGroup recursive chown; root already matches' log line appears on the second pod's creation, not the first."
+}
+
 register_test test_pod_mounts_a_persistent_volume_claim
 register_test test_csi_ephemeral_inline_volume_is_mounted
 register_test test_pod_uses_a_raw_block_volume
 register_test test_volumes_in_use_manual_note
+register_test test_fsgroup_change_policy_manual_note

@@ -18,6 +18,17 @@ impl CriRuntime {
             return out;
         };
         let pod_dir = PathBuf::from(VOLUME_ROOT).join(&id.uid).join("volumes");
+        // `fsGroupChangePolicy` (round 93; found in round 92's re-audit)
+        // is only ever honored by real kubelet for PersistentVolume-backed
+        // (here: CSI-mounted) volumes — every other volume kind nodelet
+        // materializes always gets the unconditional full chown, matching
+        // upstream's own hardcoded-nil-policy behavior for those types.
+        // `host_path_volume_names` tracks the opposite exclusion: a real
+        // `hostPath` volume never gets fsGroup applied at all upstream
+        // (no ownership-management support for that plugin), so it's
+        // tracked here to keep it out of the fs_group loop below entirely.
+        let mut csi_volume_names: HashSet<String> = HashSet::new();
+        let mut host_path_volume_names: HashSet<String> = HashSet::new();
 
         for v in volumes {
             let vol_dir = pod_dir.join(&v.name);
@@ -104,6 +115,7 @@ impl CriRuntime {
                                 // ignores this variant).
                                 let resolved = if block { ResolvedVolume::BlockDevice(vol_dir) } else { ResolvedVolume::HostPath(vol_dir) };
                                 out.insert(v.name.clone(), resolved);
+                                csi_volume_names.insert(v.name.clone());
                             }
                             Err(e) => warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "failed to mount CSI volume"),
                         }
@@ -134,6 +146,7 @@ impl CriRuntime {
                             Ok(()) => {
                                 let resolved = if block { ResolvedVolume::BlockDevice(vol_dir) } else { ResolvedVolume::HostPath(vol_dir) };
                                 out.insert(v.name.clone(), resolved);
+                                csi_volume_names.insert(v.name.clone());
                             }
                             Err(e) => warn!(volume = %v.name, claim = %claim_name, error = ?e, "failed to mount CSI volume for generic ephemeral volume"),
                         }
@@ -155,6 +168,7 @@ impl CriRuntime {
                     Some(source) => match self.csi.mount(&source, &vol_dir, &id.uid, true).await {
                         Ok(()) => {
                             out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
+                            csi_volume_names.insert(v.name.clone());
                         }
                         Err(e) => warn!(volume = %v.name, driver = %csi_source.driver, error = ?e, "failed to mount CSI ephemeral volume"),
                     },
@@ -187,6 +201,15 @@ impl CriRuntime {
                 match validate_host_path(&path, hp.type_.as_deref()) {
                     Ok(()) => {
                         out.insert(v.name.clone(), ResolvedVolume::HostPath(path));
+                        // fsGroup (round 93; found in round 92's re-audit,
+                        // verified against upstream before implementing):
+                        // real kubelet's hostPath plugin doesn't support
+                        // ownership management at all -- fsGroup is never
+                        // applied to a hostPath volume, since it's the
+                        // host's own pre-existing directory, not something
+                        // the pod owns. Tracked here so the fs_group loop
+                        // below excludes it entirely.
+                        host_path_volume_names.insert(v.name.clone());
                     }
                     Err(e) => warn!(volume = %v.name, path = %hp.path, host_path_type = %hp.type_.as_deref().unwrap_or(""), error = %e, "hostPath volume failed validation; container(s) mounting it won't get this path"),
                 }
@@ -210,21 +233,33 @@ impl CriRuntime {
             }
         }
 
-        if let Some(fs_group) = pod
-            .spec
-            .as_ref()
-            .and_then(|s| s.security_context.as_ref())
-            .and_then(|sc| sc.fs_group)
-        {
+        let pod_sc = pod.spec.as_ref().and_then(|s| s.security_context.as_ref());
+        if let Some(fs_group) = pod_sc.and_then(|sc| sc.fs_group) {
+            let fs_group = fs_group as u32;
+            // `fsGroupChangePolicy` (round 93; found in round 92's
+            // re-audit) is only ever honored upstream for PV-backed
+            // (here: CSI) volumes — see `requires_fs_group_change()`'s
+            // doc comment.
+            let fs_group_change_policy = pod_sc.and_then(|sc| sc.fs_group_change_policy.as_deref());
             for (key, source) in &out {
                 if key == ETC_HOSTS_VOLUME_KEY {
                     continue; // a single file, not a directory nodelet materialized as a tree
+                }
+                // hostPath volumes never get fsGroup applied at all,
+                // matching upstream — see where `host_path_volume_names`
+                // is populated above.
+                if host_path_volume_names.contains(key) {
+                    continue;
                 }
                 // Image volumes (round 32) are read-only OCI content with
                 // no host directory of nodelet's own to chown at all —
                 // fsGroup doesn't apply to them, matching upstream.
                 let ResolvedVolume::HostPath(dir) = source else { continue };
-                if let Err(e) = apply_fs_group(dir, fs_group as u32) {
+                if csi_volume_names.contains(key) && skip_fs_group_change(dir, fs_group, fs_group_change_policy) {
+                    debug!(dir = %dir.display(), fs_group, "skipping fsGroup recursive chown; root already matches (fsGroupChangePolicy: OnRootMismatch)");
+                    continue;
+                }
+                if let Err(e) = apply_fs_group(dir, fs_group) {
                     warn!(dir = %dir.display(), fs_group, error = ?e, "failed to apply fsGroup to volume");
                 }
             }

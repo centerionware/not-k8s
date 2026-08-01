@@ -491,7 +491,12 @@ container's ongoing reconciles. Round 91 closed
 `IfPossible`/`Enabled` mount actually resolved to, computed once at
 container-creation time straight from the spec (no RPC at all, matching
 real kubelet's own approach — CRI has no volume-name concept to read
-this back from). Full status list in `docs/GAP_CLOSURE.md`.
+this back from). Round 93 closed `fsGroupChangePolicy` for CSI-mounted
+volumes (matching upstream, which only ever honors this field for
+PV-backed volume types) and fixed a related latent gap along the way:
+`fsGroup` is no longer applied to real `hostPath` volumes at all,
+matching upstream's own no-ownership-management stance for that volume
+type. Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for
