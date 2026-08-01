@@ -27,6 +27,62 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 83: fresh gap re-audit (2026-07-31, same day)
+
+No code changed. Per the user's own instruction ("do both in order then
+another gap audit and ask again"), run after rounds 81/82 closed round
+80's backlog. Method this time: enumerated every field name declared in
+the vendored `proto/cri.proto` via a small script (`grep -oP` for `type
+name = N;` field declarations), then checked which ones are never
+referenced anywhere in this codebase's own code at all (same underlying
+technique as the manual greps rounds 76/78/80 already used, just
+automated across the whole proto in one pass rather than checking fields
+one at a time by hand).
+
+Found 2 previously-untracked, confirmed gaps — both on CRI's `Mount`
+message, both the same "vendored proto field never wired up" shape as
+round 77's raw block volumes and round 82's `hostPort` findings:
+
+1. **`volumeMounts[].mountPropagation`** — CRI's `Mount.propagation`
+   field (`PRIVATE`/`HOST_TO_CONTAINER`/`BIDIRECTIONAL`) is never set by
+   `build_mounts()`; every mount silently gets the zero-value `PRIVATE`
+   default regardless of what the pod requests. Real-world relevance:
+   FUSE-backed volumes, some CSI ephemeral drivers, any workload relying
+   on seeing host-side or cross-container mount changes.
+2. **`volumeMounts[].recursiveReadOnly`** (GA 1.33, KEP-3116) — CRI's
+   `Mount.recursive_read_only` field is also never set. Notably, the
+   *capability advertisement* half of this exact feature is already
+   correctly wired (round 53's `Node.status.runtimeHandlers[].recursiveReadOnlyMounts`,
+   reading CRI's own `RuntimeHandlerFeatures.recursive_read_only_mounts`)
+   — a node can already correctly report whether its runtime handler
+   supports this, but the actual per-mount translation that capability
+   exists to support was never implemented. A real gap between what's
+   advertised and what's honored, found by the automated proto-field
+   sweep rather than by chasing a single feature end to end.
+
+The automated sweep's full unreferenced-field list also surfaced several
+already-tracked or genuinely out-of-scope items, not new findings:
+`apparmor`/`selinux_options`/`selinux_relabel` (AppArmor/SELinux, already
+flagged and deliberately not re-flagged per round 48's own precedent),
+every `windows`/`host_process`/`credential_spec`/`run_as_username`-shaped
+field (Windows-only, out of scope for the same reason Windows node
+support generally is — this project targets Linux-only edge hardware by
+design), and `cgroup_driver` (already resolved as a non-issue in round
+11 — CRI's own proto contract means nodelet never needs to detect or
+configure this at all). A handful of stats-only fields (`rx_bytes`/
+`tx_bytes`/network-error-counters, `psi`, `swap_available_bytes`,
+`major_page_faults`, ...) were also flagged but explicitly **not**
+picked as candidates — they're `/stats/summary`/`/metrics/cadvisor`
+completeness gaps (already broadly documented as scoped-down there),
+lower value than a genuine correctness/feature gap.
+
+Ranked by value: `mountPropagation` (more broadly applicable — several
+real-world volume patterns depend on it) over `recursiveReadOnly` (GA
+but narrower in practice, and lower urgency since the advertised
+capability at least isn't actively misleading anyone — it correctly
+reports support, it just isn't used yet). Ask the user for sequencing
+again before starting the next round.
+
 ## Round 82: spec.containers[].ports[].hostPort (2026-07-31, same day)
 
 Closes the second finding from round 80's re-audit, per the user's "do
@@ -4770,6 +4826,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`valueFrom.resourceFieldRef` in container env vars** (round 44; found in round 35's re-audit) — a distinct code path from the still-open downwardAPI-volume `resourceFieldRef` gap below: new pure `resolve_resource_field_ref()`/`format_resource_field_value()` resolve `limits.cpu`/`limits.memory`/`requests.cpu`/`requests.memory` (falling back to the node's own capacity when the container has no limit set, matching real kubelet's documented Downward API behavior, then to the container's own limit for `requests.*` before that), reproducing kubelet's well-known "CPU reports whole cores, rounded up" default-divisor quirk and the common JVM-heap-sizing memory-divisor pattern with one shared ceiling-division formula. `ephemeral-storage` resolves to `"0"` (not tracked/enforced by nodelet at all — separate pre-existing gap) rather than bailing. Genuinely automated e2e test (`kubectl exec` reads the real env var values). See round 44 notes.
 - ✅ **Projected volumes** — `configMap`/`secret`/`downwardAPI`, and now `serviceAccountToken` too (mints a real token via the `TokenRequest` API — `resolve_service_account_token()`; needs nodelet's client to have `create` on `serviceaccounts/token` in the namespace, a real RBAC requirement) merge into the volume dir, with `items`/`KeyToPath` key-selection-and-rename support. `clusterTrustBundle` sources are still skipped with a warning.
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
+- ❌ **`volumeMounts[].mountPropagation`** (found in round 83's re-audit) — CRI's own `Mount.propagation` field (`MountPropagation` enum: `PROPAGATION_PRIVATE`/`PROPAGATION_HOST_TO_CONTAINER`/`PROPAGATION_BIDIRECTIONAL`) exists in the vendored proto but `build_mounts()` never sets it at all — confirmed via grep, only referenced in the proto definition file. Every mount silently gets the CRI zero-value default (`PRIVATE`/`rprivate`), regardless of what the pod actually requests. Real-world relevance: FUSE-backed volumes, CSI drivers that mount additional paths from inside the container (e.g. some CSI ephemeral drivers), and any workload relying on `HostToContainer`/`Bidirectional` to see host-side or cross-container mount changes.
+- ❌ **`volumeMounts[].recursiveReadOnly`** (found in round 83's re-audit; GA 1.33, KEP-3116) — CRI's own `Mount.recursive_read_only` field exists in the vendored proto but is never set either — confirmed via grep. Notably, the *capability advertisement* half of this feature is already correctly wired (round 53's `Node.status.runtimeHandlers[].recursiveReadOnlyMounts`, reading CRI's `RuntimeHandlerFeatures.recursive_read_only_mounts`), but the actual per-mount translation that capability exists to support was never implemented — a real, confirmed gap between what's advertised and what's honored.
 - 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`, `plugin_registry.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **Dynamic CSI driver discovery** (round 13) — a driver's `node-driver-registrar` sidecar can register itself against `NODELET_PLUGIN_REGISTRY_PATH` the same protocol it'd use against real kubelet's plugin watcher, no static config needed; `NODELET_CSI_DRIVERS` still works too, as a seed/override. **`nodeStageSecretRef`/`nodePublishSecretRef`** (round 13) — resolved to real Secret data and passed through to the driver. **Attach coordination** (round 19) — checks `CSIDriver.spec.attachRequired`, and for drivers that need it, waits on the matching `VolumeAttachment.status.attached` before Stage/Publish, threading `status.attachmentMetadata` through as `publish_context`. Calling the Controller service itself (`ControllerPublishVolume`/`ControllerUnpublishVolume`) stays out of scope — that's external-attacher's job upstream too, not kubelet's, confirmed against docs in round 19. Still out of scope: device-plugin registrations against this module (the same registration protocol, explicitly rejected with a real `NotifyRegistrationStatus{plugin_registered: false}` rather than ignored — that's `device_plugins.rs`'s job instead). Unvalidated against a real CSI driver — see rounds 12, 13, and 19 notes.
 - ✅ **hostPath** (found in a fresh gap re-audit; closed round 65) — `spec.volumes[].hostPath` resolves directly to the host's own existing path (not materialized under `VOLUME_ROOT` like every other volume kind), with real `type` validation (`DirectoryOrCreate`/`FileOrCreate`/`Directory`/`File`/`Socket`/`CharDevice`/`BlockDevice`) matching real kubelet's own create-vs-require-existing semantics exactly. A validation failure is logged and the volume skipped, same best-effort posture as every other unresolvable volume kind.
 - ✅ **`emptyDir.sizeLimit` enforcement** (found in round 65's fresh gap re-audit; closed round 67) — a plain-disk `emptyDir` volume exceeding its own `sizeLimit` now evicts the pod, checked independently of (and ahead of) both the whole-pod ephemeral-storage limit (round 49) and general node-pressure eviction — new `PodUsage.empty_dir_usage_bytes` (per-volume, same `directory_usage_bytes()` walk round 49 already uses) plus new pure `empty_dir_size_limits()`/`first_empty_dir_over_limit()` in `eviction.rs`. Scoped to plain-disk `emptyDir` only — `Memory`/`HugePages`-medium `sizeLimit` is already a real kernel-enforced cap at mount time (rounds 30/61), nothing for measurement-based eviction to add there.
@@ -5442,5 +5500,14 @@ accordingly; see those files' own updated framing.
       `hostNetwork` pods, matching upstream. 11 new unit tests + 2
       genuinely automated e2e tests (curling the node's own IP at the
       configured port — real structural proof). See round 82 notes.
-- [ ] Round 83 (fresh gap re-audit) is next, per the user's "then another
-      gap audit and ask again" instruction.
+- [x] Round 83: fresh gap re-audit — no code change. Automated a
+      full sweep of every field declared in `proto/cri.proto` against
+      what's actually referenced in this codebase's own code, finding 2
+      new candidates on CRI's `Mount` message: `volumeMounts[].mountPropagation`
+      (never set at all) and `volumeMounts[].recursiveReadOnly` (GA 1.33
+      — its capability-advertisement half, round 53, is correctly wired,
+      but the actual per-mount translation isn't). See round 83 notes.
+- [ ] Candidates for the next round, ranked: `mountPropagation` (more
+      broadly applicable) over `recursiveReadOnly` (narrower, and the
+      advertised capability at least isn't actively misleading anyone in
+      the meantime). Ask before starting the next round.
