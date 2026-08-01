@@ -22,11 +22,11 @@ fn bps(host_ip: &str, rt: &RuntimeStatus, prev: Option<&PodStatus>) -> PodStatus
 }
 
 fn bps_with_gates(host_ip: &str, rt: &RuntimeStatus, prev: Option<&PodStatus>, readiness_gates: &[String]) -> PodStatus {
-    build_pod_status(host_ip, "default", "app", rt, prev, readiness_gates, &probes::new_health_map(), crate::eviction::QosClass::BestEffort)
+    build_pod_status(host_ip, "default", "app", rt, prev, readiness_gates, &probes::new_health_map(), crate::eviction::QosClass::BestEffort, None)
 }
 
 fn bps_with_health(host_ip: &str, rt: &RuntimeStatus, health: &probes::HealthMap) -> PodStatus {
-    build_pod_status(host_ip, "default", "app", rt, None, &[], health, crate::eviction::QosClass::BestEffort)
+    build_pod_status(host_ip, "default", "app", rt, None, &[], health, crate::eviction::QosClass::BestEffort, None)
 }
 
 /// Directly seed the health map's entry for one container — `set_health()`
@@ -173,6 +173,7 @@ async fn unchanged_status_skips_the_http_patch() {
         &[],
         &probes::new_health_map(),
         crate::eviction::QosClass::BestEffort,
+        None,
     )
     .await
     .unwrap();
@@ -212,6 +213,7 @@ async fn changed_status_still_sends_the_http_patch() {
         &[],
         &probes::new_health_map(),
         crate::eviction::QosClass::BestEffort,
+        None,
     )
     .await
     .unwrap();
@@ -357,7 +359,7 @@ fn qos_class_is_reported_using_the_real_api_strings() {
     // eviction::qos_class() already computed the value internally for
     // eviction ranking (round 7) — this just surfaces it.
     for qos in [crate::eviction::QosClass::BestEffort, crate::eviction::QosClass::Burstable, crate::eviction::QosClass::Guaranteed] {
-        let status = build_pod_status("10.0.0.1", "default", "app", &running_status(), None, &[], &probes::new_health_map(), qos);
+        let status = build_pod_status("10.0.0.1", "default", "app", &running_status(), None, &[], &probes::new_health_map(), qos, None);
         assert_eq!(status.qos_class.as_deref(), Some(qos.as_str()));
     }
 }

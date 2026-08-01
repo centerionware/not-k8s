@@ -239,7 +239,7 @@ impl PodController {
                 let prev = pod.status.as_ref();
                 let gates = readiness_gate_types(&pod);
                 let qos = crate::eviction::qos_class(&pod);
-                if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev, &gates, &self.health, qos).await {
+                if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev, &gates, &self.health, qos, pod.metadata.generation).await {
                     warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status");
                 }
             }
@@ -283,7 +283,7 @@ impl PodController {
                     let prev = pod.status.as_ref();
                     let gates = readiness_gate_types(&pod);
                     let qos = crate::eviction::qos_class(&pod);
-                    if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev, &gates, &health, qos).await {
+                    if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev, &gates, &health, qos, pod.metadata.generation).await {
                         warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status (retry)");
                     }
                 }
@@ -331,6 +331,7 @@ impl PodController {
                     &gates,
                     &self.health,
                     qos,
+                    p.metadata.generation,
                 )
                 .await
                 {
@@ -357,9 +358,10 @@ pub(crate) async fn write_status(
     readiness_gates: &[String],
     health: &HealthMap,
     qos: crate::eviction::QosClass,
+    generation: Option<i64>,
 ) -> Result<()> {
     let api: Api<Pod> = Api::namespaced(client.clone(), ns);
-    let status = build_pod_status(host_ip, ns, name, rt, prev, readiness_gates, health, qos);
+    let status = build_pod_status(host_ip, ns, name, rt, prev, readiness_gates, health, qos, generation);
     if !status_patch_changes(prev, &status) {
         debug!(pod = %format!("{ns}/{name}"), "skipped unchanged pod status patch");
         return Ok(());
@@ -469,6 +471,22 @@ fn container_state(c: &crate::runtime::ContainerRuntimeStatus, started_at: Optio
     }
 }
 
+/// `PodCondition.observedGeneration` (round 87; found in round 86's
+/// re-audit) — real kubelet's own `podutil.CalculatePodConditionObservedGeneration`:
+/// a condition whose status is unchanged from the previous write keeps
+/// its *old* `observedGeneration` (it was already correctly stamped
+/// whenever it last actually changed); one that's new or whose status
+/// just flipped gets stamped with the pod's *current*
+/// `metadata.generation`. Lets a client tell whether a condition
+/// reflects the pod's current spec generation or a stale one from
+/// before the most recent spec update.
+fn condition_observed_generation(prev: Option<&PodCondition>, new_status: &str, generation: Option<i64>) -> Option<i64> {
+    match prev {
+        Some(p) if p.status == new_status => p.observed_generation,
+        _ => generation,
+    }
+}
+
 /// `containerStatuses[].lastState` (round 75) — the previous instance's
 /// terminated details, if this codebase ever captured any (see
 /// `CriRuntime`'s `last_terminated` side table / `TerminatedInfo`).
@@ -523,6 +541,7 @@ fn build_pod_status(
     readiness_gates: &[String],
     health: &HealthMap,
     qos: crate::eviction::QosClass,
+    generation: Option<i64>,
 ) -> PodStatus {
     let running = rt.phase == Phase::Running;
     let prev_time = |type_: &str, status: &str| -> Option<Time> {
@@ -533,11 +552,17 @@ fn build_pod_status(
             .find(|c| c.type_ == type_ && c.status == status)
             .and_then(|c| c.last_transition_time.clone())
     };
+    // `observedGeneration` (round 87; found in round 86's re-audit) —
+    // by TYPE only (not type+status, unlike `prev_time` above), since
+    // it needs to compare the new status against whatever this
+    // condition's status *was*, not confirm it's unchanged first.
+    let prev_condition = |type_: &str| -> Option<&PodCondition> { prev?.conditions.as_ref()?.iter().find(|c| c.type_ == type_) };
     let cond = |type_: &str, ok: bool| {
         let status = if ok { "True" } else { "False" }.to_string();
         let last_transition_time = prev_time(type_, &status)
             .or_else(|| Some(Time(k8s_openapi::jiff::Timestamp::now())));
-        PodCondition { type_: type_.to_string(), status, last_transition_time, ..Default::default() }
+        let observed_generation = condition_observed_generation(prev_condition(type_), &status, generation);
+        PodCondition { type_: type_.to_string(), status, last_transition_time, observed_generation, ..Default::default() }
     };
     // Conditions an external controller set (e.g. to satisfy a
     // `readinessGates` entry) — must be carried forward into the new
@@ -801,3 +826,6 @@ mod tests_resize_status;
 #[cfg(test)]
 #[path = "pods_tests/referenced_names.rs"]
 mod tests_referenced_names;
+#[cfg(test)]
+#[path = "pods_tests/observed_generation.rs"]
+mod tests_observed_generation;

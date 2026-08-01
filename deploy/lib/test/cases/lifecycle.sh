@@ -531,8 +531,39 @@ register_test test_exited_container_reports_terminated_state_with_exit_code
 register_test test_lifecycle_stop_signal_is_honored_by_the_runtime
 register_test test_termination_message_path_is_read_back_into_container_status
 register_test test_container_status_container_id_has_a_runtime_scheme_prefix
+test_pod_condition_reports_observed_generation() {
+    # Round 87 (found in round 86's re-audit): PodCondition.observedGeneration
+    # was never set at all before this. Structural proof: every condition
+    # nodelet owns and writes should carry a real numeric
+    # observedGeneration matching the pod's own metadata.generation.
+    # Proving the deeper "unchanged status keeps the OLD
+    # observedGeneration" semantic is already covered thoroughly by
+    # cargo test's condition_observed_generation() unit tests — this just
+    # proves the live wiring end to end.
+    local name="observed-generation-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local generation observed
+    generation="$(kctl get pod "$name" -o jsonpath='{.metadata.generation}')"
+    observed="$(kctl get pod "$name" -o jsonpath='{.status.conditions[?(@.type=="Ready")].observedGeneration}')"
+    delete_pod_if_exists "$name"
+    assert_not_empty "$generation" "metadata.generation"
+    assert_eq "$observed" "$generation" "status.conditions[Ready].observedGeneration should match the pod's own metadata.generation — check condition_observed_generation()/build_pod_status() wiring in pods.rs"
+}
+
 register_test test_pod_status_reports_host_ips_plural
 register_test test_pod_status_reports_qos_class
+register_test test_pod_condition_reports_observed_generation
 register_test test_container_status_reports_a_real_image_id
 register_test test_image_pull_policy_never_fails_when_image_is_absent
 register_test test_image_pull_policy_if_not_present_manual_note

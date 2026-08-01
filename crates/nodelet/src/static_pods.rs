@@ -164,7 +164,9 @@ pub async fn run(client: Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
 
             match runtime.ensure_pod(&prepared_pod).await {
                 Ok(status) => {
-                    let prev = api.get_opt(&mirror_name).await.ok().flatten().and_then(|p| p.status);
+                    let existing_mirror = api.get_opt(&mirror_name).await.ok().flatten();
+                    let prev = existing_mirror.as_ref().and_then(|p| p.status.as_ref());
+                    let generation = existing_mirror.as_ref().and_then(|p| p.metadata.generation);
                     let gates = crate::pods::readiness_gate_types(&prepared_pod);
                     let qos = crate::eviction::qos_class(&prepared_pod);
                     if let Err(e) = crate::pods::write_status(
@@ -173,10 +175,11 @@ pub async fn run(client: Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
                         &namespace,
                         &mirror_name,
                         &status,
-                        prev.as_ref(),
+                        prev,
                         &gates,
                         &health,
                         qos,
+                        generation,
                     )
                     .await
                     {

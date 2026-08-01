@@ -8,7 +8,7 @@ use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use std::collections::BTreeMap;
 
 fn bps(rt: &RuntimeStatus) -> PodStatus {
-    build_pod_status("10.0.0.1", "ns", "p", rt, None, &[], &probes::new_health_map(), crate::eviction::QosClass::BestEffort)
+    build_pod_status("10.0.0.1", "ns", "p", rt, None, &[], &probes::new_health_map(), crate::eviction::QosClass::BestEffort, None)
 }
 
 fn requests(memory: &str) -> BTreeMap<String, Quantity> {

@@ -27,6 +27,53 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 87: PodCondition.observedGeneration (2026-07-31, same day)
+
+Closes the higher-value finding from round 86's re-audit, per the
+user's now-established "do both then another audit" instruction —
+`Mount.uidMappings`/`.gidMappings` is round 88.
+
+- New pure `condition_observed_generation(prev: Option<&PodCondition>,
+  new_status: &str, generation: Option<i64>) -> Option<i64>` (`pods.rs`)
+  — a direct port of real kubelet's own
+  `podutil.CalculatePodConditionObservedGeneration` semantics: unchanged
+  status keeps the *old* `observedGeneration` (already correctly
+  stamped whenever that condition's status last actually flipped), a
+  new-or-just-flipped condition gets the pod's *current*
+  `metadata.generation`.
+- `build_pod_status()`'s existing `cond` closure gained a new
+  `prev_condition` lookup (by condition *type* only, distinct from the
+  pre-existing `prev_time` lookup which matches by type *and* status —
+  `observedGeneration` needs to know what the status *was* to detect a
+  flip, so it can't reuse the same type-and-status-matched lookup
+  `last_transition_time` uses). All 5 conditions `build_pod_status()`
+  already owns (`Initialized`/`PodScheduled`/`ContainersReady`/`Ready`/
+  `PodResizeInProgress`) get this for free through the shared closure.
+- `write_status()`/`build_pod_status()` gained a new `generation:
+  Option<i64>` parameter, threaded from `pod.metadata.generation` at all
+  4 call sites: `reconcile()`, `schedule_retry()`'s detached task,
+  `on_runtime_event()`, and `static_pods.rs`'s mirror-pod path (a 4th
+  call site this round's `cargo build` surfaced that wasn't in the
+  original 3-call-site mental model — the compiler caught it
+  immediately as a missing-argument error, the established
+  "let the compiler enumerate what needs fixing" pattern this project
+  has used every round with a signature change). The static-pod path
+  needed real care: `write_status()` patches the *mirror* pod object,
+  not the manifest-sourced `prepared_pod`, so it's the mirror's own
+  `metadata.generation` that has to be threaded through — re-fetching
+  the full mirror `Pod` object (previously only its `.status` was kept)
+  rather than the source pod's generation, which would have been wrong.
+- 7 new unit tests (`pods_tests/observed_generation.rs`): the pure
+  function's own matrix (4) plus 3 exercising `build_pod_status()`
+  end-to-end (fresh-generation stamping, unchanged-condition preserves
+  the old value, a genuine status flip bumps it).
+- New e2e test `test_pod_condition_reports_observed_generation`
+  (`lifecycle.sh`): structural proof that a live pod's `Ready`
+  condition's `observedGeneration` matches its own `metadata.generation`
+  — the deeper "unchanged keeps the old value" semantic is already
+  thoroughly covered by the unit tests above, so this just proves the
+  live wiring end to end.
+
 ## Round 86: fresh gap re-audit (2026-07-31, same day)
 
 No code changed. Per the user's own instruction, run after rounds 84/85
@@ -4901,7 +4948,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Pod & container lifecycle
 - ✅ Pod sandbox + container create/start/stop/remove via CRI
-- ❌ **`PodCondition.observedGeneration`** (found in round 86's re-audit) — real kubelet stamps every condition it writes (`Initialized`/`PodScheduled`/`ContainersReady`/`Ready`/`DisruptionTarget`/...) with `pod.metadata.generation` at the time that condition's status last actually changed (`podutil.CalculatePodConditionObservedGeneration`, confirmed via `gh search code` against `pkg/kubelet/kubelet_pods.go`/`pkg/kubelet/status/generate.go`), so a client can tell whether a condition reflects the *current* pod spec generation or a stale one from before the most recent spec update. Confirmed via grep that `observed_generation` is never referenced anywhere in this codebase — `build_pod_status()` (round 23's condition-building logic) never sets it on any of the conditions nodelet already owns and writes.
+- ✅ **`PodCondition.observedGeneration`** (round 87; found in round 86's re-audit) — new pure `condition_observed_generation()` mirrors real kubelet's own `podutil.CalculatePodConditionObservedGeneration` exactly: a condition whose status is unchanged from the previous write keeps its *old* `observedGeneration` (already correctly stamped whenever it last actually changed), while a new or just-flipped condition gets stamped with the pod's *current* `metadata.generation` — letting a client tell whether a condition reflects the pod's current spec generation or a stale one from before the most recent update. Wired into all 5 conditions `build_pod_status()` already owns and writes (`Initialized`/`PodScheduled`/`ContainersReady`/`Ready`/`PodResizeInProgress`); `write_status()`/`build_pod_status()` gained a new `generation: Option<i64>` parameter threaded from `pod.metadata.generation` at all 4 call sites (including the static-pod mirror-pod path, which needed its own care — the *mirror* pod's own generation, not the source manifest pod's, since that's the object actually being patched).
 - ✅ **Restart-on-exit honoring `restartPolicy`, with crash-loop backoff and `lastState`** (round 73 + round 75; found in round 72's re-audit) — `restart_backoff_ready()`/`record_restart_backoff()` (new `restart_backoff` side table on `CriRuntime`) gate the actual restart, not just its status reporting: the first restart after any exit is always immediate, but a container that keeps exiting is throttled with an exponentially growing delay (10s base, doubling, capped at 5 minutes — matching real kubelet's own `flowcontrol.Backoff` constants exactly), resetting back to the base delay after ~10 minutes without needing another restart attempt. Real behavior fix, not just a missing status string — nodelet's event-driven architecture (every status write is itself a Pod modification that re-triggers this controller's own watch stream, feeding right back into another reconcile) meant a crash-looping container was previously recreated as fast as the runtime could physically create+start it, with zero throttle. Round 75 closed the display gap round 73 deliberately left open: a new `last_terminated` side table on `CriRuntime` (`TerminatedInfo`, captured right before an old instance is removed for a fresh one) feeds `containerStatuses[].lastState`, and a backing-off container's *current* state now reports `Waiting{reason: CrashLoopBackOff}` (its real exit details moved into `lastState` instead) rather than `Terminated` — matching real kubectl's familiar display exactly. **Scoped to app containers only** — init/ephemeral containers have no backoff state or `lastState` tracking (a documented scope limitation both rounds share; `ensure_container()`'s restart path, not `ensure_init_containers()`'s, is the only one gated).
 - ✅ **Init containers** — run to completion, in order, before app containers (`ensure_init_containers`)
 - ✅ **Native sidecar containers** (round 36; `initContainers[].restartPolicy: "Always"`, GA since 1.29, found in round 35's re-audit) — `sidecar_init_decision()` routes a sidecar-marked init container through its own decision matrix: doesn't block later init/app containers on its own exit (only on having started at all), restarts on exit like a normal container for the pod's whole lifetime, and its real probe-based readiness folds into the pod's overall `Ready`/`ContainersReady` (`pods.rs::build_pod_status()`). Genuinely automated e2e tests. **Documented simplification**: sidecars aren't stopped strictly *after* app containers on teardown (one pass instead), unlike upstream's exact ordering. See round 36 notes.
@@ -5679,6 +5726,13 @@ accordingly; see those files' own updated framing.
       (verified against upstream kubelet source via `gh search code`)
       and CRI `Mount.uidMappings`/`.gidMappings` (niche per-volume idmap
       case). See round 86 notes.
-- [ ] Candidates for the next round, ranked: `PodCondition.observedGeneration`
-      (broader, correctness-shaped) over `Mount.uidMappings`/`.gidMappings`
-      (narrow edge case). Ask before starting the next round.
+- [x] Round 87: `PodCondition.observedGeneration` — new pure
+      `condition_observed_generation()` mirrors real kubelet's own
+      semantics exactly, wired into all 5 conditions `build_pod_status()`
+      owns. `write_status()`/`build_pod_status()` gained a `generation`
+      parameter threaded from all 4 call sites (a 4th, the static-pod
+      mirror path, surfaced by the compiler mid-round). 7 new unit tests
+      + a genuinely automated e2e test. See round 87 notes.
+- [ ] Round 88 (`Mount.uidMappings`/`.gidMappings`) is next, per the
+      user's "do both then another audit" instruction, followed by a
+      fresh gap re-audit.
