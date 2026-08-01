@@ -65,7 +65,7 @@ use v1::{
     StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest, ReopenContainerLogRequest,
     ExecRequest, AttachRequest, PortForwardRequest, ListPodSandboxStatsRequest,
     UpdateContainerResourcesRequest, security_profile::ProfileType, SecurityProfile,
-    IdMapping, UserNamespace,
+    IdMapping, UserNamespace, PortMapping, Protocol,
 };
 
 /// Where ConfigMap/Secret volume contents get materialized on the host, one
@@ -527,6 +527,9 @@ mod tests_pod_id;
 #[cfg(test)]
 #[path = "cri_tests/labels.rs"]
 mod tests_labels;
+#[cfg(test)]
+#[path = "cri_tests/port_mappings.rs"]
+mod tests_port_mappings;
 #[cfg(test)]
 #[path = "cri_tests/sandbox_config.rs"]
 mod tests_sandbox_config;

@@ -464,7 +464,11 @@ item from round 72's fresh gap re-audit. A fresh gap re-audit (round 80)
 found `spec.activeDeadlineSeconds` never implemented — closed round 81:
 a pod running past its own deadline is now terminated regardless of
 `restartPolicy`, checked as a direct per-pod violation alongside the
-existing ephemeral-storage/emptyDir eviction tiers. Full status list in
+existing ephemeral-storage/emptyDir eviction tiers. Round 82 closed
+`spec.containers[].ports[].hostPort`: CRI's own `PortMapping` field
+(vendored but never wired up, same shape as round 77's raw block volumes
+finding) now publishes an explicit `hostPort` on the node's own IP,
+empty for `hostNetwork` pods matching upstream. Full status list in
 `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where

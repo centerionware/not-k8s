@@ -27,6 +27,10 @@ impl PodRuntime for CriRuntime {
         let qos = crate::eviction::qos_class(pod);
         let cgroup_parent = crate::cgroup::cgroup_parent_for(qos, &id.uid);
         let overhead = pod.spec.as_ref().and_then(|s| s.overhead.as_ref()).map(|list| resource_list_to_linux_resources(list));
+        // hostPort (round 82; found in round 80's re-audit) — computed
+        // once up front, same as cgroup_parent/overhead above, since
+        // both RunPodSandbox call sites below need it.
+        let port_mappings = port_mappings_for(spec.map(|s| s.containers.as_slice()).unwrap_or(&[]), id.host_network);
         let sandbox_id = match sandbox_reuse_decision(found.as_ref().map(|(_, s)| *s), ready_state) {
             SandboxDecision::Reuse => found.unwrap().0,
             SandboxDecision::RecreateStale => {
@@ -46,10 +50,10 @@ impl PodRuntime for CriRuntime {
                 self.clear_restart_backoff(&stale_id);
                 self.clear_last_terminated(&stale_id);
                 self.release_sandbox_devices(&stale_id).await;
-                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref())).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone()).await.context("RunPodSandbox")?
             }
             SandboxDecision::CreateFresh => {
-                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref())).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone()).await.context("RunPodSandbox")?
             }
         };
 

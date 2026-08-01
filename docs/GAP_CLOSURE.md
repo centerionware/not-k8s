@@ -27,6 +27,43 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 82: spec.containers[].ports[].hostPort (2026-07-31, same day)
+
+Closes the second finding from round 80's re-audit, per the user's "do
+both in order" instruction.
+
+- New pure `port_mappings_for(containers: &[Container], host_network:
+  bool) -> Vec<PortMapping>` and `protocol_cri()` (`sandbox.rs`) — the
+  same "vendored CRI proto field that already existed but was never
+  wired up" shape as round 77's raw block volumes finding, just for
+  `PodSandboxConfig.port_mappings` this time instead of
+  `ContainerConfig.devices`.
+- `ensure_pod()` computes the mapping list once up front (same pattern
+  `cgroup_parent`/`overhead` already established), threaded through a
+  new `port_mappings: Vec<PortMapping>` parameter on `run_sandbox()` and
+  set on `PodSandboxConfig.port_mappings` right alongside the existing
+  `dns_config` assignment.
+- Only an explicit, nonzero `hostPort` produces a mapping — `containerPort`
+  alone has always been documentation-only to every Kubernetes runtime
+  (never CRI-enforced), and CRI's own proto comment is explicit that `0`
+  and "field omitted" both mean "no host port," never "dynamic
+  allocation." Empty entirely for `hostNetwork` pods (matching real
+  kubelet — `containerPort == hostPort` trivially there already) and
+  scoped to `spec.containers` only, not init containers (real kubelet's
+  own translation never reads `initContainers[].ports` either).
+- 11 new unit tests (`cri_tests/port_mappings.rs`): no-host-port/
+  explicit-zero-means-none/real-mapping/protocol-defaulting-and-mapping
+  (TCP/UDP/SCTP/unrecognized-falls-back-to-TCP)/`hostNetwork`-produces-
+  nothing/multi-container-multi-port-collection/`hostIP`-carried-through.
+- New e2e test file `networking.sh`: `test_host_port_publishes_the_container_on_the_nodes_own_ip`
+  curls the **node's own IP** (not the pod's IP, not localhost inside
+  the container) at the configured `hostPort` and confirms the response
+  actually comes from the container — real structural proof the mapping
+  works, not just a status-string check; a control-case sibling test
+  proves a `hostNetwork: true` pod's own `containerPort` is directly
+  reachable with no `hostPort` set at all, the same way real kubelet
+  treats that case.
+
 ## Round 81: spec.activeDeadlineSeconds (2026-07-31, same day)
 
 Closes the higher-value of round 80's 2 findings, per the user's
@@ -4717,7 +4754,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`hostAliases`** — generates a pod-specific `/etc/hosts` (`write_etc_hosts()`) and bind-mounts it in, exactly how real kubelet does it (CRI has no dedicated field for this)
 - ✅ Service/ClusterIP/NodePort routing (nftables — pre-existing, kube-proxy's job but already reimplemented here)
 - ✅ **`spec.hostname`/`spec.subdomain`/`setHostnameAsFQDN`** (round 38; found in round 35's re-audit) — new pure `resolve_pod_hostname()` mirrors real kubelet's `GeneratePodHostNameAndDomain`/`ShouldSetHostnameAsFQDN`: `spec.hostname` overrides the short hostname (default the pod name); `setHostnameAsFQDN` (only meaningful with `spec.subdomain` also set) makes the sandbox's actual hostname the full `<hostname>.<subdomain>.<namespace>.svc.<cluster-domain>` FQDN instead of just the short name, rejecting (`Err`, same retry-and-report path as any other `ensure_pod()` failure) an FQDN over Linux's 64-byte `sethostname(2)` limit rather than silently truncating it. Genuinely automated e2e tests (a real container's own `hostname` output). See round 38 notes.
-- ❌ **`spec.containers[].ports[].hostPort`** (found in round 80's re-audit) — CRI's own `PodSandboxConfig.port_mappings`/`PortMapping` fields (`proto/cri.proto`) exist in the vendored proto but `port_mappings`/`PortMapping` are referenced nowhere in this codebase's own code at all — confirmed via grep, only the proto definition itself mentions them. A pod declaring `hostPort` today gets no actual host-port forwarding; `containerPort` alone is purely documentation-only (informational to the API, was never CRI-enforced by any Kubernetes runtime — only `hostPort` triggers real port-forwarding). Real-world relevance: publishing a port on the node's own IP without going through a `NodePort`/`LoadBalancer` Service, a common pattern for host-networked-adjacent workloads (e.g. some ingress/monitoring DaemonSets) even on `hostNetwork: false` pods.
+- ✅ **`spec.containers[].ports[].hostPort`** (round 82; found in round 80's re-audit) — new pure `port_mappings_for()` (`sandbox.rs`) builds CRI's `PortMapping` entries (only for ports with an explicit, nonzero `hostPort` — `0`/unset both mean "no host port" per the proto's own contract; `containerPort` alone has always been documentation-only to every Kubernetes runtime, never CRI-enforced) and `protocol_cri()` maps `TCP`/`UDP`/`SCTP` (defaulting to `TCP`, matching the API's own default, including for an unrecognized value — fail-safe in the direction the API already defaults to). Computed once in `ensure_pod()` alongside the pre-existing `cgroup_parent`/`overhead` and set on `PodSandboxConfig.port_mappings` in `run_sandbox()`. Empty for `hostNetwork` pods — `containerPort == hostPort` trivially there, matching real kubelet's own behavior of never sending explicit mappings for those. Only `spec.containers` — init containers' `ports` field exists in the API but real kubelet's own translation never reads it either. Genuinely automated e2e tests (curling the *node's own IP*, not the pod's IP or localhost-inside-the-container, at the configured `hostPort` — real structural proof the mapping actually works) for both the `hostNetwork: false`+`hostPort` case and the `hostNetwork: true`+no-mapping-needed case.
 
 ### Images
 - ✅ **Private registry auth** — `imagePullSecrets` (`kubernetes.io/dockerconfigjson`) → CRI `AuthConfig` (`resolve_pull_auth()`), tried first; falling back to an **image credential provider** (round 71; found in round 69's re-audit) — `--image-credential-provider-config`/`-bin-dir` exec-plugin protocol (`credential_provider.rs`), including ServiceAccount token integration (`tokenAttributes`, beta/default-on in k8s 1.34) reusing the same `TokenRequest` machinery projected `serviceAccountToken` volumes use. Not yet: legacy `kubernetes.io/dockercfg`, ServiceAccount-linked pull secrets, multi-provider merge (only the first matching provider is tried).
@@ -5398,5 +5435,12 @@ accordingly; see those files' own updated framing.
       `status_reason`/`message` instead of one hardcoded node-pressure
       message. 7 new unit tests + a genuinely automated e2e test. See
       round 81 notes.
-- [ ] Round 82 (`hostPort`) is next, per the user's "do both in order"
-      instruction, followed by a fresh gap re-audit.
+- [x] Round 82: `spec.containers[].ports[].hostPort` — new pure
+      `port_mappings_for()`/`protocol_cri()` build CRI's `PortMapping`
+      entries, computed once in `ensure_pod()` and set on
+      `PodSandboxConfig.port_mappings` in `run_sandbox()`. Empty for
+      `hostNetwork` pods, matching upstream. 11 new unit tests + 2
+      genuinely automated e2e tests (curling the node's own IP at the
+      configured port — real structural proof). See round 82 notes.
+- [ ] Round 83 (fresh gap re-audit) is next, per the user's "then another
+      gap audit and ask again" instruction.

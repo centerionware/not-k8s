@@ -140,6 +140,50 @@ pub(crate) fn container_labels(id: &PodId, container_name: &str, kind: Container
 /// function stays pure/side-effect-free for testability. `None` (the
 /// overwhelmingly common case, `hostUsers` unset or `true`) means no user
 /// namespace at all — identical to this function's pre-round-25 behavior.
+/// `spec.containers[].ports[].hostPort` (round 82; found in round 80's
+/// re-audit) -> CRI's `PodSandboxConfig.port_mappings`, real kubelet's
+/// own mechanism for publishing a port on the node's own IP without a
+/// `NodePort`/`LoadBalancer` Service. `containerPort` alone is purely
+/// documentation to the API — only an explicit `hostPort` (present and
+/// nonzero; `0`/unset both mean "no host port" per CRI's own proto
+/// contract) ever produces a real mapping. Empty for a `hostNetwork`
+/// pod — `containerPort == hostPort` trivially there (the container
+/// already shares the host's network namespace), matching real
+/// kubelet's own behavior of never sending explicit mappings for those.
+/// Only `spec.containers` — init containers' `ports` field exists in the
+/// API but real kubelet's own translation never reads it either (an
+/// init container is gone by the time anything could dial its port).
+pub(crate) fn port_mappings_for(containers: &[Container], host_network: bool) -> Vec<PortMapping> {
+    if host_network {
+        return Vec::new();
+    }
+    containers
+        .iter()
+        .flat_map(|c| c.ports.iter().flatten())
+        .filter(|p| p.host_port.is_some_and(|hp| hp != 0))
+        .map(|p| PortMapping {
+            protocol: protocol_cri(p.protocol.as_deref()) as i32,
+            container_port: p.container_port,
+            host_port: p.host_port.unwrap_or(0),
+            host_ip: p.host_ip.clone().unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// `ContainerPort.protocol` (`"TCP"`/`"UDP"`/`"SCTP"`, defaulting to
+/// `"TCP"` when unset, matching the Kubernetes API's own default) -> CRI's
+/// `Protocol` enum. An unrecognized value also falls back to `Tcp` —
+/// fail-safe in the same direction the API's own default already is,
+/// never silently dropping the mapping over a value validation should
+/// have caught upstream.
+fn protocol_cri(protocol: Option<&str>) -> Protocol {
+    match protocol {
+        Some("UDP") => Protocol::Udp,
+        Some("SCTP") => Protocol::Sctp,
+        _ => Protocol::Tcp,
+    }
+}
+
 pub(crate) fn sandbox_config(
     id: &PodId,
     userns_mapping: Option<(u32, u32)>,
@@ -234,6 +278,7 @@ impl CriRuntime {
         cgroup_parent: String,
         overhead: Option<LinuxContainerResources>,
         pod_sc: Option<&PodSecurityContext>,
+        port_mappings: Vec<PortMapping>,
     ) -> Result<String> {
         let mut rt = self.rt.clone();
         // spec.hostUsers: false (round 25) — allocate this pod an exclusive
@@ -255,6 +300,7 @@ impl CriRuntime {
         };
         let mut config = sandbox_config(id, userns_mapping, hostname, sysctls, pod_sc);
         config.dns_config = dns;
+        config.port_mappings = port_mappings;
         let linux = config.linux.get_or_insert_with(LinuxPodSandboxConfig::default);
         linux.cgroup_parent = cgroup_parent;
         linux.overhead = overhead;
