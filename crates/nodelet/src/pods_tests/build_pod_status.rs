@@ -733,3 +733,94 @@ fn an_empty_termination_message_leaves_the_message_field_unset() {
     let state = container_state(&c, None, "ContainerCreating");
     assert!(state.terminated.unwrap().message.is_none());
 }
+
+// --- container_state / last_container_state (round 75: CrashLoopBackOff + lastState) ---
+
+#[test]
+fn waiting_reason_override_takes_priority_over_the_default_reason() {
+    // A backing-off container has exit_code deliberately left None (see
+    // status.rs) so it falls into the Waiting branch at all -- this
+    // proves the override reason wins there instead of the caller's
+    // default "ContainerCreating".
+    let c = ContainerRuntimeStatus {
+        name: "app".to_string(),
+        running: false,
+        exit_code: None,
+        waiting_reason_override: Some("CrashLoopBackOff".to_string()),
+        ..Default::default()
+    };
+    let state = container_state(&c, None, "ContainerCreating");
+    assert_eq!(state.waiting.unwrap().reason.as_deref(), Some("CrashLoopBackOff"));
+}
+
+#[test]
+fn no_override_falls_back_to_the_callers_default_reason() {
+    let c = ContainerRuntimeStatus { name: "app".to_string(), running: false, exit_code: None, ..Default::default() };
+    let state = container_state(&c, None, "PodInitializing");
+    assert_eq!(state.waiting.unwrap().reason.as_deref(), Some("PodInitializing"));
+}
+
+#[test]
+fn last_container_state_with_no_history_is_an_empty_state() {
+    let state = last_container_state(None);
+    assert!(state.terminated.is_none());
+    assert!(state.waiting.is_none());
+    assert!(state.running.is_none());
+}
+
+#[test]
+fn last_container_state_reports_the_captured_terminated_details() {
+    let info = crate::runtime::TerminatedInfo {
+        container_id: Some("containerd://abc123".to_string()),
+        exit_code: 1,
+        reason: "Error".to_string(),
+        finished_at: None,
+        message: "boom".to_string(),
+    };
+    let state = last_container_state(Some(&info));
+    let terminated = state.terminated.expect("expected terminated lastState");
+    assert_eq!(terminated.exit_code, 1);
+    assert_eq!(terminated.reason.as_deref(), Some("Error"));
+    assert_eq!(terminated.message.as_deref(), Some("boom"));
+    assert_eq!(terminated.container_id.as_deref(), Some("containerd://abc123"));
+}
+
+#[test]
+fn last_container_state_leaves_an_empty_reason_or_message_unset() {
+    let info = crate::runtime::TerminatedInfo { container_id: None, exit_code: 0, reason: String::new(), finished_at: None, message: String::new() };
+    let state = last_container_state(Some(&info));
+    let terminated = state.terminated.unwrap();
+    assert!(terminated.reason.is_none());
+    assert!(terminated.message.is_none());
+}
+
+#[test]
+fn build_pod_status_surfaces_last_terminated_into_container_statuses_last_state() {
+    // End-to-end: a currently-Running container that has a recorded
+    // last_terminated (from an earlier restart) must show BOTH its live
+    // Running state AND lastState.terminated with the earlier exit's
+    // details -- proving build_pod_status() actually wires
+    // ContainerRuntimeStatus.last_terminated through, not just
+    // container_state()/last_container_state() in isolation.
+    let mut rt = running_status();
+    rt.containers[0].last_terminated = Some(crate::runtime::TerminatedInfo {
+        container_id: Some("containerd://old".to_string()),
+        exit_code: 137,
+        reason: "OOMKilled".to_string(),
+        finished_at: None,
+        message: String::new(),
+    });
+    let status = bps("10.0.0.1", &rt, None);
+    let cs = &status.container_statuses.unwrap()[0];
+    assert!(cs.state.as_ref().unwrap().running.is_some(), "current state should still be Running");
+    let last_terminated = cs.last_state.as_ref().unwrap().terminated.as_ref().expect("expected lastState.terminated");
+    assert_eq!(last_terminated.exit_code, 137);
+    assert_eq!(last_terminated.reason.as_deref(), Some("OOMKilled"));
+}
+
+#[test]
+fn build_pod_status_leaves_last_state_unset_with_no_recorded_history() {
+    let status = bps("10.0.0.1", &running_status(), None);
+    let cs = &status.container_statuses.unwrap()[0];
+    assert!(cs.last_state.is_none());
+}

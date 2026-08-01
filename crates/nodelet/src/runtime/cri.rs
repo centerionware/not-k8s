@@ -261,6 +261,14 @@ pub struct CriRuntime {
     /// `container_state.rs`'s `crash_loop_backoff_secs()`/
     /// `crash_loop_backoff_ready()`.
     restart_backoff: Mutex<HashMap<String, (u64, u64)>>,
+    /// `"sandbox_id/container_name" -> the previous container instance's
+    /// terminated details`, captured right before that instance is
+    /// removed to make way for a fresh one (round 75; found in round
+    /// 73's crash-loop backoff work) — feeds
+    /// `containerStatuses[].lastState`, which otherwise has no way to
+    /// stay populated once the exited instance it describes is gone and
+    /// a new (possibly still-running) one has replaced it.
+    last_terminated: Mutex<HashMap<String, crate::runtime::TerminatedInfo>>,
     /// CSI Node-service clients for `PersistentVolumeClaim` volumes (see
     /// `runtime/csi.rs`) — empty at startup (unless seeded via
     /// `NODELET_CSI_DRIVERS`) means every PVC volume is skipped with a
@@ -463,6 +471,7 @@ impl CriRuntime {
             runtime_name,
             restart_counts: Mutex::new(HashMap::new()),
             restart_backoff: Mutex::new(HashMap::new()),
+            last_terminated: Mutex::new(HashMap::new()),
             csi,
             device_plugins,
             device_allocations: Mutex::new(HashMap::new()),
@@ -542,6 +551,9 @@ mod tests_restart_count;
 #[cfg(test)]
 #[path = "cri_tests/crash_loop_backoff.rs"]
 mod tests_crash_loop_backoff;
+#[cfg(test)]
+#[path = "cri_tests/last_terminated.rs"]
+mod tests_last_terminated;
 #[cfg(test)]
 #[path = "cri_tests/downward_api_volume.rs"]
 mod tests_downward_api_volume;

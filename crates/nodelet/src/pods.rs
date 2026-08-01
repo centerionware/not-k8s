@@ -455,10 +455,39 @@ fn container_state(c: &crate::runtime::ContainerRuntimeStatus, started_at: Optio
             ..Default::default()
         }
     } else {
+        // Crash-loop backoff (round 75; found in round 73's own work):
+        // `waiting_reason_override` (currently only ever
+        // `"CrashLoopBackOff"`) takes priority over the caller's default
+        // — this is the one case where a container that HAS actually run
+        // before (and has a `lastState` to show) still reports `Waiting`
+        // rather than `Terminated`, matching real kubelet's own display.
+        let reason = c.waiting_reason_override.as_deref().unwrap_or(waiting_reason);
         ContainerState {
-            waiting: Some(ContainerStateWaiting { reason: Some(waiting_reason.to_string()), message: None }),
+            waiting: Some(ContainerStateWaiting { reason: Some(reason.to_string()), message: None }),
             ..Default::default()
         }
+    }
+}
+
+/// `containerStatuses[].lastState` (round 75) — the previous instance's
+/// terminated details, if this codebase ever captured any (see
+/// `CriRuntime`'s `last_terminated` side table / `TerminatedInfo`).
+/// `Default::default()` (an empty `ContainerState`, matching upstream's
+/// own "nothing to report yet" shape) when there's none.
+fn last_container_state(last: Option<&crate::runtime::TerminatedInfo>) -> ContainerState {
+    match last {
+        Some(info) => ContainerState {
+            terminated: Some(ContainerStateTerminated {
+                container_id: info.container_id.clone(),
+                exit_code: info.exit_code,
+                finished_at: info.finished_at.map(Time),
+                message: (!info.message.is_empty()).then(|| info.message.clone()),
+                reason: (!info.reason.is_empty()).then(|| info.reason.clone()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        None => ContainerState::default(),
     }
 }
 
@@ -534,6 +563,7 @@ fn build_pod_status(
             started: Some(c.running),
             container_id: c.container_id.clone(),
             state: Some(container_state(c, rt.started_at.map(Time), "ContainerCreating")),
+            last_state: c.last_terminated.as_ref().map(|info| last_container_state(Some(info))),
             resources: c.resources.clone(),
             allocated_resources: c.allocated_resources.clone(),
             stop_signal: c.stop_signal.clone(),

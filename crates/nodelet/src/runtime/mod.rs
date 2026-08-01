@@ -114,6 +114,36 @@ pub struct ContainerRuntimeStatus {
     /// throughout. `None` for a still-running container is a documented
     /// scope limitation, not "unset/RuntimeDefault."
     pub stop_signal: Option<String>,
+    /// Round 75; found in round 73's crash-loop backoff work. `Some` only
+    /// while a container that keeps exiting is currently in its backoff
+    /// window (`waiting_reason_override` below always `Some` alongside
+    /// this) or once at least one restart has actually happened — the
+    /// previous instance's terminated details, mapped to
+    /// `containerStatuses[].lastState`. `None` means either this
+    /// container has never been replaced, or (mock runtime) this concept
+    /// isn't tracked at all.
+    pub last_terminated: Option<TerminatedInfo>,
+    /// Round 75: overrides the caller's own default waiting reason
+    /// (`"ContainerCreating"`/`"PodInitializing"`) — currently only ever
+    /// `Some("CrashLoopBackOff")`, set while `exit_code` is deliberately
+    /// left `None` here (suppressing the usual `Terminated` state) so a
+    /// backing-off container reports `Waiting` instead, with its real
+    /// exit details moved into `last_terminated` above rather than shown
+    /// as the *current* state — matching real kubelet's own display.
+    pub waiting_reason_override: Option<String>,
+}
+
+/// One container instance's terminated details, captured at the moment
+/// it's about to be replaced by a fresh instance (or, while a
+/// crash-looping container is mid-backoff, read live off the still-present
+/// exited instance) — feeds `containerStatuses[].lastState` (round 75).
+#[derive(Clone, Debug, Default)]
+pub struct TerminatedInfo {
+    pub container_id: Option<String>,
+    pub exit_code: i32,
+    pub reason: String,
+    pub finished_at: Option<Timestamp>,
+    pub message: String,
 }
 
 #[derive(Clone, Debug)]

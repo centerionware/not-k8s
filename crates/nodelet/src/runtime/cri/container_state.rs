@@ -252,6 +252,12 @@ pub(crate) fn clear_restart_backoff_in(backoff: &mut HashMap<String, (u64, u64)>
 }
 
 
+pub(crate) fn clear_last_terminated_in(table: &mut HashMap<String, crate::runtime::TerminatedInfo>, sandbox_id: &str) {
+    let prefix = format!("{sandbox_id}/");
+    table.retain(|k, _| !k.starts_with(&prefix));
+}
+
+
 /// Real kubelet default when `terminationGracePeriodSeconds` is unset (or
 /// explicitly negative, which the API otherwise allows through): 30s.
 pub(crate) fn termination_grace_seconds(pod: &Pod) -> i64 {
@@ -285,6 +291,25 @@ impl CriRuntime {
     /// reason/lifecycle as `clear_restart_counts()`.
     pub(crate) fn clear_restart_backoff(&self, sandbox_id: &str) {
         clear_restart_backoff_in(&mut self.restart_backoff.lock().unwrap(), sandbox_id);
+    }
+
+    /// Drop `lastState` history for a sandbox that's gone, same
+    /// reason/lifecycle as `clear_restart_counts()`/`clear_restart_backoff()`.
+    pub(crate) fn clear_last_terminated(&self, sandbox_id: &str) {
+        clear_last_terminated_in(&mut self.last_terminated.lock().unwrap(), sandbox_id);
+    }
+
+    /// Record `info` as the previous instance's terminated details for
+    /// `key` — called right before that instance is actually removed to
+    /// make way for a fresh one.
+    pub(crate) fn record_last_terminated(&self, sandbox_id: &str, container_name: &str, info: crate::runtime::TerminatedInfo) {
+        self.last_terminated.lock().unwrap().insert(restart_count_key(sandbox_id, container_name), info);
+    }
+
+    /// The persisted previous-instance terminated details for `key`, if
+    /// any were ever recorded.
+    pub(crate) fn last_terminated_for(&self, sandbox_id: &str, container_name: &str) -> Option<crate::runtime::TerminatedInfo> {
+        self.last_terminated.lock().unwrap().get(&restart_count_key(sandbox_id, container_name)).cloned()
     }
 
     /// Whether a container due for a restart is allowed to restart right

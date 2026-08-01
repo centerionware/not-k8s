@@ -27,6 +27,60 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 75: ContainerStatus.lastState tracking (2026-07-31, same day)
+
+Closes the display gap round 73's crash-loop backoff deliberately left
+open — user picked it directly over `allocatedResourcesStatus` and a
+fresh gap re-audit.
+
+- New `TerminatedInfo` DTO (`runtime/mod.rs`: `container_id`, `exit_code`,
+  `reason`, `finished_at`, `message`) and 2 new `ContainerRuntimeStatus`
+  fields: `last_terminated: Option<TerminatedInfo>` and
+  `waiting_reason_override: Option<String>` (currently only ever
+  `Some("CrashLoopBackOff")`).
+- New `CriRuntime.last_terminated: Mutex<HashMap<String, TerminatedInfo>>`
+  side table, same lifecycle/pattern as `restart_counts`/`restart_backoff`
+  (cleared alongside them at every sandbox-removal/recreation site) —
+  `container_create.rs`'s restart path now captures the *outgoing*
+  instance's own terminated details (fetched via the same
+  `container_status_details()` call `status.rs` already makes for exited
+  containers) right before removing it to make way for the fresh one,
+  for *any* restart-driven removal (crash or resize-triggered), not just
+  crash-loop ones — matching real kubelet's own "lastState updates
+  whenever a container is replaced" semantics.
+- `status.rs`'s `build_status()`: while an exited container is currently
+  sitting in its backoff window (`restart_policy != "Never" &&
+  !restart_backoff_ready()`), its *live* just-fetched details become
+  `last_terminated` directly (this exact instance hasn't been replaced
+  yet, so the persisted table doesn't have it) and its *current*
+  `exit_code` is deliberately left `None` — suppressing the usual
+  `Terminated` state so it falls through to `Waiting`, with
+  `waiting_reason_override` set to steer that waiting reason to
+  `"CrashLoopBackOff"` instead of the default. Once a container isn't
+  backing off (running fine, or exited under `restartPolicy: Never`),
+  `last_terminated` instead comes from the persisted table — the
+  previous instance's info, kept around across restarts even while the
+  *current* instance is happily Running.
+- `pods.rs`: `container_state()` now checks `waiting_reason_override`
+  before falling back to the caller's own default reason
+  (`"ContainerCreating"`/`"PodInitializing"`); new `last_container_state()`
+  maps a `TerminatedInfo` into `ContainerStateTerminated`, wired into
+  `containerStatuses[].lastState` (init/ephemeral container statuses are
+  unaffected — they never set this field, matching round 73's own
+  app-containers-only scope).
+- 20 new unit tests: `container_state()`'s override behavior (2),
+  `last_container_state()` (3), a full `build_pod_status()` end-to-end
+  check proving a Running container with recorded history reports both
+  its live `Running` state *and* `lastState.terminated` simultaneously
+  (2), and `clear_last_terminated_in()`'s pure sandbox-scoped sweep (3),
+  plus the pre-existing suite's own count increase from these additions.
+- New e2e test `test_crash_loop_backoff_reports_waiting_reason_and_last_state`
+  (`lifecycle.sh`): polls for `state.waiting.reason` to actually become
+  `"CrashLoopBackOff"` (not just for `restartCount` to reach 1, which
+  happens too early — as soon as the *second* instance is created, before
+  it has even exited and started backing off), then asserts
+  `lastState.terminated.exitCode` is populated.
+
 ## Round 74: PodResources API (2026-07-31, same day)
 
 Closes the second candidate from round 72's re-audit — user picked it
@@ -4317,7 +4371,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Pod & container lifecycle
 - ✅ Pod sandbox + container create/start/stop/remove via CRI
-- 🟡 **Restart-on-exit honoring `restartPolicy`, now with crash-loop backoff** (round 73; found in round 72's re-audit) — `restart_backoff_ready()`/`record_restart_backoff()` (new `restart_backoff` side table on `CriRuntime`) gate the actual restart, not just its status reporting: the first restart after any exit is always immediate, but a container that keeps exiting is throttled with an exponentially growing delay (10s base, doubling, capped at 5 minutes — matching real kubelet's own `flowcontrol.Backoff` constants exactly), resetting back to the base delay after ~10 minutes without needing another restart attempt. This closes the real behavior gap, not just the missing status string — nodelet's event-driven architecture (every status write is itself a Pod modification that re-triggers this controller's own watch stream, feeding right back into another reconcile) meant a crash-looping container was previously recreated as fast as the runtime could physically create+start it, with zero throttle. **Still not implemented**: the `CrashLoopBackOff` `state.waiting.reason` string itself — `ContainerStatus` has no `lastState` tracking at all yet (a separate, larger pre-existing gap this round didn't take on), so during the backoff window the container's status still shows its real `Terminated` state (accurate exit code/reason) rather than kubectl's familiar `Waiting: CrashLoopBackOff` + `lastState: Terminated` pairing.
+- ✅ **Restart-on-exit honoring `restartPolicy`, with crash-loop backoff and `lastState`** (round 73 + round 75; found in round 72's re-audit) — `restart_backoff_ready()`/`record_restart_backoff()` (new `restart_backoff` side table on `CriRuntime`) gate the actual restart, not just its status reporting: the first restart after any exit is always immediate, but a container that keeps exiting is throttled with an exponentially growing delay (10s base, doubling, capped at 5 minutes — matching real kubelet's own `flowcontrol.Backoff` constants exactly), resetting back to the base delay after ~10 minutes without needing another restart attempt. Real behavior fix, not just a missing status string — nodelet's event-driven architecture (every status write is itself a Pod modification that re-triggers this controller's own watch stream, feeding right back into another reconcile) meant a crash-looping container was previously recreated as fast as the runtime could physically create+start it, with zero throttle. Round 75 closed the display gap round 73 deliberately left open: a new `last_terminated` side table on `CriRuntime` (`TerminatedInfo`, captured right before an old instance is removed for a fresh one) feeds `containerStatuses[].lastState`, and a backing-off container's *current* state now reports `Waiting{reason: CrashLoopBackOff}` (its real exit details moved into `lastState` instead) rather than `Terminated` — matching real kubectl's familiar display exactly. **Scoped to app containers only** — init/ephemeral containers have no backoff state or `lastState` tracking (a documented scope limitation both rounds share; `ensure_container()`'s restart path, not `ensure_init_containers()`'s, is the only one gated).
 - ✅ **Init containers** — run to completion, in order, before app containers (`ensure_init_containers`)
 - ✅ **Native sidecar containers** (round 36; `initContainers[].restartPolicy: "Always"`, GA since 1.29, found in round 35's re-audit) — `sidecar_init_decision()` routes a sidecar-marked init container through its own decision matrix: doesn't block later init/app containers on its own exit (only on having started at all), restarts on exit like a normal container for the pod's whole lifetime, and its real probe-based readiness folds into the pod's overall `Ready`/`ContainersReady` (`pods.rs::build_pod_status()`). Genuinely automated e2e tests. **Documented simplification**: sidecars aren't stopped strictly *after* app containers on teardown (one pass instead), unlike upstream's exact ordering. See round 36 notes.
 - ✅ **Ephemeral containers** (`kubectl debug`) — `spec.ephemeralContainers` started once (never restarted) via `ensure_ephemeral_container()`, reported in `PodStatus.ephemeralContainerStatuses`, excluded from pod phase/readiness. Exit codes not tracked (always reported `0`) — see Round 8 notes.
@@ -4989,7 +5043,16 @@ accordingly; see those files' own updated framing.
       logic. 18 new unit tests. **Still open**: DRA claim devices aren't
       surfaced (documented — `PreparedPodClaim`s aren't kept in a
       queryable side table). See round 74 notes.
-- [ ] Candidates for the next round, ranked: `allocatedResourcesStatus`
-      (alpha/beta upstream, lower urgency) or `ContainerStatus.lastState`
-      tracking (would unlock the `CrashLoopBackOff` status string round
-      73 deliberately left out). Ask before starting the next round.
+- [x] Round 75: `ContainerStatus.lastState` tracking — new
+      `last_terminated` side table on `CriRuntime` (`TerminatedInfo`,
+      captured at any restart-driven container removal) feeds
+      `containerStatuses[].lastState`; a backing-off container's current
+      state now reports `Waiting{reason: CrashLoopBackOff}` (real exit
+      details moved into `lastState`) instead of `Terminated`, matching
+      real kubectl's display. Closes the display gap round 73
+      deliberately left open. 20 new unit tests + a genuinely automated
+      e2e test. Scoped to app containers only. See round 75 notes.
+- [ ] Candidates for the next round: `allocatedResourcesStatus` (alpha/beta
+      upstream, lower urgency) or a fresh gap re-audit — every item
+      tracked since round 72 is now closed. Ask before starting the next
+      round.

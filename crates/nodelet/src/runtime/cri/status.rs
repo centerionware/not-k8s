@@ -227,7 +227,7 @@ impl CriRuntime {
             earliest_created = earliest_created.min(c.created_at);
             let name = c.metadata.as_ref().map(|m| m.name.clone()).unwrap_or_default();
 
-            let (exit_code, reason, finished_at, termination_message, stop_signal) = if exited {
+            let (exit_code, reason, finished_at, termination_message, stop_signal, live_last_terminated) = if exited {
                 match self.container_status_details(&c.id).await {
                     Ok(details) => {
                         if details.exit_code != 0 {
@@ -245,16 +245,42 @@ impl CriRuntime {
                             .flatten();
                         let message = read_termination_message(&termination_message_host_path(pod_uid, &name));
                         let stop_signal = stop_signal_k8s(details.stop_signal);
-                        (Some(details.exit_code), reason, finished_at, message, stop_signal)
+                        // Crash-loop backoff (round 73)/lastState (round
+                        // 75): while this exact instance is sitting exited
+                        // and waiting out its backoff window (restartPolicy:
+                        // Never never reaches this — no backoff state is
+                        // ever recorded for it, see container_create.rs), it
+                        // reports Waiting{CrashLoopBackOff} as its *current*
+                        // state instead of Terminated, with these same
+                        // just-fetched details moved into lastState — this
+                        // instance hasn't actually been replaced yet, so the
+                        // persisted last_terminated table (which only
+                        // updates at actual replacement time) doesn't have
+                        // it yet either.
+                        let backing_off = restart_policy != "Never" && !self.restart_backoff_ready(sandbox_id, &name);
+                        let live_last_terminated = backing_off.then(|| crate::runtime::TerminatedInfo {
+                            container_id: Some(format_container_id(&self.runtime_name, &c.id)),
+                            exit_code: details.exit_code,
+                            reason: reason.clone(),
+                            finished_at,
+                            message: message.clone(),
+                        });
+                        if backing_off {
+                            (None, String::new(), None, String::new(), stop_signal, live_last_terminated)
+                        } else {
+                            (Some(details.exit_code), reason, finished_at, message, stop_signal, None)
+                        }
                     }
                     Err(e) => {
                         warn!(container = %c.id, error = ?e, "ContainerStatus failed; reporting this exited container without terminated details");
-                        (None, String::new(), None, String::new(), None)
+                        (None, String::new(), None, String::new(), None, None)
                     }
                 }
             } else {
-                (None, String::new(), None, String::new(), None)
+                (None, String::new(), None, String::new(), None, None)
             };
+            let waiting_reason_override = live_last_terminated.is_some().then(|| "CrashLoopBackOff".to_string());
+            let last_terminated = live_last_terminated.or_else(|| self.last_terminated_for(sandbox_id, &name));
 
             let resource_key = restart_count_key(sandbox_id, &name);
             let resources = self.applied_resources.lock().unwrap().get(&resource_key).cloned();
@@ -276,6 +302,8 @@ impl CriRuntime {
                 resources,
                 allocated_resources,
                 stop_signal,
+                last_terminated,
+                waiting_reason_override,
             });
         }
 
@@ -377,6 +405,13 @@ impl CriRuntime {
                     resources: None,
                     allocated_resources: None,
                     stop_signal,
+                    // Crash-loop backoff (round 73) only ever applies to
+                    // app containers (ensure_container()'s own restart
+                    // path) — init/ephemeral containers have no backoff
+                    // state to report here, a documented scope limitation
+                    // matching round 73's own.
+                    last_terminated: None,
+                    waiting_reason_override: None,
                 });
         }
         Ok(out)

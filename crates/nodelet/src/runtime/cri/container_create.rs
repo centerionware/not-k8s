@@ -137,6 +137,38 @@ impl CriRuntime {
                 if is_crash_restart {
                     self.record_restart_backoff(sandbox_id, &container.name);
                 }
+                // lastState (round 75): capture this instance's own
+                // terminated details right before it's gone for good —
+                // otherwise there's no way to report it once the fresh
+                // instance below has replaced it. Only meaningful for an
+                // instance that actually exited (not one being killed
+                // mid-run for a resize); best-effort, same as everything
+                // else in this teardown path.
+                if c.state == ContainerState::ContainerExited as i32 {
+                    if let Ok(details) = self.container_status_details(&c.id).await {
+                        let reason = if !details.reason.is_empty() {
+                            details.reason
+                        } else if details.exit_code == 0 {
+                            "Completed".to_string()
+                        } else {
+                            "Error".to_string()
+                        };
+                        let finished_at =
+                            (details.finished_at > 0).then(|| Timestamp::from_nanosecond(details.finished_at as i128).ok()).flatten();
+                        let message = read_termination_message(&termination_message_host_path(&id.uid, &container.name));
+                        self.record_last_terminated(
+                            sandbox_id,
+                            &container.name,
+                            crate::runtime::TerminatedInfo {
+                                container_id: Some(format_container_id(&self.runtime_name, &c.id)),
+                                exit_code: details.exit_code,
+                                reason,
+                                finished_at,
+                                message,
+                            },
+                        );
+                    }
+                }
                 self.release_container_devices(sandbox_id, &container.name).await;
                 let mut rt = self.rt.clone();
                 let _ = rt.remove_container(RemoveContainerRequest { container_id: c.id.clone() }).await;

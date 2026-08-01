@@ -442,7 +442,12 @@ socket (`NODELET_POD_RESOURCES_SOCKET_PATH`) for external device-monitoring
 tooling (NVIDIA DCGM and similar exporters) — a read-only projection of
 CPU/Memory/device-manager state this codebase already tracked, not new
 allocation logic; DRA claim devices aren't surfaced yet (documented scope
-limitation). Full status list in `docs/GAP_CLOSURE.md`.
+limitation). Round 75 closed the display gap round 73 deliberately left
+open: `containerStatuses[].lastState` is now tracked, so a backing-off
+container's current state reports `Waiting{reason: CrashLoopBackOff}`
+(its real exit details moved into `lastState` instead) rather than
+`Terminated` — matching kubectl's familiar display. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

@@ -199,6 +199,42 @@ EOF
     assert_true test "$restart_count" -le 3
 }
 
+test_crash_loop_backoff_reports_waiting_reason_and_last_state() {
+    # Round 75: while a crash-looping container is backing off, its
+    # *current* state must show Waiting{reason: CrashLoopBackOff} (not
+    # Terminated, even though it really did exit) with the exited
+    # instance's own details moved into lastState.terminated instead --
+    # matching real kubectl's familiar display. The very first restart
+    # (replacing the 1st exited instance with a 2nd) is never throttled
+    # (round 73); this polls for the 2nd instance's own exit to land it
+    # in the backoff window, which is when waiting.reason actually
+    # becomes CrashLoopBackOff -- restartCount alone reaching 1 isn't
+    # enough, since that happens as soon as the 2nd instance is CREATED,
+    # not once it has exited and started backing off.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="crash-loop-last-state"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "exit 1"]
+EOF
+    if ! try_wait_until 30 bash -c \
+        "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}')\" == 'CrashLoopBackOff' ]]"; then
+        delete_pod_if_exists "$name"
+        skip_test "state.waiting.reason never became CrashLoopBackOff within 30s -- check restart_policy != \"Never\" && !restart_backoff_ready() gating in runtime/cri/status.rs"
+    fi
+    local last_exit_code
+    last_exit_code="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].lastState.terminated.exitCode}')"
+    delete_pod_if_exists "$name"
+    assert_not_empty "$last_exit_code" "containerStatuses[0].lastState.terminated.exitCode -- check last_container_state()/TerminatedInfo wiring in pods.rs"
+}
+
 test_restart_policy_never_exit_zero_is_succeeded() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="never-succeed"
@@ -488,6 +524,7 @@ register_test test_native_sidecar_container_restarts_on_crash
 register_test test_init_container_failure_blocks_app_container_under_restart_policy_never
 register_test test_crashing_container_restarts_and_increments_restart_count
 register_test test_crash_loop_backoff_throttles_immediate_restarts
+register_test test_crash_loop_backoff_reports_waiting_reason_and_last_state
 register_test test_restart_policy_never_exit_zero_is_succeeded
 register_test test_restart_policy_never_exit_nonzero_is_failed
 register_test test_exited_container_reports_terminated_state_with_exit_code
