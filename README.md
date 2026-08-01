@@ -499,7 +499,13 @@ matching upstream's own no-ownership-management stance for that volume
 type. Round 94 added `NODELET_CONFIG_FILE`/`NODELET_CONFIG_DIR` — a
 YAML file (or drop-in directory) mapping the same `NODELET_*` keys the
 environment already reads, as an alternative to env-var-only
-configuration. Full status list in `docs/GAP_CLOSURE.md`.
+configuration. Round 95 added optional TLS client certificate
+authentication (`NODELET_CLIENT_CA_FILE`): a request with a cert
+chaining to the configured CA authenticates directly off its Subject
+CN/O (no `TokenReview` round-trip), matching real kubelet's own
+x509-then-bearer-token authenticator chain, while a request with no
+cert still falls back to the existing bearer-token path unchanged.
+Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

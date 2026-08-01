@@ -270,6 +270,10 @@ test_host_users_volume_ownership_translation_manual_note() {
     skip_test "genuinely proving OWNERSHIP TRANSLATION (that a host-side file owned by a UID within the pod's own mapped range shows up as the correct small container-relative UID inside the container, rather than the overflow/nobody UID a mount with no idmapping would show) needs a host-side file pre-chowned into a specific UID before the pod starts -- root required, and needs to read this node's live NODELET_USERNS_BASE_UID value. Manual spot-check: (1) note NODELET_USERNS_BASE_UID (default 100000), (2) create a hostPath directory, chown a file inside it to that exact UID ('chown 100000 <dir>/marker' -- this is the FIRST pod's allocated range base, container-relative UID 0), (3) create a hostUsers: false pod mounting that hostPath directory, (4) confirm 'stat -c %u /hostvol/marker' INSIDE the container reports '0' (proof Mount.uidMappings correctly translated host UID 100000 -> container UID 0) rather than 65534/nobody (proof no translation happened at the mount level, even though the sandbox's own userns_options, round 25, works fine on its own)."
 }
 
+test_client_certificate_authentication_manual_note() {
+    skip_test "round 95: TLS client certificate authentication (NODELET_CLIENT_CA_FILE) needs nodelet started with that env var set to a CA bundle path before the server binds its listener -- this test harness starts nodelet once, before any per-test env var can be injected, same limitation round 94's --config file e2e coverage hit. Manual spot-check: (1) generate a CA: 'openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt -days 1 -subj /CN=test-ca', (2) generate a client cert signed by it with a CN/O of your choice: 'openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj /CN=alice/O=system:masters && openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt -days 1', (3) start nodelet with NODELET_CLIENT_CA_FILE=/path/to/ca.crt, (4) 'curl -k --cert client.crt --key client.key https://<node>:<server-port>/stats/summary' should succeed with NO Authorization header at all (proof the cert alone authenticated), (5) the same curl call with a self-signed cert NOT signed by ca.crt should fail the TLS handshake outright (curl reports a certificate verify failure, not a 401 -- proof rustls itself rejects it before nodelet code runs), (6) a plain 'curl -k https://<node>:<server-port>/stats/summary' with no cert and no Authorization header should still get the existing 401 bearer-token response (proof the fallback path is unchanged)."
+}
+
 test_containers_get_isolated_pid_namespaces_by_default() {
     # Round 40: real Kubernetes' actual default is CONTAINER-scoped PID
     # namespaces (each container is its own pid-1), NOT the CRI proto's own
@@ -561,6 +565,7 @@ register_test test_proc_mount_unmasked_leaves_proc_kcore_readable
 register_test test_host_users_false_gets_a_real_user_namespace
 register_test test_host_users_false_volume_still_reads_and_writes_normally
 register_test test_host_users_volume_ownership_translation_manual_note
+register_test test_client_certificate_authentication_manual_note
 register_test test_containers_get_isolated_pid_namespaces_by_default
 register_test test_share_process_namespace_puts_every_container_in_one_pid_namespace
 register_test test_host_pid_sees_host_processes

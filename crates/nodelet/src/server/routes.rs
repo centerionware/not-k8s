@@ -81,6 +81,7 @@ pub fn query_values<'a>(pairs: &'a [(String, String)], key: &str) -> Vec<&'a str
 pub async fn handle(
     state: Arc<ServerState>,
     req: Request<Incoming>,
+    client_cert_identity: Option<(String, Vec<String>)>,
 ) -> Result<Response<BoxedBody>, Infallible> {
     let path = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -90,16 +91,23 @@ pub async fn handle(
         return Ok(text_response(StatusCode::NOT_FOUND, "not found"));
     }
 
-    let token = auth::extract_bearer_token(req.headers().get("Authorization").and_then(|v| v.to_str().ok()));
-    let Some(token) = token else {
-        return Ok(text_response(StatusCode::UNAUTHORIZED, "missing or malformed Authorization: Bearer <token> header"));
-    };
-    let username = match auth::authenticate(&state.client, token).await {
-        Ok(Some(u)) => u,
-        Ok(None) => return Ok(text_response(StatusCode::UNAUTHORIZED, "token did not authenticate")),
-        Err(e) => {
-            warn!(error = ?e, "server: TokenReview call failed");
-            return Ok(text_response(StatusCode::INTERNAL_SERVER_ERROR, "authentication check failed"));
+    // A verified client certificate (chains to NODELET_CLIENT_CA_FILE)
+    // authenticates directly — no TokenReview round-trip, matching real
+    // kubelet's own x509-then-bearer-token authenticator chain.
+    let username = if let Some((cert_username, _groups)) = client_cert_identity {
+        cert_username
+    } else {
+        let token = auth::extract_bearer_token(req.headers().get("Authorization").and_then(|v| v.to_str().ok()));
+        let Some(token) = token else {
+            return Ok(text_response(StatusCode::UNAUTHORIZED, "missing or malformed Authorization: Bearer <token> header"));
+        };
+        match auth::authenticate(&state.client, token).await {
+            Ok(Some(u)) => u,
+            Ok(None) => return Ok(text_response(StatusCode::UNAUTHORIZED, "token did not authenticate")),
+            Err(e) => {
+                warn!(error = ?e, "server: TokenReview call failed");
+                return Ok(text_response(StatusCode::INTERNAL_SERVER_ERROR, "authentication check failed"));
+            }
         }
     };
     tracing::debug!(user = %username, path = %path, "server: authenticated request");

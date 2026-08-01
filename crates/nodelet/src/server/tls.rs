@@ -9,8 +9,10 @@
 use anyhow::{Context, Result};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use rustls::ServerConfig;
+use rustls::server::WebPkiClientVerifier;
+use rustls::{RootCertStore, ServerConfig};
 use std::path::Path;
+use std::sync::Arc;
 use tracing::warn;
 
 pub struct LoadedCert {
@@ -19,13 +21,66 @@ pub struct LoadedCert {
 }
 
 impl LoadedCert {
-    pub fn server_config(&self) -> ServerConfig {
+    /// Build the TLS server config. When `client_ca` is `Some`, client
+    /// certificate authentication is offered but not required
+    /// (`allow_unauthenticated()`): a request presenting a cert that chains
+    /// to `client_ca` is accepted at the TLS layer (nodelet then reads its
+    /// identity back out of the verified peer cert — see
+    /// `client_identity_from_der` below); a request presenting no cert at
+    /// all still completes the handshake and falls back to the existing
+    /// bearer-token path in `routes::handle`. A cert that does NOT chain to
+    /// `client_ca` fails the handshake outright, before any nodelet code
+    /// runs — that's rustls's own verification, not ours.
+    pub fn server_config(&self, client_ca: Option<&RootCertStore>) -> Result<ServerConfig> {
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.key_der.clone()));
-        ServerConfig::builder()
-            .with_no_client_auth()
+        let builder = match client_ca {
+            Some(store) => {
+                let verifier = WebPkiClientVerifier::builder(Arc::new(store.clone()))
+                    .allow_unauthenticated()
+                    .build()
+                    .context("building client certificate verifier")?;
+                ServerConfig::builder().with_client_cert_verifier(verifier)
+            }
+            None => ServerConfig::builder().with_no_client_auth(),
+        };
+        builder
             .with_single_cert(vec![self.cert_der.clone()], key)
-            .expect("building rustls ServerConfig from a valid DER cert/key must succeed")
+            .context("building rustls ServerConfig from a valid DER cert/key")
     }
+}
+
+/// Parse a PEM bundle of one or more CA certificates (`NODELET_CLIENT_CA_FILE`)
+/// into a `RootCertStore` for client certificate verification.
+pub fn load_client_ca(path: &str) -> Result<RootCertStore> {
+    let pem_bytes = std::fs::read(path).with_context(|| format!("reading client CA file {path}"))?;
+    let mut store = RootCertStore::empty();
+    let mut count = 0usize;
+    for pem in x509_parser::pem::Pem::iter_from_buffer(&pem_bytes) {
+        let pem = pem.context("parsing PEM block in client CA file")?;
+        store
+            .add(CertificateDer::from(pem.contents))
+            .context("adding CA certificate to root store")?;
+        count += 1;
+    }
+    if count == 0 {
+        anyhow::bail!("client CA file {path} contained no PEM certificates");
+    }
+    Ok(store)
+}
+
+/// Extract the identity (username, groups) a real Kubernetes apiserver's own
+/// generic x509 authenticator would derive from this leaf certificate: the
+/// Subject Common Name as the username, Subject Organization values as
+/// groups. `None` if the cert can't be parsed or has no CN.
+pub fn client_identity_from_der(der: &[u8]) -> Option<(String, Vec<String>)> {
+    let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+    let subject = cert.subject();
+    let username = subject.iter_common_name().next()?.as_str().ok()?.to_string();
+    let groups = subject
+        .iter_organization()
+        .filter_map(|o| o.as_str().ok().map(str::to_string))
+        .collect();
+    Some((username, groups))
 }
 
 pub fn load_or_generate(cert_dir: &str, node_name: &str) -> Result<LoadedCert> {
@@ -61,3 +116,6 @@ pub fn load_or_generate(cert_dir: &str, node_name: &str) -> Result<LoadedCert> {
 #[cfg(test)]
 #[path = "tls_tests/load_or_generate.rs"]
 mod tests_load_or_generate;
+#[cfg(test)]
+#[path = "tls_tests/client_cert_auth.rs"]
+mod tests_client_cert_auth;

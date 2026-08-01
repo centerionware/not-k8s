@@ -142,6 +142,20 @@ pub struct Config {
     pub server_port: u16,
     /// Where the server's self-signed TLS cert/key are generated/cached.
     pub server_cert_dir: String,
+    /// `--client-ca-file` (round 95; found in round 22's re-audit) — a PEM
+    /// bundle of CA certificates the kubelet-style server trusts for TLS
+    /// client certificate authentication (the same x509 authenticator
+    /// mechanism real kubelet uses for apiserver-originated requests).
+    /// Empty (default) disables client cert auth entirely — TLS accepts no
+    /// client certificate at all, matching this codebase's pre-round-95
+    /// behavior exactly. When set, client cert auth is *optional*, not
+    /// required: a request with a valid cert chaining to this CA is
+    /// authenticated by it directly (no `TokenReview` round-trip needed);
+    /// a request with no cert at all still falls back to the existing
+    /// bearer-token path. A request presenting a cert that does NOT chain
+    /// to this CA fails the TLS handshake outright (rustls's own
+    /// verification, before nodelet's code ever sees the connection).
+    pub client_ca_file: String,
     /// Real kubelet's `ShutdownGracePeriod` — total time budget to terminate
     /// pods after systemd-logind signals an imminent shutdown, before
     /// releasing the inhibitor lock and letting shutdown proceed. `0`
@@ -337,6 +351,7 @@ impl Config {
         let server_port = env_u64("NODELET_SERVER_PORT", 10250)? as u16;
         let server_cert_dir =
             std::env::var("NODELET_SERVER_CERT_DIR").unwrap_or_else(|_| "/var/lib/nodelet/pki".to_string());
+        let client_ca_file = std::env::var("NODELET_CLIENT_CA_FILE").unwrap_or_default();
         let gc_interval = Duration::from_secs(env_u64("NODELET_GC_INTERVAL_SECS", 300)?);
         let image_gc_high_threshold_percent = match std::env::var("NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT") {
             Ok(v) => v.parse().context("NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT must be an integer 0-100")?,
@@ -437,6 +452,7 @@ impl Config {
             server_enabled,
             server_port,
             server_cert_dir,
+            client_ca_file,
             gc_interval,
             image_gc_high_threshold_percent,
             image_gc_low_threshold_percent,

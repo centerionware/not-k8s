@@ -50,7 +50,26 @@ pub async fn run(client: Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
             return;
         }
     };
-    let acceptor = TlsAcceptor::from(Arc::new(cert.server_config()));
+
+    let client_ca = if cfg.client_ca_file.is_empty() {
+        None
+    } else {
+        match tls::load_client_ca(&cfg.client_ca_file) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                warn!(error = ?e, "failed to load NODELET_CLIENT_CA_FILE; client certificate authentication will not be available");
+                None
+            }
+        }
+    };
+    let server_config = match cert.server_config(client_ca.as_ref()) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = ?e, "failed to build TLS server config; exec/logs/attach/port-forward server will not run");
+            return;
+        }
+    };
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
     let addr: SocketAddr = match format!("0.0.0.0:{}", cfg.server_port).parse() {
         Ok(a) => a,
@@ -88,8 +107,15 @@ pub async fn run(client: Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
                     return;
                 }
             };
+            let client_identity = tls_stream
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|certs| certs.first())
+                .and_then(|leaf| tls::client_identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| routes::handle(state.clone(), req));
+            let service =
+                hyper::service::service_fn(move |req| routes::handle(state.clone(), req, client_identity.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new())
                 .serve_connection_with_upgrades(io, service)
                 .await

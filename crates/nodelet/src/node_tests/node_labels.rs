@@ -32,6 +32,7 @@ fn cfg(labels: BTreeMap<String, String>) -> Config {
         server_enabled: false,
         server_port: 10250,
         server_cert_dir: "/tmp".to_string(),
+        client_ca_file: String::new(),
         gc_interval: Duration::from_secs(300),
         image_gc_high_threshold_percent: 85,
         image_gc_low_threshold_percent: 80,

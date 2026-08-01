@@ -27,6 +27,63 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 95: client certificate authentication (2026-08-01, same day)
+
+Second of the user's 3 chosen ❌ items ("do all of them in the order
+of your choosing"). Real kubelet's own kubelet-server request
+authenticator tries x509 client certificates first (via the TLS
+layer itself), falling back to bearer-token/TokenReview only when no
+client cert is presented — nodelet's kubelet-style server
+(`server/`) previously only had the bearer-token path.
+
+New `NODELET_CLIENT_CA_FILE` (empty by default — client cert auth
+disabled entirely, identical to every pre-round-95 behavior) holds a
+PEM bundle of CAs the server trusts for client certs. Client cert
+auth is *optional*, not required
+(`WebPkiClientVerifier::allow_unauthenticated()`): a request with a
+cert chaining to this CA authenticates directly off the verified
+peer certificate (no `TokenReview` round-trip); a request with no
+cert at all still falls back to the existing bearer-token path
+unchanged; a request presenting a cert that does *not* chain to the
+CA fails the TLS handshake outright — that's rustls's own
+verification, before any nodelet code runs, matching how a real
+apiserver's TLS listener behaves.
+
+Username comes from the peer cert's Subject Common Name, groups from
+Subject Organization values — the same convention the real
+Kubernetes apiserver's generic x509 authenticator uses. New
+`x509-parser` dependency (optional, folded into the `cri` feature
+alongside every other server-only dep) does both jobs needed here:
+parsing a CA bundle PEM into a `rustls::RootCertStore`
+(`tls::load_client_ca`), and parsing an authenticated peer's leaf
+certificate DER to pull out CN/O (`tls::client_identity_from_der`,
+pure and independently testable). `LoadedCert::server_config()` now
+takes `Option<&RootCertStore>` and switches between
+`.with_no_client_auth()` and the `WebPkiClientVerifier`-backed
+builder. `server/mod.rs` loads the CA once at startup if configured,
+extracts `peer_certificates()` off the completed TLS stream per
+connection, and threads the resulting `Option<(String, Vec<String>)>`
+identity into `routes::handle()`, which now skips the bearer-token
+block entirely when a cert identity is present.
+
+11 new unit tests (7 in `tls.rs`'s new `tests_client_cert_auth`
+module — CN/O extraction against real rcgen-generated certs, CA
+bundle loading, garbage/empty/missing-file error paths; the existing
+4 `load_or_generate` tests updated for `server_config()`'s new
+signature). `cargo test -p nodelet --features cri`: 1057 passed
+(+7); mock: 328 passed (unchanged — this is `cri`-gated code). New
+`test_client_certificate_authentication_manual_note` in
+`deploy/lib/test/cases/security.sh` — same "can't control this
+harness's already-started nodelet's own startup environment"
+limitation round 94's config-file test hit, with full `openssl`
+steps to generate a CA + client cert and verify the three behaviors
+(cert-only auth succeeds, an untrusted cert fails the handshake, no
+cert still gets the existing 401).
+
+Next per the user's chosen order: TLS bootstrap (CSR-based initial
+client cert issuance) — the last of the 3 items; Checkpoint API
+stays explicitly not recommended.
+
 ## Round 94: `--config` file / drop-in config directory (2026-08-01, same day)
 
 The user picked all 3 remaining implementable ❌ items (client cert
@@ -5394,7 +5451,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`/stats/summary`** (`server::stats`) — built from CRI's `ListPodSandboxStats` (one call gets per-pod *and* per-container CPU/memory usage, no cgroup-path guessing needed). Real caveat, not a nodelet limitation: `kubectl top` itself needs metrics-server (or another `metrics.k8s.io` implementation) deployed and configured to scrape this — implementing the endpoint is necessary but not sufficient for `kubectl top` on its own. Node-level CPU usage isn't populated in this endpoint's JSON shape (unlike `/metrics/resource` below, which does report it) — only memory comes from `/proc/meminfo` here.
 - ✅ **`/metrics/resource`** (`server::prom_metrics`) — full [KEP-2371](https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/2371-cri-pod-container-stats) metric set, including real node-wide CPU usage from a new `/proc/stat` parser (`metrics.rs::read_node_cpu_seconds`).
 - 🟡 **`/metrics/cadvisor`** (`server::prom_metrics`) — a deliberately scoped-down subset of real cAdvisor's much larger legacy catalog: `container_cpu_usage_seconds_total`, `container_memory_usage_bytes`, `container_memory_working_set_bytes`, `container_memory_rss`, labeled `{namespace,pod,container}` only (no `id`/`name`/`image` — not tracked in `PodUsage`). Missing: network/disk I/O, per-cpu-core breakdowns, `container_last_seen`, spec/limit metrics.
-- ❌ Client certificate authentication (bearer token only)
+- ✅ **Client certificate authentication** (round 95) — `NODELET_CLIENT_CA_FILE` (empty by default, disabled) holds a CA bundle; a request with a cert chaining to it authenticates directly off the verified peer cert's Subject CN (username) / Organization values (groups), matching the real apiserver's generic x509 authenticator convention — no `TokenReview` needed. Optional, not required: no cert still falls back to the existing bearer-token path unchanged; an untrusted cert fails the TLS handshake itself (rustls, before nodelet code runs).
 - ❌ **Checkpoint API** (`/checkpoint/{namespace}/{pod}/{container}`) (found in round 22's re-audit) — a forensic/debugging endpoint (CRIU-based container checkpointing, still alpha upstream) not implemented at all. Low value for nodelet's edge-device target and CRIU itself is a real external dependency (kernel + userspace tooling) beyond anything else this project needs — noted here rather than silently missing, not currently recommended for implementation.
 
 ### Node shutdown
@@ -6141,8 +6198,21 @@ accordingly; see those files' own updated framing.
       schema. 7 new unit tests + a manual-note e2e test (needs
       controlling nodelet's own startup environment, which this suite
       can't do against an already-running process). See round 94 notes.
+- [x] Round 95: client certificate authentication —
+      `NODELET_CLIENT_CA_FILE` (empty/disabled by default) enables
+      optional TLS client-cert auth (`WebPkiClientVerifier` +
+      `allow_unauthenticated()`); a cert chaining to the CA
+      authenticates directly off its Subject CN/O (username/groups,
+      matching the real apiserver's x509 authenticator convention),
+      no cert falls back to the existing bearer-token path unchanged,
+      an untrusted cert fails the TLS handshake itself. New
+      `x509-parser` dep (optional, `cri`-gated). 11 new/updated unit
+      tests + a manual-note e2e test with full `openssl` steps (same
+      "can't control this suite's already-started nodelet's startup
+      environment" limitation as round 94). See round 95 notes.
 - [ ] User picked all 3 remaining implementable ❌ items to be done in
       sequence ("do all of them in the order of your choosing"):
-      `--config` file (round 94, done above), then client certificate
-      authentication, then TLS bootstrap (CSR-based cert issuance).
-      Checkpoint API remains explicitly not recommended.
+      `--config` file (round 94, done), client certificate
+      authentication (round 95, done above), then TLS bootstrap
+      (CSR-based cert issuance) — the last of the 3. Checkpoint API
+      remains explicitly not recommended.

@@ -28,7 +28,7 @@ fn generates_a_cert_and_key_on_first_call() {
     let cert = load_or_generate(&dir, "test-node").expect("cert generation should succeed");
     // A working rustls ServerConfig is the real proof — building one from
     // an invalid cert/key would panic/error inside server_config().
-    let _config = cert.server_config();
+    let _config = cert.server_config(None).unwrap();
     assert!(std::path::Path::new(&dir).join("server.crt.der").exists());
     assert!(std::path::Path::new(&dir).join("server.key.der").exists());
     std::fs::remove_dir_all(&dir).unwrap();
@@ -53,7 +53,7 @@ fn regenerates_if_the_key_file_is_empty_or_missing() {
     load_or_generate(&dir, "test-node").unwrap();
     std::fs::write(std::path::Path::new(&dir).join("server.key.der"), []).unwrap(); // corrupt it
     let cert = load_or_generate(&dir, "test-node").expect("must regenerate instead of failing on a corrupt key file");
-    let _config = cert.server_config();
+    let _config = cert.server_config(None).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
