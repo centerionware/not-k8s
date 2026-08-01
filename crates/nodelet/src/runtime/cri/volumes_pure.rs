@@ -140,6 +140,30 @@ pub(crate) fn mount_propagation_cri(mount_propagation: Option<&str>) -> MountPro
     }
 }
 
+/// `volumeMounts[].recursiveReadOnly` (round 85; GA 1.33, KEP-3116;
+/// found in round 83's re-audit) -> CRI's plain boolean
+/// `Mount.recursive_read_only`. Real kubelet translates its own
+/// ternary (`nil`/`"Disabled"`/`"IfPossible"`/`"Enabled"`) into this
+/// single bool; the CRI proto's own contract requires `readonly` to be
+/// explicitly `true` and `propagation` to resolve to `Private` whenever
+/// this is `true` — checked here defensively (never sends a
+/// contract-violating combination to CRI) rather than trusting the
+/// caller got it right, the same posture this codebase takes toward
+/// other CRI-level invariants (e.g. `Mount.image`/`Mount.host_path`'s
+/// mutual exclusivity). **Documented scope simplification**: `IfPossible`
+/// is currently treated identically to `Enabled` (both resolve to `true`
+/// when the preconditions hold) — a genuine best-effort fallback would
+/// need to know whether the resolved `RuntimeClass`'s handler actually
+/// advertises `recursiveReadOnlyMounts` support (already surfaced to
+/// `Node.status.runtimeHandlers`, round 53, but not threaded down into
+/// this per-mount translation path this round) before deciding whether
+/// to ask for it at all; a runtime that doesn't support it is left to
+/// reject or ignore the request per its own CRI implementation, same as
+/// how this codebase already treats an unsupported `sysctl` (round 41).
+pub(crate) fn recursive_read_only_cri(recursive_read_only: Option<&str>, readonly: bool, propagation: MountPropagation) -> bool {
+    matches!(recursive_read_only, Some("Enabled") | Some("IfPossible")) && readonly && propagation == MountPropagation::PropagationPrivate
+}
+
 /// Build CRI `Mount` entries for a container's volumeMounts against the
 /// pod's already-resolved volume name -> mount source map (see
 /// resolve_volumes()), and the container's own resolved env vars (for
@@ -163,18 +187,20 @@ pub(crate) fn build_mounts(
                 Some(expr) => Some(expand_sub_path_expr(expr, envs)?),
                 None => vm.sub_path.clone(),
             };
-            let propagation = mount_propagation_cri(vm.mount_propagation.as_deref()) as i32;
+            let propagation = mount_propagation_cri(vm.mount_propagation.as_deref());
             match volumes.get(&vm.name)? {
                 ResolvedVolume::HostPath(host_dir) => {
                     let host_path = match &sub_path {
                         Some(sub) => host_dir.join(sub),
                         None => host_dir.clone(),
                     };
+                    let readonly = vm.read_only.unwrap_or(false);
                     Some(Mount {
                         container_path: vm.mount_path.clone(),
                         host_path: host_path.to_string_lossy().into_owned(),
-                        readonly: vm.read_only.unwrap_or(false),
-                        propagation,
+                        readonly,
+                        propagation: propagation as i32,
+                        recursive_read_only: recursive_read_only_cri(vm.recursive_read_only.as_deref(), readonly, propagation),
                         ..Default::default()
                     })
                 }
@@ -191,7 +217,8 @@ pub(crate) fn build_mounts(
                     // path *within* the mounted image instead (CRI's
                     // `image_sub_path`).
                     image_sub_path: sub_path.unwrap_or_default(),
-                    propagation,
+                    propagation: propagation as i32,
+                    recursive_read_only: recursive_read_only_cri(vm.recursive_read_only.as_deref(), true, propagation),
                     ..Default::default()
                 }),
                 // A raw block device is only ever referenced via

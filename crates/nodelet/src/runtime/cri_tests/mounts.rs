@@ -65,6 +65,37 @@ fn mount_propagation_bidirectional_is_carried_through() {
 }
 
 #[test]
+fn recursive_read_only_enabled_with_read_only_true_is_carried_through() {
+    let mut volumes = HashMap::new();
+    volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
+    let mut mount = vm("v", "/etc/v");
+    mount.read_only = Some(true);
+    mount.recursive_read_only = Some("Enabled".to_string());
+    let mounts = build_mounts(&[mount], &volumes, &[]);
+    assert!(mounts[0].recursive_read_only);
+}
+
+#[test]
+fn recursive_read_only_enabled_without_read_only_stays_false() {
+    let mut volumes = HashMap::new();
+    volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
+    let mut mount = vm("v", "/etc/v");
+    mount.recursive_read_only = Some("Enabled".to_string());
+    let mounts = build_mounts(&[mount], &volumes, &[]);
+    assert!(!mounts[0].recursive_read_only, "readOnly wasn't set to true, so recursive_read_only must stay false per the CRI contract");
+}
+
+#[test]
+fn recursive_read_only_unset_stays_false_even_with_read_only_true() {
+    let mut volumes = HashMap::new();
+    volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
+    let mut mount = vm("v", "/etc/v");
+    mount.read_only = Some(true);
+    let mounts = build_mounts(&[mount], &volumes, &[]);
+    assert!(!mounts[0].recursive_read_only);
+}
+
+#[test]
 fn a_mount_naming_a_block_device_volume_is_dropped_defensively() {
     // Round 77: a raw block volume is only ever referenced via
     // volumeDevices, never volumeMounts -- the API itself should prevent

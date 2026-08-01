@@ -513,6 +513,9 @@ mod tests_mounts;
 #[path = "cri_tests/mount_propagation.rs"]
 mod tests_mount_propagation;
 #[cfg(test)]
+#[path = "cri_tests/recursive_read_only.rs"]
+mod tests_recursive_read_only;
+#[cfg(test)]
 #[path = "cri_tests/devices.rs"]
 mod tests_devices;
 #[cfg(test)]

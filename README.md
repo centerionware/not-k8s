@@ -471,8 +471,11 @@ finding) now publishes an explicit `hostPort` on the node's own IP,
 empty for `hostNetwork` pods matching upstream. Round 84 closed
 `volumeMounts[].mountPropagation`: `HostToContainer`/`Bidirectional` now
 translate to CRI's own `MountPropagation` enum on every mount, unset
-mounts unaffected (same `PRIVATE` default as before). Full status list
-in `docs/GAP_CLOSURE.md`.
+mounts unaffected (same `PRIVATE` default as before). Round 85 closed
+`volumeMounts[].recursiveReadOnly` (GA 1.33): the API's ternary now
+translates to CRI's `Mount.recursive_read_only`, defensively enforcing
+the proto's own `readonly: true` + `Private`-propagation contract. Full
+status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for
