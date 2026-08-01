@@ -1,0 +1,492 @@
+commit: 61044f69759b8fb499278581c6f29df13065e21c
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/30693647277
+timestamp (UTC): 2026-08-01T10:20:05Z
+exit code: 1
+----------------------------------------
+==> Test namespace: not-k8s-e2e-1785576485
+==> Running 140 registered test(s)...
+▶ test_tls_bootstrap_manual_note
+    (skip: NODELET_BOOTSTRAP_KUBECONFIG (round 96) exchanges a low-privilege bootstrap credential for a real client-certificate kubeconfig via a certificates.k8s.io CSR -- the pure CSR-building/outcome-decision logic is fully unit-tested (bootstrap.rs's tests_pure_functions module), but exercising the real flow needs a cluster where CSR auto-approval is configured (a real k3s/kubeadm control plane's node-authorizer, or 'kubectl certificate approve' run manually) plus controlling nodelet's own startup environment, neither of which this e2e suite (running against an already-started nodelet against this test cluster) can provide. Manual spot-check: (1) create a low-privilege bootstrap kubeconfig authenticating as a bootstrap token or a user that can only create/get certificates.k8s.io/v1 CertificateSigningRequest objects (see https://kubernetes.io/docs/reference/access-authn-authz/kubelet-tls-bootstrapping/ for the standard ClusterRoleBinding), (2) start nodelet with NODELET_BOOTSTRAP_KUBECONFIG=/path/to/bootstrap-kubeconfig and NODELET_KUBECONFIG=/var/lib/nodelet/kubeconfig pointing at an empty/nonexistent path, (3) confirm a CertificateSigningRequest named nodelet-<node>-* appears ('kubectl get csr'), signerName kubernetes.io/kube-apiserver-client-kubelet, requesting CN=system:node:<node>/O=system:nodes, (4) approve it ('kubectl certificate approve nodelet-<node>-xxxxx') if no auto-approver is configured, (5) confirm nodelet logs 'TLS bootstrap: issued client certificate written' and /var/lib/nodelet/kubeconfig now exists with client-certificate-data/client-key-data populated, (6) restart nodelet with the same env vars and confirm it logs 'kubeconfig already present, reusing it' instead of submitting a second CSR (proof of the documented no-rotation-yet scope simplification).)
+  ○ SKIP (0s)
+▶ test_node_allocatable_cgroup_exists_and_is_capped
+  ✔ PASS (1s)
+▶ test_pod_cgroup_reflects_its_qos_class
+==> FATAL: timed out after 30s waiting for: cgroup-qos-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_config_file_manual_note
+    (skip: NODELET_CONFIG_FILE/NODELET_CONFIG_DIR (round 94) load NODELET_* settings from a YAML file instead of the environment — the pure parsing/precedence logic is fully unit-tested (config.rs's tests_config_file module), but exercising this for real needs controlling nodelet's own startup environment, which this e2e suite (running against an already-started nodelet) can't do. Manual spot-check: write a YAML file (e.g. /etc/nodelet/config.yaml) with 'NODELET_MAX_PODS: 42', set NODELET_CONFIG_FILE=/etc/nodelet/config.yaml in nodelet's own environment (systemd unit / docker-compose / etc.), restart nodelet, and confirm 'kubectl get node <node> -o jsonpath={.status.capacity.pods}' reports 42. Then set NODELET_MAX_PODS=10 directly in the environment alongside the same config file and confirm the explicit environment variable wins (reports 10, not 42) — proving the precedence order, not just that the file loads at all. Repeat with a NODELET_CONFIG_DIR of two files (e.g. 00-base.yaml, 01-override.yaml both setting the same key) to confirm the later filename wins.)
+  ○ SKIP (0s)
+▶ test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
+    (skip: TEST_CPU_MANAGER_STATIC not set to 'true' — export it once nodelet is running with NODELET_CPU_MANAGER_POLICY=static to exercise this)
+  ○ SKIP (0s)
+▶ test_cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container
+    (skip: TEST_CPU_MANAGER_STATIC not set to 'true' — export it once nodelet is running with NODELET_CPU_MANAGER_POLICY=static to exercise this)
+  ○ SKIP (0s)
+▶ test_credential_provider_config_unset_by_default
+  ✔ PASS (0s)
+▶ test_credential_provider_manual_note
+    (skip: exercising a real exec-plugin credential fetch (including the ServiceAccount tokenAttributes path) needs an actual credential-provider binary on NODELET_IMAGE_CREDENTIAL_PROVIDER_BIN_DIR and a registry that genuinely requires it (e.g. ECR with ecr-credential-provider + IAM roles for service accounts) — not something this suite can safely automate. Manual spot-check: (1) write a CredentialProviderConfig YAML (apiVersion: kubelet.config.k8s.io/v1, kind: CredentialProviderConfig) listing a provider with matchImages covering your registry (e.g. '*.dkr.ecr.*.amazonaws.com'), (2) place the provider binary at NODELET_IMAGE_CREDENTIAL_PROVIDER_BIN_DIR, (3) restart nodelet with NODELET_IMAGE_CREDENTIAL_PROVIDER_CONFIG pointing at the YAML file and NODELET_IMAGE_CREDENTIAL_PROVIDER_BIN_DIR set, (4) deploy a pod referencing an image in that registry with NO imagePullSecrets, (5) confirm the pull succeeds (kubectl get pod -o wide, 'ctr -n k8s.io images ls' shows the image) and that nodelet's logs show no credential-related warnings, (6) for a tokenAttributes-configured provider, additionally confirm (via the provider binary's own logging, since nodelet doesn't expose this in kubectl-visible state) that it received a non-empty serviceAccountToken scoped to the audience declared in the config, and that setting requireServiceAccount: true with a ServiceAccount missing a requiredServiceAccountAnnotationKeys entry causes nodelet to skip that provider (watch for 'credential provider: ServiceAccount missing a required annotation key' in nodelet's logs) rather than hard-failing the pull. Also confirm that a pod WITH a working imagePullSecret still uses that secret rather than invoking the provider at all (round 71's documented imagePullSecrets-first precedence) — the provider binary's own logs should show no invocation for that pod.)
+  ○ SKIP (0s)
+▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
+    (skip: TEST_CSI_ATTACH_STORAGE_CLASS not set — export it to a StorageClass backed by an attachRequired CSI driver (with a working external-attacher) to exercise this)
+  ○ SKIP (0s)
+▶ test_plugin_registry_directory_exists
+  ✔ PASS (1s)
+▶ test_dynamic_csi_registration_manual_note
+    (skip: exercising the full registration handshake (GetInfo/NotifyRegistrationStatus) needs a real CSI driver's node-driver-registrar sidecar pointed at NODELET_PLUGIN_REGISTRY_PATH (not kubelet's usual /var/lib/kubelet/plugins_registry) via its --kubelet-registration-path flag — not something this suite deploys itself. Manual spot-check: point a driver's registrar at this node's NODELET_PLUGIN_REGISTRY_PATH, watch nodelet's logs for 'plugin registry: CSI driver registered', then run csi_pvc.sh's test WITHOUT setting NODELET_CSI_DRIVERS statically — it should still pass, proving the driver was discovered dynamically rather than via static config.)
+  ○ SKIP (0s)
+▶ test_pod_mounts_a_persistent_volume_claim
+    (skip: TEST_CSI_STORAGE_CLASS not set — export it to a StorageClass backed by a CSI driver that's also listed in nodelet's NODELET_CSI_DRIVERS to exercise this)
+  ○ SKIP (0s)
+▶ test_csi_ephemeral_inline_volume_is_mounted
+    (skip: TEST_CSI_INLINE_DRIVER not set — export it to a CSI driver name (also listed in nodelet's NODELET_CSI_DRIVERS) that supports ephemeral/inline volumes to exercise this)
+  ○ SKIP (0s)
+▶ test_pod_uses_a_raw_block_volume
+    (skip: TEST_CSI_BLOCK_STORAGE_CLASS not set — export it to a StorageClass whose driver supports volumeMode: Block (and is also listed in nodelet's NODELET_CSI_DRIVERS) to exercise this)
+  ○ SKIP (0s)
+▶ test_volumes_in_use_manual_note
+    (skip: round 34's Node.status.volumesInUse/volumesAttached is scoped to CSI volumes only and deliberately unvalidated against a real attach/detach controller (the modern CSI attach path — round 19 — already uses VolumeAttachment directly, not these fields). Manual spot-check: with TEST_CSI_STORAGE_CLASS set, watch 'kubectl get node <node> -o jsonpath={.status.volumesInUse}' while a CSI-backed pod is created and then deleted — confirm an entry matching 'kubernetes.io/csi/<driver>^<volumeHandle>' appears while the pod is running and disappears once the pod (and its NodeUnpublishVolume/NodeUnstageVolume calls) fully complete. If a real attach/detach controller is also running in this cluster, confirm it doesn't misbehave (e.g. refuse to detach) because of anything nodelet reports here.)
+  ○ SKIP (0s)
+▶ test_fsgroup_change_policy_manual_note
+    (skip: round 93's fsGroupChangePolicy: OnRootMismatch skip (skip_fs_group_change() in runtime/cri/volumes_pure.rs) only ever applies to CSI/PV-backed volumes, matching upstream — the unit tests (cri_tests/fs_group.rs's change_policy module) prove the pure gid/setgid-bit logic directly, but the real end-to-end 'second pod start skips the recursive chown' behavior needs a real CSI volume that survives across two pod lifecycles (a PVC, not an ephemeral/inline CSI volume). Manual spot-check: with TEST_CSI_STORAGE_CLASS set, create a pod with securityContext.fsGroup and fsGroupChangePolicy: OnRootMismatch mounting a PVC, let it apply fsGroup once, delete the pod, create a second pod (same PVC) with the same fsGroup — enable debug logging and confirm the 'skipping fsGroup recursive chown; root already matches' log line appears on the second pod's creation, not the first.)
+  ○ SKIP (0s)
+▶ test_plugin_registry_watches_for_device_plugins_too
+  ✔ PASS (0s)
+▶ test_device_plugin_manual_note
+    (skip: exercising real device allocation needs an actual device plugin (e.g. nvidia-device-plugin) with real or faked hardware behind it, pointed at NODELET_PLUGIN_REGISTRY_PATH — not something this suite can set up. Manual spot-check: deploy a device plugin DaemonSet configured to register against this node's registry path, watch nodelet's logs for 'device plugin: inventory updated' and 'plugin registry: plugin registered', confirm 'kubectl describe node' shows the resource (e.g. nvidia.com/gpu) under Capacity/Allocatable, then create a pod with resources.limits['<resource>']: 1 and confirm it reaches Running with the device plugin's Allocate() response (envs/mounts/device nodes) actually present in the container (kubectl exec + env / ls the mounted paths).)
+  ○ SKIP (0s)
+▶ test_device_plugin_preferred_allocation_and_prestart_manual_note
+    (skip: exercising GetPreferredAllocation/PreStartContainer (round 21) needs a device plugin whose DevicePluginOptions actually sets get_preferred_allocation_available/pre_start_required — most reference plugins (e.g. nvidia-device-plugin) don't by default, so this is a manual spot-check even given real hardware. Manual spot-check: point a device plugin that implements GetPreferredAllocation at this node, request its resource from a pod, and confirm nodelet's logs show no 'GetPreferredAllocation failed; falling back' warning (proof the plugin's response was used) — or deliberately have the plugin return a bogus/duplicate/wrong-count response and confirm the warning *does* appear with the pod still reaching Running (proof the fallback to pick_devices_preferring() works). For PreStartContainer: point a plugin with pre_start_required=true at this node and confirm nodelet's logs show a successful PreStartContainer call before the container starts, and that a plugin returning an error from PreStartContainer leaves the pod in a failed/retrying state rather than starting with stale device state.)
+  ○ SKIP (0s)
+▶ test_allocated_resources_status_absent_without_device_resources
+==> FATAL: timed out after 30s waiting for: no-device-resources Running
+  ✘ FAIL (32s, exit 1)
+▶ test_allocated_resources_status_manual_note
+    (skip: exercising allocatedResourcesStatus needs a real device plugin (or a fake one that can be told to report a device unhealthy on demand) with a pod already holding that device allocated. Manual spot-check: deploy a device plugin, run a pod with resources.limits['<resource>']: 1, confirm 'kubectl get pod <name> -o jsonpath={.status.containerStatuses[0].allocatedResourcesStatus}' shows an entry for that resource with health: Healthy (matching the plugin's ListAndWatch state at allocation time) -- then have the plugin's own ListAndWatch report that specific device ID as unhealthy (most reference plugins support this via a fault-injection mechanism, e.g. removing/restoring a GPU) and confirm the SAME field updates to Unhealthy on nodelet's next reconcile of that pod, without the container itself being restarted (this is a live status signal, not a restart trigger).)
+  ○ SKIP (0s)
+▶ test_custom_dns_config_reaches_resolv_conf
+==> FATAL: timed out after 30s waiting for: dns-config Running
+  ✘ FAIL (32s, exit 1)
+▶ test_spec_hostname_overrides_the_container_hostname
+==> FATAL: timed out after 30s waiting for: hostname-override Running
+  ✘ FAIL (31s, exit 1)
+▶ test_set_hostname_as_fqdn_reports_the_full_fqdn
+==> FATAL: timed out after 30s waiting for: fqdn-host Running
+  ✘ FAIL (32s, exit 1)
+▶ test_plugin_registry_watches_for_dra_drivers_too
+  ✔ PASS (0s)
+▶ test_resource_api_group_manual_note
+    (skip: checking whether resource.k8s.io is even enabled on this cluster's apiserver (DynamicResourceAllocation feature gate) needs 'kubectl api-resources' against a live cluster with a version/build matching what this deployment actually runs — not assumed here since it varies by how deploy/ was configured. Manual spot-check: 'kubectl api-resources | grep resourceclaims' to confirm the API group exists at all before attempting any of the checks below.)
+  ○ SKIP (0s)
+▶ test_dra_manual_note
+    (skip: exercising a real NodePrepareResources/CDI device injection round-trip needs an actual DRA driver (a kubelet-plugin binary/DaemonSet implementing NodePrepareResources/NodeUnprepareResources) pointed at NODELET_PLUGIN_REGISTRY_PATH, plus a DeviceClass/ResourceSlice/ResourceClaim the scheduler can actually allocate — not something this suite can set up. Manual spot-check: deploy a DRA driver DaemonSet configured to register against this node's registry path (PluginInfo.type: DRAPlugin), create a DeviceClass + ResourceClaim + a Pod with spec.resourceClaims referencing it and a container with resources.claims: [{name: <pod-claim-name>}], wait for the scheduler to allocate the claim AND record this pod in status.reservedFor (kubectl get resourceclaim -o yaml, check both status.allocation and status.reservedFor — round 64: nodelet now gates NodePrepareResources on reservedFor actually listing this pod, so a claim allocated but not yet reserved for it will just be retried on a later reconcile, not treated as an error; watch for 'DRA: claim not yet reserved for this pod' at debug level if it seems stuck), then confirm the pod reaches Running and that 'kubectl exec' into the container shows the CDI device the driver's NodePrepareResources response specified (watch nodelet's logs for 'DRA: NodePrepareResources failed' — its absence plus a Running pod is the proof it worked). If the pod has multiple resourceClaims backed by the same driver, confirm (via the driver's own logs) that only ONE NodePrepareResources call was made covering all of them, not one call per claim (round 64's batching). Also confirm NodeUnprepareResources is called on pod deletion (driver-side logs, since nodelet doesn't expose this in kubectl-visible state).)
+  ○ SKIP (0s)
+▶ test_kubectl_debug_adds_and_starts_an_ephemeral_container
+==> FATAL: timed out after 30s waiting for: ephemeral-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_pod_mounts_a_generic_ephemeral_volume
+    (skip: TEST_CSI_STORAGE_CLASS not set — export it to a StorageClass backed by a CSI driver that's also listed in nodelet's NODELET_CSI_DRIVERS to exercise this)
+  ○ SKIP (0s)
+▶ test_eviction_manual_procedure
+    (skip: triggering real eviction safely needs either an artificially-low pressure threshold or actually exhausting a resource — neither is something this suite does to a live node automatically. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES set just above current MemAvailable (forces MemoryPressure=True without real exhaustion), (3) apply a BestEffort pod and a Guaranteed pod, (4) within NODELET_EVICTION_CHECK_SECS (default 10s) confirm the BestEffort pod gets phase Failed/reason Evicted and is deleted, while the Guaranteed pod is untouched, (5) restore the normal threshold and restart nodelet.)
+  ○ SKIP (0s)
+▶ test_eviction_priority_tiebreak_manual_procedure
+    (skip: proving priority-based tiebreaking (round 26 — pick_eviction_candidate() ranks by spec.priority within a QoS class before falling back to usage) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with different PriorityClasses (e.g. a low-priority one and a high-priority one, or set spec.priority directly), force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the LOWER-priority pod is evicted first even if the higher-priority pod is using more memory — proof priority wins the tiebreak before usage does, matching real kubelet's rankMemoryPressure ordering. The pure ranking logic itself (priority beats usage, QoS class still outranks priority) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end.)
+  ○ SKIP (0s)
+▶ test_eviction_exceeds_requests_tiebreak_manual_procedure
+    (skip: proving the exceeds-requests comparator step (round 99 — pick_eviction_candidate() ranks a pod whose usage exceeds its own memory request ahead of one that doesn't, within a QoS class, before even priority) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with the SAME spec.priority, one whose container actually consumes more memory than it requested (e.g. requests: {memory: 16Mi} but the process allocates 100Mi) and one that stays within its request, force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the pod exceeding its own request is evicted first even if the other pod's absolute usage is higher — proof the exceeds-requests step is real, not just a documented no-op. The pure ranking logic itself (exceeds_memory_requests(), and that it now sits ahead of priority in eviction_rank()) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end.)
+  ○ SKIP (0s)
+▶ test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
+==> FATAL: timed out after 30s waiting for: ephemeral-storage-limit-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_pod_exceeding_an_empty_dir_size_limit_is_evicted
+==> FATAL: timed out after 30s waiting for: empty-dir-size-limit-check Running
+  ✘ FAIL (31s, exit 1)
+▶ test_pod_teardown_actually_removes_the_sandbox
+==> FATAL: timed out after 30s waiting for: teardown-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_orphaned_sandbox_gc_manual_procedure
+    (skip: needs stopping nodelet, deleting a pod from the apiserver while it's down, then restarting and watching gc_loop clean up the now-orphaned sandbox — not something this suite automates against a live service. Manual steps: (1) apply a test pod and wait Running, (2) sudo systemctl stop nodelet, (3) kubectl delete pod <name> --wait=false, (4) sudo systemctl start nodelet, (5) within NODELET_GC_INTERVAL_SECS confirm 'ctr -n k8s.io containers ls' no longer shows it.)
+  ○ SKIP (0s)
+▶ test_unreferenced_image_is_not_removed_below_the_watermark
+==> FATAL: timed out after 60s waiting for: image-gc-below-watermark-check Running
+  ✘ FAIL (63s, exit 1)
+▶ test_image_gc_watermark_removal_manual_procedure
+    (skip: exercising *actual* image removal under real disk pressure needs either genuinely filling NODELET_DISK_PATH's filesystem or restarting nodelet with an artificially-low NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT — neither is something this suite does to a live node automatically (same reasoning as the orphaned-sandbox/eviction manual procedures above). Manual procedure: (1) note current disk usage via 'df' on NODELET_DISK_PATH, (2) restart nodelet with NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT set at or below current usage and NODELET_IMAGE_GC_MIN_AGE_SECS set low (e.g. 5) for a fast test, (3) apply and delete a pod using a distinct scratch image tag (same pattern as test_unreferenced_image_is_not_removed_below_the_watermark), (4) within NODELET_GC_INTERVAL_SECS confirm 'ctr -n k8s.io images ls' no longer shows it, (5) confirm images NOT unreferenced (or referenced by other running pods) are left alone, (6) restore normal thresholds and restart nodelet.)
+  ○ SKIP (0s)
+▶ test_graceful_node_shutdown_manual_note
+    (skip: graceful node shutdown needs a real systemd-logind PrepareForShutdown signal, which only happens on an actual host shutdown/reboot — not something this suite triggers automatically. Manual spot-check: set NODELET_SHUTDOWN_GRACE_PERIOD_SECS (and optionally NODELET_SHUTDOWN_GRACE_PERIOD_CRITICAL_SECS) on nodelet, run 'loginctl list-inhibitors' and confirm nodelet holds a 'shutdown'/'delay' entry, apply a few test pods, then 'systemctl poweroff' (or 'reboot') the node and watch nodelet's logs for 'terminating pods' before the box actually goes down — non-critical pods (no system-node-critical/system-cluster-critical priorityClassName) should get preStop + termination before critical ones, all within NODELET_SHUTDOWN_GRACE_PERIOD_SECS total.)
+  ○ SKIP (0s)
+▶ test_poststart_hook_runs_after_container_start
+==> FATAL: timed out after 30s waiting for: poststart-hook Running
+  ✘ FAIL (31s, exit 1)
+▶ test_prestop_hook_runs_before_termination
+==> FATAL: timed out after 30s waiting for: prestop-hook Running
+  ✘ FAIL (32s, exit 1)
+▶ test_termination_grace_period_is_honored_not_instant
+==> FATAL: timed out after 30s waiting for: grace-period Running
+  ✘ FAIL (31s, exit 1)
+▶ test_basic_pod_runs
+==> FATAL: timed out after 60s waiting for: basic-pod Running
+  ✘ FAIL (63s, exit 1)
+▶ test_init_containers_run_before_app_container
+==> FATAL: timed out after 90s waiting for: init-order Running
+  ✘ FAIL (94s, exit 1)
+▶ test_native_sidecar_container_starts_before_app_container_and_keeps_running
+==> FATAL: timed out after 30s waiting for: native-sidecar Running
+  ✘ FAIL (32s, exit 1)
+▶ test_native_sidecar_container_restarts_on_crash
+==> FATAL: timed out after 30s waiting for: native-sidecar-crash Running
+  ✘ FAIL (31s, exit 1)
+▶ test_init_container_failure_blocks_app_container_under_restart_policy_never
+==> FATAL: timed out after 60s waiting for: init-fail-never Failed
+  ✘ FAIL (64s, exit 1)
+▶ test_crashing_container_restarts_and_increments_restart_count
+==> FATAL: timed out after 90s waiting for: restart count > 0
+  ✘ FAIL (90s, exit 1)
+▶ test_crash_loop_backoff_throttles_immediate_restarts
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/harness.sh: line 103: test: : integer expression expected
+==> FATAL: assertion failed: command failed: test  -ge 1
+  ✘ FAIL (21s, exit 1)
+▶ test_crash_loop_backoff_reports_waiting_reason_and_last_state
+    (skip: state.waiting.reason never became CrashLoopBackOff within 30s -- check restart_policy != "Never" && !restart_backoff_ready() gating in runtime/cri/status.rs)
+  ○ SKIP (30s)
+▶ test_restart_policy_never_exit_zero_is_succeeded
+==> FATAL: timed out after 60s waiting for: never-succeed Succeeded
+  ✘ FAIL (64s, exit 1)
+▶ test_restart_policy_never_exit_nonzero_is_failed
+==> FATAL: timed out after 60s waiting for: never-fail Failed
+  ✘ FAIL (62s, exit 1)
+▶ test_exited_container_reports_terminated_state_with_exit_code
+==> FATAL: timed out after 60s waiting for: terminated-state-check Failed
+  ✘ FAIL (63s, exit 1)
+▶ test_lifecycle_stop_signal_is_honored_by_the_runtime
+    (skip: pod never reached Running with lifecycle.stopSignal set — check nodelet's logs, or that this runtime version supports CRI's ContainerConfig.stop_signal field at all)
+  ○ SKIP (32s)
+▶ test_termination_message_path_is_read_back_into_container_status
+==> FATAL: timed out after 60s waiting for: termination-message-check Failed
+  ✘ FAIL (63s, exit 1)
+▶ test_container_status_container_id_has_a_runtime_scheme_prefix
+==> FATAL: timed out after 30s waiting for: container-id-scheme-check Running
+  ✘ FAIL (31s, exit 1)
+▶ test_pod_status_reports_host_ips_plural
+==> FATAL: timed out after 30s waiting for: host-ips-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_pod_status_reports_qos_class
+==> FATAL: timed out after 30s waiting for: qos-class-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_pod_condition_reports_observed_generation
+==> FATAL: timed out after 30s waiting for: observed-generation-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_container_status_reports_a_real_image_id
+==> FATAL: timed out after 30s waiting for: image-id-check Running
+  ✘ FAIL (31s, exit 1)
+▶ test_image_pull_policy_never_fails_when_image_is_absent
+  ✔ PASS (21s)
+▶ test_image_pull_policy_if_not_present_manual_note
+    (skip: proving IfNotPresent/Never actually SKIP the registry round-trip (not just that Never fails when absent, which test_image_pull_policy_never_fails_when_image_is_absent already covers live) needs reading nodelet's own logs or observing network activity — not something this suite does. Manual spot-check: pull alpine:3.20 once via a Running pod, then create a second pod referencing the same image with imagePullPolicy: IfNotPresent and (if your registry supports it) point nodelet at an unreachable/offline registry mirror — confirm the second pod still reaches Running quickly (no failed registry call blocking it), and check nodelet's logs show no new ImageStatus miss or PullImage call for that image.)
+  ○ SKIP (0s)
+▶ test_log_rotation_creates_a_rotated_file
+    (skip: TEST_LOG_MAX_SIZE_BYTES not set — export it to whatever NODELET_CONTAINER_LOG_MAX_SIZE_BYTES nodelet is currently running with (something small, e.g. 4096) to exercise this within a reasonable test window)
+  ○ SKIP (1s)
+▶ test_memory_manager_pins_guaranteed_containers_to_a_numa_node
+    (skip: TEST_MEMORY_MANAGER_STATIC not set to 'true' — export it once nodelet is running with NODELET_MEMORY_MANAGER_POLICY=static to exercise this)
+  ○ SKIP (0s)
+▶ test_host_port_publishes_the_container_on_the_nodes_own_ip
+    (skip: pod never reached Running with hostPort set — check nodelet's logs for a RunPodSandbox error (the runtime may not support CRI's port_mappings, or the host port may already be in use on this node))
+  ○ SKIP (32s)
+▶ test_host_network_pod_needs_no_explicit_port_mapping
+    (skip: pod never reached Running with hostNetwork: true)
+  ○ SKIP (32s)
+▶ test_node_is_ready_with_capacity_advertised
+  ✔ PASS (1s)
+▶ test_node_reports_hugepages_capacity_when_reserved
+    (skip: no hugepages reserved on this node (/proc/sys/vm/nr_hugepages is 0) — nothing for Node.status.capacity["hugepages-*"] to report)
+  ○ SKIP (0s)
+▶ test_pressure_conditions_are_present_and_normally_false
+  ✔ PASS (0s)
+▶ test_node_reports_a_real_kernel_and_os_image
+  ✔ PASS (0s)
+▶ test_node_status_reports_runtime_handlers
+    (skip: Node.status.runtimeHandlers is empty — either this containerd version doesn't report any handlers via its Status RPC, or jq isn't available to parse the field)
+  ○ SKIP (1s)
+▶ test_node_status_images_reflects_a_real_pulled_image
+==> FATAL: timed out after 30s waiting for: node-status-images-check Running
+  ✘ FAIL (31s, exit 1)
+▶ test_pod_resources_socket_is_created_on_a_cri_node
+  ✔ PASS (0s)
+▶ test_pod_resources_grpc_query_manual_note
+    (skip: proving the actual List/GetAllocatableResources/Get RPCs return correct data against a live pod needs a gRPC client this suite doesn't assume is installed (grpcurl, or a real exporter like NVIDIA DCGM) — the pure proto-conversion logic and the RPC handlers' request/response wiring both have solid unit-test confidence (pod_resources_tests/) but the actual wire behavior against a real client is unexercised here. Manual spot-check: with grpcurl installed, 'grpcurl -plaintext -unix $NODELET_POD_RESOURCES_SOCKET_PATH v1.PodResourcesLister/List' against a node running a Guaranteed-QoS pod with NODELET_CPU_MANAGER_POLICY=static should show that pod's containerResources[].cpuIds populated with its exclusively-pinned cores; a pod using a device-plugin resource should show containerResources[].devices with the allocated device IDs. 'GetAllocatableResources' should report the whole static-policy-managed CPU/device pool regardless of current allocation. Confirm 'Get' with a real podName/podNamespace returns just that one pod, and with a nonexistent one returns a NotFound gRPC status (not a crash or an empty-but-ok response).)
+  ○ SKIP (0s)
+▶ test_readiness_probe_gates_ready_condition
+==> FATAL: timed out after 30s waiting for: readiness-gate Running
+  ✘ FAIL (32s, exit 1)
+▶ test_liveness_probe_failure_restarts_the_container
+==> FATAL: timed out after 30s waiting for: liveness-restart Running
+  ✘ FAIL (31s, exit 1)
+▶ test_liveness_probes_own_grace_period_overrides_the_pods
+==> FATAL: timed out after 30s waiting for: liveness-grace-override Running
+  ✘ FAIL (32s, exit 1)
+▶ test_startup_probe_gates_liveness_and_readiness
+==> FATAL: timed out after 30s waiting for: startup-gate Running
+  ✘ FAIL (32s, exit 1)
+▶ test_startup_probe_failure_past_threshold_restarts_the_container
+==> FATAL: timed out after 30s waiting for: startup-restart Running
+  ✘ FAIL (32s, exit 1)
+▶ test_http_get_readiness_probe_against_a_real_server
+==> FATAL: timed out after 30s waiting for: httpget-probe Running
+  ✘ FAIL (32s, exit 1)
+▶ test_grpc_probe_manual_note
+    (skip: exercising grpc probes for real needs a container that actually speaks grpc.health.v1.Health/Check — TEST_IMAGE (busybox-style) doesn't, and this suite doesn't bundle a gRPC server image. Manual spot-check: deploy a pod running something that exposes the standard health-checking protocol (etcd does, out of the box, on its client port; or any grpc-health-probe-compatible workload), set readinessProbe.grpc.port to that port (and .service if the workload registers a named service rather than reporting overall health), and confirm the pod reaches Ready. Also worth checking: an unreachable/wrong port should leave the pod NOT Ready (proof check_grpc()'s timeout/connect-failure path works, not just the success path) — probes_tests/network_checks.rs already covers those failure paths against a real (non-grpc) TCP listener, so this is really just proving the success path end to end.)
+  ○ SKIP (0s)
+▶ test_metrics_resource_returns_real_pod_usage
+==> FATAL: timed out after 30s waiting for: metrics-resource-check Running
+  ✘ FAIL (31s, exit 1)
+▶ test_metrics_cadvisor_returns_real_container_usage
+==> FATAL: timed out after 30s waiting for: metrics-cadvisor-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set
+==> FATAL: timed out after 30s waiting for: readiness-gate-check Running
+  ✘ FAIL (31s, exit 1)
+▶ test_memory_limit_is_enforced_via_cgroup
+==> FATAL: timed out after 30s waiting for: mem-limit Running
+  ✘ FAIL (32s, exit 1)
+▶ test_hugepages_limit_is_enforced_via_cgroup
+    (skip: pod never reached Running with a hugepages-2Mi limit set — this node/kernel likely has no 2Mi hugepages reserved (check /proc/sys/vm/nr_hugepages) or the runtime doesn't support the hugetlb cgroup controller)
+  ○ SKIP (32s)
+▶ test_no_swap_default_disables_swap_via_cgroup
+==> FATAL: timed out after 30s waiting for: no-swap-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_limited_swap_manual_note
+    (skip: exercising memorySwap.swapBehavior: LimitedSwap needs restarting nodelet with NODELET_MEMORY_SWAP_BEHAVIOR=LimitedSwap set — not something this suite does to a running node automatically (same reasoning as eviction.sh's pressure-based manual procedures). Manual spot-check: (1) confirm the node actually has swap enabled (swapon --show, or a nonzero SwapTotal in /proc/meminfo — LimitedSwap grants nothing on a swapless node regardless of config), (2) restart nodelet with NODELET_MEMORY_SWAP_BEHAVIOR=LimitedSwap, (3) apply a Burstable pod (memory request set, no limit or a limit above the request) and read /sys/fs/cgroup/memory.swap.max from inside it — it should be a nonzero value roughly proportional to (memory request / node memory) * node swap, per KEP-2400's formula (container_swap_limit_bytes() in resources.rs), (4) apply a Guaranteed pod (request == limit) and confirm its memory.swap.max is still exactly 0 — LimitedSwap explicitly grants Guaranteed-shaped containers no swap at all, same as BestEffort.)
+  ○ SKIP (0s)
+▶ test_in_place_resize_updates_memory_limit_without_restarting
+==> FATAL: timed out after 30s waiting for: resize-check Running
+  ✘ FAIL (31s, exit 1)
+▶ test_env_resource_field_ref_reports_the_containers_own_limits
+==> FATAL: timed out after 30s waiting for: resource-field-ref Running
+  ✘ FAIL (32s, exit 1)
+▶ test_cpu_limit_is_enforced_via_cgroup
+==> FATAL: timed out after 30s waiting for: cpu-limit Running
+  ✘ FAIL (31s, exit 1)
+▶ test_besteffort_pod_gets_no_cgroup_limit
+==> FATAL: timed out after 30s waiting for: besteffort Running
+  ✘ FAIL (32s, exit 1)
+▶ test_besteffort_pod_gets_the_certain_death_oom_score
+==> FATAL: timed out after 30s waiting for: oom-score-besteffort Running
+  ✘ FAIL (32s, exit 1)
+▶ test_guaranteed_pod_gets_the_protected_oom_score
+==> FATAL: timed out after 30s waiting for: oom-score-guaranteed Running
+  ✘ FAIL (32s, exit 1)
+▶ test_runtime_class_handler_is_honored
+    (skip: pod never reached Running with runtimeClassName=nodelet-e2e-runtimeclass (handler 'runc') — set TEST_RUNTIME_CLASS_HANDLER to a handler name this containerd actually has configured, or this containerd may only have the implicit default with no named handlers at all)
+  ○ SKIP (32s)
+▶ test_run_as_user_is_applied
+==> FATAL: timed out after 30s waiting for: run-as-user Running
+  ✘ FAIL (32s, exit 1)
+▶ test_read_only_root_filesystem_is_enforced
+==> FATAL: timed out after 30s waiting for: readonly-rootfs Running
+  ✘ FAIL (32s, exit 1)
+▶ test_without_read_only_root_filesystem_writes_succeed
+==> FATAL: timed out after 30s waiting for: writable-rootfs Running
+  ✘ FAIL (32s, exit 1)
+▶ test_proc_mount_default_masks_proc_kcore
+    (skip: pod never reached Running -- can't exercise the default procMount masking check)
+  ○ SKIP (31s)
+▶ test_proc_mount_unmasked_leaves_proc_kcore_readable
+The Pod "proc-mount-unmasked" is invalid: spec.containers[0].securityContext.procMount: Invalid value: "Unmasked": `hostUsers` must be false to use `Unmasked`
+    (skip: pod never reached Running with securityContext.procMount: Unmasked -- check nodelet's logs for a CreateContainer error (the runtime may reject procMount: Unmasked entirely without also setting a permissive seccomp profile, matching real kubelet's own admission-time requirement that this project's apiserver doesn't enforce))
+  ○ SKIP (33s)
+▶ test_host_users_false_gets_a_real_user_namespace
+    (skip: pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted) or a RunPodSandbox error (runtime doesn't support CRI's userns_options at all, e.g. too old containerd))
+  ○ SKIP (31s)
+▶ test_host_users_false_volume_still_reads_and_writes_normally
+    (skip: pod never reached Running with hostUsers: false and a volume mounted — check mount_id_mappings()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects Mount.uidMappings/.gidMappings entirely)
+  ○ SKIP (32s)
+▶ test_host_users_volume_ownership_translation_manual_note
+    (skip: genuinely proving OWNERSHIP TRANSLATION (that a host-side file owned by a UID within the pod's own mapped range shows up as the correct small container-relative UID inside the container, rather than the overflow/nobody UID a mount with no idmapping would show) needs a host-side file pre-chowned into a specific UID before the pod starts -- root required, and needs to read this node's live NODELET_USERNS_BASE_UID value. Manual spot-check: (1) note NODELET_USERNS_BASE_UID (default 100000), (2) create a hostPath directory, chown a file inside it to that exact UID ('chown 100000 <dir>/marker' -- this is the FIRST pod's allocated range base, container-relative UID 0), (3) create a hostUsers: false pod mounting that hostPath directory, (4) confirm 'stat -c %u /hostvol/marker' INSIDE the container reports '0' (proof Mount.uidMappings correctly translated host UID 100000 -> container UID 0) rather than 65534/nobody (proof no translation happened at the mount level, even though the sandbox's own userns_options, round 25, works fine on its own). Round 98 extended the same mapping to nodelet's own auxiliary host-bind-mounts (/etc/hosts, terminationMessagePath) -- to spot-check those too: (5) 'stat -c %u <nodelet-state-dir>/pods/<uid>/etc-hosts' and the termination-log file under NODELET_VOLUME_ROOT should show the HOST-side base UID (they're written by nodelet itself, running as host root, so they're owned by the real host UID on disk -- the id-mapping only affects what UID the mount shows INSIDE the container), while (6) 'stat -c %u /etc/hosts' and 'stat -c %u /dev/termination-log' INSIDE the container should report '0' (translated), not 65534/nobody.)
+  ○ SKIP (0s)
+▶ test_client_certificate_authentication_manual_note
+    (skip: round 95: TLS client certificate authentication (NODELET_CLIENT_CA_FILE) needs nodelet started with that env var set to a CA bundle path before the server binds its listener -- this test harness starts nodelet once, before any per-test env var can be injected, same limitation round 94's --config file e2e coverage hit. Manual spot-check: (1) generate a CA: 'openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt -days 1 -subj /CN=test-ca', (2) generate a client cert signed by it with a CN/O of your choice: 'openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj /CN=alice/O=system:masters && openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt -days 1', (3) start nodelet with NODELET_CLIENT_CA_FILE=/path/to/ca.crt, (4) 'curl -k --cert client.crt --key client.key https://<node>:<server-port>/stats/summary' should succeed with NO Authorization header at all (proof the cert alone authenticated), (5) the same curl call with a self-signed cert NOT signed by ca.crt should fail the TLS handshake outright (curl reports a certificate verify failure, not a 401 -- proof rustls itself rejects it before nodelet code runs), (6) a plain 'curl -k https://<node>:<server-port>/stats/summary' with no cert and no Authorization header should still get the existing 401 bearer-token response (proof the fallback path is unchanged).)
+  ○ SKIP (0s)
+▶ test_containers_get_isolated_pid_namespaces_by_default
+==> FATAL: timed out after 30s waiting for: pid-isolated-default Running
+  ✘ FAIL (33s, exit 1)
+▶ test_share_process_namespace_puts_every_container_in_one_pid_namespace
+==> FATAL: timed out after 30s waiting for: pid-shared Running
+  ✘ FAIL (31s, exit 1)
+▶ test_host_pid_sees_host_processes
+==> FATAL: timed out after 30s waiting for: host-pid-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_sysctls_are_applied_to_the_sandbox
+    (skip: pod never reached Running with a sysctl set — check nodelet's logs for a RunPodSandbox error (runtime may not support this specific sysctl as namespaced, or reject unknown sysctls))
+  ○ SKIP (31s)
+▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
+Error from server (BadRequest): error when creating "STDIN": Pod in version "v1" cannot be handled as a Pod: strict decoding error: unknown field "spec.containers[0].securityContext.supplementalGroups", unknown field "spec.containers[0].securityContext.supplementalGroupsPolicy", unknown field "spec.containers[1].securityContext.supplementalGroups", unknown field "spec.containers[1].securityContext.supplementalGroupsPolicy"
+    (skip: pod never reached Running with supplementalGroupsPolicy set — check nodelet's logs for a RunPodSandbox/CreateContainer error (runtime may not support CRI's SupplementalGroupsPolicy field at all, e.g. too old containerd))
+  ○ SKIP (33s)
+▶ test_static_pod_creates_a_mirror_pod
+    (skip: TEST_STATIC_POD_PATH not set — export it to the directory nodelet was started with NODELET_STATIC_POD_PATH=<that same dir> to exercise this)
+  ○ SKIP (0s)
+▶ test_stats_summary_returns_real_pod_usage
+==> FATAL: timed out after 30s waiting for: stats-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_kubectl_logs_returns_real_output
+==> FATAL: timed out after 30s waiting for: logs-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_kubectl_logs_follow_streams_new_output
+==> FATAL: timed out after 30s waiting for: logs-follow-check Running
+  ✘ FAIL (31s, exit 1)
+▶ test_kubectl_exec_runs_a_command_and_returns_its_output
+==> FATAL: timed out after 30s waiting for: exec-check Running
+  ✘ FAIL (32s, exit 1)
+▶ test_attach_and_port_forward_manual_note
+    (skip: attach and portForward share exec's exact proxy_upgrade()/splice() code path in server/exec.rs — if test_kubectl_exec_runs_a_command_and_returns_its_output passes, the underlying mechanism is proven. Manual spot-check if you want independent coverage: 'kubectl attach <pod>' against a pod whose command writes to stdout in a loop, and 'kubectl port-forward <pod> 8080:80' against a pod running a server on 80, then curl localhost:8080.)
+  ○ SKIP (0s)
+▶ test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host
+    (skip: TEST_TOPOLOGY_MANAGER_POLICY not set to 'single-numa-node' — export it once nodelet is running with NODELET_TOPOLOGY_MANAGER_POLICY=single-numa-node (and NODELET_CPU_MANAGER_POLICY=static) to exercise this)
+  ○ SKIP (0s)
+▶ test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host
+    (skip: TEST_TOPOLOGY_MANAGER_POLICY not set to 'restricted' — export it once nodelet is running with NODELET_TOPOLOGY_MANAGER_POLICY=restricted (and NODELET_CPU_MANAGER_POLICY=static) to exercise this)
+  ○ SKIP (0s)
+▶ test_topology_manager_cross_provider_alignment_manual_note
+    (skip: proving CPU-and-device alignment (not just non-rejection) needs either real multi-socket/multi-NUMA hardware or a device plugin reporting TopologyInfo pointing at a specific NUMA node — not something this suite can set up. Manual spot-check on real multi-NUMA hardware: deploy a device plugin whose devices report differing NUMA affinity, request both an exclusive CPU and one of those devices in the same Guaranteed pod, then compare the container's cpuset.cpus (see cpu_manager.sh for how to find it) against which NUMA node the allocated device actually sits on — they should be the same node. Also try NODELET_TOPOLOGY_MANAGER_POLICY=single-numa-node with a deliberately unsatisfiable combination (e.g. requesting more exclusive CPUs than any single node has) and confirm the pod stays Pending with a 'Topology Manager: no single NUMA node can satisfy' error logged, rather than starting misaligned.)
+  ○ SKIP (0s)
+▶ test_topology_manager_restricted_spread_manual_note
+    (skip: proving restricted policy's spread() fallback (round 20 — each provider placed on its own best NUMA node independently when no single node satisfies everyone) needs real multi-NUMA hardware where a CPU request and a device/memory request can only individually be satisfied on *different* nodes. Manual spot-check: with NODELET_TOPOLOGY_MANAGER_POLICY=restricted, create a Guaranteed pod whose exclusive-CPU request only fits node 0's remaining capacity and whose device-plugin/memory request only fits node 1's — the pod should reach Running (unlike single-numa-node, which would reject it) with nodelet logging 'no single NUMA node satisfies every request together; spreading each across its own best node'; the container's cpuset.cpus should land on node 0's CPUs and cpuset.mems (if a memory request was involved) on node 1.)
+  ○ SKIP (0s)
+▶ test_configmap_and_secret_volumes_are_materialized
+==> FATAL: timed out after 30s waiting for: cm-secret-vol Running
+  ✘ FAIL (32s, exit 1)
+▶ test_configmap_volume_updates_live_without_pod_restart
+==> FATAL: timed out after 30s waiting for: cm-live-update Running
+  ✘ FAIL (32s, exit 1)
+▶ test_downward_api_volume_writes_pod_metadata
+==> FATAL: timed out after 30s waiting for: downward-vol Running
+  ✘ FAIL (32s, exit 1)
+▶ test_sub_path_expr_expands_a_downward_api_env_var
+    (skip: pod never reached Running with a subPathExpr volumeMount — check nodelet's logs for a dropped mount)
+  ○ SKIP (32s)
+▶ test_projected_volume_merges_configmap_and_downward_api
+==> FATAL: timed out after 30s waiting for: projected-vol Running
+  ✘ FAIL (32s, exit 1)
+▶ test_service_account_token_projected_volume_mints_a_real_token
+==> FATAL: timed out after 30s waiting for: sat-vol Running
+  ✘ FAIL (32s, exit 1)
+▶ test_host_aliases_are_written_to_etc_hosts
+==> FATAL: timed out after 30s waiting for: hostaliases Running
+  ✘ FAIL (32s, exit 1)
+▶ test_host_aliases_still_work_under_host_users_false
+    (skip: pod never reached Running with hostUsers: false and hostAliases together — check the aux_id_mappings wiring in runtime/cri/container_create.rs's /etc/hosts mount, or whether this runtime version rejects Mount.uidMappings/.gidMappings entirely)
+  ○ SKIP (32s)
+▶ test_empty_dir_medium_memory_is_backed_by_tmpfs
+==> FATAL: timed out after 30s waiting for: empty-dir-memory Running
+  ✘ FAIL (32s, exit 1)
+▶ test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs
+    (skip: no hugepages reserved on this node (/proc/sys/vm/nr_hugepages is 0) — nothing for a HugePages-medium emptyDir to mount against)
+  ○ SKIP (0s)
+▶ test_image_volume_source_mounts_a_read_only_image
+    (skip: pod never reached Running with an image volume mounted — check nodelet's logs for 'failed to pull image for image volume', and that this CRI runtime's version actually supports CRI's Mount.image field (containerd >= 2.0 with the ImageVolume feature))
+  ○ SKIP (31s)
+▶ test_fsgroup_chowns_materialized_volumes
+==> FATAL: timed out after 30s waiting for: fsgroup Running
+  ✘ FAIL (33s, exit 1)
+▶ test_fsgroup_never_applies_to_hostpath_volumes
+==> FATAL: timed out after 30s waiting for: fsgroup-hostpath Running
+  ✘ FAIL (32s, exit 1)
+▶ test_mount_propagation_host_to_container_still_mounts_normally
+    (skip: pod never reached Running with mountPropagation: HostToContainer set — check mount_propagation_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects a nonzero Mount.propagation entirely)
+  ○ SKIP (32s)
+▶ test_mount_propagation_manual_note
+    (skip: genuinely observing mount propagation in effect needs a real mount(2) syscall performed on the HOST (root required) after the pod is already running -- not something this suite does automatically to a live node's filesystem. Manual spot-check: (1) create a hostPath directory and a pod mounting it with mountPropagation: HostToContainer, (2) once Running, on the HOST run 'mount --bind <some-other-dir> <hostPath-dir>/newmount' (or 'mount -t tmpfs tmpfs <hostPath-dir>/newmount'), (3) confirm the new mount is immediately visible inside the container at /hostvol/newmount ('kubectl exec ... -- ls /hostvol') without restarting the pod -- proof HostToContainer propagation is real, not just that the field round-tripped through config. Repeat with mountPropagation unset (or None) and confirm the new host-side mount is NOT visible inside the container -- proof PRIVATE (the default) genuinely isolates mount events. Bidirectional needs the reverse: a mount made INSIDE the container should become visible on the host.)
+  ○ SKIP (0s)
+▶ test_recursive_read_only_still_mounts_read_only_normally
+    (skip: pod never reached Running with recursiveReadOnly: Enabled set — check recursive_read_only_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects Mount.recursive_read_only entirely)
+  ○ SKIP (32s)
+▶ test_recursive_read_only_if_possible_falls_back_without_erroring
+    (skip: pod never reached Running with recursiveReadOnly: IfPossible set — check recursive_read_only_cri()'s IfPossible branch in runtime/cri/volumes_pure.rs)
+  ○ SKIP (32s)
+▶ test_recursive_read_only_manual_note
+    (skip: genuinely proving RECURSIVENESS (that a mount nested underneath a recursiveReadOnly: Enabled mount is also read-only, not just the top-level mountpoint) needs a second real mount(2) syscall performed inside the container's own mount namespace before nodelet's own outer mount is made -- not something this suite can set up. Manual spot-check: (1) on the HOST, bind-mount a writable directory underneath the hostPath directory a pod will reference (e.g. 'mount --bind /some/writable/dir <hostPath-dir>/nested' before creating the pod), (2) create the pod with that hostPath volume mounted readOnly: true, recursiveReadOnly: Enabled, (3) confirm writes fail INSIDE THE NESTED MOUNT too ('kubectl exec ... -- touch /hostvol/nested/test' should fail) -- proof the read-only-ness is genuinely recursive, not just applied to the top-level mountpoint (which test_recursive_read_only_still_mounts_read_only_normally already proves automatically). Also confirm CreateContainer fails cleanly (not a silent partial mount) if recursiveReadOnly: Enabled is combined with a runtime that doesn't support CRI's Mount.recursive_read_only at all. Separately (round 97): to specifically confirm IfPossible's Enabled-vs-Disabled decision actually tracks this runtime's own advertised capability (not just that it reaches Running either way, which test_recursive_read_only_if_possible_falls_back_without_erroring already proves automatically), compare 'kubectl get node <node> -o jsonpath={.status.runtimeHandlers[0].features.recursiveReadOnlyMounts}' against the IfPossible pod's own containerStatuses[].volumeMounts[].recursiveReadOnly — they must match.)
+  ○ SKIP (0s)
+▶ test_host_path_directory_mounts_the_real_host_directory
+    (skip: pod never reached Running with a hostPath: Directory volume — check nodelet's logs for a 'hostPath volume failed validation' warning)
+  ○ SKIP (32s)
+▶ test_host_path_directory_or_create_creates_a_missing_directory
+    (skip: pod never reached Running with a hostPath: DirectoryOrCreate volume)
+  ○ SKIP (32s)
+▶ test_host_path_directory_type_rejects_a_nonexistent_path
+    (skip: pod never reached Running at all — can't distinguish 'correctly rejected the volume' from 'something else failed')
+  ○ SKIP (32s)
+
+════════════════════════════════════════
+Results: 10 passed, 66 failed, 64 skipped
+Failed:
+  - test_pod_cgroup_reflects_its_qos_class
+  - test_allocated_resources_status_absent_without_device_resources
+  - test_custom_dns_config_reaches_resolv_conf
+  - test_spec_hostname_overrides_the_container_hostname
+  - test_set_hostname_as_fqdn_reports_the_full_fqdn
+  - test_kubectl_debug_adds_and_starts_an_ephemeral_container
+  - test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
+  - test_pod_exceeding_an_empty_dir_size_limit_is_evicted
+  - test_pod_teardown_actually_removes_the_sandbox
+  - test_unreferenced_image_is_not_removed_below_the_watermark
+  - test_poststart_hook_runs_after_container_start
+  - test_prestop_hook_runs_before_termination
+  - test_termination_grace_period_is_honored_not_instant
+  - test_basic_pod_runs
+  - test_init_containers_run_before_app_container
+  - test_native_sidecar_container_starts_before_app_container_and_keeps_running
+  - test_native_sidecar_container_restarts_on_crash
+  - test_init_container_failure_blocks_app_container_under_restart_policy_never
+  - test_crashing_container_restarts_and_increments_restart_count
+  - test_crash_loop_backoff_throttles_immediate_restarts
+  - test_restart_policy_never_exit_zero_is_succeeded
+  - test_restart_policy_never_exit_nonzero_is_failed
+  - test_exited_container_reports_terminated_state_with_exit_code
+  - test_termination_message_path_is_read_back_into_container_status
+  - test_container_status_container_id_has_a_runtime_scheme_prefix
+  - test_pod_status_reports_host_ips_plural
+  - test_pod_status_reports_qos_class
+  - test_pod_condition_reports_observed_generation
+  - test_container_status_reports_a_real_image_id
+  - test_node_status_images_reflects_a_real_pulled_image
+  - test_readiness_probe_gates_ready_condition
+  - test_liveness_probe_failure_restarts_the_container
+  - test_liveness_probes_own_grace_period_overrides_the_pods
+  - test_startup_probe_gates_liveness_and_readiness
+  - test_startup_probe_failure_past_threshold_restarts_the_container
+  - test_http_get_readiness_probe_against_a_real_server
+  - test_metrics_resource_returns_real_pod_usage
+  - test_metrics_cadvisor_returns_real_container_usage
+  - test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set
+  - test_memory_limit_is_enforced_via_cgroup
+  - test_no_swap_default_disables_swap_via_cgroup
+  - test_in_place_resize_updates_memory_limit_without_restarting
+  - test_env_resource_field_ref_reports_the_containers_own_limits
+  - test_cpu_limit_is_enforced_via_cgroup
+  - test_besteffort_pod_gets_no_cgroup_limit
+  - test_besteffort_pod_gets_the_certain_death_oom_score
+  - test_guaranteed_pod_gets_the_protected_oom_score
+  - test_run_as_user_is_applied
+  - test_read_only_root_filesystem_is_enforced
+  - test_without_read_only_root_filesystem_writes_succeed
+  - test_containers_get_isolated_pid_namespaces_by_default
+  - test_share_process_namespace_puts_every_container_in_one_pid_namespace
+  - test_host_pid_sees_host_processes
+  - test_stats_summary_returns_real_pod_usage
+  - test_kubectl_logs_returns_real_output
+  - test_kubectl_logs_follow_streams_new_output
+  - test_kubectl_exec_runs_a_command_and_returns_its_output
+  - test_configmap_and_secret_volumes_are_materialized
+  - test_configmap_volume_updates_live_without_pod_restart
+  - test_downward_api_volume_writes_pod_metadata
+  - test_projected_volume_merges_configmap_and_downward_api
+  - test_service_account_token_projected_volume_mints_a_real_token
+  - test_host_aliases_are_written_to_etc_hosts
+  - test_empty_dir_medium_memory_is_backed_by_tmpfs
+  - test_fsgroup_chowns_materialized_volumes
+  - test_fsgroup_never_applies_to_hostpath_volumes
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1785576485...
