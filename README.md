@@ -452,7 +452,13 @@ container's current state reports `Waiting{reason: CrashLoopBackOff}`
 the raw device via CRI's `ContainerConfig.devices` (the same mechanism
 device-plugin device-node injection already uses), with CSI's own
 `AccessType::Block` and a file-shaped bind-mount target instead of the
-usual directory. Full status list in `docs/GAP_CLOSURE.md`.
+usual directory. Round 78 closed `securityContext.procMount`: nodelet
+previously never masked `/proc` for any container at all (a modern
+containerd applies zero masking when `masked_paths`/`readonly_paths` are
+left unset) — it now always sends them explicitly, matching real
+kubelet's own posture, with `Default` getting the standard masked/readonly
+lists and `Unmasked` getting genuinely empty ones. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

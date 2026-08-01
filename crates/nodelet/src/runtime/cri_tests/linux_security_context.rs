@@ -168,3 +168,35 @@ fn container_scoped_pid_mode_is_the_default_when_nothing_special_applies() {
     let sc = linux_security_context(None, None, NamespaceMode::Container);
     assert_eq!(sc.namespace_options.unwrap().pid, NamespaceMode::Container as i32);
 }
+
+// --- procMount (round 78; found in round 76's re-audit) ---
+
+#[test]
+fn no_proc_mount_set_gets_the_default_masked_and_readonly_paths() {
+    // The real-world-relevant case: without this, nothing was ever sent
+    // at all, and a modern containerd (disable_proc_mount=false, its own
+    // default config) applies NO masking whatsoever when the field is
+    // absent -- a silent security regression this round closes, not just
+    // a missing Unmasked toggle.
+    let sc = linux_security_context(None, None, NamespaceMode::Container);
+    assert!(!sc.masked_paths.is_empty());
+    assert!(sc.masked_paths.contains(&"/proc/acpi".to_string()));
+    assert!(!sc.readonly_paths.is_empty());
+    assert!(sc.readonly_paths.contains(&"/proc/sys".to_string()));
+}
+
+#[test]
+fn explicit_default_proc_mount_gets_the_same_default_paths() {
+    let csc = SecurityContext { proc_mount: Some("Default".to_string()), ..Default::default() };
+    let sc = linux_security_context(None, Some(&csc), NamespaceMode::Container);
+    assert!(!sc.masked_paths.is_empty());
+    assert!(!sc.readonly_paths.is_empty());
+}
+
+#[test]
+fn unmasked_proc_mount_gets_genuinely_empty_masked_and_readonly_paths() {
+    let csc = SecurityContext { proc_mount: Some("Unmasked".to_string()), ..Default::default() };
+    let sc = linux_security_context(None, Some(&csc), NamespaceMode::Container);
+    assert!(sc.masked_paths.is_empty());
+    assert!(sc.readonly_paths.is_empty());
+}

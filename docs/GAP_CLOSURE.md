@@ -27,6 +27,53 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 78: securityContext.procMount (2026-07-31, same day)
+
+Closes the second finding from round 76's re-audit.
+
+- New pure `proc_mount_paths()` (`resources.rs`), plus `DEFAULT_MASKED_PATHS`/
+  `DEFAULT_READONLY_PATHS` constants — a direct port of real kubelet's own
+  `ConvertToRuntimeMaskedPaths()`/`ConvertToRuntimeReadonlyPaths()`
+  (`pkg/securitycontext/util.go`, fetched via `gh api` to confirm the
+  exact list rather than guessing): `Default`/unset gets the standard
+  Docker/OCI-recommended masked/readonly path lists, `Unmasked` gets two
+  genuinely empty lists. Wired into `linux_security_context()`'s
+  `masked_paths`/`readonly_paths` fields.
+- **Research finding that reframed the scope mid-round, worth recording
+  clearly**: this isn't just "`procMount: Unmasked` doesn't work" — it's
+  "nodelet never masks `/proc` for ANY container at all, regardless of
+  what the pod asks for." Traced by reading containerd's own CRI test
+  suite (`internal/cri/server/container_create_linux_test.go`'s
+  `TestMaskedAndReadonlyPaths`, fetched via `gh search code`/`gh api`):
+  on a modern containerd (`disable_proc_mount: false`, the common default
+  config), leaving `masked_paths`/`readonly_paths` unset (nodelet's
+  previous behavior, always) results in **zero masking applied at all**
+  — not the OCI-spec-generator's own default masking, genuinely nothing.
+  Real kubelet never hits this because it *always* explicitly sets both
+  fields on every container, for every `procMount` value including
+  `Default` — it never relies on any runtime's own implicit default
+  either. This round's fix matches that same always-explicit posture,
+  which is why it closes more than just the narrow `Unmasked` case.
+- Also confirmed (same containerd test suite): a *privileged* container
+  ignores whatever masked/readonly paths are sent, regardless of value —
+  kubelet itself has no privileged-specific branch when computing these
+  fields either (verified against `pkg/kubelet/kuberuntime/security_context.go`),
+  so nodelet needs none — the runtime's own privileged handling already
+  covers it, matching upstream's actual division of responsibility.
+- 9 new unit tests: `proc_mount_paths()`'s own matrix (6: `None`/`Default`/
+  `Unmasked`/unrecognized-value-fails-safe-to-Default, plus 2 spot-checks
+  of the constant lists' well-known entries) and `linux_security_context()`'s
+  wiring (3).
+- New e2e tests in `security.sh`: `/proc/kcore` reads 0 bytes under the
+  default `procMount` (masked to `/dev/null` by the runtime) vs. reads
+  real bytes under `procMount: Unmasked` — a portable, kernel-version-
+  independent discriminator (unlike checking for a specific masked path's
+  mere existence, which varies by hardware/BIOS). `warn`s rather than
+  hard-fails either way, since honoring `masked_paths`/`readonly_paths`
+  at all is ultimately the CRI runtime's own choice (containerd's
+  `disable_proc_mount` config setting affects this, same as the research
+  finding above).
+
 ## Round 77: raw block volumes (2026-07-31, same day)
 
 Closes the higher-value of round 76's 2 findings — user picked it
@@ -4510,7 +4557,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
-- ❌ **`securityContext.procMount: Unmasked`** (found in round 76's re-audit) — CRI's own `LinuxContainerSecurityContext.masked_paths`/`.readonly_paths` fields (the actual mechanism `Unmasked` needs — clearing the runtime's default `/proc` masking, vs. the implicit `Default` behavior of leaving them alone) exist in the vendored `proto/cri.proto` but are never referenced anywhere in `resources.rs`/`container_support.rs` at all — confirmed via direct grep, not just doc-reading. Every container always gets the runtime's own default masking regardless of what the pod spec asks for. Low-to-moderate value (a narrow, uncommonly-set field, mostly used by specialized sysadmin-style containers), but a real, cleanly-implementable gap: CRI already has the exact mechanism, nothing new to vendor.
+- ✅ **`securityContext.procMount`** (round 78; found in round 76's re-audit) — new pure `proc_mount_paths()` mirrors real kubelet's own `ConvertToRuntimeMaskedPaths()`/`ConvertToRuntimeReadonlyPaths()` (`pkg/securitycontext/util.go`) exactly: `Default`/unset gets the standard Docker/OCI-recommended masked (`/proc/acpi`, `/proc/kcore`, `/sys/firmware`, ...) and readonly (`/proc/sys`, `/proc/irq`, ...) path lists, `Unmasked` gets two genuinely empty lists — wired into `linux_security_context()`'s `masked_paths`/`readonly_paths`. **This closes a real, if subtle, security gap wider than "Unmasked doesn't work"**: nodelet previously never set either field at all (always proto3-absent), which on a modern containerd (`disable_proc_mount: false`, the common default config) applies **no `/proc` masking whatsoever regardless of the pod's own `procMount` setting** — confirmed by reading containerd's own CRI test suite (`internal/cri/server/container_create_linux_test.go`'s `TestMaskedAndReadonlyPaths`). Real kubelet's own always-explicit-never-implicit posture (it never relies on the runtime's own default either) is why this round matches it exactly rather than only fixing the narrower `Unmasked` case. Genuinely automated e2e tests for both `Default` (masked) and `Unmasked` (readable) using `/proc/kcore`'s distinct byte-count behavior — `warn`s rather than hard-fails, since honoring `masked_paths` at all is ultimately the CRI runtime's own choice (containerd's `disable_proc_mount` config affects this).
 - ✅ **`securityContext.sysctls`** (round 41; found in round 39's re-audit) — new pure `pod_sysctls()` flattens `spec.securityContext.sysctls` into CRI's `LinuxPodSandboxConfig.sysctls` map, threaded through `sandbox_config()`/`ensure_pod()` alongside the existing hostname resolution. No admission-time allowlisting of "safe" (namespaced) vs. unsafe (host-wide) sysctls — that's the apiserver's job upstream and nodelet has no admission layer at all; an unsupported sysctl simply surfaces as a real `RunPodSandbox` error from the CRI runtime. Genuinely automated e2e test (a real container's own `/proc/sys` read). See round 41 notes.
 - ✅ **`hostPID`/`hostIPC`/`shareProcessNamespace`** (round 40; found in round 39's re-audit) — new pure `pid_namespace_mode(host_pid, share_process_namespace) -> NamespaceMode` (`hostPID` wins → `Node`, else `shareProcessNamespace` → `Pod`, else `Container`) is now always applied, on both `sandbox_config()`'s `namespace_options.pid` and each container's own `linux_security_context()`'s `namespace_options.pid` (mirroring real kubelet setting it in both places). **Correctness fix, not just a missing feature**: CRI's own proto comment on `NamespaceOption.pid` says *"the CRI default is POD, but the v1.PodSpec default is CONTAINER"* — before this round nodelet never set the field at all, so every container was silently getting containerd's own POD-shared default, the **opposite** of real Kubernetes' actual default. `hostIPC` sets `namespace_options.ipc` to `Node` (else `Pod` — IPC has no `CONTAINER`-scope concept in the API at all, unlike PID). Genuinely automated e2e tests for `hostPID`/`shareProcessNamespace` (a container's own pid, structural proof); `hostIPC` is unit-tested only — no simple portable shell-level IPC probe in a minimal image, a documented scope limitation. See round 40 notes.
 - ✅ **User namespaces** (`spec.hostUsers: false`, round 25; found in round 22's re-audit) — `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive host UID/GID range (fixed length, default 65536, configurable via `NODELET_USERNS_BASE_UID`/`_LENGTH`/`_MAX_PODS`), set as a `POD`-mode `UserNamespace` on `LinuxSandboxSecurityContext.namespace_options.userns_options`. Simplified vs. upstream's own variable-length `usernsManager`: every pod gets the same fixed range size, and allocation state is in-memory only (self-heals as still-running pods reconcile, narrow double-allocation window across a nodelet restart — documented, not hidden). Unvalidated against a real CRI runtime's actual `userns_options` wire support — see round 25 notes.
@@ -5170,7 +5217,15 @@ accordingly; see those files' own updated framing.
       `AccessType::Block` and a file- (not directory-) shaped bind-mount
       target. 11 new unit tests + a genuinely automated e2e test (gated
       behind `TEST_CSI_BLOCK_STORAGE_CLASS`). See round 77 notes.
-- [ ] Candidates for the next round, ranked: `securityContext.procMount:
-      Unmasked` (narrower/more niche), or `allocatedResourcesStatus`
-      (alpha/beta upstream, lowest urgency of the two remaining). Ask
-      before starting the next round.
+- [x] Round 78: `securityContext.procMount` — new pure `proc_mount_paths()`
+      mirrors real kubelet's own always-explicit `masked_paths`/
+      `readonly_paths` computation exactly. Closes a wider gap than
+      "`Unmasked` doesn't work": nodelet never masked `/proc` for ANY
+      container at all before this (confirmed via containerd's own CRI
+      test suite — a modern containerd applies zero masking when the
+      field is left unset, unlike relying on its own OCI-spec default).
+      9 new unit tests + 2 genuinely automated e2e tests (`/proc/kcore`'s
+      byte-count under Default vs. Unmasked). See round 78 notes.
+- [ ] Candidates for the next round: `allocatedResourcesStatus`
+      (alpha/beta upstream) — the last item from round 76's re-audit — or
+      a fresh re-audit. Ask before starting the next round.

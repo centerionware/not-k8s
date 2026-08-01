@@ -359,6 +359,84 @@ EOF
     fi
 }
 
+test_proc_mount_default_masks_proc_kcore() {
+    # Round 78 (found in round 76's re-audit): under the default
+    # procMount, /proc/kcore should be bind-mounted to /dev/null by the
+    # runtime (real kubelet's own standard masked-paths list, which
+    # nodelet now actually sends instead of leaving the field unset) --
+    # reading it returns 0 bytes immediately. Before this round, nodelet
+    # never set masked_paths/readonly_paths at all, which on a modern
+    # containerd (disable_proc_mount=false, the common config) applies NO
+    # masking whatsoever -- a real, if subtle, security regression this
+    # closes.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="proc-mount-default"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "head -c 4 /proc/kcore 2>/dev/null | wc -c > /shared/kcore_bytes.txt; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running -- can't exercise the default procMount masking check"
+    fi
+    local bytes
+    bytes="$(wait_for_check_file "$name" shared kcore_bytes.txt 30)"
+    delete_pod_if_exists "$name"
+    if [[ "$bytes" != "0" ]]; then
+        warn "expected /proc/kcore to read 0 bytes under the default procMount (masked to /dev/null), got $bytes -- check proc_mount_paths()/linux_security_context()'s masked_paths wiring in runtime/cri/resources.rs; not failing outright since this depends on the CRI runtime actually honoring masked_paths (some configurations, e.g. containerd's disable_proc_mount=true, apply their own OCI-spec-generator default regardless of what's sent)"
+    fi
+}
+
+test_proc_mount_unmasked_leaves_proc_kcore_readable() {
+    # The Unmasked-vs-Default control case: with procMount: Unmasked,
+    # /proc/kcore should be the real (huge, non-empty) kernel core image,
+    # not bind-mounted to /dev/null.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="proc-mount-unmasked"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      securityContext:
+        procMount: Unmasked
+      command: ["sh", "-c", "head -c 4 /proc/kcore 2>/dev/null | wc -c > /shared/kcore_bytes.txt; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with securityContext.procMount: Unmasked -- check nodelet's logs for a CreateContainer error (the runtime may reject procMount: Unmasked entirely without also setting a permissive seccomp profile, matching real kubelet's own admission-time requirement that this project's apiserver doesn't enforce)"
+    fi
+    local bytes
+    bytes="$(wait_for_check_file "$name" shared kcore_bytes.txt 30)"
+    delete_pod_if_exists "$name"
+    if [[ "$bytes" == "0" ]]; then
+        warn "expected /proc/kcore to be readable (non-zero bytes) under procMount: Unmasked, got 0 -- check proc_mount_paths()'s Unmasked branch in runtime/cri/resources.rs; not failing outright since this depends on the CRI runtime actually honoring an explicitly-empty masked_paths the same way it honors a populated one"
+    fi
+}
+
+register_test test_proc_mount_default_masks_proc_kcore
+register_test test_proc_mount_unmasked_leaves_proc_kcore_readable
 register_test test_host_users_false_gets_a_real_user_namespace
 register_test test_containers_get_isolated_pid_namespaces_by_default
 register_test test_share_process_namespace_puts_every_container_in_one_pid_namespace

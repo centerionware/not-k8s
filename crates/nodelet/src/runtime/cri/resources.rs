@@ -345,6 +345,7 @@ pub(crate) fn linux_security_context(
         .and_then(|s| s.supplemental_groups.clone())
         .unwrap_or_default();
     let seccomp = seccomp_profile(pod_sc, container_sc);
+    let (masked_paths, readonly_paths) = proc_mount_paths(container_sc.and_then(|s| s.proc_mount.as_deref()));
 
     LinuxContainerSecurityContext {
         run_as_user: run_as_user.map(|value| Int64Value { value }),
@@ -357,7 +358,48 @@ pub(crate) fn linux_security_context(
         supplemental_groups_policy: supplemental_groups_policy_cri(pod_sc.and_then(|s| s.supplemental_groups_policy.as_deref())) as i32,
         seccomp,
         namespace_options: Some(NamespaceOption { pid: pid_mode as i32, ..Default::default() }),
+        masked_paths,
+        readonly_paths,
         ..Default::default()
+    }
+}
+
+
+/// `securityContext.procMount` (round 78; found in round 76's re-audit)
+/// -> CRI's `LinuxContainerSecurityContext.masked_paths`/`.readonly_paths`.
+/// Real kubelet always sets both explicitly rather than ever leaving
+/// them for the runtime's own default (`pkg/securitycontext/util.go`'s
+/// `ConvertToRuntimeMaskedPaths`/`ConvertToRuntimeReadonlyPaths`, mirrored
+/// here) — `Default`/unset gets the standard Docker/OCI-recommended
+/// masking list (`DEFAULT_MASKED_PATHS`/`DEFAULT_READONLY_PATHS`),
+/// `Unmasked` gets two genuinely empty lists (real emptiness, not "field
+/// omitted" — proto3 can't distinguish those on the wire either way, but
+/// sending them explicitly matches upstream's own intent and avoids
+/// depending on whatever a given CRI runtime happens to default to when
+/// the field is left unset).
+pub(crate) const DEFAULT_MASKED_PATHS: &[&str] = &[
+    "/proc/asound",
+    "/proc/acpi",
+    "/proc/interrupts",
+    "/proc/kcore",
+    "/proc/keys",
+    "/proc/latency_stats",
+    "/proc/timer_list",
+    "/proc/timer_stats",
+    "/proc/sched_debug",
+    "/proc/scsi",
+    "/sys/firmware",
+    "/sys/devices/virtual/powercap",
+];
+
+pub(crate) const DEFAULT_READONLY_PATHS: &[&str] =
+    &["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"];
+
+pub(crate) fn proc_mount_paths(proc_mount: Option<&str>) -> (Vec<String>, Vec<String>) {
+    if proc_mount == Some("Unmasked") {
+        (Vec::new(), Vec::new())
+    } else {
+        (DEFAULT_MASKED_PATHS.iter().map(|s| s.to_string()).collect(), DEFAULT_READONLY_PATHS.iter().map(|s| s.to_string()).collect())
     }
 }
 
