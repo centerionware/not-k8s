@@ -27,6 +27,54 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 80: fresh gap re-audit (2026-07-31, same day)
+
+No code changed. Every item tracked since round 72 was closed (rounds
+74/77/78/79), so a fresh re-audit was the natural next step. Method:
+grepped the codebase and the vendored `proto/cri.proto` directly against
+specific fields not yet checked by any prior round (same style as rounds
+27/72/76), not doc-reading.
+
+Found 2 previously-untracked, confirmed (not speculative) gaps:
+
+1. **`spec.activeDeadlineSeconds`** — real kubelet's own job (not a
+   controller's): once a pod has run longer than this many seconds since
+   its start, kubelet kills it and reports `phase: Failed` with `reason:
+   DeadlineExceeded`, overriding `restartPolicy` entirely (even
+   `Always`). Confirmed via grep that `active_deadline_seconds` is never
+   referenced anywhere in this codebase. Moderate value — a genuine
+   bounded-runtime pattern independent of `Job`'s own separate
+   controller-level `activeDeadlineSeconds` semantics.
+2. **`spec.containers[].ports[].hostPort`** — CRI's own
+   `PodSandboxConfig.port_mappings`/`PortMapping` fields exist in the
+   vendored proto but are referenced nowhere in this codebase's actual
+   code, only in the proto definition file itself. A pod declaring
+   `hostPort` gets no real host-port forwarding today.
+
+Both correspond to real CRI/API mechanisms already available (no new
+vendoring needed for either) — `port_mappings` is a `PodSandboxConfig`
+field set once at `RunPodSandbox` time, same call site `sandbox_config()`
+already builds; `activeDeadlineSeconds` needs no CRI field at all, just a
+timer against a pod's recorded start time triggering the same
+`remove_pod()`/status-update path graceful shutdown and eviction already
+use.
+
+Also specifically checked and confirmed already-tracked or genuinely not
+applicable, not new findings: pod-level `spec.resources` (KEP-2837,
+already tracked from an earlier audit), `spec.dnsConfig.options` (already
+wired in `dns_config_for()`), `spec.enableServiceLinks` (already handled),
+probe-level `terminationGracePeriodSeconds` (round 44), `PodStatus.resize`
+(superseded by the `PodResizeInProgress` condition + `containerStatuses[].resources`,
+rounds 42-43), `spec.schedulingGates`/`spec.tolerations`/`NodeAffinity`
+(scheduler's job, not kubelet's, confirmed boundary).
+
+Ranked by value: `activeDeadlineSeconds` (a genuine, if narrower,
+bounded-runtime enforcement gap — the kind of "silently wrong, not just
+missing" correctness issue this project has historically prioritized)
+over `hostPort` (real-world-relevant but more purely additive, no
+correctness risk from its absence). Ask the user for sequencing again
+before starting the next round.
+
 ## Round 79: allocatedResourcesStatus (2026-07-31, same day)
 
 Closes the last item from round 72's fresh gap re-audit — the only
@@ -4613,12 +4661,14 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
 - ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
 - ✅ **`Node.status.runtimeHandlers`** (round 53; found in round 50's re-audit) — new `PodRuntime::runtime_handlers()` calls CRI's runtime-level `Status` RPC once (never called anywhere in this codebase before this round) and maps the discovered handlers through to `Node.status.runtimeHandlers`, via the same `images`/`mounted_csi_volumes`-shaped plumbing rounds 33/34 already established. Genuinely automated e2e test (asserts at least one handler is present; skips rather than fails if a given containerd version's `Status` RPC doesn't populate the list at all). See round 53 notes.
+- ❌ **`spec.activeDeadlineSeconds`** (found in round 80's re-audit) — real kubelet's own job (not a controller's): once a pod has been running longer than this many seconds since its start, kubelet kills it and reports `phase: Failed` with `reason: DeadlineExceeded`, independent of `restartPolicy` (this overrides even `Always`/`OnFailure` — the deadline is absolute, not per-container-attempt). Confirmed via grep that `active_deadline_seconds` is never referenced anywhere in this codebase at all. Moderate value — genuinely used for bounded-runtime batch-style workloads (a common real-world pattern beyond just `Job`, which layers its own `activeDeadlineSeconds` semantics at the controller level independently of this pod-level field).
 
 ### Networking
 - ✅ **DNS config** — `dnsPolicy`/`dnsConfig` → CRI `PodSandboxConfig.dns_config` (`dns_config_for()`), via new `NODELET_CLUSTER_DNS`/`NODELET_CLUSTER_DOMAIN`
 - ✅ **`hostAliases`** — generates a pod-specific `/etc/hosts` (`write_etc_hosts()`) and bind-mounts it in, exactly how real kubelet does it (CRI has no dedicated field for this)
 - ✅ Service/ClusterIP/NodePort routing (nftables — pre-existing, kube-proxy's job but already reimplemented here)
 - ✅ **`spec.hostname`/`spec.subdomain`/`setHostnameAsFQDN`** (round 38; found in round 35's re-audit) — new pure `resolve_pod_hostname()` mirrors real kubelet's `GeneratePodHostNameAndDomain`/`ShouldSetHostnameAsFQDN`: `spec.hostname` overrides the short hostname (default the pod name); `setHostnameAsFQDN` (only meaningful with `spec.subdomain` also set) makes the sandbox's actual hostname the full `<hostname>.<subdomain>.<namespace>.svc.<cluster-domain>` FQDN instead of just the short name, rejecting (`Err`, same retry-and-report path as any other `ensure_pod()` failure) an FQDN over Linux's 64-byte `sethostname(2)` limit rather than silently truncating it. Genuinely automated e2e tests (a real container's own `hostname` output). See round 38 notes.
+- ❌ **`spec.containers[].ports[].hostPort`** (found in round 80's re-audit) — CRI's own `PodSandboxConfig.port_mappings`/`PortMapping` fields (`proto/cri.proto`) exist in the vendored proto but `port_mappings`/`PortMapping` are referenced nowhere in this codebase's own code at all — confirmed via grep, only the proto definition itself mentions them. A pod declaring `hostPort` today gets no actual host-port forwarding; `containerPort` alone is purely documentation-only (informational to the API, was never CRI-enforced by any Kubernetes runtime — only `hostPort` triggers real port-forwarding). Real-world relevance: publishing a port on the node's own IP without going through a `NodePort`/`LoadBalancer` Service, a common pattern for host-networked-adjacent workloads (e.g. some ingress/monitoring DaemonSets) even on `hostNetwork: false` pods.
 
 ### Images
 - ✅ **Private registry auth** — `imagePullSecrets` (`kubernetes.io/dockerconfigjson`) → CRI `AuthConfig` (`resolve_pull_auth()`), tried first; falling back to an **image credential provider** (round 71; found in round 69's re-audit) — `--image-credential-provider-config`/`-bin-dir` exec-plugin protocol (`credential_provider.rs`), including ServiceAccount token integration (`tokenAttributes`, beta/default-on in k8s 1.34) reusing the same `TokenRequest` machinery projected `serviceAccountToken` volumes use. Not yet: legacy `kubernetes.io/dockercfg`, ServiceAccount-linked pull secrets, multi-provider merge (only the first matching provider is tried).
@@ -5284,6 +5334,14 @@ accordingly; see those files' own updated framing.
       ephemeral). Closes the last item from round 72's fresh gap
       re-audit. 11 new unit tests + a genuinely automated regression e2e
       test. See round 79 notes.
-- [ ] Every item tracked since round 72 is now closed. Candidates for the
-      next round: a fresh gap re-audit is the natural next step. Ask
-      before starting the next round.
+- [x] Round 80: fresh gap re-audit — no code change. Found 2 new,
+      grep-confirmed candidates: `spec.activeDeadlineSeconds` (real
+      kubelet's own job, never implemented at all — kills a pod that's
+      run past its deadline regardless of `restartPolicy`), and
+      `spec.containers[].ports[].hostPort` (CRI's own `PortMapping`
+      fields exist in the vendored proto but are never referenced in
+      this codebase's code). See round 80 notes.
+- [ ] Candidates for the next round, ranked: `activeDeadlineSeconds`
+      (correctness-shaped gap, matches this project's historical
+      prioritization) over `hostPort` (real-world-relevant but purely
+      additive). Ask before starting the next round.
