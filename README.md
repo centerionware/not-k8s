@@ -436,7 +436,13 @@ that keeps exiting is now throttled with an exponentially growing delay
 (10s base, doubling, capped at 5 minutes, matching real kubelet's own
 constants) instead of being recreated as fast as this event-driven
 controller's own status-write-triggers-another-watch-event feedback loop
-otherwise allows. Full status list in `docs/GAP_CLOSURE.md`.
+otherwise allows. Round 74 closed the **PodResources API**: kubelet's own
+`List`/`GetAllocatableResources`/`Get` gRPC service, served over a Unix
+socket (`NODELET_POD_RESOURCES_SOCKET_PATH`) for external device-monitoring
+tooling (NVIDIA DCGM and similar exporters) — a read-only projection of
+CPU/Memory/device-manager state this codebase already tracked, not new
+allocation logic; DRA claim devices aren't surfaced yet (documented scope
+limitation). Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for
@@ -1007,6 +1013,7 @@ Two layers, and they're not substitutes for each other:
 | `NODELET_CSI_DRIVERS` | (none) | Comma-separated `driver-name=unix:///path/to/socket` pairs mapping a CSI driver name to its Node-service socket (`cri` only) — see [Status](#status). Unset means `PersistentVolumeClaim` volumes are skipped with a warning unless a driver registers itself dynamically (below). |
 | `NODELET_PLUGIN_REGISTRY_PATH` | `/var/lib/nodelet/plugins_registry` | Directory watched for CSI driver registration sockets (`cri` only) — point a driver's `node-driver-registrar` `--kubelet-registration-path` here for dynamic discovery. |
 | `NODELET_PLUGIN_REGISTRY_SYNC_SECS` | `10` | How often that directory is rescanned for new/removed sockets. |
+| `NODELET_POD_RESOURCES_SOCKET_PATH` | `/var/lib/nodelet/pod-resources/kubelet.sock` | Unix socket the PodResources API's gRPC server (`List`/`GetAllocatableResources`/`Get`) binds (`cri` only) — set to the empty string to disable. See [Status](#status). |
 | `NODELET_CPU_MANAGER_POLICY` | `none` | `none` or `static` (`cri` only) — pins Guaranteed-QoS containers requesting a whole number of CPUs to exclusive cores. See [Status](#status). |
 | `NODELET_MEMORY_MANAGER_POLICY` | `none` | `none` or `static` (`cri` only) — pins Guaranteed-QoS containers with a memory limit to a single NUMA node. See [Status](#status). |
 | `NODELET_TOPOLOGY_MANAGER_POLICY` | `none` | `none`, `best-effort`, `restricted`, or `single-numa-node` (`cri` only) — coordinates CPU Manager, Memory Manager, and device plugins by NUMA node. See [Status](#status). |

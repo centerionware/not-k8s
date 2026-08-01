@@ -129,3 +129,34 @@ fn allocate_preferring_still_fails_if_the_whole_pool_cannot_satisfy_it() {
     let preferred: BTreeSet<u32> = [0].into_iter().collect();
     assert!(mgr.allocate_preferring("sandbox/a", 3, Some(&preferred)).is_none());
 }
+
+#[test]
+fn assigned_is_none_before_any_allocation() {
+    let mgr = CpuManager::new(4, 0);
+    assert_eq!(mgr.assigned("sandbox/a"), None);
+}
+
+#[test]
+fn assigned_reflects_the_live_claim() {
+    let mgr = CpuManager::new(4, 0);
+    let picked = mgr.allocate("sandbox/a", 2).unwrap();
+    assert_eq!(mgr.assigned("sandbox/a"), Some(picked));
+}
+
+#[test]
+fn assigned_is_none_again_after_release() {
+    let mgr = CpuManager::new(4, 0);
+    mgr.allocate("sandbox/a", 1).unwrap();
+    mgr.release("sandbox/a");
+    assert_eq!(mgr.assigned("sandbox/a"), None);
+}
+
+#[test]
+fn allocatable_cpus_excludes_reserved_but_not_currently_claimed_ones() {
+    // Unlike shared_pool(), allocatable_cpus() reports the whole
+    // static-policy-managed pool regardless of what's claimed right now
+    // -- PodResources API's GetAllocatableResources semantics.
+    let mgr = CpuManager::new(4, 1000); // cpu 0 reserved
+    mgr.allocate("sandbox/a", 2).unwrap();
+    assert_eq!(mgr.allocatable_cpus(), [1, 2, 3].into_iter().collect());
+}

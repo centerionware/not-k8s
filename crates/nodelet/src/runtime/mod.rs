@@ -310,6 +310,22 @@ pub trait PodRuntime: Send + Sync {
     async fn runtime_handlers(&self) -> anyhow::Result<Vec<RuntimeHandlerInfo>> {
         Ok(Vec::new())
     }
+
+    /// Current CPU/memory/device allocation for every pod this runtime is
+    /// actively managing — feeds the PodResources API's `List`/`Get` RPCs
+    /// (round 74; found in round 72's re-audit). Default: empty (mock has
+    /// no CPU/Memory/Device Manager state to report — those are `cri`-only
+    /// concepts in this codebase).
+    async fn pod_resources_snapshot(&self) -> Vec<PodResourcesEntry> {
+        Vec::new()
+    }
+
+    /// Node-wide allocatable resources in the same shape `pod_resources_snapshot()`
+    /// reports per-container — feeds the PodResources API's
+    /// `GetAllocatableResources` RPC. Default: empty.
+    fn allocatable_resources(&self) -> AllocatableResourcesSnapshot {
+        AllocatableResourcesSnapshot::default()
+    }
 }
 
 /// One CRI runtime handler, in the shape `Node.status.runtimeHandlers`
@@ -320,6 +336,48 @@ pub struct RuntimeHandlerInfo {
     pub name: String,
     pub recursive_read_only_mounts: bool,
     pub user_namespaces: bool,
+}
+
+/// One pod's worth of `pod_resources_snapshot()` output (round 74) — kept
+/// as nodelet's own type, not the generated PodResources proto type, for
+/// the same reason `RuntimeHandlerInfo`/`UsageStats` are: usable from the
+/// trait without a `cri`-feature bound on the trait itself.
+#[derive(Clone, Debug, Default)]
+pub struct PodResourcesEntry {
+    pub namespace: String,
+    pub name: String,
+    pub containers: Vec<ContainerResourcesEntry>,
+}
+
+/// One container's currently-assigned CPU/device/pinned-memory resources.
+/// `cpu_ids` is empty unless CPU Manager gave this container exclusive
+/// cores; `memory` is empty unless Memory Manager pinned it to a NUMA
+/// node; `devices` is empty unless it holds a device-plugin allocation.
+/// **Dynamic Resource Allocation claims are deliberately not represented
+/// here** — `PreparedPodClaim`s are recomputed fresh on every reconcile
+/// (see `runtime/cri/claims.rs`) rather than kept in a queryable side
+/// table the way CPU/Memory/device-plugin state is, so surfacing them
+/// here would need a new persisted table of its own; a documented scope
+/// limitation, not silently dropped.
+#[derive(Clone, Debug, Default)]
+pub struct ContainerResourcesEntry {
+    pub name: String,
+    pub cpu_ids: Vec<i64>,
+    /// `(resource_name, device_ids)`, e.g. `("nvidia.com/gpu", ["gpu0"])`.
+    pub devices: Vec<(String, Vec<String>)>,
+    /// `(numa_node, bytes)` — at most one entry in this codebase's own
+    /// Memory Manager (never spans multiple nodes, see `memory_manager.rs`).
+    pub memory: Vec<(u32, u64)>,
+}
+
+/// Node-wide allocatable resources (round 74) — same shape as
+/// `ContainerResourcesEntry` minus the container name, for
+/// `GetAllocatableResources`.
+#[derive(Clone, Debug, Default)]
+pub struct AllocatableResourcesSnapshot {
+    pub cpu_ids: Vec<i64>,
+    pub devices: Vec<(String, Vec<String>)>,
+    pub memory: Vec<(u32, u64)>,
 }
 
 /// CPU/memory usage numbers in the same shape CRI's `CpuUsage`/`MemoryUsage`

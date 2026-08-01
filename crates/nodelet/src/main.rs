@@ -108,6 +108,12 @@ async fn main() -> Result<()> {
     #[cfg(feature = "cri")]
     tokio::spawn(nodelet::shutdown::run(client.clone(), runtime.clone(), cfg.clone()));
 
+    // PodResources API: kubelet's own gRPC service (List/GetAllocatableResources/
+    // Get) for external device-monitoring tooling. No-op unless
+    // NODELET_POD_RESOURCES_SOCKET_PATH is non-empty (has a real default).
+    #[cfg(feature = "cri")]
+    tokio::spawn(nodelet::pod_resources::run(runtime.clone(), cfg.clone()));
+
     // ClusterIP/NodePort routing (nftables). No-op if disabled or if `nft`
     // isn't usable — pods and direct pod-IP traffic work either way.
     if cfg.service_proxy {

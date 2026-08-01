@@ -129,6 +129,20 @@ impl MemoryManager {
     pub fn is_pinned(&self, key: &str) -> bool {
         self.pinned.lock().unwrap().contains_key(key)
     }
+
+    /// `key`'s currently pinned `(NUMA node, bytes)`, if any — the
+    /// PodResources API (round 74) needs the actual assignment, not just
+    /// `is_pinned()`'s bool.
+    pub fn assigned(&self, key: &str) -> Option<(u32, u64)> {
+        self.pinned.lock().unwrap().get(key).copied()
+    }
+
+    /// Total capacity per NUMA node, as configured at startup — the
+    /// PodResources API's `GetAllocatableResources` needs this alongside
+    /// `free_per_node()`'s live view.
+    pub fn capacity_per_node(&self) -> BTreeMap<u32, u64> {
+        self.capacity.clone()
+    }
 }
 
 #[cfg(test)]

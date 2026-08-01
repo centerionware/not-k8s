@@ -240,6 +240,18 @@ impl DevicePlugins {
             .collect()
     }
 
+    /// `(resource_name, healthy device IDs)` for every resource — the
+    /// PodResources API's `GetAllocatableResources` (round 74) needs the
+    /// actual IDs, not just `capacity_map()`'s counts.
+    pub fn all_healthy_device_ids(&self) -> Vec<(String, Vec<String>)> {
+        self.plugins
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(name, state)| (name.clone(), state.devices.iter().filter(|d| d.healthy).map(|d| d.id.clone()).collect()))
+            .collect()
+    }
+
     fn update_devices(&self, resource_name: &str, endpoint: &str, new_devices: Vec<DeviceInfo>) -> bool {
         let mut plugins = self.plugins.lock().unwrap();
         match plugins.get_mut(resource_name) {
@@ -459,3 +471,6 @@ mod tests_registration_state;
 #[cfg(test)]
 #[path = "device_plugins_tests/preferred_allocation.rs"]
 mod tests_preferred_allocation;
+#[cfg(test)]
+#[path = "device_plugins_tests/all_healthy_device_ids.rs"]
+mod tests_all_healthy_device_ids;

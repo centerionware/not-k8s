@@ -108,6 +108,15 @@ impl CpuManager {
         self.total_cpus.difference(&self.reserved).filter(|c| !claimed.contains(c)).copied().collect()
     }
 
+    /// Every CPU eligible for exclusive allocation at all (total minus
+    /// reserved), regardless of current claims — what the PodResources
+    /// API's `GetAllocatableResources` reports (round 74; matches real
+    /// kubelet's own semantics: the whole static-policy-managed pool, not
+    /// just what's free right now).
+    pub fn allocatable_cpus(&self) -> BTreeSet<u32> {
+        self.total_cpus.difference(&self.reserved).copied().collect()
+    }
+
     /// Try to claim `count` exclusive CPUs for `key` (the same
     /// `"sandbox_id/container_name"` shape `restart_counts`/
     /// `device_allocations` use) — lowest-numbered-first from the current
@@ -169,6 +178,13 @@ impl CpuManager {
     /// containers when sweeping the shared pool across everything else.
     pub fn is_exclusive(&self, key: &str) -> bool {
         self.exclusive.lock().unwrap().contains_key(key)
+    }
+
+    /// `key`'s currently exclusively-assigned CPU IDs, if any — the
+    /// PodResources API (round 74) needs the actual set, not just
+    /// `is_exclusive()`'s bool.
+    pub fn assigned(&self, key: &str) -> Option<BTreeSet<u32>> {
+        self.exclusive.lock().unwrap().get(key).cloned()
     }
 }
 

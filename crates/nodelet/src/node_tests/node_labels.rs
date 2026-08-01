@@ -50,6 +50,7 @@ fn cfg(labels: BTreeMap<String, String>) -> Config {
         cgroup_fs_root: "/sys/fs/cgroup".to_string(),
         csi_drivers: Default::default(),
         plugin_registry_path: "/tmp".to_string(),
+        pod_resources_socket_path: String::new(),
         plugin_registry_sync_interval: Duration::from_secs(10),
         cpu_manager_static: false,
         topology_manager_policy: "none".to_string(),

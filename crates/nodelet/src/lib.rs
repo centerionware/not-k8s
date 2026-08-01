@@ -20,6 +20,8 @@ pub mod gc;
 pub mod memory_manager;
 pub mod metrics;
 pub mod node;
+#[cfg(feature = "cri")]
+pub mod pod_resources;
 pub mod pods;
 #[cfg(feature = "cri")]
 pub mod plugin_registry;

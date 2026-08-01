@@ -422,6 +422,14 @@ impl PodRuntime for CriRuntime {
         Ok(handlers.into_iter().map(runtime_handler_from_cri).collect())
     }
 
+    async fn pod_resources_snapshot(&self) -> Vec<crate::runtime::PodResourcesEntry> {
+        self.build_pod_resources_snapshot().await
+    }
+
+    fn allocatable_resources(&self) -> crate::runtime::AllocatableResourcesSnapshot {
+        self.build_allocatable_resources()
+    }
+
 }
 
 /// Shift `path`, `path.1`, `path.2`, ... up by one, dropping whatever would

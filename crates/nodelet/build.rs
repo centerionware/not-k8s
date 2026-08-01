@@ -49,6 +49,16 @@ fn main() {
                 .build_client(true)
                 .compile_protos(&["proto/draplugin.proto"], &["proto"])
                 .expect("failed to compile DRA plugin proto");
+
+            // PodResources API (round 74): unlike every proto above, nodelet
+            // is the SERVER here, not the client — external tooling (device
+            // monitoring exporters) dials in to ask what's allocated where.
+            println!("cargo:rerun-if-changed=proto/podresources.proto");
+            tonic_prost_build::configure()
+                .build_server(true)
+                .build_client(false)
+                .compile_protos(&["proto/podresources.proto"], &["proto"])
+                .expect("failed to compile PodResources API proto");
         }
     }
 }

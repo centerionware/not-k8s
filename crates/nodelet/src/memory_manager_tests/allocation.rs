@@ -89,3 +89,31 @@ fn free_per_node_with_no_pins_equals_capacity() {
     let mgr = MemoryManager::new(cap(&[(0, 1_000), (1, 2_000)]));
     assert_eq!(mgr.free_per_node(), cap(&[(0, 1_000), (1, 2_000)]));
 }
+
+#[test]
+fn assigned_is_none_before_any_allocation() {
+    let mgr = MemoryManager::new(cap(&[(0, 1_000)]));
+    assert_eq!(mgr.assigned("sandbox/a"), None);
+}
+
+#[test]
+fn assigned_reflects_the_live_pin() {
+    let mgr = MemoryManager::new(cap(&[(0, 1_000), (1, 1_000)]));
+    let node = mgr.allocate("sandbox/a", 500).unwrap();
+    assert_eq!(mgr.assigned("sandbox/a"), Some((node, 500)));
+}
+
+#[test]
+fn assigned_is_none_again_after_release() {
+    let mgr = MemoryManager::new(cap(&[(0, 1_000)]));
+    mgr.allocate("sandbox/a", 500).unwrap();
+    mgr.release("sandbox/a");
+    assert_eq!(mgr.assigned("sandbox/a"), None);
+}
+
+#[test]
+fn capacity_per_node_reflects_the_original_configuration_regardless_of_pins() {
+    let mgr = MemoryManager::new(cap(&[(0, 1_000), (1, 2_000)]));
+    mgr.allocate("sandbox/a", 500).unwrap();
+    assert_eq!(mgr.capacity_per_node(), cap(&[(0, 1_000), (1, 2_000)]));
+}

@@ -79,6 +79,7 @@ mod container_state;
 mod container_support;
 mod env;
 mod events_gc;
+mod pod_resources_snapshot;
 mod pod_runtime_impl;
 mod resources;
 mod sandbox;

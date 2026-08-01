@@ -195,6 +195,16 @@ pub struct Config {
     /// How often the registry directory is rescanned for new/removed
     /// sockets.
     pub plugin_registry_sync_interval: Duration,
+    /// Where the PodResources API's own gRPC server binds a Unix socket
+    /// (`cri` only; round 74, found in round 72's re-audit) — real
+    /// kubelet's `List`/`GetAllocatableResources`/`Get` service that
+    /// external device-monitoring tooling (e.g. NVIDIA DCGM) dials
+    /// directly to see current CPU/memory/device allocation. Same
+    /// deliberate-departure-from-`/var/lib/kubelet/...`-convention
+    /// reasoning as `plugin_registry_path` — point tooling expecting
+    /// upstream's own path at this one instead via its own config, or
+    /// bind-mount this path over upstream's conventional location.
+    pub pod_resources_socket_path: String,
     /// Real kubelet's `--cpu-manager-policy` (`cri` only; see
     /// `cpu_manager.rs`) — `false` (default `none`, matches upstream) or
     /// `true` (`static`), which pins Guaranteed-QoS containers requesting
@@ -370,6 +380,8 @@ impl Config {
 
         let plugin_registry_path = std::env::var("NODELET_PLUGIN_REGISTRY_PATH")
             .unwrap_or_else(|_| "/var/lib/nodelet/plugins_registry".to_string());
+        let pod_resources_socket_path = std::env::var("NODELET_POD_RESOURCES_SOCKET_PATH")
+            .unwrap_or_else(|_| "/var/lib/nodelet/pod-resources/kubelet.sock".to_string());
         let plugin_registry_sync_interval = Duration::from_secs(env_u64("NODELET_PLUGIN_REGISTRY_SYNC_SECS", 10)?);
 
         let cpu_manager_static = match std::env::var("NODELET_CPU_MANAGER_POLICY").as_deref() {
@@ -442,6 +454,7 @@ impl Config {
             csi_drivers,
             plugin_registry_path,
             plugin_registry_sync_interval,
+            pod_resources_socket_path,
             cpu_manager_static,
             topology_manager_policy,
             memory_manager_static,

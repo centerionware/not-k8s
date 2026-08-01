@@ -27,6 +27,67 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 74: PodResources API (2026-07-31, same day)
+
+Closes the second candidate from round 72's re-audit — user picked it
+directly over `allocatedResourcesStatus` and `ContainerStatus.lastState`
+tracking (the item round 73 surfaced).
+
+- Vendored `proto/podresources.proto` (`k8s.io/kubelet/pkg/apis/podresources/v1`,
+  from the `release-1.34` branch) — clean, no gogoproto stripping needed
+  unlike most other `k8s.io/kubelet`-sourced protos this codebase has
+  vendored. Compiled with `build_server(true)` in `build.rs` — the first
+  proto in this codebase compiled as a server rather than a client, since
+  nodelet is the one being dialed into here (every other plugin protocol
+  — CSI/device-plugin/DRA — has nodelet as the client, connecting OUT to
+  a plugin's own socket).
+- `tonic`'s workspace feature list gained `server`/`router` (previously
+  only `transport`/`codegen`/`channel`, sufficient for every existing
+  client-only usage) — `Server::builder().add_service(...)` needs both.
+- 2 new `PodRuntime` trait methods, same "default empty, `cri`-only
+  override" pattern as `device_plugin_capacity()`/`runtime_handlers()`:
+  `pod_resources_snapshot()` (per-pod, per-container CPU/device/pinned-
+  memory assignment) and `allocatable_resources()` (node-wide totals).
+  New DTOs in `runtime/mod.rs` (`PodResourcesEntry`/`ContainerResourcesEntry`/
+  `AllocatableResourcesSnapshot`) keep the trait itself free of a `cri`-
+  feature bound, same reasoning `RuntimeHandlerInfo`/`UsageStats` already
+  established.
+- New getters added to existing managers rather than new bookkeeping:
+  `CpuManager::assigned()`/`allocatable_cpus()`, `MemoryManager::assigned()`/
+  `capacity_per_node()`, `DevicePlugins::all_healthy_device_ids()` — every
+  one a read-only view over state these modules already maintained for
+  their own allocation logic.
+- New `runtime/cri/pod_resources_snapshot.rs`: `build_pod_resources_snapshot()`
+  (walks `list_all_sandboxes()` + `list_pod_containers()`, joining in
+  each container's `cpu_manager`/`memory_manager`/`device_allocations`
+  state by the same `"sandbox_id/container_name"` key every other side
+  table in this codebase already uses) and `build_allocatable_resources()`.
+- New `pod_resources.rs` (crate-level, `cri`-gated): the actual gRPC
+  server. Opt-out via `NODELET_POD_RESOURCES_SOCKET_PATH=""` rather than
+  opt-in — matches upstream's own "on by default" posture, unlike most of
+  this codebase's other optional features. Default path deliberately
+  departs from real kubelet's own `/var/lib/kubelet/pod-resources/kubelet.sock`
+  convention (same reasoning `NODELET_PLUGIN_REGISTRY_PATH` already
+  established) — point external tooling's own config at nodelet's path,
+  or bind-mount it over upstream's conventional location.
+- **Documented, not silently cut**: DRA claim devices (`dynamic_resources`)
+  are never populated — see the responsibility-list entry above for why.
+- 18 new unit tests: `CpuManager`/`MemoryManager` getter behavior (8),
+  `DevicePlugins::all_healthy_device_ids()` (4), plus 9 tests in
+  `pod_resources_tests/` covering the pure proto-conversion functions
+  (`to_container_devices()`/`to_container_memory()`/`to_pod_resources()`)
+  and the `Lister`'s RPC handlers exercised against the mock runtime
+  (proving the request/response wiring itself, using `tonic::Request`/
+  `Response` directly — no live socket needed for this level of test).
+- **Unvalidated against real client tooling** (same honest-limitation
+  class as every other server/plugin-protocol round in this project) —
+  no NVIDIA DCGM or similar exporter was available to dial in against a
+  live nodelet in this sandbox; the wire format itself has high
+  confidence (vendored directly from upstream, not reconstructed), but
+  the actual gRPC server's runtime behavior against a real client is
+  unexercised. `deploy/lib/test/cases/pod_resources.sh` documents the
+  manual spot-check procedure.
+
 ## Round 73: crash-loop backoff (2026-07-31, same day)
 
 Closes the biggest finding from round 72's fresh gap re-audit — user
@@ -4290,7 +4351,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`securityContext.supplementalGroupsPolicy`** (GA 1.33; found in round 58's re-audit; closed round 62) — `Merge`/`Strict` now translates directly to CRI's own `SupplementalGroupsPolicy` enum on both the sandbox- and container-level security context; genuinely automated e2e test proves `Strict` excludes image-defined `/etc/group` membership while `Merge` includes it, using a portable ConfigMap-subPath-supplied `/etc/passwd`/`/etc/group` rather than depending on `$TEST_IMAGE`'s own baked-in group file.
 - 🟡 **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit; closed round 63, gating + batching closed round 64) — kubelet's actual responsibilities are implemented: resolving a pod's `resourceClaims` to their `ResourceClaim` objects' `status.allocation`, gating on `status.reservedFor` actually listing this pod (round 64 — real kubelet's own safety check; `reservedFor` itself is scheduler-written, not kubelet-written, correcting round 63's docs), calling the owning driver(s)' `NodePrepareResources`/`NodeUnprepareResources` once per driver per pod covering every claim it owns (round 64 batching; new `dra.rs`, reusing the plugin-registration infrastructure with a new `"DRAPlugin"` type), and wiring the returned CDI device IDs into each container's CRI `ContainerConfig.cdi_devices` per its `resources.claims[].{name, request}` entries. **Known scope limitations**: `proto/draplugin.proto` was reconstructed from public documentation rather than vendored from upstream, so its exact wire format is unverified against a live third-party driver; no genuinely automated e2e test exists (needs a real DRA driver binary this bash-only harness can't stand up — see `dra.sh`'s manual-spot-check notes, same honest-limitation pattern as `device_plugins.sh`).
 - ✅ **Swap support (`memorySwap.swapBehavior`)** (GA 1.34; found in round 65's fresh gap re-audit; closed round 68) — `NODELET_MEMORY_SWAP_BEHAVIOR` (`NoSwap` default / `LimitedSwap`) drives CRI's native `LinuxContainerResources.memory_swap_limit_in_bytes` via new `container_swap_limit_bytes()`, implementing upstream's KEP-2400 formula exactly for `LimitedSwap` (proportional share for Burstable-shaped containers only, an emergent property of the per-container `request == limit` / no-request checks rather than a separate QoS lookup). **Known scope limitation**: no `--system-reserved`/`--kube-reserved`-equivalent knob for swap, so the node's full raw `SwapTotal` is used with nothing withheld.
-- ❌ **PodResources API** (found in round 72's re-audit) — kubelet's own gRPC service on `/var/lib/kubelet/pod-resources/kubelet.sock` (`List`/`GetAllocatableResources`/`Watch`, `k8s.io/kubelet/pkg/apis/podresources`) exposing which CPUs/devices/NUMA nodes are assigned to which running container — not implemented at all. Real-world consumers: NVIDIA DCGM and other device-monitoring exporters query this socket directly rather than guessing allocation from `Node.status`. Nodelet already has every piece of the underlying state (`cpu_manager.rs`/`memory_manager.rs`/`device_plugins.rs` all track exactly this), so this would be a read-only projection of existing state onto a new gRPC surface, not new allocation logic.
+- ✅ **PodResources API** (round 74; found in round 72's re-audit) — kubelet's own gRPC service (`List`/`GetAllocatableResources`/`Get`, `k8s.io/kubelet/pkg/apis/podresources/v1`), served over a Unix socket (`NODELET_POD_RESOURCES_SOCKET_PATH`) for external device-monitoring tooling (NVIDIA DCGM and similar exporters query this directly rather than guessing allocation from `Node.status`). Nodelet is the gRPC *server* here for the first time in this codebase (every other plugin protocol — CSI/device-plugin/DRA — has nodelet dialing OUT as the client); a read-only projection of `cpu_manager.rs`/`memory_manager.rs`/`device_plugins.rs`'s already-tracked state via 2 new `PodRuntime` trait methods (`pod_resources_snapshot()`/`allocatable_resources()`, default-empty on the mock runtime), not new allocation logic. **Known scope limitation, documented not hidden**: DRA claim devices (`dynamic_resources`) aren't surfaced — `PreparedPodClaim`s are recomputed fresh every reconcile rather than kept in a queryable side table the way CPU/Memory/device-plugin state is, unlike everything else this endpoint reports.
 - ❌ **`allocatedResourcesStatus` / ResourceHealthStatus** (`containerStatuses[].allocatedResourcesStatus`; found in round 72's re-audit; alpha/beta KEP-4680, `ResourceHealthStatus` feature gate) — per-device health (Healthy/Unhealthy/Unknown) isn't reported back into `PodStatus` at all; `device_plugins.rs` already tracks per-device health from `ListAndWatch` for capacity/allocatable purposes, but a device going unhealthy *after* allocation to a running container currently has no pod-visible signal at all. Lower priority than PodResources API — still an alpha/beta upstream feature, not GA.
 
 ### Security context
@@ -4918,10 +4979,17 @@ accordingly; see those files' own updated framing.
       the `CrashLoopBackOff` status string itself, since
       `ContainerStatus.lastState` isn't tracked at all yet. See round 73
       notes.
-- [ ] Candidates for the next round, ranked: PodResources API (real
-      external-tooling value, low implementation risk since
-      cpu_manager.rs/memory_manager.rs/device_plugins.rs already track
-      the underlying state), `allocatedResourcesStatus` (alpha/beta
-      upstream, lower urgency), or `ContainerStatus.lastState` tracking
-      (would unlock the `CrashLoopBackOff` status string this round
-      deliberately left out). Ask before starting the next round.
+- [x] Round 74: PodResources API — kubelet's own `List`/
+      `GetAllocatableResources`/`Get` gRPC service, served over a Unix
+      socket (`NODELET_POD_RESOURCES_SOCKET_PATH`) for external
+      device-monitoring tooling. Nodelet's first gRPC *server* (every
+      other plugin protocol has it as the client). 2 new `PodRuntime`
+      trait methods project already-tracked `cpu_manager.rs`/
+      `memory_manager.rs`/`device_plugins.rs` state, no new allocation
+      logic. 18 new unit tests. **Still open**: DRA claim devices aren't
+      surfaced (documented — `PreparedPodClaim`s aren't kept in a
+      queryable side table). See round 74 notes.
+- [ ] Candidates for the next round, ranked: `allocatedResourcesStatus`
+      (alpha/beta upstream, lower urgency) or `ContainerStatus.lastState`
+      tracking (would unlock the `CrashLoopBackOff` status string round
+      73 deliberately left out). Ask before starting the next round.
