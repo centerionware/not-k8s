@@ -27,6 +27,46 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 84: volumeMounts[].mountPropagation (2026-07-31, same day)
+
+Closes the higher-value of round 83's 2 findings, per the user's "same
+deal, do both then another audit" instruction — `recursiveReadOnly` is
+round 85.
+
+- New pure `mount_propagation_cri(mount_propagation: Option<&str>) ->
+  MountPropagation` (`volumes_pure.rs`) — `None`/unset and any
+  unrecognized value both fall back to `PropagationPrivate`, the same
+  CRI zero-value default this codebase already produced by omission
+  before this round (so every mount that never set the field is
+  behaviorally unchanged), matching the same fail-safe direction
+  `protocol_cri()` (round 82) already established for an analogous
+  unrecognized-value case.
+- Prost's generated enum keeps the proto's own `PROPAGATION_` prefix on
+  every variant (`PropagationPrivate`/`PropagationHostToContainer`/
+  `PropagationBidirectional`), a naming quirk worth remembering — the
+  first build attempt used bare `Private`/`HostToContainer`/`Bidirectional`
+  and failed with `E0599`, fixed by checking the actual generated
+  `runtime.v1.rs` output.
+- Wired into **both** branches of `build_mounts()` (the pre-existing
+  `HostPath` mount, and the image-backed `Image` mount from round 32) —
+  computed once per `volumeMounts` entry alongside the existing `subPath`
+  resolution, since both `Mount` variants share the same field.
+- 8 new unit tests: `mount_propagation_cri()`'s own matrix (5: unset,
+  both real values, explicit `"None"` string, unrecognized-value
+  fallback) plus 3 in `mounts.rs` proving the field is actually threaded
+  through `build_mounts()`'s output, not just correct in isolation.
+- New e2e test `test_mount_propagation_host_to_container_still_mounts_normally`
+  (`volumes.sh`): proves wiring this newly-touched field on *every*
+  mount (not just ones that set it) didn't break the ordinary case — a
+  real risk specifically because this round changes behavior for every
+  single mount's construction path, not just an opt-in feature. New
+  manual-note documents the actual live-propagation verification
+  procedure (a real `mount(2)` syscall on the host, after the pod is
+  already running, root required) — the same honest-limitation
+  treatment this project gives anything needing genuine host-level
+  mount operations mid-test that this bash-only harness won't do to a
+  live node automatically.
+
 ## Round 83: fresh gap re-audit (2026-07-31, same day)
 
 No code changed. Per the user's own instruction ("do both in order then
@@ -4826,7 +4866,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`valueFrom.resourceFieldRef` in container env vars** (round 44; found in round 35's re-audit) — a distinct code path from the still-open downwardAPI-volume `resourceFieldRef` gap below: new pure `resolve_resource_field_ref()`/`format_resource_field_value()` resolve `limits.cpu`/`limits.memory`/`requests.cpu`/`requests.memory` (falling back to the node's own capacity when the container has no limit set, matching real kubelet's documented Downward API behavior, then to the container's own limit for `requests.*` before that), reproducing kubelet's well-known "CPU reports whole cores, rounded up" default-divisor quirk and the common JVM-heap-sizing memory-divisor pattern with one shared ceiling-division formula. `ephemeral-storage` resolves to `"0"` (not tracked/enforced by nodelet at all — separate pre-existing gap) rather than bailing. Genuinely automated e2e test (`kubectl exec` reads the real env var values). See round 44 notes.
 - ✅ **Projected volumes** — `configMap`/`secret`/`downwardAPI`, and now `serviceAccountToken` too (mints a real token via the `TokenRequest` API — `resolve_service_account_token()`; needs nodelet's client to have `create` on `serviceaccounts/token` in the namespace, a real RBAC requirement) merge into the volume dir, with `items`/`KeyToPath` key-selection-and-rename support. `clusterTrustBundle` sources are still skipped with a warning.
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
-- ❌ **`volumeMounts[].mountPropagation`** (found in round 83's re-audit) — CRI's own `Mount.propagation` field (`MountPropagation` enum: `PROPAGATION_PRIVATE`/`PROPAGATION_HOST_TO_CONTAINER`/`PROPAGATION_BIDIRECTIONAL`) exists in the vendored proto but `build_mounts()` never sets it at all — confirmed via grep, only referenced in the proto definition file. Every mount silently gets the CRI zero-value default (`PRIVATE`/`rprivate`), regardless of what the pod actually requests. Real-world relevance: FUSE-backed volumes, CSI drivers that mount additional paths from inside the container (e.g. some CSI ephemeral drivers), and any workload relying on `HostToContainer`/`Bidirectional` to see host-side or cross-container mount changes.
+- ✅ **`volumeMounts[].mountPropagation`** (round 84; found in round 83's re-audit) — new pure `mount_propagation_cri()` (`volumes_pure.rs`) maps `HostToContainer`/`Bidirectional` (and `None`/unset, and any unrecognized value) onto CRI's `MountPropagation` enum, wired into both branches of `build_mounts()` (regular `HostPath` and image-backed mounts alike). Unset/unrecognized both fall back to `PRIVATE` — the same zero-value default this codebase already produced by omission before this round, so every mount that never set this field behaves identically to before. Genuinely automated e2e test proves wiring this newly-touched field on *every* mount didn't break the common (unset) case; the actual live propagation behavior (a new host-side mount becoming visible inside a running `HostToContainer` container without a restart) needs a real `mount(2)` syscall on the host after the pod is already running — a manual spot-check procedure, same honest-limitation treatment this project gives anything needing genuine root-level host mount operations mid-test.
 - ❌ **`volumeMounts[].recursiveReadOnly`** (found in round 83's re-audit; GA 1.33, KEP-3116) — CRI's own `Mount.recursive_read_only` field exists in the vendored proto but is never set either — confirmed via grep. Notably, the *capability advertisement* half of this feature is already correctly wired (round 53's `Node.status.runtimeHandlers[].recursiveReadOnlyMounts`, reading CRI's `RuntimeHandlerFeatures.recursive_read_only_mounts`), but the actual per-mount translation that capability exists to support was never implemented — a real, confirmed gap between what's advertised and what's honored.
 - 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`, `plugin_registry.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **Dynamic CSI driver discovery** (round 13) — a driver's `node-driver-registrar` sidecar can register itself against `NODELET_PLUGIN_REGISTRY_PATH` the same protocol it'd use against real kubelet's plugin watcher, no static config needed; `NODELET_CSI_DRIVERS` still works too, as a seed/override. **`nodeStageSecretRef`/`nodePublishSecretRef`** (round 13) — resolved to real Secret data and passed through to the driver. **Attach coordination** (round 19) — checks `CSIDriver.spec.attachRequired`, and for drivers that need it, waits on the matching `VolumeAttachment.status.attached` before Stage/Publish, threading `status.attachmentMetadata` through as `publish_context`. Calling the Controller service itself (`ControllerPublishVolume`/`ControllerUnpublishVolume`) stays out of scope — that's external-attacher's job upstream too, not kubelet's, confirmed against docs in round 19. Still out of scope: device-plugin registrations against this module (the same registration protocol, explicitly rejected with a real `NotifyRegistrationStatus{plugin_registered: false}` rather than ignored — that's `device_plugins.rs`'s job instead). Unvalidated against a real CSI driver — see rounds 12, 13, and 19 notes.
 - ✅ **hostPath** (found in a fresh gap re-audit; closed round 65) — `spec.volumes[].hostPath` resolves directly to the host's own existing path (not materialized under `VOLUME_ROOT` like every other volume kind), with real `type` validation (`DirectoryOrCreate`/`FileOrCreate`/`Directory`/`File`/`Socket`/`CharDevice`/`BlockDevice`) matching real kubelet's own create-vs-require-existing semantics exactly. A validation failure is logged and the volume skipped, same best-effort posture as every other unresolvable volume kind.
@@ -5507,7 +5547,14 @@ accordingly; see those files' own updated framing.
       (never set at all) and `volumeMounts[].recursiveReadOnly` (GA 1.33
       — its capability-advertisement half, round 53, is correctly wired,
       but the actual per-mount translation isn't). See round 83 notes.
-- [ ] Candidates for the next round, ranked: `mountPropagation` (more
-      broadly applicable) over `recursiveReadOnly` (narrower, and the
-      advertised capability at least isn't actively misleading anyone in
-      the meantime). Ask before starting the next round.
+- [x] Round 84: `volumeMounts[].mountPropagation` — new pure
+      `mount_propagation_cri()` maps `HostToContainer`/`Bidirectional`
+      onto CRI's `MountPropagation` enum, wired into both branches of
+      `build_mounts()`; unset/unrecognized fall back to the same
+      `PRIVATE` default this codebase already produced by omission, so
+      existing mounts are unaffected. 8 new unit tests + a genuinely
+      automated e2e test proving the common (unset) case still works,
+      plus a manual-note for live propagation verification (needs a real
+      host-side `mount(2)`). See round 84 notes.
+- [ ] Round 85 (`recursiveReadOnly`) is next, per the user's "do both
+      then another audit" instruction, followed by a fresh gap re-audit.

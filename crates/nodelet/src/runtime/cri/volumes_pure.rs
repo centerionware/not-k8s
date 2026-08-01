@@ -126,6 +126,20 @@ fn expand_sub_path_expr(expr: &str, envs: &[KeyValue]) -> Option<String> {
     Some(out)
 }
 
+/// `volumeMounts[].mountPropagation` (round 84; found in round 83's
+/// re-audit) -> CRI's `MountPropagation` enum. `None`/unset (the API's
+/// own default) and any unrecognized value both fall back to `Private`
+/// — the CRI zero-value default this codebase already produced by
+/// omission before this round, so behavior for every mount that never
+/// set this field is unchanged.
+pub(crate) fn mount_propagation_cri(mount_propagation: Option<&str>) -> MountPropagation {
+    match mount_propagation {
+        Some("HostToContainer") => MountPropagation::PropagationHostToContainer,
+        Some("Bidirectional") => MountPropagation::PropagationBidirectional,
+        _ => MountPropagation::PropagationPrivate,
+    }
+}
+
 /// Build CRI `Mount` entries for a container's volumeMounts against the
 /// pod's already-resolved volume name -> mount source map (see
 /// resolve_volumes()), and the container's own resolved env vars (for
@@ -149,6 +163,7 @@ pub(crate) fn build_mounts(
                 Some(expr) => Some(expand_sub_path_expr(expr, envs)?),
                 None => vm.sub_path.clone(),
             };
+            let propagation = mount_propagation_cri(vm.mount_propagation.as_deref()) as i32;
             match volumes.get(&vm.name)? {
                 ResolvedVolume::HostPath(host_dir) => {
                     let host_path = match &sub_path {
@@ -159,6 +174,7 @@ pub(crate) fn build_mounts(
                         container_path: vm.mount_path.clone(),
                         host_path: host_path.to_string_lossy().into_owned(),
                         readonly: vm.read_only.unwrap_or(false),
+                        propagation,
                         ..Default::default()
                     })
                 }
@@ -175,6 +191,7 @@ pub(crate) fn build_mounts(
                     // path *within* the mounted image instead (CRI's
                     // `image_sub_path`).
                     image_sub_path: sub_path.unwrap_or_default(),
+                    propagation,
                     ..Default::default()
                 }),
                 // A raw block device is only ever referenced via

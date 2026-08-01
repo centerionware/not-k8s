@@ -65,7 +65,7 @@ use v1::{
     StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest, ReopenContainerLogRequest,
     ExecRequest, AttachRequest, PortForwardRequest, ListPodSandboxStatsRequest,
     UpdateContainerResourcesRequest, security_profile::ProfileType, SecurityProfile,
-    IdMapping, UserNamespace, PortMapping, Protocol,
+    IdMapping, UserNamespace, PortMapping, Protocol, MountPropagation,
 };
 
 /// Where ConfigMap/Secret volume contents get materialized on the host, one
@@ -509,6 +509,9 @@ mod tests_sidecar_init_decision;
 #[cfg(test)]
 #[path = "cri_tests/mounts.rs"]
 mod tests_mounts;
+#[cfg(test)]
+#[path = "cri_tests/mount_propagation.rs"]
+mod tests_mount_propagation;
 #[cfg(test)]
 #[path = "cri_tests/devices.rs"]
 mod tests_devices;

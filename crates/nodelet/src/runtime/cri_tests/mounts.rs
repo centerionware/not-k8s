@@ -37,6 +37,34 @@ fn mount_naming_an_unresolved_volume_is_dropped_not_errored() {
 }
 
 #[test]
+fn mount_propagation_unset_defaults_to_private() {
+    let mut volumes = HashMap::new();
+    volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
+    let mounts = build_mounts(&[vm("v", "/etc/v")], &volumes, &[]);
+    assert_eq!(mounts[0].propagation, MountPropagation::PropagationPrivate as i32);
+}
+
+#[test]
+fn mount_propagation_host_to_container_is_carried_through() {
+    let mut volumes = HashMap::new();
+    volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
+    let mut mount = vm("v", "/etc/v");
+    mount.mount_propagation = Some("HostToContainer".to_string());
+    let mounts = build_mounts(&[mount], &volumes, &[]);
+    assert_eq!(mounts[0].propagation, MountPropagation::PropagationHostToContainer as i32);
+}
+
+#[test]
+fn mount_propagation_bidirectional_is_carried_through() {
+    let mut volumes = HashMap::new();
+    volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
+    let mut mount = vm("v", "/etc/v");
+    mount.mount_propagation = Some("Bidirectional".to_string());
+    let mounts = build_mounts(&[mount], &volumes, &[]);
+    assert_eq!(mounts[0].propagation, MountPropagation::PropagationBidirectional as i32);
+}
+
+#[test]
 fn a_mount_naming_a_block_device_volume_is_dropped_defensively() {
     // Round 77: a raw block volume is only ever referenced via
     // volumeDevices, never volumeMounts -- the API itself should prevent

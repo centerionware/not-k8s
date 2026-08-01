@@ -468,8 +468,11 @@ existing ephemeral-storage/emptyDir eviction tiers. Round 82 closed
 `spec.containers[].ports[].hostPort`: CRI's own `PortMapping` field
 (vendored but never wired up, same shape as round 77's raw block volumes
 finding) now publishes an explicit `hostPort` on the node's own IP,
-empty for `hostNetwork` pods matching upstream. Full status list in
-`docs/GAP_CLOSURE.md`.
+empty for `hostNetwork` pods matching upstream. Round 84 closed
+`volumeMounts[].mountPropagation`: `HostToContainer`/`Bidirectional` now
+translate to CRI's own `MountPropagation` enum on every mount, unset
+mounts unaffected (same `PRIVATE` default as before). Full status list
+in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

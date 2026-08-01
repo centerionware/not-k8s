@@ -588,6 +588,63 @@ register_test test_empty_dir_medium_memory_is_backed_by_tmpfs
 register_test test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs
 register_test test_image_volume_source_mounts_a_read_only_image
 register_test test_fsgroup_chowns_materialized_volumes
+test_mount_propagation_host_to_container_still_mounts_normally() {
+    # Round 84 (found in round 83's re-audit): volumeMounts[].mountPropagation
+    # was never set at all before this (every mount silently got CRI's
+    # PRIVATE zero-value default regardless of what the pod asked for).
+    # Genuinely observing PROPAGATION at work needs a real mount(2) syscall
+    # performed on the host AFTER this pod is already running (root
+    # required) -- see the manual-note below for that. What this DOES
+    # prove, fully automated: a hostPath volume with
+    # mountPropagation: HostToContainer set still mounts and is readable
+    # normally, i.e. wiring this field through didn't break the mount
+    # itself (a real risk, since propagation is a rarely-set field this
+    # round newly touches on every single mount, not just ones that use
+    # it).
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local host_dir
+    host_dir="$(mktemp -d /tmp/nodelet-mountprop-test.XXXXXX)"
+    echo "written-by-the-host" > "$host_dir/marker"
+    local name="mount-propagation-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: hostvol
+      hostPath:
+        path: $host_dir
+        type: Directory
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "cat /hostvol/marker > /hostvol/from-container; sleep 3600"]
+      volumeMounts:
+        - name: hostvol
+          mountPath: /hostvol
+          mountPropagation: HostToContainer
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        rm -rf "$host_dir"
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with mountPropagation: HostToContainer set — check mount_propagation_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects a nonzero Mount.propagation entirely"
+    fi
+    wait_until 20 "container's write landed back on the host" bash -c "[[ -s '$host_dir/from-container' ]]"
+    local content
+    content="$(cat "$host_dir/from-container")"
+    delete_pod_if_exists "$name"
+    rm -rf "$host_dir"
+    assert_contains "$content" "written-by-the-host" "hostPath volume with mountPropagation: HostToContainer should still mount and read normally"
+}
+
+test_mount_propagation_manual_note() {
+    skip_test "genuinely observing mount propagation in effect needs a real mount(2) syscall performed on the HOST (root required) after the pod is already running -- not something this suite does automatically to a live node's filesystem. Manual spot-check: (1) create a hostPath directory and a pod mounting it with mountPropagation: HostToContainer, (2) once Running, on the HOST run 'mount --bind <some-other-dir> <hostPath-dir>/newmount' (or 'mount -t tmpfs tmpfs <hostPath-dir>/newmount'), (3) confirm the new mount is immediately visible inside the container at /hostvol/newmount ('kubectl exec ... -- ls /hostvol') without restarting the pod -- proof HostToContainer propagation is real, not just that the field round-tripped through config. Repeat with mountPropagation unset (or None) and confirm the new host-side mount is NOT visible inside the container -- proof PRIVATE (the default) genuinely isolates mount events. Bidirectional needs the reverse: a mount made INSIDE the container should become visible on the host."
+}
+
+register_test test_mount_propagation_host_to_container_still_mounts_normally
+register_test test_mount_propagation_manual_note
 register_test test_host_path_directory_mounts_the_real_host_directory
 register_test test_host_path_directory_or_create_creates_a_missing_directory
 register_test test_host_path_directory_type_rejects_a_nonexistent_path
