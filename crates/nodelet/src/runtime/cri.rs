@@ -314,6 +314,15 @@ pub struct CriRuntime {
     /// structured, cross-runtime way, so this is nodelet's own record of
     /// "what did I last tell the runtime this container's resources were."
     container_resources: Mutex<HashMap<String, (String, LinuxContainerResources)>>,
+    /// `"sandbox_id/container_name" -> (uid, gid, supplemental_groups)`
+    /// (round 90; found in round 89's re-audit) — `ContainerStatus.user`,
+    /// fetched exactly *once* right after a container starts (not on
+    /// every reconcile — `build_status()`'s "zero extra RPCs for a
+    /// healthy container" design, round 24, still holds) and cached here
+    /// for the rest of that container instance's life. A fresh restart
+    /// re-fetches, since a new instance could resolve to a different
+    /// user (e.g. if the image itself changed).
+    container_users: Mutex<HashMap<String, (i64, i64, Vec<i64>)>>,
     /// Resize status reporting (round 43; the deferred half of round 42's
     /// arc). Same `"sandbox_id/container_name"` key as `container_resources`
     /// (and the same reasoning: `build_status()`'s event-driven path has no
@@ -479,6 +488,7 @@ impl CriRuntime {
             cpu_manager,
             memory_manager,
             container_resources: Mutex::new(HashMap::new()),
+            container_users: Mutex::new(HashMap::new()),
             applied_resources: Mutex::new(HashMap::new()),
             spec_resources: Mutex::new(HashMap::new()),
             topology_policy,

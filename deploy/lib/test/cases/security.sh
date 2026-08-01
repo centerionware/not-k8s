@@ -34,6 +34,38 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_container_status_reports_resolved_user() {
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="container-status-user"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      securityContext:
+        runAsUser: 4000
+        runAsGroup: 5000
+      command: ["sleep", "3600"]
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    # Round 90 (found in round 89's re-audit): containerStatuses[].user.linux
+    # is fetched once via ContainerStatusRequest right after the container
+    # starts and cached for the rest of that instance's life -- give it a
+    # moment past Running to land.
+    local uid gid
+    wait_until 20 "$name containerStatuses[0].user.linux.uid to be populated" bash -c \
+        "[[ -n \"\$(kctl get pod '$name' -o jsonpath='{.status.containerStatuses[0].user.linux.uid}')\" ]]"
+    uid="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].user.linux.uid}')"
+    gid="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].user.linux.gid}')"
+    assert_eq "$uid" "4000" "containerStatuses[0].user.linux.uid should match securityContext.runAsUser"
+    assert_eq "$gid" "5000" "containerStatuses[0].user.linux.gid should match securityContext.runAsGroup"
+    delete_pod_if_exists "$name"
+}
+
 test_read_only_root_filesystem_is_enforced() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="readonly-rootfs"

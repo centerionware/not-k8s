@@ -325,6 +325,13 @@ impl CriRuntime {
         self.device_allocations.lock().unwrap().insert(restart_count_key(sandbox_id, container_name), allocations);
     }
 
+    /// `containerStatuses[].user.linux` (round 90) — a plain table read,
+    /// no RPC; the actual fetch happens once at container-start time in
+    /// `create_and_start_container()`.
+    pub(crate) fn container_user_for(&self, sandbox_id: &str, container_name: &str) -> Option<(i64, i64, Vec<i64>)> {
+        self.container_users.lock().unwrap().get(&restart_count_key(sandbox_id, container_name)).cloned()
+    }
+
     /// `containerStatuses[].allocatedResourcesStatus` (round 79;
     /// `ResourceHealthStatus`, found in round 72's re-audit) — live
     /// per-device health for every device-plugin allocation currently
@@ -376,6 +383,7 @@ impl CriRuntime {
         self.container_resources.lock().unwrap().remove(&key);
         self.applied_resources.lock().unwrap().remove(&key);
         self.spec_resources.lock().unwrap().remove(&key);
+        self.container_users.lock().unwrap().remove(&key);
         if let Some(cpu_manager) = &self.cpu_manager {
             let was_exclusive = cpu_manager.is_exclusive(&key);
             cpu_manager.release(&key);

@@ -127,6 +127,13 @@ pub struct ContainerRuntimeStatus {
     /// with no device-plugin resources allocated at all — the common
     /// case, costing nothing beyond an empty `Vec`.
     pub allocated_resources_status: Vec<(String, String, String)>,
+    /// `containerStatuses[].user.linux` (round 90; found in round 89's
+    /// re-audit) — `(uid, gid, supplemental_groups)` the container's
+    /// first process actually started with, fetched once right after
+    /// the container starts (see `CriRuntime.container_users`) and
+    /// cached for the rest of that instance's life; `None` if it was
+    /// never fetched (e.g. the mock runtime) or the fetch failed.
+    pub container_user: Option<(i64, i64, Vec<i64>)>,
     /// Round 75; found in round 73's crash-loop backoff work. `Some` only
     /// while a container that keeps exiting is currently in its backoff
     /// window (`waiting_reason_override` below always `Some` alongside

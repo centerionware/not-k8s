@@ -482,7 +482,11 @@ semantics exactly. Round 88 closed per-volume `Mount.uidMappings`/
 `.gidMappings`: every volume mount for a `hostUsers: false` pod now
 carries the same UID/GID range `run_sandbox()` already applies at the
 sandbox level, so kernel-level idmapped-mounts translation actually
-applies to volumes too, not just the sandbox itself. Full status list in
+applies to volumes too, not just the sandbox itself. Round 90 closed
+`containerStatuses[].user`: the resolved UID/GID/`supplementalGroups` a
+container's first process actually started with is fetched once, right
+after the container starts, and cached — no extra RPCs on a healthy
+container's ongoing reconciles. Full status list in
 `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where

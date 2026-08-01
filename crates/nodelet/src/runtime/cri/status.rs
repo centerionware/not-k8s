@@ -305,6 +305,7 @@ impl CriRuntime {
                 last_terminated,
                 waiting_reason_override,
                 allocated_resources_status: self.allocated_resources_status(sandbox_id, &name),
+                container_user: self.container_user_for(sandbox_id, &name),
             });
         }
 
@@ -388,6 +389,7 @@ impl CriRuntime {
                     (None, String::new(), None, String::new(), None)
                 };
                 let allocated_resources_status = self.allocated_resources_status(sandbox_id, &name);
+                let container_user = self.container_user_for(sandbox_id, &name);
                 out.push(ContainerRuntimeStatus {
                     restart_count: self.restart_count(sandbox_id, &name),
                     name,
@@ -415,6 +417,7 @@ impl CriRuntime {
                     last_terminated: None,
                     waiting_reason_override: None,
                     allocated_resources_status,
+                    container_user,
                 });
         }
         Ok(out)

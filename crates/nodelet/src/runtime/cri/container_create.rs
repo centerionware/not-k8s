@@ -570,6 +570,25 @@ impl CriRuntime {
             return Err(e).context("starting container");
         }
 
+        // ContainerStatus.user (round 90; found in round 89's re-audit):
+        // fetched exactly once here, right after start, never again for
+        // this same container instance — matches this codebase's "zero
+        // extra RPCs for a healthy container" design (round 24) since
+        // build_status()'s own per-reconcile path never touches this.
+        // Best-effort: a failure here is cosmetic (the field is simply
+        // absent), never worth failing the whole container creation over.
+        match self.container_status_details(&created.container_id).await {
+            Ok(status) => {
+                if let Some(linux) = status.user.and_then(|u| u.linux) {
+                    self.container_users
+                        .lock()
+                        .unwrap()
+                        .insert(restart_count_key(sandbox_id, &container.name), (linux.uid, linux.gid, linux.supplemental_groups));
+                }
+            }
+            Err(e) => warn!(container = %container.name, error = ?e, "ContainerStatus failed; containerStatuses[].user will be left unset for this container instance"),
+        }
+
         // Record this container's own resources so a later shared-pool
         // refresh (triggered by some *other* container's exclusive claim/
         // release) can find and update it, and — if this container itself

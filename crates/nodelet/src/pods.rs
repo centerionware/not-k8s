@@ -15,7 +15,8 @@ use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
     ConfigMap, ContainerState, ContainerStateRunning, ContainerStateTerminated, ContainerStateWaiting,
-    ContainerStatus, HostIP, Pod, PodCondition, PodIP, PodStatus, ResourceHealth, ResourceStatus, Secret, Volume,
+    ContainerStatus, ContainerUser, HostIP, LinuxContainerUser, Pod, PodCondition, PodIP, PodStatus, ResourceHealth,
+    ResourceStatus, Secret, Volume,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{ListParams, Patch, PatchParams};
@@ -515,6 +516,16 @@ fn allocated_resources_status_field(entries: &[(String, String, String)]) -> Opt
     Some(by_resource.into_iter().map(|(name, resources)| ResourceStatus { name, resources: Some(resources) }).collect())
 }
 
+/// `containerStatuses[].user` (round 90; found in round 89's re-audit)
+/// — `None` if this container's user was never fetched (mock runtime,
+/// or the fetch failed), `Some` otherwise.
+fn container_user_field(user: Option<&(i64, i64, Vec<i64>)>) -> Option<ContainerUser> {
+    let &(uid, gid, ref supplemental_groups) = user?;
+    Some(ContainerUser {
+        linux: Some(LinuxContainerUser { uid, gid, supplemental_groups: (!supplemental_groups.is_empty()).then(|| supplemental_groups.clone()) }),
+    })
+}
+
 fn last_container_state(last: Option<&crate::runtime::TerminatedInfo>) -> ContainerState {
     match last {
         Some(info) => ContainerState {
@@ -615,6 +626,7 @@ fn build_pod_status(
             resources: c.resources.clone(),
             allocated_resources: c.allocated_resources.clone(),
             allocated_resources_status: allocated_resources_status_field(&c.allocated_resources_status),
+            user: container_user_field(c.container_user.as_ref()),
             stop_signal: c.stop_signal.clone(),
             ..Default::default()
         })
@@ -651,6 +663,7 @@ fn build_pod_status(
             container_id: c.container_id.clone(),
             state: Some(container_state(c, None, "PodInitializing")),
             allocated_resources_status: allocated_resources_status_field(&c.allocated_resources_status),
+            user: container_user_field(c.container_user.as_ref()),
             stop_signal: c.stop_signal.clone(),
             ..Default::default()
         })
@@ -689,6 +702,7 @@ fn build_pod_status(
                 }
             }),
             allocated_resources_status: allocated_resources_status_field(&c.allocated_resources_status),
+            user: container_user_field(c.container_user.as_ref()),
             stop_signal: c.stop_signal.clone(),
             ..Default::default()
         })
@@ -829,3 +843,6 @@ mod tests_referenced_names;
 #[cfg(test)]
 #[path = "pods_tests/observed_generation.rs"]
 mod tests_observed_generation;
+#[cfg(test)]
+#[path = "pods_tests/container_user.rs"]
+mod tests_container_user;

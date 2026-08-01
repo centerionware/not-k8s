@@ -27,6 +27,49 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 90: `ContainerStatus.user` (2026-08-01)
+
+Closed the first of round 89's two findings. Real design decision made,
+not silently assumed: `container_status_details()` (the CRI
+`ContainerStatusRequest` wrapper) stays *deliberately* exited-only for
+its existing per-reconcile callers (round 24's "zero extra RPCs for a
+healthy container" principle is untouched) — but a container's
+resolved `user` is fetched **exactly once**, immediately after
+`StartContainer` succeeds in `create_and_start_container()`, and cached
+in a new `CriRuntime.container_users: Mutex<HashMap<String, (i64,
+i64, Vec<i64>)>>` side table keyed the same way as the existing
+`container_resources`/`spec_resources` tables. Every later
+`build_status()`/`build_labeled_container_statuses()` call is a plain
+table read (`container_user_for()`), never an RPC. The cache entry is
+cleared on restart/removal in `release_container_devices()`, matching
+the existing cleanup pattern for the sibling resource tables — a fresh
+restart re-fetches, since a new container instance could resolve to a
+different user (e.g. if the image itself changed).
+
+The tuple DTO is converted to the real `k8s_openapi::api::core::v1::
+ContainerUser`/`LinuxContainerUser` types by a new pure function,
+`container_user_field()` in `pods.rs`, wired into all three
+`ContainerStatus` construction sites (app/init/ephemeral containers).
+An empty `supplementalGroups` list is left `None` rather than
+`Some(vec![])`, matching this codebase's existing convention for
+optional list fields elsewhere in `pods.rs`.
+
+Best-effort: a failure fetching `ContainerStatus` right after start is
+cosmetic (logged, field simply stays absent) — never worth failing the
+whole container creation over.
+
+New coverage: 4 dedicated unit tests for `container_user_field()`
+(`pods_tests/container_user.rs`) plus a new e2e test,
+`test_container_status_reports_resolved_user` in `security.sh`, which
+sets an explicit `runAsUser`/`runAsGroup` and confirms
+`containerStatuses[0].user.linux.uid`/`.gid` match. `cargo test -p
+nodelet --features cri`: 1028 passed (+4); mock config: 321 passed
+(+4). Both build configs clean.
+
+Same underlying design (fetch once at start, cache, read back) applies
+to round 89's second finding, `ContainerStatus.volumeMounts[].
+recursiveReadOnly` reporting — queued as round 91.
+
 ## Round 89: fresh gap re-audit (2026-07-31, same day)
 
 No code changed. Per the user's own instruction, run after rounds 87/88
@@ -5084,7 +5127,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
-- ❌ **`ContainerStatus.user`** (found in round 89's re-audit) — reports the resolved UID/GID/`supplementalGroups` a container's first process *actually* started with (`k8s.io/api/core/v1`'s `ContainerUser`/`LinuxContainerUser`), most useful exactly when `runAsUser`/`runAsGroup` are *unset* and left to the image's own baked-in default — CRI's own `ContainerStatus` response already carries the identical `ContainerUser`/`LinuxContainerUser` messages (`proto/cri.proto`, field `user`, already vendored) `container_status_details()` could read directly, no new proto work needed. Never referenced anywhere in this codebase, confirmed via grep. **Real design question for whichever round implements this**: this is most valuable for a *running* container (confirming the resolved user right when it starts), but nodelet's `container_status_details()` is deliberately only ever called for *exited* containers today (round 24's "zero extra RPCs for a healthy container" design principle) — populating this for running containers would need a real, documented trade-off decision, not just wiring an existing field through.
+- ✅ **`ContainerStatus.user`** (round 90; found in round 89's re-audit) — reports the resolved UID/GID/`supplementalGroups` a container's first process *actually* started with (`k8s.io/api/core/v1`'s `ContainerUser`/`LinuxContainerUser`). **Design decision made, not silently assumed**: `container_status_details()` (CRI's `ContainerStatusRequest`) stays exited-only for its existing per-reconcile callers (round 24's "zero extra RPCs for a healthy container" principle untouched) — the resolved user is instead fetched *exactly once*, right after `StartContainer` succeeds, and cached in a new `CriRuntime.container_users` side table; every later status build is a plain table read, never an RPC. Cache cleared on restart/removal alongside the sibling `container_resources`/`spec_resources` tables — a fresh restart re-fetches, since a new instance could resolve to a different user. New pure `container_user_field()` (`pods.rs`) converts the cached tuple into the real API types, wired into all three `ContainerStatus` construction sites. Genuinely automated e2e test (`test_container_status_reports_resolved_user`, `security.sh`) sets an explicit `runAsUser`/`runAsGroup` and confirms the reported value matches.
 - ✅ **`securityContext.procMount`** (round 78; found in round 76's re-audit) — new pure `proc_mount_paths()` mirrors real kubelet's own `ConvertToRuntimeMaskedPaths()`/`ConvertToRuntimeReadonlyPaths()` (`pkg/securitycontext/util.go`) exactly: `Default`/unset gets the standard Docker/OCI-recommended masked (`/proc/acpi`, `/proc/kcore`, `/sys/firmware`, ...) and readonly (`/proc/sys`, `/proc/irq`, ...) path lists, `Unmasked` gets two genuinely empty lists — wired into `linux_security_context()`'s `masked_paths`/`readonly_paths`. **This closes a real, if subtle, security gap wider than "Unmasked doesn't work"**: nodelet previously never set either field at all (always proto3-absent), which on a modern containerd (`disable_proc_mount: false`, the common default config) applies **no `/proc` masking whatsoever regardless of the pod's own `procMount` setting** — confirmed by reading containerd's own CRI test suite (`internal/cri/server/container_create_linux_test.go`'s `TestMaskedAndReadonlyPaths`). Real kubelet's own always-explicit-never-implicit posture (it never relies on the runtime's own default either) is why this round matches it exactly rather than only fixing the narrower `Unmasked` case. Genuinely automated e2e tests for both `Default` (masked) and `Unmasked` (readable) using `/proc/kcore`'s distinct byte-count behavior — `warn`s rather than hard-fails, since honoring `masked_paths` at all is ultimately the CRI runtime's own choice (containerd's `disable_proc_mount` config affects this).
 - ✅ **`securityContext.sysctls`** (round 41; found in round 39's re-audit) — new pure `pod_sysctls()` flattens `spec.securityContext.sysctls` into CRI's `LinuxPodSandboxConfig.sysctls` map, threaded through `sandbox_config()`/`ensure_pod()` alongside the existing hostname resolution. No admission-time allowlisting of "safe" (namespaced) vs. unsafe (host-wide) sysctls — that's the apiserver's job upstream and nodelet has no admission layer at all; an unsupported sysctl simply surfaces as a real `RunPodSandbox` error from the CRI runtime. Genuinely automated e2e test (a real container's own `/proc/sys` read). See round 41 notes.
 - ✅ **`hostPID`/`hostIPC`/`shareProcessNamespace`** (round 40; found in round 39's re-audit) — new pure `pid_namespace_mode(host_pid, share_process_namespace) -> NamespaceMode` (`hostPID` wins → `Node`, else `shareProcessNamespace` → `Pod`, else `Container`) is now always applied, on both `sandbox_config()`'s `namespace_options.pid` and each container's own `linux_security_context()`'s `namespace_options.pid` (mirroring real kubelet setting it in both places). **Correctness fix, not just a missing feature**: CRI's own proto comment on `NamespaceOption.pid` says *"the CRI default is POD, but the v1.PodSpec default is CONTAINER"* — before this round nodelet never set the field at all, so every container was silently getting containerd's own POD-shared default, the **opposite** of real Kubernetes' actual default. `hostIPC` sets `namespace_options.ipc` to `Node` (else `Pod` — IPC has no `CONTAINER`-scope concept in the API at all, unlike PID). Genuinely automated e2e tests for `hostPID`/`shareProcessNamespace` (a container's own pid, structural proof); `hostIPC` is unit-tested only — no simple portable shell-level IPC probe in a minimal image, a documented scope limitation. See round 40 notes.
@@ -5847,8 +5890,16 @@ accordingly; see those files' own updated framing.
       `ContainerStatus.volumeMounts[].recursiveReadOnly` reporting (the
       exact missing half of round 85's own `IfPossible` simplification).
       See round 89 notes.
-- [ ] Candidates for the next round: `ContainerStatus.user` or
-      `ContainerStatus.volumeMounts[].recursiveReadOnly` reporting —
-      roughly equal value, both share the same open RPC-cost design
-      question worth deciding once for both. Ask before starting the
-      next round.
+- [x] Round 90: `ContainerStatus.user` — resolved the shared
+      running-vs-exited RPC-cost design question by fetching once, right
+      after `StartContainer` succeeds, and caching in a new
+      `CriRuntime.container_users` side table read back via plain lookup
+      (no RPC) on every later status build. New pure
+      `container_user_field()` (`pods.rs`), 4 new unit tests + a
+      genuinely automated e2e test. See round 90 notes.
+- [ ] Round 91 (queued, same "fetch once, cache" design as round 90):
+      `ContainerStatus.volumeMounts[].recursiveReadOnly` reporting — the
+      exact missing half of round 85's own `IfPossible` simplification.
+      Worth checking whether round 90's existing one-time
+      `container_status_details()` fetch can also capture per-mount
+      `recursive_read_only` in the same RPC rather than adding a second.
