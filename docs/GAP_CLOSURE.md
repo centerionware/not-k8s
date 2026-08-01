@@ -27,6 +27,52 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 92: fresh gap re-audit (2026-08-01, same day)
+
+No code changed. Per the user's own instruction, run after rounds 90/91
+closed round 89's `ContainerStatus.user`/`volumeMounts[].
+recursiveReadOnly` pair.
+
+METHOD: continued the automated field-sweep technique against the
+structs not yet swept clean — `PodSpec`, `Container`, `PodStatus`, and
+`ContainerStatus` were already confirmed clean as of rounds 86/89; this
+pass covered `NodeStatus`, `NodeSpec`, `Probe`, `PodSecurityContext`,
+container-level `SecurityContext`, `NodeSystemInfo`, `Lifecycle`,
+`ResourceRequirements`, and `ContainerResizePolicy`.
+
+Only **one** new, genuinely unimplemented, non-out-of-scope field
+found — every other unreferenced field checked was either already
+tracked (`appArmorProfile`/`seLinuxOptions`/`runAsNonRoot` — the
+existing `securityContext` responsibility line already says "Not yet:
+..."), already closed (`Node.status.volumesInUse`/`.volumesAttached`,
+round 34; `Node.status.features`, wired in round 89's own
+`ContainerStatus.user` groundwork), legacy/deprecated
+(`Node.spec.externalID`/`.configSource`, `Node.spec.unschedulable` —
+all superseded by taints/newer mechanisms upstream itself has mostly
+stopped setting), scheduler's job and not kubelet's at all
+(`affinity`/`nodeSelector`/`tolerations`/`topologySpreadConstraints`/
+`schedulingGates`/`preemptionPolicy`/`schedulerName` — confirmed
+against this doc's own scope boundary above), or Windows-only (`windows`-
+shaped fields, out of scope for the standing reason):
+
+1. **`PodSecurityContext.fsGroupChangePolicy`** — GA since 1.20 (not a
+   new/immature feature like round 91's precedent-check concern), and a
+   real behavior gap, not just a missing field: `volumes_resolve.rs`'s
+   existing `fsGroup` handling (round 3) *always* walks and `chown()`s
+   every file in a volume when `fsGroup` is set, with no way to opt out
+   even when the volume's ownership is already correct (`OnRootMismatch`)
+   — real kubelet uses this field to skip the potentially expensive
+   recursive walk entirely when the top-level directory's group already
+   matches. On a large volume this is a real, measurable startup-latency
+   difference this codebase doesn't currently offer a way to avoid.
+   Moderate value: correctness is unaffected either way (both policies
+   converge on the same *result*), this is purely a performance/UX gap.
+
+Ranked candidate for the next round: `fsGroupChangePolicy`. No second
+candidate of comparable value found this pass — the sweep is
+continuing to narrow (matching the trend rounds 76/80/83/86/89 already
+showed). Ask the user for sequencing before starting the next round.
+
 ## Round 91: `ContainerStatus.volumeMounts[].recursiveReadOnly` reporting (2026-08-01)
 
 Closed the second of round 89's two findings — the exact missing
@@ -5184,6 +5230,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **User namespaces** (`spec.hostUsers: false`, round 25; found in round 22's re-audit) — `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive host UID/GID range (fixed length, default 65536, configurable via `NODELET_USERNS_BASE_UID`/`_LENGTH`/`_MAX_PODS`), set as a `POD`-mode `UserNamespace` on `LinuxSandboxSecurityContext.namespace_options.userns_options`. Simplified vs. upstream's own variable-length `usernsManager`: every pod gets the same fixed range size, and allocation state is in-memory only (self-heals as still-running pods reconcile, narrow double-allocation window across a nodelet restart — documented, not hidden). Unvalidated against a real CRI runtime's actual `userns_options` wire support — see round 25 notes.
 - 🟡 **Per-volume `Mount.uidMappings`/`.gidMappings`** (round 88; found in round 86's re-audit) — every `HostPath`-shaped volume mount for a `hostUsers: false` pod now carries the same UID/GID `IDMapping` (`host_id`/`container_id: 0`/`length`) `run_sandbox()` already applies at the sandbox level (round 25), via new pure `mount_id_mappings()` and a new `UsernsAllocator::assigned()` read-only lookup (no re-allocation — just reads back the range `run_sandbox()` already claimed for this pod uid). Without this, kernel-level idmapped-mounts translation (Linux 5.12+) only applies to mounts CRI is actually told to map — a file the host sees as owned by some in-range UID would otherwise show up wrong (`nobody`/overflow, or untranslated) inside the container's own view of that volume. **Deliberately scoped to `build_mounts()`'s regular `volumeMounts` only** — image-backed mounts (round 32) never go through the host bind-mount path idmapping applies to at all, and the auxiliary host-bind-mounts nodelet creates for itself (`hostAliases`' `/etc/hosts`, `terminationMessagePath`) are **not yet** id-mapped, a known follow-up if a future round revisits this area. Genuinely automated e2e test proves adding this to *every* `hostUsers: false` pod's *every* volume mount (not an opt-in feature) didn't break the mount itself; the actual ownership-translation behavior needs a host-side file pre-chowned into the pod's specific mapped range before the pod starts (root required) — a manual spot-check procedure.
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
+- ❌ **`PodSecurityContext.fsGroupChangePolicy`** (found in round 92's re-audit) — GA since 1.20. `apply_fs_group()` (round 3) always walks and `chown()`s every file in a volume unconditionally whenever `fsGroup` is set; real kubelet uses this field's `OnRootMismatch` value to skip the (potentially expensive, on a large volume) recursive walk entirely when the top-level directory's ownership already matches, only ever forcing it for `Always` (the API's default). Correctness is identical either way — this is purely a startup-latency gap on volumes that don't actually need re-chowning.
 - ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
 - ✅ **`Node.status.runtimeHandlers`** (round 53; found in round 50's re-audit) — new `PodRuntime::runtime_handlers()` calls CRI's runtime-level `Status` RPC once (never called anywhere in this codebase before this round) and maps the discovered handlers through to `Node.status.runtimeHandlers`, via the same `images`/`mounted_csi_volumes`-shaped plumbing rounds 33/34 already established. Genuinely automated e2e test (asserts at least one handler is present; skips rather than fails if a given containerd version's `Status` RPC doesn't populate the list at all). See round 53 notes.
 - ✅ **`spec.activeDeadlineSeconds`** (round 81; found in round 80's re-audit) — new pure `active_deadline_exceeded()` compares elapsed time since `status.startTime` against the deadline, checked every `eviction_loop()` cycle ahead of node-pressure eviction (the same "direct per-pod violation, checked independently of general pressure" tier the ephemeral-storage/emptyDir checks already occupy) — overrides `restartPolicy` entirely, so an `Always` pod that would otherwise keep restarting forever is terminated once its deadline passes regardless. **Deliberate simplification vs. upstream, documented not hidden**: real kubelet marks the pod `Failed`/`DeadlineExceeded` but leaves the object itself for the owning controller to observe; nodelet reuses the same terminate-and-delete `evict_pod()` path every other kubelet-initiated termination in this codebase already takes (there's no other "kill but never delete" pattern anywhere else to build a second one on top of) — `evict_pod()` itself was generalized to take an explicit `status_reason`/`message` pair instead of a single hardcoded "node was low on resource" string, since that framing never fit this case.
@@ -5958,5 +6005,17 @@ accordingly; see those files' own updated framing.
       container_volume_mount_statuses`, read back via plain lookup. New
       pure `volume_mount_statuses_field()` (`pods.rs`). 7 new unit tests
       + a genuinely automated e2e test. See round 91 notes.
-- [x] Rounds 90-91 close both of round 89's findings. No candidates
-      currently queued — round 92 (fresh gap re-audit) is next.
+- [x] Rounds 90-91 close both of round 89's findings.
+- [x] Round 92: fresh gap re-audit — no code change. Swept `NodeStatus`/
+      `NodeSpec`/`Probe`/`PodSecurityContext`/container `SecurityContext`/
+      `NodeSystemInfo`/`Lifecycle`/`ResourceRequirements`/
+      `ContainerResizePolicy` (the structs not yet covered by rounds
+      83/86/89's earlier sweeps). Found exactly 1 new genuine gap:
+      `PodSecurityContext.fsGroupChangePolicy` — everything else
+      unreferenced was already tracked, already closed, legacy/deprecated,
+      or someone else's job (scheduler fields, Windows-only fields). See
+      round 92 notes.
+- [ ] Candidate for the next round: `PodSecurityContext.fsGroupChangePolicy`
+      (a startup-latency gap, not a correctness one — `OnRootMismatch`
+      could skip `apply_fs_group()`'s recursive chown when unneeded). Ask
+      before starting.
