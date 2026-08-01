@@ -150,18 +150,29 @@ pub(crate) fn mount_propagation_cri(mount_propagation: Option<&str>) -> MountPro
 /// contract-violating combination to CRI) rather than trusting the
 /// caller got it right, the same posture this codebase takes toward
 /// other CRI-level invariants (e.g. `Mount.image`/`Mount.host_path`'s
-/// mutual exclusivity). **Documented scope simplification**: `IfPossible`
-/// is currently treated identically to `Enabled` (both resolve to `true`
-/// when the preconditions hold) — a genuine best-effort fallback would
-/// need to know whether the resolved `RuntimeClass`'s handler actually
-/// advertises `recursiveReadOnlyMounts` support (already surfaced to
-/// `Node.status.runtimeHandlers`, round 53, but not threaded down into
-/// this per-mount translation path this round) before deciding whether
-/// to ask for it at all; a runtime that doesn't support it is left to
-/// reject or ignore the request per its own CRI implementation, same as
-/// how this codebase already treats an unsupported `sysctl` (round 41).
-pub(crate) fn recursive_read_only_cri(recursive_read_only: Option<&str>, readonly: bool, propagation: MountPropagation) -> bool {
-    matches!(recursive_read_only, Some("Enabled") | Some("IfPossible")) && readonly && propagation == MountPropagation::PropagationPrivate
+/// mutual exclusivity). `IfPossible` is a genuine best-effort fallback
+/// (round 97; closes round 85's documented simplification): it resolves
+/// to `true` only when the resolved `RuntimeClass`'s handler actually
+/// advertises `recursiveReadOnlyMounts` support (`Node.status.runtimeHandlers`,
+/// round 53 — `handler_supports_recursive_ro`, threaded down from a
+/// one-time `Status` RPC result cached at `CriRuntime::connect()` time,
+/// keyed by handler name), unlike `Enabled` which always asks for it
+/// regardless of advertised support — a runtime that doesn't support
+/// `Enabled`'s explicit request is left to reject or ignore it per its
+/// own CRI implementation, same as how this codebase already treats an
+/// unsupported `sysctl` (round 41); `IfPossible` instead falls back to a
+/// plain (non-recursive) read-only mount when the handler doesn't
+/// support it, matching real kubelet's own "if possible, else best
+/// effort" semantics for this field.
+pub(crate) fn recursive_read_only_cri(recursive_read_only: Option<&str>, readonly: bool, propagation: MountPropagation, handler_supports_recursive_ro: bool) -> bool {
+    if !readonly || propagation != MountPropagation::PropagationPrivate {
+        return false;
+    }
+    match recursive_read_only {
+        Some("Enabled") => true,
+        Some("IfPossible") => handler_supports_recursive_ro,
+        _ => false,
+    }
 }
 
 /// Build CRI `Mount` entries for a container's volumeMounts against the
@@ -192,8 +203,8 @@ fn mount_id_mappings(userns_mapping: Option<(u32, u32)>) -> Vec<IdMapping> {
 /// `containerStatuses[].volumeMounts[].recursiveReadOnly` reporting
 /// (round 91; found in round 89's re-audit) — the exact missing
 /// reporting half of this file's own `recursive_read_only_cri()`
-/// above (round 85's documented `IfPossible`-treated-as-`Enabled`
-/// simplification applies here too, unchanged). Real kubelet computes
+/// above (round 97's real `IfPossible` fallback applies here too,
+/// same `handler_supports_recursive_ro` input). Real kubelet computes
 /// this straight from the container's own `volumeMounts` spec at
 /// status-build time (`kubelet_pods.go`'s `resolveRecursiveReadOnly`),
 /// the SAME resolution used at CRI mount-request time — NOT read back
@@ -209,14 +220,14 @@ fn mount_id_mappings(userns_mapping: Option<(u32, u32)>) -> Vec<IdMapping> {
 /// `ContainerStatus.user` did the same) — keeps this function callable
 /// from a plain unit test without needing the `cri` feature's own
 /// vendored types pulled in just for the tuple shape.
-pub(crate) fn volume_mount_status_tuples(volume_mounts: &[k8s_openapi::api::core::v1::VolumeMount]) -> Vec<(String, String, bool, Option<String>)> {
+pub(crate) fn volume_mount_status_tuples(volume_mounts: &[k8s_openapi::api::core::v1::VolumeMount], handler_supports_recursive_ro: bool) -> Vec<(String, String, bool, Option<String>)> {
     volume_mounts
         .iter()
         .map(|vm| {
             let readonly = vm.read_only.unwrap_or(false);
             let propagation = mount_propagation_cri(vm.mount_propagation.as_deref());
             let recursive_read_only = readonly.then(|| {
-                if recursive_read_only_cri(vm.recursive_read_only.as_deref(), readonly, propagation) { "Enabled" } else { "Disabled" }.to_string()
+                if recursive_read_only_cri(vm.recursive_read_only.as_deref(), readonly, propagation, handler_supports_recursive_ro) { "Enabled" } else { "Disabled" }.to_string()
             });
             (vm.name.clone(), vm.mount_path.clone(), readonly, recursive_read_only)
         })
@@ -228,6 +239,7 @@ pub(crate) fn build_mounts(
     volumes: &HashMap<String, ResolvedVolume>,
     envs: &[KeyValue],
     userns_mapping: Option<(u32, u32)>,
+    handler_supports_recursive_ro: bool,
 ) -> Vec<Mount> {
     let id_mappings = mount_id_mappings(userns_mapping);
     volume_mounts
@@ -250,7 +262,7 @@ pub(crate) fn build_mounts(
                         host_path: host_path.to_string_lossy().into_owned(),
                         readonly,
                         propagation: propagation as i32,
-                        recursive_read_only: recursive_read_only_cri(vm.recursive_read_only.as_deref(), readonly, propagation),
+                        recursive_read_only: recursive_read_only_cri(vm.recursive_read_only.as_deref(), readonly, propagation, handler_supports_recursive_ro),
                         uid_mappings: id_mappings.clone(),
                         gid_mappings: id_mappings.clone(),
                         ..Default::default()
@@ -270,7 +282,7 @@ pub(crate) fn build_mounts(
                     // `image_sub_path`).
                     image_sub_path: sub_path.unwrap_or_default(),
                     propagation: propagation as i32,
-                    recursive_read_only: recursive_read_only_cri(vm.recursive_read_only.as_deref(), true, propagation),
+                    recursive_read_only: recursive_read_only_cri(vm.recursive_read_only.as_deref(), true, propagation, handler_supports_recursive_ro),
                     ..Default::default()
                 }),
                 // A raw block device is only ever referenced via

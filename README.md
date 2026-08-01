@@ -512,7 +512,12 @@ own node identity, and — once the apiserver's own node-authorizer
 approves and signs it — writes a real client-cert kubeconfig for all
 further apiserver traffic, the same `--bootstrap-kubeconfig` flow real
 kubelet uses instead of always needing a working kubeconfig handed to
-it directly. Full status list in `docs/GAP_CLOSURE.md`.
+it directly. Round 97 gave `volumeMounts[].recursiveReadOnly: IfPossible`
+a real best-effort fallback: it now resolves to `true` only when the
+pod's resolved runtime handler actually advertises
+`recursiveReadOnlyMounts` support, falling back to a plain read-only
+mount otherwise, instead of always behaving like `Enabled`. Full
+status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

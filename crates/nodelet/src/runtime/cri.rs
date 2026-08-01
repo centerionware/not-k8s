@@ -244,6 +244,18 @@ pub struct CriRuntime {
     /// (best-effort — a cosmetic prefix isn't worth failing `connect()`
     /// over).
     runtime_name: String,
+    /// `handler name -> whether it advertises `recursiveReadOnlyMounts`
+    /// support` (round 97; closes round 85's documented `IfPossible`
+    /// simplification), from the same one-time `Status` RPC call
+    /// `runtime_handlers()` makes on demand for `Node.status.runtimeHandlers`
+    /// (round 53) — cached here instead so `volumeMounts[].recursiveReadOnly:
+    /// IfPossible` can make a real per-mount decision without an extra RPC
+    /// on every container creation. The empty-string key is CRI's own
+    /// convention for "the default handler" (no `runtimeClassName` set).
+    /// Best-effort: empty (every handler treated as unsupported, same as
+    /// this codebase's pre-round-97 behavior for `IfPossible`) if the
+    /// `Status` call fails at connect time.
+    recursive_read_only_handlers: HashMap<String, bool>,
     /// `"sandbox_id/container_name" -> cumulative restart count`, mirroring
     /// `PodStatus.containerStatuses[].restartCount`. Side table for the same
     /// reason `restart_policies` is one: CRI's `ListContainers` has no
@@ -429,6 +441,27 @@ impl CriRuntime {
             }
         };
 
+        // Which handlers advertise recursiveReadOnlyMounts support (round
+        // 97), from the same Status RPC `runtime_handlers()` makes on
+        // demand for Node.status.runtimeHandlers — cached once here so
+        // volumeMounts[].recursiveReadOnly: IfPossible can make a real
+        // per-mount decision without an extra RPC on every container
+        // creation. Best-effort: empty (every handler treated as
+        // unsupported) if this call fails.
+        let mut status_client = rt.clone();
+        let recursive_read_only_handlers = match status_client.status(StatusRequest { verbose: false }).await {
+            Ok(resp) => resp
+                .into_inner()
+                .runtime_handlers
+                .into_iter()
+                .map(|h| (h.name, h.features.map(|f| f.recursive_read_only_mounts).unwrap_or(false)))
+                .collect(),
+            Err(e) => {
+                warn!(error = ?e, "CRI Status call failed; volumeMounts[].recursiveReadOnly: IfPossible will fall back to non-recursive for every handler");
+                HashMap::new()
+            }
+        };
+
         // Spawn the event subscriber (event-driven status, no polling).
         let (tx, rx) = unbounded_channel();
         tokio::spawn(event_loop(channel, tx));
@@ -486,6 +519,7 @@ impl CriRuntime {
             image_unreferenced_since: Mutex::new(HashMap::new()),
             credential_providers,
             runtime_name,
+            recursive_read_only_handlers,
             restart_counts: Mutex::new(HashMap::new()),
             restart_backoff: Mutex::new(HashMap::new()),
             last_terminated: Mutex::new(HashMap::new()),
@@ -505,6 +539,14 @@ impl CriRuntime {
         })
     }
 
+    /// Whether `handler` (a resolved `RuntimeClass` handler name, or the
+    /// empty string for the default handler — same convention
+    /// `resolve_runtime_handler()` returns) advertises
+    /// `recursiveReadOnlyMounts` support, per the one-time `Status` RPC
+    /// result cached at `connect()` time (round 97).
+    pub(crate) fn handler_supports_recursive_ro(&self, handler: &str) -> bool {
+        self.recursive_read_only_handlers.get(handler).copied().unwrap_or(false)
+    }
 }
 
 // Small, isolated test files — one behavior area each — under cri_tests/.

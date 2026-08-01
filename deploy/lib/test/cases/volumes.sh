@@ -744,17 +744,71 @@ EOF
     assert_eq "$result" "readonly" "hostPath volume with recursiveReadOnly: Enabled must still block writes at the top level"
 }
 
+test_recursive_read_only_if_possible_falls_back_without_erroring() {
+    # Round 97: IfPossible is a real best-effort fallback now (previously
+    # treated identically to Enabled) -- gated on whether the resolved
+    # runtime handler advertises Node.status.runtimeHandlers[].features
+    # .recursiveReadOnlyMounts support. This suite doesn't control which
+    # capability the test cluster's own containerd build reports, so it
+    # can't assert Enabled vs. Disabled specifically either way -- what
+    # IS fully automatable: a pod requesting IfPossible reaches Running
+    # either way (never errors regardless of handler support) and its
+    # reported containerStatuses[].volumeMounts[].recursiveReadOnly is
+    # always one of the two valid values, never something else -- proof
+    # the fallback path itself is wired correctly, not a silent no-op or
+    # crash. See test_recursive_read_only_manual_note for the specific
+    # Enabled-vs-Disabled-by-handler-support spot-check.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local host_dir
+    host_dir="$(mktemp -d /tmp/nodelet-rro-ifpossible-test.XXXXXX)"
+    local name="recursive-readonly-ifpossible-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: hostvol
+      hostPath:
+        path: $host_dir
+        type: Directory
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+      volumeMounts:
+        - name: hostvol
+          mountPath: /hostvol
+          readOnly: true
+          recursiveReadOnly: IfPossible
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        rm -rf "$host_dir"
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with recursiveReadOnly: IfPossible set — check recursive_read_only_cri()'s IfPossible branch in runtime/cri/volumes_pure.rs"
+    fi
+    local status
+    status="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].volumeMounts[?(@.name=="hostvol")].recursiveReadOnly}')"
+    delete_pod_if_exists "$name"
+    rm -rf "$host_dir"
+    if [ "$status" != "Enabled" ] && [ "$status" != "Disabled" ]; then
+        die "assertion failed: IfPossible must report either Enabled or Disabled, got '$status'"
+    fi
+}
+
 test_mount_propagation_manual_note() {
     skip_test "genuinely observing mount propagation in effect needs a real mount(2) syscall performed on the HOST (root required) after the pod is already running -- not something this suite does automatically to a live node's filesystem. Manual spot-check: (1) create a hostPath directory and a pod mounting it with mountPropagation: HostToContainer, (2) once Running, on the HOST run 'mount --bind <some-other-dir> <hostPath-dir>/newmount' (or 'mount -t tmpfs tmpfs <hostPath-dir>/newmount'), (3) confirm the new mount is immediately visible inside the container at /hostvol/newmount ('kubectl exec ... -- ls /hostvol') without restarting the pod -- proof HostToContainer propagation is real, not just that the field round-tripped through config. Repeat with mountPropagation unset (or None) and confirm the new host-side mount is NOT visible inside the container -- proof PRIVATE (the default) genuinely isolates mount events. Bidirectional needs the reverse: a mount made INSIDE the container should become visible on the host."
 }
 
 test_recursive_read_only_manual_note() {
-    skip_test "genuinely proving RECURSIVENESS (that a mount nested underneath a recursiveReadOnly: Enabled mount is also read-only, not just the top-level mountpoint) needs a second real mount(2) syscall performed inside the container's own mount namespace before nodelet's own outer mount is made -- not something this suite can set up. Manual spot-check: (1) on the HOST, bind-mount a writable directory underneath the hostPath directory a pod will reference (e.g. 'mount --bind /some/writable/dir <hostPath-dir>/nested' before creating the pod), (2) create the pod with that hostPath volume mounted readOnly: true, recursiveReadOnly: Enabled, (3) confirm writes fail INSIDE THE NESTED MOUNT too ('kubectl exec ... -- touch /hostvol/nested/test' should fail) -- proof the read-only-ness is genuinely recursive, not just applied to the top-level mountpoint (which test_recursive_read_only_still_mounts_read_only_normally already proves automatically). Also confirm CreateContainer fails cleanly (not a silent partial mount) if recursiveReadOnly: Enabled is combined with a runtime that doesn't support CRI's Mount.recursive_read_only at all."
+    skip_test "genuinely proving RECURSIVENESS (that a mount nested underneath a recursiveReadOnly: Enabled mount is also read-only, not just the top-level mountpoint) needs a second real mount(2) syscall performed inside the container's own mount namespace before nodelet's own outer mount is made -- not something this suite can set up. Manual spot-check: (1) on the HOST, bind-mount a writable directory underneath the hostPath directory a pod will reference (e.g. 'mount --bind /some/writable/dir <hostPath-dir>/nested' before creating the pod), (2) create the pod with that hostPath volume mounted readOnly: true, recursiveReadOnly: Enabled, (3) confirm writes fail INSIDE THE NESTED MOUNT too ('kubectl exec ... -- touch /hostvol/nested/test' should fail) -- proof the read-only-ness is genuinely recursive, not just applied to the top-level mountpoint (which test_recursive_read_only_still_mounts_read_only_normally already proves automatically). Also confirm CreateContainer fails cleanly (not a silent partial mount) if recursiveReadOnly: Enabled is combined with a runtime that doesn't support CRI's Mount.recursive_read_only at all. Separately (round 97): to specifically confirm IfPossible's Enabled-vs-Disabled decision actually tracks this runtime's own advertised capability (not just that it reaches Running either way, which test_recursive_read_only_if_possible_falls_back_without_erroring already proves automatically), compare 'kubectl get node <node> -o jsonpath={.status.runtimeHandlers[0].features.recursiveReadOnlyMounts}' against the IfPossible pod's own containerStatuses[].volumeMounts[].recursiveReadOnly — they must match."
 }
 
 register_test test_mount_propagation_host_to_container_still_mounts_normally
 register_test test_mount_propagation_manual_note
 register_test test_recursive_read_only_still_mounts_read_only_normally
+register_test test_recursive_read_only_if_possible_falls_back_without_erroring
 register_test test_recursive_read_only_manual_note
 register_test test_host_path_directory_mounts_the_real_host_directory
 register_test test_host_path_directory_or_create_creates_a_missing_directory

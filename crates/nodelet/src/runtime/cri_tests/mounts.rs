@@ -14,14 +14,14 @@ fn vm(name: &str, mount_path: &str) -> VolumeMount {
 #[test]
 fn empty_mounts_list_produces_no_mounts() {
     let volumes = HashMap::new();
-    assert!(build_mounts(&[], &volumes, &[], None).is_empty());
+    assert!(build_mounts(&[], &volumes, &[], None, false).is_empty());
 }
 
 #[test]
 fn resolves_a_simple_mount_to_its_volume_directory() {
     let mut volumes = HashMap::new();
     volumes.insert("config-volume".to_string(), ResolvedVolume::HostPath(PathBuf::from("/var/lib/nodelet/pods/uid1/volumes/config-volume")));
-    let mounts = build_mounts(&[vm("config-volume", "/etc/coredns")], &volumes, &[], None);
+    let mounts = build_mounts(&[vm("config-volume", "/etc/coredns")], &volumes, &[], None, false);
     assert_eq!(mounts.len(), 1);
     assert_eq!(mounts[0].container_path, "/etc/coredns");
     assert_eq!(mounts[0].host_path, "/var/lib/nodelet/pods/uid1/volumes/config-volume");
@@ -32,7 +32,7 @@ fn mount_naming_an_unresolved_volume_is_dropped_not_errored() {
     // e.g. a projected/serviceAccountToken volume resolve_volumes() didn't
     // materialize — must not produce a Mount pointing at a nonexistent path.
     let volumes = HashMap::new();
-    let mounts = build_mounts(&[vm("kube-api-access", "/var/run/secrets/kubernetes.io/serviceaccount")], &volumes, &[], None);
+    let mounts = build_mounts(&[vm("kube-api-access", "/var/run/secrets/kubernetes.io/serviceaccount")], &volumes, &[], None, false);
     assert!(mounts.is_empty());
 }
 
@@ -40,7 +40,7 @@ fn mount_naming_an_unresolved_volume_is_dropped_not_errored() {
 fn mount_propagation_unset_defaults_to_private() {
     let mut volumes = HashMap::new();
     volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
-    let mounts = build_mounts(&[vm("v", "/etc/v")], &volumes, &[], None);
+    let mounts = build_mounts(&[vm("v", "/etc/v")], &volumes, &[], None, false);
     assert_eq!(mounts[0].propagation, MountPropagation::PropagationPrivate as i32);
 }
 
@@ -50,7 +50,7 @@ fn mount_propagation_host_to_container_is_carried_through() {
     volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
     let mut mount = vm("v", "/etc/v");
     mount.mount_propagation = Some("HostToContainer".to_string());
-    let mounts = build_mounts(&[mount], &volumes, &[], None);
+    let mounts = build_mounts(&[mount], &volumes, &[], None, false);
     assert_eq!(mounts[0].propagation, MountPropagation::PropagationHostToContainer as i32);
 }
 
@@ -60,7 +60,7 @@ fn mount_propagation_bidirectional_is_carried_through() {
     volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
     let mut mount = vm("v", "/etc/v");
     mount.mount_propagation = Some("Bidirectional".to_string());
-    let mounts = build_mounts(&[mount], &volumes, &[], None);
+    let mounts = build_mounts(&[mount], &volumes, &[], None, false);
     assert_eq!(mounts[0].propagation, MountPropagation::PropagationBidirectional as i32);
 }
 
@@ -71,7 +71,7 @@ fn recursive_read_only_enabled_with_read_only_true_is_carried_through() {
     let mut mount = vm("v", "/etc/v");
     mount.read_only = Some(true);
     mount.recursive_read_only = Some("Enabled".to_string());
-    let mounts = build_mounts(&[mount], &volumes, &[], None);
+    let mounts = build_mounts(&[mount], &volumes, &[], None, false);
     assert!(mounts[0].recursive_read_only);
 }
 
@@ -81,7 +81,7 @@ fn recursive_read_only_enabled_without_read_only_stays_false() {
     volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
     let mut mount = vm("v", "/etc/v");
     mount.recursive_read_only = Some("Enabled".to_string());
-    let mounts = build_mounts(&[mount], &volumes, &[], None);
+    let mounts = build_mounts(&[mount], &volumes, &[], None, false);
     assert!(!mounts[0].recursive_read_only, "readOnly wasn't set to true, so recursive_read_only must stay false per the CRI contract");
 }
 
@@ -91,7 +91,7 @@ fn recursive_read_only_unset_stays_false_even_with_read_only_true() {
     volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
     let mut mount = vm("v", "/etc/v");
     mount.read_only = Some(true);
-    let mounts = build_mounts(&[mount], &volumes, &[], None);
+    let mounts = build_mounts(&[mount], &volumes, &[], None, false);
     assert!(!mounts[0].recursive_read_only);
 }
 
@@ -99,7 +99,7 @@ fn recursive_read_only_unset_stays_false_even_with_read_only_true() {
 fn userns_mapping_none_leaves_uid_gid_mappings_empty() {
     let mut volumes = HashMap::new();
     volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
-    let mounts = build_mounts(&[vm("v", "/etc/v")], &volumes, &[], None);
+    let mounts = build_mounts(&[vm("v", "/etc/v")], &volumes, &[], None, false);
     assert!(mounts[0].uid_mappings.is_empty());
     assert!(mounts[0].gid_mappings.is_empty());
 }
@@ -108,7 +108,7 @@ fn userns_mapping_none_leaves_uid_gid_mappings_empty() {
 fn userns_mapping_some_is_carried_onto_the_mount() {
     let mut volumes = HashMap::new();
     volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
-    let mounts = build_mounts(&[vm("v", "/etc/v")], &volumes, &[], Some((100_000, 65_536)));
+    let mounts = build_mounts(&[vm("v", "/etc/v")], &volumes, &[], Some((100_000, 65_536)), false);
     assert_eq!(mounts[0].uid_mappings.len(), 1);
     assert_eq!(mounts[0].uid_mappings[0].host_id, 100_000);
     assert_eq!(mounts[0].uid_mappings[0].container_id, 0);
@@ -122,7 +122,7 @@ fn userns_mapping_is_not_applied_to_image_backed_mounts() {
     // path idmapped mounts apply to at all.
     let mut volumes = HashMap::new();
     volumes.insert("img".to_string(), ResolvedVolume::Image { image_ref: "docker.io/library/nginx:1.25".to_string() });
-    let mounts = build_mounts(&[vm("img", "/etc/nginx")], &volumes, &[], Some((100_000, 65_536)));
+    let mounts = build_mounts(&[vm("img", "/etc/nginx")], &volumes, &[], Some((100_000, 65_536)), false);
     assert!(mounts[0].uid_mappings.is_empty());
     assert!(mounts[0].gid_mappings.is_empty());
 }
@@ -136,7 +136,7 @@ fn a_mount_naming_a_block_device_volume_is_dropped_defensively() {
     // mismatch).
     let mut volumes = HashMap::new();
     volumes.insert("raw-disk".to_string(), ResolvedVolume::BlockDevice(PathBuf::from("/host/raw-disk")));
-    let mounts = build_mounts(&[vm("raw-disk", "/mnt/raw-disk")], &volumes, &[], None);
+    let mounts = build_mounts(&[vm("raw-disk", "/mnt/raw-disk")], &volumes, &[], None, false);
     assert!(mounts.is_empty());
 }
 
@@ -146,7 +146,7 @@ fn sub_path_is_joined_onto_the_volume_directory() {
     volumes.insert("config-volume".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/config-volume")));
     let mut mount = vm("config-volume", "/etc/coredns/Corefile");
     mount.sub_path = Some("Corefile".to_string());
-    let mounts = build_mounts(&[mount], &volumes, &[], None);
+    let mounts = build_mounts(&[mount], &volumes, &[], None, false);
     assert_eq!(mounts[0].host_path, "/vol/config-volume/Corefile");
 }
 
@@ -156,7 +156,7 @@ fn read_only_true_is_propagated() {
     volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
     let mut mount = vm("v", "/etc/v");
     mount.read_only = Some(true);
-    let mounts = build_mounts(&[mount], &volumes, &[], None);
+    let mounts = build_mounts(&[mount], &volumes, &[], None, false);
     assert!(mounts[0].readonly);
 }
 
@@ -164,7 +164,7 @@ fn read_only_true_is_propagated() {
 fn read_only_unset_defaults_to_false() {
     let mut volumes = HashMap::new();
     volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
-    let mounts = build_mounts(&[vm("v", "/etc/v")], &volumes, &[], None);
+    let mounts = build_mounts(&[vm("v", "/etc/v")], &volumes, &[], None, false);
     assert!(!mounts[0].readonly);
 }
 
@@ -174,7 +174,7 @@ fn read_only_explicit_false_stays_false() {
     volumes.insert("v".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/v")));
     let mut mount = vm("v", "/etc/v");
     mount.read_only = Some(false);
-    let mounts = build_mounts(&[mount], &volumes, &[], None);
+    let mounts = build_mounts(&[mount], &volumes, &[], None, false);
     assert!(!mounts[0].readonly);
 }
 
@@ -183,7 +183,7 @@ fn multiple_mounts_each_resolve_independently() {
     let mut volumes = HashMap::new();
     volumes.insert("a".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/a")));
     volumes.insert("b".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/b")));
-    let mounts = build_mounts(&[vm("a", "/mnt/a"), vm("b", "/mnt/b"), vm("c", "/mnt/c")], &volumes, &[], None);
+    let mounts = build_mounts(&[vm("a", "/mnt/a"), vm("b", "/mnt/b"), vm("c", "/mnt/c")], &volumes, &[], None, false);
     // "c" has no matching volume — dropped, leaving exactly the two resolvable ones.
     assert_eq!(mounts.len(), 2);
     assert!(mounts.iter().any(|m| m.container_path == "/mnt/a" && m.host_path == "/vol/a"));
@@ -196,7 +196,7 @@ fn coredns_shaped_mount_matches_the_real_crash_scenario() {
     // mounted at /etc/coredns, containing a Corefile.
     let mut volumes = HashMap::new();
     volumes.insert("config-volume".to_string(), ResolvedVolume::HostPath(PathBuf::from("/var/lib/nodelet/pods/abc/volumes/config-volume")));
-    let mounts = build_mounts(&[vm("config-volume", "/etc/coredns")], &volumes, &[], None);
+    let mounts = build_mounts(&[vm("config-volume", "/etc/coredns")], &volumes, &[], None, false);
     assert_eq!(mounts.len(), 1);
     assert_eq!(mounts[0].container_path, "/etc/coredns");
     assert!(!mounts[0].host_path.is_empty());
@@ -208,7 +208,7 @@ fn coredns_shaped_mount_matches_the_real_crash_scenario() {
 fn image_volume_sets_the_image_field_not_a_host_path() {
     let mut volumes = HashMap::new();
     volumes.insert("config-image".to_string(), ResolvedVolume::Image { image_ref: "docker.io/library/nginx@sha256:abc".to_string() });
-    let mounts = build_mounts(&[vm("config-image", "/etc/nginx")], &volumes, &[], None);
+    let mounts = build_mounts(&[vm("config-image", "/etc/nginx")], &volumes, &[], None, false);
     assert_eq!(mounts.len(), 1);
     assert_eq!(mounts[0].host_path, "");
     assert!(mounts[0].readonly, "image volumes must always be readonly");
@@ -221,7 +221,7 @@ fn image_volume_subpath_becomes_image_sub_path_not_a_joined_host_path() {
     volumes.insert("config-image".to_string(), ResolvedVolume::Image { image_ref: "example.com/img:latest".to_string() });
     let mut mount = vm("config-image", "/etc/nginx");
     mount.sub_path = Some("conf.d".to_string());
-    let mounts = build_mounts(&[mount], &volumes, &[], None);
+    let mounts = build_mounts(&[mount], &volumes, &[], None, false);
     assert_eq!(mounts[0].image_sub_path, "conf.d");
     assert_eq!(mounts[0].host_path, "");
 }
@@ -230,7 +230,7 @@ fn image_volume_subpath_becomes_image_sub_path_not_a_joined_host_path() {
 fn image_volume_with_no_subpath_leaves_image_sub_path_empty() {
     let mut volumes = HashMap::new();
     volumes.insert("config-image".to_string(), ResolvedVolume::Image { image_ref: "example.com/img:latest".to_string() });
-    let mounts = build_mounts(&[vm("config-image", "/etc/nginx")], &volumes, &[], None);
+    let mounts = build_mounts(&[vm("config-image", "/etc/nginx")], &volumes, &[], None, false);
     assert_eq!(mounts[0].image_sub_path, "");
 }
 
@@ -247,7 +247,7 @@ fn sub_path_expr_expands_a_downward_api_style_env_var() {
     let mut mount = vm("data", "/etc/data");
     mount.sub_path_expr = Some("$(POD_NAME)".to_string());
     let envs = [env("POD_NAME", "my-pod")];
-    let mounts = build_mounts(&[mount], &volumes, &envs, None);
+    let mounts = build_mounts(&[mount], &volumes, &envs, None, false);
     assert_eq!(mounts.len(), 1);
     assert_eq!(mounts[0].host_path, "/vol/data/my-pod");
 }
@@ -259,7 +259,7 @@ fn sub_path_expr_supports_multiple_references_and_literal_text() {
     let mut mount = vm("data", "/etc/data");
     mount.sub_path_expr = Some("$(POD_NAMESPACE)/$(POD_NAME)-logs".to_string());
     let envs = [env("POD_NAME", "my-pod"), env("POD_NAMESPACE", "default")];
-    let mounts = build_mounts(&[mount], &volumes, &envs, None);
+    let mounts = build_mounts(&[mount], &volumes, &envs, None, false);
     assert_eq!(mounts[0].host_path, "/vol/data/default/my-pod-logs");
 }
 
@@ -269,7 +269,7 @@ fn sub_path_expr_a_double_dollar_is_a_literal_dollar_not_a_reference() {
     volumes.insert("data".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/data")));
     let mut mount = vm("data", "/etc/data");
     mount.sub_path_expr = Some("price-$$5".to_string());
-    let mounts = build_mounts(&[mount], &volumes, &[], None);
+    let mounts = build_mounts(&[mount], &volumes, &[], None, false);
     assert_eq!(mounts[0].host_path, "/vol/data/price-$5");
 }
 
@@ -279,7 +279,7 @@ fn sub_path_expr_referencing_an_unknown_var_drops_the_mount() {
     volumes.insert("data".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/data")));
     let mut mount = vm("data", "/etc/data");
     mount.sub_path_expr = Some("$(NOT_SET)".to_string());
-    let mounts = build_mounts(&[mount], &volumes, &[], None);
+    let mounts = build_mounts(&[mount], &volumes, &[], None, false);
     assert!(mounts.is_empty(), "an unresolvable subPathExpr must never produce a mount pointing at a garbage path");
 }
 
@@ -289,7 +289,7 @@ fn sub_path_expr_an_unclosed_reference_drops_the_mount() {
     volumes.insert("data".to_string(), ResolvedVolume::HostPath(PathBuf::from("/vol/data")));
     let mut mount = vm("data", "/etc/data");
     mount.sub_path_expr = Some("$(POD_NAME".to_string());
-    let mounts = build_mounts(&[mount], &volumes, &[env("POD_NAME", "my-pod")], None);
+    let mounts = build_mounts(&[mount], &volumes, &[env("POD_NAME", "my-pod")], None, false);
     assert!(mounts.is_empty());
 }
 
@@ -300,7 +300,7 @@ fn sub_path_expr_wins_over_a_plain_sub_path_if_both_are_somehow_set() {
     let mut mount = vm("data", "/etc/data");
     mount.sub_path = Some("literal".to_string());
     mount.sub_path_expr = Some("$(POD_NAME)".to_string());
-    let mounts = build_mounts(&[mount], &volumes, &[env("POD_NAME", "expanded")], None);
+    let mounts = build_mounts(&[mount], &volumes, &[env("POD_NAME", "expanded")], None, false);
     assert_eq!(mounts[0].host_path, "/vol/data/expanded");
 }
 
@@ -310,6 +310,6 @@ fn sub_path_expr_also_applies_to_image_volumes() {
     volumes.insert("config-image".to_string(), ResolvedVolume::Image { image_ref: "example.com/img:latest".to_string() });
     let mut mount = vm("config-image", "/etc/nginx");
     mount.sub_path_expr = Some("$(POD_NAME)".to_string());
-    let mounts = build_mounts(&[mount], &volumes, &[env("POD_NAME", "my-pod")], None);
+    let mounts = build_mounts(&[mount], &volumes, &[env("POD_NAME", "my-pod")], None, false);
     assert_eq!(mounts[0].image_sub_path, "my-pod");
 }

@@ -28,6 +28,7 @@ impl CriRuntime {
         envs: &[KeyValue],
         qos: QosClass,
         claim_devices: &HashMap<String, PreparedPodClaim>,
+        runtime_handler: &str,
     ) -> Result<()> {
         // Resize status reporting (round 43): record what the pod spec is
         // currently asking for, every reconcile, regardless of whether a
@@ -177,7 +178,7 @@ impl CriRuntime {
 
         let attempt = self.restart_count(sandbox_id, &container.name);
         self.create_and_start_container(
-            sandbox_id, id, container, pod_sc, volumes, pull_secrets, envs, ContainerKind::App, attempt, qos, claim_devices,
+            sandbox_id, id, container, pod_sc, volumes, pull_secrets, envs, ContainerKind::App, attempt, qos, claim_devices, runtime_handler,
         )
         .await
     }
@@ -198,6 +199,7 @@ impl CriRuntime {
         pull_secrets: &[String],
         service_env: &BTreeMap<String, Vec<u8>>,
         claim_devices: &HashMap<String, PreparedPodClaim>,
+        runtime_handler: &str,
     ) -> Result<()> {
         let existing = self.list_pod_containers(sandbox_id).await?;
         let already_exists = existing.iter().any(|c| {
@@ -210,7 +212,7 @@ impl CriRuntime {
         let envs = self.resolve_container_env(pod, id, container, service_env).await?;
         let qos = crate::eviction::qos_class(pod);
         self.create_and_start_container(
-            sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Ephemeral, 0, qos, claim_devices,
+            sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Ephemeral, 0, qos, claim_devices, runtime_handler,
         )
         .await
     }
@@ -232,6 +234,7 @@ impl CriRuntime {
         attempt: u32,
         qos: QosClass,
         claim_devices: &HashMap<String, PreparedPodClaim>,
+        runtime_handler: &str,
     ) -> Result<()> {
         let image = container.image.clone().unwrap_or_default();
         let auth = self.resolve_pull_auth(id, pull_secrets, &image).await;
@@ -278,14 +281,15 @@ impl CriRuntime {
         // one run_sandbox() already allocated and applied at the sandbox
         // level (round 25); read-only here, never allocates.
         let userns_mapping = (!id.host_users).then(|| self.userns.assigned(&id.uid)).flatten();
-        let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes, envs, userns_mapping);
+        let handler_supports_recursive_ro = self.handler_supports_recursive_ro(runtime_handler);
+        let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes, envs, userns_mapping, handler_supports_recursive_ro);
         // `containerStatuses[].volumeMounts` (round 91; found in round 89's
         // re-audit): entirely derived from the spec, no RPC needed — cached
         // here (same key shape as `container_users`) for `build_status()`
         // to read back via plain lookup.
         self.container_volume_mount_statuses.lock().unwrap().insert(
             restart_count_key(sandbox_id, &container.name),
-            volume_mount_status_tuples(container.volume_mounts.as_deref().unwrap_or(&[])),
+            volume_mount_status_tuples(container.volume_mounts.as_deref().unwrap_or(&[]), handler_supports_recursive_ro),
         );
         if let Some(ResolvedVolume::HostPath(hosts_path)) = volumes.get(ETC_HOSTS_VOLUME_KEY) {
             mounts.push(Mount {
@@ -642,6 +646,7 @@ impl CriRuntime {
         service_env: &BTreeMap<String, Vec<u8>>,
         qos: QosClass,
         claim_devices: &HashMap<String, PreparedPodClaim>,
+        runtime_handler: &str,
     ) -> Result<InitProgress> {
         let running_v = ContainerState::ContainerRunning as i32;
         let exited_v = ContainerState::ContainerExited as i32;
@@ -668,7 +673,7 @@ impl CriRuntime {
                         let envs = self.resolve_container_env(pod, id, container, service_env).await?;
                         let attempt = self.restart_count(sandbox_id, &container.name);
                         self.create_and_start_container(
-                            sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt, qos, claim_devices,
+                            sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt, qos, claim_devices, runtime_handler,
                         )
                         .await?;
                         // Gate later containers on this one actually
@@ -701,7 +706,7 @@ impl CriRuntime {
                     let envs = self.resolve_container_env(pod, id, container, service_env).await?;
                     let attempt = self.restart_count(sandbox_id, &container.name);
                     self.create_and_start_container(
-                        sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt, qos, claim_devices,
+                        sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt, qos, claim_devices, runtime_handler,
                     )
                     .await?;
                     return Ok(InitProgress::Waiting);

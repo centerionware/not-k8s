@@ -27,6 +27,54 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 97: `volumeMounts[].recursiveReadOnly: IfPossible` real fallback (2026-08-01, same day)
+
+With all 3 of the user's chosen ❌ items done (rounds 94-96), the
+user asked to work through the remaining 🟡 partial/simplified
+items too ("do them all, let's get it done"). Of the 9, 4 are
+genuinely closeable by writing more code; the other 5 are DRA/CSI
+items whose only remaining gap is "unvalidated against a real
+driver" — a hardware/infra limitation, not missing code (see the
+persistent memory file for the full breakdown). This round closes
+the first of the 4: round 85's documented `IfPossible`-treated-
+identically-to-`Enabled` simplification.
+
+`recursive_read_only_cri()` (`volumes_pure.rs`) now takes a new
+`handler_supports_recursive_ro: bool` and makes a real decision:
+`Enabled` still always asks for it (unchanged — an unsupporting
+runtime rejects/ignores per its own CRI implementation); `IfPossible`
+resolves to `true` only when the resolved `RuntimeClass` handler
+actually advertises `recursiveReadOnlyMounts` support, `false`
+(falling back to a plain read-only mount) otherwise. The capability
+comes from a new `CriRuntime.recursive_read_only_handlers: HashMap<String,
+bool>` cached once at `connect()` time from the same `Status` RPC
+`runtime_handlers()` already makes on demand for
+`Node.status.runtimeHandlers` (round 53) — no extra RPC per container
+creation, matching this codebase's long-standing "cache once, don't
+add RPCs to the hot per-container path" posture (round 90/91's own
+container-user/recursiveReadOnly-reporting work took the same
+approach). `runtime_handler` (already resolved once per pod reconcile
+via `resolve_runtime_handler()`) is threaded down through
+`ensure_container()`/`ensure_ephemeral_container()`/
+`ensure_init_containers()` → `create_and_start_container()` →
+`build_mounts()`/`volume_mount_status_tuples()`, so the *reported*
+`containerStatuses[].volumeMounts[].recursiveReadOnly` status matches
+exactly what was actually requested of CRI, same "one resolution, used
+consistently at request time and report time" discipline round 91
+established.
+
+Existing unit tests updated for the new signature (`recursive_read_only.rs`,
+`volume_mount_status_tuples.rs`, `mounts.rs`) plus new assertions
+proving `IfPossible` now genuinely diverges from `Enabled` when the
+handler doesn't support it. New
+`test_recursive_read_only_if_possible_falls_back_without_erroring` in
+`deploy/lib/test/cases/volumes.sh` — fully automated (a pod reaches
+Running either way and its reported status is always a valid value,
+regardless of which way this test cluster's own runtime resolves the
+capability); the manual-note test's text extended with the specific
+Enabled-vs-Disabled-matches-advertised-capability spot-check, which
+does need to know the runtime's actual capability ahead of time.
+
 ## Round 96: TLS bootstrap — CSR-based initial client cert issuance (2026-08-01, same day)
 
 Last of the user's 3 chosen ❌ items ("do all of them in the order of
@@ -5486,7 +5534,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Projected volumes** — `configMap`/`secret`/`downwardAPI`, and now `serviceAccountToken` too (mints a real token via the `TokenRequest` API — `resolve_service_account_token()`; needs nodelet's client to have `create` on `serviceaccounts/token` in the namespace, a real RBAC requirement) merge into the volume dir, with `items`/`KeyToPath` key-selection-and-rename support. `clusterTrustBundle` sources are still skipped with a warning.
 - ✅ **downwardAPI volumes** (`write_downward_api_volume()`, `fieldRef` only — `resourceFieldRef` needs the resolved container spec and isn't supported)
 - ✅ **`volumeMounts[].mountPropagation`** (round 84; found in round 83's re-audit) — new pure `mount_propagation_cri()` (`volumes_pure.rs`) maps `HostToContainer`/`Bidirectional` (and `None`/unset, and any unrecognized value) onto CRI's `MountPropagation` enum, wired into both branches of `build_mounts()` (regular `HostPath` and image-backed mounts alike). Unset/unrecognized both fall back to `PRIVATE` — the same zero-value default this codebase already produced by omission before this round, so every mount that never set this field behaves identically to before. Genuinely automated e2e test proves wiring this newly-touched field on *every* mount didn't break the common (unset) case; the actual live propagation behavior (a new host-side mount becoming visible inside a running `HostToContainer` container without a restart) needs a real `mount(2)` syscall on the host after the pod is already running — a manual spot-check procedure, same honest-limitation treatment this project gives anything needing genuine root-level host mount operations mid-test.
-- 🟡 **`volumeMounts[].recursiveReadOnly`** (round 85; GA 1.33, KEP-3116; found in round 83's re-audit) — new pure `recursive_read_only_cri()` translates the API's ternary (`Disabled`/`IfPossible`/`Enabled`, `None` treated as `Disabled`) into CRI's plain boolean `Mount.recursive_read_only`, defensively enforcing the CRI proto's own contract (`recursive_read_only: true` requires `readonly: true` and `propagation` to resolve to `Private`) rather than trusting the caller — never sends a contract-violating combination, silently downgrading to `false` instead. **Documented scope simplification**: `IfPossible` is currently treated identically to `Enabled` (both resolve to `true` when the preconditions hold) — a genuine best-effort fallback would need to know whether the resolved runtime handler actually advertises `recursiveReadOnlyMounts` support (already surfaced to `Node.status.runtimeHandlers`, round 53) before deciding whether to ask for it at all; that capability isn't threaded down into the per-mount translation path this round, so an unsupporting runtime is left to reject or ignore the request per its own CRI implementation, same treatment this codebase already gives an unsupported `sysctl` (round 41).
+- ✅ **`volumeMounts[].recursiveReadOnly`** (round 85, GA 1.33, KEP-3116, found in round 83's re-audit; `IfPossible` fallback closed round 97) — pure `recursive_read_only_cri()` translates the API's ternary (`Disabled`/`IfPossible`/`Enabled`, `None` treated as `Disabled`) into CRI's plain boolean `Mount.recursive_read_only`, defensively enforcing the CRI proto's own contract (`recursive_read_only: true` requires `readonly: true` and `propagation` to resolve to `Private`) — never sends a contract-violating combination, silently downgrading to `false` instead. `Enabled` always asks for it (an unsupporting runtime is left to reject/ignore, same treatment this codebase already gives an unsupported `sysctl`, round 41); `IfPossible` (round 97) is a real best-effort fallback — `true` only when the resolved `RuntimeClass` handler actually advertises `recursiveReadOnlyMounts` support (`Node.status.runtimeHandlers`, round 53; `CriRuntime.recursive_read_only_handlers` caches this from a one-time `Status` RPC at `connect()`, no extra RPC per container), `false` (plain read-only mount) otherwise.
 - ✅ **`ContainerStatus.volumeMounts[].recursiveReadOnly` reporting** (round 91; found in round 89's re-audit) — the API's own `VolumeMountStatus.recursiveReadOnly` doc comment is explicit: *"An `IfPossible` value in the original VolumeMount must be translated to `Disabled` or `Enabled`, depending on the mount result."* This is the exact missing half of round 85's own documented `IfPossible` simplification. **Verified against upstream before implementing** (`gh api` fetch of `kubelet_pods.go`): real kubelet does *not* read this back from the runtime's own `ContainerStatus.mounts` — CRI has no volume *name* concept to reconstruct `VolumeMountStatus.name` from — it recomputes straight from the container's own `volumeMounts` spec using the same resolution as CRI mount-request time. New `volume_mount_status_tuples()` mirrors `recursive_read_only_cri()`'s exact resolution (round 85's `IfPossible`-as-`Enabled` simplification unchanged), computed once at container-creation time (no RPC needed at all — entirely spec-derived) and cached for `build_status()` to read back via plain lookup. Genuinely automated e2e test confirms a read-only `Enabled` mount reports `Enabled` and a read-write mount reports an unspecified value.
 - 🟡 **PersistentVolumeClaim / CSI** (`runtime/csi.rs`, `plugin_registry.rs`) — resolves a bound PVC's `PersistentVolume.spec.csi` source and drives `NodeStageVolume` (if the driver supports it)/`NodePublishVolume`, with per-node reference counting so `NodeUnstageVolume` only fires once every pod using a volume is gone. **Dynamic CSI driver discovery** (round 13) — a driver's `node-driver-registrar` sidecar can register itself against `NODELET_PLUGIN_REGISTRY_PATH` the same protocol it'd use against real kubelet's plugin watcher, no static config needed; `NODELET_CSI_DRIVERS` still works too, as a seed/override. **`nodeStageSecretRef`/`nodePublishSecretRef`** (round 13) — resolved to real Secret data and passed through to the driver. **Attach coordination** (round 19) — checks `CSIDriver.spec.attachRequired`, and for drivers that need it, waits on the matching `VolumeAttachment.status.attached` before Stage/Publish, threading `status.attachmentMetadata` through as `publish_context`. Calling the Controller service itself (`ControllerPublishVolume`/`ControllerUnpublishVolume`) stays out of scope — that's external-attacher's job upstream too, not kubelet's, confirmed against docs in round 19. Still out of scope: device-plugin registrations against this module (the same registration protocol, explicitly rejected with a real `NotifyRegistrationStatus{plugin_registered: false}` rather than ignored — that's `device_plugins.rs`'s job instead). Unvalidated against a real CSI driver — see rounds 12, 13, and 19 notes.
 - ✅ **hostPath** (found in a fresh gap re-audit; closed round 65) — `spec.volumes[].hostPath` resolves directly to the host's own existing path (not materialized under `VOLUME_ROOT` like every other volume kind), with real `type` validation (`DirectoryOrCreate`/`FileOrCreate`/`Directory`/`File`/`Socket`/`CharDevice`/`BlockDevice`) matching real kubelet's own create-vs-require-existing semantics exactly. A validation failure is logged and the volume skipped, same best-effort posture as every other unresolvable volume kind.
@@ -6297,3 +6345,13 @@ accordingly; see those files' own updated framing.
       `--config` file (round 94), client certificate authentication
       (round 95), TLS bootstrap (round 96) — all 3 now done. Only the
       explicitly-not-recommended Checkpoint API remains ❌.
+- [x] Round 97: `volumeMounts[].recursiveReadOnly: IfPossible` real
+      fallback — closes round 85's documented simplification.
+      `handler_supports_recursive_ro`, cached once from `Status` RPC
+      results at `connect()` (no extra RPC per container), threaded
+      through `ensure_container()`/`ensure_ephemeral_container()`/
+      `ensure_init_containers()` → `build_mounts()`/
+      `volume_mount_status_tuples()`. First of 4 closeable 🟡 items
+      (user: "do them all, let's get it done" — the other 5 🟡 items
+      are DRA/CSI-driver-validation gaps, not missing code). See round
+      97 notes.

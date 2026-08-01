@@ -8,6 +8,7 @@ impl PodRuntime for CriRuntime {
         let ready_state = v1::PodSandboxState::SandboxReady as i32;
         let dns = dns_config_for(pod, &self.cluster_dns, &self.cluster_domain);
         let runtime_handler = self.resolve_runtime_handler(pod).await;
+        let runtime_handler_for_containers = runtime_handler.clone();
         let spec = pod.spec.as_ref();
         let hostname = resolve_pod_hostname(
             spec.and_then(|s| s.hostname.as_deref()),
@@ -116,6 +117,7 @@ impl PodRuntime for CriRuntime {
                     &service_env,
                     qos,
                     &claim_devices,
+                    &runtime_handler_for_containers,
                 )
                 .await?;
             match progress {
@@ -156,7 +158,7 @@ impl PodRuntime for CriRuntime {
         if let Some(spec) = pod.spec.as_ref() {
             for c in &spec.containers {
                 let envs = self.resolve_container_env(pod, &id, c, &service_env).await?;
-                self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs, qos, &claim_devices)
+                self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs, qos, &claim_devices, &runtime_handler_for_containers)
                     .await?;
             }
             // Added post-hoc via the `ephemeralcontainers` subresource (e.g.
@@ -166,7 +168,7 @@ impl PodRuntime for CriRuntime {
             for ec in spec.ephemeral_containers.as_deref().unwrap_or(&[]) {
                 let container = ephemeral_to_container(ec);
                 if let Err(e) = self
-                    .ensure_ephemeral_container(&sandbox_id, &id, pod, &container, pod_sc, &volumes, &pull_secrets, &service_env, &claim_devices)
+                    .ensure_ephemeral_container(&sandbox_id, &id, pod, &container, pod_sc, &volumes, &pull_secrets, &service_env, &claim_devices, &runtime_handler_for_containers)
                     .await
                 {
                     warn!(container = %ec.name, error = ?e, "failed to start ephemeral container");
