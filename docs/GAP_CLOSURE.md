@@ -27,6 +27,51 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 76: fresh gap re-audit (2026-07-31, same day)
+
+No code changed. User picked re-audit again (offered alongside
+`allocatedResourcesStatus` and pausing, since every crash-loop-backoff-
+related item from round 72 onward is now closed). Method: grepped the
+codebase and the vendored `proto/cri.proto` directly against specific
+fields not yet checked by any prior round (same style as rounds 27/72),
+rather than doc-reading.
+
+Found 2 previously-untracked, confirmed (not speculative) gaps:
+
+1. **Raw block volumes** (`spec.containers[].volumeDevices` +
+   `volumeMode: Block`) — `volumeDevices` is referenced exactly once in
+   the whole codebase, in `sandbox.rs`'s `ephemeral_to_container()` (a
+   plain struct-field copy for the `EphemeralContainer` → `Container`
+   conversion), never actually read by `resolve_volumes()`/
+   `build_mounts()`/`create_and_start_container()` for any container
+   kind. This corrects a stale framing from round 48's own audit, which
+   lumped this in with hostPath as "the same pre-existing gap" — hostPath
+   was closed in round 65, but raw block volumes were never revisited as
+   their own item since. CRI's `ContainerConfig.devices` field (already
+   used for device-plugin device-node injection since round 14) is the
+   exact mechanism needed; nothing new to vendor.
+2. **`securityContext.procMount: Unmasked`** — CRI's own
+   `LinuxContainerSecurityContext.masked_paths`/`.readonly_paths` fields
+   (the actual mechanism `Unmasked` needs) exist in the vendored proto
+   but are never referenced in `resources.rs`/`container_support.rs` at
+   all. Every container always gets the runtime's own default `/proc`
+   masking regardless of what the pod spec asks for. Lower value — a
+   narrow, uncommonly-set field — but cleanly implementable since CRI
+   already exposes the mechanism.
+
+Also specifically checked and confirmed already-tracked/already-closed,
+not new findings: `procMount: Default` (the common case, already correct
+by construction — nothing to translate), `readOnlyRootFilesystem`
+(already wired), pod-level `spec.resources` (already tracked from an
+earlier audit), `spec.os` (Linux-only project by design, not a gap the
+same way Windows support isn't), AppArmor/SELinux options (already
+flagged, not re-flagged per round 48's own precedent for this section).
+
+Ranked by value: raw block volumes (the more complete, more clearly
+real-world-relevant gap — Block-mode PVCs are a genuine, if less common,
+storage pattern) over `procMount: Unmasked` (narrower, more niche). Ask
+the user for sequencing again before starting the next round.
+
 ## Round 75: ContainerStatus.lastState tracking (2026-07-31, same day)
 
 Closes the display gap round 73's crash-loop backoff deliberately left
@@ -4410,6 +4455,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
+- ❌ **`securityContext.procMount: Unmasked`** (found in round 76's re-audit) — CRI's own `LinuxContainerSecurityContext.masked_paths`/`.readonly_paths` fields (the actual mechanism `Unmasked` needs — clearing the runtime's default `/proc` masking, vs. the implicit `Default` behavior of leaving them alone) exist in the vendored `proto/cri.proto` but are never referenced anywhere in `resources.rs`/`container_support.rs` at all — confirmed via direct grep, not just doc-reading. Every container always gets the runtime's own default masking regardless of what the pod spec asks for. Low-to-moderate value (a narrow, uncommonly-set field, mostly used by specialized sysadmin-style containers), but a real, cleanly-implementable gap: CRI already has the exact mechanism, nothing new to vendor.
 - ✅ **`securityContext.sysctls`** (round 41; found in round 39's re-audit) — new pure `pod_sysctls()` flattens `spec.securityContext.sysctls` into CRI's `LinuxPodSandboxConfig.sysctls` map, threaded through `sandbox_config()`/`ensure_pod()` alongside the existing hostname resolution. No admission-time allowlisting of "safe" (namespaced) vs. unsafe (host-wide) sysctls — that's the apiserver's job upstream and nodelet has no admission layer at all; an unsupported sysctl simply surfaces as a real `RunPodSandbox` error from the CRI runtime. Genuinely automated e2e test (a real container's own `/proc/sys` read). See round 41 notes.
 - ✅ **`hostPID`/`hostIPC`/`shareProcessNamespace`** (round 40; found in round 39's re-audit) — new pure `pid_namespace_mode(host_pid, share_process_namespace) -> NamespaceMode` (`hostPID` wins → `Node`, else `shareProcessNamespace` → `Pod`, else `Container`) is now always applied, on both `sandbox_config()`'s `namespace_options.pid` and each container's own `linux_security_context()`'s `namespace_options.pid` (mirroring real kubelet setting it in both places). **Correctness fix, not just a missing feature**: CRI's own proto comment on `NamespaceOption.pid` says *"the CRI default is POD, but the v1.PodSpec default is CONTAINER"* — before this round nodelet never set the field at all, so every container was silently getting containerd's own POD-shared default, the **opposite** of real Kubernetes' actual default. `hostIPC` sets `namespace_options.ipc` to `Node` (else `Pod` — IPC has no `CONTAINER`-scope concept in the API at all, unlike PID). Genuinely automated e2e tests for `hostPID`/`shareProcessNamespace` (a container's own pid, structural proof); `hostIPC` is unit-tested only — no simple portable shell-level IPC probe in a minimal image, a documented scope limitation. See round 40 notes.
 - ✅ **User namespaces** (`spec.hostUsers: false`, round 25; found in round 22's re-audit) — `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive host UID/GID range (fixed length, default 65536, configurable via `NODELET_USERNS_BASE_UID`/`_LENGTH`/`_MAX_PODS`), set as a `POD`-mode `UserNamespace` on `LinuxSandboxSecurityContext.namespace_options.userns_options`. Simplified vs. upstream's own variable-length `usernsManager`: every pod gets the same fixed range size, and allocation state is in-memory only (self-heals as still-running pods reconcile, narrow double-allocation window across a nodelet restart — documented, not hidden). Unvalidated against a real CRI runtime's actual `userns_options` wire support — see round 25 notes.
@@ -4446,6 +4492,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **Generic ephemeral volumes** (round 31; `volumeSource.ephemeral`, found in round 27's re-audit) — `resolve_volumes()` now recognizes `.ephemeral`, resolving the deterministic-named (`<pod name>-<volume name>`) PVC the ephemeral-volume controller (a `kube-controller-manager` component — not nodelet's job, same as dynamic provisioning) auto-creates, with an ownership safety check (by UID) before trusting it, then reuses all of CSI's existing mount machinery. Unvalidated against a real CSI driver/ephemeral-volume controller — see round 31 notes.
 - ✅ **Image volume source** (round 32; `volumeSource.image`, KEP-4639, still beta, found in round 27's re-audit) — `resolve_volumes()`/`build_mounts()` use CRI's native `Mount.image`/`image_sub_path` fields directly (no host-path materialization needed, unlike every other volume kind) after a `PullImage` call resolves the reference. Always read-only, per the KEP. Genuinely automated e2e test (no external StorageClass/CSI driver needed — any pullable image works). See round 32 notes.
 - 🟡 **`Node.status.volumesInUse`/`.volumesAttached`** (round 34; found in round 27's re-audit) — `CsiDrivers::mounted_volumes()` exposes the mount reference-counting round 12 already tracked; `node.rs::csi_unique_volume_name()` builds real kubelet's `kubernetes.io/csi/<driver>^<volume_handle>` naming. Scoped to CSI volumes only (this project's actual PVC story, rounds 12/13/19); CSI's own attach coordination (round 19) doesn't read these fields itself. **Deliberately lower-confidence by design**: whether a real attach/detach controller is satisfied by this is unvalidated, not just unvalidated by sandbox limitation. See round 34 notes.
+- ❌ **Raw block volumes** (`spec.containers[].volumeDevices` + a PV/PVC's `volumeMode: Block`; found in round 76's re-audit, correcting round 48's stale "same gap as hostPath" framing — hostPath itself closed round 65, this never did) — confirmed via grep that `volumeDevices` is referenced exactly once in this whole codebase, in `sandbox.rs`'s `ephemeral_to_container()`, a plain struct-field copy converting an `EphemeralContainer` to a `Container` — never actually read by `resolve_volumes()`/`build_mounts()`/`create_and_start_container()` for *any* container kind. CRI's own `ContainerConfig.devices` field (already used for device-plugin device-node injection, round 14) is the exact mechanism a Block-mode PVC would need, just never wired for this case. A pod requesting `volumeMode: Block` today silently gets no device at all rather than a real error or the expected raw block device.
 
 ### Node-pressure eviction
 - ✅ MemoryPressure/DiskPressure *conditions* reflect real reads
@@ -5052,7 +5099,15 @@ accordingly; see those files' own updated framing.
       real kubectl's display. Closes the display gap round 73
       deliberately left open. 20 new unit tests + a genuinely automated
       e2e test. Scoped to app containers only. See round 75 notes.
-- [ ] Candidates for the next round: `allocatedResourcesStatus` (alpha/beta
-      upstream, lower urgency) or a fresh gap re-audit — every item
-      tracked since round 72 is now closed. Ask before starting the next
-      round.
+- [x] Round 76: fresh gap re-audit — no code change. Found 2 new,
+      confirmed (grep-verified, not speculative) candidates: raw block
+      volumes (`volumeDevices`/`volumeMode: Block`, referenced exactly
+      once in the whole codebase and never actually wired — corrects a
+      stale round-48 framing), and `securityContext.procMount: Unmasked`
+      (CRI's own `masked_paths`/`readonly_paths` fields exist in the
+      vendored proto but are never used). See round 76 notes.
+- [ ] Candidates for the next round, ranked: raw block volumes (more
+      complete, more real-world-relevant), `securityContext.procMount:
+      Unmasked` (narrower/more niche), or `allocatedResourcesStatus`
+      (alpha/beta upstream, lowest urgency of the three). Ask before
+      starting the next round.
