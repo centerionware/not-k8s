@@ -240,6 +240,20 @@ impl DevicePlugins {
             .collect()
     }
 
+    /// Live health for one already-allocated device — `containerStatuses[].allocatedResourcesStatus`
+    /// (round 79; `ResourceHealthStatus`, KEP-4680, found in round 72's
+    /// re-audit) needs this per-device signal for devices a container is
+    /// *currently* using, not just the aggregate healthy-count
+    /// `capacity_map()` reports. `None` if `resource_name` isn't
+    /// registered at all (e.g. the plugin deregistered since allocation —
+    /// matches upstream's own `Unknown` case) or `device_id` isn't in its
+    /// current inventory; `Some(healthy)` otherwise, straight off the
+    /// same `ListAndWatch`-fed state `capacity_map()`/`allocate()` already
+    /// use — no new tracking, purely a read of what's already there.
+    pub fn health_of(&self, resource_name: &str, device_id: &str) -> Option<bool> {
+        self.plugins.lock().unwrap().get(resource_name)?.devices.iter().find(|d| d.id == device_id).map(|d| d.healthy)
+    }
+
     /// `(resource_name, healthy device IDs)` for every resource — the
     /// PodResources API's `GetAllocatableResources` (round 74) needs the
     /// actual IDs, not just `capacity_map()`'s counts.
@@ -474,3 +488,6 @@ mod tests_preferred_allocation;
 #[cfg(test)]
 #[path = "device_plugins_tests/all_healthy_device_ids.rs"]
 mod tests_all_healthy_device_ids;
+#[cfg(test)]
+#[path = "device_plugins_tests/health_of.rs"]
+mod tests_health_of;

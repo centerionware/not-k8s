@@ -27,6 +27,55 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 79: allocatedResourcesStatus (2026-07-31, same day)
+
+Closes the last item from round 72's fresh gap re-audit — the only
+candidate remaining after rounds 74 (PodResources API) and this round's
+own predecessors closed the others.
+
+- New `DevicePlugins::health_of(resource_name, device_id) -> Option<bool>`
+  — a pure read over the module's existing `ListAndWatch`-fed inventory
+  state (the same data `capacity_map()`/`allocate()` already use), no new
+  bookkeeping. `None` covers both "resource never registered" and
+  "device ID not currently in inventory" (e.g. the plugin deregistered
+  since allocation) — both map to the API's own `Unknown` health value
+  via new `resource_health_string()`, rather than guessing `Healthy` or
+  `Unhealthy` either way.
+- New `CriRuntime::allocated_resources_status()` (`container_support.rs`)
+  joins the pre-existing `device_allocations` side table (round 14, "what
+  did this container end up with") against `health_of()` for each
+  currently-held device — a read-only projection, exactly the same shape
+  every PodResources-API-round-74-style addition in this codebase takes.
+- New `ContainerRuntimeStatus.allocated_resources_status: Vec<(String,
+  String, String)>` (resource name, device ID, health string — kept as a
+  plain tuple, not the generated k8s-openapi types, matching every other
+  DTO on this struct) and `pods.rs`'s new `allocated_resources_status_field()`
+  groups those into the API's `ResourceStatus`/`ResourceHealth` shape
+  (one `ResourceStatus` per resource name, each holding every device's
+  own `ResourceHealth`) — `None` (field entirely absent) for a container
+  with nothing allocated, not an empty list.
+- Wired into all three status-builder call sites — app containers
+  (`status.rs`'s main `build_status()` loop) and, via the shared
+  `build_labeled_container_statuses()`, init *and* ephemeral containers
+  too. Device allocation itself already applies uniformly to any
+  container kind (all three route through the same
+  `create_and_start_container()`), so this status field does too —
+  unlike round 73/75's crash-loop-backoff/`lastState` work, which was
+  deliberately scoped to app containers only because *that* underlying
+  mechanism (`ensure_container()`'s own restart path) genuinely is
+  app-container-specific.
+- 11 new unit tests: `DevicePlugins::health_of()` (3),
+  `resource_health_string()` (3), `allocated_resources_status_field()`'s
+  grouping behavior (5, including a full `build_pod_status()` end-to-end
+  check).
+- New e2e tests in `device_plugins.sh`: a genuinely automated regression
+  check that a plain pod with no device-plugin resources never gets a
+  spurious `allocatedResourcesStatus` entry, plus a manual-note for the
+  live health-transition case (same hardware limitation every
+  device-plugin round since round 14 has carried — genuinely observing a
+  device flip Healthy→Unhealthy on cue needs real or fault-injectable
+  hardware behind a real plugin).
+
 ## Round 78: securityContext.procMount (2026-07-31, same day)
 
 Closes the second finding from round 76's re-audit.
@@ -4553,7 +4602,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - 🟡 **Dynamic Resource Allocation** (`spec.resourceClaims`; found in round 58's re-audit; closed round 63, gating + batching closed round 64) — kubelet's actual responsibilities are implemented: resolving a pod's `resourceClaims` to their `ResourceClaim` objects' `status.allocation`, gating on `status.reservedFor` actually listing this pod (round 64 — real kubelet's own safety check; `reservedFor` itself is scheduler-written, not kubelet-written, correcting round 63's docs), calling the owning driver(s)' `NodePrepareResources`/`NodeUnprepareResources` once per driver per pod covering every claim it owns (round 64 batching; new `dra.rs`, reusing the plugin-registration infrastructure with a new `"DRAPlugin"` type), and wiring the returned CDI device IDs into each container's CRI `ContainerConfig.cdi_devices` per its `resources.claims[].{name, request}` entries. **Known scope limitations**: `proto/draplugin.proto` was reconstructed from public documentation rather than vendored from upstream, so its exact wire format is unverified against a live third-party driver; no genuinely automated e2e test exists (needs a real DRA driver binary this bash-only harness can't stand up — see `dra.sh`'s manual-spot-check notes, same honest-limitation pattern as `device_plugins.sh`).
 - ✅ **Swap support (`memorySwap.swapBehavior`)** (GA 1.34; found in round 65's fresh gap re-audit; closed round 68) — `NODELET_MEMORY_SWAP_BEHAVIOR` (`NoSwap` default / `LimitedSwap`) drives CRI's native `LinuxContainerResources.memory_swap_limit_in_bytes` via new `container_swap_limit_bytes()`, implementing upstream's KEP-2400 formula exactly for `LimitedSwap` (proportional share for Burstable-shaped containers only, an emergent property of the per-container `request == limit` / no-request checks rather than a separate QoS lookup). **Known scope limitation**: no `--system-reserved`/`--kube-reserved`-equivalent knob for swap, so the node's full raw `SwapTotal` is used with nothing withheld.
 - ✅ **PodResources API** (round 74; found in round 72's re-audit) — kubelet's own gRPC service (`List`/`GetAllocatableResources`/`Get`, `k8s.io/kubelet/pkg/apis/podresources/v1`), served over a Unix socket (`NODELET_POD_RESOURCES_SOCKET_PATH`) for external device-monitoring tooling (NVIDIA DCGM and similar exporters query this directly rather than guessing allocation from `Node.status`). Nodelet is the gRPC *server* here for the first time in this codebase (every other plugin protocol — CSI/device-plugin/DRA — has nodelet dialing OUT as the client); a read-only projection of `cpu_manager.rs`/`memory_manager.rs`/`device_plugins.rs`'s already-tracked state via 2 new `PodRuntime` trait methods (`pod_resources_snapshot()`/`allocatable_resources()`, default-empty on the mock runtime), not new allocation logic. **Known scope limitation, documented not hidden**: DRA claim devices (`dynamic_resources`) aren't surfaced — `PreparedPodClaim`s are recomputed fresh every reconcile rather than kept in a queryable side table the way CPU/Memory/device-plugin state is, unlike everything else this endpoint reports.
-- ❌ **`allocatedResourcesStatus` / ResourceHealthStatus** (`containerStatuses[].allocatedResourcesStatus`; found in round 72's re-audit; alpha/beta KEP-4680, `ResourceHealthStatus` feature gate) — per-device health (Healthy/Unhealthy/Unknown) isn't reported back into `PodStatus` at all; `device_plugins.rs` already tracks per-device health from `ListAndWatch` for capacity/allocatable purposes, but a device going unhealthy *after* allocation to a running container currently has no pod-visible signal at all. Lower priority than PodResources API — still an alpha/beta upstream feature, not GA.
+- ✅ **`allocatedResourcesStatus` / ResourceHealthStatus** (round 79; `containerStatuses[].allocatedResourcesStatus`; found in round 72's re-audit; KEP-4680) — new `DevicePlugins::health_of()` (a read-only query over the same `ListAndWatch`-fed state `capacity_map()`/`allocate()` already use, no new tracking) plus `resource_health_string()`/`allocated_resources_status_field()` (matching upstream's own `Healthy`/`Unhealthy`/`Unknown` values exactly — a deregistered plugin or an untracked device ID reports `Unknown`, never guessed either way) surface live per-device health for every device-plugin allocation a container currently holds, grouped by resource name into the API's `ResourceStatus`/`ResourceHealth` shape. Wired into all three status-builder call sites (app, init, and ephemeral containers) — device allocation itself already applies uniformly to any container kind via the shared `create_and_start_container()`, so this does too.
 
 ### Security context
 - ✅ **`securityContext`** — `runAsUser`/`runAsGroup`, capabilities add/drop, `privileged`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation`→`no_new_privs`, `supplementalGroups`, `seccompProfile` (`linux_security_context()`). Not yet: `runAsNonRoot` verification against the image's actual user, AppArmor profile, SELinux options.
@@ -5226,6 +5275,15 @@ accordingly; see those files' own updated framing.
       field is left unset, unlike relying on its own OCI-spec default).
       9 new unit tests + 2 genuinely automated e2e tests (`/proc/kcore`'s
       byte-count under Default vs. Unmasked). See round 78 notes.
-- [ ] Candidates for the next round: `allocatedResourcesStatus`
-      (alpha/beta upstream) — the last item from round 76's re-audit — or
-      a fresh re-audit. Ask before starting the next round.
+- [x] Round 79: `allocatedResourcesStatus` — new `DevicePlugins::health_of()`
+      (read-only query over already-tracked `ListAndWatch` state) plus
+      `resource_health_string()`/`allocated_resources_status_field()`
+      surface live per-device health for a container's device-plugin
+      allocations into `containerStatuses[].allocatedResourcesStatus`,
+      wired into all three container-status builders (app/init/
+      ephemeral). Closes the last item from round 72's fresh gap
+      re-audit. 11 new unit tests + a genuinely automated regression e2e
+      test. See round 79 notes.
+- [ ] Every item tracked since round 72 is now closed. Candidates for the
+      next round: a fresh gap re-audit is the natural next step. Ask
+      before starting the next round.

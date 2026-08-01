@@ -824,3 +824,55 @@ fn build_pod_status_leaves_last_state_unset_with_no_recorded_history() {
     let cs = &status.container_statuses.unwrap()[0];
     assert!(cs.last_state.is_none());
 }
+
+// --- allocated_resources_status_field (round 79: ResourceHealthStatus) ---
+
+#[test]
+fn empty_entries_produce_no_allocated_resources_status_field() {
+    assert!(allocated_resources_status_field(&[]).is_none());
+}
+
+#[test]
+fn single_device_produces_one_resource_status_with_one_health_entry() {
+    let entries = vec![("nvidia.com/gpu".to_string(), "gpu-0".to_string(), "Healthy".to_string())];
+    let out = allocated_resources_status_field(&entries).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].name, "nvidia.com/gpu");
+    let resources = out[0].resources.as_ref().unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].resource_id, "gpu-0");
+    assert_eq!(resources[0].health.as_deref(), Some("Healthy"));
+}
+
+#[test]
+fn multiple_devices_for_the_same_resource_group_under_one_resource_status() {
+    let entries = vec![
+        ("nvidia.com/gpu".to_string(), "gpu-0".to_string(), "Healthy".to_string()),
+        ("nvidia.com/gpu".to_string(), "gpu-1".to_string(), "Unhealthy".to_string()),
+    ];
+    let out = allocated_resources_status_field(&entries).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].resources.as_ref().unwrap().len(), 2);
+}
+
+#[test]
+fn different_resources_produce_separate_resource_status_entries() {
+    let entries = vec![
+        ("nvidia.com/gpu".to_string(), "gpu-0".to_string(), "Healthy".to_string()),
+        ("example.com/fpga".to_string(), "fpga-0".to_string(), "Unknown".to_string()),
+    ];
+    let out = allocated_resources_status_field(&entries).unwrap();
+    assert_eq!(out.len(), 2);
+    assert!(out.iter().any(|r| r.name == "nvidia.com/gpu"));
+    assert!(out.iter().any(|r| r.name == "example.com/fpga"));
+}
+
+#[test]
+fn build_pod_status_surfaces_allocated_resources_status_into_container_statuses() {
+    let mut rt = running_status();
+    rt.containers[0].allocated_resources_status = vec![("nvidia.com/gpu".to_string(), "gpu-0".to_string(), "Healthy".to_string())];
+    let status = bps("10.0.0.1", &rt, None);
+    let cs = &status.container_statuses.unwrap()[0];
+    let ars = cs.allocated_resources_status.as_ref().expect("expected allocatedResourcesStatus");
+    assert_eq!(ars[0].name, "nvidia.com/gpu");
+}

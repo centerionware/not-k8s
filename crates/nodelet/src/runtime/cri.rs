@@ -540,6 +540,9 @@ mod tests_linux_security_context;
 #[path = "cri_tests/proc_mount_paths.rs"]
 mod tests_proc_mount_paths;
 #[cfg(test)]
+#[path = "cri_tests/resource_health_string.rs"]
+mod tests_resource_health_string;
+#[cfg(test)]
 #[path = "cri_tests/dns_config.rs"]
 mod tests_dns_config;
 #[cfg(test)]

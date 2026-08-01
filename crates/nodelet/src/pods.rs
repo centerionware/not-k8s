@@ -15,7 +15,7 @@ use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
     ConfigMap, ContainerState, ContainerStateRunning, ContainerStateTerminated, ContainerStateWaiting,
-    ContainerStatus, HostIP, Pod, PodCondition, PodIP, PodStatus, Secret, Volume,
+    ContainerStatus, HostIP, Pod, PodCondition, PodIP, PodStatus, ResourceHealth, ResourceStatus, Secret, Volume,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{ListParams, Patch, PatchParams};
@@ -474,6 +474,29 @@ fn container_state(c: &crate::runtime::ContainerRuntimeStatus, started_at: Optio
 /// `CriRuntime`'s `last_terminated` side table / `TerminatedInfo`).
 /// `Default::default()` (an empty `ContainerState`, matching upstream's
 /// own "nothing to report yet" shape) when there's none.
+/// `containerStatuses[].allocatedResourcesStatus` (round 79;
+/// `ResourceHealthStatus`, KEP-4680) — groups `(resource_name, device_id,
+/// health)` entries by resource name into the API's `ResourceStatus`
+/// shape (one entry per resource, each with a list of per-device
+/// `ResourceHealth`). `None` for an empty input, matching every other
+/// "nothing to report" field on this struct — an entry never appears in
+/// this list at all for a container with no device-plugin resources
+/// allocated, rather than an empty list.
+fn allocated_resources_status_field(entries: &[(String, String, String)]) -> Option<Vec<ResourceStatus>> {
+    if entries.is_empty() {
+        return None;
+    }
+    let mut by_resource: Vec<(String, Vec<ResourceHealth>)> = Vec::new();
+    for (resource_name, device_id, health) in entries {
+        let health_entry = ResourceHealth { resource_id: device_id.clone(), health: Some(health.clone()) };
+        match by_resource.iter_mut().find(|(name, _)| name == resource_name) {
+            Some((_, healths)) => healths.push(health_entry),
+            None => by_resource.push((resource_name.clone(), vec![health_entry])),
+        }
+    }
+    Some(by_resource.into_iter().map(|(name, resources)| ResourceStatus { name, resources: Some(resources) }).collect())
+}
+
 fn last_container_state(last: Option<&crate::runtime::TerminatedInfo>) -> ContainerState {
     match last {
         Some(info) => ContainerState {
@@ -566,6 +589,7 @@ fn build_pod_status(
             last_state: c.last_terminated.as_ref().map(|info| last_container_state(Some(info))),
             resources: c.resources.clone(),
             allocated_resources: c.allocated_resources.clone(),
+            allocated_resources_status: allocated_resources_status_field(&c.allocated_resources_status),
             stop_signal: c.stop_signal.clone(),
             ..Default::default()
         })
@@ -601,6 +625,7 @@ fn build_pod_status(
             started: Some(c.running),
             container_id: c.container_id.clone(),
             state: Some(container_state(c, None, "PodInitializing")),
+            allocated_resources_status: allocated_resources_status_field(&c.allocated_resources_status),
             stop_signal: c.stop_signal.clone(),
             ..Default::default()
         })
@@ -638,6 +663,7 @@ fn build_pod_status(
                     ..Default::default()
                 }
             }),
+            allocated_resources_status: allocated_resources_status_field(&c.allocated_resources_status),
             stop_signal: c.stop_signal.clone(),
             ..Default::default()
         })

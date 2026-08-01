@@ -457,7 +457,10 @@ previously never masked `/proc` for any container at all (a modern
 containerd applies zero masking when `masked_paths`/`readonly_paths` are
 left unset) — it now always sends them explicitly, matching real
 kubelet's own posture, with `Default` getting the standard masked/readonly
-lists and `Unmasked` getting genuinely empty ones. Full status list in
+lists and `Unmasked` getting genuinely empty ones. Round 79 closed
+`allocatedResourcesStatus` (KEP-4680): `containerStatuses[]` now reports
+live per-device health for device-plugin allocations, closing the last
+item from round 72's fresh gap re-audit. Full status list in
 `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where

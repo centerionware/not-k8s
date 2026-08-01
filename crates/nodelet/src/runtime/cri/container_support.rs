@@ -1,5 +1,18 @@
 use super::*;
 
+/// `DevicePlugins::health_of()`'s `Option<bool>` -> the
+/// `ResourceHealth.health` API string (round 79) — matches upstream's
+/// own 3 documented values exactly: a device plugin that deregistered
+/// (or a device ID it no longer reports at all) reports `"Unknown"`
+/// rather than being assumed either healthy or unhealthy.
+pub(crate) fn resource_health_string(health: Option<bool>) -> &'static str {
+    match health {
+        Some(true) => "Healthy",
+        Some(false) => "Unhealthy",
+        None => "Unknown",
+    }
+}
+
 /// The mutable tag on an image reference, if any — `None` for a bare
 /// digest reference (`repo@sha256:...`) or a plain repo name with no tag
 /// at all. Only looks at the segment after the last `/`, so a registry
@@ -310,6 +323,29 @@ impl CriRuntime {
             return;
         }
         self.device_allocations.lock().unwrap().insert(restart_count_key(sandbox_id, container_name), allocations);
+    }
+
+    /// `containerStatuses[].allocatedResourcesStatus` (round 79;
+    /// `ResourceHealthStatus`, found in round 72's re-audit) — live
+    /// per-device health for every device-plugin allocation currently
+    /// recorded for this container, queried straight off
+    /// `device_plugins`' own `ListAndWatch`-fed state (no new tracking).
+    /// Empty for a container with no device-plugin resources allocated
+    /// at all.
+    pub(crate) fn allocated_resources_status(&self, sandbox_id: &str, container_name: &str) -> Vec<(String, String, String)> {
+        let key = restart_count_key(sandbox_id, container_name);
+        let Some(allocations) = self.device_allocations.lock().unwrap().get(&key).cloned() else {
+            return Vec::new();
+        };
+        allocations
+            .into_iter()
+            .flat_map(|(resource_name, device_ids)| {
+                device_ids.into_iter().map(move |device_id| {
+                    let health = resource_health_string(self.device_plugins.health_of(&resource_name, &device_id));
+                    (resource_name.clone(), device_id, health.to_string())
+                })
+            })
+            .collect()
     }
 
     /// Give back every device allocation this list represents — used both

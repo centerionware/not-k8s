@@ -114,6 +114,19 @@ pub struct ContainerRuntimeStatus {
     /// throughout. `None` for a still-running container is a documented
     /// scope limitation, not "unset/RuntimeDefault."
     pub stop_signal: Option<String>,
+    /// Round 79 (`ResourceHealthStatus`, KEP-4680; found in round 72's
+    /// re-audit) — per-device health for every device-plugin-backed
+    /// resource this container is currently allocated, mapped to
+    /// `containerStatuses[].allocatedResourcesStatus`. `(resource_name,
+    /// device_id, health)`, `health` already the API's own string
+    /// (`"Healthy"`/`"Unhealthy"`/`"Unknown"`) — kept as nodelet's own
+    /// tuple shape here (not the generated k8s-openapi `ResourceStatus`/
+    /// `ResourceHealth` types) for the same reason every other DTO on
+    /// this struct is: usable from the trait without extra type
+    /// dependencies pulled into `runtime/mod.rs`. Empty for a container
+    /// with no device-plugin resources allocated at all — the common
+    /// case, costing nothing beyond an empty `Vec`.
+    pub allocated_resources_status: Vec<(String, String, String)>,
     /// Round 75; found in round 73's crash-loop backoff work. `Some` only
     /// while a container that keeps exiting is currently in its backoff
     /// window (`waiting_reason_override` below always `Some` alongside

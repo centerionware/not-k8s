@@ -304,6 +304,7 @@ impl CriRuntime {
                 stop_signal,
                 last_terminated,
                 waiting_reason_override,
+                allocated_resources_status: self.allocated_resources_status(sandbox_id, &name),
             });
         }
 
@@ -386,6 +387,7 @@ impl CriRuntime {
                 } else {
                     (None, String::new(), None, String::new(), None)
                 };
+                let allocated_resources_status = self.allocated_resources_status(sandbox_id, &name);
                 out.push(ContainerRuntimeStatus {
                     restart_count: self.restart_count(sandbox_id, &name),
                     name,
@@ -412,6 +414,7 @@ impl CriRuntime {
                     // matching round 73's own.
                     last_terminated: None,
                     waiting_reason_override: None,
+                    allocated_resources_status,
                 });
         }
         Ok(out)

@@ -29,6 +29,42 @@ test_device_plugin_preferred_allocation_and_prestart_manual_note() {
     skip_test "exercising GetPreferredAllocation/PreStartContainer (round 21) needs a device plugin whose DevicePluginOptions actually sets get_preferred_allocation_available/pre_start_required — most reference plugins (e.g. nvidia-device-plugin) don't by default, so this is a manual spot-check even given real hardware. Manual spot-check: point a device plugin that implements GetPreferredAllocation at this node, request its resource from a pod, and confirm nodelet's logs show no 'GetPreferredAllocation failed; falling back' warning (proof the plugin's response was used) — or deliberately have the plugin return a bogus/duplicate/wrong-count response and confirm the warning *does* appear with the pod still reaching Running (proof the fallback to pick_devices_preferring() works). For PreStartContainer: point a plugin with pre_start_required=true at this node and confirm nodelet's logs show a successful PreStartContainer call before the container starts, and that a plugin returning an error from PreStartContainer leaves the pod in a failed/retrying state rather than starting with stale device state."
 }
 
+test_allocated_resources_status_absent_without_device_resources() {
+    # Regression check for round 79's wiring: a plain pod with no
+    # device-plugin resources requested must never get a spurious
+    # allocatedResourcesStatus entry.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="no-device-resources"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local ars
+    ars="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].allocatedResourcesStatus}')"
+    delete_pod_if_exists "$name"
+    assert_eq "$ars" "" "containerStatuses[0].allocatedResourcesStatus should be empty/absent for a pod with no device-plugin resources allocated"
+}
+
+test_allocated_resources_status_manual_note() {
+    # Round 79 (ResourceHealthStatus, KEP-4680; found in round 72's
+    # re-audit): containerStatuses[].allocatedResourcesStatus reports
+    # live per-device health for devices a container currently holds.
+    # Same hardware limitation as every other device-plugin round --
+    # genuinely observing a device transition Healthy->Unhealthy AFTER
+    # allocation needs real (or faked) hardware misbehaving on cue.
+    skip_test "exercising allocatedResourcesStatus needs a real device plugin (or a fake one that can be told to report a device unhealthy on demand) with a pod already holding that device allocated. Manual spot-check: deploy a device plugin, run a pod with resources.limits['<resource>']: 1, confirm 'kubectl get pod <name> -o jsonpath={.status.containerStatuses[0].allocatedResourcesStatus}' shows an entry for that resource with health: Healthy (matching the plugin's ListAndWatch state at allocation time) -- then have the plugin's own ListAndWatch report that specific device ID as unhealthy (most reference plugins support this via a fault-injection mechanism, e.g. removing/restoring a GPU) and confirm the SAME field updates to Unhealthy on nodelet's next reconcile of that pod, without the container itself being restarted (this is a live status signal, not a restart trigger)."
+}
+
 register_test test_plugin_registry_watches_for_device_plugins_too
 register_test test_device_plugin_manual_note
 register_test test_device_plugin_preferred_allocation_and_prestart_manual_note
+register_test test_allocated_resources_status_absent_without_device_resources
+register_test test_allocated_resources_status_manual_note
