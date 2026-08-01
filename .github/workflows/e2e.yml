@@ -1,0 +1,84 @@
+name: E2E tests
+
+# Manual trigger only for now — on: push/pull_request can be added later
+# once this has proven reliable. Builds a full not-k8s cluster from source
+# (deploy/bootstrap-source.sh --with-cri: k3s control plane, real
+# containerd/runc, nodelet built with the cri feature) on the runner
+# itself, runs deploy/test-e2e.sh's full suite against it, and pushes the
+# results to a dedicated branch (creating it if it doesn't exist yet,
+# replacing its contents otherwise) regardless of whether the run passed.
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Optional --only=<pattern> filter (substring match on test function names). Leave empty to run everything.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build and deploy not-k8s (real containerd/CRI runtime)
+        run: sudo ./deploy/bootstrap-source.sh --with-cri
+
+      - name: Run the e2e suite
+        id: e2e
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+        run: |
+          set +e
+          sudo chmod 644 "$KUBECONFIG" 2>/dev/null || true
+          ONLY_FLAG=""
+          if [ -n "${{ inputs.only }}" ]; then
+            ONLY_FLAG="--only=${{ inputs.only }}"
+          fi
+          # shellcheck disable=SC2086
+          ./deploy/test-e2e.sh $ONLY_FLAG 2>&1 | tee /tmp/e2e-raw.txt
+          exit_code=${PIPESTATUS[0]}
+          # Strip ANSI color codes for a clean plain-text results file.
+          sed -r 's/\x1b\[[0-9;]*m//g' /tmp/e2e-raw.txt > /tmp/e2e-results.txt
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish results to the e2e-results branch
+        if: always()
+        env:
+          RESULTS_BRANCH: e2e-results
+          RUN_EXIT_CODE: ${{ steps.e2e.outputs.exit_code }}
+        run: |
+          {
+            echo "commit: $GITHUB_SHA"
+            echo "workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "timestamp (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "exit code: ${RUN_EXIT_CODE:-unknown}"
+            echo "----------------------------------------"
+            cat /tmp/e2e-results.txt 2>/dev/null || echo "(no results captured — the run failed before test-e2e.sh could produce output)"
+          } > /tmp/e2e-results-final.txt
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin "$RESULTS_BRANCH" >/dev/null 2>&1; then
+            git fetch origin "$RESULTS_BRANCH"
+            git checkout -B "$RESULTS_BRANCH" "origin/$RESULTS_BRANCH"
+          else
+            git checkout --orphan "$RESULTS_BRANCH"
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          cp /tmp/e2e-results-final.txt results.txt
+          git add results.txt
+          git commit -m "e2e results for ${GITHUB_SHA:0:12}" --allow-empty
+          git push origin "$RESULTS_BRANCH" --force
+
+      - name: Fail the job if the e2e suite failed
+        if: steps.e2e.outputs.exit_code != '0'
+        run: exit 1
