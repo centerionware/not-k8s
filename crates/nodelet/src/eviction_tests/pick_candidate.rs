@@ -171,3 +171,49 @@ fn unset_priority_defaults_to_zero() {
     let pods = vec![unset, explicit_zero];
     assert!(pick_eviction_candidate(&pods, &HashMap::new()).is_some());
 }
+
+#[test]
+fn exceeding_its_own_request_beats_a_higher_priority_pod_that_does_not() {
+    // Round 99: exceedMemoryRequests is real kubelet's actual PRIMARY
+    // ranking criterion within a QoS class, ahead of priority. A pod
+    // using more than it requested must be evicted before a
+    // higher-priority pod that's still within its request, even though
+    // priority alone would otherwise pick the other way.
+    let within_request = pod_with_priority("within-request", 1000, resources(&[("memory", "512Mi")], &[]));
+    let over_request = pod_with_priority("over-request", 0, resources(&[("memory", "64Mi")], &[]));
+    let over_request_uid = over_request.metadata.uid.clone().unwrap();
+    let pods = vec![within_request, over_request];
+
+    let mut usage = HashMap::new();
+    usage.insert(over_request_uid, 200 * 1024 * 1024); // 200Mi used, 64Mi requested — exceeds
+
+    assert_eq!(name_of(pick_eviction_candidate(&pods, &usage)), Some("over-request"));
+}
+
+#[test]
+fn within_request_pods_still_rank_by_priority_between_themselves() {
+    // Once both pods are on the same side of the exceeds-requests line
+    // (both within their own request, usage known for both), priority
+    // still breaks the tie exactly as before round 99.
+    let low = pod_with_priority("low-priority", 0, resources(&[("memory", "512Mi")], &[]));
+    let high = pod_with_priority("high-priority", 1000, resources(&[("memory", "512Mi")], &[]));
+    let low_uid = low.metadata.uid.clone().unwrap();
+    let high_uid = high.metadata.uid.clone().unwrap();
+    let pods = vec![high, low];
+
+    let mut usage = HashMap::new();
+    usage.insert(low_uid, 100 * 1024 * 1024); // well within 512Mi request
+    usage.insert(high_uid, 100 * 1024 * 1024); // same — neither exceeds
+
+    assert_eq!(name_of(pick_eviction_candidate(&pods, &usage)), Some("low-priority"));
+}
+
+#[test]
+fn unknown_usage_is_treated_as_exceeding_requests() {
+    // No live stats for either pod (mock runtime, or too new for CRI to
+    // have measured) — matches upstream's own "prioritize evicting the
+    // pod for which no stats were found" direction, so this must not
+    // silently behave as if neither exceeds anything.
+    let pods = vec![pod("no-stats", resources(&[("memory", "64Mi")], &[]))];
+    assert!(exceeds_memory_requests(&pods[0], &HashMap::new()));
+}

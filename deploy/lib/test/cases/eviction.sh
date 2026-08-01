@@ -14,6 +14,10 @@ test_eviction_priority_tiebreak_manual_procedure() {
     skip_test "proving priority-based tiebreaking (round 26 — pick_eviction_candidate() ranks by spec.priority within a QoS class before falling back to usage) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with different PriorityClasses (e.g. a low-priority one and a high-priority one, or set spec.priority directly), force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the LOWER-priority pod is evicted first even if the higher-priority pod is using more memory — proof priority wins the tiebreak before usage does, matching real kubelet's rankMemoryPressure ordering. The pure ranking logic itself (priority beats usage, QoS class still outranks priority) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end."
 }
 
+test_eviction_exceeds_requests_tiebreak_manual_procedure() {
+    skip_test "proving the exceeds-requests comparator step (round 99 — pick_eviction_candidate() ranks a pod whose usage exceeds its own memory request ahead of one that doesn't, within a QoS class, before even priority) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with the SAME spec.priority, one whose container actually consumes more memory than it requested (e.g. requests: {memory: 16Mi} but the process allocates 100Mi) and one that stays within its request, force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the pod exceeding its own request is evicted first even if the other pod's absolute usage is higher — proof the exceeds-requests step is real, not just a documented no-op. The pure ranking logic itself (exceeds_memory_requests(), and that it now sits ahead of priority in eviction_rank()) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end."
+}
+
 test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted() {
     # Round 49: unlike the node-level pressure eviction above, a pod
     # exceeding its OWN ephemeral-storage limit is a direct per-pod
@@ -116,5 +120,6 @@ EOF
 
 register_test test_eviction_manual_procedure
 register_test test_eviction_priority_tiebreak_manual_procedure
+register_test test_eviction_exceeds_requests_tiebreak_manual_procedure
 register_test test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
 register_test test_pod_exceeding_an_empty_dir_size_limit_is_evicted

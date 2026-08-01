@@ -27,6 +27,57 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 99: eviction's `exceedMemoryRequests` comparator step (2026-08-01, same day)
+
+Third of the 4 closeable 🟡 items. Closes the specific gap round
+26's own notes flagged: real kubelet's `rankMemoryPressure` comparator
+chain is actually `exceedMemoryRequests, priority, memory` — its
+*primary* ranking criterion is whether a pod's usage exceeds its own
+request, not priority. Round 26 only added the priority step; this
+round adds the missing one.
+
+Checked upstream first (`pkg/kubelet/eviction/helpers.go` via `gh
+api`) before implementing, same discipline as rounds 91/93: confirmed
+real kubelet has **no explicit QoS-class sort key at all** in this
+comparator chain — QoS ordering *emerges* naturally from
+`exceedMemoryRequests` because BestEffort pods request `0` memory (so
+any nonzero usage trivially "exceeds"), while Guaranteed pods rarely
+do (request equals limit). This is *why* nodelet's own doc comment
+already called the QoS-explicit-key design "conservative" relative to
+upstream (real kubelet ranks *all* active pods, no QoS pre-filter,
+and can evict a Guaranteed pod under severe enough pressure). Given
+the specific documented gap was the missing comparator step, not a
+request to drop the Guaranteed-pod exemption, this round adds
+`exceeds_memory_requests()` as a new tie-break sandwiched between
+this codebase's existing QoS-class key and the existing priority
+key — closing the named gap without silently changing the
+already-deliberate, already-documented conservative eviction scope.
+
+New pure `exceeds_memory_requests(pod, usage_bytes_by_uid) -> bool`
+(`eviction.rs`): usage known and exceeding `requested_memory_bytes()`
+→ `true`; usage unknown → `true` too, matching upstream's own
+`!found` direction (`cmpBool(!p1Found, !p2Found)` — no visibility
+into a pod's usage should not protect it from eviction). `eviction_rank()`'s
+sort-key tuple gained a `Reverse<bool>` slot for it, positioned right
+after `QosClass` and before `spec.priority`.
+
+3 new unit tests (`eviction_tests/pick_candidate.rs`) proving the new
+step actually changes ranking (a pod exceeding its own request now
+beats a higher-priority pod that doesn't, reversing what
+`priority_beats_usage_as_a_tiebreaker`'s existing all-tied-usage
+scenario alone would suggest), that within-request pods still fall
+back to priority exactly as before, and that unknown usage is treated
+as exceeding. All 59 pre-existing eviction tests pass unchanged
+(every one either uses an empty usage map, where every pod ties on
+the new key, or was already written with usage data that happens to
+agree with the new ordering). New
+`test_eviction_exceeds_requests_tiebreak_manual_procedure`
+(`deploy/lib/test/cases/eviction.sh`) — same artificial-pressure
+manual-procedure pattern the existing priority-tiebreak test already
+uses (deliberately not automated: forcing real MemoryPressure on a
+live test node is exactly the kind of destructive action this suite
+avoids doing automatically).
+
 ## Round 98: `hostAliases`/`terminationMessagePath` id-mapping (2026-08-01, same day)
 
 Second of the 4 closeable 🟡 items ("do them all, let's get it
@@ -5580,7 +5631,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Node-pressure eviction
 - ✅ MemoryPressure/DiskPressure *conditions* reflect real reads
-- 🟡 **Eviction** — `eviction_loop()` now acts on real pressure: ranks eligible pods by QoS class (`eviction.rs`'s `qos_class()`/`pick_eviction_candidate()` — BestEffort before Burstable, Guaranteed and `system-*-critical` pods never evicted), evicts one per check. Ranking within a QoS class now uses **`spec.priority`** (round 26 — lower priority evicted first, matching real kubelet's own ordering; read directly off the Pod object since the apiserver's Priority admission controller already resolves `priorityClassName` into it, no lookup needed) **before** falling back to real memory usage from CRI's `ListPodSandboxStats` (the same source `/stats/summary` uses) when known, or requested memory otherwise (`eviction_weight()`). Still simplified vs. real kubelet: no soft-threshold grace period (hard-style immediate action only), and doesn't implement the "exceeds requests" step of upstream's comparator chain (round 26 only added the priority step).
+- 🟡 **Eviction** — `eviction_loop()` now acts on real pressure: ranks eligible pods by QoS class (`eviction.rs`'s `qos_class()`/`pick_eviction_candidate()` — BestEffort before Burstable, Guaranteed and `system-*-critical` pods never evicted), evicts one per check. Ranking within a QoS class (round 99; found in round 26's own notes) now checks **whether usage exceeds the pod's own memory request** first (`exceeds_memory_requests()` — real kubelet's actual *primary* `exceedMemoryRequests` comparator criterion, applied here as a tie-break within this codebase's existing QoS tiers; unknown usage counts as "exceeds", matching upstream's own no-stats-found direction), **then** by **`spec.priority`** (round 26 — lower priority evicted first; read directly off the Pod object since the apiserver's Priority admission controller already resolves `priorityClassName` into it, no lookup needed), **then** falls back to real memory usage from CRI's `ListPodSandboxStats` (the same source `/stats/summary` uses) when known, or requested memory otherwise (`eviction_weight()`) as the final tie-break. Still simplified vs. real kubelet: no soft-threshold grace period (hard-style immediate action only), and QoS class remains an explicit, higher-priority sort key rather than upstream's implicit request-based emergence of the same ordering (a deliberate, documented conservative stance — Guaranteed pods are never evicted here, unlike upstream under severe enough pressure).
 - ✅ PID pressure — real `/proc/sys/kernel/pid_max` + a `/proc` scan (`read_pid_info()`/`pid_pressure()`), same fail-open pattern as memory/disk
 
 ### Static pods & mirror pods
@@ -6392,3 +6443,13 @@ accordingly; see those files' own updated framing.
       the two auxiliary host-bind-mounts (`/etc/hosts`,
       `terminationMessagePath`) `build_mounts()` never covered. Second
       of 4 closeable 🟡 items. See round 98 notes.
+- [x] Round 99: eviction's `exceedMemoryRequests` comparator step —
+      closes the specific gap round 26's notes flagged. New pure
+      `exceeds_memory_requests()` sits between the existing QoS-class
+      key and `spec.priority` in `eviction_rank()`'s sort tuple.
+      Verified against upstream source first (`gh api`) — confirmed
+      real kubelet has no explicit QoS sort key at all here, it
+      emerges from this exact comparator; nodelet's own QoS-explicit-
+      key design and Guaranteed-pod exemption stay deliberately
+      unchanged (already documented as conservative). Third of 4
+      closeable 🟡 items. See round 99 notes.

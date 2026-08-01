@@ -11,8 +11,12 @@
 //!     `system-cluster-critical` priority class are never touched.
 //!   - Within the eligible pods, `BestEffort` goes before `Burstable`
 //!     (matches real kubelet's QoS-based ranking); ties within a QoS class
-//!     are broken by `spec.priority` (round 26 — lower priority evicted
-//!     first, matching real kubelet's own `priority` step in its
+//!     are broken by whether the pod's actual usage exceeds its own memory
+//!     request (round 99 — real kubelet's `exceedMemoryRequests` comparator
+//!     step, its actual *primary* ranking criterion upstream, applied here
+//!     as a tie-break within the QoS tiers this codebase already has), then
+//!     by `spec.priority` (round 26 — lower priority evicted first,
+//!     matching real kubelet's own `priority` step in its
 //!     `rankMemoryPressure`/`rankDiskPressureFunc` comparator chains), and
 //!     ties within the *same* priority are broken by real memory usage
 //!     (from CRI's `ListPodSandboxStats`, the same source
@@ -292,14 +296,38 @@ fn eviction_weight(pod: &Pod, usage_bytes_by_uid: &HashMap<String, u64>) -> u64 
         .unwrap_or_else(|| requested_memory_bytes(pod))
 }
 
+/// Real kubelet's `exceedMemoryRequests` comparator step (round 99;
+/// found as a documented gap in round 26's own notes) — a pod whose
+/// actual memory usage exceeds its own request
+/// is ranked as more evictable than one that doesn't, ahead of the
+/// `spec.priority` tie-break. Usage unknown (no live stats yet — the
+/// mock runtime, or a pod too new for CRI to have measured) is treated
+/// as "exceeds", the same conservative direction upstream's own
+/// `!found` branch takes (`cmpBool(!p1Found, !p2Found)` prioritizes
+/// evicting the pod nodelet has no visibility into over one it can
+/// positively confirm is within its request).
+fn exceeds_memory_requests(pod: &Pod, usage_bytes_by_uid: &HashMap<String, u64>) -> bool {
+    let usage = pod.metadata.uid.as_deref().and_then(|uid| usage_bytes_by_uid.get(uid).copied());
+    match usage {
+        Some(usage) => usage > requested_memory_bytes(pod),
+        None => true,
+    }
+}
+
 /// Sort key for `pick_eviction_candidate()` — `min_by_key` picks the
 /// smallest, so this is ordered "most evictable first": QoS class
-/// (`BestEffort` < `Burstable`), then `spec.priority` ascending (lower
-/// priority is more evictable — round 26), then usage descending via
-/// `Reverse` (higher usage is more evictable, the tie-breaker within the
-/// same QoS class *and* the same priority).
-fn eviction_rank(pod: &Pod, usage_bytes_by_uid: &HashMap<String, u64>) -> (QosClass, i32, Reverse<u64>) {
-    (qos_class(pod), pod_priority(pod), Reverse(eviction_weight(pod, usage_bytes_by_uid)))
+/// (`BestEffort` < `Burstable`), then whether usage exceeds the pod's
+/// own memory request (round 99 — `Reverse` so "exceeds" sorts first),
+/// then `spec.priority` ascending (lower priority is more evictable —
+/// round 26), then usage descending via `Reverse` (higher usage is more
+/// evictable, the final tie-breaker).
+fn eviction_rank(pod: &Pod, usage_bytes_by_uid: &HashMap<String, u64>) -> (QosClass, Reverse<bool>, i32, Reverse<u64>) {
+    (
+        qos_class(pod),
+        Reverse(exceeds_memory_requests(pod, usage_bytes_by_uid)),
+        pod_priority(pod),
+        Reverse(eviction_weight(pod, usage_bytes_by_uid)),
+    )
 }
 
 pub fn pick_eviction_candidate<'a>(pods: &'a [Pod], usage_bytes_by_uid: &HashMap<String, u64>) -> Option<&'a Pod> {

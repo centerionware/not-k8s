@@ -520,8 +520,11 @@ mount otherwise, instead of always behaving like `Enabled`. Round 98
 extended `hostUsers: false`'s per-volume `Mount.uidMappings`/
 `.gidMappings` (round 88) to nodelet's own auxiliary host-bind-mounts
 (`hostAliases`' `/etc/hosts`, `terminationMessagePath`) too, closing
-the one gap round 88 itself had flagged. Full status list in
-`docs/GAP_CLOSURE.md`.
+the one gap round 88 itself had flagged. Round 99 gave node-pressure
+eviction real kubelet's actual primary ranking criterion — whether a
+pod's usage exceeds its own memory request — as a tie-break ahead of
+`spec.priority`, closing the specific gap round 26's own notes
+flagged. Full status list in `docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for
