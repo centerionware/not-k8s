@@ -274,7 +274,11 @@ impl CriRuntime {
             .context("pulling image")?;
         }
 
-        let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes, envs);
+        // Round 88: this pod's own userns range, if it has one — the same
+        // one run_sandbox() already allocated and applied at the sandbox
+        // level (round 25); read-only here, never allocates.
+        let userns_mapping = (!id.host_users).then(|| self.userns.assigned(&id.uid)).flatten();
+        let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes, envs, userns_mapping);
         if let Some(ResolvedVolume::HostPath(hosts_path)) = volumes.get(ETC_HOSTS_VOLUME_KEY) {
             mounts.push(Mount {
                 container_path: "/etc/hosts".to_string(),

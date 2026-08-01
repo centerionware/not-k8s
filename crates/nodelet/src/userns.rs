@@ -57,6 +57,17 @@ impl UsernsAllocator {
         self.claims.lock().unwrap().remove(key);
     }
 
+    /// `key`'s currently-allocated `(host_id_base, length)` range, if
+    /// any — a read-only lookup for call sites (round 88's `Mount.uidMappings`/
+    /// `.gidMappings` wiring) that need the same range `run_sandbox()`
+    /// already allocated, without re-deriving or re-triggering allocation
+    /// themselves.
+    pub fn assigned(&self, key: &str) -> Option<(u32, u32)> {
+        let claims = self.claims.lock().unwrap();
+        let &slot = claims.get(key)?;
+        Some((self.base_uid + slot * self.length, self.length))
+    }
+
     #[cfg(test)]
     fn claimed_count(&self) -> usize {
         self.claims.lock().unwrap().len()

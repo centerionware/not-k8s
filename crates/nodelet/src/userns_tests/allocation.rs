@@ -62,3 +62,35 @@ fn released_and_reallocated_slots_reuse_the_lowest_free_index() {
     let (base, _) = a.allocate("pod-4").unwrap();
     assert_eq!(base, 100_000 + 65_536); // slot 1's base, not a new slot 3
 }
+
+// --- assigned() (round 88: Mount.uidMappings/.gidMappings) ---
+
+#[test]
+fn assigned_is_none_before_any_allocation() {
+    let a = UsernsAllocator::new(100_000, 65_536, 4);
+    assert_eq!(a.assigned("pod-1"), None);
+}
+
+#[test]
+fn assigned_matches_what_allocate_already_returned() {
+    let a = UsernsAllocator::new(100_000, 65_536, 4);
+    let allocated = a.allocate("pod-1").unwrap();
+    assert_eq!(a.assigned("pod-1"), Some(allocated));
+}
+
+#[test]
+fn assigned_does_not_itself_allocate() {
+    let a = UsernsAllocator::new(100_000, 65_536, 1);
+    assert_eq!(a.assigned("pod-1"), None);
+    // Still able to allocate afterwards -- assigned() must not have
+    // consumed the only slot just by being called.
+    assert!(a.allocate("pod-1").is_some());
+}
+
+#[test]
+fn assigned_is_none_again_after_release() {
+    let a = UsernsAllocator::new(100_000, 65_536, 4);
+    a.allocate("pod-1");
+    a.release("pod-1");
+    assert_eq!(a.assigned("pod-1"), None);
+}

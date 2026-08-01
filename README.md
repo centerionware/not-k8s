@@ -478,7 +478,12 @@ the proto's own `readonly: true` + `Private`-propagation contract. Round
 87 closed `PodCondition.observedGeneration`: every condition nodelet
 writes now carries the pod's own `metadata.generation`, unchanged unless
 the condition's status actually flips — matching real kubelet's own
-semantics exactly. Full status list in `docs/GAP_CLOSURE.md`.
+semantics exactly. Round 88 closed per-volume `Mount.uidMappings`/
+`.gidMappings`: every volume mount for a `hostUsers: false` pod now
+carries the same UID/GID range `run_sandbox()` already applies at the
+sandbox level, so kernel-level idmapped-mounts translation actually
+applies to volumes too, not just the sandbox itself. Full status list in
+`docs/GAP_CLOSURE.md`.
 
 **Scope note:** nodelet keeps its single-node-first design (this is where
 it shines — low idle CPU, no etcd/multi-node coordination overhead for

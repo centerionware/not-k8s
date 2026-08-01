@@ -175,11 +175,27 @@ pub(crate) fn recursive_read_only_cri(recursive_read_only: Option<&str>, readonl
 /// CRI socket. `subPathExpr` wins over a plain `subPath` when both are
 /// somehow set (the API validates them as mutually exclusive, so this is
 /// purely a defensive tie-break, never expected to matter in practice).
+/// `spec.hostUsers: false` pods (round 25) need every volume mount
+/// idmapped too (round 88; found in round 86's re-audit), not just the
+/// sandbox itself — without this, a file the host sees as owned by e.g.
+/// UID 0 shows up as owned by the pod's *unmapped* host-range UID inside
+/// the container (kernel-level idmapped-mounts translation only applies
+/// to mounts CRI is actually told to map), the same "one UID mapping,
+/// applied consistently everywhere" requirement `run_sandbox()`'s own
+/// `userns_options` already satisfies at the sandbox level. `container_id`
+/// is always `0` — same single-range-covering-the-whole-container-ID-space
+/// shape `sandbox_config()`'s own `UserNamespace` mapping already uses.
+fn mount_id_mappings(userns_mapping: Option<(u32, u32)>) -> Vec<IdMapping> {
+    userns_mapping.map(|(host_id, length)| vec![IdMapping { host_id, container_id: 0, length }]).unwrap_or_default()
+}
+
 pub(crate) fn build_mounts(
     volume_mounts: &[k8s_openapi::api::core::v1::VolumeMount],
     volumes: &HashMap<String, ResolvedVolume>,
     envs: &[KeyValue],
+    userns_mapping: Option<(u32, u32)>,
 ) -> Vec<Mount> {
+    let id_mappings = mount_id_mappings(userns_mapping);
     volume_mounts
         .iter()
         .filter_map(|vm| {
@@ -201,6 +217,8 @@ pub(crate) fn build_mounts(
                         readonly,
                         propagation: propagation as i32,
                         recursive_read_only: recursive_read_only_cri(vm.recursive_read_only.as_deref(), readonly, propagation),
+                        uid_mappings: id_mappings.clone(),
+                        gid_mappings: id_mappings.clone(),
                         ..Default::default()
                     })
                 }

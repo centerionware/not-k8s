@@ -149,6 +149,54 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+test_host_users_false_volume_still_reads_and_writes_normally() {
+    # Round 88 (found in round 86's re-audit): every volume mount for a
+    # hostUsers: false pod now also carries CRI's Mount.uidMappings/
+    # .gidMappings (the same range run_sandbox() already allocates and
+    # applies at the sandbox level). Genuinely proving the OWNERSHIP
+    # TRANSLATION itself needs a host-side file pre-chowned into the
+    # pod's specific mapped UID range before the pod starts (root
+    # required, and needs to know NODELET_USERNS_BASE_UID's live value)
+    # -- see the manual-note below for that. What this DOES prove, fully
+    # automated: adding uid_mappings/gid_mappings to every single volume
+    # mount for a userns pod (not just an opt-in feature -- this touches
+    # every hostUsers: false pod's every volume) didn't break the mount
+    # itself -- a real risk, since a malformed or rejected Mount.uidMappings
+    # entry could make CreateContainer fail outright, or make the mount
+    # silently unusable.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="hostusers-false-volume-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  hostUsers: false
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "echo hello-from-userns-pod > /shared/marker; cat /shared/marker > /shared/roundtrip; sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        skip_test "pod never reached Running with hostUsers: false and a volume mounted — check mount_id_mappings()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects Mount.uidMappings/.gidMappings entirely"
+    fi
+    local content
+    content="$(wait_for_check_file "$name" shared roundtrip 30)"
+    delete_pod_if_exists "$name"
+    assert_contains "$content" "hello-from-userns-pod" "a hostUsers: false pod's volume should still read/write normally with uid/gid mappings applied to the mount"
+}
+
+test_host_users_volume_ownership_translation_manual_note() {
+    skip_test "genuinely proving OWNERSHIP TRANSLATION (that a host-side file owned by a UID within the pod's own mapped range shows up as the correct small container-relative UID inside the container, rather than the overflow/nobody UID a mount with no idmapping would show) needs a host-side file pre-chowned into a specific UID before the pod starts -- root required, and needs to read this node's live NODELET_USERNS_BASE_UID value. Manual spot-check: (1) note NODELET_USERNS_BASE_UID (default 100000), (2) create a hostPath directory, chown a file inside it to that exact UID ('chown 100000 <dir>/marker' -- this is the FIRST pod's allocated range base, container-relative UID 0), (3) create a hostUsers: false pod mounting that hostPath directory, (4) confirm 'stat -c %u /hostvol/marker' INSIDE the container reports '0' (proof Mount.uidMappings correctly translated host UID 100000 -> container UID 0) rather than 65534/nobody (proof no translation happened at the mount level, even though the sandbox's own userns_options, round 25, works fine on its own)."
+}
+
 test_containers_get_isolated_pid_namespaces_by_default() {
     # Round 40: real Kubernetes' actual default is CONTAINER-scoped PID
     # namespaces (each container is its own pid-1), NOT the CRI proto's own
@@ -438,6 +486,8 @@ EOF
 register_test test_proc_mount_default_masks_proc_kcore
 register_test test_proc_mount_unmasked_leaves_proc_kcore_readable
 register_test test_host_users_false_gets_a_real_user_namespace
+register_test test_host_users_false_volume_still_reads_and_writes_normally
+register_test test_host_users_volume_ownership_translation_manual_note
 register_test test_containers_get_isolated_pid_namespaces_by_default
 register_test test_share_process_namespace_puts_every_container_in_one_pid_namespace
 register_test test_host_pid_sees_host_processes

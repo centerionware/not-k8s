@@ -27,6 +27,53 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Round 88: per-volume Mount.uidMappings/.gidMappings (2026-07-31, same day)
+
+Closes the second finding from round 86's re-audit, per the user's
+established "do both then another audit" instruction — this round's own
+2-item backlog is now closed, matching the pattern from rounds 80-82
+and 83-85 before it.
+
+- New `UsernsAllocator::assigned(key) -> Option<(u32, u32)>` (`userns.rs`)
+  — a read-only lookup mirroring the same range `allocate()` already
+  claimed for a pod uid, without re-allocating or having any allocation
+  side effect (unlike calling `allocate()` again, which — though
+  idempotent and technically safe — would be semantically confusing to
+  call from a code path that isn't actually doing allocation).
+- New pure `mount_id_mappings(userns_mapping: Option<(u32, u32)>) ->
+  Vec<IdMapping>` (`volumes_pure.rs`) — builds the single-range
+  `IdMapping{host_id, container_id: 0, length}` list `build_mounts()`
+  now applies to every `HostPath`-shaped mount's new `uid_mappings`/
+  `gid_mappings` fields, the exact same shape `sandbox_config()`'s own
+  `UserNamespace` mapping (round 25) already uses at the sandbox level.
+  `container_create.rs` reads the pod's range via the new
+  `UsernsAllocator::assigned()` (only when `!id.host_users`) and passes
+  it into `build_mounts()`.
+- **Deliberately scoped to regular `volumeMounts` only** — image-backed
+  mounts (round 32) never go through the host bind-mount path idmapping
+  applies to, and this round explicitly does *not* extend to the
+  auxiliary host-bind-mounts nodelet creates for itself (`hostAliases`'
+  `/etc/hosts`, `terminationMessagePath`) — a documented, bounded scope
+  rather than an attempt to id-map every bind mount in the codebase in
+  one pass.
+- 7 new unit tests: `mount_id_mappings()`'s own behavior via
+  `build_mounts()` (3: no-mapping-leaves-empty, a real mapping carried
+  onto both `uid_mappings`/`gid_mappings` identically, image-backed
+  mounts never get it) and `UsernsAllocator::assigned()` (4: none-before-
+  allocation, matches-what-allocate-returned, doesn't-itself-allocate,
+  none-again-after-release).
+- New e2e test `test_host_users_false_volume_still_reads_and_writes_normally`
+  (`security.sh`): proves adding `uid_mappings`/`gid_mappings` to *every*
+  volume mount for *every* `hostUsers: false` pod (not an opt-in
+  feature) didn't break the mount itself — a real risk, since a
+  malformed or rejected `Mount.uidMappings` entry could fail
+  `CreateContainer` outright. New manual-note documents the real
+  ownership-translation verification (needs a host-side file
+  pre-chowned into the pod's specific mapped UID range before the pod
+  starts, root required, and reading this node's live
+  `NODELET_USERNS_BASE_UID` — genuinely can't be automated by this
+  harness).
+
 ## Round 87: PodCondition.observedGeneration (2026-07-31, same day)
 
 Closes the higher-value finding from round 86's re-audit, per the
@@ -4992,7 +5039,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ **`securityContext.sysctls`** (round 41; found in round 39's re-audit) — new pure `pod_sysctls()` flattens `spec.securityContext.sysctls` into CRI's `LinuxPodSandboxConfig.sysctls` map, threaded through `sandbox_config()`/`ensure_pod()` alongside the existing hostname resolution. No admission-time allowlisting of "safe" (namespaced) vs. unsafe (host-wide) sysctls — that's the apiserver's job upstream and nodelet has no admission layer at all; an unsupported sysctl simply surfaces as a real `RunPodSandbox` error from the CRI runtime. Genuinely automated e2e test (a real container's own `/proc/sys` read). See round 41 notes.
 - ✅ **`hostPID`/`hostIPC`/`shareProcessNamespace`** (round 40; found in round 39's re-audit) — new pure `pid_namespace_mode(host_pid, share_process_namespace) -> NamespaceMode` (`hostPID` wins → `Node`, else `shareProcessNamespace` → `Pod`, else `Container`) is now always applied, on both `sandbox_config()`'s `namespace_options.pid` and each container's own `linux_security_context()`'s `namespace_options.pid` (mirroring real kubelet setting it in both places). **Correctness fix, not just a missing feature**: CRI's own proto comment on `NamespaceOption.pid` says *"the CRI default is POD, but the v1.PodSpec default is CONTAINER"* — before this round nodelet never set the field at all, so every container was silently getting containerd's own POD-shared default, the **opposite** of real Kubernetes' actual default. `hostIPC` sets `namespace_options.ipc` to `Node` (else `Pod` — IPC has no `CONTAINER`-scope concept in the API at all, unlike PID). Genuinely automated e2e tests for `hostPID`/`shareProcessNamespace` (a container's own pid, structural proof); `hostIPC` is unit-tested only — no simple portable shell-level IPC probe in a minimal image, a documented scope limitation. See round 40 notes.
 - ✅ **User namespaces** (`spec.hostUsers: false`, round 25; found in round 22's re-audit) — `userns.rs`'s `UsernsAllocator` gives each such pod an exclusive host UID/GID range (fixed length, default 65536, configurable via `NODELET_USERNS_BASE_UID`/`_LENGTH`/`_MAX_PODS`), set as a `POD`-mode `UserNamespace` on `LinuxSandboxSecurityContext.namespace_options.userns_options`. Simplified vs. upstream's own variable-length `usernsManager`: every pod gets the same fixed range size, and allocation state is in-memory only (self-heals as still-running pods reconcile, narrow double-allocation window across a nodelet restart — documented, not hidden). Unvalidated against a real CRI runtime's actual `userns_options` wire support — see round 25 notes.
-- ❌ **Per-volume `Mount.uidMappings`/`.gidMappings`** (found in round 86's re-audit) — CRI's own `Mount` message has dedicated `repeated IDMapping uidMappings`/`gidMappings` fields (distinct from the sandbox-level `userns_options` round 25 already wires up) for idmap-mounting a specific volume into a user-namespaced pod (`hostUsers: false`) when that volume's on-disk ownership falls outside the pod's mapped ID range — never referenced anywhere in this codebase, confirmed via grep. Niche in practice (most volume kinds a `hostUsers: false` pod would use — ConfigMap/Secret/emptyDir, all nodelet-materialized — already get their ownership set correctly for the pod's own mapped range at materialization time; this would only matter for a real external volume, e.g. a CSI-backed PVC, with pre-existing ownership outside that range).
+- 🟡 **Per-volume `Mount.uidMappings`/`.gidMappings`** (round 88; found in round 86's re-audit) — every `HostPath`-shaped volume mount for a `hostUsers: false` pod now carries the same UID/GID `IDMapping` (`host_id`/`container_id: 0`/`length`) `run_sandbox()` already applies at the sandbox level (round 25), via new pure `mount_id_mappings()` and a new `UsernsAllocator::assigned()` read-only lookup (no re-allocation — just reads back the range `run_sandbox()` already claimed for this pod uid). Without this, kernel-level idmapped-mounts translation (Linux 5.12+) only applies to mounts CRI is actually told to map — a file the host sees as owned by some in-range UID would otherwise show up wrong (`nobody`/overflow, or untranslated) inside the container's own view of that volume. **Deliberately scoped to `build_mounts()`'s regular `volumeMounts` only** — image-backed mounts (round 32) never go through the host bind-mount path idmapping applies to at all, and the auxiliary host-bind-mounts nodelet creates for itself (`hostAliases`' `/etc/hosts`, `terminationMessagePath`) are **not yet** id-mapped, a known follow-up if a future round revisits this area. Genuinely automated e2e test proves adding this to *every* `hostUsers: false` pod's *every* volume mount (not an opt-in feature) didn't break the mount itself; the actual ownership-translation behavior needs a host-side file pre-chowned into the pod's specific mapped range before the pod starts (root required) — a manual spot-check procedure.
 - ✅ **`fsGroup` volume ownership application** — recursive chown + setgid on every volume directory nodelet itself materializes (`apply_fs_group()`). Only reaches those (ConfigMap/Secret/emptyDir/downwardAPI/projected) — there's no real PV/hostPath for it to reach beyond that yet.
 - ✅ **RuntimeClass** — `spec.runtimeClassName` resolves the cluster-scoped `RuntimeClass` object and passes its `.handler` through as CRI's `runtime_handler` (`resolve_runtime_handler()`), so gVisor/Kata/etc. selection actually reaches the runtime. `Overhead.podFixed` now also accounted: converted to `LinuxContainerResources` (`resource_list_to_linux_resources()`) and set on `LinuxPodSandboxConfig.overhead`, closed alongside round 11's cgroup work since it's the same struct/code path. A missing/invalid RuntimeClass still isn't rejected at admission (falls back to the default handler with a warning instead, since nodelet can't enforce the validation a real cluster's admission plugin normally would).
 - ✅ **`Node.status.runtimeHandlers`** (round 53; found in round 50's re-audit) — new `PodRuntime::runtime_handlers()` calls CRI's runtime-level `Status` RPC once (never called anywhere in this codebase before this round) and maps the discovered handlers through to `Node.status.runtimeHandlers`, via the same `images`/`mounted_csi_volumes`-shaped plumbing rounds 33/34 already established. Genuinely automated e2e test (asserts at least one handler is present; skips rather than fails if a given containerd version's `Status` RPC doesn't populate the list at all). See round 53 notes.
@@ -5733,6 +5780,13 @@ accordingly; see those files' own updated framing.
       parameter threaded from all 4 call sites (a 4th, the static-pod
       mirror path, surfaced by the compiler mid-round). 7 new unit tests
       + a genuinely automated e2e test. See round 87 notes.
-- [ ] Round 88 (`Mount.uidMappings`/`.gidMappings`) is next, per the
-      user's "do both then another audit" instruction, followed by a
-      fresh gap re-audit.
+- [x] Round 88: per-volume `Mount.uidMappings`/`.gidMappings` — new
+      `UsernsAllocator::assigned()` (read-only) plus pure
+      `mount_id_mappings()` apply the pod's own userns range to every
+      `HostPath`-shaped volume mount, mirroring `sandbox_config()`'s own
+      mapping. Scoped to regular `volumeMounts` only (not image mounts,
+      not nodelet's own auxiliary bind mounts). 7 new unit tests + a
+      genuinely automated e2e test + a manual-note for real ownership-
+      translation verification. See round 88 notes.
+- [ ] Round 89 (fresh gap re-audit) is next, per the user's "then
+      another audit" instruction.
