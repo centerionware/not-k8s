@@ -1,0 +1,753 @@
+// Generated from definition io.k8s.api.resource.v1beta1.ResourceClaimSpec
+
+/// ResourceClaimSpec defines what is being requested in a ResourceClaim and how to configure it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ResourceClaimSpec {
+    /// Devices defines how to request devices.
+    pub devices: Option<crate::api::resource::v1beta1::DeviceClaim>,
+}
+
+impl crate::DeepMerge for ResourceClaimSpec {
+    fn merge_from(&mut self, other: Self) {
+        crate::DeepMerge::merge_from(&mut self.devices, other.devices);
+    }
+}
+
+impl<'de> crate::serde::Deserialize<'de> for ResourceClaimSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: crate::serde::Deserializer<'de> {
+        #[allow(non_camel_case_types)]
+        enum Field {
+            Key_devices,
+            Other,
+        }
+
+        impl<'de> crate::serde::Deserialize<'de> for Field {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: crate::serde::Deserializer<'de> {
+                struct Visitor;
+
+                impl crate::serde::de::Visitor<'_> for Visitor {
+                    type Value = Field;
+
+                    fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                        f.write_str("field identifier")
+                    }
+
+                    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> where E: crate::serde::de::Error {
+                        Ok(match v {
+                            "devices" => Field::Key_devices,
+                            _ => Field::Other,
+                        })
+                    }
+                }
+
+                deserializer.deserialize_identifier(Visitor)
+            }
+        }
+
+        struct Visitor;
+
+        impl<'de> crate::serde::de::Visitor<'de> for Visitor {
+            type Value = ResourceClaimSpec;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("ResourceClaimSpec")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error> where A: crate::serde::de::MapAccess<'de> {
+                let mut value_devices: Option<crate::api::resource::v1beta1::DeviceClaim> = None;
+
+                while let Some(key) = crate::serde::de::MapAccess::next_key::<Field>(&mut map)? {
+                    match key {
+                        Field::Key_devices => value_devices = crate::serde::de::MapAccess::next_value(&mut map)?,
+                        Field::Other => { let _: crate::serde::de::IgnoredAny = crate::serde::de::MapAccess::next_value(&mut map)?; },
+                    }
+                }
+
+                Ok(ResourceClaimSpec {
+                    devices: value_devices,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "ResourceClaimSpec",
+            &[
+                "devices",
+            ],
+            Visitor,
+        )
+    }
+}
+
+impl crate::serde::Serialize for ResourceClaimSpec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: crate::serde::Serializer {
+        let mut state = serializer.serialize_struct(
+            "ResourceClaimSpec",
+            self.devices.as_ref().map_or(0, |_| 1),
+        )?;
+        if let Some(value) = &self.devices {
+            crate::serde::ser::SerializeStruct::serialize_field(&mut state, "devices", value)?;
+        }
+        crate::serde::ser::SerializeStruct::end(state)
+    }
+}
+
+#[cfg(feature = "schemars")]
+impl crate::schemars::JsonSchema for ResourceClaimSpec {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "io.k8s.api.resource.v1beta1.ResourceClaimSpec".into()
+    }
+
+    fn json_schema(__gen: &mut crate::schemars::SchemaGenerator) -> crate::schemars::Schema {
+        crate::schemars::json_schema!({
+            "description": "ResourceClaimSpec defines what is being requested in a ResourceClaim and how to configure it.",
+            "type": "object",
+            "properties": {
+                "devices": ({
+                    let mut schema_obj = __gen.subschema_for::<crate::api::resource::v1beta1::DeviceClaim>();
+                    schema_obj.ensure_object().insert("description".into(), "Devices defines how to request devices.".into());
+                    schema_obj
+                }),
+            },
+        })
+    }
+}
+
+#[cfg(feature = "schemars08")]
+impl crate::schemars08::JsonSchema for ResourceClaimSpec {
+    fn schema_name() -> std::string::String {
+        "io.k8s.api.resource.v1beta1.ResourceClaimSpec".into()
+    }
+
+    fn json_schema(__gen: &mut crate::schemars08::gen::SchemaGenerator) -> crate::schemars08::schema::Schema {
+        crate::schemars08::schema::Schema::Object(crate::schemars08::schema::SchemaObject {
+            metadata: Some(std::boxed::Box::new(crate::schemars08::schema::Metadata {
+                description: Some("ResourceClaimSpec defines what is being requested in a ResourceClaim and how to configure it.".into()),
+                ..Default::default()
+            })),
+            instance_type: Some(crate::schemars08::schema::SingleOrVec::Single(std::boxed::Box::new(crate::schemars08::schema::InstanceType::Object))),
+            object: Some(std::boxed::Box::new(crate::schemars08::schema::ObjectValidation {
+                properties: [
+                    (
+                        "devices".into(),
+                        {
+                            let mut schema_obj = __gen.subschema_for::<crate::api::resource::v1beta1::DeviceClaim>().into_object();
+                            schema_obj.metadata = Some(std::boxed::Box::new(crate::schemars08::schema::Metadata {
+                                description: Some("Devices defines how to request devices.".into()),
+                                ..Default::default()
+                            }));
+                            crate::schemars08::schema::Schema::Object(schema_obj)
+                        },
+                    ),
+                ].into(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        })
+    }
+}
+---STATUS---
+// Generated from definition io.k8s.api.resource.v1beta1.ResourceClaimStatus
+
+/// ResourceClaimStatus tracks whether the resource has been allocated and what the result of that was.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ResourceClaimStatus {
+    /// Allocation is set once the claim has been allocated successfully.
+    pub allocation: Option<crate::api::resource::v1beta1::AllocationResult>,
+
+    /// Devices contains the status of each device allocated for this claim, as reported by the driver. This can include driver-specific information. Entries are owned by their respective drivers.
+    pub devices: Option<std::vec::Vec<crate::api::resource::v1beta1::AllocatedDeviceStatus>>,
+
+    /// ReservedFor indicates which entities are currently allowed to use the claim. A Pod which references a ResourceClaim which is not reserved for that Pod will not be started. A claim that is in use or might be in use because it has been reserved must not get deallocated.
+    ///
+    /// In a cluster with multiple scheduler instances, two pods might get scheduled concurrently by different schedulers. When they reference the same ResourceClaim which already has reached its maximum number of consumers, only one pod can be scheduled.
+    ///
+    /// Both schedulers try to add their pod to the claim.status.reservedFor field, but only the update that reaches the API server first gets stored. The other one fails with an error and the scheduler which issued it knows that it must put the pod back into the queue, waiting for the ResourceClaim to become usable again.
+    ///
+    /// There can be at most 256 such reservations. This may get increased in the future, but not reduced.
+    pub reserved_for: Option<std::vec::Vec<crate::api::resource::v1beta1::ResourceClaimConsumerReference>>,
+}
+
+impl crate::DeepMerge for ResourceClaimStatus {
+    fn merge_from(&mut self, other: Self) {
+        crate::DeepMerge::merge_from(&mut self.allocation, other.allocation);
+        crate::merge_strategies::list::map(
+            &mut self.devices,
+            other.devices,
+            &[|lhs, rhs| lhs.driver == rhs.driver, |lhs, rhs| lhs.device == rhs.device, |lhs, rhs| lhs.pool == rhs.pool],
+            |current_item, other_item| {
+                crate::DeepMerge::merge_from(current_item, other_item);
+            },
+        );
+        crate::merge_strategies::list::map(
+            &mut self.reserved_for,
+            other.reserved_for,
+            &[|lhs, rhs| lhs.uid == rhs.uid],
+            |current_item, other_item| {
+                crate::DeepMerge::merge_from(current_item, other_item);
+            },
+        );
+    }
+}
+
+impl<'de> crate::serde::Deserialize<'de> for ResourceClaimStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: crate::serde::Deserializer<'de> {
+        #[allow(non_camel_case_types)]
+        enum Field {
+            Key_allocation,
+            Key_devices,
+            Key_reserved_for,
+            Other,
+        }
+
+        impl<'de> crate::serde::Deserialize<'de> for Field {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: crate::serde::Deserializer<'de> {
+                struct Visitor;
+
+                impl crate::serde::de::Visitor<'_> for Visitor {
+                    type Value = Field;
+
+                    fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                        f.write_str("field identifier")
+                    }
+
+                    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> where E: crate::serde::de::Error {
+                        Ok(match v {
+                            "allocation" => Field::Key_allocation,
+                            "devices" => Field::Key_devices,
+                            "reservedFor" => Field::Key_reserved_for,
+                            _ => Field::Other,
+                        })
+                    }
+                }
+
+                deserializer.deserialize_identifier(Visitor)
+            }
+        }
+
+        struct Visitor;
+
+        impl<'de> crate::serde::de::Visitor<'de> for Visitor {
+            type Value = ResourceClaimStatus;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("ResourceClaimStatus")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error> where A: crate::serde::de::MapAccess<'de> {
+                let mut value_allocation: Option<crate::api::resource::v1beta1::AllocationResult> = None;
+                let mut value_devices: Option<std::vec::Vec<crate::api::resource::v1beta1::AllocatedDeviceStatus>> = None;
+                let mut value_reserved_for: Option<std::vec::Vec<crate::api::resource::v1beta1::ResourceClaimConsumerReference>> = None;
+
+                while let Some(key) = crate::serde::de::MapAccess::next_key::<Field>(&mut map)? {
+                    match key {
+                        Field::Key_allocation => value_allocation = crate::serde::de::MapAccess::next_value(&mut map)?,
+                        Field::Key_devices => value_devices = crate::serde::de::MapAccess::next_value(&mut map)?,
+                        Field::Key_reserved_for => value_reserved_for = crate::serde::de::MapAccess::next_value(&mut map)?,
+                        Field::Other => { let _: crate::serde::de::IgnoredAny = crate::serde::de::MapAccess::next_value(&mut map)?; },
+                    }
+                }
+
+                Ok(ResourceClaimStatus {
+                    allocation: value_allocation,
+                    devices: value_devices,
+                    reserved_for: value_reserved_for,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "ResourceClaimStatus",
+            &[
+                "allocation",
+                "devices",
+                "reservedFor",
+            ],
+            Visitor,
+        )
+    }
+}
+
+impl crate::serde::Serialize for ResourceClaimStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: crate::serde::Serializer {
+        let mut state = serializer.serialize_struct(
+            "ResourceClaimStatus",
+            self.allocation.as_ref().map_or(0, |_| 1) +
+            self.devices.as_ref().map_or(0, |_| 1) +
+            self.reserved_for.as_ref().map_or(0, |_| 1),
+        )?;
+        if let Some(value) = &self.allocation {
+            crate::serde::ser::SerializeStruct::serialize_field(&mut state, "allocation", value)?;
+        }
+        if let Some(value) = &self.devices {
+            crate::serde::ser::SerializeStruct::serialize_field(&mut state, "devices", value)?;
+        }
+        if let Some(value) = &self.reserved_for {
+            crate::serde::ser::SerializeStruct::serialize_field(&mut state, "reservedFor", value)?;
+        }
+        crate::serde::ser::SerializeStruct::end(state)
+    }
+}
+
+#[cfg(feature = "schemars")]
+impl crate::schemars::JsonSchema for ResourceClaimStatus {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "io.k8s.api.resource.v1beta1.ResourceClaimStatus".into()
+    }
+
+    fn json_schema(__gen: &mut crate::schemars::SchemaGenerator) -> crate::schemars::Schema {
+        crate::schemars::json_schema!({
+            "description": "ResourceClaimStatus tracks whether the resource has been allocated and what the result of that was.",
+            "type": "object",
+            "properties": {
+                "allocation": ({
+                    let mut schema_obj = __gen.subschema_for::<crate::api::resource::v1beta1::AllocationResult>();
+                    schema_obj.ensure_object().insert("description".into(), "Allocation is set once the claim has been allocated successfully.".into());
+                    schema_obj
+                }),
+                "devices": {
+                    "description": "Devices contains the status of each device allocated for this claim, as reported by the driver. This can include driver-specific information. Entries are owned by their respective drivers.",
+                    "type": "array",
+                    "items": (__gen.subschema_for::<crate::api::resource::v1beta1::AllocatedDeviceStatus>()),
+                },
+                "reservedFor": {
+                    "description": "ReservedFor indicates which entities are currently allowed to use the claim. A Pod which references a ResourceClaim which is not reserved for that Pod will not be started. A claim that is in use or might be in use because it has been reserved must not get deallocated.\n\nIn a cluster with multiple scheduler instances, two pods might get scheduled concurrently by different schedulers. When they reference the same ResourceClaim which already has reached its maximum number of consumers, only one pod can be scheduled.\n\nBoth schedulers try to add their pod to the claim.status.reservedFor field, but only the update that reaches the API server first gets stored. The other one fails with an error and the scheduler which issued it knows that it must put the pod back into the queue, waiting for the ResourceClaim to become usable again.\n\nThere can be at most 256 such reservations. This may get increased in the future, but not reduced.",
+                    "type": "array",
+                    "items": (__gen.subschema_for::<crate::api::resource::v1beta1::ResourceClaimConsumerReference>()),
+                },
+            },
+        })
+    }
+}
+
+#[cfg(feature = "schemars08")]
+impl crate::schemars08::JsonSchema for ResourceClaimStatus {
+    fn schema_name() -> std::string::String {
+        "io.k8s.api.resource.v1beta1.ResourceClaimStatus".into()
+    }
+
+    fn json_schema(__gen: &mut crate::schemars08::gen::SchemaGenerator) -> crate::schemars08::schema::Schema {
+        crate::schemars08::schema::Schema::Object(crate::schemars08::schema::SchemaObject {
+            metadata: Some(std::boxed::Box::new(crate::schemars08::schema::Metadata {
+                description: Some("ResourceClaimStatus tracks whether the resource has been allocated and what the result of that was.".into()),
+                ..Default::default()
+            })),
+            instance_type: Some(crate::schemars08::schema::SingleOrVec::Single(std::boxed::Box::new(crate::schemars08::schema::InstanceType::Object))),
+            object: Some(std::boxed::Box::new(crate::schemars08::schema::ObjectValidation {
+                properties: [
+                    (
+                        "allocation".into(),
+                        {
+                            let mut schema_obj = __gen.subschema_for::<crate::api::resource::v1beta1::AllocationResult>().into_object();
+                            schema_obj.metadata = Some(std::boxed::Box::new(crate::schemars08::schema::Metadata {
+                                description: Some("Allocation is set once the claim has been allocated successfully.".into()),
+                                ..Default::default()
+                            }));
+                            crate::schemars08::schema::Schema::Object(schema_obj)
+                        },
+                    ),
+                    (
+                        "devices".into(),
+                        crate::schemars08::schema::Schema::Object(crate::schemars08::schema::SchemaObject {
+                            metadata: Some(std::boxed::Box::new(crate::schemars08::schema::Metadata {
+                                description: Some("Devices contains the status of each device allocated for this claim, as reported by the driver. This can include driver-specific information. Entries are owned by their respective drivers.".into()),
+                                ..Default::default()
+                            })),
+                            instance_type: Some(crate::schemars08::schema::SingleOrVec::Single(std::boxed::Box::new(crate::schemars08::schema::InstanceType::Array))),
+                            array: Some(std::boxed::Box::new(crate::schemars08::schema::ArrayValidation {
+                                items: Some(crate::schemars08::schema::SingleOrVec::Single(std::boxed::Box::new(__gen.subschema_for::<crate::api::resource::v1beta1::AllocatedDeviceStatus>()))),
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        }),
+                    ),
+                    (
+                        "reservedFor".into(),
+                        crate::schemars08::schema::Schema::Object(crate::schemars08::schema::SchemaObject {
+                            metadata: Some(std::boxed::Box::new(crate::schemars08::schema::Metadata {
+                                description: Some("ReservedFor indicates which entities are currently allowed to use the claim. A Pod which references a ResourceClaim which is not reserved for that Pod will not be started. A claim that is in use or might be in use because it has been reserved must not get deallocated.\n\nIn a cluster with multiple scheduler instances, two pods might get scheduled concurrently by different schedulers. When they reference the same ResourceClaim which already has reached its maximum number of consumers, only one pod can be scheduled.\n\nBoth schedulers try to add their pod to the claim.status.reservedFor field, but only the update that reaches the API server first gets stored. The other one fails with an error and the scheduler which issued it knows that it must put the pod back into the queue, waiting for the ResourceClaim to become usable again.\n\nThere can be at most 256 such reservations. This may get increased in the future, but not reduced.".into()),
+                                ..Default::default()
+                            })),
+                            instance_type: Some(crate::schemars08::schema::SingleOrVec::Single(std::boxed::Box::new(crate::schemars08::schema::InstanceType::Array))),
+                            array: Some(std::boxed::Box::new(crate::schemars08::schema::ArrayValidation {
+                                items: Some(crate::schemars08::schema::SingleOrVec::Single(std::boxed::Box::new(__gen.subschema_for::<crate::api::resource::v1beta1::ResourceClaimConsumerReference>()))),
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        }),
+                    ),
+                ].into(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        })
+    }
+}
+---ALLOC---
+// Generated from definition io.k8s.api.resource.v1beta1.AllocationResult
+
+/// AllocationResult contains attributes of an allocated resource.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AllocationResult {
+    /// Devices is the result of allocating devices.
+    pub devices: Option<crate::api::resource::v1beta1::DeviceAllocationResult>,
+
+    /// NodeSelector defines where the allocated resources are available. If unset, they are available everywhere.
+    pub node_selector: Option<crate::api::core::v1::NodeSelector>,
+}
+
+impl crate::DeepMerge for AllocationResult {
+    fn merge_from(&mut self, other: Self) {
+        crate::DeepMerge::merge_from(&mut self.devices, other.devices);
+        crate::DeepMerge::merge_from(&mut self.node_selector, other.node_selector);
+    }
+}
+
+impl<'de> crate::serde::Deserialize<'de> for AllocationResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: crate::serde::Deserializer<'de> {
+        #[allow(non_camel_case_types)]
+        enum Field {
+            Key_devices,
+            Key_node_selector,
+            Other,
+        }
+
+        impl<'de> crate::serde::Deserialize<'de> for Field {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: crate::serde::Deserializer<'de> {
+                struct Visitor;
+
+                impl crate::serde::de::Visitor<'_> for Visitor {
+                    type Value = Field;
+
+                    fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                        f.write_str("field identifier")
+                    }
+
+                    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> where E: crate::serde::de::Error {
+                        Ok(match v {
+                            "devices" => Field::Key_devices,
+                            "nodeSelector" => Field::Key_node_selector,
+                            _ => Field::Other,
+                        })
+                    }
+                }
+
+                deserializer.deserialize_identifier(Visitor)
+            }
+        }
+
+        struct Visitor;
+
+        impl<'de> crate::serde::de::Visitor<'de> for Visitor {
+            type Value = AllocationResult;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("AllocationResult")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error> where A: crate::serde::de::MapAccess<'de> {
+                let mut value_devices: Option<crate::api::resource::v1beta1::DeviceAllocationResult> = None;
+                let mut value_node_selector: Option<crate::api::core::v1::NodeSelector> = None;
+
+                while let Some(key) = crate::serde::de::MapAccess::next_key::<Field>(&mut map)? {
+                    match key {
+                        Field::Key_devices => value_devices = crate::serde::de::MapAccess::next_value(&mut map)?,
+                        Field::Key_node_selector => value_node_selector = crate::serde::de::MapAccess::next_value(&mut map)?,
+                        Field::Other => { let _: crate::serde::de::IgnoredAny = crate::serde::de::MapAccess::next_value(&mut map)?; },
+                    }
+                }
+
+                Ok(AllocationResult {
+                    devices: value_devices,
+                    node_selector: value_node_selector,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "AllocationResult",
+            &[
+                "devices",
+                "nodeSelector",
+            ],
+            Visitor,
+        )
+    }
+}
+
+impl crate::serde::Serialize for AllocationResult {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: crate::serde::Serializer {
+        let mut state = serializer.serialize_struct(
+            "AllocationResult",
+            self.devices.as_ref().map_or(0, |_| 1) +
+            self.node_selector.as_ref().map_or(0, |_| 1),
+        )?;
+        if let Some(value) = &self.devices {
+            crate::serde::ser::SerializeStruct::serialize_field(&mut state, "devices", value)?;
+        }
+        if let Some(value) = &self.node_selector {
+            crate::serde::ser::SerializeStruct::serialize_field(&mut state, "nodeSelector", value)?;
+        }
+        crate::serde::ser::SerializeStruct::end(state)
+    }
+}
+
+#[cfg(feature = "schemars")]
+impl crate::schemars::JsonSchema for AllocationResult {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "io.k8s.api.resource.v1beta1.AllocationResult".into()
+    }
+
+    fn json_schema(__gen: &mut crate::schemars::SchemaGenerator) -> crate::schemars::Schema {
+        crate::schemars::json_schema!({
+            "description": "AllocationResult contains attributes of an allocated resource.",
+            "type": "object",
+            "properties": {
+                "devices": ({
+                    let mut schema_obj = __gen.subschema_for::<crate::api::resource::v1beta1::DeviceAllocationResult>();
+                    schema_obj.ensure_object().insert("description".into(), "Devices is the result of allocating devices.".into());
+                    schema_obj
+                }),
+                "nodeSelector": ({
+                    let mut schema_obj = __gen.subschema_for::<crate::api::core::v1::NodeSelector>();
+                    schema_obj.ensure_object().insert("description".into(), "NodeSelector defines where the allocated resources are available. If unset, they are available everywhere.".into());
+                    schema_obj
+                }),
+            },
+        })
+    }
+}
+
+#[cfg(feature = "schemars08")]
+impl crate::schemars08::JsonSchema for AllocationResult {
+    fn schema_name() -> std::string::String {
+        "io.k8s.api.resource.v1beta1.AllocationResult".into()
+    }
+
+    fn json_schema(__gen: &mut crate::schemars08::gen::SchemaGenerator) -> crate::schemars08::schema::Schema {
+        crate::schemars08::schema::Schema::Object(crate::schemars08::schema::SchemaObject {
+            metadata: Some(std::boxed::Box::new(crate::schemars08::schema::Metadata {
+                description: Some("AllocationResult contains attributes of an allocated resource.".into()),
+                ..Default::default()
+            })),
+            instance_type: Some(crate::schemars08::schema::SingleOrVec::Single(std::boxed::Box::new(crate::schemars08::schema::InstanceType::Object))),
+            object: Some(std::boxed::Box::new(crate::schemars08::schema::ObjectValidation {
+                properties: [
+                    (
+                        "devices".into(),
+                        {
+                            let mut schema_obj = __gen.subschema_for::<crate::api::resource::v1beta1::DeviceAllocationResult>().into_object();
+                            schema_obj.metadata = Some(std::boxed::Box::new(crate::schemars08::schema::Metadata {
+                                description: Some("Devices is the result of allocating devices.".into()),
+                                ..Default::default()
+                            }));
+                            crate::schemars08::schema::Schema::Object(schema_obj)
+                        },
+                    ),
+                    (
+                        "nodeSelector".into(),
+                        {
+                            let mut schema_obj = __gen.subschema_for::<crate::api::core::v1::NodeSelector>().into_object();
+                            schema_obj.metadata = Some(std::boxed::Box::new(crate::schemars08::schema::Metadata {
+                                description: Some("NodeSelector defines where the allocated resources are available. If unset, they are available everywhere.".into()),
+                                ..Default::default()
+                            }));
+                            crate::schemars08::schema::Schema::Object(schema_obj)
+                        },
+                    ),
+                ].into(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        })
+    }
+}
+---DAR---
+// Generated from definition io.k8s.api.resource.v1beta1.DeviceAllocationResult
+
+/// DeviceAllocationResult is the result of allocating devices.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DeviceAllocationResult {
+    /// This field is a combination of all the claim and class configuration parameters. Drivers can distinguish between those based on a flag.
+    ///
+    /// This includes configuration parameters for drivers which have no allocated devices in the result because it is up to the drivers which configuration parameters they support. They can silently ignore unknown configuration parameters.
+    pub config: Option<std::vec::Vec<crate::api::resource::v1beta1::DeviceAllocationConfiguration>>,
+
+    /// Results lists all allocated devices.
+    pub results: Option<std::vec::Vec<crate::api::resource::v1beta1::DeviceRequestAllocationResult>>,
+}
+
+impl crate::DeepMerge for DeviceAllocationResult {
+    fn merge_from(&mut self, other: Self) {
+        crate::merge_strategies::list::atomic(&mut self.config, other.config);
+        crate::merge_strategies::list::atomic(&mut self.results, other.results);
+    }
+}
+
+impl<'de> crate::serde::Deserialize<'de> for DeviceAllocationResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: crate::serde::Deserializer<'de> {
+        #[allow(non_camel_case_types)]
+        enum Field {
+            Key_config,
+            Key_results,
+            Other,
+        }
+
+        impl<'de> crate::serde::Deserialize<'de> for Field {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: crate::serde::Deserializer<'de> {
+                struct Visitor;
+
+                impl crate::serde::de::Visitor<'_> for Visitor {
+                    type Value = Field;
+
+                    fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                        f.write_str("field identifier")
+                    }
+
+                    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> where E: crate::serde::de::Error {
+                        Ok(match v {
+                            "config" => Field::Key_config,
+                            "results" => Field::Key_results,
+                            _ => Field::Other,
+                        })
+                    }
+                }
+
+                deserializer.deserialize_identifier(Visitor)
+            }
+        }
+
+        struct Visitor;
+
+        impl<'de> crate::serde::de::Visitor<'de> for Visitor {
+            type Value = DeviceAllocationResult;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("DeviceAllocationResult")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error> where A: crate::serde::de::MapAccess<'de> {
+                let mut value_config: Option<std::vec::Vec<crate::api::resource::v1beta1::DeviceAllocationConfiguration>> = None;
+                let mut value_results: Option<std::vec::Vec<crate::api::resource::v1beta1::DeviceRequestAllocationResult>> = None;
+
+                while let Some(key) = crate::serde::de::MapAccess::next_key::<Field>(&mut map)? {
+                    match key {
+                        Field::Key_config => value_config = crate::serde::de::MapAccess::next_value(&mut map)?,
+                        Field::Key_results => value_results = crate::serde::de::MapAccess::next_value(&mut map)?,
+                        Field::Other => { let _: crate::serde::de::IgnoredAny = crate::serde::de::MapAccess::next_value(&mut map)?; },
+                    }
+                }
+
+                Ok(DeviceAllocationResult {
+                    config: value_config,
+                    results: value_results,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "DeviceAllocationResult",
+            &[
+                "config",
+                "results",
+            ],
+            Visitor,
+        )
+    }
+}
+
+impl crate::serde::Serialize for DeviceAllocationResult {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: crate::serde::Serializer {
+        let mut state = serializer.serialize_struct(
+            "DeviceAllocationResult",
+            self.config.as_ref().map_or(0, |_| 1) +
+            self.results.as_ref().map_or(0, |_| 1),
+        )?;
+        if let Some(value) = &self.config {
+            crate::serde::ser::SerializeStruct::serialize_field(&mut state, "config", value)?;
+        }
+        if let Some(value) = &self.results {
+            crate::serde::ser::SerializeStruct::serialize_field(&mut state, "results", value)?;
+        }
+        crate::serde::ser::SerializeStruct::end(state)
+    }
+}
+
+#[cfg(feature = "schemars")]
+impl crate::schemars::JsonSchema for DeviceAllocationResult {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "io.k8s.api.resource.v1beta1.DeviceAllocationResult".into()
+    }
+
+    fn json_schema(__gen: &mut crate::schemars::SchemaGenerator) -> crate::schemars::Schema {
+        crate::schemars::json_schema!({
+            "description": "DeviceAllocationResult is the result of allocating devices.",
+            "type": "object",
+            "properties": {
+                "config": {
+                    "description": "This field is a combination of all the claim and class configuration parameters. Drivers can distinguish between those based on a flag.\n\nThis includes configuration parameters for drivers which have no allocated devices in the result because it is up to the drivers which configuration parameters they support. They can silently ignore unknown configuration parameters.",
+                    "type": "array",
+                    "items": (__gen.subschema_for::<crate::api::resource::v1beta1::DeviceAllocationConfiguration>()),
+                },
+                "results": {
+                    "description": "Results lists all allocated devices.",
+                    "type": "array",
+                    "items": (__gen.subschema_for::<crate::api::resource::v1beta1::DeviceRequestAllocationResult>()),
+                },
+            },
+        })
+    }
+}
+
+#[cfg(feature = "schemars08")]
+impl crate::schemars08::JsonSchema for DeviceAllocationResult {
+    fn schema_name() -> std::string::String {
+        "io.k8s.api.resource.v1beta1.DeviceAllocationResult".into()
+    }
+
+    fn json_schema(__gen: &mut crate::schemars08::gen::SchemaGenerator) -> crate::schemars08::schema::Schema {
+        crate::schemars08::schema::Schema::Object(crate::schemars08::schema::SchemaObject {
+            metadata: Some(std::boxed::Box::new(crate::schemars08::schema::Metadata {
+                description: Some("DeviceAllocationResult is the result of allocating devices.".into()),
+                ..Default::default()
+            })),
+            instance_type: Some(crate::schemars08::schema::SingleOrVec::Single(std::boxed::Box::new(crate::schemars08::schema::InstanceType::Object))),
+            object: Some(std::boxed::Box::new(crate::schemars08::schema::ObjectValidation {
+                properties: [
+                    (
+                        "config".into(),
+                        crate::schemars08::schema::Schema::Object(crate::schemars08::schema::SchemaObject {
+                            metadata: Some(std::boxed::Box::new(crate::schemars08::schema::Metadata {
+                                description: Some("This field is a combination of all the claim and class configuration parameters. Drivers can distinguish between those based on a flag.\n\nThis includes configuration parameters for drivers which have no allocated devices in the result because it is up to the drivers which configuration parameters they support. They can silently ignore unknown configuration parameters.".into()),
+                                ..Default::default()
+                            })),
+                            instance_type: Some(crate::schemars08::schema::SingleOrVec::Single(std::boxed::Box::new(crate::schemars08::schema::InstanceType::Array))),
+                            array: Some(std::boxed::Box::new(crate::schemars08::schema::ArrayValidation {
+                                items: Some(crate::schemars08::schema::SingleOrVec::Single(std::boxed::Box::new(__gen.subschema_for::<crate::api::resource::v1beta1::DeviceAllocationConfiguration>()))),
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        }),
+                    ),
+                    (
+                        "results".into(),
+                        crate::schemars08::schema::Schema::Object(crate::schemars08::schema::SchemaObject {
+                            metadata: Some(std::boxed::Box::new(crate::schemars08::schema::Metadata {
+                                description: Some("Results lists all allocated devices.".into()),
+                                ..Default::default()
+                            })),
+                            instance_type: Some(crate::schemars08::schema::SingleOrVec::Single(std::boxed::Box::new(crate::schemars08::schema::InstanceType::Array))),
+                            array: Some(std::boxed::Box::new(crate::schemars08::schema::ArrayValidation {
+                                items: Some(crate::schemars08::schema::SingleOrVec::Single(std::boxed::Box::new(__gen.subschema_for::<crate::api::resource::v1beta1::DeviceRequestAllocationResult>()))),
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        }),
+                    ),
+                ].into(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        })
+    }
+}
