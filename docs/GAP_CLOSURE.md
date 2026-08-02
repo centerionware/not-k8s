@@ -77,6 +77,57 @@ wired into it), and whatever narrower simplifications remain within
 Eviction/`/metrics/cadvisor`/DRA/PVC-CSI's own 🟡 bullets that this
 round's specifically-named sub-gaps didn't claim to fully resolve.
 
+## Round 102: `/metrics/cadvisor` gains network I/O (2026-08-02)
+
+Continuing the same "dig into remaining 🟡 bullets' own narrower
+simplifications" direction as round 101. Round 100's own doc comment
+claimed network/disk I/O metrics were out of scope because they
+"need CRI data this codebase doesn't collect at all today." Checking
+that claim against the vendored `proto/cri.proto` before accepting it
+(same discipline rounds 91/93/99 used) found it was only half true:
+`PodSandboxStats.linux.network.default_interface` (rx/tx byte
+counters) is already present on the exact same `ListPodSandboxStats`
+RPC `pod_usage_stats()` calls for cpu/memory — CRI's `IoUsage`, by
+contrast, really is only PSI pressure-stall stats with no byte
+counters at all, so disk I/O genuinely stays out of scope as
+documented.
+
+New `PodUsage` fields (`runtime/mod.rs`): `network_interface: Option<String>`,
+`network_rx_bytes: Option<u64>`, `network_tx_bytes: Option<u64>` —
+pod-scoped, not per-container, since a pod's containers share one
+network namespace and CRI only ever reports one measurement per pod
+(matching real cAdvisor's own `container_network_*` metrics, which
+carry the `container_` prefix but are pod-scoped too).
+`pod_usage_from_sandbox_stats()` (`runtime/cri/status.rs`) reads
+`linux.network.as_ref().and_then(|n| n.default_interface.as_ref())`
+alongside the cpu/memory/writable-layer fields it already parsed — no
+new RPC.
+
+`render_cadvisor_metrics()` (`server::prom_metrics`) gains
+`container_network_receive_bytes_total`/`container_network_transmit_bytes_total`,
+labeled `{namespace, pod, interface}` (no `container` label, per the
+pod-scoping above); an unmeasured interface name reports an empty
+`interface=""` label rather than dropping the sample, keeping the
+label set shape consistent. Both gated on `Some(value)`, same
+unconditional-only-for-`container_last_seen` pattern every other
+metric here already follows.
+
+4 new unit tests (`prom_metrics_tests/render_cadvisor_metrics.rs`):
+one sample per pod regardless of container count, missing stats omit
+the sample but keep the HELP/TYPE header, and a missing interface
+name still reports a (`interface=""`) sample. Existing
+`test_metrics_cadvisor_returns_real_container_usage`
+(`deploy/lib/test/cases/prom_metrics.sh`) extended with TYPE-line-only
+assertions for both new metrics (not a sample-line assertion — not
+every CRI runtime is guaranteed to populate this field, so the test
+stays robust to that rather than assuming containerd/CRI-O specifics).
+
+Module doc comment (`server/prom_metrics.rs`) corrected accordingly:
+network I/O moved out of the "still out of scope" list into the
+five-metrics description; disk I/O's own reason was sharpened from a
+blanket "needs new CRI data collection" to the more precise "CRI's
+`IoUsage` is PSI stats, not byte counters — nothing to parse."
+
 ## Round 101: eviction's soft-threshold grace period (2026-08-01, same day)
 
 With all 4 of rounds 97-100's closeable 🟡 items done, the user chose to
@@ -5751,7 +5802,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 - ✅ `Node.status.daemonEndpoints.kubeletEndpoint.port` now advertised (was never set before — without it the apiserver has no route to proxy exec/logs/attach/port-forward requests to at all, regardless of whether a server is listening).
 - ✅ **`/stats/summary`** (`server::stats`) — built from CRI's `ListPodSandboxStats` (one call gets per-pod *and* per-container CPU/memory usage, no cgroup-path guessing needed). Real caveat, not a nodelet limitation: `kubectl top` itself needs metrics-server (or another `metrics.k8s.io` implementation) deployed and configured to scrape this — implementing the endpoint is necessary but not sufficient for `kubectl top` on its own. Node-level CPU usage isn't populated in this endpoint's JSON shape (unlike `/metrics/resource` below, which does report it) — only memory comes from `/proc/meminfo` here.
 - ✅ **`/metrics/resource`** (`server::prom_metrics`) — full [KEP-2371](https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/2371-cri-pod-container-stats) metric set, including real node-wide CPU usage from a new `/proc/stat` parser (`metrics.rs::read_node_cpu_seconds`).
-- 🟡 **`/metrics/cadvisor`** (`server::prom_metrics`) — a deliberately scoped-down subset of real cAdvisor's much larger legacy catalog: `container_cpu_usage_seconds_total`, `container_memory_usage_bytes`, `container_memory_working_set_bytes`, `container_memory_rss`, and (round 100) `container_last_seen` — unconditional per container, since every container in a fresh `ListPodSandboxStats` snapshot is by definition being observed right now, needing no new data collection — labeled `{namespace,pod,container}` only (no `id`/`name`/`image` — not tracked in `PodUsage`). Still missing, re-confirmed deliberately out of scope round 100: network/disk I/O and per-cpu-core breakdowns (need real new CRI data collection this codebase doesn't do at all today, not a formatting gap), and spec/limit metrics (would need cross-referencing every container against its Pod's resource spec on every scrape — real functionality, bigger than this round's scope).
+- 🟡 **`/metrics/cadvisor`** (`server::prom_metrics`) — a deliberately scoped-down subset of real cAdvisor's much larger legacy catalog: `container_cpu_usage_seconds_total`, `container_memory_usage_bytes`, `container_memory_working_set_bytes`, `container_memory_rss`, and (round 100) `container_last_seen` — unconditional per container, since every container in a fresh `ListPodSandboxStats` snapshot is by definition being observed right now, needing no new data collection — labeled `{namespace,pod,container}` only (no `id`/`name`/`image` — not tracked in `PodUsage`). Also (round 102) `container_network_receive_bytes_total`/`container_network_transmit_bytes_total`, labeled `{namespace,pod,interface}` instead (no `container` label — a pod's containers share one network namespace, and CRI's `PodSandboxStats.linux.network.default_interface` only ever reports one measurement per pod, matching real cAdvisor's own pod-scoped-despite-the-name `container_network_*` metrics); this corrected round 100's own claim that network I/O needed new CRI data collection — the field was already present on the same RPC every other metric here reads, just unparsed. Still missing, re-confirmed genuinely out of scope round 102: disk I/O (CRI's own `IoUsage` is PSI pressure-stall stats, not byte counters — nothing to parse, unlike network) and per-cpu-core breakdowns (need real new CRI data collection this codebase doesn't do at all today), and spec/limit metrics (would need cross-referencing every container against its Pod's resource spec on every scrape — real functionality, bigger than this round's scope).
 - ✅ **Client certificate authentication** (round 95) — `NODELET_CLIENT_CA_FILE` (empty by default, disabled) holds a CA bundle; a request with a cert chaining to it authenticates directly off the verified peer cert's Subject CN (username) / Organization values (groups), matching the real apiserver's generic x509 authenticator convention — no `TokenReview` needed. Optional, not required: no cert still falls back to the existing bearer-token path unchanged; an untrusted cert fails the TLS handshake itself (rustls, before nodelet code runs).
 - ❌ **Checkpoint API** (`/checkpoint/{namespace}/{pod}/{container}`) (found in round 22's re-audit) — a forensic/debugging endpoint (CRIU-based container checkpointing, still alpha upstream) not implemented at all. Low value for nodelet's edge-device target and CRIU itself is a real external dependency (kernel + userspace tooling) beyond anything else this project needs — noted here rather than silently missing, not currently recommended for implementation.
 
@@ -6579,3 +6630,13 @@ accordingly; see those files' own updated framing.
       whether to act this tick. User picked this over the DRA/CSI e2e
       driver and a fresh gap re-audit — chose to dig further into the
       existing 🟡 bullets first. See round 101 notes.
+- [x] Round 102: `/metrics/cadvisor` gains network I/O — corrects round
+      100's own "needs new CRI data collection" claim about network
+      metrics: `PodSandboxStats.linux.network.default_interface` was
+      already present on the same RPC other metrics here already read.
+      New `container_network_receive_bytes_total`/
+      `container_network_transmit_bytes_total`, pod-scoped (not
+      per-container) since a pod's containers share one network
+      namespace. Disk I/O confirmed to genuinely stay out of scope —
+      CRI's `IoUsage` is PSI stats, not byte counters. See round 102
+      notes.

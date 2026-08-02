@@ -154,6 +154,14 @@ pub(crate) fn pod_usage_from_sandbox_stats(stats: &v1::PodSandboxStats) -> Optio
         .map(|e| (e.file_name().to_string_lossy().into_owned(), directory_usage_bytes(&e.path())))
         .collect();
 
+    // Network I/O (round 102): pod-scoped (one shared netns per pod), read
+    // straight off the same PodSandboxStats this function already parses
+    // everything else from — no extra RPC.
+    let default_interface = linux.network.as_ref().and_then(|n| n.default_interface.as_ref());
+    let network_interface = default_interface.map(|i| i.name.clone());
+    let network_rx_bytes = default_interface.and_then(|i| u64_value(&i.rx_bytes));
+    let network_tx_bytes = default_interface.and_then(|i| u64_value(&i.tx_bytes));
+
     Some(crate::runtime::PodUsage {
         namespace: metadata.namespace.clone(),
         name: metadata.name.clone(),
@@ -162,6 +170,9 @@ pub(crate) fn pod_usage_from_sandbox_stats(stats: &v1::PodSandboxStats) -> Optio
         containers,
         ephemeral_storage_usage_bytes,
         empty_dir_usage_bytes,
+        network_interface,
+        network_rx_bytes,
+        network_tx_bytes,
     })
 }
 

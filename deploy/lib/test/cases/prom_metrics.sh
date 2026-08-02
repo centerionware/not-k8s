@@ -76,6 +76,12 @@ EOF
     # container regardless of what CRI has reported stats-wise yet.
     assert_contains "$body" "# TYPE container_last_seen gauge" "container_last_seen TYPE line present"
     assert_contains "$body" "container_last_seen{namespace=" "container_last_seen has a sample line, not just headers"
+    # Round 102: network I/O TYPE lines are always emitted (same
+    # unconditional-header pattern as every other metric here); the sample
+    # line itself is only asserted loosely since not every CRI runtime is
+    # guaranteed to populate PodSandboxStats.linux.network.
+    assert_contains "$body" "# TYPE container_network_receive_bytes_total counter" "container_network_receive_bytes_total TYPE line present"
+    assert_contains "$body" "# TYPE container_network_transmit_bytes_total counter" "container_network_transmit_bytes_total TYPE line present"
     delete_pod_if_exists "$name"
 }
 

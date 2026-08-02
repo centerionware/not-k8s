@@ -21,6 +21,8 @@ fn includes_help_and_type_lines_for_every_metric() {
         "container_memory_working_set_bytes",
         "container_memory_rss",
         "container_last_seen",
+        "container_network_receive_bytes_total",
+        "container_network_transmit_bytes_total",
     ] {
         assert!(out.contains(&format!("# HELP {name} ")), "missing HELP for {name}");
         assert!(out.contains(&format!("# TYPE {name} ")), "missing TYPE for {name}");
@@ -64,6 +66,43 @@ fn all_empty_usage_still_reports_last_seen_but_no_other_sample_lines() {
     assert!(!out.contains("container_memory_working_set_bytes{"));
     assert!(!out.contains("container_memory_rss{"));
     assert!(out.contains("container_last_seen{namespace=\"default\",pod=\"web\",container=\"app\"} 12345"));
+}
+
+#[test]
+fn network_io_is_reported_per_pod_not_per_container() {
+    let pods = vec![PodUsage {
+        namespace: "default".to_string(),
+        name: "web".to_string(),
+        uid: "abc-123".to_string(),
+        containers: vec![
+            ContainerUsage { name: "app".to_string(), stats: UsageStats::default() },
+            ContainerUsage { name: "sidecar".to_string(), stats: UsageStats::default() },
+        ],
+        network_interface: Some("eth0".to_string()),
+        network_rx_bytes: Some(1000),
+        network_tx_bytes: Some(500),
+        ..Default::default()
+    }];
+    let out = render_cadvisor_metrics(&pods, 0);
+    assert_eq!(out.matches("container_network_receive_bytes_total{").count(), 1, "one sample per pod, not per container");
+    assert!(out.contains("container_network_receive_bytes_total{namespace=\"default\",pod=\"web\",interface=\"eth0\"} 1000"));
+    assert!(out.contains("container_network_transmit_bytes_total{namespace=\"default\",pod=\"web\",interface=\"eth0\"} 500"));
+}
+
+#[test]
+fn missing_network_stats_omit_the_sample_line_but_keep_the_header() {
+    let pods = vec![pod_with_one_container(UsageStats::default())];
+    let out = render_cadvisor_metrics(&pods, 0);
+    assert!(out.contains("# HELP container_network_receive_bytes_total"));
+    assert!(!out.contains("container_network_receive_bytes_total{"));
+    assert!(!out.contains("container_network_transmit_bytes_total{"));
+}
+
+#[test]
+fn missing_interface_name_reports_an_empty_interface_label_rather_than_dropping_the_sample() {
+    let pods = vec![PodUsage { network_rx_bytes: Some(42), network_tx_bytes: None, ..pod_with_one_container(UsageStats::default()) }];
+    let out = render_cadvisor_metrics(&pods, 0);
+    assert!(out.contains("container_network_receive_bytes_total{namespace=\"default\",pod=\"web\",interface=\"\"} 42"));
 }
 
 #[test]

@@ -483,6 +483,22 @@ pub struct PodUsage {
     /// same "no volumes, nothing to report" shape as an empty `containers`
     /// list, not a distinct "measurement failed" state.
     pub empty_dir_usage_bytes: std::collections::HashMap<String, u64>,
+    /// Network I/O for the pod's default interface (round 102; found while
+    /// re-checking `/metrics/cadvisor`'s documented "network I/O needs new
+    /// CRI data collection" claim — it doesn't: CRI's `PodSandboxStats`
+    /// already carries `linux.network.default_interface` on the exact same
+    /// `ListPodSandboxStats` RPC `pod_usage_stats()` already calls for
+    /// cpu/memory, just unread until now). Pod-scoped, not per-container —
+    /// containers in a pod share one network namespace, so there's only
+    /// ever one measurement per pod, matching real cAdvisor's own
+    /// `container_network_*` metrics (which are pod-scoped despite the
+    /// `container_` name prefix). `None` when nothing could be measured
+    /// (mock runtime; a `cri` pod CRI hasn't measured yet; a host-network
+    /// pod sharing the node's own interface may also report nothing
+    /// meaningful here depending on the runtime).
+    pub network_interface: Option<String>,
+    pub network_rx_bytes: Option<u64>,
+    pub network_tx_bytes: Option<u64>,
 }
 
 /// One cached image, in the shape `Node.status.images` needs (round 33)

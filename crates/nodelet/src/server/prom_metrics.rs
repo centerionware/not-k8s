@@ -25,19 +25,29 @@
 //!   scraper uses it to detect a container that's vanished since the last
 //!   scrape, and every container in a fresh `ListPodSandboxStats` result
 //!   is, by definition, being seen *right now*, so no new data collection
-//!   is needed to report it honestly). All five carry a
-//!   `{namespace, pod, container}` label set — real cAdvisor also labels
-//!   with `id`/`name`/`image` (the container's cgroup path, runtime name,
-//!   and image ref), which aren't tracked anywhere in nodelet's `PodUsage`
+//!   is needed to report it honestly), plus `container_network_receive_bytes_total`/
+//!   `container_network_transmit_bytes_total` (round 102 — corrects round
+//!   100's own "needs new CRI data collection" claim about network I/O:
+//!   `PodSandboxStats.linux.network.default_interface` was already present
+//!   on the same `ListPodSandboxStats` response every other metric here
+//!   reads, just unparsed until now). The first five carry a
+//!   `{namespace, pod, container}` label set; the two network ones carry
+//!   `{namespace, pod, interface}` instead — no `container` label, since a
+//!   pod's containers share one network namespace and CRI only ever
+//!   reports one measurement per pod, matching real cAdvisor's own
+//!   `container_network_*` metrics (pod-scoped despite the `container_`
+//!   name prefix). Real cAdvisor also labels every metric here with
+//!   `id`/`name`/`image` (the container's cgroup path, runtime name, and
+//!   image ref), which aren't tracked anywhere in nodelet's `PodUsage`
 //!   today and are dropped here rather than faked. **Still out of scope,
-//!   deliberately** (round 100 re-confirmed, not just carried over):
-//!   network/disk I/O and per-cpu-core breakdowns need CRI data this
-//!   codebase doesn't collect *at all* today (a real new collection path,
-//!   not a formatting gap like `container_last_seen` was), and spec/limit
-//!   metrics (`container_spec_memory_limit_bytes` etc.) would need
-//!   cross-referencing every container against its Pod's resource spec on
-//!   every scrape — real functionality, but a bigger, separate piece of
-//!   work than this round's scope.
+//!   deliberately** (round 102 re-confirmed, not just carried over): disk
+//!   I/O and per-cpu-core breakdowns need CRI data this codebase doesn't
+//!   collect at all today (CRI's own `IoUsage` is PSI pressure-stall
+//!   stats, not byte counters — genuinely nothing to parse, unlike network),
+//!   and spec/limit metrics (`container_spec_memory_limit_bytes` etc.)
+//!   would need cross-referencing every container against its Pod's
+//!   resource spec on every scrape — real functionality, but a bigger,
+//!   separate piece of work than this round's scope.
 
 use super::{text_response, BoxedBody, ServerState};
 use crate::runtime::PodUsage;
@@ -209,6 +219,45 @@ pub fn render_cadvisor_metrics(pods: &[PodUsage], now_unix_seconds: u64) -> Stri
                 "container_last_seen",
                 &[("namespace", &pod.namespace), ("pod", &pod.name), ("container", &c.name)],
                 now_unix_seconds as f64,
+            );
+        }
+    }
+
+    // container_network_{receive,transmit}_bytes_total (round 102): pod-
+    // scoped, not per-container -- see the module doc comment for why.
+    // "interface" defaults to "" (rather than being omitted) when CRI
+    // reported rx/tx bytes but no interface name, keeping the label set
+    // shape consistent across samples.
+    push_help_type(
+        &mut out,
+        "container_network_receive_bytes_total",
+        "Cumulative count of bytes received",
+        "counter",
+    );
+    for pod in pods {
+        if let Some(v) = pod.network_rx_bytes {
+            push_metric(
+                &mut out,
+                "container_network_receive_bytes_total",
+                &[("namespace", &pod.namespace), ("pod", &pod.name), ("interface", pod.network_interface.as_deref().unwrap_or(""))],
+                v as f64,
+            );
+        }
+    }
+
+    push_help_type(
+        &mut out,
+        "container_network_transmit_bytes_total",
+        "Cumulative count of bytes transmitted",
+        "counter",
+    );
+    for pod in pods {
+        if let Some(v) = pod.network_tx_bytes {
+            push_metric(
+                &mut out,
+                "container_network_transmit_bytes_total",
+                &[("namespace", &pod.namespace), ("pod", &pod.name), ("interface", pod.network_interface.as_deref().unwrap_or(""))],
+                v as f64,
             );
         }
     }
