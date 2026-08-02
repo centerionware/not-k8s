@@ -244,7 +244,12 @@ async fn gc_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: Config
 /// Re-check node pressure on `cfg.eviction_check_interval` and, if
 /// MemoryPressure or DiskPressure is active, evict exactly one eligible pod
 /// (see `nodelet::eviction`) — never a mass cull; the next tick re-measures
-/// and decides again, same as real kubelet's eviction manager.
+/// and decides again, same as real kubelet's eviction manager. A *hard*
+/// threshold acts the same tick it's crossed; a *soft* one (round 101)
+/// first needs to stay continuously crossed for `cfg.eviction_soft_grace_period`
+/// (`soft_since`, tracked across ticks) — real kubelet's own
+/// eviction-soft/-soft-grace-period pair, this codebase's prior "hard-style
+/// immediate action only" simplification.
 /// Terminate one pod on nodelet's own initiative (node-pressure eviction,
 /// a per-pod ephemeral-storage/emptyDir limit violation, or — round 81 —
 /// `activeDeadlineSeconds`): best-effort `Failed` status patch with the
@@ -278,6 +283,15 @@ async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: 
     use k8s_openapi::api::core::v1::Pod;
     use kube::api::{Api, ListParams};
     use std::collections::HashMap;
+
+    // Round 101: how long each resource has been continuously past its
+    // *soft* (but not yet hard) threshold — real kubelet's
+    // eviction-soft-grace-period bookkeeping. Cleared whenever that
+    // resource drops back under its soft threshold; `Instant`, not
+    // wall-clock, since only elapsed-since-start-of-tracking matters and
+    // this never survives a restart (matching the rest of eviction_loop's
+    // own no-persisted-state design).
+    let mut soft_since: HashMap<&'static str, tokio::time::Instant> = HashMap::new();
 
     loop {
         tokio::time::sleep(cfg.eviction_check_interval).await;
@@ -389,18 +403,45 @@ async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: 
             continue; // one pod per check, matching the pressure-based path below
         }
 
-        let pressure = nodelet::metrics::read_pressure(
+        let hard = nodelet::metrics::read_pressure(
             &cfg.disk_path,
             cfg.memory_pressure_threshold_bytes,
             cfg.disk_pressure_percent,
             cfg.pid_pressure_percent,
         );
-        if !pressure.memory && !pressure.disk && !pressure.pid {
+        // Round 101: the looser eviction-soft signals, using the same live
+        // reads as `hard` above but against cfg's soft thresholds (which
+        // default equal to the hard ones, making this a no-op by
+        // construction for any deployment that hasn't set them).
+        let soft = nodelet::metrics::read_pressure(
+            &cfg.disk_path,
+            cfg.memory_pressure_soft_threshold_bytes,
+            cfg.disk_pressure_soft_percent,
+            cfg.pid_pressure_soft_percent,
+        );
+        let now = tokio::time::Instant::now();
+        let mut track = |key: &'static str, soft_true: bool| -> Option<std::time::Duration> {
+            if !soft_true {
+                soft_since.remove(key);
+                return None;
+            }
+            let since = *soft_since.entry(key).or_insert(now);
+            Some(now.duration_since(since))
+        };
+        let memory_elapsed = track("memory", soft.memory);
+        let disk_elapsed = track("disk", soft.disk);
+        let pid_elapsed = track("pid", soft.pid);
+        drop(track);
+
+        let memory_due = nodelet::eviction::pressure_action_due(hard.memory, memory_elapsed, cfg.eviction_soft_grace_period);
+        let disk_due = nodelet::eviction::pressure_action_due(hard.disk, disk_elapsed, cfg.eviction_soft_grace_period);
+        let pid_due = nodelet::eviction::pressure_action_due(hard.pid, pid_elapsed, cfg.eviction_soft_grace_period);
+        if !memory_due && !disk_due && !pid_due {
             continue;
         }
-        let reason = if pressure.memory {
+        let reason = if memory_due {
             "MemoryPressure"
-        } else if pressure.disk {
+        } else if disk_due {
             "DiskPressure"
         } else {
             "PIDPressure"

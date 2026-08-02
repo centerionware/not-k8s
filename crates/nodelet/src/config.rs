@@ -78,6 +78,22 @@ pub struct Config {
     /// PIDPressure condition fires when available PIDs (`pid_max` minus
     /// running processes) drops below this percent (default 10).
     pub pid_pressure_percent: u8,
+    /// Real kubelet's `--eviction-soft` counterparts: looser than the hard
+    /// thresholds above (round 101; found in round 99's own notes as the
+    /// eviction bullet's one remaining explicit simplification, "no
+    /// soft-threshold grace period"). Crossing a soft threshold alone
+    /// doesn't evict immediately — it must stay continuously crossed for
+    /// `eviction_soft_grace_period` first (see `eviction_loop()`).
+    /// Defaults equal to the matching hard threshold, which makes the soft
+    /// path a no-op by construction (hard already fires at that point) —
+    /// existing deployments with no soft config set see zero behavior
+    /// change.
+    pub memory_pressure_soft_threshold_bytes: u64,
+    pub disk_pressure_soft_percent: u8,
+    pub pid_pressure_soft_percent: u8,
+    /// Real kubelet's `--eviction-soft-grace-period`: how long a soft
+    /// threshold must stay continuously crossed before it's acted on.
+    pub eviction_soft_grace_period: Duration,
     /// How often orphaned-sandbox and unreferenced-image GC runs (cri
     /// runtime only; no-op on mock). Coarse on purpose — not a poll loop
     /// for pod state, just periodic housekeeping.
@@ -360,6 +376,17 @@ impl Config {
             Ok(v) => v.parse().context("NODELET_PID_PRESSURE_PERCENT must be an integer 0-100")?,
             Err(_) => 10u8,
         };
+        let memory_pressure_soft_threshold_bytes =
+            env_u64("NODELET_MEMORY_PRESSURE_SOFT_THRESHOLD_BYTES", memory_pressure_threshold_bytes)?;
+        let disk_pressure_soft_percent = match std::env::var("NODELET_DISK_PRESSURE_SOFT_PERCENT") {
+            Ok(v) => v.parse().context("NODELET_DISK_PRESSURE_SOFT_PERCENT must be an integer 0-100")?,
+            Err(_) => disk_pressure_percent,
+        };
+        let pid_pressure_soft_percent = match std::env::var("NODELET_PID_PRESSURE_SOFT_PERCENT") {
+            Ok(v) => v.parse().context("NODELET_PID_PRESSURE_SOFT_PERCENT must be an integer 0-100")?,
+            Err(_) => pid_pressure_percent,
+        };
+        let eviction_soft_grace_period = Duration::from_secs(env_u64("NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS", 90)?);
         let container_log_max_size_bytes =
             env_u64("NODELET_CONTAINER_LOG_MAX_SIZE_BYTES", 10 * 1024 * 1024)?;
         let container_log_max_files = env_u64("NODELET_CONTAINER_LOG_MAX_FILES", 5)? as u32;
@@ -471,6 +498,10 @@ impl Config {
             disk_path,
             disk_pressure_percent,
             pid_pressure_percent,
+            memory_pressure_soft_threshold_bytes,
+            disk_pressure_soft_percent,
+            pid_pressure_soft_percent,
+            eviction_soft_grace_period,
             container_log_max_size_bytes,
             container_log_max_files,
             log_rotate_interval,

@@ -18,6 +18,10 @@ test_eviction_exceeds_requests_tiebreak_manual_procedure() {
     skip_test "proving the exceeds-requests comparator step (round 99 — pick_eviction_candidate() ranks a pod whose usage exceeds its own memory request ahead of one that doesn't, within a QoS class, before even priority) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with the SAME spec.priority, one whose container actually consumes more memory than it requested (e.g. requests: {memory: 16Mi} but the process allocates 100Mi) and one that stays within its request, force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the pod exceeding its own request is evicted first even if the other pod's absolute usage is higher — proof the exceeds-requests step is real, not just a documented no-op. The pure ranking logic itself (exceeds_memory_requests(), and that it now sits ahead of priority in eviction_rank()) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end."
 }
 
+test_eviction_soft_grace_period_manual_procedure() {
+    skip_test "proving the soft-threshold grace period (round 101 — a pod isn't evicted the instant a looser *soft* threshold is crossed, only once it's stayed continuously crossed for NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS) needs artificial pressure sustained across multiple ticks, harder to orchestrate reliably here than the base eviction procedure above. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_SOFT_THRESHOLD_BYTES set just above current MemAvailable (so MemoryPressure's soft signal trips immediately) but NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES (the hard one) left at its normal, much-lower default, and NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS set to something short like 20, (3) apply a BestEffort pod, (4) confirm it is NOT evicted before the grace period elapses but IS evicted (phase Failed/reason Evicted) once NODELET_EVICTION_CHECK_SECS ticks have accumulated past NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS of continuous soft pressure, (5) restore normal thresholds and restart nodelet. The pure decision logic itself (eviction::pressure_action_due()) is already covered by cargo test's eviction_tests/pressure_action_due.rs — this only proves the live wiring end to end."
+}
+
 test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted() {
     # Round 49: unlike the node-level pressure eviction above, a pod
     # exceeding its OWN ephemeral-storage limit is a direct per-pod
@@ -121,5 +125,6 @@ EOF
 register_test test_eviction_manual_procedure
 register_test test_eviction_priority_tiebreak_manual_procedure
 register_test test_eviction_exceeds_requests_tiebreak_manual_procedure
+register_test test_eviction_soft_grace_period_manual_procedure
 register_test test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
 register_test test_pod_exceeding_an_empty_dir_size_limit_is_evicted

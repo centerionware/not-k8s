@@ -77,6 +77,61 @@ wired into it), and whatever narrower simplifications remain within
 Eviction/`/metrics/cadvisor`/DRA/PVC-CSI's own 🟡 bullets that this
 round's specifically-named sub-gaps didn't claim to fully resolve.
 
+## Round 101: eviction's soft-threshold grace period (2026-08-01, same day)
+
+With all 4 of rounds 97-100's closeable 🟡 items done, the user chose to
+keep digging into the remaining 🟡 bullets' own narrower simplifications
+rather than a fresh gap re-audit or the DRA/CSI e2e driver infra work.
+Picked: the Eviction bullet's one remaining explicitly-documented gap —
+"no soft-threshold grace period (hard-style immediate action only)".
+
+Real kubelet distinguishes `--eviction-hard` (acts the instant a signal
+crosses it) from `--eviction-soft` + `--eviction-soft-grace-period` (a
+looser signal that must stay continuously crossed for that long before
+it's acted on — lets a brief spike self-resolve without triggering an
+eviction). Nodelet had only ever implemented the hard half.
+
+New `Config` fields: `memory_pressure_soft_threshold_bytes`,
+`disk_pressure_soft_percent`, `pid_pressure_soft_percent` (each
+`NODELET_*_SOFT_*` env var, defaulting equal to the matching *hard*
+threshold/percent already in `Config`) and `eviction_soft_grace_period`
+(`NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS`, default 90s). Defaulting the
+soft values equal to hard is deliberate: whenever soft would be true,
+hard already is too (same or looser threshold), so hard's immediate path
+fires first and the whole soft mechanism is a no-op unless an operator
+explicitly configures a looser soft threshold — zero behavior change for
+existing deployments.
+
+`eviction_loop()` (`main.rs`) now reads pressure twice per tick — once
+against the hard thresholds (unchanged), once against the soft ones —
+and keeps a `soft_since: HashMap<&str, Instant>` across ticks recording
+when each resource most recently became continuously soft-true,
+cleared the moment it drops back under the soft threshold. New pure
+`eviction::pressure_action_due(hard_true, soft_true_since,
+soft_grace_period)` (`eviction.rs`) is the actual decision: hard acts
+immediately, soft only once `soft_true_since` has reached the grace
+period — kept pure and unit-testable (4 new tests,
+`eviction_tests/pressure_action_due.rs`) rather than inlining the time
+comparison directly in the impure loop.
+
+The 4 test-fixture files that construct `Config` by struct literal
+(`node_tests/{capacity_map,build_status,node_labels,build_node}.rs`)
+each gained the 4 new fields at hard-equal defaults, matching every
+other fixture's existing values for the fields being extended.
+
+No new e2e test: `deploy/lib/test/cases/eviction.sh`'s existing
+pressure-eviction tests only exercise the hard path already covered;
+a soft-grace-period e2e test would need to hold a specific resource
+level steady across a multi-tick window, materially harder to
+orchestrate reliably in the bash harness than the unit coverage above
+already gives real confidence in the core decision logic.
+
+This closes the Eviction bullet's last explicitly-named simplification.
+Remaining below full ✅ for Eviction, re-confirmed not touched this
+round: QoS class staying an explicit higher-priority sort key rather
+than upstream's implicit request-based emergence (a deliberate,
+documented conservative stance, not a gap).
+
 ## Round 99: eviction's `exceedMemoryRequests` comparator step (2026-08-01, same day)
 
 Third of the 4 closeable 🟡 items. Closes the specific gap round
@@ -5681,7 +5736,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing
 
 ### Node-pressure eviction
 - ✅ MemoryPressure/DiskPressure *conditions* reflect real reads
-- 🟡 **Eviction** — `eviction_loop()` now acts on real pressure: ranks eligible pods by QoS class (`eviction.rs`'s `qos_class()`/`pick_eviction_candidate()` — BestEffort before Burstable, Guaranteed and `system-*-critical` pods never evicted), evicts one per check. Ranking within a QoS class (round 99; found in round 26's own notes) now checks **whether usage exceeds the pod's own memory request** first (`exceeds_memory_requests()` — real kubelet's actual *primary* `exceedMemoryRequests` comparator criterion, applied here as a tie-break within this codebase's existing QoS tiers; unknown usage counts as "exceeds", matching upstream's own no-stats-found direction), **then** by **`spec.priority`** (round 26 — lower priority evicted first; read directly off the Pod object since the apiserver's Priority admission controller already resolves `priorityClassName` into it, no lookup needed), **then** falls back to real memory usage from CRI's `ListPodSandboxStats` (the same source `/stats/summary` uses) when known, or requested memory otherwise (`eviction_weight()`) as the final tie-break. Still simplified vs. real kubelet: no soft-threshold grace period (hard-style immediate action only), and QoS class remains an explicit, higher-priority sort key rather than upstream's implicit request-based emergence of the same ordering (a deliberate, documented conservative stance — Guaranteed pods are never evicted here, unlike upstream under severe enough pressure).
+- 🟡 **Eviction** — `eviction_loop()` now acts on real pressure: ranks eligible pods by QoS class (`eviction.rs`'s `qos_class()`/`pick_eviction_candidate()` — BestEffort before Burstable, Guaranteed and `system-*-critical` pods never evicted), evicts one per check. Ranking within a QoS class (round 99; found in round 26's own notes) now checks **whether usage exceeds the pod's own memory request** first (`exceeds_memory_requests()` — real kubelet's actual *primary* `exceedMemoryRequests` comparator criterion, applied here as a tie-break within this codebase's existing QoS tiers; unknown usage counts as "exceeds", matching upstream's own no-stats-found direction), **then** by **`spec.priority`** (round 26 — lower priority evicted first; read directly off the Pod object since the apiserver's Priority admission controller already resolves `priorityClassName` into it, no lookup needed), **then** falls back to real memory usage from CRI's `ListPodSandboxStats` (the same source `/stats/summary` uses) when known, or requested memory otherwise (`eviction_weight()`) as the final tie-break. `eviction_loop()` also implements real kubelet's `--eviction-soft`/`--eviction-soft-grace-period` pair (round 101; found in round 99's own notes) alongside the pre-existing `--eviction-hard`-style immediate thresholds: a soft threshold (`*_pressure_soft_*` config, defaulting equal to the matching hard one — a no-op unless explicitly configured looser) must stay continuously crossed for `eviction_soft_grace_period` (default 90s) before it's acted on, tracked per-resource across ticks and decided by pure `eviction::pressure_action_due()`. Still simplified vs. real kubelet: QoS class remains an explicit, higher-priority sort key rather than upstream's implicit request-based emergence of the same ordering (a deliberate, documented conservative stance — Guaranteed pods are never evicted here, unlike upstream under severe enough pressure).
 - ✅ PID pressure — real `/proc/sys/kernel/pid_max` + a `/proc` scan (`read_pid_info()`/`pid_pressure()`), same fail-open pattern as memory/disk
 
 ### Static pods & mirror pods
@@ -6511,3 +6566,16 @@ accordingly; see those files' own updated framing.
       not a formatting gap). Fourth and last of the 4 closeable 🟡
       items — closes the "do them all, let's get it done" instruction
       in full. See round 100 notes.
+- [x] Round 101: eviction's soft-threshold grace period — closes the
+      Eviction bullet's remaining explicit simplification ("no
+      soft-threshold grace period, hard-style immediate action only").
+      New `memory_pressure_soft_threshold_bytes`/
+      `disk_pressure_soft_percent`/`pid_pressure_soft_percent`/
+      `eviction_soft_grace_period` config, defaulting equal to the
+      existing hard thresholds (no-op by construction for anyone not
+      setting them). `eviction_loop()` tracks how long each resource
+      has been continuously past its soft-but-not-hard threshold
+      (`soft_since`); new pure `eviction::pressure_action_due()` decides
+      whether to act this tick. User picked this over the DRA/CSI e2e
+      driver and a fresh gap re-audit — chose to dig further into the
+      existing 🟡 bullets first. See round 101 notes.

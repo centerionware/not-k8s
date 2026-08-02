@@ -330,6 +330,19 @@ fn eviction_rank(pod: &Pod, usage_bytes_by_uid: &HashMap<String, u64>) -> (QosCl
     )
 }
 
+/// Real kubelet's `--eviction-soft`/`--eviction-soft-grace-period` pair
+/// (round 101; found in round 99's own notes as the eviction bullet's one
+/// remaining explicit simplification, "no soft-threshold grace period").
+/// A signal past its *hard* threshold (`hard_true`) evicts this tick,
+/// unchanged from pre-round-101 behavior. One only past the looser *soft*
+/// threshold must stay continuously true first — `soft_true_since` is how
+/// long ago (if ever) it most recently became soft-true without
+/// interruption, threaded in/out by the caller (`eviction_loop()`) across
+/// ticks: `None` means "not soft-true right now", so nothing to track.
+pub fn pressure_action_due(hard_true: bool, soft_true_since: Option<std::time::Duration>, soft_grace_period: std::time::Duration) -> bool {
+    hard_true || matches!(soft_true_since, Some(elapsed) if elapsed >= soft_grace_period)
+}
+
 pub fn pick_eviction_candidate<'a>(pods: &'a [Pod], usage_bytes_by_uid: &HashMap<String, u64>) -> Option<&'a Pod> {
     pods.iter()
         .filter(|p| {
@@ -356,3 +369,6 @@ mod tests_empty_dir_size_limit;
 #[cfg(test)]
 #[path = "eviction_tests/active_deadline.rs"]
 mod tests_active_deadline;
+#[cfg(test)]
+#[path = "eviction_tests/pressure_action_due.rs"]
+mod tests_pressure_action_due;
