@@ -25,7 +25,29 @@ build_nodelet() {
         features=(--features cri)
     fi
     log "Building nodelet (cargo build --release ${features[*]:-})..."
-    cargo build --release "${features[@]}"
+    if ! cargo build --release "${features[@]}"; then
+        # Cargo.toml's [profile.release] deliberately uses lto = true +
+        # codegen-units = 1 for the smallest/fastest possible edge binary —
+        # right for a well-resourced build machine/CI, but it means nearly
+        # all of the actual compiling (every dependency crate: tokio, kube,
+        # and with --features cri also tonic/prost/rustls) happens fine,
+        # and then the *entire* dependency graph gets merged into one
+        # codegen unit and LTO'd in a single rustc/LLVM process at the very
+        # end. That one process's memory use scales with the whole
+        # dependency graph, not any single crate — on a constrained device
+        # it's the single likeliest place in this whole script for the OOM
+        # killer to strike, and from the outside that looks exactly like
+        # "the build got all the way to the end and then just died/hung."
+        # Confirmed for real: this is the actual failure being retried here.
+        #
+        # Don't touch the committed profile for that — retry once with a
+        # much lighter LTO/codegen setting via env override instead, same
+        # tiered-fallback spirit as everything else in this script.
+        warn "cargo build --release failed — if this device is memory-constrained, the likely cause is the final whole-program LTO step (Cargo.toml's [profile.release] uses lto=true, codegen-units=1 for the smallest edge binary, which needs the most memory right at the end). Retrying once with lighter LTO settings (thin LTO, 16 codegen units) that trade a slightly larger binary for much lower peak memory..."
+        CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+            cargo build --release "${features[@]}" \
+            || die "Build failed even with lighter LTO settings — check $LOG_DIR or run 'free -h' during a manual 'cargo build --release' to confirm this is memory exhaustion (dmesg/journalctl will show an oom-kill of rustc/cc1plus/ld if so). Adding swap, or building on a box with more RAM, are the remaining options for this profile."
+    fi
     [[ -x "$REPO_ROOT/target/release/nodelet" ]] || die "Build finished but binary not found."
 
     # Copy out to a stable path before the end-of-run cleanup wipes target/

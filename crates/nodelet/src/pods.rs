@@ -19,7 +19,7 @@ use k8s_openapi::api::core::v1::{
     ResourceStatus, Secret, Volume, VolumeMountStatus,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-use kube::api::{ListParams, Patch, PatchParams};
+use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client};
@@ -293,13 +293,40 @@ impl PodController {
         });
     }
 
+    /// Tears down a pod's runtime state and, if it still exists in the
+    /// apiserver (the `reconcile()` path — `deletionTimestamp` set but not
+    /// yet purged), finishes the deletion there too.
+    ///
+    /// Real kubelet's graceful-delete contract: `kubectl delete pod` only
+    /// *sets* `deletionTimestamp` (a soft delete — the object stays in
+    /// etcd). Nothing purges it from there on its own; the apiserver
+    /// leaves that to whoever is actually terminating the pod. kubelet
+    /// does this itself once termination finishes, by issuing a second,
+    /// now-effectively-immediate `Delete`. Without that second call here,
+    /// every normally-deleted pod would tear down its containers just
+    /// fine but sit in `Terminating` forever — and so would any namespace
+    /// containing it, since namespace GC waits for all its objects to be
+    /// gone.
+    ///
+    /// `Event::Delete` (object already gone from etcd — someone else, or
+    /// a previous call to this same function, already finished it) is the
+    /// other caller; the delete call below tolerates a 404 as success so
+    /// this stays a no-op harmless double-call in that case.
     async fn teardown(&self, pod: &Pod) {
         if let Some((ns, name)) = key_parts(pod) {
             self.stop_probe_supervisor(&ns, &name);
             if let Err(e) = self.runtime.remove_pod(pod).await {
                 warn!(pod = %format!("{ns}/{name}"), error = ?e, "remove_pod failed");
-            } else {
-                info!(pod = %format!("{ns}/{name}"), "torn down");
+                return;
+            }
+            info!(pod = %format!("{ns}/{name}"), "torn down");
+
+            let api: Api<Pod> = Api::namespaced(self.client.clone(), &ns);
+            let dp = DeleteParams { grace_period_seconds: Some(0), ..Default::default() };
+            match api.delete(&name, &dp).await {
+                Ok(_) => {}
+                Err(kube::Error::Api(e)) if e.code == 404 => {}
+                Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "final delete of pod object failed"),
             }
         }
     }
