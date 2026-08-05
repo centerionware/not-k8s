@@ -92,9 +92,26 @@ fi
 #       NOTK8S_CLUSTER_CIDR/NOTK8S_SERVICE_CIDR once it's resolved
 #       --ip-family, so this script and nodelet's Service proxy always agree
 #       on the same mode.
+#
+#   --kube-apiserver-arg=kubelet-certificate-authority=...
+#       Only added once NOTK8S_KUBELET_CA_PEM is set (deploy/bootstrap-
+#       source.sh does this in a *second* call to this script, after
+#       nodelet's own first startup has actually generated the cert this
+#       needs to point at — see enable_kubelet_certificate_authority_trust()
+#       in lib/control-plane.sh for why it can't just be included from the
+#       first call). Without it, the apiserver refuses to trust nodelet's
+#       self-signed kubelet-style server cert at all ("certificate signed
+#       by unknown authority"), and containerLogs/exec/attach/port-forward
+#       proxying is unreachable through it — confirmed for real. This
+#       trusts nodelet's own leaf cert directly as if it were a CA (valid
+#       x509: a self-signed cert can vouch for itself when explicitly
+#       placed in a trust store this way) — not a real CA/CSR pipeline,
+#       which stays a separate, lower-priority open item (docs/GAP_CLOSURE.md).
 
 CLUSTER_CIDR="${NOTK8S_CLUSTER_CIDR:-10.42.0.0/16}"
 SERVICE_CIDR="${NOTK8S_SERVICE_CIDR:-10.43.0.0/16}"
+KUBELET_CA_ARG=""
+[[ -n "${NOTK8S_KUBELET_CA_PEM:-}" ]] && KUBELET_CA_ARG="--kube-apiserver-arg=kubelet-certificate-authority=$NOTK8S_KUBELET_CA_PEM"
 
 export INSTALL_K3S_EXEC="server \
     --disable-agent \
@@ -108,6 +125,7 @@ export INSTALL_K3S_EXEC="server \
     --cluster-cidr=$CLUSTER_CIDR \
     --service-cidr=$SERVICE_CIDR \
     --kube-controller-manager-arg=node-monitor-period=10s \
+    $KUBELET_CA_ARG \
     --write-kubeconfig-mode=0644"
 
 echo "==> Starting k3s with INSTALL_K3S_EXEC:"

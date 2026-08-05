@@ -83,6 +83,29 @@ pub fn client_identity_from_der(der: &[u8]) -> Option<(String, Vec<String>)> {
     Some((username, groups))
 }
 
+/// Filename for the PEM copy of the leaf cert `load_or_generate` keeps
+/// alongside the DER original — the stable path
+/// `--kube-apiserver-arg=kubelet-certificate-authority=` gets pointed at so
+/// the apiserver trusts this self-signed cert for exec/logs/attach/
+/// port-forward proxying (see docs/GAP_CLOSURE.md's CA/CSR pipeline note
+/// for why this, not a real CA, is what's here today). DER is what rustls
+/// wants at TLS-handshake time; nothing about that changes — this is
+/// purely an additional, redundant encoding of the exact same leaf cert
+/// for a consumer (kube-apiserver) that only reads PEM.
+pub const CA_PEM_FILENAME: &str = "server-ca.pem";
+
+fn write_ca_pem(dir: &Path, cert_der: &CertificateDer<'_>) -> Result<()> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(cert_der.as_ref());
+    let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
+    for chunk in b64.as_bytes().chunks(64) {
+        pem.push_str(std::str::from_utf8(chunk).expect("base64 output is always ASCII"));
+        pem.push('\n');
+    }
+    pem.push_str("-----END CERTIFICATE-----\n");
+    std::fs::write(dir.join(CA_PEM_FILENAME), pem).context("writing server-ca.pem")
+}
+
 pub fn load_or_generate(cert_dir: &str, node_name: &str, node_ip: &str) -> Result<LoadedCert> {
     let dir = Path::new(cert_dir);
     let cert_path = dir.join("server.crt.der");
@@ -90,7 +113,15 @@ pub fn load_or_generate(cert_dir: &str, node_name: &str, node_ip: &str) -> Resul
 
     if let (Ok(cert_bytes), Ok(key_bytes)) = (std::fs::read(&cert_path), std::fs::read(&key_path)) {
         if !cert_bytes.is_empty() && !key_bytes.is_empty() {
-            return Ok(LoadedCert { cert_der: CertificateDer::from(cert_bytes), key_der: key_bytes });
+            let cert_der = CertificateDer::from(cert_bytes);
+            // Re-derived every load, not just on first generation — cheap,
+            // and means an upgrade from a version that predates this PEM
+            // export self-heals the missing file on next restart instead
+            // of needing a one-time manual fixup.
+            if let Err(e) = write_ca_pem(dir, &cert_der) {
+                warn!(error = ?e, "failed to write server-ca.pem alongside the existing cert");
+            }
+            return Ok(LoadedCert { cert_der, key_der: key_bytes });
         }
         warn!(dir = %cert_dir, "existing TLS cert/key files are empty; regenerating");
     }
@@ -121,6 +152,7 @@ pub fn load_or_generate(cert_dir: &str, node_name: &str, node_ip: &str) -> Resul
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
     }
+    write_ca_pem(dir, &cert_der)?;
 
     Ok(LoadedCert { cert_der, key_der })
 }

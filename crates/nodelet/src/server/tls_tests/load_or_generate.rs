@@ -52,6 +52,34 @@ fn cert_includes_the_node_ip_as_a_san() {
 }
 
 #[test]
+fn writes_a_pem_copy_matching_the_der_cert() {
+    // The PEM copy is what --kube-apiserver-arg=kubelet-certificate-authority
+    // gets pointed at (kube-apiserver only reads PEM) — needs to actually
+    // decode back to the exact same cert bytes rustls uses for the
+    // handshake, not just "some file exists".
+    let dir = tmp_dir("pem-copy");
+    let cert = load_or_generate(&dir, "test-node", "10.1.2.3").unwrap();
+    let pem_bytes = std::fs::read(std::path::Path::new(&dir).join(CA_PEM_FILENAME)).expect("server-ca.pem should exist");
+    assert!(String::from_utf8_lossy(&pem_bytes).starts_with("-----BEGIN CERTIFICATE-----\n"));
+    let decoded = x509_parser::pem::Pem::iter_from_buffer(&pem_bytes).next().expect("should contain one PEM block").expect("PEM block should parse");
+    assert_eq!(decoded.contents, cert.cert_der.as_ref(), "PEM copy should decode back to the exact same DER bytes as the cert rustls serves");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn reusing_an_existing_cert_still_writes_the_pem_copy() {
+    // Upgrade path: a node that already had a cert from before this PEM
+    // export existed shouldn't need a manual fixup — the reuse branch
+    // (not just first generation) has to (re)write it too.
+    let dir = tmp_dir("pem-copy-reuse");
+    load_or_generate(&dir, "test-node", "10.1.2.3").unwrap();
+    std::fs::remove_file(std::path::Path::new(&dir).join(CA_PEM_FILENAME)).unwrap();
+    load_or_generate(&dir, "test-node", "10.1.2.3").unwrap();
+    assert!(std::path::Path::new(&dir).join(CA_PEM_FILENAME).exists(), "reuse path should regenerate a missing server-ca.pem, not just skip it");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn reuses_an_existing_cert_on_second_call() {
     let dir = tmp_dir("reuse");
     load_or_generate(&dir, "test-node", "10.1.2.3").unwrap();

@@ -405,19 +405,62 @@ an already-running node needs its stale
 the fix; confirmed live, the very next `load_or_generate()` call
 regenerates cleanly.
 
-**What's still separately broken, already-documented, not fixed here**:
-after this fix, `kubectl exec` gets *past* the IP-SAN check and fails
-differently — `x509: certificate signed by unknown authority`. This is
-k3s's apiserver not being configured to trust nodelet's self-signed
-leaf at all (no `--kubelet-certificate-authority` / `--kubelet-insecure-tls`
-wired up anywhere in this repo's `control-plane.sh`), which
-`server::tls`'s own header comment already flags as a known, deliberately
-out-of-scope gap ("unless a real CA/CSR pipeline is configured — see
-docs/GAP_CLOSURE.md for that as a still-open, lower-priority item").
-Confirmed it's genuinely a separate issue, not this same bug reappearing:
-the error message itself changed (IP-SAN failure → CA-trust failure),
-proving the fix here is doing its job. Full `kubectl exec` end-to-end
-still needs that separate, already-scoped CA-trust work.
+**Update — the remaining two trust legs are now also fixed (same
+session, immediately after this one)**: past the IP-SAN fix,
+`kubectl exec` still failed twice more, each a genuinely separate
+issue, confirmed by the error message changing each time rather than
+the same error reappearing:
+
+1. `x509: certificate signed by unknown authority` — k3s's apiserver
+   didn't trust nodelet's self-signed leaf at all. Fixed by pointing
+   `--kube-apiserver-arg=kubelet-certificate-authority=` directly at
+   nodelet's own cert (a self-signed leaf can vouch for itself when
+   explicitly placed in a trust store this way — not a real CA, but
+   valid x509). This has a real ordering problem: k3s starts before
+   nodelet has ever generated that cert file. Solved with a *second*,
+   later call into `setup-control-plane.sh` (`enable_kubelet_
+   certificate_authority_trust()` in `lib/control-plane.sh`, run after
+   `run_and_verify` — nodelet has started and generated its cert by
+   then) rather than reordering the whole bootstrap flow or adding a
+   new nodelet CLI mode; `setup-control-plane.sh`'s installer is
+   already idempotent/safe to re-run. `server::tls::load_or_generate()`
+   now also writes a PEM copy of the cert (`server-ca.pem`, alongside
+   the DER rustls actually serves) since kube-apiserver only reads PEM
+   — regenerated on every load, not just first generation, so a node
+   upgrading from a version predating this self-heals the missing file
+   on next restart.
+2. `missing or malformed Authorization: Bearer <token> header` —
+   nodelet's own server had no client CA configured
+   (`NODELET_CLIENT_CA_FILE` unset), so it fell back to bearer-token-only
+   auth, but the apiserver authenticates via mTLS client cert here, not
+   a bearer token. Fixed by setting `NODELET_CLIENT_CA_FILE` to k3s's
+   own client CA (`/var/lib/rancher/k3s/server/tls/client-ca.crt` —
+   fixed by k3s's installer) in `nodelet_env_lines()`
+   (`lib/nodelet-service.sh`), CRI-runtime-only. No ordering problem
+   this direction: k3s writes that file during its own first startup,
+   which always precedes nodelet's service install.
+
+**Both verified live** through the real deploy scripts (not manual
+edits) — a real config from a clean rebuild + reinstall of both
+services, not hand-patched units: `kubectl exec`, `kubectl logs`, and
+`kubectl logs -f` all pass against a live pod, and
+`lib/test/cases/streaming.sh`'s three real (non-skip) tests
+(`test_kubectl_logs_returns_real_output`,
+`test_kubectl_logs_follow_streams_new_output`,
+`test_kubectl_exec_runs_a_command_and_returns_its_output`) all pass.
+`attach`/`port-forward` share `exec`'s exact proxy code path per that
+test file's own header, so this is full functional coverage of all
+four endpoints this gap was blocking, not just `exec` in isolation.
+
+**Near-miss worth recording**: the first attempt at the apiserver-trust
+leg used `--kube-apiserver-arg=kubelet-insecure-tls=true`, a *plausible-
+sounding but nonexistent* kube-apiserver flag — confirmed wrong the hard
+way, live: `Error: unknown flag: --kubelet-insecure-tls` crashed the
+running k3s outright (recovered in seconds by reverting the flag and
+restarting). No script ever shipped this — caught and reverted before
+being wired into any committed file. The real flag
+(`kubelet-certificate-authority`) was verified working by hand before
+being wired into `setup-control-plane.sh`/`control-plane.sh` at all.
 
 **Not a code bug — this session's own mistake, corrected here for the
 record**: a reboot mid-session revealed `flanneld` permanently broken

@@ -35,6 +35,17 @@ install_nodelet_service() {
     fi
 }
 
+# k3s's own client CA — signs the client cert its apiserver presents when
+# it dials OUT to a kubelet (containerLogs/exec/attach/port-forward
+# proxying), separate from --client-ca-file (which verifies clients
+# connecting INTO the apiserver). Fixed by k3s's own installer, not
+# something this project configures — this is just where k3s always puts
+# it. Pointing NODELET_CLIENT_CA_FILE at it here has no ordering problem
+# the way the reverse direction (apiserver trusting nodelet's cert) does:
+# k3s writes this file as part of its own first startup, which always
+# happens before nodelet's service unit is ever installed/started.
+K3S_CLIENT_CA_FILE=/var/lib/rancher/k3s/server/tls/client-ca.crt
+
 nodelet_env_lines() { # $1 = "export VAR=value" (shell) or "Environment=VAR=value" (systemd)
     local style="$1" out=""
     for kv in "KUBECONFIG=$KUBECONFIG" "NODELET_RUNTIME=$NODELET_RUNTIME" \
@@ -44,6 +55,21 @@ nodelet_env_lines() { # $1 = "export VAR=value" (shell) or "Environment=VAR=valu
     if [[ -n "${NODELET_CRI_ENDPOINT:-}" ]]; then
         [[ "$style" == "systemd" ]] && out+="Environment=NODELET_CRI_ENDPOINT=$NODELET_CRI_ENDPOINT"$'\n' \
             || out+="export NODELET_CRI_ENDPOINT=$NODELET_CRI_ENDPOINT"$'\n'
+    fi
+    # Only meaningful for the CRI runtime's kubelet-style server
+    # (containerLogs/exec/attach/port-forward) — the mock runtime doesn't
+    # run it at all (config.rs's server_enabled default). Without this,
+    # nodelet's server has no client CA configured, falls back to
+    # bearer-token-only auth, and every proxied request from the
+    # apiserver (which authenticates via this client cert, not a bearer
+    # token) fails with "missing or malformed Authorization" — confirmed
+    # for real. Best-effort: if k3s hasn't written this file yet for some
+    # reason, set the var anyway (nodelet just logs a warning and runs
+    # bearer-token-only, same as if this were never set at all) rather
+    # than conditioning the whole service install on it.
+    if [[ "${NODELET_RUNTIME:-}" == "cri" ]]; then
+        [[ "$style" == "systemd" ]] && out+="Environment=NODELET_CLIENT_CA_FILE=$K3S_CLIENT_CA_FILE"$'\n' \
+            || out+="export NODELET_CLIENT_CA_FILE=$K3S_CLIENT_CA_FILE"$'\n'
     fi
     printf '%s' "$out"
 }

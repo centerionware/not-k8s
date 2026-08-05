@@ -252,4 +252,5 @@ ensure_cni
 ensure_nft
 enable_bridge_netfilter
 run_and_verify
+enable_kubelet_certificate_authority_trust
 cleanup_build_footprint
