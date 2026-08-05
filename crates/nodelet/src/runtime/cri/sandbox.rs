@@ -184,12 +184,32 @@ fn protocol_cri(protocol: Option<&str>) -> Protocol {
     }
 }
 
+/// Whether *any* container in the pod (app or init) asks for
+/// `securityContext.privileged: true` — CRI's own
+/// `LinuxSandboxSecurityContext.privileged` doc comment: "Indicates whether
+/// the sandbox will be asked to run a privileged container. If a privileged
+/// container is to be executed within it, this field has to be set." A
+/// sandbox created without this set refuses to host *any* privileged
+/// container later, regardless of that container's own securityContext —
+/// confirmed for real: `RunPodSandbox` for a pod none of this cared about
+/// yet, then `CreateContainer` for a privileged container within it, failed
+/// with "no privileged container allowed in sandbox" every time, for every
+/// container in the pod, not just the privileged one — until the sandbox
+/// itself is (re)created with this set.
+pub(crate) fn pod_requests_privileged(containers: &[Container], init_containers: &[Container]) -> bool {
+    containers
+        .iter()
+        .chain(init_containers.iter())
+        .any(|c| c.security_context.as_ref().and_then(|sc| sc.privileged) == Some(true))
+}
+
 pub(crate) fn sandbox_config(
     id: &PodId,
     userns_mapping: Option<(u32, u32)>,
     hostname: &str,
     sysctls: &HashMap<String, String>,
     pod_sc: Option<&PodSecurityContext>,
+    privileged: bool,
 ) -> PodSandboxConfig {
     // Host-network pods set the network namespace to NODE, which makes the CRI
     // runtime skip CNI entirely (no pod network to set up). The `linux` block
@@ -217,6 +237,7 @@ pub(crate) fn sandbox_config(
             supplemental_groups_policy: supplemental_groups_policy_cri(
                 pod_sc.and_then(|s| s.supplemental_groups_policy.as_deref()),
             ) as i32,
+            privileged,
             ..Default::default()
         }),
         sysctls: sysctls.clone(),
@@ -279,6 +300,7 @@ impl CriRuntime {
         overhead: Option<LinuxContainerResources>,
         pod_sc: Option<&PodSecurityContext>,
         port_mappings: Vec<PortMapping>,
+        privileged: bool,
     ) -> Result<String> {
         let mut rt = self.rt.clone();
         // spec.hostUsers: false (round 25) — allocate this pod an exclusive
@@ -298,7 +320,7 @@ impl CriRuntime {
         } else {
             None
         };
-        let mut config = sandbox_config(id, userns_mapping, hostname, sysctls, pod_sc);
+        let mut config = sandbox_config(id, userns_mapping, hostname, sysctls, pod_sc, privileged);
         config.dns_config = dns;
         config.port_mappings = port_mappings;
         let linux = config.linux.get_or_insert_with(LinuxPodSandboxConfig::default);

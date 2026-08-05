@@ -32,6 +32,13 @@ impl PodRuntime for CriRuntime {
         // once up front, same as cgroup_parent/overhead above, since
         // both RunPodSandbox call sites below need it.
         let port_mappings = port_mappings_for(spec.map(|s| s.containers.as_slice()).unwrap_or(&[]), id.host_network);
+        // Same story: RunPodSandbox needs to know up front whether any
+        // container in the pod will need privileged mode — see
+        // pod_requests_privileged()'s own doc comment for why.
+        let privileged = pod_requests_privileged(
+            spec.map(|s| s.containers.as_slice()).unwrap_or(&[]),
+            spec.and_then(|s| s.init_containers.as_deref()).unwrap_or(&[]),
+        );
         let sandbox_id = match sandbox_reuse_decision(found.as_ref().map(|(_, s)| *s), ready_state) {
             SandboxDecision::Reuse => found.unwrap().0,
             SandboxDecision::RecreateStale => {
@@ -51,10 +58,10 @@ impl PodRuntime for CriRuntime {
                 self.clear_restart_backoff(&stale_id);
                 self.clear_last_terminated(&stale_id);
                 self.release_sandbox_devices(&stale_id).await;
-                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone()).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone(), privileged).await.context("RunPodSandbox")?
             }
             SandboxDecision::CreateFresh => {
-                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone()).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone(), privileged).await.context("RunPodSandbox")?
             }
         };
 

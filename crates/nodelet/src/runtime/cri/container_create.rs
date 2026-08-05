@@ -271,7 +271,7 @@ impl CriRuntime {
             img.pull_image(PullImageRequest {
                 image: Some(image_spec.clone()),
                 auth,
-                sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new(), None)),
+                sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new(), None, false)),
             })
             .await
             .context("pulling image")?;
@@ -576,7 +576,7 @@ impl CriRuntime {
             .create_container(CreateContainerRequest {
                 pod_sandbox_id: sandbox_id.to_string(),
                 config: Some(config),
-                sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new(), None)),
+                sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new(), None, false)),
             })
             .await
         {

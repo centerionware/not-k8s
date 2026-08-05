@@ -541,3 +541,86 @@ the full lifecycle is correct —
 No code change needed — this is a clean pass, recorded here because it
 was a real untested interaction with Round 103's fix, not because
 anything was wrong.
+
+### 12. Sandbox never told CRI it would host a privileged container — fixed, and found live installing a real CSI driver
+
+**Severity: high — blocked every privileged container outright, not
+CSI-specific.**
+
+Installed `kubernetes-csi/csi-driver-host-path` (the upstream CSI
+sanity/conformance test driver) against this node to actually exercise
+nodelet's CSI code paths for real, rather than only unit tests and
+clean-skip e2e tests. Every privileged container in the driver's pod
+(`hostpath`, `node-driver-registrar`, `csi-attacher`, `csi-provisioner`)
+failed `CreateContainer` with `no privileged container allowed in
+sandbox` — confirmed via `crictl inspectp` that the sandbox's own
+`security.privileged` was `false` even though every container inside it
+requested `privileged: true`.
+
+Root cause: `sandbox_config()` (`runtime/cri/sandbox.rs`) never set
+`LinuxSandboxSecurityContext.privileged` at all. CRI's own proto comment
+on that field says exactly why this matters: "Indicates whether the
+sandbox will be asked to run a privileged container. If a privileged
+container is to be executed within it, this field has to be set." A
+sandbox created without it refuses to host *any* privileged container
+afterward, regardless of that container's own securityContext — this
+isn't a per-container check, it's a sandbox-wide capability that has to
+be declared at `RunPodSandbox` time, before any container exists.
+
+**Fix**: new pure helper `pod_requests_privileged(containers,
+init_containers)` computes whether *any* container in the pod (app or
+init) asks for `privileged: true`; `ensure_pod()` calls it once
+up front (same pattern already used for `port_mappings`/`cgroup_parent`)
+and threads it through `run_sandbox()` into `sandbox_config()`'s
+`LinuxSandboxSecurityContext.privileged`. 9 new unit tests
+(`sandbox_config.rs`: 2 for the sandbox wiring, 6 for the pure helper
+including an init-container case, all direct hits on this exact
+scenario). Verified live: after the fix, `crictl inspectp` on a freshly
+created sandbox for this same pod shows `"privileged": true`, and the
+`no privileged container allowed` error is gone entirely from
+subsequent `CreateContainer` calls.
+
+**Caveat confirmed while verifying**: an *existing* sandbox created
+before this fix keeps its old (non-privileged) `RunPodSandbox` config —
+`sandbox_reuse_decision()`'s `Reuse` path never calls `sandbox_config()`
+again for a live sandbox, same as any other sandbox-level CRI setting.
+A node upgrading to this fix with an already-running privileged
+workload needs that workload's pod deleted (not just restarted) so its
+sandbox gets recreated — force-deleting the pod (or `crictl rmp` its
+sandbox directly) is what actually picks this up; a plain container
+restart or nodelet restart alone does not.
+
+### 13. Found live testing CSI, not yet fixed: liveness-probe-triggered restarts have no rate limit at all
+
+**Severity: high — a genuine restart storm, confirmed at 810 restart
+attempts in 90 seconds for one pod (periodSeconds=2 for the fastest
+probe involved would cap that around 45-90 in the same window even at
+100% failure) — found integration-testing the CSI driver above, not
+CSI-specific itself.**
+
+Once finding #12's fix let the CSI driver's containers actually start,
+`hostpath` and `node-driver-registrar` (livenessProbe periodSeconds 2s
+and 10s respectively) began restarting far faster than either interval
+could produce — `journalctl`'s own timestamps show dozens of "liveness
+probe failed; restarting container" lines within the same second,
+repeatedly, for many consecutive seconds.
+
+Not yet root-caused to a specific line, but the crash-loop-*detected*
+restart path (`container_create.rs`'s exited-container branch) has an
+explicit backoff gate (`restart_backoff_ready()`/
+`record_restart_backoff()`, round 73) that the *liveness-probe-triggered*
+restart path (`main.rs`/`probes.rs` → `PodRuntime::restart_container()`
+in `pod_runtime_impl.rs`) does not appear to share or have an equivalent
+of — worth checking first. If a container takes any non-trivial time to
+actually reach a state where its probe would pass, and the probe loop's
+own `sleep(timing.period)` isn't actually preventing back-to-back
+checks under whatever's happening here (parallelism across the pod's
+multiple probed containers, `ensure_probe_supervisor()`'s stop/respawn
+cycle on each restart, or something else), every failed check keeps
+immediately re-triggering another restart with no throttle at all.
+
+**Not fixed in this round** — surfaced by live integration testing,
+worth its own focused investigation rather than a rushed fix bolted
+onto an unrelated CSI testing session. CSI driver testing itself is
+paused pending this (scaled the StatefulSet to 0 replicas to stop the
+resource drain while this gets investigated).
