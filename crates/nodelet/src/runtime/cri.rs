@@ -571,6 +571,9 @@ mod tests_sidecar_init_decision;
 #[path = "cri_tests/mounts.rs"]
 mod tests_mounts;
 #[cfg(test)]
+#[path = "cri_tests/command_args_expansion.rs"]
+mod tests_command_args_expansion;
+#[cfg(test)]
 #[path = "cri_tests/mount_propagation.rs"]
 mod tests_mount_propagation;
 #[cfg(test)]

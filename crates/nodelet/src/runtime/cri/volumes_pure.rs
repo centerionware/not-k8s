@@ -126,6 +126,55 @@ fn expand_sub_path_expr(expr: &str, envs: &[KeyValue]) -> Option<String> {
     Some(out)
 }
 
+/// `command`/`args`' `$(VAR)` expansion against a container's own resolved
+/// env vars — Kubernetes' "dependent environment variables" feature
+/// (documented use case: `args: ["--endpoint=$(CSI_ENDPOINT)"]` referencing
+/// a sibling `env:` entry; found live testing a real CSI driver — nodelet
+/// was passing `$(CSI_ENDPOINT)` through to the container completely
+/// unexpanded, so `hostpathplugin`'s own gRPC server tried to bind a unix
+/// socket at the literal path `/$(CSI_ENDPOINT)` instead of
+/// `unix:///csi/csi.sock`, never actually came up, and got killed and
+/// restarted by its liveness probe every ~10s forever). Unlike
+/// `expand_sub_path_expr()`'s stricter volume-mount semantics (any
+/// unresolved `$(VAR)` fails the whole mount), real kubelet's
+/// `expandContainerCommandAndArgs()` leaves an unresolved reference
+/// untouched as literal text rather than failing the container — matched
+/// here: a name not found in `envs` keeps its original `$(...)` text
+/// verbatim instead of being dropped.
+pub(crate) fn expand_command_arg(expr: &str, envs: &[KeyValue]) -> String {
+    let mut out = String::with_capacity(expr.len());
+    let mut rest = expr;
+    while let Some(dollar) = rest.find('$') {
+        out.push_str(&rest[..dollar]);
+        rest = &rest[dollar..];
+        if let Some(after) = rest.strip_prefix("$$") {
+            out.push('$');
+            rest = after;
+        } else if let Some(after_paren) = rest.strip_prefix("$(") {
+            match after_paren.find(')') {
+                Some(close) => {
+                    let name = &after_paren[..close];
+                    match envs.iter().find(|kv| kv.key == name) {
+                        Some(value) => out.push_str(&String::from_utf8_lossy(&value.value)),
+                        None => out.push_str(&rest[..close + 3]), // "$(" + name + ")" kept verbatim
+                    }
+                    rest = &after_paren[close + 1..];
+                }
+                None => {
+                    // Unterminated "$(" -- keep the rest as literal text, same as upstream.
+                    out.push_str(rest);
+                    rest = "";
+                }
+            }
+        } else {
+            out.push('$');
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// `volumeMounts[].mountPropagation` (round 84; found in round 83's
 /// re-audit) -> CRI's `MountPropagation` enum. `None`/unset (the API's
 /// own default) and any unrecognized value both fall back to `Private`

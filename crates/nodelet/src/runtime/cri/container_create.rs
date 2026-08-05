@@ -560,8 +560,12 @@ impl CriRuntime {
         let config = ContainerConfig {
             metadata: Some(ContainerMetadata { name: container.name.clone(), attempt }),
             image: Some(image_spec),
-            command: container.command.clone().unwrap_or_default(),
-            args: container.args.clone().unwrap_or_default(),
+            // `$(VAR)` expansion (found live testing a real CSI driver —
+            // see `expand_command_arg()`'s doc comment): every command/args
+            // entry can reference this container's own env vars, same as
+            // `subPathExpr` already does for volume mounts.
+            command: container.command.clone().unwrap_or_default().iter().map(|s| expand_command_arg(s, &envs)).collect(),
+            args: container.args.clone().unwrap_or_default().iter().map(|s| expand_command_arg(s, &envs)).collect(),
             working_dir: container.working_dir.clone().unwrap_or_default(),
             envs,
             mounts,

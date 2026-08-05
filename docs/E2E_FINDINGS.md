@@ -700,3 +700,45 @@ Verified live end-to-end: after all three of #13/#14/#15, force-deleting
 the CSI driver's StatefulSet pod produces a fresh pod that reaches
 `5/5 Running` immediately, with a disciplined (non-snowballing) restart
 cadence thereafter — CSI driver testing can now resume.
+
+### 16. Fixed: `command`/`args`' `$(VAR)` references were never expanded against a container's own env vars
+
+**Severity: high — the actual remaining cause of the "disciplined restart
+cadence" #13/#14/#15 left behind: `hostpath` (the real CSI driver binary)
+was still restarting every ~10-15s, and it turned out to be crashing for
+real, not the storm bug at all.**
+
+Found live re-verifying #13/#14/#15 with the CSI StatefulSet scaled back
+up: `hostpath`'s own container spec sets `--endpoint=$(CSI_ENDPOINT)`,
+referencing a sibling `env: [{name: CSI_ENDPOINT, value:
+unix:///csi/csi.sock}]` entry — Kubernetes' standard "dependent
+environment variables" feature, where `$(VAR_NAME)` in `command`/`args`
+is substituted against the container's own resolved env before it's
+exec'd. nodelet never did this substitution at all. The driver's own
+logs confirmed it: `Listening for connections on address:
+&net.UnixAddr{Name:"/$(CSI_ENDPOINT)", Net:"unix"}` — it was trying to
+bind its gRPC CSI socket at the *literal* path `/$(CSI_ENDPOINT)`
+instead of `unix:///csi/csi.sock`. The socket never came up, so the
+driver failed its own liveness probe (`period=2s #failure=5`) every
+~10s and got killed and restarted forever by nodelet's (entirely
+correct, by this point) restart-on-exit logic — which then cascaded
+into the `csi-attacher`/`csi-provisioner`/`node-driver-registrar`
+sidecars, all of which also crash-looped since they could never dial a
+socket that didn't exist.
+
+**Fixed**: new `expand_command_arg()` in `volumes_pure.rs` — the same
+`$(VAR)`/`$$`-escaping grammar `expand_sub_path_expr()` (round 69)
+already implements for `subPathExpr`, but with real kubelet's actual
+(more lenient) semantics for `command`/`args`: an unresolved `$(VAR)`
+is left as literal text rather than failing the container, matching
+`expandContainerCommandAndArgs()` upstream. Applied to both `command`
+and `args` in `container_create.rs`'s `ContainerConfig` construction.
+7 new regression tests in `cri_tests/command_args_expansion.rs`.
+
+Verified live end-to-end: after rebuilding and redeploying, the CSI
+driver's `hostpath` container's own logs show it binding the real
+socket and answering `csi.v1.Identity/Probe` gRPC calls, and the pod
+ran `5/5 Running` with **zero restarts across all 5 containers** over
+a full 5 minutes of observation (previously: 12+ restarts on `hostpath`
+alone within the first 2 minutes). CSI driver testing can now actually
+proceed past pod startup.
