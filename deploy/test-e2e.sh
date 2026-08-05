@@ -50,6 +50,13 @@ for arg in "$@"; do
     esac
 done
 
+# Several case files' wait_until/try_wait_until calls run their check via
+# `bash -c "..."` — a real separate bash process, not just a subshell —
+# and reference TEST_NAMESPACE inside it (directly, or transitively through
+# an exported helper like kctl). Without this it's simply unset there,
+# same failure mode lib/test/k8s.sh's own export -f comment describes.
+export TEST_NAMESPACE
+
 # shellcheck source=lib/common.sh
 source "$LIB_DIR/common.sh"
 

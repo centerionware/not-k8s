@@ -8,6 +8,11 @@
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==> WARNING:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m==> FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
+# Exported so callers that need to run one of these inside a `bash -c "..."`
+# (a genuinely separate bash process, not just a subshell) still have them
+# — see lib/test/k8s.sh's own export -f block for the fuller story of why
+# this matters.
+export -f log warn die
 
 # Sets ARCH_RAW, ARCH, PKG_MGR, IS_ROOT, SUDO. Call once, early.
 detect_platform() {

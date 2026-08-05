@@ -45,3 +45,11 @@ wait_for_check_file() {
         waited=$((waited + 2))
     done
 }
+
+# Same reasoning as k8s.sh's own export -f block: several call sites use
+# `wait_for_check_file`/`pod_volume_host_path` from inside a `bash -c
+# "..."` (a separate bash process), which needs its own copy of the
+# function and every global it touches (NODELET_VOLUME_ROOT here;
+# TEST_NAMESPACE transitively, via pod_field -> kctl).
+export -f pod_volume_host_path wait_for_check_file
+export NODELET_VOLUME_ROOT

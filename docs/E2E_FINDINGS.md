@@ -263,3 +263,47 @@ next time someone edits a case file or drives it standalone**:
   doesn't have this problem. Several stray `run_one.sh` processes (and,
   once, an actual node-wide `DiskPressure` trip from the image churn
   they caused) came from this exact mistake during today's session.
+
+### 6. Fixed systemic test-harness bug: `bash -c "...kctl..."` never worked (function not exported)
+
+**Severity: test-only, but wide — 23 call sites across 8 case files,
+found by scanning rather than one at a time.**
+
+`kctl`, `pod_field`, `pod_condition_status`, `pod_container_restart_count`,
+`pod_volume_host_path`, and friends (`lib/test/k8s.sh`,
+`lib/test/manifests.sh`) are plain shell functions, convenient inside the
+case files themselves (which run in the *same* bash process that sourced
+them) — but several `wait_until`/`try_wait_until` call sites build their
+poll check as `bash -c "... kctl get pod ... "`, which execs a genuinely
+separate `bash` process. Shell functions aren't inherited by a child
+process unless explicitly `export -f`'d, and nothing here was — so every
+one of those 23 sites' function reference silently resolved to "command
+not found" (swallowed by the surrounding `2>/dev/null`), the condition
+being polled for could never become true, and the test just burned its
+full timeout and failed regardless of what was actually happening in the
+cluster. Confirmed directly: `test_native_sidecar_container_restarts_on_crash`
+failed on `kctl get pod ... initContainerStatuses[0].restartCount`
+timing out — while `kubectl get pod` run by hand against the exact same
+live pod showed the restart count climbing normally (1, 2, 3, ... every
+~5s) the whole time.
+
+Found the full extent with a script scanning every `lib/test/cases/*.sh`
+for a helper-function name appearing inside a `bash -c "..."` string,
+rather than fixing the one site that happened to surface first — 23
+matches across `eviction.sh`, `lifecycle.sh`, `probes.sh`,
+`readiness_gates.sh`, `resources.sh`, `security.sh`, `streaming.sh`.
+
+**Fix**: `export -f` every one of these helpers (`k8s.sh`,
+`manifests.sh`, plus `log`/`warn`/`die` in `common.sh`, since several
+helpers call `die`), and `export TEST_NAMESPACE` wherever it's set
+(`test-e2e.sh`; this session's own standalone harness needed the same
+fix) — the functions are also useless in a child process without the
+variable they all key off of. One central fix rather than rewriting 23
+call sites to avoid the helpers. Verified:
+`test_native_sidecar_container_restarts_on_crash` now passes in 7s.
+
+Re-ran the previously-diagnosed eviction failures after this fix to
+check whether it was secretly the whole story there too — it wasn't:
+`test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted` still
+times out identically. Finding #4 (immediate-delete-on-evict racing the
+assertion) is a real, separate bug, not an artifact of this one.

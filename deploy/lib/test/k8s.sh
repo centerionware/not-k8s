@@ -77,6 +77,24 @@ node_uses_cri_runtime() {
     [[ "$version" == cri://* ]]
 }
 
+# A good few callers below build their own poll loop as `wait_until N desc
+# bash -c "... kctl ..."` instead of using wait_until's own re-invoke — a
+# real, separate `bash -c` command needs its own bash *process*, and shell
+# functions are per-process; nothing here reaches that new process unless
+# it's exported. Confirmed for real: without this, every one of those
+# call sites' `kctl`/`pod_*` reference silently resolved to nothing
+# ("command not found", swallowed by the caller's own `2>/dev/null`), so
+# the condition being polled for could never become true and the test
+# just ran out its full timeout and failed — regardless of whether the
+# thing it was actually checking was fine. `export -f` fixes it for good:
+# every helper here becomes callable from a `bash -c` (or any other child
+# process) the same way it is from this file itself. TEST_NAMESPACE also
+# has to be `export`ed by whatever sets it (test-e2e.sh does) — these
+# functions are worthless in a child process without it.
+export -f kctl apply_manifest delete_pod_if_exists pod_json pod_field \
+    pod_is_phase pod_condition_status pod_container_ready pod_container_restart_count \
+    pod_exists pod_gone node_name node_condition_status node_uses_cri_runtime
+
 # run_in_container <pod> <container> <shell-command...> — the only way this
 # suite can run a command inside a live container: through the CRI-backed
 # probe/hook machinery isn't reachable from outside, and `kubectl exec`
