@@ -93,13 +93,24 @@ still `mock`. Both are consistent with the real `cargo build --release
 writes `NODELET_RUNTIME=cri` into the unit) ever ran, on a reboot that
 left the previous mock-only build's artifacts in place.
 
-**Fix direction**: on a device this small, `nodelet-build.sh` should
-default to the light LTO settings for the *first* attempt too (or detect
-low total RAM — e.g. via `/proc/meminfo` — and choose the profile up
-front) rather than always trying the expensive one first and hoping the
-process-level retry logic gets a chance to run. A build that can crash
-the host it's running on shouldn't be the default path on exactly the
-class of device this project targets.
+**Fixed**: `nodelet-build.sh` now checks `/proc/meminfo`'s `MemTotal`
+(`release_lto_settings_for_this_device()`) and goes straight to the light
+LTO settings for the *first* attempt on anything under ~4GB RAM, instead
+of always trying the expensive profile first and hoping the process-level
+retry gets a chance to run. Also fixed alongside it, same investigation:
+`install_nodelet_binary()` now `rm -f`s the destination before `install`
+and checks the result — the plain `install -m 0755 src dst` this replaced
+silently no-op'd on a permission error against an existing (e.g.
+root-owned, from an earlier privileged run) `bin/nodelet`, which is
+exactly how this session ended up with the stale binary described above:
+the surrounding script logged "nodelet built" unconditionally right after,
+with nothing about the output saying the copy had actually failed. And
+`install_nodelet_service_systemd`/`_openrc`/`_fallback` now explicitly
+`restart` (or kill-and-respawn, for the fallback tier) rather than
+`enable --now`/`start`, which are no-ops against an already-running
+service — a re-run of `bootstrap-source.sh` was silently leaving the OLD
+nodelet process running the whole time regardless of what the new build
+produced.
 
 **What actually worked**: `CARGO_PROFILE_RELEASE_LTO=thin
 CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_BUILD_JOBS=2 cargo build

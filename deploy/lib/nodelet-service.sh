@@ -68,7 +68,15 @@ $(nodelet_env_lines systemd)
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    systemctl enable --now nodelet.service
+    systemctl enable nodelet.service
+    # `enable --now` (equivalently `start` on an already-active unit) is a
+    # no-op if nodelet was already running from a previous install — it
+    # would keep the OLD process (old binary in memory, old env vars)
+    # running forever, silently ignoring whatever this run just built and
+    # wrote to the unit file. `restart` always re-execs, whether nodelet
+    # was already running or not, so a re-run of this script actually
+    # picks up a freshly built binary / changed NODELET_RUNTIME / etc.
+    systemctl restart nodelet.service
     sleep 3
     systemctl is-active --quiet nodelet.service \
         || warn "nodelet.service didn't come up cleanly — check: journalctl -u nodelet -n 50"
@@ -93,7 +101,13 @@ depend() {
 EOF
     chmod +x "$NODELET_UNIT_OPENRC"
     rc-update add nodelet default 2>/dev/null || true
-    rc-service nodelet start
+    # Same reasoning as the systemd tier's `restart` above: `start` is a
+    # no-op against an already-running service, which would leave a
+    # previous install's old binary/env running instead of this run's.
+    # OpenRC's own `restart` action already tolerates "not currently
+    # running" (falls through to just starting it), so this is safe on a
+    # fresh install too, not just a re-run.
+    rc-service nodelet restart
     sleep 3
     rc-service nodelet status 2>&1 | grep -qi started \
         || warn "nodelet OpenRC service didn't come up cleanly — check: rc-service nodelet status"
@@ -104,6 +118,19 @@ install_nodelet_service_fallback() {
 this is unusual for a box running k3s) — falling back to a self-restarting background loop. \
 This recovers from a crash but is NOT a real service; set up this system's actual init/service \
 manager to run '$SCRIPT_DIR/run-nodelet.sh' persistently when you can."
+
+    # A re-run of this tier without killing the previous loop/nodelet
+    # first would leave two supervisor loops and two nodelet processes
+    # running side by side — both trying to bind the same ports/sockets —
+    # instead of the new build actually replacing the old one. Same
+    # tear-down remove_nodelet_service() already does, just inline here
+    # since a re-install needs it too, not only an uninstall.
+    if [[ -f "$WORK_DIR/nodelet.pid" ]]; then
+        kill "$(cat "$WORK_DIR/nodelet.pid")" 2>/dev/null || true
+    fi
+    pkill -f "$NODELET_SUPERVISOR_SCRIPT" 2>/dev/null || true
+    pkill -f "$SCRIPT_DIR/run-nodelet.sh" 2>/dev/null || true
+
     cat > "$NODELET_SUPERVISOR_SCRIPT" <<EOF
 #!/usr/bin/env bash
 $(nodelet_env_lines shell)
