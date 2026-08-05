@@ -42,6 +42,88 @@ EOF
         || die "container $container_id is still present in containerd after its pod was deleted"
 }
 
+test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed() {
+    # Round 103 gave teardown() a real Api::<Pod>::delete() call so a
+    # deleted pod's object actually leaves the apiserver instead of
+    # parking in Terminating forever (see docs/E2E_FINDINGS.md finding
+    # #1) — but nothing anywhere (nodelet's own code or this suite) had
+    # ever exercised a finalizer-blocked pod through that path. Proves
+    # the two things a finalizer is supposed to guarantee still hold:
+    # container teardown doesn't wait on it (finalizers are an apiserver/
+    # object-removal concept, unrelated to kubelet stopping containers),
+    # and the delete() call doesn't error or infinite-loop against an
+    # object it can't actually finish deleting — it just stays
+    # Terminating, correctly, until the finalizer is gone.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if ! command -v ctr >/dev/null 2>&1; then
+        skip_test "no 'ctr' (containerd CLI) on PATH to verify sandbox removal"
+    fi
+    local name="finalizer-check"
+    local finalizer="e2e.not-k8s.dev/test-finalizer"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+  finalizers: ["$finalizer"]
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    # Cleanup runs even if an assertion below dies mid-test — a leftover
+    # finalizer would otherwise wedge this pod (and this test's namespace
+    # deletion) forever, unlike every other test's plain delete_pod_if_exists.
+    # EXIT, not RETURN: die() (what assert_*/the die calls below use) exits
+    # the subshell run_test() runs each test in outright rather than
+    # returning from this function normally, and a RETURN trap does not
+    # fire on exit — confirmed the hard way, live: the first version of
+    # this test used RETURN, failed an assertion, and left its pod's
+    # finalizer in place, wedging the whole test namespace's deletion.
+    finalizer_check_cleanup() {
+        kctl patch pod "$name" --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
+        delete_pod_if_exists "$name"
+    }
+    trap finalizer_check_cleanup EXIT
+
+    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    local container_id
+    container_id="$(pod_field "$name" '{.status.containerStatuses[0].containerID}')"
+    container_id="${container_id#containerd://}"
+    assert_not_empty "$container_id" "container ID before deletion"
+
+    kctl delete pod "$name" --wait=false >/dev/null
+
+    # Container teardown must happen regardless of the finalizer. 40s, not
+    # the 20s the finalizer-free version of this check uses above — a
+    # finalizer-blocked pod never gets an Event::Delete (the object never
+    # actually leaves the apiserver), so reconcile() only has the
+    # Modified/Apply event from deletionTimestamp being set to react to;
+    # confirmed live this reliably still finishes well under a minute, just
+    # not as fast as the plain-delete path, which gets both that event and
+    # a fast follow-up Delete event once the object is actually gone.
+    try_wait_until 40 bash -c "! ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
+        || die "container $container_id is still present in containerd after pod delete, even though the pod has a finalizer blocking apiserver removal — teardown() must not wait on finalizers"
+
+    # The pod object itself must survive — deletionTimestamp set, the
+    # finalizer we put there still listed, and NOT gone from the apiserver
+    # (teardown()'s delete() call must not error its way around the
+    # finalizer, and must not spin retrying it either).
+    sleep 3
+    pod_exists "$name" || die "pod $name disappeared from the apiserver despite an unremoved finalizer — a finalizer must block actual object removal"
+    local deletion_ts finalizers
+    deletion_ts="$(pod_field "$name" '{.metadata.deletionTimestamp}')"
+    finalizers="$(pod_field "$name" '{.metadata.finalizers}')"
+    assert_not_empty "$deletion_ts" "deletionTimestamp should be set"
+    assert_contains "$finalizers" "$finalizer" "the finalizer should still be listed"
+
+    # Removing the finalizer should let the object actually go away, same
+    # as it would for any other controller's finalizer.
+    kctl patch pod "$name" --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null
+    wait_until 20 "$name gone once its finalizer is removed" pod_gone "$name"
+}
+
 test_orphaned_sandbox_gc_manual_procedure() {
     skip_test "needs stopping nodelet, deleting a pod from the apiserver while it's down, then restarting and watching gc_loop clean up the now-orphaned sandbox — not something this suite automates against a live service. Manual steps: (1) apply a test pod and wait Running, (2) sudo systemctl stop nodelet, (3) kubectl delete pod <name> --wait=false, (4) sudo systemctl start nodelet, (5) within NODELET_GC_INTERVAL_SECS confirm 'ctr -n k8s.io containers ls' no longer shows it."
 }
@@ -85,6 +167,7 @@ test_image_gc_watermark_removal_manual_procedure() {
 }
 
 register_test test_pod_teardown_actually_removes_the_sandbox
+register_test test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed
 register_test test_orphaned_sandbox_gc_manual_procedure
 register_test test_unreferenced_image_is_not_removed_below_the_watermark
 register_test test_image_gc_watermark_removal_manual_procedure
