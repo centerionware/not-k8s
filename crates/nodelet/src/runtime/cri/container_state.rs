@@ -29,16 +29,25 @@ pub(crate) enum SandboxDecision {
     /// A ready sandbox exists — use it as-is.
     Reuse,
     /// A sandbox exists but isn't ready (its task/pause process is gone,
-    /// e.g. after a reboot) — tear it down and create a fresh one.
+    /// e.g. after a reboot) *or* it belongs to an earlier incarnation of
+    /// this pod name (different UID) — tear it down and create a fresh one.
     RecreateStale,
     /// No sandbox at all — create one.
     CreateFresh,
 }
 
 
-pub(crate) fn sandbox_reuse_decision(found: Option<i32>, ready_state: i32) -> SandboxDecision {
+/// `uid_matches`: whether the found sandbox's own recorded pod UID equals
+/// the pod's *current* UID. A namespace+name match with a mismatched UID
+/// (found live: a StatefulSet pod recreated with a new UID reusing its
+/// stable name) must never be treated as `Reuse` regardless of CRI
+/// state — it was built for a different pod object (possibly with a
+/// different spec, e.g. privileged/not), and `gc_orphaned_sandboxes()`'s own
+/// namespace+name-keyed orphan check can never catch it since a live pod
+/// with that same key still exists.
+pub(crate) fn sandbox_reuse_decision(found: Option<i32>, ready_state: i32, uid_matches: bool) -> SandboxDecision {
     match found {
-        Some(s) if s == ready_state => SandboxDecision::Reuse,
+        Some(s) if uid_matches && s == ready_state => SandboxDecision::Reuse,
         Some(_) => SandboxDecision::RecreateStale,
         None => SandboxDecision::CreateFresh,
     }

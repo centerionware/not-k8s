@@ -44,7 +44,7 @@ pub struct PodController {
     health: HealthMap,
     /// One probe-supervisor task per pod key, so re-reconciling an
     /// unchanged pod doesn't spawn duplicates. Aborted on teardown.
-    probe_tasks: Mutex<HashMap<String, JoinHandle<()>>>,
+    probe_tasks: Mutex<HashMap<String, Vec<JoinHandle<()>>>>,
 }
 
 impl PodController {
@@ -91,7 +91,7 @@ impl PodController {
         // override isn't set — same default (30) real kubelet applies.
         let pod_grace_period_seconds =
             pod.spec.as_ref().and_then(|s| s.termination_grace_period_seconds).filter(|s| *s >= 0).unwrap_or(30);
-        let handle = probes::spawn(
+        let handles = probes::spawn(
             self.runtime.clone(),
             self.health.clone(),
             ns.to_string(),
@@ -100,13 +100,19 @@ impl PodController {
             pod_ip.to_string(),
             pod_grace_period_seconds,
         );
-        tasks.insert(key, handle);
+        tasks.insert(key, handles);
     }
 
     fn stop_probe_supervisor(&self, ns: &str, name: &str) {
         let key = crate::runtime::pod_key(ns, name);
-        if let Some(handle) = self.probe_tasks.lock().unwrap().remove(&key) {
-            handle.abort();
+        // Every container's probe loop is its own independent tokio task
+        // (see probes::spawn()'s doc comment) — abort() doesn't cascade, so
+        // all of them must be aborted individually or the old ones leak and
+        // keep restarting containers on their own schedule forever.
+        if let Some(handles) = self.probe_tasks.lock().unwrap().remove(&key) {
+            for handle in handles {
+                handle.abort();
+            }
         }
         probes::clear_pod_health(&self.health, ns, name);
     }

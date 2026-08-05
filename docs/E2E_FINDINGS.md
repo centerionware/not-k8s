@@ -590,7 +590,7 @@ sandbox gets recreated — force-deleting the pod (or `crictl rmp` its
 sandbox directly) is what actually picks this up; a plain container
 restart or nodelet restart alone does not.
 
-### 13. Found live testing CSI, not yet fixed: liveness-probe-triggered restarts have no rate limit at all
+### 13. Fixed: `probes::spawn()`'s own supervisor task leaked every per-container probe loop on restart, causing an unbounded restart storm
 
 **Severity: high — a genuine restart storm, confirmed at 810 restart
 attempts in 90 seconds for one pod (periodSeconds=2 for the fastest
@@ -605,22 +605,98 @@ could produce — `journalctl`'s own timestamps show dozens of "liveness
 probe failed; restarting container" lines within the same second,
 repeatedly, for many consecutive seconds.
 
-Not yet root-caused to a specific line, but the crash-loop-*detected*
-restart path (`container_create.rs`'s exited-container branch) has an
-explicit backoff gate (`restart_backoff_ready()`/
-`record_restart_backoff()`, round 73) that the *liveness-probe-triggered*
-restart path (`main.rs`/`probes.rs` → `PodRuntime::restart_container()`
-in `pod_runtime_impl.rs`) does not appear to share or have an equivalent
-of — worth checking first. If a container takes any non-trivial time to
-actually reach a state where its probe would pass, and the probe loop's
-own `sleep(timing.period)` isn't actually preventing back-to-back
-checks under whatever's happening here (parallelism across the pod's
-multiple probed containers, `ensure_probe_supervisor()`'s stop/respawn
-cycle on each restart, or something else), every failed check keeps
-immediately re-triggering another restart with no throttle at all.
+Root cause: `probes::spawn()` used to wrap every per-container probe
+loop it spawned inside one outer `tokio::spawn()` task and return only
+that outer task's handle. `PodController::stop_probe_supervisor()`
+`.abort()`s exactly the handle it's given — Tokio doesn't treat a task
+spawned *by* another task as that task's child for cancellation
+purposes, so aborting the outer wrapper never touched the inner
+per-container loops it had spawned. Every container restart therefore
+leaked the *previous* generation's probe loops instead of replacing
+them: they kept running forever, independently kept polling on their
+own schedule, and each one kept calling `restart_container()` whenever
+its own probe failed. Restarts accumulate leaked loops (one set per
+restart), so the failure rate compounds every cycle instead of staying
+constant — exactly the 810-in-90s runaway observed live.
 
-**Not fixed in this round** — surfaced by live integration testing,
-worth its own focused investigation rather than a rushed fix bolted
-onto an unrelated CSI testing session. CSI driver testing itself is
-paused pending this (scaled the StatefulSet to 0 replicas to stop the
-resource drain while this gets investigated).
+**Fixed**: `probes::spawn()` (`crates/nodelet/src/probes.rs`) now
+returns `Vec<JoinHandle<()>>` — one handle per probed container,
+directly, with no wrapping outer task at all. `PodController` now
+stores `Vec<JoinHandle<()>>` per pod key and `stop_probe_supervisor()`
+aborts every handle in the Vec, not just one. Regression test:
+`probes::tests_supervisor::spawn_returns_one_independently_abortable_handle_per_probed_container`
+proves `spawn()`'s handle count matches the probed-container count and
+that aborting all of them genuinely stops every loop (no more
+`restart_container()` calls afterward, even when probes keep failing).
+
+Verified live: after the fix, the CSI driver's containers settle into
+a disciplined restart cadence that tracks each container's own
+`periodSeconds`/`failureThreshold` (no snowball), instead of restarting
+dozens of times per second.
+
+### 14. Found live re-verifying #12: a StatefulSet pod recreated with a new UID kept reusing its previous incarnation's stale sandbox forever
+
+**Severity: high — silently defeats any fix (like #12) that only takes
+effect for freshly-created sandboxes, for the very common case of a
+StatefulSet pod (stable name across every incarnation) being recreated.**
+
+While re-verifying #12's privileged-sandbox fix against the CSI driver
+(scaled its StatefulSet to 0 then back to 1 to get a clean pod), the
+*same* "no privileged container allowed in sandbox" error kept
+happening — with the newly-built, correctly-fixed binary already
+running. Root cause: `CriRuntime::find_sandbox()` looks a pod's sandbox
+up by namespace+name label only, never pod UID. A StatefulSet pod's
+name is stable across every incarnation, so when it's recreated (new
+UID) before its *previous* sandbox is torn down/GC'd, the namespace+name
+match finds that old, `Ready`, but stale sandbox and reuses it
+unconditionally — built for an entirely different pod object, from
+before the fix even existed. `gc_orphaned_sandboxes()` can't clean this
+up either: its own orphan check is keyed by the same namespace+name, and
+a live pod with that key still exists (just a different UID), so the
+stale sandbox never looks orphaned.
+
+**Fixed**: added `find_sandbox_with_uid()` (returns the sandbox's own
+recorded pod UID alongside its id/state) and made `sandbox_reuse_decision()`
+UID-aware — a namespace+name match with a mismatched UID is now always
+treated as `RecreateStale` regardless of CRI state, tearing the old
+sandbox down and building a genuinely fresh one. Regression tests:
+`runtime::cri::tests_sandbox_reuse::ready_sandbox_with_mismatched_uid_is_recreated_not_reused`
+and `mismatched_uid_overrides_ready_state_every_time`.
+
+### 15. Found live re-verifying #12/#14: `CreateContainerRequest`'s own redundant `sandbox_config` field was hardcoded to `privileged: false`, silently overriding the sandbox's real privileged flag
+
+**Severity: high — the actual remaining root cause of "no privileged
+container allowed in sandbox" even against a genuinely fresh,
+correctly-`privileged: true` sandbox (post #12 and #14).**
+
+CRI's `CreateContainerRequest` carries its own `sandbox_config` field —
+"the same config that was passed to `RunPodSandboxRequest`... passed
+again here just for easy reference" per the proto's own doc comment.
+containerd's CRI plugin actually *reads this copy back* to decide
+whether a privileged container may be created — not whatever was
+stored at `RunPodSandbox` time. Confirmed via `crictl inspectp`'s
+`info.config` (the real stored `PodSandboxConfig`, as opposed to
+`status.linux`, which doesn't carry a security context at all and
+was an earlier red herring while investigating this): the sandbox
+itself was genuinely `privileged: true`. Yet `container_create.rs`'s
+`create_and_start_container()` was building this redundant copy with
+`sandbox_config(id, None, &id.name, &HashMap::new(), None, false)` —
+a hardcoded `false`, unconditionally, for every container, regardless
+of what the pod actually required. A leftover from #12's fix: the
+mechanical pass that added the new `privileged` parameter to every
+`sandbox_config()` call site added a trailing `false` here too, since
+this call site isn't the one that creates the sandbox and wasn't
+re-examined for what it should actually be passing.
+
+**Fixed**: threaded a `privileged: bool` parameter down through
+`create_and_start_container()` → `ensure_container()` /
+`ensure_ephemeral_container()` / `ensure_init_containers()`, computed
+once in `ensure_pod()` (the same `pod_requests_privileged()` call #12
+already added) and passed through every call site, so the redundant
+`sandbox_config` in `CreateContainerRequest` always matches what
+`RunPodSandbox` actually used.
+
+Verified live end-to-end: after all three of #13/#14/#15, force-deleting
+the CSI driver's StatefulSet pod produces a fresh pod that reaches
+`5/5 Running` immediately, with a disciplined (non-snowballing) restart
+cadence thereafter — CSI driver testing can now resume.

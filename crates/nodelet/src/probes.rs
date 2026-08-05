@@ -309,8 +309,24 @@ async fn run_check(
     }
 }
 
-/// Spawn the probe supervisor for one pod. Returns immediately; the
-/// returned handle should be aborted by the caller on pod teardown.
+/// Spawn the probe supervisor for one pod: one task per container that
+/// declares a probe. Returns immediately; every returned handle should be
+/// aborted by the caller on pod teardown — all of them, not just one.
+///
+/// Deliberately *not* one outer task that itself spawns these and returns
+/// only its own handle: `JoinHandle::abort()` cancels exactly the task it
+/// names, never anything that task went on to `tokio::spawn()` — those are
+/// independent, detached tasks the runtime doesn't treat as children of
+/// whoever spawned them. Confirmed for real, live: with a single
+/// wrapping-task handle (this function's previous shape), the per-container
+/// loops it spawned kept running forever after `stop_probe_supervisor()`'s
+/// abort() — every container restart leaked the old probe loops instead of
+/// stopping them, and each orphaned loop kept independently polling and
+/// calling `restart_container()` on its own schedule. Accumulate enough of
+/// those (one per restart) and it snowballs into a genuine restart storm:
+/// confirmed at 810 restart attempts in 90s for one two-container pod,
+/// installing a real CSI driver whose containers happened to restart a
+/// few times early on before stabilizing.
 pub fn spawn(
     runtime: Arc<dyn PodRuntime>,
     health: HealthMap,
@@ -319,26 +335,22 @@ pub fn spawn(
     containers: Vec<Container>,
     pod_ip: String,
     pod_grace_period_seconds: i64,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut tasks = Vec::new();
-        for container in containers {
-            if !has_any_probe(std::slice::from_ref(&container)) {
-                continue; // no probes on this container; default health is already "healthy"
-            }
-            let runtime = runtime.clone();
-            let health = health.clone();
-            let ns = namespace.clone();
-            let name = name.clone();
-            let pod_ip = pod_ip.clone();
-            tasks.push(tokio::spawn(async move {
-                probe_container(runtime, health, ns, name, container, pod_ip, pod_grace_period_seconds).await;
-            }));
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let mut tasks = Vec::new();
+    for container in containers {
+        if !has_any_probe(std::slice::from_ref(&container)) {
+            continue; // no probes on this container; default health is already "healthy"
         }
-        for t in tasks {
-            let _ = t.await;
-        }
-    })
+        let runtime = runtime.clone();
+        let health = health.clone();
+        let ns = namespace.clone();
+        let name = name.clone();
+        let pod_ip = pod_ip.clone();
+        tasks.push(tokio::spawn(async move {
+            probe_container(runtime, health, ns, name, container, pod_ip, pod_grace_period_seconds).await;
+        }));
+    }
+    tasks
 }
 
 /// A probe's own `terminationGracePeriodSeconds` override (only meaningful

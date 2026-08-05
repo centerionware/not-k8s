@@ -200,6 +200,46 @@ async fn startup_probe_gates_readiness_until_it_passes() {
 }
 
 #[tokio::test]
+async fn spawn_returns_one_independently_abortable_handle_per_probed_container() {
+    // Regression test for the restart-storm bug: spawn() used to wrap all
+    // per-container loops in one outer task and return only that outer
+    // handle, so stop_probe_supervisor()'s single abort() never reached the
+    // inner loops — they kept running (and kept calling restart_container())
+    // forever after the pod's probe supervisor was supposedly stopped.
+    // Confirmed live at 810 restart attempts in 90s for one two-container
+    // pod. spawn() must instead return one handle per container, every one
+    // of which the caller can abort individually.
+    let runtime = FakeRuntime::new(true);
+    let health = new_health_map();
+    let containers = vec![
+        Container { name: "app".to_string(), liveness_probe: Some(exec_probe("live-check", 1)), ..Default::default() },
+        Container { name: "sidecar".to_string(), liveness_probe: Some(exec_probe("live-check", 1)), ..Default::default() },
+        Container { name: "no-probe".to_string(), ..Default::default() }, // must not get a task at all
+    ];
+
+    let handles = super::spawn(runtime.clone(), health.clone(), "default".to_string(), "web".to_string(), containers, "10.0.0.5".to_string(), 30);
+    assert_eq!(handles.len(), 2, "one task per probed container, none for the container with no probes");
+
+    // Abort every returned handle, as stop_probe_supervisor() does.
+    for handle in &handles {
+        handle.abort();
+    }
+    for handle in handles {
+        let _ = handle.await; // aborted tasks resolve Err(JoinError), not hang
+    }
+
+    // Once aborted, no further restarts should happen no matter how long we wait.
+    runtime.exec_ok.store(false, Ordering::SeqCst);
+    let count_after_abort = runtime.restart_count.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        runtime.restart_count.load(Ordering::SeqCst),
+        count_after_abort,
+        "aborted probe tasks must not still be running and calling restart_container()"
+    );
+}
+
+#[tokio::test]
 async fn startup_probe_failure_past_threshold_triggers_a_restart_and_recovers() {
     // Round 47: real kubelet kills and restarts the container once a
     // startup probe fails past its own failureThreshold, exactly like a

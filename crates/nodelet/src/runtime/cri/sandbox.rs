@@ -289,6 +289,42 @@ impl CriRuntime {
         Ok(resp.items.into_iter().next().map(|s| (s.id, s.state)))
     }
 
+    /// Same lookup as `find_sandbox()`, but also returns the sandbox's own
+    /// recorded pod UID (from its `PodSandboxMetadata`, stamped by us in
+    /// `sandbox_config()` at creation time) so `ensure_pod()` can tell a
+    /// genuinely-current sandbox apart from a stale one left behind by an
+    /// *earlier* incarnation of a pod with the same namespace+name.
+    ///
+    /// Found live, real: a StatefulSet pod (`csi-hostpathplugin-0`, a stable
+    /// name reused across every incarnation) got recreated with a new UID
+    /// after being scaled to 0 and back to 1. Its old sandbox — created
+    /// before a privileged-sandbox fix landed — was still `Ready`, so
+    /// `find_sandbox()`'s namespace+name-only match reused it forever, and
+    /// every `CreateContainer` for the pod's privileged container kept
+    /// failing with "no privileged container allowed in sandbox" no matter
+    /// how many times the (correctly-fixed) code ran. `gc_orphaned_sandboxes`
+    /// can't clean this up either — its own orphan check is keyed by the
+    /// same namespace+name, and a live pod with that key still exists (just
+    /// a different UID), so the stale sandbox never looks orphaned.
+    pub(crate) async fn find_sandbox_with_uid(&self, namespace: &str, name: &str) -> Result<Option<(String, i32, String)>> {
+        let mut rt = self.rt.clone();
+        let filter = PodSandboxFilter {
+            label_selector: HashMap::from([
+                (POD_NS_LABEL.to_string(), namespace.to_string()),
+                (POD_NAME_LABEL.to_string(), name.to_string()),
+            ]),
+            ..Default::default()
+        };
+        let resp = rt
+            .list_pod_sandbox(ListPodSandboxRequest { filter: Some(filter) })
+            .await?
+            .into_inner();
+        Ok(resp.items.into_iter().next().map(|s| {
+            let uid = s.metadata.map(|m| m.uid).unwrap_or_default();
+            (s.id, s.state, uid)
+        }))
+    }
+
     pub(crate) async fn run_sandbox(
         &self,
         id: &PodId,

@@ -4,7 +4,8 @@ use super::*;
 impl PodRuntime for CriRuntime {
     async fn ensure_pod(&self, pod: &Pod) -> Result<RuntimeStatus> {
         let id = pod_id(pod);
-        let found = self.find_sandbox(&id.namespace, &id.name).await?;
+        let found = self.find_sandbox_with_uid(&id.namespace, &id.name).await?;
+        let uid_matches = found.as_ref().is_some_and(|(_, _, found_uid)| *found_uid == id.uid);
         let ready_state = v1::PodSandboxState::SandboxReady as i32;
         let dns = dns_config_for(pod, &self.cluster_dns, &self.cluster_domain);
         let runtime_handler = self.resolve_runtime_handler(pod).await;
@@ -39,15 +40,19 @@ impl PodRuntime for CriRuntime {
             spec.map(|s| s.containers.as_slice()).unwrap_or(&[]),
             spec.and_then(|s| s.init_containers.as_deref()).unwrap_or(&[]),
         );
-        let sandbox_id = match sandbox_reuse_decision(found.as_ref().map(|(_, s)| *s), ready_state) {
+        let sandbox_id = match sandbox_reuse_decision(found.as_ref().map(|(_, s, _)| *s), ready_state, uid_matches) {
             SandboxDecision::Reuse => found.unwrap().0,
             SandboxDecision::RecreateStale => {
-                // The sandbox record exists but its task/pause process
-                // isn't alive (e.g. this metadata survived a reboot but
-                // the process didn't) — tear it down and start clean
-                // instead of reusing something CreateContainer can never
-                // succeed against. Best-effort: it may already be half-gone.
-                let (stale_id, _) = found.unwrap();
+                // The sandbox record exists but either its task/pause
+                // process isn't alive (e.g. this metadata survived a reboot
+                // but the process didn't), or it belongs to an earlier
+                // incarnation of this pod name with a different UID (e.g. a
+                // StatefulSet pod recreated after scale-to-0) — tear it down
+                // and start clean instead of reusing something
+                // CreateContainer can never succeed against, or that was
+                // built for a different pod spec entirely. Best-effort: it
+                // may already be half-gone.
+                let (stale_id, _, _) = found.unwrap();
                 let mut rt = self.rt.clone();
                 let _ = rt.stop_pod_sandbox(StopPodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
                 let _ = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
@@ -125,6 +130,7 @@ impl PodRuntime for CriRuntime {
                     qos,
                     &claim_devices,
                     &runtime_handler_for_containers,
+                    privileged,
                 )
                 .await?;
             match progress {
@@ -165,7 +171,7 @@ impl PodRuntime for CriRuntime {
         if let Some(spec) = pod.spec.as_ref() {
             for c in &spec.containers {
                 let envs = self.resolve_container_env(pod, &id, c, &service_env).await?;
-                self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs, qos, &claim_devices, &runtime_handler_for_containers)
+                self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs, qos, &claim_devices, &runtime_handler_for_containers, privileged)
                     .await?;
             }
             // Added post-hoc via the `ephemeralcontainers` subresource (e.g.
@@ -175,7 +181,7 @@ impl PodRuntime for CriRuntime {
             for ec in spec.ephemeral_containers.as_deref().unwrap_or(&[]) {
                 let container = ephemeral_to_container(ec);
                 if let Err(e) = self
-                    .ensure_ephemeral_container(&sandbox_id, &id, pod, &container, pod_sc, &volumes, &pull_secrets, &service_env, &claim_devices, &runtime_handler_for_containers)
+                    .ensure_ephemeral_container(&sandbox_id, &id, pod, &container, pod_sc, &volumes, &pull_secrets, &service_env, &claim_devices, &runtime_handler_for_containers, privileged)
                     .await
                 {
                     warn!(container = %ec.name, error = ?e, "failed to start ephemeral container");
