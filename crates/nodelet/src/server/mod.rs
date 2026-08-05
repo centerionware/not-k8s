@@ -43,7 +43,7 @@ pub async fn run(client: Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
         return;
     }
 
-    let cert = match tls::load_or_generate(&cfg.server_cert_dir, &cfg.node_name) {
+    let cert = match tls::load_or_generate(&cfg.server_cert_dir, &cfg.node_name, &crate::node::detect_internal_ip()) {
         Ok(c) => c,
         Err(e) => {
             warn!(error = ?e, "failed to load/generate a TLS certificate; exec/logs/attach/port-forward server will not run");

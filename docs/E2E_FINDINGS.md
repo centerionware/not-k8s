@@ -372,3 +372,71 @@ Same fix (an `nc -lp` loop serving a canned 200 response — the probe
 only checks the status code, not the exact body/path). Grepped the
 whole suite afterward for any other `busybox httpd` survivors: none.
 Verified live: passes in 4s.
+
+### 9. kubelet-style server's self-signed cert had zero IP SANs — apiserver proxy dial always failed
+
+**Severity: high — this alone blocked `kubectl exec`/`logs`/`attach`/
+`port-forward` end to end, entirely independent of and prior to the
+separate CA-trust gap noted below.**
+
+`server::tls::load_or_generate()` built its self-signed cert's SAN list
+as `[node_name, "localhost"]` only. The apiserver proxies
+exec/logs/attach/port-forward requests to nodelet's kubelet-style server
+by dialing the node's *address* (`Node.status.addresses`' InternalIP —
+the same one `node.rs::detect_internal_ip()` advertises), not its
+hostname. Confirmed live against a real k3s apiserver:
+`kubectl exec <pod> -- echo hi` failed every time with `x509: cannot
+validate certificate for 10.226.246.213 because it doesn't contain any
+IP SANs` — zero IP SANs on the cert at all, so this could never have
+worked regardless of anything else being configured correctly.
+
+**Fix**: `load_or_generate()` now takes the node's IP as a parameter and
+includes it (plus `127.0.0.1`) in the SAN list passed to
+`generate_simple_self_signed()` — it parses each string and adds it as a
+`SanType::IpAddress` or `SanType::DnsName` automatically, so a literal IP
+string is all that's needed. `server::run()` supplies
+`node::detect_internal_ip()`. New unit test
+(`cert_includes_the_node_ip_as_a_san`) parses the generated cert with
+`x509_parser` and asserts the IP SAN is actually present, not just that
+generation succeeds. Existing cert/key files on disk are reused as-is
+(by design — see the file's own header comment on why), so upgrading
+an already-running node needs its stale
+`$NODELET_SERVER_CERT_DIR/server.{crt,key}.der` deleted once to pick up
+the fix; confirmed live, the very next `load_or_generate()` call
+regenerates cleanly.
+
+**What's still separately broken, already-documented, not fixed here**:
+after this fix, `kubectl exec` gets *past* the IP-SAN check and fails
+differently — `x509: certificate signed by unknown authority`. This is
+k3s's apiserver not being configured to trust nodelet's self-signed
+leaf at all (no `--kubelet-certificate-authority` / `--kubelet-insecure-tls`
+wired up anywhere in this repo's `control-plane.sh`), which
+`server::tls`'s own header comment already flags as a known, deliberately
+out-of-scope gap ("unless a real CA/CSR pipeline is configured — see
+docs/GAP_CLOSURE.md for that as a still-open, lower-priority item").
+Confirmed it's genuinely a separate issue, not this same bug reappearing:
+the error message itself changed (IP-SAN failure → CA-trust failure),
+proving the fix here is doing its job. Full `kubectl exec` end-to-end
+still needs that separate, already-scoped CA-trust work.
+
+**Not a code bug — this session's own mistake, corrected here for the
+record**: a reboot mid-session revealed `flanneld` permanently broken
+("plugin type=flannel failed... loadFlannelSubnetEnv failed", every new
+pod stuck `Pending` forever). Root cause: this session ran its own ad hoc
+`rm -rf .bootstrap/toolchain` several times as a disk-pressure mitigation
+(finding #3), which deleted `.bootstrap/toolchain/bin/flanneld` along
+with the actual Rust build cache it was trying to clear. This is **not**
+a gap in `bootstrap-source.sh` — `deploy/lib/cleanup.sh`'s own
+`cleanup_build_footprint()` already gets this exactly right, and says so
+explicitly in its header: "`$TOOLCHAIN_DIR/bin` is mixed: build-only
+(cc/gcc/g++/protoc/go) sits next to runtime binaries
+(runc/containerd/flanneld) — remove only the named build-only entries,
+never glob the whole directory," and its actual implementation does
+precisely that (`rm -f "$TOOLCHAIN_DIR/bin"/{cc,gcc,g++,protoc,go}`,
+never a blanket delete of the directory). This session's own cleanup
+commands bypassed that safety rail instead of calling the project's own
+function. Recovered by re-fetching `flanneld-arm64` v0.25.6 from its
+GitHub release to the same path. Lesson for future sessions on this
+device: use `cleanup_build_footprint()` (or its exact named-file list)
+for disk-pressure cleanup, never a blanket `rm -rf
+.bootstrap/toolchain`.

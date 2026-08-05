@@ -83,7 +83,7 @@ pub fn client_identity_from_der(der: &[u8]) -> Option<(String, Vec<String>)> {
     Some((username, groups))
 }
 
-pub fn load_or_generate(cert_dir: &str, node_name: &str) -> Result<LoadedCert> {
+pub fn load_or_generate(cert_dir: &str, node_name: &str, node_ip: &str) -> Result<LoadedCert> {
     let dir = Path::new(cert_dir);
     let cert_path = dir.join("server.crt.der");
     let key_path = dir.join("server.key.der");
@@ -96,7 +96,19 @@ pub fn load_or_generate(cert_dir: &str, node_name: &str) -> Result<LoadedCert> {
     }
 
     std::fs::create_dir_all(dir).with_context(|| format!("creating server cert directory {cert_dir}"))?;
-    let sans = vec![node_name.to_string(), "localhost".to_string()];
+    // node_name/"localhost" alone leave this cert with zero IP SANs — the
+    // apiserver dials nodelet's server by the node's *address*
+    // (Node.status.addresses' InternalIP, same one node.rs advertises via
+    // detect_internal_ip()), not its hostname, for exec/logs/attach/
+    // port-forward proxying. Without the IP itself in here, that dial
+    // fails TLS verification outright ("doesn't contain any IP SANs"),
+    // confirmed for real against a live k3s apiserver — every one of
+    // those four endpoints was unreachable through the apiserver proxy
+    // despite the server itself working fine. generate_simple_self_signed
+    // parses each string and adds it as a DNS name or IP SAN as
+    // appropriate — a literal IP address string here becomes a real
+    // SanType::IpAddress entry, no extra API needed.
+    let sans = vec![node_name.to_string(), "localhost".to_string(), node_ip.to_string(), "127.0.0.1".to_string()];
     let CertifiedKey { cert, key_pair } =
         generate_simple_self_signed(sans).context("generating self-signed TLS certificate")?;
     let cert_der = cert.der().clone();
