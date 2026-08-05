@@ -269,6 +269,16 @@ impl PodRuntime for CriRuntime {
             .stop_container(StopContainerRequest { container_id: container_id.clone(), timeout: grace_period_seconds.max(0) })
             .await;
         rt.remove_container(RemoveContainerRequest { container_id }).await.context("RemoveContainerRequest")?;
+        // container_create.rs's own reconcile-driven restart path
+        // (a container CRI itself reports as exited) bumps this right
+        // before removing the stale container, so the next status read
+        // reflects the new attempt count. This path removes a container
+        // CRI still considers *running* (a probe failure, not a crash) —
+        // reconcile never sees an existing container to bump against once
+        // this returns, so without this call here restartCount would
+        // never move for a probe-triggered restart at all. Confirmed for
+        // real: it didn't, before this.
+        self.bump_restart_count(&sandbox_id, container);
         Ok(())
     }
 

@@ -328,3 +328,38 @@ image's busybox build, confirmed live) — `while true; do nc -lp $port
 < /tmp/resp; done`, since busybox's `nc -l` exits after one connection
 and needs the loop to keep serving `try_wait_until`'s repeated polls.
 Verified both tests pass live (4s and 25s respectively).
+
+## Confirmed bugs (continued, part 2)
+
+### 8. `restartCount` never incremented for probe-triggered restarts
+
+**Severity: medium — a real, user-visible status field silently wrong,
+though the restart itself (kill+recreate) works correctly.**
+
+`restart_container()` (`runtime/cri/pod_runtime_impl.rs`) — the path a
+failed liveness/startup probe takes to kill and recreate a still-running
+container — stops and removes the container but never calls
+`bump_restart_count()`. Confirmed live: a liveness-probe-triggered
+restart cycle repeated correctly (container actually stopped, actually
+recreated, new `startedAt` each time) but `status.containerStatuses[0]
+.restartCount` stayed at `0` through multiple observed cycles.
+
+Root cause, once traced through `container_create.rs`'s reconcile path:
+that path *does* call `bump_restart_count()`, but only from the branch
+that finds an **existing** (CRI-reported-exited) container to replace —
+the normal crash-restart case, confirmed still working correctly
+(`test_crashing_container_restarts_and_increments_restart_count`
+passes). `restart_container()` runs *before* that reconcile ever sees
+the container again — it's a separate, self-contained stop+remove called
+directly from the probe-failure path (`main.rs`'s probe loop) — so by
+the time the next reconcile runs, there's no existing container left to
+trigger that branch's increment. The two restart paths (crash-detected
+vs. probe-killed) share the removal/recreation *behavior* but hadn't
+shared the counter bump.
+
+**Fix**: `restart_container()` now calls `self.bump_restart_count(&sandbox_id,
+container)` itself, right after removing the old container instance —
+matching what the reconcile path already does for the crash case, just
+inline here since there's no second chance to catch it later. Verified
+live: `test_liveness_probe_failure_restarts_the_container` now passes
+(45s).
