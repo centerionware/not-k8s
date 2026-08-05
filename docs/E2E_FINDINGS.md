@@ -307,3 +307,24 @@ check whether it was secretly the whole story there too — it wasn't:
 `test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted` still
 times out identically. Finding #4 (immediate-delete-on-evict racing the
 assertion) is a real, separate bug, not an artifact of this one.
+
+### 7. Fixed test bug: `busybox httpd` isn't compiled into alpine:3.20's busybox
+
+**Severity: test-only.** `test_host_port_publishes_the_container_on_the_nodes_own_ip`
+and `test_host_network_pod_needs_no_explicit_port_mapping`
+(`lib/test/cases/networking.sh`) both used `busybox httpd -f -p <port>
+-h /www` as their in-container HTTP responder. Confirmed live: alpine
+3.20's busybox binary doesn't have the `httpd` applet compiled in
+(`busybox httpd` → `httpd: applet not found`, exit 127), so the
+container crash-looped immediately — which both tests' own error
+handling reported as "pod never reached Running", pointing a debugger
+at `port_mappings_for()`/`sandbox_config()`/CRI wiring that was never
+actually exercised. Real cause had nothing to do with hostPort/
+hostNetwork at all.
+
+**Fix**: replaced the responder with a `busybox nc -lp <port>` loop
+serving a pre-built HTTP response from a file (`nc` *is* in this
+image's busybox build, confirmed live) — `while true; do nc -lp $port
+< /tmp/resp; done`, since busybox's `nc -l` exits after one connection
+and needs the loop to keep serving `try_wait_until`'s repeated polls.
+Verified both tests pass live (4s and 25s respectively).

@@ -19,7 +19,15 @@ spec:
   containers:
     - name: app
       image: $TEST_IMAGE
-      command: ["sh", "-c", "mkdir -p /www && echo host-port-marker > /www/marker && busybox httpd -f -p 8080 -h /www"]
+      # Not 'busybox httpd' — alpine:3.20's busybox build doesn't compile
+      # that applet in ('httpd: applet not found', confirmed live), which
+      # made the container exit immediately (CrashLoopBackOff) and this
+      # test misreport that as "pod never reached Running" — nothing to
+      # do with hostPort/port_mappings_for() wiring at all. busybox nc's
+      # -lp does listen-on-port, so a tiny loop around it makes a
+      # good-enough one-shot-per-connection HTTP responder without
+      # needing a real web server in the test image.
+      command: ["sh", "-c", "printf 'HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nConnection: close\\r\\n\\r\\nhost-port-marker\\n' > /tmp/resp && while true; do nc -lp 8080 < /tmp/resp; done"]
       ports:
         - containerPort: 8080
           hostPort: $host_port
@@ -60,7 +68,8 @@ spec:
   containers:
     - name: app
       image: $TEST_IMAGE
-      command: ["sh", "-c", "mkdir -p /www && echo host-network-marker > /www/marker && busybox httpd -f -p $container_port -h /www"]
+      # See the hostPort test above for why this isn't 'busybox httpd'.
+      command: ["sh", "-c", "printf 'HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nConnection: close\\r\\n\\r\\nhost-network-marker\\n' > /tmp/resp && while true; do nc -lp $container_port < /tmp/resp; done"]
       ports:
         - containerPort: $container_port
 EOF
