@@ -742,3 +742,57 @@ ran `5/5 Running` with **zero restarts across all 5 containers** over
 a full 5 minutes of observation (previously: 12+ restarts on `hostpath`
 alone within the first 2 minutes). CSI driver testing can now actually
 proceed past pod startup.
+
+### 17. Fixed: nodelet never reconciled `CSINode`, and never synced CSI topology labels onto the Node — a topology-aware provisioner could never provision anything
+
+**Severity: high — every PVC backed by a topology-aware CSI provisioner
+(`csi-provisioner --feature-gates=Topology=true`, the common default
+for real CSI drivers, including this project's own bundled deploy
+manifest) permanently failed to provision, with no way to recover
+short of disabling topology awareness in the provisioner itself.**
+
+Found running the CSI e2e suite for real (`TEST_CSI_STORAGE_CLASS` set
+against the now cleanly-running hostpath driver from #16):
+`test_pod_mounts_a_persistent_volume_claim` skipped — "PVC never became
+Bound within 60s". `kubectl logs ... -c csi-provisioner` showed a
+permanently repeating `"error generating accessibility requirements: no
+available topology found"`. `kubectl get csinodes -o yaml` showed
+`spec.drivers: null` — nodelet had never implemented any `CSINode`
+reconciliation at all (`grep -rn CSINode crates/nodelet/src` was
+entirely empty before this fix). Real kubelet's own "Node Info Manager"
+does this automatically the moment a CSI driver registers via the
+plugin-registration protocol: it calls `NodeGetInfo`, then reconciles
+`{name, nodeID, topologyKeys}` onto `CSINode.spec.drivers[]`.
+
+**Fixed, first pass**: new `csi_node.rs` — pure `upsert_driver()`/
+`remove_driver()` list-update functions (7 unit tests), plus thin async
+`upsert()`/`remove()` wrappers doing a read-modify-write against the
+real `CSINode` API object (full-list JSON merge patch, since merge
+patch doesn't deep-merge array elements). Wired into
+`plugin_registry.rs`'s `register_one()` (upsert on registration) and its
+deregistration path (remove when a driver's socket disappears). A new
+`CsiDrivers::node_info()` in `runtime/csi.rs` makes the actual
+`NodeGetInfo` RPC call.
+
+**That alone wasn't enough**: redeploying and re-running the PVC test
+showed progress but a *different* failure —
+`"topologyKeys [topology.hostpath.csi/node] were not found on any
+nodes"`. `csi-provisioner` reads `topologyKeys` off `CSINode` to know
+which label *keys* matter, then reads the actual *values* off the Node
+object's own labels to build `TopologyRequirement` — real kubelet's
+other half of the Node Info Manager, which the first pass had
+deliberately (and, it turned out, incorrectly) scoped out as unlikely
+to matter. Fixed with a second function, `node.rs`'s
+`apply_topology_labels()` — merge-patches `NodeGetInfo`'s
+`accessible_topology` segments onto the Node's labels, called from the
+same `plugin_registry.rs` registration path right after the `CSINode`
+upsert.
+
+Verified live end-to-end: `kubectl get node debian` now carries
+`topology.hostpath.csi/node: debian`, `kubectl get csinodes` shows the
+matching `topologyKeys`, and the previously-skipping
+`test_pod_mounts_a_persistent_volume_claim` now passes, along with
+`test_pod_with_an_attach_required_pvc_waits_for_volumeattachment`,
+`test_csi_ephemeral_inline_volume_is_mounted`, and
+`test_pod_mounts_a_generic_ephemeral_volume` — the full set of CSI e2e
+tests that need a real, bindable PVC.

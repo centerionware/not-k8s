@@ -415,6 +415,31 @@ async fn clear_cloudprovider_taint(client: Client, node_name: String) {
     }
 }
 
+/// Merge `segments` (a CSI driver's `NodeGetInfo.accessible_topology`,
+/// e.g. `topology.hostpath.csi/node: debian`) onto this Node's labels —
+/// the other half of real kubelet's Node Info Manager that `csi_node.rs`'s
+/// own doc comment scoped out as a later follow-up, until live testing
+/// showed a topology-aware `csi-provisioner` needs *both* halves: it reads
+/// `topologyKeys` off `CSINode` to know which label keys matter, then reads
+/// the label *values* straight off the Node object itself to build
+/// `TopologyRequirement` — missing this half left it permanently failing
+/// with "topologyKeys [...] were not found on any nodes" even after
+/// `CSINode` carried the right keys.
+///
+/// Merge-patches only the given keys in (never removes existing labels,
+/// same posture as `node_labels()`'s own `cfg.labels` merge) — a second
+/// driver's segments call this independently and must not clobber the
+/// first's.
+pub async fn apply_topology_labels(client: &Client, node_name: &str, segments: &BTreeMap<String, String>) -> Result<()> {
+    if segments.is_empty() {
+        return Ok(());
+    }
+    let api: Api<Node> = Api::all(client.clone());
+    let patch = serde_json::json!({ "metadata": { "labels": segments } });
+    api.patch(node_name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
+    Ok(())
+}
+
 /// Push the (heavy, infrequent) node status.
 pub async fn push_status(
     client: &Client,

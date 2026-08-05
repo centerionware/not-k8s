@@ -12,6 +12,8 @@ pub mod cpu_manager;
 #[cfg(feature = "cri")]
 pub mod credential_provider;
 #[cfg(feature = "cri")]
+pub mod csi_node;
+#[cfg(feature = "cri")]
 pub mod device_plugins;
 #[cfg(feature = "cri")]
 pub mod dra;

@@ -103,6 +103,8 @@ async fn register_one(
     devices: &Arc<DevicePlugins>,
     dra: &Arc<DraDrivers>,
     socket_path: &Path,
+    kube_client: &kube::Client,
+    node_name: &str,
 ) -> Result<Option<(PluginKind, String)>> {
     let channel = connect_uds(socket_path).await?;
     let mut client = RegistrationClient::new(channel);
@@ -143,6 +145,32 @@ async fn register_one(
         .await
         .context("NotifyRegistrationStatus")?;
     info!(name = %info.name, endpoint = %info.endpoint, plugin_type = %info.r#type, "plugin registry: plugin registered");
+
+    // CSINode reconciliation (see csi_node.rs's own doc comment for the
+    // full story) — best-effort: a topology-aware provisioner staying
+    // broken is a real problem, but it must never take down the
+    // registration handshake itself. Logged loudly and retried on the
+    // next sync tick rather than failing register_one().
+    if matches!(kind, PluginKind::Csi) {
+        match csi.node_info(&info.name).await {
+            Ok(node_info) => {
+                let segments = node_info.accessible_topology.map(|t| t.segments).unwrap_or_default();
+                let topology_keys = segments.keys().cloned().collect();
+                if let Err(e) = crate::csi_node::upsert(kube_client, node_name, &info.name, &node_info.node_id, topology_keys).await {
+                    warn!(name = %info.name, error = ?e, "plugin registry: failed to reconcile CSINode; topology-aware provisioning may not work for this driver until the next sync");
+                }
+                // The other half: csi-provisioner (Topology=true) reads
+                // topologyKeys off CSINode but the segment *values* off the
+                // Node's own labels — see apply_topology_labels()'s doc
+                // comment for the full story.
+                let segments: std::collections::BTreeMap<String, String> = segments.into_iter().collect();
+                if let Err(e) = crate::node::apply_topology_labels(kube_client, node_name, &segments).await {
+                    warn!(name = %info.name, error = ?e, "plugin registry: failed to apply topology labels to Node; topology-aware provisioning may not work for this driver until the next sync");
+                }
+            }
+            Err(e) => warn!(name = %info.name, error = ?e, "plugin registry: NodeGetInfo failed; CSINode not reconciled for this driver"),
+        }
+    }
     Ok(Some((kind, info.name)))
 }
 
@@ -154,7 +182,15 @@ async fn register_one(
 /// `NODELET_CSI_DRIVERS` config still works either way; there's no static
 /// equivalent for device plugins, so a failure here means device plugins
 /// don't work at all for this run).
-pub async fn run(csi: Arc<CsiDrivers>, devices: Arc<DevicePlugins>, dra: Arc<DraDrivers>, registry_path: String, sync_interval: Duration) {
+pub async fn run(
+    csi: Arc<CsiDrivers>,
+    devices: Arc<DevicePlugins>,
+    dra: Arc<DraDrivers>,
+    registry_path: String,
+    sync_interval: Duration,
+    kube_client: kube::Client,
+    node_name: String,
+) {
     let dir = PathBuf::from(&registry_path);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         warn!(path = %dir.display(), error = ?e, "plugin registry: couldn't create the registry directory; dynamic plugin discovery disabled for this run");
@@ -175,7 +211,12 @@ pub async fn run(csi: Arc<CsiDrivers>, devices: Arc<DevicePlugins>, dra: Arc<Dra
             if let Some((kind, name)) = known.remove(&path) {
                 info!(name, path = %path.display(), "plugin registry: socket disappeared; deregistering");
                 match kind {
-                    PluginKind::Csi => csi.deregister(&name),
+                    PluginKind::Csi => {
+                        csi.deregister(&name);
+                        if let Err(e) = crate::csi_node::remove(&kube_client, &node_name, &name).await {
+                            warn!(name, error = ?e, "plugin registry: failed to remove CSINode entry for a deregistered driver");
+                        }
+                    }
                     PluginKind::Device => devices.deregister(&name),
                     PluginKind::Dra => dra.deregister(&name),
                 }
@@ -186,7 +227,7 @@ pub async fn run(csi: Arc<CsiDrivers>, devices: Arc<DevicePlugins>, dra: Arc<Dra
             if known.contains_key(path) {
                 continue;
             }
-            match register_one(&csi, &devices, &dra, path).await {
+            match register_one(&csi, &devices, &dra, path, &kube_client, &node_name).await {
                 Ok(Some(entry)) => {
                     known.insert(path.clone(), entry);
                 }

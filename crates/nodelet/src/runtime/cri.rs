@@ -494,6 +494,8 @@ impl CriRuntime {
             dra.clone(),
             plugin_registry_path,
             plugin_registry_sync_interval,
+            client.clone(),
+            node_name.clone(),
         ));
 
         Ok(Self {

@@ -49,8 +49,9 @@ pub mod v1 {
 use v1::node_client::NodeClient;
 use v1::volume_capability::{access_mode, AccessMode, AccessType, BlockVolume, MountVolume};
 use v1::{
-    NodeGetCapabilitiesRequest, NodePublishVolumeRequest, NodeStageVolumeRequest,
-    NodeUnpublishVolumeRequest, NodeUnstageVolumeRequest, NodeServiceCapability, VolumeCapability,
+    NodeGetCapabilitiesRequest, NodeGetInfoRequest, NodeGetInfoResponse, NodePublishVolumeRequest,
+    NodeStageVolumeRequest, NodeUnpublishVolumeRequest, NodeUnstageVolumeRequest,
+    NodeServiceCapability, VolumeCapability,
 };
 
 /// Dial a CSI driver's Node-service Unix socket — same connector shape as
@@ -241,6 +242,22 @@ impl CsiDrivers {
         let mut client = self.client_for(driver).await?;
         let resp = client.node_get_capabilities(NodeGetCapabilitiesRequest {}).await.context("NodeGetCapabilities")?.into_inner();
         Ok(has_stage_unstage_capability(&resp.capabilities))
+    }
+
+    /// `NodeGetInfo` — called once, right after `plugin_registry.rs` learns
+    /// a driver has registered, so its `CSINode.spec.drivers[]` entry can
+    /// be reconciled (see `csi_node.rs`). Without this, a topology-aware
+    /// external-provisioner (`--feature-gates=Topology=true`, this
+    /// codebase's own bundled CSI driver deploy manifest included — the
+    /// common default for real CSI drivers, not an edge case) permanently
+    /// fails every `CreateVolume` with "no available topology found",
+    /// because it walks every `CSINode` object looking for the requesting
+    /// driver's entry and never finds one — found live testing a real CSI
+    /// driver's PVC provisioning, after rounds 117-119 already got the pod
+    /// itself running cleanly.
+    pub(crate) async fn node_info(&self, driver: &str) -> Result<NodeGetInfoResponse> {
+        let mut client = self.client_for(driver).await?;
+        Ok(client.node_get_info(NodeGetInfoRequest {}).await.context("NodeGetInfo")?.into_inner())
     }
 
     /// Stage (if the driver supports it) and publish `source` at
