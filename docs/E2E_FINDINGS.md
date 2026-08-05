@@ -142,3 +142,124 @@ to do with the code under test. `rm -rf target/ .bootstrap/toolchain`
 after a successful build (the binary's already been copied to
 `bin/nodelet`) is cheap insurance.
 
+## Confirmed bugs (continued)
+
+### 4. Self-initiated eviction deletes the Pod object immediately, unlike real kubelet — makes its own status unobservable
+
+**Severity: medium — the eviction *decision* itself is correct and fast;
+only the after-the-fact observability is wrong, and it makes
+`test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted` (and,
+by the same code path, every other eviction test) inherently racy
+rather than reliably assertable.**
+
+`evict_pod()` (`main.rs`) — the one function behind node-pressure
+eviction, per-pod ephemeral-storage/emptyDir limit violations, and
+`activeDeadlineSeconds` — patches `status.phase=Failed` /
+`status.reason=<given reason>`, then *immediately* issues a real
+`pod_api.delete()` with `grace_period_seconds: 0`, back-to-back with no
+delay. Confirmed live (nodelet logs): the ephemeral-storage-limit test's
+pod goes from Running to fully deleted from the apiserver in well under
+a second of wall-clock time — `kubectl get pod ... -o
+jsonpath={.status.reason}` essentially never has a chance to observe
+`Evicted` before the object is just gone (404), regardless of how often
+something polls for it. `not-k8s-e2e-test`'s own `wait_until` (2s poll
+interval, 60s budget) never once caught it live.
+
+Real kubelet does **not** do this: an evicted (or otherwise
+kubelet-terminated) bare Pod is left in the apiserver with
+`phase: Failed` / a `reason` for its owner (or a human) to observe and
+clean up — this is the well-known real-world behavior where nodes
+accumulate visible "Evicted" pods until something (a TTL controller, a
+human running `kubectl delete pod --field-selector=status.phase=Failed`,
+etc.) removes them. The project's own code already half-documents this
+tension — `evict_pod()`'s doc comment calls out that reusing this same
+terminate-and-delete path for `activeDeadlineSeconds` specifically is a
+"**Deliberate simplification vs. upstream**... real kubelet marks the
+pod `Failed`/`DeadlineExceeded` but leaves the object itself for the
+owning controller to observe/react to" — but doesn't flag that the
+*other* two callers of the same function (node-pressure eviction, the
+ephemeral-storage/emptyDir case this test exercises) inherit the exact
+same deviation, and that it isn't just a controller-observability nuance
+but actively breaks black-box assertions like this e2e test's.
+
+**Fix direction**: stop deleting the object from `evict_pod()` itself —
+patch status only (`phase: Failed`, the given `reason`/`message`) and
+let deletion be someone else's job (a controller, a human, or a future
+TTL-based GC pass), matching upstream. `gc.rs` already exists and
+already reasons about pod lifecycle for cleanup purposes — worth
+checking whether it's the natural place to eventually reclaim
+long-Failed unmanaged pods, rather than nodelet unilaterally deleting
+them itself at eviction time.
+
+Not fixed in this pass — noted here rather than blocking on it, since
+unlike finding #1 it doesn't cascade into other tests (if anything, the
+current immediate-delete behavior keeps eviction tests' own namespaces
+cleaner, not messier) and the eviction *decision* logic itself
+(`pick_eviction_candidate()` et al.) is separately covered by
+`cargo test`'s `eviction_tests/`.
+
+
+### 5. Fixed test bug (not app code): `sleep 3600 & wait` doesn't actually block on the child
+
+**Severity: test-only, no product impact — but was previously
+unobservable, and its own attempted fix hit two more real gotchas worth
+recording.**
+
+`test_termination_grace_period_is_honored_not_instant`
+(`lib/test/cases/hooks.sh`) used
+`command: ["sh", "-c", "trap 'echo trapped' TERM; sleep 3600 & wait"]`,
+intending a container that traps SIGTERM, keeps running, and only
+actually dies to a SIGKILL once `terminationGracePeriodSeconds` (8s in
+this test) elapses. It doesn't do that: in ash/dash (and other POSIX
+shells), a signal caught by `trap` while `wait` is blocked interrupts
+`wait` immediately once the trap handler returns — regardless of
+whether the backgrounded child (`sleep 3600`) has actually exited. So
+the container's PID 1 (the `sh -c` script) reaches its own end and
+exits voluntarily within milliseconds of receiving SIGTERM, having
+"trapped" it but not actually stayed alive. Confirmed directly (both
+via a plain local `sh -c` repro and via `crictl stop --timeout 8` on a
+live container from this exact pod spec): full teardown in ~0.3–1.7s,
+nowhere near 8s.
+
+This was invisible before finding #1's fix: with pod deletes never
+actually reaching the apiserver, this test's `wait_until ... pod_gone`
+could never observe the pod disappearing either-fast-or-slow — it just
+always timed out for the same reason every other pod-delete assertion
+did. Fixing finding #1 exposed this as a *different* failure (pod
+gone almost immediately, not stuck) rather than revealing it as a pass.
+
+**Fix**: replaced the container command with
+`trap 'echo trapped' TERM; while true; do sleep 1; done` — a foreground
+loop has no `wait`-interrupt escape hatch; dash still runs the trap and
+returns straight to the loop, so only a real SIGKILL (at the end of the
+grace period) ends it. Verified: 15s round-trip (create → Running →
+delete → gone), comfortably inside the test's own 5–35s sanity bounds.
+
+**Two harness gotchas hit while fixing this, worth remembering for
+next time someone edits a case file or drives it standalone**:
+
+- **Backticks inside a heredoc "comment" are not inert.** The fix's
+  first draft explained the bug in a `#`-prefixed comment line inside
+  the pod manifest's `apply_manifest <<EOF ... EOF` heredoc, using
+  backticks for inline-code emphasis (`` `sleep 3600 & wait` ``). An
+  unquoted heredoc (`<<EOF`, not `<<'EOF'`) isn't parsed as bash
+  source — there's no such thing as a heredoc "comment" to the shell,
+  `#` is just a literal character — so bash's normal command
+  substitution still fires on backticks anywhere in the body,
+  regardless of a leading `#`. The result: `` `sleep 3600 & wait` ``
+  actually ran on the *host*, backgrounding a real `sleep 3600` and
+  blocking the whole heredoc's construction on `wait` — which looks
+  exactly like the pod hanging, except no `kctl apply` (or anything
+  else pod-related) ever actually ran; `kubectl get events` showed
+  nothing, because nothing was ever sent to the apiserver. Lesson: no
+  backticks (or unescaped `$`) in prose inside an unquoted heredoc,
+  ever — quote them (`'like this'`) instead.
+- **`timeout N sudo -n bash script.sh` doesn't reliably kill anything.**
+  `sudo` doesn't forward SIGTERM to the child it execs by default, so
+  `timeout`'s signal to the `sudo` process can leave `script.sh`
+  running as an orphan indefinitely, invisible to whatever's waiting on
+  the timed-out call. `sudo -n timeout -k <grace> N bash script.sh`
+  (timeout *inside* the sudo call, directly wrapping the real target)
+  doesn't have this problem. Several stray `run_one.sh` processes (and,
+  once, an actual node-wide `DiskPressure` trip from the image churn
+  they caused) came from this exact mistake during today's session.

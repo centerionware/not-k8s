@@ -80,10 +80,20 @@ spec:
   containers:
     - name: app
       image: $TEST_IMAGE
-      # traps SIGTERM and keeps running instead of exiting immediately,
+      # Traps SIGTERM and keeps running instead of exiting immediately,
       # so the only way it goes away within the window is SIGKILL at the
-      # end of the grace period.
-      command: ["sh", "-c", "trap 'echo trapped' TERM; sleep 3600 & wait"]
+      # end of the grace period. NOT 'sleep 3600 & wait' (and deliberately
+      # not backticked here — this whole block is inside an unquoted
+      # heredoc, where backticks trigger real command substitution even
+      # on a '#' line, since heredoc bodies aren't parsed as bash source)
+      # — ash/dash's 'wait' returns as soon as a trap fires, whether or
+      # not the backgrounded child actually exited, so that idiom's shell
+      # (the container's PID 1) would exit voluntarily within
+      # milliseconds of SIGTERM despite the trap "running" — proving
+      # nothing about grace periods. A foreground loop has no such
+      # wait-interrupt escape hatch: dash still runs the trap and returns
+      # to the loop, so only an actual SIGKILL ends it.
+      command: ["sh", "-c", "trap 'echo trapped' TERM; while true; do sleep 1; done"]
 EOF
     wait_until 30 "$name Running" pod_is_phase "$name" Running
     local start
