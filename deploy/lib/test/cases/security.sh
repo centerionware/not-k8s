@@ -12,23 +12,29 @@ kind: Pod
 metadata:
   name: $name
 spec:
-  volumes:
-    - name: shared
-      emptyDir: {}
   containers:
     - name: app
       image: $TEST_IMAGE
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
-      command: ["sh", "-c", "id -u > /shared/uid.txt; id -g > /shared/gid.txt; sleep 3600"]
-      volumeMounts:
-        - {name: shared, mountPath: /shared}
+      command: ["sleep", "3600"]
 EOF
     wait_until 30 "$name Running" pod_is_phase "$name" Running
+    # Not the shared-emptyDir-write trick the rest of this file uses (see
+    # its header) — kctl exec now works (Round 111), and it's the more
+    # direct check here anyway: a plain runAsUser with no fsGroup set
+    # genuinely can't write to a root-owned emptyDir on real kubelet
+    # either (a well-known K8s gotcha, confirmed live: 'Permission
+    # denied', not a nodelet bug), so the write-to-a-volume version of
+    # this specific test was asserting something real kubelet wouldn't
+    # support either — kctl exec sidesteps the whole question by just
+    # asking the running container what UID/GID it's actually executing
+    # as, which is exactly what runAsUser/runAsGroup are supposed to
+    # control.
     local uid gid
-    uid="$(wait_for_check_file "$name" shared uid.txt 30)"
-    gid="$(wait_for_check_file "$name" shared gid.txt 20)"
+    uid="$(kctl exec "$name" -- id -u)"
+    gid="$(kctl exec "$name" -- id -g)"
     assert_eq "$uid" "1000" "runAsUser"
     assert_eq "$gid" "1000" "runAsGroup"
     delete_pod_if_exists "$name"
