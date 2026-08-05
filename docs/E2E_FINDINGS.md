@@ -515,3 +515,29 @@ closer look with `RUST_LOG=debug` + a raw HTTP capture of the PATCH
 body nodelet actually sends, if this ever needs to be pinned down for
 real (e.g. if a real client starts depending on the field being
 present).
+
+### 11. Verified (not previously tested anywhere): finalizers behave correctly with the Round 103 delete fix
+
+Neither `nodelet`'s own code nor any `lib/test/cases/*.sh` file mentions
+finalizers at all — a real gap in coverage for something Round 103's
+`teardown()` change (adding a real `Api::<Pod>::delete()` call) could
+plausibly have interacted badly with. Tested live rather than left
+unverified: created a pod with a finalizer, deleted it, and confirmed
+the full lifecycle is correct —
+
+1. `deletionTimestamp` set, finalizer stays (apiserver's own behavior,
+   nothing to do with nodelet).
+2. nodelet tears the CRI sandbox/containers down immediately regardless
+   of the finalizer (`crictl pods` showed nothing left) — correct: real
+   kubelet doesn't wait on finalizers to stop containers either,
+   finalizers only block *object* removal.
+3. The Pod object correctly stays present (`Terminating`, finalizer
+   still listed) — `teardown()`'s `delete()` call doesn't error or
+   loop against a finalizer-blocked object; logged "torn down" twice
+   (matching the usual multi-watch-trigger pattern) and then stopped,
+   no flooding.
+4. Removing the finalizer by hand purged the object immediately.
+
+No code change needed — this is a clean pass, recorded here because it
+was a real untested interaction with Round 103's fix, not because
+anything was wrong.
