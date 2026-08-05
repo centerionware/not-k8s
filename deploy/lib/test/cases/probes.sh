@@ -169,7 +169,12 @@ spec:
   containers:
     - name: app
       image: $TEST_IMAGE
-      command: ["sh", "-c", "mkdir -p /www && echo ok > /www/healthz && busybox httpd -f -p 8080 -h /www"]
+      # Not 'busybox httpd' — alpine:3.20's busybox build doesn't compile
+      # that applet in ('httpd: applet not found', confirmed live; see
+      # lib/test/cases/networking.sh's own fix for the same issue). A
+      # busybox nc loop is a good-enough one-shot-per-connection HTTP
+      # responder, and each httpGet probe is its own new connection.
+      command: ["sh", "-c", "printf 'HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nConnection: close\\r\\n\\r\\nok\\n' > /tmp/resp && while true; do nc -lp 8080 < /tmp/resp; done"]
       readinessProbe:
         httpGet:
           path: /healthz

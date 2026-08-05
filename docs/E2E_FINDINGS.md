@@ -363,3 +363,12 @@ matching what the reconcile path already does for the crash case, just
 inline here since there's no second chance to catch it later. Verified
 live: `test_liveness_probe_failure_restarts_the_container` now passes
 (45s).
+
+### 7b. Same `busybox httpd` bug, one more site: `probes.sh`
+
+`test_http_get_readiness_probe_against_a_real_server` had the identical
+`busybox httpd -f -p 8080 -h /www` bug documented in finding #7 above.
+Same fix (an `nc -lp` loop serving a canned 200 response — the probe
+only checks the status code, not the exact body/path). Grepped the
+whole suite afterward for any other `busybox httpd` survivors: none.
+Verified live: passes in 4s.
