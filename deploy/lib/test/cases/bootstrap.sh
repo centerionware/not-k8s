@@ -31,26 +31,45 @@ test_tls_bootstrap_issues_a_real_client_certificate() {
         skip_test "no nodelet binary found at $REPO_ROOT/bin/nodelet or $REPO_ROOT/target/release/nodelet"
     fi
 
-    local sa="tls-bootstrap-test-sa"
-    local role="tls-bootstrap-test-role"
-    local binding="tls-bootstrap-test-binding"
-    local node_name="tls-bootstrap-test-node"
-    local scratch
+    # Deliberately NOT `local` below, despite being set inside this
+    # function: they're read from bootstrap_test_cleanup(), which runs as
+    # an EXIT trap. Confirmed live (round 123) that a trap can fire after
+    # this function's own local scope is already gone — e.g. when the
+    # subshell run_test() wraps each test in unwinds normally — at which
+    # point a `local`-scoped variable referenced from the trap is
+    # genuinely unbound under `set -u`, not just empty. That crashed
+    # bootstrap_test_cleanup() at its very first line (an unbound `[[ -n
+    # "$nodelet_pid" ]]` aborts the whole trap immediately, `|| true` and
+    # all — the error happens evaluating the test, before either branch
+    # runs), which skipped every subsequent cleanup step, leaking the
+    # throwaway nodelet process and its RBAC/Node/CSR objects into the
+    # cluster for the rest of the suite. Plain (subshell-global, not
+    # `local`) assignment sidesteps the whole scoping hazard: these
+    # variables live for the lifetime of the subshell run_test() already
+    # isolates this test in, so nothing leaks across tests either way.
+    sa="tls-bootstrap-test-sa"
+    role="tls-bootstrap-test-role"
+    binding="tls-bootstrap-test-binding"
+    node_name="tls-bootstrap-test-node"
     scratch="$(mktemp -d)"
+    nodelet_pid=""
+    csr_name=""
     local bootstrap_kubeconfig="$scratch/bootstrap-kubeconfig"
     local output_kubeconfig="$scratch/output-kubeconfig"
     local log_file="$scratch/nodelet.log"
-    local nodelet_pid=""
-    local csr_name=""
 
     bootstrap_test_cleanup() {
-        [[ -n "$nodelet_pid" ]] && kill "$nodelet_pid" 2>/dev/null || true
-        [[ -n "$csr_name" ]] && kubectl delete csr "$csr_name" --ignore-not-found >/dev/null 2>&1 || true
-        kubectl delete node "$node_name" --ignore-not-found >/dev/null 2>&1 || true
-        kubectl delete clusterrolebinding "$binding" --ignore-not-found >/dev/null 2>&1 || true
-        kubectl delete clusterrole "$role" --ignore-not-found >/dev/null 2>&1 || true
-        kctl delete serviceaccount "$sa" --ignore-not-found >/dev/null 2>&1 || true
-        rm -rf "$scratch"
+        # ${var:-} everywhere too, belt-and-suspenders on top of the
+        # plain-assignment fix above: a genuinely unbound reference here
+        # must never abort the trap partway through and skip the rest of
+        # cleanup.
+        [[ -n "${nodelet_pid:-}" ]] && kill "$nodelet_pid" 2>/dev/null; true
+        [[ -n "${csr_name:-}" ]] && kubectl delete csr "$csr_name" --ignore-not-found >/dev/null 2>&1; true
+        kubectl delete node "${node_name:-}" --ignore-not-found >/dev/null 2>&1 || true
+        kubectl delete clusterrolebinding "${binding:-}" --ignore-not-found >/dev/null 2>&1 || true
+        kubectl delete clusterrole "${role:-}" --ignore-not-found >/dev/null 2>&1 || true
+        kctl delete serviceaccount "${sa:-}" --ignore-not-found >/dev/null 2>&1 || true
+        [[ -n "${scratch:-}" ]] && rm -rf "$scratch"; true
     }
     trap bootstrap_test_cleanup EXIT
 

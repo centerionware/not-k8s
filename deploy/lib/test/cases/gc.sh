@@ -10,6 +10,17 @@
 # a freshly-unreferenced image is NOT swept away just because it's unused,
 # which is the whole point of round 70's change from the old unconditional
 # sweep.
+#
+# Round 123: every `ctr` call below runs under `sudo` — found live on CI
+# that the e2e suite's own step doesn't run as root (unlike the earlier
+# build/install steps, which do), and containerd's CRI socket is
+# root-only. Without sudo, `ctr` fails with a permission-denied error on
+# stderr and prints nothing on stdout — which silently made the two
+# absence checks below (`! ctr ... | grep -qx ...`, i.e. "is this
+# container gone") pass for the wrong reason (no output at all still
+# satisfies "doesn't contain this ID"), while the one presence check
+# (image GC's `ctr ... | grep -q ...`) correctly failed instead of
+# passing, since it needs real output to match against.
 
 test_pod_teardown_actually_removes_the_sandbox() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
@@ -38,7 +49,7 @@ EOF
     wait_until 30 "$name gone from apiserver" pod_gone "$name"
     # Give nodelet a moment to actually process the delete watch event and
     # tear the sandbox down (this races the apiserver delete slightly).
-    try_wait_until 20 bash -c "! ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
+    try_wait_until 20 bash -c "! sudo ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
         || die "container $container_id is still present in containerd after its pod was deleted"
 }
 
@@ -103,7 +114,7 @@ EOF
     # confirmed live this reliably still finishes well under a minute, just
     # not as fast as the plain-delete path, which gets both that event and
     # a fast follow-up Delete event once the object is actually gone.
-    try_wait_until 40 bash -c "! ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
+    try_wait_until 40 bash -c "! sudo ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
         || die "container $container_id is still present in containerd after pod delete, even though the pod has a finalizer blocking apiserver removal — teardown() must not wait on finalizers"
 
     # The pod object itself must survive — deletionTimestamp set, the
@@ -160,13 +171,13 @@ spec:
       command: ["sleep", "60"]
 EOF
     wait_until 60 "$name Running" pod_is_phase "$name" Running
-    assert_true bash -c "ctr -n k8s.io images ls -q | grep -q '$image'"
+    assert_true bash -c "sudo ctr -n k8s.io images ls -q | grep -q '$image'"
     kctl delete pod "$name" --wait=false >/dev/null
     wait_until 30 "$name gone" pod_gone "$name"
 
     log "    waiting through at least one NODELET_GC_INTERVAL_SECS cycle (default 300s) to confirm $image survives it..."
     sleep 60
-    assert_true bash -c "ctr -n k8s.io images ls -q | grep -q '$image'" \
+    assert_true bash -c "sudo ctr -n k8s.io images ls -q | grep -q '$image'" \
         "an unreferenced image below the image-GC high watermark must NOT be removed — if this fails, either disk usage on this node genuinely is at/above NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT (check 'df' on NODELET_DISK_PATH), or should_start_image_gc()'s gating broke"
 }
 
