@@ -91,8 +91,25 @@ helm upgrade -i --create-namespace --namespace dra-example-driver \
     --set kubeletPlugin.kubeletPluginsDirectoryPath="$NODELET_DATA_DIR/plugins" \
     --set kubeletPlugin.numDevices=4
 
+# `kubectl wait -l <selector>` errors immediately with "no matching
+# resources found" if zero pods match *at the moment it's called* — it
+# does not wait for one to be *created*, only for an already-existing one
+# to reach the condition. A DaemonSet's pod object doesn't exist the
+# instant `helm install`/`kubectl delete` returns (real controller
+# propagation delay), so a bare `kubectl wait` right after either
+# routinely races and fails outright — confirmed for real, round 123's
+# CI hit this exactly. Poll for the pod to *exist* first, then wait for
+# it to become ready.
+wait_for_dra_pod_ready() {
+    for i in $(seq 1 30); do
+        [[ -n "$(kubectl get pods -n dra-example-driver -l app.kubernetes.io/component=kubeletplugin -o name 2>/dev/null)" ]] && break
+        sleep 2
+    done
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=kubeletplugin -n dra-example-driver --timeout=120s
+}
+
 log "waiting for the DRA driver pod to be ready..."
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=kubeletplugin -n dra-example-driver --timeout=120s
+wait_for_dra_pod_ready
 
 # A driver's own gRPC client TokenRequest needs a fresh, node-bound
 # ServiceAccount token to satisfy the apiserver's ResourceSlice admission
@@ -102,7 +119,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=kubeletplu
 # from the start, so this is just making sure a stale pod from a prior
 # partial run doesn't linger with an old token.
 kubectl delete pod -n dra-example-driver -l app.kubernetes.io/component=kubeletplugin --ignore-not-found
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=kubeletplugin -n dra-example-driver --timeout=120s
+wait_for_dra_pod_ready
 
 log "confirming both drivers actually registered with nodelet..."
 for i in $(seq 1 15); do
