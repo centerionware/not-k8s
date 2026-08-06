@@ -45,6 +45,14 @@ pub struct PodController {
     /// One probe-supervisor task per pod key, so re-reconciling an
     /// unchanged pod doesn't spawn duplicates. Aborted on teardown.
     probe_tasks: Mutex<HashMap<String, Vec<JoinHandle<()>>>>,
+    /// Pod UIDs already torn down (see `reconcile()`'s deletion branch) —
+    /// keyed by UID rather than namespace/name, so a same-named pod
+    /// recreated after this one is genuinely gone still gets a real
+    /// teardown. Entries are removed once the real `Event::Delete`
+    /// confirms the object actually left the apiserver, so this stays
+    /// bounded by "pods currently mid-termination", not "every pod this
+    /// node has ever run."
+    torn_down: Mutex<HashSet<String>>,
 }
 
 impl PodController {
@@ -59,6 +67,7 @@ impl PodController {
             events,
             health: probes::new_health_map(),
             probe_tasks: Mutex::new(HashMap::new()),
+            torn_down: Mutex::new(HashSet::new()),
         }
     }
 
@@ -223,7 +232,18 @@ impl PodController {
     async fn on_watch(&self, ev: Event<Pod>) {
         match ev {
             Event::Apply(pod) | Event::InitApply(pod) => self.reconcile(pod).await,
-            Event::Delete(pod) => self.teardown(&pod).await,
+            Event::Delete(pod) => {
+                // The real, final removal — always run teardown() here
+                // (idempotent-safe: everything it does already tolerates
+                // "target already gone" with a warn, not a hard failure),
+                // then forget the UID: the object genuinely left the
+                // apiserver, so there's nothing left to guard against
+                // re-tearing-down.
+                self.teardown(&pod).await;
+                if let Some(uid) = pod.metadata.uid.as_deref() {
+                    self.torn_down.lock().unwrap().remove(uid);
+                }
+            }
             Event::Init | Event::InitDone => {}
         }
     }
@@ -236,6 +256,29 @@ impl PodController {
         };
 
         if pod.metadata.deletion_timestamp.is_some() {
+            // A finalizer-blocked pod (or just ordinary apiserver
+            // propagation delay) can generate several more watch events
+            // for the SAME still-terminating object before it's actually
+            // gone (any status settling, a resync, etc.) — reconcile()
+            // dispatches on deletion_timestamp alone, so without this
+            // check every one of those re-ran the full teardown() (real
+            // network round-trips: CSI unmount RPCs, PVC re-fetches)
+            // instead of a no-op. Found live (round 123): this single
+            // serial watch-event loop processes one event at a time, so a
+            // burst of redundant teardown() calls for one pod could delay
+            // it from reaching a completely unrelated pod's own creation
+            // event — a real, if unconfirmed, contributor to pods
+            // intermittently taking far longer than expected to reach
+            // Running in CI.
+            // No UID at all is a real apiserver-watch-event anomaly, not
+            // something normal to dedupe against — fall through to a
+            // real teardown() every time rather than risk collapsing
+            // unrelated events into one shared "" key.
+            if let Some(uid) = pod.metadata.uid.clone() {
+                if !self.torn_down.lock().unwrap().insert(uid) {
+                    return; // already handled this pod's teardown
+                }
+            }
             self.teardown(&pod).await;
             return;
         }
