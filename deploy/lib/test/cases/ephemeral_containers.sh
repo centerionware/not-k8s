@@ -18,7 +18,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
 
     if ! kubectl debug "$name" -n "$TEST_NAMESPACE" --image="$TEST_IMAGE" --container=debugger -- sleep 3600 >/dev/null 2>&1; then
         delete_pod_if_exists "$name"

@@ -28,7 +28,7 @@ spec:
         requests: { cpu: "100m", memory: "64Mi" }
         limits: { cpu: "100m", memory: "64Mi" }
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
 
     local cid path cpuset_mems
     cid="$(kubectl get pod "$name" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"

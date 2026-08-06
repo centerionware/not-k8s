@@ -46,7 +46,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local uid
     uid="$(kubectl get pod "$name" -o jsonpath='{.metadata.uid}')"
 

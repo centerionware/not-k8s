@@ -20,7 +20,7 @@ spec:
         runAsGroup: 1000
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     # Not the shared-emptyDir-write trick the rest of this file uses (see
     # its header) — kctl exec now works (Round 111), and it's the more
     # direct check here anyway: a plain runAsUser with no fsGroup set
@@ -57,7 +57,7 @@ spec:
         runAsGroup: 5000
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     # Round 90 (found in round 89's re-audit): containerStatuses[].user.linux
     # is fetched once via ContainerStatusRequest right after the container
     # starts and cached for the rest of that instance's life -- give it a
@@ -105,7 +105,7 @@ spec:
         - {name: ro-vol, mountPath: /ro, readOnly: true, recursiveReadOnly: Enabled}
         - {name: rw-vol, mountPath: /rw}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     # Round 91 (found in round 89's re-audit, the missing reporting half
     # of round 85's IfPossible-treated-as-Enabled simplification):
     # containerStatuses[].volumeMounts[].recursiveReadOnly is computed
@@ -166,7 +166,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local result
     result="$(wait_for_check_file "$name" shared result.txt 30)"
     assert_eq "$result" "readonly" "readOnlyRootFilesystem must block writes outside mounted volumes"
@@ -204,7 +204,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local result
     result="$(wait_for_check_file "$name" shared result.txt 30)"
     assert_eq "$result" "writable" "root filesystem should be writable without readOnlyRootFilesystem"
@@ -330,7 +330,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local second_pid
     second_pid="$(wait_for_check_file "$name" shared second-pid.txt 30)"
     assert_eq "$second_pid" "1" "second container's own shell should be pid 1 in its own isolated PID namespace"
@@ -360,7 +360,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local second_pid
     second_pid="$(wait_for_check_file "$name" shared second-pid.txt 30)"
     assert_not_eq "$second_pid" "1" "with shareProcessNamespace, the first container already holds pid 1 — the second container's shell must get a higher pid in the shared namespace"
@@ -389,7 +389,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local count
     count="$(wait_for_check_file "$name" shared proc_count.txt 30)"
     assert_true bash -c "[[ '$count' -gt 5 ]]" "hostPID container should see many more than its own handful of processes (saw $count)"

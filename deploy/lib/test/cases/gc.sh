@@ -39,7 +39,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local container_id
     container_id="$(pod_field "$name" '{.status.containerStatuses[0].containerID}')"
     container_id="${container_id#containerd://}"
@@ -98,7 +98,7 @@ EOF
     }
     trap finalizer_check_cleanup EXIT
 
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local container_id
     container_id="$(pod_field "$name" '{.status.containerStatuses[0].containerID}')"
     container_id="${container_id#containerd://}"

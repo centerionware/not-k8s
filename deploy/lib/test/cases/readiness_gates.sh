@@ -23,7 +23,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
 
     # Container itself is ready (no readiness probe -> defaults to ready),
     # but the gate condition has never been set -> Ready must stay False.

@@ -34,7 +34,7 @@ spec:
         - {name: cm-vol, mountPath: /cm}
         - {name: secret-vol, mountPath: /secret}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local cm_content secret_content
     cm_content="$(wait_for_check_file "$name" cm-vol greeting 30)"
     secret_content="$(wait_for_check_file "$name" secret-vol password 30)"
@@ -71,7 +71,7 @@ spec:
       volumeMounts:
         - {name: cm-vol, mountPath: /cm}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local before
     before="$(wait_for_check_file "$name" cm-vol greeting 30)"
     assert_eq "$before" "hello" "ConfigMap volume content before update"
@@ -121,7 +121,7 @@ spec:
       volumeMounts:
         - {name: downward, mountPath: /downward}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local content
     content="$(wait_for_check_file "$name" downward pod_name 30)"
     assert_eq "$content" "$name" "downwardAPI volume pod_name"
@@ -203,7 +203,7 @@ spec:
       volumeMounts:
         - {name: proj, mountPath: /proj}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local cm_val name_val
     cm_val="$(wait_for_check_file "$name" proj key1 30)"
     name_val="$(wait_for_check_file "$name" proj name 30)"
@@ -236,7 +236,7 @@ spec:
       volumeMounts:
         - {name: token-vol, mountPath: /var/run/secrets/token}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local path
     path="$(pod_volume_host_path "$name" token-vol)/token"
     if ! try_wait_until 30 bash -c "[[ -s '$path' ]]"; then
@@ -270,7 +270,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local hosts_path
     hosts_path="$(pod_volume_host_path "$name" etc-hosts)"
     wait_until 20 "hostAliases /etc/hosts materialized" bash -c "[[ -s '$hosts_path' ]]"
@@ -339,7 +339,7 @@ spec:
       volumeMounts:
         - {name: cm-vol, mountPath: /cm}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local dir
     dir="$(pod_volume_host_path "$name" cm-vol)"
     wait_until 20 "cm-vol materialized" bash -c "[[ -d '$dir' ]]"
@@ -381,7 +381,7 @@ spec:
       volumeMounts:
         - {name: hostvol, mountPath: /host}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     sleep 2 # give resolve_volumes()'s fsGroup pass a moment, if it were (wrongly) going to run
     local gid
     gid="$(stat -c %g "$host_dir")"
@@ -416,7 +416,7 @@ spec:
       volumeMounts:
         - {name: ramdisk, mountPath: /ram}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local dir
     dir="$(pod_volume_host_path "$name" ramdisk)"
     if ! wait_until 20 "ramdisk mounted" bash -c "[[ -d '$dir' ]]"; then

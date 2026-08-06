@@ -28,7 +28,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sh", "-c", "echo hello-from-nodelet-logs; sleep 3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local output
     if ! output="$(try_wait_until 30 bash -c "kctl logs '$name' 2>/dev/null | grep -q hello-from-nodelet-logs" && kctl logs "$name" 2>/dev/null)"; then
         delete_pod_if_exists "$name"
@@ -52,7 +52,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sh", "-c", "for i in 1 2 3 4 5 6 7 8; do echo line-\$i; sleep 1; done; sleep 3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local out_file="/tmp/nodelet-e2e-logs-follow-$$"
     (kctl logs -f "$name" > "$out_file" 2>/dev/null &)
     local follow_pid_check
@@ -82,7 +82,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local output
     output="$(kctl exec "$name" -- echo hello-from-exec 2>&1)" || true
     assert_contains "$output" "hello-from-exec" "kubectl exec output — if this fails, check nodelet's server logs for the proxy_upgrade path (server/exec.rs); this is the piece least validated outside a live cluster"

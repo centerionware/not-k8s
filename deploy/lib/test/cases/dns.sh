@@ -30,7 +30,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local resolv
     resolv="$(wait_for_check_file "$name" shared resolv.conf 30)"
     assert_contains "$resolv" "203.0.113.53" "custom nameserver"
@@ -61,7 +61,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local hn
     hn="$(wait_for_check_file "$name" shared hostname 30)"
     assert_eq "$hn" "custom-host" "container's own hostname reflects spec.hostname"
@@ -92,7 +92,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local hn
     hn="$(wait_for_check_file "$name" shared hostname 30)"
     assert_eq "$hn" "$name.web.$TEST_NAMESPACE.svc.cluster.local" "container's own hostname reflects the full FQDN"

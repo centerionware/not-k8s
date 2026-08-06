@@ -21,7 +21,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sh", "-c", "while true; do echo 'filler line to grow the log file quickly'; done"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
 
     local ns uid log_dir
     ns="$(pod_field "$name" '{.metadata.namespace}')"

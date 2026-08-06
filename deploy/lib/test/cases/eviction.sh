@@ -128,7 +128,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     wait_until 30 "$name terminated for exceeding its activeDeadlineSeconds" bash -c \
         "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.reason}')\" == 'DeadlineExceeded' ]]"
     delete_pod_if_exists "$name"

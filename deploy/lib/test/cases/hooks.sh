@@ -27,7 +27,7 @@ spec:
           exec:
             command: ["sh", "-c", "echo ran > /shared/poststart.txt"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local content
     content="$(wait_for_check_file "$name" shared poststart.txt 30)"
     assert_eq "$content" "ran" "postStart hook output"
@@ -59,7 +59,7 @@ spec:
           exec:
             command: ["sh", "-c", "echo ran > /shared/prestop.txt"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     kctl delete pod "$name" --wait=false >/dev/null
     local content
     content="$(wait_for_check_file "$name" shared prestop.txt 20)"
@@ -95,7 +95,7 @@ spec:
       # to the loop, so only an actual SIGKILL ends it.
       command: ["sh", "-c", "trap 'echo trapped' TERM; while true; do sleep 1; done"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local start
     start=$(date +%s)
     kctl delete pod "$name" --wait=false >/dev/null

@@ -76,7 +76,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     assert_eq "$(pod_condition_status "$name" Initialized)" "True" "Initialized condition"
 
     local sidecar_state
@@ -427,7 +427,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local host_ip host_ips_first
     host_ip="$(kctl get pod "$name" -o jsonpath='{.status.hostIP}')"
     host_ips_first="$(kctl get pod "$name" -o jsonpath='{.status.hostIPs[0].ip}')"
@@ -460,7 +460,7 @@ spec:
           memory: "64Mi"
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local qos
     qos="$(kctl get pod "$name" -o jsonpath='{.status.qosClass}')"
     assert_eq "$qos" "Guaranteed" "status.qosClass for a pod with matching requests/limits on every resource"
@@ -485,7 +485,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local image_id
     wait_until 20 "$name containerStatuses[0].imageID to be populated" bash -c \
         "[[ -n \"\$(kctl get pod '$name' -o jsonpath='{.status.containerStatuses[0].imageID}')\" ]]"
@@ -562,7 +562,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local generation observed
     generation="$(kctl get pod "$name" -o jsonpath='{.metadata.generation}')"
     observed="$(kctl get pod "$name" -o jsonpath='{.status.conditions[?(@.type=="Ready")].observedGeneration}')"

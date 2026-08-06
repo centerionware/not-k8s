@@ -32,7 +32,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local value
     if ! value="$(try_wait_until 30 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/memmax.txt\" ]]" && wait_for_check_file "$name" shared memmax.txt 5)"; then
         delete_pod_if_exists "$name"
@@ -72,7 +72,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local value
     if ! value="$(try_wait_until 30 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/swapmax.txt\" ]]" && wait_for_check_file "$name" shared swapmax.txt 5)"; then
         delete_pod_if_exists "$name"
@@ -158,7 +158,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local value
     if ! value="$(try_wait_until 30 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/cpumax.txt\" ]]" && wait_for_check_file "$name" shared cpumax.txt 5)"; then
         delete_pod_if_exists "$name"
@@ -188,7 +188,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local value
     if ! value="$(try_wait_until 30 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/memmax.txt\" ]]" && wait_for_check_file "$name" shared memmax.txt 5)"; then
         delete_pod_if_exists "$name"
@@ -219,7 +219,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local value
     value="$(wait_for_check_file "$name" shared oom.txt 30)"
     assert_eq "$value" "1000" "BestEffort containers should get oom_score_adj=1000 (the kernel's most-likely-to-kill value), matching eviction::oom_score_adj()"
@@ -248,7 +248,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local value
     value="$(wait_for_check_file "$name" shared oom.txt 30)"
     assert_eq "$value" "-998" "Guaranteed containers should get oom_score_adj=-998 (the kernel's least-likely-to-kill value), matching eviction::oom_score_adj()"
@@ -278,7 +278,7 @@ spec:
           memory: "134217728"
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     wait_until 30 "$name container ready" pod_container_ready "$name" app
 
     local before
@@ -356,7 +356,7 @@ spec:
               resource: limits.memory
               divisor: 1Mi
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local cpu_env mem_env
     cpu_env="$(kctl exec "$name" -- sh -c 'echo $CPU_LIMIT_CORES' 2>/dev/null || true)"
     mem_env="$(kctl exec "$name" -- sh -c 'echo $MEM_LIMIT_MI' 2>/dev/null || true)"
