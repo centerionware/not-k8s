@@ -7,11 +7,31 @@
 use super::*;
 use crate::runtime::{PodRuntime, RuntimeStatus};
 use async_trait::async_trait;
+use http::{Request, Response};
 use k8s_openapi::api::core::v1::{Container, ExecAction, Pod, Probe};
+use kube::client::Body;
+use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tower::service_fn;
+
+/// A `kube::Client` that 404s every request — enough for these tests:
+/// `restart_and_reensure()`'s post-restart re-fetch sees "pod not found"
+/// and skips calling `ensure_pod()` (which `FakeRuntime` deliberately
+/// leaves `unimplemented!()`, since fully mocking real pod-ensure
+/// behavior is out of scope for what these tests are actually proving —
+/// that a probe failure calls `restart_container()` with the right
+/// grace period). A real cluster's own re-fetch-and-reensure behavior is
+/// out of this file's scope; see probes.rs's own `restart_and_reensure()`
+/// doc comment for why it exists.
+fn not_found_client() -> kube::Client {
+    let service = service_fn(|_req: Request<Body>| async move {
+        Ok::<_, Infallible>(Response::builder().status(404).body(Body::from(b"{}".to_vec())).unwrap())
+    });
+    kube::Client::new(service, "default")
+}
 
 struct FakeRuntime {
     exec_ok: AtomicBool,
@@ -75,6 +95,7 @@ async fn readiness_starts_false_and_flips_true_once_the_exec_probe_passes() {
 
     let handle = tokio::spawn(probe_container(
         runtime.clone(),
+        not_found_client(),
         health.clone(),
         "default".to_string(),
         "web".to_string(),
@@ -106,6 +127,7 @@ async fn liveness_failure_past_threshold_triggers_a_container_restart() {
 
     let handle = tokio::spawn(probe_container(
         runtime.clone(),
+        not_found_client(),
         health.clone(),
         "default".to_string(),
         "web".to_string(),
@@ -144,6 +166,7 @@ async fn liveness_probes_own_termination_grace_period_overrides_the_pods() {
 
     let handle = tokio::spawn(probe_container(
         runtime.clone(),
+        not_found_client(),
         health.clone(),
         "default".to_string(),
         "web".to_string(),
@@ -179,6 +202,7 @@ async fn startup_probe_gates_readiness_until_it_passes() {
 
     let handle = tokio::spawn(probe_container(
         runtime.clone(),
+        not_found_client(),
         health.clone(),
         "default".to_string(),
         "web".to_string(),
@@ -255,6 +279,7 @@ async fn startup_probe_failure_past_threshold_triggers_a_restart_and_recovers() 
 
     let handle = tokio::spawn(probe_container(
         runtime.clone(),
+        not_found_client(),
         health.clone(),
         "default".to_string(),
         "web".to_string(),

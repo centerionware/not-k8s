@@ -93,6 +93,7 @@ impl PodController {
             pod.spec.as_ref().and_then(|s| s.termination_grace_period_seconds).filter(|s| *s >= 0).unwrap_or(30);
         let handles = probes::spawn(
             self.runtime.clone(),
+            self.client.clone(),
             self.health.clone(),
             ns.to_string(),
             name.to_string(),

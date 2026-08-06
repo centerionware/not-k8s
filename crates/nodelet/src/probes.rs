@@ -19,8 +19,9 @@
 //! and the pod-level `Ready`/`ContainersReady` conditions.
 
 use crate::runtime::{pod_key, PodRuntime};
-use k8s_openapi::api::core::v1::{Container, Probe};
+use k8s_openapi::api::core::v1::{Container, Pod, Probe};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+use kube::api::Api;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -329,6 +330,7 @@ async fn run_check(
 /// few times early on before stabilizing.
 pub fn spawn(
     runtime: Arc<dyn PodRuntime>,
+    client: kube::Client,
     health: HealthMap,
     namespace: String,
     name: String,
@@ -342,12 +344,13 @@ pub fn spawn(
             continue; // no probes on this container; default health is already "healthy"
         }
         let runtime = runtime.clone();
+        let client = client.clone();
         let health = health.clone();
         let ns = namespace.clone();
         let name = name.clone();
         let pod_ip = pod_ip.clone();
         tasks.push(tokio::spawn(async move {
-            probe_container(runtime, health, ns, name, container, pod_ip, pod_grace_period_seconds).await;
+            probe_container(runtime, client, health, ns, name, container, pod_ip, pod_grace_period_seconds).await;
         }));
     }
     tasks
@@ -362,8 +365,46 @@ fn probe_grace_period_seconds(probe: &Probe, pod_grace_period_seconds: i64) -> i
     probe.termination_grace_period_seconds.filter(|s| *s >= 0).unwrap_or(pod_grace_period_seconds)
 }
 
+/// `runtime.restart_container()` only kills and removes the old container
+/// — it doesn't (can't, from inside the `PodRuntime` trait impl alone)
+/// recreate one, since that needs the pod's full current spec (volumes,
+/// pull secrets, resolved claim devices, ...) which only `ensure_pod()`
+/// knows how to gather. Real kubelet's own SyncPod treats a probe-
+/// triggered restart as kill-then-immediately-start, one atomic sync —
+/// this does the same by re-fetching the live Pod and calling
+/// `ensure_pod()` again right after the removal, rather than leaving the
+/// container missing until *something else* happens to trigger a
+/// reconcile for this pod (a watch event on the Pod object itself, which
+/// a purely-internal probe-driven restart never generates).
+///
+/// Found live (not hypothetical): round 123's first full CI e2e run hit
+/// this exactly — coredns's liveness probe failed once, restart_container()
+/// removed its container, and with no unrelated event ever touching
+/// coredns's own Pod object again for the rest of the run, nothing ever
+/// recreated it — every subsequent probe cycle found no container,
+/// "restarted" (a no-op — already gone) forever, and the whole node's
+/// DNS (and everything downstream of it) stayed broken for the rest of
+/// the run.
+async fn restart_and_reensure(runtime: &Arc<dyn PodRuntime>, client: &kube::Client, ns: &str, name: &str, cname: &str, grace: i64) {
+    if let Err(e) = runtime.restart_container(ns, name, cname, grace).await {
+        warn!(pod = %pod_key(ns, name), container = %cname, error = ?e, "restart_container failed");
+        return;
+    }
+    let api: Api<Pod> = Api::namespaced(client.clone(), ns);
+    match api.get_opt(name).await {
+        Ok(Some(pod)) if pod.metadata.deletion_timestamp.is_none() => {
+            if let Err(e) = runtime.ensure_pod(&pod).await {
+                warn!(pod = %pod_key(ns, name), container = %cname, error = ?e, "re-ensure after probe-triggered restart failed; will retry next probe cycle");
+            }
+        }
+        Ok(_) => {} // pod gone or being deleted — nothing to recreate
+        Err(e) => warn!(pod = %pod_key(ns, name), container = %cname, error = ?e, "failed to re-fetch pod after probe-triggered restart"),
+    }
+}
+
 async fn probe_container(
     runtime: Arc<dyn PodRuntime>,
+    client: kube::Client,
     health: HealthMap,
     ns: String,
     name: String,
@@ -402,9 +443,7 @@ async fn probe_container(
             if tracker.failures >= timing.failure_threshold.max(1) {
                 let grace = probe_grace_period_seconds(&startup, pod_grace_period_seconds);
                 warn!(pod = %key, container = %cname, grace_period_seconds = grace, "startup probe failed; restarting container");
-                if let Err(e) = runtime.restart_container(&ns, &name, &cname, grace).await {
-                    warn!(pod = %key, container = %cname, error = ?e, "restart_container failed");
-                }
+                restart_and_reensure(&runtime, &client, &ns, &name, &cname, grace).await;
                 tracker = ProbeTracker::new(false);
             }
             tokio::time::sleep(timing.period).await;
@@ -442,9 +481,7 @@ async fn probe_container(
             if was_passing && !tracker.passing {
                 let grace = probe_grace_period_seconds(container.liveness_probe.as_ref().unwrap(), pod_grace_period_seconds);
                 warn!(pod = %key, container = %cname, grace_period_seconds = grace, "liveness probe failed; restarting container");
-                if let Err(e) = runtime.restart_container(&ns, &name, &cname, grace).await {
-                    warn!(pod = %key, container = %cname, error = ?e, "restart_container failed");
-                }
+                restart_and_reensure(&runtime, &client, &ns, &name, &cname, grace).await;
                 *tracker = ProbeTracker::new(true); // give the fresh container a clean slate
             }
         }

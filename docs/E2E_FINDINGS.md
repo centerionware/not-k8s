@@ -878,3 +878,53 @@ driver's `NodePrepareResources` response specified —
 (registration → `ResourceSlice` publish → scheduler allocation →
 `NodePrepareResources` → CDI injection via containerd) genuinely works,
 not just individual pieces in isolation.
+
+### 19. Fixed: a probe-triggered container restart never actually recreated the container — found live when CoreDNS crash-looped for the rest of a CI run
+
+**Severity: critical — a real, previously-undiscovered production bug,
+not a test artifact. Any liveness/startup probe failure could
+permanently kill a container with no automatic recovery, for any
+workload, not just test pods.**
+
+Found running the full e2e suite in GitHub Actions CI for the first
+time (round 123): CoreDNS started failing its liveness probe once
+(cause unconfirmed — likely ordinary cold-start jitter on a fresh
+runner), and from that point on, restarted "successfully" every single
+probe cycle (every few seconds) for the rest of a 30+ minute run,
+without ever actually coming back — visible in nodelet's own logs as
+an unbroken stream of `WARN liveness probe failed; restarting
+container pod=kube-system/coredns...` lines, one per probe period, with
+no gap. DNS being down for the whole run then cascaded into ~15
+unrelated test failures across totally different categories (PID
+namespaces, OOM score, pod status fields, cgroup enforcement variants)
+— anything needing DNS resolution, and (once fail-fast + per-test
+diagnostics were added to actually see node state at each failure)
+confirmed the node itself was healthy the entire time (Ready, no
+pressure, no taints) — the breakage was entirely inside nodelet's own
+container lifecycle handling, not the cluster/environment.
+
+**Root cause**: `runtime::cri::pod_runtime_impl.rs`'s `restart_container()`
+(what every probe failure calls) only ever stops and removes the old
+container — it was never responsible for creating a new one. That was
+always implicitly left to `ensure_pod()`, called from `pods.rs`'s
+`reconcile()`. But `reconcile()` only runs in response to a **watch
+event on the Pod object itself** (or a ConfigMap/Secret it references
+changing) — a probe-triggered restart is a purely internal action
+nodelet takes on its own, generating no such event. Unless something
+*else* happened to touch that Pod's object again, nothing ever
+re-triggered `ensure_pod()`, and the removed container stayed removed
+forever — every subsequent probe check found no container, "restarted"
+it (a no-op, since `find_container_id()` already returned `None`), and
+logged the exact same warning again next cycle, permanently.
+
+**Fixed**: `probes.rs` gained `restart_and_reensure()` — after
+`restart_container()` succeeds, re-fetches the live Pod object via the
+apiserver and calls `ensure_pod()` again immediately, matching real
+kubelet's own `SyncPod` semantics (a probe-triggered restart is
+kill-then-immediately-start, one atomic sync, not kill-and-hope).
+Needed threading a `kube::Client` through `probes::spawn()`/
+`probe_container()` (previously only had a `PodRuntime` handle, no way
+to re-fetch the Pod object). Reuses the exact same `ensure_pod()` path
+every other pod-creation flow already goes through — no new
+container-creation logic, no duplicated volume/pull-secret/claim-device
+resolution.
