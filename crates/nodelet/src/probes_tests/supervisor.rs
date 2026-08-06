@@ -241,7 +241,7 @@ async fn spawn_returns_one_independently_abortable_handle_per_probed_container()
         Container { name: "no-probe".to_string(), ..Default::default() }, // must not get a task at all
     ];
 
-    let handles = super::spawn(runtime.clone(), health.clone(), "default".to_string(), "web".to_string(), containers, "10.0.0.5".to_string(), 30);
+    let handles = super::spawn(runtime.clone(), not_found_client(), health.clone(), "default".to_string(), "web".to_string(), containers, "10.0.0.5".to_string(), 30);
     assert_eq!(handles.len(), 2, "one task per probed container, none for the container with no probes");
 
     // Abort every returned handle, as stop_probe_supervisor() does.
