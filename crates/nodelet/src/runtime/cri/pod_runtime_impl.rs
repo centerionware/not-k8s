@@ -7,7 +7,7 @@ impl PodRuntime for CriRuntime {
         let found = self.find_sandbox_with_uid(&id.namespace, &id.name).await?;
         let uid_matches = found.as_ref().is_some_and(|(_, _, found_uid)| *found_uid == id.uid);
         let ready_state = v1::PodSandboxState::SandboxReady as i32;
-        let dns = dns_config_for(pod, &self.cluster_dns, &self.cluster_domain);
+        let dns = dns_config_for(pod, &self.cluster_dns, &self.cluster_domain, read_host_resolv_conf().as_deref());
         let runtime_handler = self.resolve_runtime_handler(pod).await;
         let runtime_handler_for_containers = runtime_handler.clone();
         let spec = pod.spec.as_ref();

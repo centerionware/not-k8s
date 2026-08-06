@@ -67,14 +67,82 @@ pub(crate) fn resolve_resource_field_ref(
 }
 
 
+/// On a systemd-resolved host, `/etc/resolv.conf` is a symlink/generated
+/// file pointing at the *stub* listener (`nameserver 127.0.0.53`), not the
+/// real upstream servers — CoreDNS's own loop-detection plugin treats a
+/// container whose resolv.conf forwards back to a loopback address as a
+/// self-referential forwarding loop and deliberately crashes (`exit 1`,
+/// "Loop ... detected for zone") rather than risk actually looping.
+///
+/// Real kubelet has no systemd awareness built in — it just reads whatever
+/// file its own `--resolv-conf` flag points at (default `/etc/resolv.conf`
+/// on Linux). It's kubeadm's own preflight tooling and most distro/cloud
+/// install docs that carry the operational convention of explicitly
+/// pointing `--resolv-conf` at `/run/systemd/resolve/resolv.conf` on hosts
+/// known to run systemd-resolved — a manual/install-time workaround, not
+/// something kubelet auto-detects. This does the detection automatically
+/// instead (prefer the real-upstream-servers file whenever the default
+/// looks like the stub and the real one exists), rather than requiring an
+/// operator to already know their host's resolver setup and configure
+/// around it.
+///
+/// Found live (not hypothetical): round 123's CI e2e run hit this for
+/// real — CoreDNS crash-looped for the entire run on a GitHub Actions
+/// runner (systemd-resolved, like most modern Ubuntu images), cascading
+/// into ~15 unrelated test failures downstream of DNS being broken. Never
+/// manifested in this project's own local testing because that happened
+/// on hosts without systemd-resolved's stub in the picture.
+fn effective_host_resolv_conf_path() -> &'static str {
+    const STUB: &str = "/etc/resolv.conf";
+    const REAL: &str = "/run/systemd/resolve/resolv.conf";
+    let looks_like_stub = std::fs::read_to_string(STUB).map(|s| s.contains("127.0.0.53")).unwrap_or(false);
+    if looks_like_stub && std::path::Path::new(REAL).exists() {
+        REAL
+    } else {
+        STUB
+    }
+}
+
+/// The actual filesystem read behind `effective_host_resolv_conf_path()` —
+/// kept as its own thin, non-pure wrapper so `dns_config_for()` itself
+/// stays pure (given already-read file contents) and unit-testable without
+/// the filesystem, matching this codebase's usual split. Callers read this
+/// once per pod-sandbox creation and pass the result in.
+pub(crate) fn read_host_resolv_conf() -> Option<String> {
+    std::fs::read_to_string(effective_host_resolv_conf_path()).ok()
+}
+
+/// Parse a resolv.conf's `nameserver`/`search`/`options` lines — pure
+/// enough (given the file's contents as a string) to unit test without
+/// touching the filesystem.
+pub(crate) fn parse_resolv_conf(contents: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut servers = Vec::new();
+    let mut searches = Vec::new();
+    let mut options = Vec::new();
+    for line in contents.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        let mut words = line.split_whitespace();
+        match words.next() {
+            Some("nameserver") => servers.extend(words.next().map(str::to_string)),
+            Some("search") => searches.extend(words.map(str::to_string)),
+            Some("options") => options.extend(words.map(str::to_string)),
+            _ => {}
+        }
+    }
+    (servers, searches, options)
+}
+
 /// Build the CRI `DnsConfig` for a pod, honoring `dnsPolicy` +
 /// custom `dnsConfig`. `dnsPolicy: Default` means "inherit the node's own
-/// resolv.conf" — returning `None` leaves containerd's own default in place,
-/// which is exactly that. `ClusterFirst` (the pod-spec default) only takes
-/// effect if the node was actually configured with cluster DNS servers
-/// (`NODELET_CLUSTER_DNS`); an edge device with no cluster DNS server falls
-/// back to the host's resolv.conf rather than pointing pods at nothing.
-pub(crate) fn dns_config_for(pod: &Pod, cluster_dns: &[String], cluster_domain: &str) -> Option<DnsConfig> {
+/// resolv.conf" — explicitly parsed and passed through (`host_resolv_conf`,
+/// the caller's already-read `read_host_resolv_conf()` result) rather than
+/// left to containerd's own default (which just bind-mounts whatever
+/// `/etc/resolv.conf` literally is, stub included). `ClusterFirst` (the
+/// pod-spec default) only takes effect if the node was actually configured
+/// with cluster DNS servers (`NODELET_CLUSTER_DNS`); an edge device with no
+/// cluster DNS server falls back to the host's resolv.conf rather than
+/// pointing pods at nothing.
+pub(crate) fn dns_config_for(pod: &Pod, cluster_dns: &[String], cluster_domain: &str, host_resolv_conf: Option<&str>) -> Option<DnsConfig> {
     let policy = pod
         .spec
         .as_ref()
@@ -95,7 +163,20 @@ pub(crate) fn dns_config_for(pod: &Pod, cluster_dns: &[String], cluster_domain: 
         ];
         options = vec!["ndots:5".to_string()];
     } else if policy == "Default" {
-        return None; // explicit "use the host's own resolv.conf" — nothing to set
+        // "Use the node's own resolv.conf" — resolved explicitly (see
+        // effective_host_resolv_conf_path()'s own doc comment) rather than
+        // trusting containerd's own default to have picked the right file.
+        // A read failure falls through to containerd's own default too
+        // (returning None below) — no worse than before this existed.
+        match host_resolv_conf {
+            Some(contents) => {
+                let (s, se, o) = parse_resolv_conf(contents);
+                servers = s;
+                searches = se;
+                options = o;
+            }
+            None => return None,
+        }
     }
 
     if let Some(dns_config) = pod.spec.as_ref().and_then(|s| s.dns_config.as_ref()) {
