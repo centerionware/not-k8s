@@ -80,6 +80,21 @@ build_nodelet() {
         features=(--features cri)
     fi
 
+    # NOTK8S_BUILD_PROFILE=debug skips the optimized release profile
+    # entirely (Cargo.toml's lto=true/codegen-units=1 is what makes a
+    # release build take ~5 minutes vs. cargo test's ~1 — worthwhile for
+    # an actual deployed binary, pure waste for e2e testing, which only
+    # needs correctness, not runtime performance). Not the default: a real
+    # device install should still get the real, optimized binary.
+    if [[ "${NOTK8S_BUILD_PROFILE:-release}" == "debug" ]]; then
+        log "Building nodelet (cargo build ${features[*]:-} — debug profile, NOTK8S_BUILD_PROFILE=debug)..."
+        cargo build "${features[@]}" || die "cargo build (debug) failed — check $LOG_DIR."
+        [[ -x "$REPO_ROOT/target/debug/nodelet" ]] || die "Build finished but binary not found."
+        install_nodelet_binary "$REPO_ROOT/target/debug/nodelet"
+        log "nodelet built (debug): $REPO_ROOT/bin/nodelet"
+        return 0
+    fi
+
     local lto_override
     lto_override="$(release_lto_settings_for_this_device)"
     if [[ -n "$lto_override" ]]; then

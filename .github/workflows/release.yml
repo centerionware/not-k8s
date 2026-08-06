@@ -49,14 +49,27 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build and deploy not-k8s (real containerd/CRI runtime)
-        run: sudo ./deploy/bootstrap-source.sh --with-cri
+        # Debug profile: this stage only needs a correct binary, not an
+        # optimized one — Cargo.toml's release profile (lto=true,
+        # codegen-units=1) is what makes cargo build --release take ~5x
+        # longer than a debug build, worthwhile for an actually-deployed
+        # binary (stage 3 builds those), pure waste here.
+        env:
+          NOTK8S_BUILD_PROFILE: debug
+        run: sudo -E ./deploy/bootstrap-source.sh --with-cri
 
       - name: Install reference CSI + DRA drivers
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
           sudo chmod 644 "$KUBECONFIG"
-          sudo -E bash deploy/lib/e2e-full-setup.sh
+          # A real containerd/nodelet on a healthy runner brings the
+          # reference drivers up in well under a minute (round 121's own
+          # live verification took well under that) — 3 minutes is a
+          # generous ceiling, not a target, so a real regression fails
+          # fast instead of silently eating the job's whole 90-minute
+          # budget the way the unbounded first run did.
+          sudo -E timeout 180 bash deploy/lib/e2e-full-setup.sh
 
       - name: Run the full e2e suite
         env:
@@ -120,6 +133,20 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Build (debug + release, both profiles)
+        # CARGO_PROFILE_RELEASE_LTO=thin/CODEGEN_UNITS=16 here trades a
+        # bit of the smallest-possible-binary optimization Cargo.toml's
+        # committed [profile.release] (lto=true, codegen-units=1) gives
+        # real edge-device installs, for much faster CI turnaround — the
+        # full-LTO profile's whole appeal is minimizing an edge device's
+        # own resource footprint, a concern that doesn't apply to a
+        # GitHub-hosted runner building the binary, only to the device
+        # eventually running it. nodelet-build.sh already defines this
+        # exact "lighter" preset for RAM-constrained devices
+        # (release_lto_settings_for_this_device()); reused here for a
+        # different reason (CI speed, not memory) but the same trade-off.
+        env:
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
           set -e
           TARGET_FLAG=""

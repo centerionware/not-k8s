@@ -33,14 +33,20 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build and deploy not-k8s (real containerd/CRI runtime)
-        run: sudo ./deploy/bootstrap-source.sh --with-cri
+        # Debug profile: this stage only needs a correct binary, not an
+        # optimized one — see release.yml's own e2e job for why.
+        env:
+          NOTK8S_BUILD_PROFILE: debug
+        run: sudo -E ./deploy/bootstrap-source.sh --with-cri
 
       - name: Install reference CSI + DRA drivers
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
           sudo chmod 644 "$KUBECONFIG"
-          sudo -E bash deploy/lib/e2e-full-setup.sh
+          # See release.yml's own e2e job for why this has an external
+          # ceiling well below the drivers' own internal ~5min timeout.
+          sudo -E timeout 180 bash deploy/lib/e2e-full-setup.sh
 
       - name: Run the e2e suite
         id: e2e

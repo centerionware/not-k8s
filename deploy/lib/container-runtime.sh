@@ -63,7 +63,8 @@ ensure_container_runtime() {
     fi
 
     mkdir -p /etc/containerd
-    [[ -f /etc/containerd/config.toml ]] || containerd config default > /etc/containerd/config.toml
+    local wrote_fresh_config=0
+    [[ -f /etc/containerd/config.toml ]] || { containerd config default > /etc/containerd/config.toml; wrote_fresh_config=1; }
     if grep -qE '(docker|containerd|kubepods)' /proc/1/cgroup 2>/dev/null; then
         log "Nested container environment detected — using the native snapshotter (overlayfs can't mount here)."
         sed -i 's/snapshotter = "overlayfs"/snapshotter = "native"/' /etc/containerd/config.toml
@@ -79,6 +80,48 @@ ensure_container_runtime() {
     # and nodelet passing its CDI IDs through correctly.
     grep -q '^\s*enable_cdi = true' /etc/containerd/config.toml \
         || sed -i 's/enable_cdi = false/enable_cdi = true/' /etc/containerd/config.toml
+
+    # A pre-existing config.toml (the `[[ -f ... ]] ||` above skipped
+    # generating one) commonly means containerd came from somewhere other
+    # than this script — Docker's own package install being the case that
+    # actually bit this live (found running e2e in GitHub Actions, round
+    # 123: ubuntu-latest ships Docker with its own bundled containerd,
+    # already running, whose shipped config.toml explicitly disables the
+    # CRI plugin — Docker itself talks to containerd via its own internal
+    # API, not CRI, and the two would otherwise fight over pod/container
+    # lifecycle). nodelet is a CRI client; a containerd with the CRI
+    # plugin disabled answers every RPC with "unknown service
+    # runtime.v1.RuntimeService" and nodelet can never do anything at
+    # all — confirmed for real, not a hypothetical. Strip "cri" out of
+    # disabled_plugins unconditionally, not just on a freshly-generated
+    # config, so an already-configured-elsewhere containerd still ends up
+    # CRI-capable.
+    local removed_disabled_cri=0
+    if grep -qE '^\s*disabled_plugins\s*=.*"cri"' /etc/containerd/config.toml; then
+        log "containerd's existing config.toml disables the CRI plugin (likely a Docker-managed install) — enabling it."
+        sed -i -E 's/^(\s*disabled_plugins\s*=.*)"cri",?\s*/\1/; s/,\s*\]/]/' /etc/containerd/config.toml
+        removed_disabled_cri=1
+    fi
+
+    if pgrep -x containerd &>/dev/null && { [[ "$wrote_fresh_config" -eq 1 ]] || [[ "$removed_disabled_cri" -eq 1 ]]; }; then
+        # containerd was already running before we touched its config
+        # (the branch below that starts it fresh never runs in that case)
+        # — restart it so the CRI-enabling change actually takes effect,
+        # rather than leaving the old (CRI-disabled) process running
+        # forever with a config file on disk that says otherwise.
+        log "containerd was already running with a stale config — restarting it to pick up the CRI-enabling change..."
+        if command -v systemctl &>/dev/null && systemctl is-active --quiet containerd.service 2>/dev/null; then
+            systemctl restart containerd.service
+            sleep 2
+            systemctl is-active --quiet containerd.service \
+                || die "containerd.service failed to restart after enabling the CRI plugin — check: journalctl -u containerd -n 50"
+        else
+            pkill -x containerd
+            for _ in $(seq 1 15); do pgrep -x containerd &>/dev/null || break; sleep 1; done
+            install_supervised_service containerd "containerd container runtime (installed by not-k8s)" \
+                "$(command -v containerd)" ""
+        fi
+    fi
 
     if ! pgrep -x containerd &>/dev/null; then
         # If containerd came from a distro package, it almost certainly
