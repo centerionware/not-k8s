@@ -720,6 +720,48 @@ pub(crate) fn chown_gid(path: &std::path::Path, gid: u32) -> std::io::Result<()>
 }
 
 
+/// Set both the owning uid and gid of `path` (no `(uid_t)-1` "leave
+/// unchanged" trick here — both are always set to the same value, since
+/// every call site below chowns to a userns range's single base id).
+fn chown_uid_gid(path: &std::path::Path, id: u32) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let rc = unsafe { libc::chown(c_path.as_ptr(), id as libc::uid_t, id as libc::gid_t) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+
+/// Recursively chown `path` (and everything under it, if it's a directory)
+/// to `host_base:host_base` — the real on-host owner a `hostUsers: false`
+/// pod's own mounts need in order for `build_mounts()`'s per-mount
+/// `uid_mappings`/`gid_mappings` (round 88) to actually translate to
+/// container-visible UID/GID 0. Those CRI `IdMapping`s are `{ host_id:
+/// host_base, container_id: 0, length }` — the *exact same* numbers
+/// `sandbox_config()`'s own sandbox-level `UserNamespace` mapping already
+/// uses (round 25) — so a file genuinely owned on-disk by real host UID
+/// `host_base` is what maps to container UID 0 through either one. Left at
+/// nodelet's own default ownership (real host root, since nodelet itself
+/// materializes these directories running as host root), a file is outside
+/// the mapped range entirely and shows up as the overflow/nobody UID
+/// inside the container instead — confirmed live (round 123): every plain
+/// write into a `hostUsers: false` pod's emptyDir silently failed with
+/// EACCES this way, timing out two automated e2e checks that had never
+/// actually executed this deep into the suite before.
+pub(crate) fn chown_userns_base(path: &std::path::Path, host_base: u32) -> std::io::Result<()> {
+    chown_uid_gid(path, host_base)?;
+    if path.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            chown_userns_base(&entry?.path(), host_base)?;
+        }
+    }
+    Ok(())
+}
+
+
 /// Set the setgid bit on a directory so files later written into it by the
 /// container process inherit `fsGroup` too, matching real kubelet's
 /// volume-ownership behavior.

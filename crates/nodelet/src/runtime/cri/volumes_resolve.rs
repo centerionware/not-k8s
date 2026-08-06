@@ -265,6 +265,31 @@ impl CriRuntime {
             }
         }
 
+        // `hostUsers: false` (round 25) needs every volume nodelet itself
+        // materialized (not a real hostPath — see `host_path_volume_names`
+        // above, same exclusion `apply_fs_group()` uses and for the same
+        // reason: that's the host's own pre-existing directory, not the
+        // pod's to chown) actually owned on-disk by this pod's allocated
+        // userns range base, or `build_mounts()`'s own per-mount id
+        // mappings (round 88) have nothing real to translate — see
+        // `chown_userns_base()`'s doc comment for the full mechanism.
+        // Independent of `fsGroup` above: this is needed even when no
+        // fsGroup is set at all, since it's ownership for the container's
+        // own (mapped) root user, not group-shared access.
+        if !id.host_users {
+            if let Some((host_base, _length)) = self.userns.assigned(&id.uid) {
+                for (key, source) in &out {
+                    if host_path_volume_names.contains(key) {
+                        continue;
+                    }
+                    let ResolvedVolume::HostPath(dir) = source else { continue };
+                    if let Err(e) = chown_userns_base(dir, host_base) {
+                        warn!(dir = %dir.display(), host_base, error = ?e, "failed to chown volume to the pod's userns base uid/gid");
+                    }
+                }
+            }
+        }
+
         out
     }
 

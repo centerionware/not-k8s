@@ -328,6 +328,19 @@ impl CriRuntime {
             if !host_path.exists() {
                 std::fs::File::create(&host_path).context("creating termination-message host file")?;
             }
+            // Round 123 (found live in CI): same real ownership requirement
+            // as `resolve_volumes()`'s own userns chown loop — `aux_id_mappings`
+            // above only translates a file actually owned on-disk by
+            // `userns_mapping`'s host_base; left at nodelet's own default
+            // (host root, since nodelet creates this file running as host
+            // root), it's outside the mapped range and the container's own
+            // writes to /dev/termination-log would hit the same silent
+            // EACCES the etc-hosts/emptyDir case did.
+            if let Some((host_base, _length)) = userns_mapping {
+                if let Err(e) = chown_userns_base(&host_path, host_base) {
+                    warn!(path = %host_path.display(), host_base, error = ?e, "failed to chown termination-message file to the pod's userns base uid/gid");
+                }
+            }
             let container_path =
                 container.termination_message_path.clone().filter(|p| !p.is_empty()).unwrap_or_else(|| "/dev/termination-log".to_string());
             mounts.push(Mount {
