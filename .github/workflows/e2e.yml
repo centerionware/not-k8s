@@ -57,6 +57,7 @@ jobs:
           TEST_CSI_INLINE_DRIVER: hostpath.csi.k8s.io
           TEST_CSI_BLOCK_STORAGE_CLASS: csi-hostpath-block-sc
           NOTK8S_E2E_DEBUG_ON_FAIL: "1"
+          NOTK8S_E2E_MAX_FAILURES: "3"
         run: |
           set +e
           ONLY_FLAG=""

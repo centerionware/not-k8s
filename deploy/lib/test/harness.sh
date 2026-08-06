@@ -64,11 +64,28 @@ run_test() {
 }
 
 run_all_registered_tests() {
+    # NOTK8S_E2E_MAX_FAILURES stops the whole run once this many tests
+    # have failed, instead of always running every remaining test —
+    # unset/0 means unlimited (the historical, still-default local
+    # behavior). Set to a small number in CI: a systemic break (the node
+    # itself degraded, a real regression affecting a whole category of
+    # tests) shows the same failure shape over and over, and running the
+    # other ~130 tests anyway just to also fail from the same root cause
+    # costs 30+ minutes for zero extra signal — confirmed for real, round
+    # 123's first full CI run took 34 minutes to report 15 failures that
+    # were all downstream of the same thing. A few failures' worth of
+    # signal is enough to start root-causing; more than that is waste,
+    # not thoroughness.
+    local max_failures="${NOTK8S_E2E_MAX_FAILURES:-0}"
     for name in "${TESTS_REGISTERED[@]}"; do
         if [[ -n "$ONLY_PATTERN" && "$name" != *"$ONLY_PATTERN"* ]]; then
             continue
         fi
         run_test "$name"
+        if [[ "$max_failures" -gt 0 && "$TESTS_FAILED" -ge "$max_failures" ]]; then
+            warn "stopping early: $TESTS_FAILED failures reached NOTK8S_E2E_MAX_FAILURES=$max_failures (${#TESTS_REGISTERED[@]} tests registered total, not all of them ran) — see the failures above/print_summary below for what's already known, rather than burning time re-discovering the same root cause across the rest of the suite."
+            break
+        fi
     done
 }
 
