@@ -25,10 +25,20 @@ jobs:
       - name: cargo build (debug)
         run: cargo build --features cri -p nodelet
       - name: cargo test (both feature sets)
+        # Under sudo: some tests (svc.rs's nft_check() ones) open real
+        # netlink/nftables sockets to validate generated ruleset syntax,
+        # which needs CAP_NET_ADMIN — consistent with this project's whole
+        # premise (a kubelet replacement that manages real nftables/
+        # cgroups/mounts needs root for its actual job, so its test suite
+        # needing it too isn't a workaround). sudo -E preserves PATH/
+        # CARGO_HOME/RUSTUP_HOME (set via $GITHUB_ENV/$GITHUB_PATH by
+        # setup-toolchain) into the root shell. Confirmed for real: this
+        # test failed with "cache initialization failed: Operation not
+        # permitted" running unprivileged on a GitHub-hosted runner.
         run: |
           set -e
-          cargo test -p nodelet
-          cargo test -p nodelet --features cri
+          sudo -E env "PATH=$PATH" cargo test -p nodelet
+          sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
 
   # ── Stage 2: full e2e suite, real CSI + DRA reference drivers ─────────
   e2e:
