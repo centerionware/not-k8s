@@ -241,6 +241,15 @@ EOF
         skip_test "pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted) or a RunPodSandbox error (runtime doesn't support CRI's userns_options at all, e.g. too old containerd)"
     fi
 
+    # Round 123 diagnostics: this test (and its volume-roundtrip sibling)
+    # started timing out on a write into /shared that never produced a
+    # file at all -- unconditionally logged (not just on failure) so a
+    # passing run's own transcript shows what "healthy" actually looks
+    # like too, for comparison against the next failure.
+    log "    [diag] id inside container: $(kctl exec "$name" -- id 2>&1)"
+    log "    [diag] ls -la /shared inside container: $(kctl exec "$name" -- ls -la /shared 2>&1)"
+    log "    [diag] stat /shared host dir: $(stat -c '%u:%g %n' "$(pod_volume_host_path "$name" shared)" 2>&1)"
+
     local uid_map
     uid_map="$(wait_for_check_file "$name" shared uid_map.txt 30)"
     assert_not_empty "$uid_map" "/proc/self/uid_map should have content"
@@ -289,6 +298,10 @@ EOF
         delete_pod_if_exists "$name"
         skip_test "pod never reached Running with hostUsers: false and a volume mounted — check mount_id_mappings()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects Mount.uidMappings/.gidMappings entirely"
     fi
+    # Round 123 diagnostics — see the sibling test's identical block above.
+    log "    [diag] id inside container: $(kctl exec "$name" -- id 2>&1)"
+    log "    [diag] ls -la /shared inside container: $(kctl exec "$name" -- ls -la /shared 2>&1)"
+    log "    [diag] stat /shared host dir: $(stat -c '%u:%g %n' "$(pod_volume_host_path "$name" shared)" 2>&1)"
     local content
     content="$(wait_for_check_file "$name" shared roundtrip 30)"
     delete_pod_if_exists "$name"
