@@ -22,6 +22,19 @@ runs:
         detect_platform
         ensure_rust
         ensure_protoc
-        echo "$TOOLCHAIN_DIR/cargo/bin" >> "$GITHUB_PATH"
-        echo "RUSTUP_HOME=$TOOLCHAIN_DIR/rustup" >> "$GITHUB_ENV"
-        echo "CARGO_HOME=$TOOLCHAIN_DIR/cargo" >> "$GITHUB_ENV"
+        # ensure_rust() only installs into $TOOLCHAIN_DIR when no
+        # already-satisfactory cargo was found on PATH (cargo_is_new_enough())
+        # — a GitHub-hosted runner's own preinstalled Rust toolchain (its
+        # RUSTUP_HOME/CARGO_HOME under $HOME/.rustup, $HOME/.cargo) is exactly
+        # that case. Pointing later steps' RUSTUP_HOME/CARGO_HOME at
+        # $TOOLCHAIN_DIR unconditionally would silently break that
+        # perfectly-good toolchain by redirecting rustup's `cargo` proxy at an
+        # empty directory with no default configured — confirmed for real,
+        # round 123's first live CI run failed exactly this way. Only
+        # override when $TOOLCHAIN_DIR/cargo/bin/cargo actually exists (i.e.
+        # ensure_rust() really did install its own copy there).
+        if [[ -x "$TOOLCHAIN_DIR/cargo/bin/cargo" ]]; then
+            echo "$TOOLCHAIN_DIR/cargo/bin" >> "$GITHUB_PATH"
+            echo "RUSTUP_HOME=$TOOLCHAIN_DIR/rustup" >> "$GITHUB_ENV"
+            echo "CARGO_HOME=$TOOLCHAIN_DIR/cargo" >> "$GITHUB_ENV"
+        fi
