@@ -33,6 +33,15 @@ fn not_found_client() -> kube::Client {
     kube::Client::new(service, "default")
 }
 
+/// A `notify` channel these tests don't care about — they observe
+/// readiness/liveness effects directly via `health`/`FakeRuntime`'s own
+/// counters, not via the reconcile-trigger side channel (round 123).
+/// Nothing reads the receiver end; sends just land in the queue and are
+/// dropped with it.
+fn discard_notify() -> tokio::sync::mpsc::UnboundedSender<String> {
+    tokio::sync::mpsc::unbounded_channel().0
+}
+
 struct FakeRuntime {
     exec_ok: AtomicBool,
     restart_count: AtomicUsize,
@@ -97,6 +106,7 @@ async fn readiness_starts_false_and_flips_true_once_the_exec_probe_passes() {
         runtime.clone(),
         not_found_client(),
         health.clone(),
+        discard_notify(),
         "default".to_string(),
         "web".to_string(),
         container,
@@ -129,6 +139,7 @@ async fn liveness_failure_past_threshold_triggers_a_container_restart() {
         runtime.clone(),
         not_found_client(),
         health.clone(),
+        discard_notify(),
         "default".to_string(),
         "web".to_string(),
         container,
@@ -168,6 +179,7 @@ async fn liveness_probes_own_termination_grace_period_overrides_the_pods() {
         runtime.clone(),
         not_found_client(),
         health.clone(),
+        discard_notify(),
         "default".to_string(),
         "web".to_string(),
         container,
@@ -204,6 +216,7 @@ async fn startup_probe_gates_readiness_until_it_passes() {
         runtime.clone(),
         not_found_client(),
         health.clone(),
+        discard_notify(),
         "default".to_string(),
         "web".to_string(),
         container,
@@ -241,7 +254,7 @@ async fn spawn_returns_one_independently_abortable_handle_per_probed_container()
         Container { name: "no-probe".to_string(), ..Default::default() }, // must not get a task at all
     ];
 
-    let handles = super::spawn(runtime.clone(), not_found_client(), health.clone(), "default".to_string(), "web".to_string(), containers, "10.0.0.5".to_string(), 30);
+    let handles = super::spawn(runtime.clone(), not_found_client(), health.clone(), discard_notify(), "default".to_string(), "web".to_string(), containers, "10.0.0.5".to_string(), 30);
     assert_eq!(handles.len(), 2, "one task per probed container, none for the container with no probes");
 
     // Abort every returned handle, as stop_probe_supervisor() does.
@@ -281,6 +294,7 @@ async fn startup_probe_failure_past_threshold_triggers_a_restart_and_recovers() 
         runtime.clone(),
         not_found_client(),
         health.clone(),
+        discard_notify(),
         "default".to_string(),
         "web".to_string(),
         container,

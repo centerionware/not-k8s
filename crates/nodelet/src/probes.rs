@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
 
 /// Per-container live health, keyed by `namespace/name` then container name.
@@ -332,6 +333,7 @@ pub fn spawn(
     runtime: Arc<dyn PodRuntime>,
     client: kube::Client,
     health: HealthMap,
+    notify: UnboundedSender<String>,
     namespace: String,
     name: String,
     containers: Vec<Container>,
@@ -346,11 +348,12 @@ pub fn spawn(
         let runtime = runtime.clone();
         let client = client.clone();
         let health = health.clone();
+        let notify = notify.clone();
         let ns = namespace.clone();
         let name = name.clone();
         let pod_ip = pod_ip.clone();
         tasks.push(tokio::spawn(async move {
-            probe_container(runtime, client, health, ns, name, container, pod_ip, pod_grace_period_seconds).await;
+            probe_container(runtime, client, health, notify, ns, name, container, pod_ip, pod_grace_period_seconds).await;
         }));
     }
     tasks
@@ -406,6 +409,7 @@ async fn probe_container(
     runtime: Arc<dyn PodRuntime>,
     client: kube::Client,
     health: HealthMap,
+    notify: UnboundedSender<String>,
     ns: String,
     name: String,
     container: Container,
@@ -414,6 +418,13 @@ async fn probe_container(
 ) {
     let cname = container.name.clone();
     let key = pod_key(&ns, &name);
+    // Round 123: a readiness/started transition changes real pod status
+    // (conditions[Ready], containerStatuses[].ready/started) but never
+    // touches the apiserver or the CRI event stream on its own — nothing
+    // else would notice. A closed receiver (PodController shutting down)
+    // just means these sends become no-ops; never worth failing a probe
+    // loop over.
+    let notify_reconcile = || { let _ = notify.send(key.clone()); };
 
     if container.readiness_probe.is_some() {
         set_health(&health, &ns, &name, &cname, |h| h.ready = false);
@@ -450,6 +461,7 @@ async fn probe_container(
         }
         info!(pod = %key, container = %cname, "startup probe succeeded");
         set_health(&health, &ns, &name, &cname, |h| h.started = true);
+        notify_reconcile();
     }
 
     let liveness = container.liveness_probe.clone().map(|p| (probe_timing(&p), probe_check(&p, &container)));
@@ -487,8 +499,12 @@ async fn probe_container(
         }
         if let (Some((t, check)), Some(tracker)) = (&readiness, &mut ready_tracker) {
             let ok = run_check(check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, t.timeout).await;
+            let was_passing = tracker.passing;
             tracker.record(ok, t.success_threshold, t.failure_threshold);
             set_health(&health, &ns, &name, &cname, |h| h.ready = tracker.passing);
+            if tracker.passing != was_passing {
+                notify_reconcile();
+            }
         }
         tokio::time::sleep(period).await;
     }

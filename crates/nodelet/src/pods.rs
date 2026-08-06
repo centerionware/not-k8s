@@ -27,7 +27,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -37,6 +37,21 @@ pub struct PodController {
     node_name: String,
     host_ip: String,
     events: Option<UnboundedReceiver<String>>,
+    /// Round 123: a probe transitioning readiness/started in `health` is a
+    /// real state change (it flips `status.conditions[Ready]` and
+    /// `containerStatuses[].ready/started`) but, unlike a container
+    /// restart or exit, it never touches the apiserver or the CRI
+    /// runtime's own event stream on its own — nothing else in this
+    /// select! loop would ever notice it happened. Found live: a plain
+    /// readinessProbe with no restarts anywhere in its pod's lifetime
+    /// (the common case) got stuck reporting `Ready: False` forever after
+    /// the one-time initial reconcile, because nothing ever re-ran
+    /// write_status() to pick up the health map's new value. This
+    /// channel is probes.rs's own way to say "re-check this pod's status
+    /// now" — same handler (`on_runtime_event`) the CRI event channel
+    /// already uses, since it already reads `self.health` on every call.
+    probe_events_tx: UnboundedSender<String>,
+    probe_events_rx: Option<UnboundedReceiver<String>>,
     /// Per-container liveness/readiness state, written by probe supervisor
     /// tasks and read by build_pod_status(). Shared (not owned per-pod)
     /// because build_pod_status() is a free function reachable from the
@@ -59,12 +74,15 @@ impl PodController {
     pub fn new(client: Client, runtime: Arc<dyn PodRuntime>, node_name: String) -> Self {
         let host_ip = crate::node::detect_internal_ip();
         let events = runtime.take_event_rx();
+        let (probe_events_tx, probe_events_rx) = mpsc::unbounded_channel();
         Self {
             client,
             runtime,
             node_name,
             host_ip,
             events,
+            probe_events_tx,
+            probe_events_rx: Some(probe_events_rx),
             health: probes::new_health_map(),
             probe_tasks: Mutex::new(HashMap::new()),
             torn_down: Mutex::new(HashSet::new()),
@@ -104,6 +122,7 @@ impl PodController {
             self.runtime.clone(),
             self.client.clone(),
             self.health.clone(),
+            self.probe_events_tx.clone(),
             ns.to_string(),
             name.to_string(),
             containers,
@@ -141,8 +160,9 @@ impl PodController {
         let mut cm_stream = watcher(cm_api, watcher::Config::default()).boxed();
         let sec_api: Api<Secret> = Api::all(self.client.clone());
         let mut sec_stream = watcher(sec_api, watcher::Config::default()).boxed();
-        // Move the receiver into a local so reconcile methods can borrow `&self`.
+        // Move the receivers into locals so reconcile methods can borrow `&self`.
         let mut events = self.events.take();
+        let mut probe_events = self.probe_events_rx.take();
 
         info!(node = %self.node_name, "pod controller watching pods bound to this node");
 
@@ -151,13 +171,16 @@ impl PodController {
                 key = next_event(&mut events) => {
                     self.on_runtime_event(&key).await;
                 }
+                key = next_event(&mut probe_events) => {
+                    self.on_runtime_event(&key).await;
+                }
                 item = stream.next() => {
                     match item {
                         Some(Ok(ev)) => self.on_watch(ev).await,
                         Some(Err(e)) => warn!(error = ?e, "pod watch error; watcher will retry"),
                         None => {
                             warn!("pod watch stream ended; restarting");
-                            self.events = events; // retain for the next run()
+                            self.events = events; self.probe_events_rx = probe_events; // retain for the next run()
                             return Ok(());
                         }
                     }
@@ -173,7 +196,7 @@ impl PodController {
                         Some(Err(e)) => warn!(error = ?e, "configmap watch error; watcher will retry"),
                         None => {
                             warn!("configmap watch stream ended; restarting");
-                            self.events = events;
+                            self.events = events; self.probe_events_rx = probe_events;
                             return Ok(());
                         }
                     }
@@ -189,7 +212,7 @@ impl PodController {
                         Some(Err(e)) => warn!(error = ?e, "secret watch error; watcher will retry"),
                         None => {
                             warn!("secret watch stream ended; restarting");
-                            self.events = events;
+                            self.events = events; self.probe_events_rx = probe_events;
                             return Ok(());
                         }
                     }
