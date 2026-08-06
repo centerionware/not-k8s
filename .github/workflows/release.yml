@@ -67,6 +67,16 @@ jobs:
           TEST_CSI_BLOCK_STORAGE_CLASS: csi-hostpath-block-sc
         run: ./deploy/test-e2e.sh
 
+      # Runs if any earlier step in this job failed (driver setup timing
+      # out, a test failing, anything) — node/taint status, disk space,
+      # and nodelet's own service status + logs weren't visible anywhere
+      # before this, and the CSI/DRA drivers' own upstream deploy tooling
+      # only dumps *their* objects on timeout, not what's actually
+      # upstream of them. See e2e-debug-dump.sh's own doc comment.
+      - name: Dump debug info (node/taints/disk/nodelet logs) on failure
+        if: failure()
+        run: bash deploy/lib/e2e-debug-dump.sh
+
   # ── Stage 3: debug + release builds, all 3 platforms, concurrently ────
   build-release:
     needs: e2e

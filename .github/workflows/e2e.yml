@@ -64,6 +64,14 @@ jobs:
           echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
           exit 0
 
+      # Runs if driver setup timed out/failed, or the e2e suite itself
+      # reported a failing/erroring test — node/taint status, disk
+      # space, and nodelet's own service status + logs weren't visible
+      # anywhere before this. See e2e-debug-dump.sh's own doc comment.
+      - name: Dump debug info (node/taints/disk/nodelet logs) on failure
+        if: failure() || steps.e2e.outputs.exit_code != '0'
+        run: bash deploy/lib/e2e-debug-dump.sh
+
       - name: Publish results to the e2e-results branch
         if: always()
         env:
