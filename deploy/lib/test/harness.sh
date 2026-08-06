@@ -54,6 +54,11 @@ run_test() {
             printf '\033[1;31m  ✘ FAIL\033[0m (%ss, exit %s)\n' "$elapsed" "$code"
             TESTS_FAILED=$((TESTS_FAILED + 1))
             FAILED_TEST_NAMES+=("$name")
+            # Opt-in (CI sets this; local runs stay quiet by default) —
+            # see e2e-quick-diag.sh's own doc comment for why this is a
+            # small per-failure snapshot rather than the full end-of-run
+            # dump repeated every time.
+            [[ "${NOTK8S_E2E_DEBUG_ON_FAIL:-0}" == "1" ]] && bash "$LIB_DIR/e2e-quick-diag.sh"
         fi
     fi
 }
