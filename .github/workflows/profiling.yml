@@ -1,0 +1,123 @@
+name: Profiling — nodelet vs stock k3s (real kubelet)
+
+# Manual trigger only, same conservative posture as e2e.yml — this job is
+# slow (bootstraps two full clusters sequentially on the same runner) and
+# its numbers are only meaningful once things have settled, not something
+# to fire on every push.
+#
+# What this measures and why: idle/steady-state RSS + CPU% for the node
+# agent (deploy/measure.sh's existing local tool, reused as-is here) —
+# nodelet's core pitch is "does the same job as kubelet using dramatically
+# less idle overhead," so that's the number that matters, not synthetic
+# throughput. Baseline is real k3s's own bundled kubelet (a default,
+# single-node `k3s server` — no --disable-agent, so its embedded agent's
+# real kubelet is actually running), not a separately-built vanilla
+# kubeadm cluster: this project already targets k3s as its control plane,
+# so that's the actual apples-to-apples comparison, not a hypothetical one.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  profiling:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Measure not-k8s (nodelet + stripped k3s server)
+        id: notk8s
+        run: |
+          set -e
+          sudo ./deploy/bootstrap-source.sh --with-cri
+          echo "==> letting it settle for 30s before measuring idle steady-state..."
+          sleep 30
+          sudo ./deploy/measure.sh 30 | tee /tmp/notk8s-measure.txt
+          COMBINED="$(awk '/^ *COMBINED/{gsub("%","",$2); print $2, $3}' /tmp/notk8s-measure.txt)"
+          echo "cpu=$(echo "$COMBINED" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "rss=$(echo "$COMBINED" | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Tear down not-k8s
+        if: always()
+        run: |
+          sudo systemctl stop nodelet.service 2>/dev/null || true
+          sudo systemctl stop k3s.service 2>/dev/null || true
+          sudo /usr/local/bin/k3s-uninstall.sh 2>/dev/null || true
+
+      - name: Install stock k3s (real bundled kubelet, default single-node, no disables)
+        run: |
+          set -e
+          curl -sfL https://get.k3s.io | sudo sh -
+          echo "==> waiting for stock k3s to report Ready..."
+          for i in $(seq 1 30); do
+            sudo k3s kubectl get nodes 2>/dev/null | grep -q " Ready" && break
+            sleep 2
+          done
+
+      - name: Measure stock k3s (real kubelet, idle)
+        id: stockk3s
+        run: |
+          set -e
+          echo "==> letting it settle for 30s before measuring idle steady-state..."
+          sleep 30
+          sudo ./deploy/measure.sh 30 | tee /tmp/stockk3s-measure.txt
+          COMBINED="$(awk '/^ *COMBINED/{gsub("%","",$2); print $2, $3}' /tmp/stockk3s-measure.txt)"
+          echo "cpu=$(echo "$COMBINED" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "rss=$(echo "$COMBINED" | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Tear down stock k3s
+        if: always()
+        run: sudo /usr/local/bin/k3s-uninstall.sh 2>/dev/null || true
+
+      - name: Build comparison report
+        if: always()
+        env:
+          NOTK8S_CPU: ${{ steps.notk8s.outputs.cpu }}
+          NOTK8S_RSS: ${{ steps.notk8s.outputs.rss }}
+          STOCK_CPU: ${{ steps.stockk3s.outputs.cpu }}
+          STOCK_RSS: ${{ steps.stockk3s.outputs.rss }}
+        run: |
+          set -e
+          bash deploy/lib/profiling-report.sh "$NOTK8S_CPU" "$NOTK8S_RSS" "$STOCK_CPU" "$STOCK_RSS" \
+            > /tmp/report.md
+          cat /tmp/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish results to the profiling-results branch
+        if: always()
+        run: |
+          set -e
+          {
+            echo "commit: $GITHUB_SHA"
+            echo "workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "timestamp (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "----------------------------------------"
+            cat /tmp/report.md 2>/dev/null || echo "(no report — a step above failed before it could be generated)"
+          } > /tmp/profiling-entry.txt
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH=profiling-results
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+          else
+            git checkout --orphan "$BRANCH"
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          mkdir -p history
+          cp /tmp/profiling-entry.txt "history/${GITHUB_SHA:0:12}-$(date -u +%Y%m%dT%H%M%SZ).txt"
+          {
+            echo "# Profiling history"
+            echo ""
+            echo "Latest run: see history/ for every run's raw comparison. Most recent first:"
+            echo ""
+            ls -1 history | sort -r | while read -r f; do echo "- [$f](history/$f)"; done
+          } > results.md
+          git add history results.md
+          git commit -m "profiling results for ${GITHUB_SHA:0:12}" --allow-empty
+          git push origin "$BRANCH" --force

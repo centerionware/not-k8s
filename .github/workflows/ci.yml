@@ -1,0 +1,87 @@
+name: Build & unit tests
+
+# Manual trigger only for now, matching e2e.yml's own stated philosophy —
+# on: push/pull_request can be added later once this has proven reliable
+# on GitHub's runners (this project's real dev loop has mostly run on a
+# resource-constrained phone VM, where every workaround in
+# deploy/lib/nodelet-build.sh's low-memory detection exists for a reason
+# that mostly doesn't apply to a real ubuntu-latest runner's ~7GB+ RAM —
+# still using the same build so a real regression there doesn't hide).
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain + protoc
+        run: |
+          set -e
+          export FORCE_SOURCE_BUILD=0 WITH_CRI=1
+          export WORK_DIR="$GITHUB_WORKSPACE/.bootstrap"
+          export TOOLCHAIN_DIR="$WORK_DIR/toolchain"
+          export SRC_DIR="$WORK_DIR/src"
+          export LOG_DIR="$WORK_DIR/logs"
+          export REPO_ROOT="$GITHUB_WORKSPACE"
+          mkdir -p "$LOG_DIR"
+          source deploy/lib/common.sh
+          source deploy/lib/toolchain-c.sh
+          source deploy/lib/toolchain-rust.sh
+          source deploy/lib/toolchain-protoc.sh
+          detect_platform
+          ensure_rust
+          ensure_protoc
+          echo "$TOOLCHAIN_DIR/cargo/bin" >> "$GITHUB_PATH"
+          echo "RUSTUP_HOME=$TOOLCHAIN_DIR/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$TOOLCHAIN_DIR/cargo" >> "$GITHUB_ENV"
+
+      - name: cargo test (both feature sets)
+        run: |
+          set -e
+          cargo test -p nodelet
+          cargo test -p nodelet --features cri
+
+  release-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain + protoc
+        run: |
+          set -e
+          export FORCE_SOURCE_BUILD=0 WITH_CRI=1
+          export WORK_DIR="$GITHUB_WORKSPACE/.bootstrap"
+          export TOOLCHAIN_DIR="$WORK_DIR/toolchain"
+          export SRC_DIR="$WORK_DIR/src"
+          export LOG_DIR="$WORK_DIR/logs"
+          export REPO_ROOT="$GITHUB_WORKSPACE"
+          mkdir -p "$LOG_DIR"
+          source deploy/lib/common.sh
+          source deploy/lib/toolchain-c.sh
+          source deploy/lib/toolchain-rust.sh
+          source deploy/lib/toolchain-protoc.sh
+          detect_platform
+          ensure_rust
+          ensure_protoc
+          echo "$TOOLCHAIN_DIR/cargo/bin" >> "$GITHUB_PATH"
+          echo "RUSTUP_HOME=$TOOLCHAIN_DIR/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$TOOLCHAIN_DIR/cargo" >> "$GITHUB_ENV"
+
+      - name: cargo build --release --features cri
+        run: cargo build --release --features cri -p nodelet
+
+      - name: Upload nodelet binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodelet-${{ github.sha }}
+          path: target/release/nodelet
+          retention-days: 30
