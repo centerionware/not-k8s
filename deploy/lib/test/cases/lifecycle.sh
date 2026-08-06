@@ -105,7 +105,13 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    # 60s, not 30 — found live (round 123) that 30s isn't reliably enough
+    # for even a trivial single/two-container pod to reach Running this
+    # deep into a long real e2e run: two of the tests immediately
+    # preceding this one in registration order each took 57-61s on their
+    # own under sustained real container/image churn, well past this
+    # test's own 30s budget by the time it started.
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     # The sidecar crash-loops every ~3s — its own restart count (not the
     # app container's) must climb above zero, same restart-count
     # mechanism ensure_container()'s app-container path already uses.
@@ -395,7 +401,11 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    # 60s, not 30 — same reasoning as
+    # test_native_sidecar_container_restarts_on_crash's own comment above:
+    # this test registers right after two others that took 57-61s each
+    # under sustained real container/image churn this deep into the suite.
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
     local container_id
     container_id="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].containerID}')"
     assert_contains "$container_id" "://" "containerStatuses[0].containerID should have a <runtimeName>:// scheme prefix"

@@ -206,12 +206,17 @@ impl CriRuntime {
         // even started, every init container has already exited zero
         // (ensure_init_containers() gates on that), so counting them would
         // make `all_exited` true for entirely the wrong reason.
-        let containers: Vec<_> = self
+        let mut containers: Vec<_> = self
             .list_pod_containers(sandbox_id)
             .await?
             .into_iter()
             .filter(|c| !c.labels.contains_key(CTR_INIT_LABEL) && !c.labels.contains_key(CTR_EPHEMERAL_LABEL))
             .collect();
+        // Same ordering fix as build_labeled_container_statuses() below —
+        // CRI's ListContainers makes no ordering guarantee, so
+        // containerStatuses needs the same created_at sort to reliably
+        // come back in spec order.
+        containers.sort_by_key(|c| c.created_at);
         let running_v = ContainerState::ContainerRunning as i32;
         let exited_v = ContainerState::ContainerExited as i32;
 
@@ -368,7 +373,22 @@ impl CriRuntime {
     ) -> Result<Vec<ContainerRuntimeStatus>> {
         let running_v = ContainerState::ContainerRunning as i32;
         let exited_v = ContainerState::ContainerExited as i32;
-        let containers = self.list_pod_containers(sandbox_id).await?;
+        let mut containers = self.list_pod_containers(sandbox_id).await?;
+        // Round 123: CRI's ListContainers makes no ordering guarantee at
+        // all — confirmed live, this containerd returned init containers
+        // in reverse-of-creation order, so status.initContainerStatuses
+        // came back as `init-two init-one` for a pod whose spec declared
+        // `init-one` first. Real kubelet's own contract (and what this
+        // suite's test_init_containers_run_before_app_container checks)
+        // is that initContainerStatuses reflects spec order. `created_at`
+        // (nanoseconds) is a real per-container CRI field set by the
+        // runtime itself, not something nodelet has to track separately
+        // — sorting by it recovers real creation order, which for
+        // init/ephemeral containers (both run through this same
+        // function) is exactly spec/attach order, since nodelet only
+        // ever creates the next one after the previous one is already
+        // running or done.
+        containers.sort_by_key(|c| c.created_at);
         let sidecar_names = self.sidecar_names.lock().unwrap().get(sandbox_id).cloned().unwrap_or_default();
         let mut out = Vec::new();
         for c in containers.into_iter().filter(|c| c.labels.contains_key(label)) {
