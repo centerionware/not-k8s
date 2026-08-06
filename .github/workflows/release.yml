@@ -1,15 +1,21 @@
 name: Release pipeline
 
-# Triggers on every push to main — direct pushes and PR merges alike (a
-# PR merge *is* a push to main). Deliberately NOT triggered on
-# pull_request: this pipeline needs real sudo + a real k3s/containerd
-# cluster to run the e2e stage, and running that against arbitrary
-# untrusted PR code would be a real code-execution risk. PRs get
-# CodeRabbit's automated review instead (.coderabbit.yaml) — no unit
-# tests or e2e tests run until the PR is actually merged.
+# Manual (workflow_dispatch) only — was `on: push: branches: [main]` until
+# round 123, when two consecutive real pushes to main (8f1ee46, dfafc08)
+# silently never queued a run at all: no run, queued or otherwise, ever
+# appeared for either SHA (confirmed repeatedly via the GitHub API, well
+# after any plausible indexing lag, including a follow-up empty diagnostic
+# commit that *also* never triggered one). Never actually root-caused
+# (nothing on the repo/workflow-file/permissions side looked wrong), so
+# rather than depend on a push trigger that's demonstrated it can silently
+# drop events, releases are now started by hand: push/merge to main as
+# before, then trigger this workflow explicitly (`gh workflow run
+# release.yml` or the Actions tab's "Run workflow" button). Still needs
+# real sudo + a real k3s/containerd cluster for the e2e stage, so this
+# stays independent of `pull_request` for the same reason as before: PRs
+# get CodeRabbit's automated review only (.coderabbit.yaml).
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
