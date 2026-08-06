@@ -68,6 +68,17 @@ ensure_container_runtime() {
         log "Nested container environment detected — using the native snapshotter (overlayfs can't mount here)."
         sed -i 's/snapshotter = "overlayfs"/snapshotter = "native"/' /etc/containerd/config.toml
     fi
+    # CDI (Container Device Interface) device injection — off by default in
+    # containerd's own generated config. nodelet's own DRA support
+    # (dra.rs/runtime/cri's ContainerConfig.cdi_devices, round 63) hands
+    # containerd fully-qualified CDI device names expecting it to actually
+    # inject them at OCI spec generation time; without this, those IDs are
+    # silently accepted and do nothing — confirmed live standing up a real
+    # DRA driver for e2e testing (round 121), where a claimed device never
+    # showed up in the container despite NodePrepareResources succeeding
+    # and nodelet passing its CDI IDs through correctly.
+    grep -q '^\s*enable_cdi = true' /etc/containerd/config.toml \
+        || sed -i 's/enable_cdi = false/enable_cdi = true/' /etc/containerd/config.toml
 
     if ! pgrep -x containerd &>/dev/null; then
         # If containerd came from a distro package, it almost certainly

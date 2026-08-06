@@ -1,12 +1,20 @@
 // draplugin.proto — the kubelet-side client half of the Dynamic Resource
-// Allocation (DRA) plugin protocol (round 63). Reconstructed from public
-// documentation of `k8s.io/kubelet/pkg/apis/dra/v1beta1` rather than
-// vendored directly from the upstream Go module (which isn't available to
-// generate Rust bindings from in this environment) — field numbers/names
-// are believed accurate but have NOT been validated against a live
-// third-party DRA driver. Verify against a real driver (or the upstream
-// k8s.io/kubelet source directly) before relying on this for production
-// interop; see docs/GAP_CLOSURE.md's round 63 notes.
+// Allocation (DRA) plugin protocol (round 63). Originally reconstructed
+// from public documentation of `k8s.io/kubelet/pkg/apis/dra/v1beta1`
+// rather than vendored directly from the upstream Go module — that
+// reconstruction turned out wrong on both the package name (real drivers
+// implement `k8s.io.kubelet.pkg.apis.dra.v1`, not `dra.v1beta1` — DRA
+// graduated past beta before this was written) and the `Device` message's
+// field layout (missing `pool_name`/`device_name`/`share_id`, and
+// `cdi_device_ids` at the wrong field number), confirmed live standing up
+// a real DRA driver for e2e testing: every `NodePrepareResources` call
+// failed outright with "unknown service dra.v1beta1.DRAPlugin" (round
+// 121). This version is transcribed directly from
+// k8s.io/kubelet/pkg/apis/dra/v1/api.proto (kubernetes/kubernetes
+// staging), the same source a real driver's own generated stubs come
+// from — verified working against kubernetes-sigs/dra-example-driver
+// v0.4.0, the reference driver real Kubernetes e2e/conformance tests use
+// for exactly this (the same role csi-driver-host-path plays for CSI).
 //
 // A DRA driver's own kubelet-plugin process runs this service's *server*
 // side, listening on a Unix socket it announces via the same plugin
@@ -17,43 +25,56 @@
 
 syntax = "proto3";
 
-// Named distinctly from deviceplugin.proto's own "v1beta1" package (they're
-// unrelated APIs that happen to share a version suffix upstream) so both
-// compile to separate generated Rust modules instead of colliding.
-package dra.v1beta1;
+package k8s.io.kubelet.pkg.apis.dra.v1;
 
-option go_package = "k8s.io/kubelet/pkg/apis/dra/v1beta1";
+option go_package = "k8s.io/kubelet/pkg/apis/dra/v1";
 
 service DRAPlugin {
-    // Called once per (driver, claim) before any container that
-    // references an allocated device from that claim/driver is created.
+    // NodePrepareResources prepares several ResourceClaims for use on the
+    // node. If an error is returned, the response is ignored. Failures for
+    // individual claims can be reported inside
+    // NodePrepareResourcesResponse.
     rpc NodePrepareResources(NodePrepareResourcesRequest) returns (NodePrepareResourcesResponse) {}
 
-    // Called once per (driver, claim) after every container that
-    // referenced it has been removed, so the driver can release
-    // whatever host-side state it set up in NodePrepareResources.
+    // NodeUnprepareResources is the opposite of NodePrepareResources. The
+    // same error handling rules apply.
     rpc NodeUnprepareResources(NodeUnprepareResourcesRequest) returns (NodeUnprepareResourcesResponse) {}
 }
 
 // Claim identifies a single ResourceClaim to prepare/unprepare.
 message Claim {
+    // The ResourceClaim namespace (ResourceClaim.meta.Namespace). REQUIRED.
     string namespace = 1;
+    // The UID of the ResourceClaim (ResourceClaim.meta.UUID). REQUIRED.
     string uid = 2;
+    // The name of the ResourceClaim (ResourceClaim.meta.Name). REQUIRED.
     string name = 3;
 }
 
 message NodePrepareResourcesRequest {
+    // The list of ResourceClaims that are to be prepared.
     repeated Claim claims = 1;
 }
 
 // Device is one device the driver prepared for a claim, and which
 // request(s) within that claim it satisfies.
 message Device {
-    // Which request(s) in the claim caused this device to be prepared.
+    // The requests in the claim that this device is associated with.
+    // Optional. If empty, the device is associated with all requests.
     repeated string request_names = 1;
-    // Fully-qualified CDI device names (vendor.com/class=id) — copied
-    // verbatim into the container's CRI ContainerConfig.cdi_devices.
-    repeated string cdi_device_ids = 2;
+
+    // The pool which contains the device. Required.
+    string pool_name = 2;
+
+    // The device itself. Required.
+    string device_name = 3;
+
+    // A single device instance may map to several CDI device IDs. None is
+    // also valid.
+    repeated string cdi_device_ids = 4;
+
+    // The share ID of the device. Optional.
+    optional string share_id = 5;
 }
 
 message NodePrepareResourceResponse {

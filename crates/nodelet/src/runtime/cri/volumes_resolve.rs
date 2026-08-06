@@ -270,10 +270,11 @@ impl CriRuntime {
 
     /// Materialize a `projected` volume: each source contributes files into
     /// the same directory (real Kubernetes semantics — sources are merged,
-    /// not nested). `serviceAccountToken`/`clusterTrustBundle` sources
-    /// aren't implemented (the former needs the TokenRequest API; see
-    /// docs/GAP_CLOSURE.md) — skipped with a warning, same treatment as any
-    /// other unsupported volume type.
+    /// not nested). `serviceAccountToken` is implemented via the real
+    /// `TokenRequest` API, bound to the requesting Pod (see
+    /// `resolve_service_account_token()`'s own doc comment). `clusterTrustBundle`
+    /// isn't — skipped with a warning, same treatment as any other
+    /// unsupported volume type.
     pub(crate) async fn write_projected_volume(
         &self,
         dir: &std::path::Path,
@@ -307,7 +308,10 @@ impl CriRuntime {
             } else if let Some(sat) = &source.service_account_token {
                 let service_account = pod_service_account_name(pod);
                 let audiences = token_audiences(sat.audience.as_deref());
-                match self.resolve_service_account_token(&id.namespace, &service_account, &audiences, sat.expiration_seconds).await {
+                match self
+                    .resolve_service_account_token(&id.namespace, &service_account, &audiences, sat.expiration_seconds, Some((&id.name, &id.uid)))
+                    .await
+                {
                     Ok(token) => {
                         let target = dir.join(&sat.path);
                         if let Some(parent) = target.parent() {

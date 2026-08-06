@@ -176,19 +176,42 @@ impl CriRuntime {
     /// `serviceaccounts/token` in the target namespace — a real RBAC
     /// requirement, not a nodelet limitation; callers log and skip on
     /// failure rather than treating it as fatal to the whole pod.
+    ///
+    /// `bound_pod` (name, uid) sets `TokenRequestSpec.boundObjectRef` to the
+    /// requesting Pod, matching what real kubelet always does for a
+    /// projected `serviceAccountToken` volume — found missing live standing
+    /// up a real DRA driver (round 121): the apiserver's
+    /// `ServiceAccountTokenPodNodeInfo` enrichment (GA since 1.36, embeds
+    /// `authentication.kubernetes.io/node-name` into the token's userInfo
+    /// `extra`) only fires for tokens bound to a Pod with a resolvable
+    /// `spec.nodeName` — an unbound token (this function's previous, only
+    /// behavior) never gets it, so anything gating on that claim (the
+    /// reference DRA driver's own `ValidatingAdmissionPolicy` on
+    /// `ResourceSlice`, in this case) rejects every request. A real
+    /// security property too, not just this one unblocking side effect:
+    /// without it, a leaked projected token stays valid after its pod is
+    /// deleted, unlike real kubelet's tokens. `None` for the credential-
+    /// provider call site below, which mints a token before any pod exists.
     pub(crate) async fn resolve_service_account_token(
         &self,
         namespace: &str,
         service_account: &str,
         audiences: &[String],
         expiration_seconds: Option<i64>,
+        bound_pod: Option<(&str, &str)>,
     ) -> Result<String> {
-        use k8s_openapi::api::authentication::v1::{TokenRequest, TokenRequestSpec};
+        use k8s_openapi::api::authentication::v1::{BoundObjectReference, TokenRequest, TokenRequestSpec};
+        let bound_object_ref = bound_pod.map(|(name, uid)| BoundObjectReference {
+            api_version: Some("v1".to_string()),
+            kind: Some("Pod".to_string()),
+            name: Some(name.to_string()),
+            uid: Some(uid.to_string()),
+        });
         let body = TokenRequest {
             metadata: Default::default(),
             spec: TokenRequestSpec {
                 audiences: audiences.to_vec(),
-                bound_object_ref: None,
+                bound_object_ref,
                 expiration_seconds,
             },
             status: None,
@@ -253,7 +276,12 @@ impl CriRuntime {
                         None
                     } else {
                         let audiences = vec![token_attrs.service_account_token_audience.clone()];
-                        match self.resolve_service_account_token(&id.namespace, &id.service_account_name, &audiences, None).await {
+                        // No pod exists yet at credential-provider time (this
+                        // token is minted while resolving how to pull the
+                        // image that will *become* the pod's container) —
+                        // matches real kubelet, which doesn't bind these
+                        // either.
+                        match self.resolve_service_account_token(&id.namespace, &id.service_account_name, &audiences, None, None).await {
                             Ok(token) => Some(crate::credential_provider::ServiceAccountContext {
                                 pod_name: id.name.clone(),
                                 pod_namespace: id.namespace.clone(),

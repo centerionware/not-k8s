@@ -3,14 +3,11 @@
 //! Dynamic Resource Allocation (round 63) — resolving which ResourceClaim
 //! object a pod-claim points at, grouping its allocated devices by
 //! driver, and picking which CDI device IDs a specific container's
-//! `resources.claims[]` entry should get.
+//! `resources.claims[]` entry should get. Uses the hand-written
+//! `RawResourceClaim` family (round 121 — see that type's own doc
+//! comment) rather than a k8s-openapi-generated type.
 use super::*;
 use k8s_openapi::api::core::v1::PodResourceClaimStatus;
-use k8s_openapi::api::resource::v1beta1::{
-    AllocationResult, DeviceAllocationResult, DeviceRequestAllocationResult, ResourceClaimConsumerReference, ResourceClaimSpec,
-    ResourceClaimStatus,
-};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
 // --- resource_claim_object_name() ---
 
@@ -44,41 +41,29 @@ fn direct_name_wins_even_if_status_entries_are_present() {
 
 // --- allocated_devices_by_driver() ---
 
-fn claim_with_results(results: Vec<DeviceRequestAllocationResult>) -> DraResourceClaim {
-    DraResourceClaim {
-        metadata: ObjectMeta::default(),
-        spec: ResourceClaimSpec::default(),
-        status: Some(ResourceClaimStatus {
-            allocation: Some(AllocationResult {
-                devices: Some(DeviceAllocationResult { config: None, results: Some(results) }),
-                node_selector: None,
-            }),
-            devices: None,
+fn claim_with_results(results: Vec<RawDeviceRequestAllocationResult>) -> RawResourceClaim {
+    RawResourceClaim {
+        metadata: RawObjectMeta::default(),
+        status: Some(RawResourceClaimStatus {
+            allocation: Some(RawAllocationResult { devices: Some(RawDeviceAllocationResult { results: Some(results) }) }),
             reserved_for: None,
         }),
     }
 }
 
-fn result(driver: &str, request: &str, device: &str) -> DeviceRequestAllocationResult {
-    DeviceRequestAllocationResult {
-        admin_access: None,
-        device: device.to_string(),
-        driver: driver.to_string(),
-        pool: "default".to_string(),
-        request: request.to_string(),
-        tolerations: None,
-    }
+fn result(driver: &str) -> RawDeviceRequestAllocationResult {
+    RawDeviceRequestAllocationResult { driver: driver.to_string() }
 }
 
 #[test]
 fn unallocated_claim_groups_to_an_empty_map() {
-    let claim = DraResourceClaim { metadata: ObjectMeta::default(), spec: ResourceClaimSpec::default(), status: None };
+    let claim = RawResourceClaim::default();
     assert!(allocated_devices_by_driver(&claim).is_empty());
 }
 
 #[test]
 fn single_driver_single_device() {
-    let claim = claim_with_results(vec![result("gpu.example.com", "req-a", "gpu-0")]);
+    let claim = claim_with_results(vec![result("gpu.example.com")]);
     let by_driver = allocated_devices_by_driver(&claim);
     assert_eq!(by_driver.len(), 1);
     assert_eq!(by_driver.get("gpu.example.com").unwrap().len(), 1);
@@ -86,7 +71,7 @@ fn single_driver_single_device() {
 
 #[test]
 fn multiple_devices_from_different_drivers_are_split() {
-    let claim = claim_with_results(vec![result("gpu.example.com", "req-a", "gpu-0"), result("nic.example.com", "req-b", "nic-0")]);
+    let claim = claim_with_results(vec![result("gpu.example.com"), result("nic.example.com")]);
     let by_driver = allocated_devices_by_driver(&claim);
     assert_eq!(by_driver.len(), 2);
     assert!(by_driver.contains_key("gpu.example.com"));
@@ -95,7 +80,7 @@ fn multiple_devices_from_different_drivers_are_split() {
 
 #[test]
 fn multiple_devices_from_the_same_driver_stay_grouped_together() {
-    let claim = claim_with_results(vec![result("gpu.example.com", "req-a", "gpu-0"), result("gpu.example.com", "req-b", "gpu-1")]);
+    let claim = claim_with_results(vec![result("gpu.example.com"), result("gpu.example.com")]);
     let by_driver = allocated_devices_by_driver(&claim);
     assert_eq!(by_driver.len(), 1);
     assert_eq!(by_driver.get("gpu.example.com").unwrap().len(), 2);
@@ -149,21 +134,17 @@ fn a_request_name_with_no_matching_devices_yields_an_empty_list() {
 
 // --- pod_is_reserved_for_claim() (round 64) ---
 
-fn claim_reserved_for(refs: Vec<ResourceClaimConsumerReference>) -> DraResourceClaim {
-    DraResourceClaim {
-        metadata: ObjectMeta::default(),
-        spec: ResourceClaimSpec::default(),
-        status: Some(ResourceClaimStatus { allocation: None, devices: None, reserved_for: Some(refs) }),
-    }
+fn claim_reserved_for(refs: Vec<RawConsumerReference>) -> RawResourceClaim {
+    RawResourceClaim { metadata: RawObjectMeta::default(), status: Some(RawResourceClaimStatus { allocation: None, reserved_for: Some(refs) }) }
 }
 
-fn consumer_ref(name: &str, uid: &str) -> ResourceClaimConsumerReference {
-    ResourceClaimConsumerReference { api_group: None, name: name.to_string(), resource: "pods".to_string(), uid: uid.to_string() }
+fn consumer_ref(name: &str, uid: &str) -> RawConsumerReference {
+    RawConsumerReference { name: name.to_string(), resource: "pods".to_string(), uid: uid.to_string() }
 }
 
 #[test]
 fn no_status_at_all_is_not_reserved() {
-    let claim = DraResourceClaim { metadata: ObjectMeta::default(), spec: ResourceClaimSpec::default(), status: None };
+    let claim = RawResourceClaim::default();
     assert!(!pod_is_reserved_for_claim(&claim, "my-pod", "uid-1"));
 }
 

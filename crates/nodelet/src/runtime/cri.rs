@@ -22,7 +22,19 @@ use k8s_openapi::api::core::v1::{
     SecretReference, SecurityContext, Service, ServiceAccount, Volume,
 };
 use k8s_openapi::api::node::v1::RuntimeClass;
-use k8s_openapi::api::resource::v1beta1::ResourceClaim as DraResourceClaim;
+// resource.k8s.io/v1beta1 no longer exists on modern (1.34+) clusters —
+// DRA graduated to GA as resource.k8s.io/v1. k8s-openapi's *generated*
+// ResourceClaim type only exists from its "v1_34" schema feature onward,
+// and this workspace is still pinned to "v1_33" (bumping it ripples into
+// unrelated breaking field changes across the whole codebase — a much
+// bigger, riskier change than this fix). So ResourceClaim is fetched via
+// a raw request into `claims::RawResourceClaim` (hand-written, only the
+// fields DRA actually reads) instead of a typed `kube::Api<T>` — see
+// that module's own doc comment. Using the removed v1beta1 type here
+// previously made every ResourceClaim fetch 404 silently (claims.rs logs
+// and skips on fetch failure rather than failing the pod), so containers
+// requesting a device via DRA/CDI always started with none — found live
+// standing up a real DRA driver for e2e testing (round 121).
 use k8s_openapi::api::storage::v1::{CSIDriver, VolumeAttachment};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;

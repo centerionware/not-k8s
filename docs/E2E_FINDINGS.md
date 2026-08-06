@@ -796,3 +796,85 @@ matching `topologyKeys`, and the previously-skipping
 `test_csi_ephemeral_inline_volume_is_mounted`, and
 `test_pod_mounts_a_generic_ephemeral_volume` — the full set of CSI e2e
 tests that need a real, bindable PVC.
+
+### 18. Fixed: three separate, real bugs found standing up a real DRA driver (kubernetes-sigs/dra-example-driver) — the reference driver real Kubernetes e2e/conformance tests use for CDI/GPU passthrough, same role csi-driver-host-path plays for CSI
+
+**Severity: high — Dynamic Resource Allocation (CDI/GPU device passthrough)
+was completely non-functional end-to-end, on three independent layers,
+despite round 63/64's implementation looking complete on inspection.**
+
+Deployed `kubernetes-sigs/dra-example-driver` (Helm chart, `numDevices=4`,
+paths pointed at nodelet's `NODELET_PLUGIN_REGISTRY_PATH`) to actually
+exercise DRA for the first time against a real driver, exactly the "use
+whatever kubelet uses for their testing" approach that verified CSI in
+rounds 117-120. Registration itself worked immediately (`plugin registry:
+plugin registered ... plugin_type=DRAPlugin`), but nothing downstream did,
+in three separate ways, each requiring root-causing and fixing in turn:
+
+**Bug 1 — projected ServiceAccount tokens were never bound to their Pod.**
+The reference driver's own Helm chart ships a `ValidatingAdmissionPolicy`
+gating `ResourceSlice` writes on the requesting token carrying
+`authentication.kubernetes.io/node-name` (real Kubernetes 1.36's
+`ServiceAccountTokenPodNodeInfo`, GA/always-on). That claim is only
+populated for tokens whose `TokenRequestSpec.boundObjectRef` points at a
+Pod with a resolvable `spec.nodeName` — nodelet's own
+`resolve_service_account_token()` hardcoded `bound_object_ref: None` for
+every projected `serviceAccountToken` volume. **Fixed**: threads
+`(pod_name, pod_uid)` through to set a real `BoundObjectReference{kind:
+Pod, ...}`, matching real kubelet. A real security property too, not just
+this fix: an unbound token stays valid after its pod is deleted, unlike
+real kubelet's.
+
+**Bug 2 — `ResourceClaim` was fetched against the wrong, now-removed API
+version.** `resource.k8s.io/v1beta1` doesn't exist on any cluster running
+Kubernetes ≥1.34 (DRA graduated to GA as `resource.k8s.io/v1`) —
+confirmed via `kubectl get --raw /apis/resource.k8s.io`, only `v1` listed.
+Every `ResourceClaim` GET 404'd silently (claims.rs logs and skips rather
+than failing the pod), so a container requesting a device always started
+without it, no error visible anywhere except a WARN log easy to miss.
+**Fixed**: rather than bumping the workspace's pinned `k8s-openapi`
+schema feature (`v1_33` → `v1_36`, attempted first — turned out to ripple
+into unrelated breaking field renames across the whole codebase, a much
+bigger and riskier change than this fix warrants), `ResourceClaim` is now
+fetched via a raw request into a small hand-written `RawResourceClaim`
+struct (only the fields DRA actually reads), the same raw-request pattern
+`resolve_service_account_token()` already uses for a subresource
+k8s-openapi 0.28 doesn't generate a helper for either.
+
+**Bug 3 — the reconstructed gRPC proto was wrong.** `proto/draplugin.proto`
+carried an explicit caveat since round 63 ("reconstructed from public
+documentation... NOT validated against a live third-party DRA driver") —
+now definitively confirmed broken, live: `NodePrepareResources` failed
+outright with `unknown service dra.v1beta1.DRAPlugin`. The real service
+package is `k8s.io.kubelet.pkg.apis.dra.v1` (again, DRA graduated past
+beta before this was originally written), and the `Device` message's
+field layout was also wrong (missing `pool_name`/`device_name`/`share_id`,
+`cdi_device_ids` at the wrong field number). **Fixed**: `draplugin.proto`
+rewritten by transcribing `k8s.io/kubelet/pkg/apis/dra/v1/api.proto`
+(kubernetes/kubernetes staging) directly — the same source a real
+driver's own generated stubs come from.
+
+**A fourth, non-nodelet gap found along the way**: containerd's own
+`enable_cdi` defaults to `false` — without it, `ContainerConfig.cdi_devices`
+is silently accepted and does nothing at the OCI spec generation layer,
+regardless of anything nodelet does correctly. Fixed in
+`deploy/lib/container-runtime.sh` (flips it on for every fresh bootstrap)
+and applied live. Also needed a real k3s apiserver feature gate
+(`--kube-apiserver-arg=feature-gates=ServiceAccountTokenPodNodeInfo=true`,
+already GA/on-by-default in 1.36 but harmless/idempotent to set
+explicitly) added to `deploy/setup-control-plane.sh` for completeness —
+this one turned out to be a red herring for the actual fix (Bug 1 above
+was the real blocker), but is documented and left in since it costs
+nothing and matches what a real 1.36 cluster already does anyway.
+
+Verified live end-to-end, all the way through: a Pod with a
+`resourceClaims`/`ResourceClaimTemplate` referencing the reference
+driver's `gpu.example.com` DeviceClass reaches `Running`, and `kubectl
+exec`'ing into it shows real CDI-injected environment variables the
+driver's `NodePrepareResources` response specified —
+`GPU_DEVICE_0=gpu-0`, `GPU_DEVICE_GPU_0_RESOURCE_CLAIM=<uuid>`,
+`DRA_RESOURCE_DRIVER_NAME=gpu.example.com`, `DRA_ADMIN_ACCESS=false`,
+`GPU_DEVICE_0_SHARING_STRATEGY=TimeSlicing` — proof the full chain
+(registration → `ResourceSlice` publish → scheduler allocation →
+`NodePrepareResources` → CDI injection via containerd) genuinely works,
+not just individual pieces in isolation.

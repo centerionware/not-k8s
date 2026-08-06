@@ -36,7 +36,7 @@ fn deregistering_an_unknown_driver_is_a_harmless_no_op() {
 
 #[test]
 fn from_proto_devices_carries_request_names_and_cdi_ids_through() {
-    let devices = vec![Device { request_names: vec!["req-a".to_string()], cdi_device_ids: vec!["vendor.com/gpu=0".to_string()] }];
+    let devices = vec![Device { request_names: vec!["req-a".to_string()], pool_name: "pool".to_string(), device_name: "gpu-0".to_string(), cdi_device_ids: vec!["vendor.com/gpu=0".to_string()], share_id: None }];
     let prepared = from_proto_devices(devices);
     assert_eq!(prepared.len(), 1);
     assert_eq!(prepared[0].request_names, vec!["req-a".to_string()]);

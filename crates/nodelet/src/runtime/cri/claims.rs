@@ -1,5 +1,70 @@
 use super::*;
 
+/// Hand-written subset of `resource.k8s.io/v1`'s `ResourceClaim` — only
+/// the fields DRA actually reads. Exists because k8s-openapi's own
+/// generated type for this resource only appears from its "v1_34" schema
+/// feature onward, and this workspace stays pinned to "v1_33" (bumping it
+/// ripples into unrelated breaking field renames across the whole
+/// codebase, confirmed trying it — a much bigger change than this fix
+/// warrants). Fetched via a raw GET through `kube::Client::request`, the
+/// same pattern `container_support.rs`'s `resolve_service_account_token()`
+/// already uses for a subresource k8s-openapi 0.28 doesn't generate a
+/// helper for either. Round 121 — found live standing up a real DRA
+/// driver: the old `resource.k8s.io/v1beta1`-typed fetch this replaced
+/// 404'd on every call against a modern (1.34+) cluster, since that
+/// version no longer exists there at all.
+#[derive(serde::Deserialize, Default, Clone, Debug)]
+pub(crate) struct RawResourceClaim {
+    #[serde(default)]
+    pub(crate) metadata: RawObjectMeta,
+    pub(crate) status: Option<RawResourceClaimStatus>,
+}
+
+#[derive(serde::Deserialize, Default, Clone, Debug)]
+pub(crate) struct RawObjectMeta {
+    pub(crate) uid: Option<String>,
+}
+
+#[derive(serde::Deserialize, Default, Clone, Debug)]
+pub(crate) struct RawResourceClaimStatus {
+    #[serde(rename = "reservedFor")]
+    pub(crate) reserved_for: Option<Vec<RawConsumerReference>>,
+    pub(crate) allocation: Option<RawAllocationResult>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+pub(crate) struct RawConsumerReference {
+    pub(crate) resource: String,
+    pub(crate) name: String,
+    pub(crate) uid: String,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+pub(crate) struct RawAllocationResult {
+    pub(crate) devices: Option<RawDeviceAllocationResult>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+pub(crate) struct RawDeviceAllocationResult {
+    pub(crate) results: Option<Vec<RawDeviceRequestAllocationResult>>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+pub(crate) struct RawDeviceRequestAllocationResult {
+    pub(crate) driver: String,
+}
+
+/// Fetch a `ResourceClaim` by name via a raw request (see
+/// `RawResourceClaim`'s own doc comment for why not a typed `kube::Api`).
+async fn get_resource_claim(client: &kube::Client, namespace: &str, name: &str) -> Result<RawResourceClaim> {
+    let req = http::Request::builder()
+        .method("GET")
+        .uri(format!("/apis/resource.k8s.io/v1/namespaces/{namespace}/resourceclaims/{name}"))
+        .body(Vec::new())
+        .context("building ResourceClaim GET request")?;
+    client.request(req).await.context("ResourceClaim GET")
+}
+
 /// Dynamic Resource Allocation (round 63): the CDI device IDs a pod-claim
 /// resolved to, split by which `DeviceRequest` name (within the claim)
 /// produced them so `container.resources.claims[].request` can filter to
@@ -38,9 +103,7 @@ pub(crate) fn resource_claim_object_name(
 /// different device classes, so each driver only ever gets asked about
 /// its own devices. Pure given an already-fetched claim object, so the
 /// grouping logic is unit-testable without a live ResourceClaim.
-pub(crate) fn allocated_devices_by_driver(
-    claim: &DraResourceClaim,
-) -> BTreeMap<String, Vec<k8s_openapi::api::resource::v1beta1::DeviceRequestAllocationResult>> {
+pub(crate) fn allocated_devices_by_driver(claim: &RawResourceClaim) -> BTreeMap<String, Vec<RawDeviceRequestAllocationResult>> {
     let mut out: BTreeMap<String, Vec<_>> = BTreeMap::new();
     let results = claim
         .status
@@ -65,7 +128,7 @@ pub(crate) fn allocated_devices_by_driver(
 /// an empty/absent `apiGroup` are how a Pod consumer reference is
 /// spelled (pods are a core-API type). Pure given an already-fetched
 /// claim, so unit-testable without a live object.
-pub(crate) fn pod_is_reserved_for_claim(claim: &DraResourceClaim, pod_name: &str, pod_uid: &str) -> bool {
+pub(crate) fn pod_is_reserved_for_claim(claim: &RawResourceClaim, pod_name: &str, pod_uid: &str) -> bool {
     claim
         .status
         .as_ref()
@@ -108,7 +171,7 @@ struct ResolvedClaim {
     pod_claim_name: String,
     claim_name: String,
     claim_uid: String,
-    by_driver: BTreeMap<String, Vec<k8s_openapi::api::resource::v1beta1::DeviceRequestAllocationResult>>,
+    by_driver: BTreeMap<String, Vec<RawDeviceRequestAllocationResult>>,
 }
 
 impl CriRuntime {
@@ -152,7 +215,6 @@ impl CriRuntime {
         let pod_name = pod.metadata.name.clone().unwrap_or_default();
         let pod_uid = pod.metadata.uid.clone().unwrap_or_default();
         let statuses = pod.status.as_ref().and_then(|s| s.resource_claim_statuses.as_ref());
-        let claims_api: Api<DraResourceClaim> = Api::namespaced(self.client.clone(), &namespace);
 
         let mut resolved = Vec::new();
         for pc in pod_claims {
@@ -164,7 +226,7 @@ impl CriRuntime {
                 // (triggered by the Pod's own status update) will retry.
                 continue;
             };
-            let claim = match claims_api.get(&claim_name).await {
+            let claim = match get_resource_claim(&self.client, &namespace, &claim_name).await {
                 Ok(c) => c,
                 Err(e) => {
                     warn!(pod_claim = %pc.name, claim = %claim_name, error = ?e, "DRA: failed to fetch ResourceClaim; container(s) referencing it will start without these devices");
@@ -241,12 +303,11 @@ impl CriRuntime {
         }
         let namespace = pod.metadata.namespace.clone().unwrap_or_default();
         let statuses = pod.status.as_ref().and_then(|s| s.resource_claim_statuses.as_ref());
-        let claims_api: Api<DraResourceClaim> = Api::namespaced(self.client.clone(), &namespace);
 
         let mut per_driver: HashMap<String, Vec<crate::dra::ClaimRef>> = HashMap::new();
         for pc in pod_claims {
             let Some(claim_name) = resource_claim_object_name(&pc.name, pc.resource_claim_name.as_deref(), statuses) else { continue };
-            let claim = match claims_api.get(&claim_name).await {
+            let claim = match get_resource_claim(&self.client, &namespace, &claim_name).await {
                 Ok(c) => c,
                 Err(e) => {
                     warn!(pod_claim = %pc.name, claim = %claim_name, error = ?e, "DRA teardown: failed to fetch ResourceClaim; driver(s) not notified to unprepare");

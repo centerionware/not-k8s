@@ -93,6 +93,18 @@ fi
 #       --ip-family, so this script and nodelet's Service proxy always agree
 #       on the same mode.
 #
+#   --kube-apiserver-arg=feature-gates=ServiceAccountTokenPodNodeInfo=true
+#       Real Kubernetes 1.36+ feature gate, off by default upstream too.
+#       A DRA driver's ResourceSlice objects (published per-node, describing
+#       what devices it has to offer) get a ValidatingAdmissionPolicy in
+#       front of them (the reference kubernetes-sigs/dra-example-driver's
+#       own Helm chart ships one) that checks the publishing service
+#       account token actually carries pod/node identity info — without
+#       this gate, every ResourceSlice create is rejected with "no node
+#       association found for user", and DRA-based device allocation (CDI/
+#       GPU passthrough) can never advertise anything to allocate. Found
+#       live standing up a real DRA driver for e2e testing (round 121).
+#
 #   --kube-apiserver-arg=kubelet-certificate-authority=...
 #       Only added once NOTK8S_KUBELET_CA_PEM is set (deploy/bootstrap-
 #       source.sh does this in a *second* call to this script, after
@@ -125,6 +137,7 @@ export INSTALL_K3S_EXEC="server \
     --cluster-cidr=$CLUSTER_CIDR \
     --service-cidr=$SERVICE_CIDR \
     --kube-controller-manager-arg=node-monitor-period=10s \
+    --kube-apiserver-arg=feature-gates=ServiceAccountTokenPodNodeInfo=true \
     $KUBELET_CA_ARG \
     --write-kubeconfig-mode=0644"
 

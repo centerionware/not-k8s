@@ -6,21 +6,26 @@
 # and device_plugins.sh check (plugin_registry.rs handles CSI/device
 # plugin/DRA driver registrations through one watcher).
 #
-# Same honest limitation device_plugins.sh already documents, several
-# layers deeper here: fully exercising this needs a real DRA driver
-# (a kubelet-plugin process implementing NodePrepareResources/
-# NodeUnprepareResources) *and* the cluster's apiserver/scheduler/
-# controller-manager actually running with the DynamicResourceAllocation
-# feature gate + resource.k8s.io API group enabled *and* a real (or
-# realistically faked) device for a DeviceClass/ResourceSlice to advertise
-# and the scheduler to allocate. None of that is something this bash-only
-# harness can stand up — a hand-rolled fake gRPC DRA driver (GetInfo/
-# NodePrepareResources/NodeUnprepareResources can all be faked without
-# real hardware) would make this fully automatable; that's a natural next
-# step, not attempted in this round's harness. draplugin.proto's own
-# comment also flags that its field numbers were reconstructed from
-# documentation, not vendored from upstream — genuinely unverified against
-# a live driver until one is available to test against.
+# **Round 121: manually verified live** against
+# kubernetes-sigs/dra-example-driver (the reference DRA driver real
+# Kubernetes e2e/conformance tests use for exactly this, same role
+# csi-driver-host-path plays for CSI) — a real Pod claiming a device via
+# ResourceClaimTemplate reached Running with genuine CDI-injected device
+# env vars from the driver's own NodePrepareResources response. Found and
+# fixed 3 real bugs in the process (unbound ServiceAccount tokens,
+# ResourceClaim fetched against the removed v1beta1 API, and
+# draplugin.proto's reconstructed wire format being genuinely wrong — see
+# docs/E2E_FINDINGS.md finding #18 for the full story). draplugin.proto is
+# now transcribed directly from upstream, not reconstructed — that
+# specific caveat is resolved.
+#
+# Still the same honest limitation device_plugins.sh documents, though:
+# this bash-only harness can't itself stand up a Helm chart + driver
+# DaemonSet, so the manual-spot-check tests below remain manual rather
+# than becoming a real `register_test` — automating this (installing helm,
+# deploying the reference driver, running a real ResourceClaim round-trip)
+# is a natural fit for the GitHub Actions e2e job rather than this local
+# suite.
 
 test_plugin_registry_watches_for_dra_drivers_too() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi

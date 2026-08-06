@@ -33,12 +33,16 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use tonic::transport::{Channel, Endpoint, Uri};
 
-pub mod v1beta1 {
-    tonic::include_proto!("dra.v1beta1");
+// Package name matches proto/draplugin.proto's real upstream package
+// (k8s.io.kubelet.pkg.apis.dra.v1 — see that file's own doc comment for
+// round 121's "this used to be wrong" story) exactly, since tonic's
+// generated code is looked up by that literal string.
+pub mod v1 {
+    tonic::include_proto!("k8s.io.kubelet.pkg.apis.dra.v1");
 }
 
-use v1beta1::dra_plugin_client::DraPluginClient;
-use v1beta1::{Claim, Device, NodePrepareResourcesRequest, NodeUnprepareResourcesRequest};
+use v1::dra_plugin_client::DraPluginClient;
+use v1::{Claim, Device, NodePrepareResourcesRequest, NodeUnprepareResourcesRequest};
 
 /// Dial a DRA driver's own Unix socket — same connector shape as every
 /// other `connect_uds` in this codebase (`runtime/cri.rs`, `runtime/csi.rs`,
@@ -74,8 +78,15 @@ impl From<&ClaimRef> for Claim {
 }
 
 /// One prepared device: which request(s) in the claim it satisfies, and
-/// its CDI device IDs — pure data, mirrors `v1beta1::Device` without
-/// depending on callers reaching into the generated proto type directly.
+/// its CDI device IDs — pure data, mirrors `v1::Device` without depending
+/// on callers reaching into the generated proto type directly.
+/// `pool_name`/`device_name` (identifying which specific device this is,
+/// independent of CDI) and `share_id` aren't currently consumed by
+/// anything nodelet does with a prepared device (CDI IDs are all
+/// `container_create.rs` ever injects), so they're not carried into this
+/// type — round 121 found and fixed the real bug here (wrong proto
+/// package/field layout entirely, see `proto/draplugin.proto`), not a
+/// reason to widen this struct without an actual consumer yet.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct PreparedDevice {
     pub request_names: Vec<String>,
@@ -93,7 +104,7 @@ fn from_proto_devices(devices: Vec<Device>) -> Vec<PreparedDevice> {
 /// or `Err` with either the driver's own reported error message or a
 /// synthetic one if the driver's response silently omitted that claim
 /// (a malformed/buggy driver response, not something to treat as success).
-fn map_prepare_results(claims: &[ClaimRef], resp_claims: &HashMap<String, v1beta1::NodePrepareResourceResponse>) -> HashMap<String, Result<Vec<PreparedDevice>, String>> {
+fn map_prepare_results(claims: &[ClaimRef], resp_claims: &HashMap<String, v1::NodePrepareResourceResponse>) -> HashMap<String, Result<Vec<PreparedDevice>, String>> {
     claims
         .iter()
         .map(|c| {
@@ -113,7 +124,7 @@ fn map_prepare_results(claims: &[ClaimRef], resp_claims: &HashMap<String, v1beta
 /// result (which hides real device state the caller needs), an absent
 /// unprepare result has no useful signal either way, and treating it as a
 /// failure would just make routine teardown noisier for no benefit.
-fn map_unprepare_results(claims: &[ClaimRef], resp_claims: &HashMap<String, v1beta1::NodeUnprepareResourceResponse>) -> HashMap<String, Result<(), String>> {
+fn map_unprepare_results(claims: &[ClaimRef], resp_claims: &HashMap<String, v1::NodeUnprepareResourceResponse>) -> HashMap<String, Result<(), String>> {
     claims
         .iter()
         .map(|c| {
