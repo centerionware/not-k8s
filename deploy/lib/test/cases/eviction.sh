@@ -53,7 +53,17 @@ spec:
     - name: data
       emptyDir: {}
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    # No separate "wait for Running first" — round 123 found this races
+    # for real: the container's dd write completes in milliseconds, so
+    # eviction_loop() (10s check interval, but can catch a pod already
+    # long over its limit on its very first check after the pod starts)
+    # can evict the pod before this test's own poll ever happens to
+    # observe it in Running, failing a test whose actual assertion (does
+    # it get evicted) was true the whole time. A successful "Evicted"
+    # observation already implies the pod started (nothing can exceed a
+    # disk-usage limit without having run), so this isn't a rigor loss —
+    # it's the same assertion this test actually needs, without an
+    # unnecessary racy intermediate one.
     wait_until 60 "$name evicted for exceeding its own ephemeral-storage limit" bash -c \
         "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.reason}')\" == 'Evicted' ]]"
     delete_pod_if_exists "$name"
@@ -87,7 +97,9 @@ spec:
       emptyDir:
         sizeLimit: 1Mi
 EOF
-    wait_until 30 "$name Running" pod_is_phase "$name" Running
+    # See test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted's
+    # own comment (round 123) — same race, same fix: no separate
+    # "wait for Running first".
     wait_until 60 "$name evicted for exceeding its emptyDir volume's sizeLimit" bash -c \
         "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.reason}')\" == 'Evicted' ]]"
     delete_pod_if_exists "$name"

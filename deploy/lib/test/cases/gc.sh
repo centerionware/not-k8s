@@ -119,9 +119,17 @@ EOF
     assert_contains "$finalizers" "$finalizer" "the finalizer should still be listed"
 
     # Removing the finalizer should let the object actually go away, same
-    # as it would for any other controller's finalizer.
+    # as it would for any other controller's finalizer. Purely an
+    # apiserver-side mechanism once every finalizer is gone — nodelet
+    # itself has nothing left to do here — but found live (round 123, on
+    # a CI runner) that 20s isn't always enough headroom for the
+    # apiserver to actually process the removal under real load (this
+    # test runs right after two churn-heavy eviction tests); 30s matches
+    # this file's own earlier acknowledgment that finalizer-blocked
+    # teardown is reliably slower than the plain-delete path, not
+    # instant.
     kctl patch pod "$name" --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null
-    wait_until 20 "$name gone once its finalizer is removed" pod_gone "$name"
+    wait_until 30 "$name gone once its finalizer is removed" pod_gone "$name"
 }
 
 test_orphaned_sandbox_gc_manual_procedure() {
