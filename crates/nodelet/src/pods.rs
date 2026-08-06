@@ -283,6 +283,25 @@ impl PodController {
             return;
         }
 
+        // A pod whose phase is already terminal (Failed/Succeeded) is
+        // done for good — real Kubernetes semantics: once a pod reaches
+        // Failed or Succeeded, its phase never goes back, and kubelet
+        // must not (re)create/restart its containers regardless of
+        // restartPolicy. Needed once evict_pod() (main.rs's
+        // eviction_loop()) stopped deleting evicted/deadline-exceeded
+        // pods outright (round 123, matching real kubelet — it never
+        // deletes them either): evict_pod() stops containers and patches
+        // status to Failed without deleting the object, which generates
+        // a fresh watch event: without this check, the very next
+        // reconcile would see "no containers running" for a
+        // restartPolicy: Always pod and recreate them right back.
+        // Also doubles as this pod's probe-supervisor cleanup, which
+        // teardown() would otherwise have been the only path to.
+        if matches!(pod.status.as_ref().and_then(|s| s.phase.as_deref()), Some("Failed") | Some("Succeeded")) {
+            self.stop_probe_supervisor(&ns, &name);
+            return;
+        }
+
         match self.runtime.ensure_pod(&pod).await {
             Ok(status) => {
                 debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured");
