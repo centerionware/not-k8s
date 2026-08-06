@@ -21,3 +21,4 @@
 *.tgz
 *.zip
 /deploy/*.bin
+flannellog
