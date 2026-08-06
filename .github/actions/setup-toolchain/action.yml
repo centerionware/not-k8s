@@ -1,0 +1,27 @@
+name: Setup Rust + protoc toolchain
+description: Installs the Rust toolchain and protoc via this repo's own deploy/lib bootstrap scripts, same as a real device install would, and puts cargo on PATH for later steps.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain + protoc
+      shell: bash
+      run: |
+        set -e
+        export FORCE_SOURCE_BUILD=0 WITH_CRI=1
+        export WORK_DIR="$GITHUB_WORKSPACE/.bootstrap"
+        export TOOLCHAIN_DIR="$WORK_DIR/toolchain"
+        export SRC_DIR="$WORK_DIR/src"
+        export LOG_DIR="$WORK_DIR/logs"
+        export REPO_ROOT="$GITHUB_WORKSPACE"
+        mkdir -p "$LOG_DIR"
+        source deploy/lib/common.sh
+        source deploy/lib/toolchain-c.sh
+        source deploy/lib/toolchain-rust.sh
+        source deploy/lib/toolchain-protoc.sh
+        detect_platform
+        ensure_rust
+        ensure_protoc
+        echo "$TOOLCHAIN_DIR/cargo/bin" >> "$GITHUB_PATH"
+        echo "RUSTUP_HOME=$TOOLCHAIN_DIR/rustup" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=$TOOLCHAIN_DIR/cargo" >> "$GITHUB_ENV"

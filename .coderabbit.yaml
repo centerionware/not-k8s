@@ -1,0 +1,29 @@
+# CodeRabbit configuration — automated PR review.
+#
+# This file only takes effect once the CodeRabbit GitHub App is installed
+# on this repo (https://github.com/marketplace/coderabbitai) — that's a
+# one-time manual step from the repo's Settings > Integrations, not
+# something a workflow file can do. Once installed, CodeRabbit reviews
+# every PR automatically; no separate Actions workflow is needed for it.
+#
+# By design, PRs only get CodeRabbit's review — unit tests and the full
+# e2e suite (which needs real sudo/cluster access to bootstrap k3s +
+# containerd) only run on push to main (direct pushes and PR merges
+# alike), not on arbitrary PR branches, so an untrusted PR can't get CI to
+# execute arbitrary code with that access. See .github/workflows/release.yml.
+language: en-US
+early_access: false
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+
+chat:
+  auto_reply: true

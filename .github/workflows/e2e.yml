@@ -1,12 +1,18 @@
 name: E2E tests
 
-# Manual trigger only for now — on: push/pull_request can be added later
-# once this has proven reliable. Builds a full not-k8s cluster from source
+# Manual, ad-hoc utility — release.yml's own e2e stage is the real gate
+# (runs on every push to main, no --only filter, must pass to reach the
+# release stages). This workflow is for on-demand debugging: rerun just
+# the e2e suite (optionally filtered to one test) without waiting on the
+# rest of the pipeline. Builds a full not-k8s cluster from source
 # (deploy/bootstrap-source.sh --with-cri: k3s control plane, real
 # containerd/runc, nodelet built with the cri feature) on the runner
-# itself, runs deploy/test-e2e.sh's full suite against it, and pushes the
-# results to a dedicated branch (creating it if it doesn't exist yet,
-# replacing its contents otherwise) regardless of whether the run passed.
+# itself, installs the same reference CSI + DRA drivers release.yml's e2e
+# stage does (deploy/lib/e2e-full-setup.sh) so CSI/DRA-gated tests
+# actually run instead of skipping, runs deploy/test-e2e.sh against it,
+# and pushes the results to a dedicated branch (creating it if it doesn't
+# exist yet, replacing its contents otherwise) regardless of whether the
+# run passed.
 on:
   workflow_dispatch:
     inputs:
@@ -29,13 +35,23 @@ jobs:
       - name: Build and deploy not-k8s (real containerd/CRI runtime)
         run: sudo ./deploy/bootstrap-source.sh --with-cri
 
+      - name: Install reference CSI + DRA drivers
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+        run: |
+          sudo chmod 644 "$KUBECONFIG"
+          sudo -E bash deploy/lib/e2e-full-setup.sh
+
       - name: Run the e2e suite
         id: e2e
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+          TEST_CSI_STORAGE_CLASS: csi-hostpath-sc
+          TEST_CSI_ATTACH_STORAGE_CLASS: csi-hostpath-sc
+          TEST_CSI_INLINE_DRIVER: hostpath.csi.k8s.io
+          TEST_CSI_BLOCK_STORAGE_CLASS: csi-hostpath-block-sc
         run: |
           set +e
-          sudo chmod 644 "$KUBECONFIG" 2>/dev/null || true
           ONLY_FLAG=""
           if [ -n "${{ inputs.only }}" ]; then
             ONLY_FLAG="--only=${{ inputs.only }}"

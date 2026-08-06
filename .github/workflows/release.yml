@@ -1,0 +1,182 @@
+name: Release pipeline
+
+# Triggers on every push to main — direct pushes and PR merges alike (a
+# PR merge *is* a push to main). Deliberately NOT triggered on
+# pull_request: this pipeline needs real sudo + a real k3s/containerd
+# cluster to run the e2e stage, and running that against arbitrary
+# untrusted PR code would be a real code-execution risk. PRs get
+# CodeRabbit's automated review instead (.coderabbit.yaml) — no unit
+# tests or e2e tests run until the PR is actually merged.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Stage 1: debug build + unit tests ─────────────────────────────────
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-toolchain
+      - name: cargo build (debug)
+        run: cargo build --features cri -p nodelet
+      - name: cargo test (both feature sets)
+        run: |
+          set -e
+          cargo test -p nodelet
+          cargo test -p nodelet --features cri
+
+  # ── Stage 2: full e2e suite, real CSI + DRA reference drivers ─────────
+  e2e:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and deploy not-k8s (real containerd/CRI runtime)
+        run: sudo ./deploy/bootstrap-source.sh --with-cri
+
+      - name: Install reference CSI + DRA drivers
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+        run: |
+          sudo chmod 644 "$KUBECONFIG"
+          sudo -E bash deploy/lib/e2e-full-setup.sh
+
+      - name: Run the full e2e suite
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+          TEST_CSI_STORAGE_CLASS: csi-hostpath-sc
+          TEST_CSI_ATTACH_STORAGE_CLASS: csi-hostpath-sc
+          TEST_CSI_INLINE_DRIVER: hostpath.csi.k8s.io
+          TEST_CSI_BLOCK_STORAGE_CLASS: csi-hostpath-block-sc
+        run: ./deploy/test-e2e.sh
+
+  # ── Stage 3: debug + release builds, all 3 platforms, concurrently ────
+  build-release:
+    needs: e2e
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+          - arch: aarch64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            cross: false
+          - arch: armv7l
+            target: armv7-unknown-linux-gnueabihf
+            runner: ubuntu-latest
+            cross: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Add cross target + linker (armv7l only)
+        if: matrix.cross
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-arm-linux-gnueabihf
+          rustup target add armv7-unknown-linux-gnueabihf
+          {
+            echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc"
+            echo "CC_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc"
+            # protoc itself runs on THIS (build) host to generate code, not
+            # on the target — no cross protoc needed, just make sure
+            # prost-build/tonic-build find the one setup-toolchain already
+            # installed regardless of target triple.
+            echo "PROTOC=$(command -v protoc)"
+          } >> "$GITHUB_ENV"
+
+      - name: Build (debug + release, both profiles)
+        run: |
+          set -e
+          TARGET_FLAG=""
+          [[ "${{ matrix.cross }}" == "true" ]] && TARGET_FLAG="--target ${{ matrix.target }}"
+          # shellcheck disable=SC2086
+          cargo build --features cri -p nodelet $TARGET_FLAG
+          # shellcheck disable=SC2086
+          cargo build --release --features cri -p nodelet $TARGET_FLAG
+
+      - name: Stage binaries for upload
+        run: |
+          set -e
+          mkdir -p dist
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            SRC_DIR="target/${{ matrix.target }}"
+          else
+            SRC_DIR="target"
+          fi
+          cp "$SRC_DIR/debug/nodelet" "dist/nodelet-linux-${{ matrix.arch }}-debug"
+          cp "$SRC_DIR/release/nodelet" "dist/nodelet-linux-${{ matrix.arch }}-release"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodelet-${{ matrix.arch }}
+          path: dist/
+          retention-days: 5
+
+  # ── Stage 4: bump version, tag, publish the GitHub Release ────────────
+  publish-release:
+    needs: build-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: nodelet-*
+          merge-multiple: true
+
+      - name: Determine this release's version
+        id: version
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          VERSION="$(bash deploy/lib/version-bump.sh "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rename artifacts to include the version
+        run: |
+          set -e
+          cd dist
+          for f in nodelet-linux-*-debug nodelet-linux-*-release; do
+            [[ -f "$f" ]] || continue
+            arch_profile="${f#nodelet-linux-}"
+            mv "$f" "nodelet-${{ steps.version.outputs.version }}-linux-${arch_profile}"
+          done
+          ls -la
+
+      - name: Generate changelog
+        run: bash deploy/lib/changelog.sh "v${{ steps.version.outputs.version }}" > changelog.md
+
+      - name: Tag and publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="v${{ steps.version.outputs.version }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file changelog.md \
+            dist/nodelet-*
