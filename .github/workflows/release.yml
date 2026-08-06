@@ -215,6 +215,9 @@ jobs:
       - name: Generate changelog
         run: bash deploy/lib/changelog.sh "v${{ steps.version.outputs.version }}" > changelog.md
 
+      - name: Build deploy.tar.gz (what the standalone installer fetches)
+        run: tar czf dist/deploy.tar.gz deploy
+
       - name: Tag and publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -226,4 +229,34 @@ jobs:
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file changelog.md \
-            dist/nodelet-*
+            dist/nodelet-* dist/deploy.tar.gz
+
+      - name: Compile the standalone install scripts
+        run: |
+          set -e
+          mkdir -p install-scripts-out
+          bash deploy/lib/compile-install-script.sh "${{ steps.version.outputs.version }}" install-scripts-out/install.sh
+          bash deploy/lib/compile-install-script.sh "${{ steps.version.outputs.version }}" "install-scripts-out/install-v${{ steps.version.outputs.version }}.sh" --pin
+
+      - name: Publish install scripts to the install-scripts branch
+        # install.sh always gets overwritten (it's "latest" by design —
+        # unpinned, resolves whatever release is newest whenever someone
+        # actually runs it). install-vX.Y.Z.sh is unique per version and
+        # never overwritten — older scripts stay put so a pinned install
+        # keeps working exactly as it did the day it was published, even
+        # after newer releases exist.
+        run: |
+          set -e
+          BRANCH=install-scripts
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+          else
+            git checkout --orphan "$BRANCH"
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          cp install-scripts-out/install.sh install.sh
+          cp "install-scripts-out/install-v${{ steps.version.outputs.version }}.sh" "install-v${{ steps.version.outputs.version }}.sh"
+          git add install.sh "install-v${{ steps.version.outputs.version }}.sh"
+          git commit -m "install scripts for v${{ steps.version.outputs.version }}" --allow-empty
+          git push origin "$BRANCH"

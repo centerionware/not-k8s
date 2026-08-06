@@ -8,7 +8,13 @@ The core idea: kubelet idles at 30–50% of a CPU core on an edge device, not fr
 
 ## Get started
 
-**From a prebuilt release** (fastest for trying it out):
+**No clone needed** — fetches a prebuilt binary for your architecture and installs everything else around it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/centerionware/not-k8s/install-scripts/install.sh | bash -s -- --with-cri
+```
+
+**From a prebuilt release, if you'd rather have the repo on disk too:**
 
 ```bash
 git clone https://github.com/centerionware/not-k8s && cd not-k8s && \
@@ -22,7 +28,7 @@ git clone https://github.com/centerionware/not-k8s && cd not-k8s && \
   ./deploy/bootstrap-source.sh --with-cri
 ```
 
-Both scripts are self-contained: they detect your distro and CPU architecture, install and build everything needed (Rust, containerd, k3s, CNI), then clean up build tools afterward.
+All three are self-contained: they detect your distro and CPU architecture and install everything else needed (containerd, k3s, CNI); the two prebuilt-binary paths need no Rust toolchain at all, the from-source path builds and then cleans up its build tools afterward. Pin the one-liner to a specific release instead of always-latest with `install-v<version>.sh` in place of `install.sh`.
 
 ## Scope
 
