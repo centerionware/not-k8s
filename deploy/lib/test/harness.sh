@@ -63,7 +63,35 @@ run_test() {
     fi
 }
 
+# _reorder_env_reconfiguring_tests_last — moves every registered test
+# whose own body touches nodelet_restart_with_env (a real systemd
+# restart) or restarts/reconfigures another host-level service
+# (containerd, swap) to the END of TESTS_REGISTERED, preserving relative
+# order within each of the two groups otherwise. Round 123: found live in
+# CI — a batch mixing these with ordinary pod-creation tests produced
+# flaky "pod never reached Running" failures that moved to a DIFFERENT
+# test on every rerun, tracking down to real contention (node briefly
+# NotReady, CSI/DRA plugins re-registering, volumes re-materializing)
+# from whichever restart-ish test happened to run nearby. Detection is
+# by grepping each test function's real source (`declare -f`) rather
+# than a hand-maintained list, so a new test that starts doing this
+# automatically gets deferred too, without anyone remembering to update
+# a list here.
+_reorder_env_reconfiguring_tests_last() {
+    local -a normal=() deferred=()
+    local name
+    for name in "${TESTS_REGISTERED[@]}"; do
+        if declare -f "$name" 2>/dev/null | grep -qE 'nodelet_restart_with_env|sudo (systemctl restart containerd|swapon|mkswap)'; then
+            deferred+=("$name")
+        else
+            normal+=("$name")
+        fi
+    done
+    TESTS_REGISTERED=("${normal[@]}" "${deferred[@]}")
+}
+
 run_all_registered_tests() {
+    _reorder_env_reconfiguring_tests_last
     # NOTK8S_E2E_MAX_FAILURES stops the whole run once this many tests
     # have failed, instead of always running every remaining test —
     # unset/0 means unlimited (the historical, still-default local

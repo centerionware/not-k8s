@@ -98,6 +98,15 @@ node conditions/taints + nodelet's log tail right after each failure — CI sets
 1) make a systemic break fail fast with real signal instead of burning 30+
 minutes re-discovering the same root cause across the rest of the suite.
 
+`harness.sh`'s `run_all_registered_tests()` automatically reorders any test
+that restarts nodelet (`nodelet_restart_with_env`) or another host service
+(containerd, swap) to the very end of the run — detected by grepping each
+test function's real source (`declare -f`), not a hand-maintained list, so
+new tests doing this get deferred automatically. Found live in CI: mixing
+these with ordinary pod-creation tests caused flaky "pod never reached
+Running" failures that moved to a different test on every rerun (node
+briefly NotReady, CSI/DRA plugins re-registering, volumes re-materializing).
+
 **Iterating on a known e2e failure: use `.github/workflows/e2e.yml` (manual
 `workflow_dispatch`, `only` input — same comma-separated matching as above),
 not the full `release.yml` pipeline.** `gh workflow run e2e.yml --ref main -f
