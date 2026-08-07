@@ -1,6 +1,20 @@
-commit: b2ae24fd162eb1ca601ceb34f26085b2a124f2ba
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31143370579
-timestamp (UTC): 2026-08-07T03:10:17Z
-exit code: unknown
+commit: 060f9013a6b68ee4839699636501396a11fb7c8d
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31143522249
+timestamp (UTC): 2026-08-07T03:16:06Z
+exit code: 0
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786072493
+==> Running 142 registered test(s)...
+▶ test_pod_cgroup_reflects_its_qos_class
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedError from server (NotFound): pods "cgroup-qos-check" not found
+    (skip: couldn't find a cgroup directory under /sys/fs/cgroup/kubepods containing pod uid  — either this containerd doesn't delegate cgroup creation the way this test expects, or cgroup_parent_for()'s wiring in runtime/cri.rs::ensure_pod needs a look)
+  ○ SKIP (4s)
+▶ test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (36s)
+▶ test_share_process_namespace_puts_every_container_in_one_pid_namespace
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (33s)
+
+════════════════════════════════════════
+Results: 2 passed, 0 failed, 1 skipped
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786072493...
