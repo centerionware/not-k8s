@@ -237,8 +237,16 @@ spec:
         - {name: shared, mountPath: /shared}
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        # Round 123 diagnostics: skip_test isn't a hard failure, so
+        # NOTK8S_E2E_DEBUG_ON_FAIL's automatic dump never fires here --
+        # pull nodelet's own recent log unconditionally before skipping,
+        # since this branch just started firing after linux_security_context()
+        # started sending userns_options on every container too (not just
+        # the sandbox), and a CreateContainer-level rejection of that field
+        # would land here, not in the FATAL/die path below.
+        log "    [diag] nodelet tail: $(sudo journalctl -u nodelet.service --no-pager -n 40 2>&1)"
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted) or a RunPodSandbox error (runtime doesn't support CRI's userns_options at all, e.g. too old containerd)"
+        skip_test "pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted) or a RunPodSandbox/CreateContainer error (runtime doesn't support CRI's userns_options at all, e.g. too old containerd, or doesn't accept it on a per-container NamespaceOption)"
     fi
 
     # Round 123 diagnostics: this test (and its volume-roundtrip sibling)
