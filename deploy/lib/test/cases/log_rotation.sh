@@ -5,27 +5,25 @@
 # (nodelet_env.sh) does that for real now, instead of relying on an
 # externally pre-configured nodelet + a TEST_LOG_MAX_SIZE_BYTES hint.
 #
-# Round 123's own investigation into this test is worth recording: a
-# hand-quoted `try_wait_until 60 bash -c "sudo ls '$log_dir'/app_*.log.1
-# ..."` reliably reported failure for the full 60s run after run, even
-# though sudo-based post-mortem diagnostics AND a direct `crictl inspect`
-# of the container's own real ContainerStatus.log_path (confirming CRI
-# returns it already joined with the sandbox's log_directory, exactly as
-# rotate_logs() expects) both proved real rotation was happening well
-# within that same window — rotation itself was never broken. The actual
-# bug was in the *check*, not the feature: nesting a hand-built
-# single-quoted path inside a double-quoted `bash -c "..."` string is
-# exactly the kind of construct that's fragile to get right blind, even
-# when it happens to parse correctly stand-alone. Using an exported
-# function (the same pattern k8s.sh's own wait_until helpers already
-# establish for this exact reason — see its own comment) instead of a
-# hand-quoted command string sidesteps the whole class of bug.
+# Round 123's own investigation is worth recording, since the eventual
+# bug was subtle: rotation itself was never broken (confirmed via a
+# direct `crictl inspect` of the container's real ContainerStatus.log_path,
+# and repeated post-mortem `sudo ls -la` dumps that always found
+# app_0.log.1 through .4 present well within the wait window) — every
+# single check attempt still failed anyway. The actual cause: `sudo ls
+# "$dir"/app_*.log.1` glob-expands `app_*.log.1` in the CALLING shell
+# (this suite's own unprivileged process) *before* sudo ever elevates —
+# a well-known sudo gotcha. Since /var/log/pods isn't traversable by an
+# unprivileged user even though the pod's own log directory underneath
+# it is 755, that client-side glob expansion silently matched nothing,
+# and `ls` received the literal, never-existing string "app_*.log.1" as
+# its argument — `sudo ls -la` (no wildcard) always worked because a
+# literal path needs no client-side pre-resolution. Fixed by pushing the
+# glob expansion itself inside the sudo'd shell (`sudo bash -c '...'`),
+# so it happens as root.
 
-_log_rotation_check() { # _log_rotation_check <log_dir> <trace_file>
-    sudo ls "$1"/app_*.log.1 >/dev/null 2>&1
-    local rc=$?
-    echo "$(date +%T.%N) rc=$rc" >> "$2"
-    return "$rc"
+_log_rotation_check() { # _log_rotation_check <log_dir>
+    sudo bash -c 'ls "$1"/app_*.log.1' _ "$1" >/dev/null 2>&1
 }
 export -f _log_rotation_check
 
@@ -63,18 +61,13 @@ EOF
     log_dir="/var/log/pods/${ns}_${name}_${uid}"
 
     log "    waiting for a rotated log file under $log_dir (log_rotate_interval, default 10s)..."
-    local trace_file
-    trace_file="$(mktemp)"
-    if ! try_wait_until 60 _log_rotation_check "$log_dir" "$trace_file"; then
-        warn "[diag] per-attempt check trace: $(cat "$trace_file" 2>&1 | tr '\n' '|')"
+    if ! try_wait_until 60 _log_rotation_check "$log_dir"; then
         warn "[diag] contents of $log_dir: $(sudo ls -la "$log_dir" 2>&1)"
         warn "[diag] nodelet log mentioning rotation:"
         sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -iE "rotat" | tail -20 | while IFS= read -r line; do warn "[diag]   $line"; done
-        rm -f "$trace_file"
         delete_pod_if_exists "$name"
         die "no rotated log file appeared within 60s despite NODELET_CONTAINER_LOG_MAX_SIZE_BYTES=4096 — check log rotation wiring"
     fi
-    rm -f "$trace_file"
     delete_pod_if_exists "$name"
 }
 
