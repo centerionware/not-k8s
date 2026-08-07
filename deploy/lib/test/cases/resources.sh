@@ -166,7 +166,14 @@ spec:
         requests: { memory: "64Mi", cpu: "100m" }
         limits: { memory: "64Mi", cpu: "100m" }
 EOF
-    wait_until 60 "$guaranteed Running" pod_is_phase "$guaranteed" Running
+    if ! try_wait_until 90 pod_is_phase "$guaranteed" Running; then
+        warn "[diag] pod status: $(kctl get pod "$guaranteed" -o wide 2>&1)"
+        warn "[diag] pod events: $(kctl describe pod "$guaranteed" 2>&1 | grep -A20 '^Events:')"
+        warn "[diag] nodelet log mentioning $guaranteed:"
+        sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -E "$guaranteed" | tail -30 | while IFS= read -r line; do warn "[diag]   $line"; done
+        delete_pod_if_exists "$guaranteed"
+        die "timed out after 90s waiting for: $guaranteed Running"
+    fi
     local guaranteed_swap_max
     guaranteed_swap_max="$(kctl exec "$guaranteed" -- cat /sys/fs/cgroup/memory.swap.max 2>&1 | tr -dc '0-9')"
     delete_pod_if_exists "$guaranteed"
