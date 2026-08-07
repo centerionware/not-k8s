@@ -103,13 +103,6 @@ $(nodelet_env_lines systemd)
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    # Temporary diagnostic (round 123): StartLimitIntervalSec=0 above was
-    # supposed to stop nodelet_restart_with_env's repeated real restarts
-    # from ever hitting systemd's start-limit, but that happened anyway in
-    # CI even with this line present in the unit file — print what systemd
-    # itself actually loaded so the next real run's log settles whether
-    # the setting reached systemd at all, rather than guessing further.
-    log "nodelet.service start-limit as loaded by systemd: $(systemctl show nodelet.service -p StartLimitIntervalUSec -p StartLimitBurst --value | tr '\n' ' ')"
     systemctl enable nodelet.service
     # `enable --now` (equivalently `start` on an already-active unit) is a
     # no-op if nodelet was already running from a previous install — it
