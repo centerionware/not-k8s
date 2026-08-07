@@ -6,13 +6,11 @@
 # correctly — both exercised for real here, not just unit-tested in
 # isolation like the request-routing/auth-parsing logic already is.
 #
-# Only two of the four endpoints (containerLogs, exec) get real functional
-# coverage here. attach and portForward share the exact same proxy code
-# path (server/exec.rs's proxy_upgrade()/splice()) as exec — if exec works,
-# the proxying mechanism itself is proven; scripting a standalone attach or
-# port-forward check in bash (backgrounding a process, probing a forwarded
-# port, managing an interactive stdin stream) adds a lot of test-harness
-# complexity for very little additional coverage of *new* code.
+# Round 123: all four endpoints (containerLogs, exec, attach, portForward)
+# now get real functional coverage — attach and portForward share the
+# exact same proxy code path (server/exec.rs's proxy_upgrade()/splice())
+# as exec, but each gets its own independent test rather than resting
+# entirely on exec proving the shared mechanism.
 
 test_kubectl_logs_returns_real_output() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
@@ -89,11 +87,75 @@ EOF
     delete_pod_if_exists "$name"
 }
 
-test_attach_and_port_forward_manual_note() {
-    skip_test "attach and portForward share exec's exact proxy_upgrade()/splice() code path in server/exec.rs — if test_kubectl_exec_runs_a_command_and_returns_its_output passes, the underlying mechanism is proven. Manual spot-check if you want independent coverage: 'kubectl attach <pod>' against a pod whose command writes to stdout in a loop, and 'kubectl port-forward <pod> 8080:80' against a pod running a server on 80, then curl localhost:8080."
+test_kubectl_attach_streams_the_containers_stdout() {
+    # attach and portForward (below) share exec's exact
+    # proxy_upgrade()/splice() code path in server/exec.rs — round 123
+    # automates independent coverage of both anyway, rather than resting
+    # entirely on the exec test above proving the shared mechanism.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="attach-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "for i in 1 2 3 4 5 6 7 8; do echo attach-line-\$i; sleep 1; done; sleep 3600"]
+EOF
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    local out_file="/tmp/nodelet-e2e-attach-$$"
+    (kctl attach "$name" > "$out_file" 2>/dev/null &)
+    try_wait_until 20 bash -c "grep -q attach-line-3 '$out_file' 2>/dev/null" \
+        || warn "kubectl attach didn't show streamed output within 20s (may still be buffering)"
+    pkill -f "kubectl.*attach $name" 2>/dev/null || true
+    local seen
+    seen="$(cat "$out_file" 2>/dev/null)"
+    rm -f "$out_file"
+    delete_pod_if_exists "$name"
+    assert_contains "$seen" "attach-line-" "kubectl attach produced no streamed output at all"
+}
+
+test_kubectl_port_forward_reaches_a_real_container_port() {
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="port-forward-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      # Same one-shot-per-connection busybox-nc HTTP responder
+      # networking.sh's hostPort tests already use — alpine's busybox
+      # doesn't compile in the httpd applet.
+      command: ["sh", "-c", "printf 'HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nConnection: close\\r\\n\\r\\nport-forward-marker\\n' > /tmp/resp && while true; do nc -lp 8080 < /tmp/resp; done"]
+EOF
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
+
+    local local_port=18080
+    local pf_log="/tmp/nodelet-e2e-port-forward-$$"
+    (kctl port-forward "$name" "$local_port:8080" > "$pf_log" 2>&1 &)
+    local response
+    if ! response="$(try_wait_until 20 bash -c "curl -sf --max-time 3 http://127.0.0.1:$local_port/ 2>/dev/null | grep -q port-forward-marker" \
+        && curl -sf --max-time 3 "http://127.0.0.1:$local_port/")"; then
+        pkill -f "kubectl.*port-forward $name" 2>/dev/null || true
+        rm -f "$pf_log"
+        delete_pod_if_exists "$name"
+        die "kubectl port-forward never reached the container's real port 8080 — check server/exec.rs's proxy_upgrade()/splice() path (see $pf_log for kubectl's own output, if still present)"
+    fi
+    pkill -f "kubectl.*port-forward $name" 2>/dev/null || true
+    rm -f "$pf_log"
+    delete_pod_if_exists "$name"
+    assert_contains "$response" "port-forward-marker" "curl through kubectl port-forward should reach the container's real HTTP responder"
 }
 
 register_test test_kubectl_logs_returns_real_output
 register_test test_kubectl_logs_follow_streams_new_output
 register_test test_kubectl_exec_runs_a_command_and_returns_its_output
-register_test test_attach_and_port_forward_manual_note
+register_test test_kubectl_attach_streams_the_containers_stdout
+register_test test_kubectl_port_forward_reaches_a_real_container_port
