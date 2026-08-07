@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: 'Optional --only=<pattern> filter (substring match on test function names). Leave empty to run everything.'
+        description: 'Optional --only=<pattern> filter (substring match on test function names; comma-separate multiple patterns to run several specific tests in one dispatch). Leave empty to run everything.'
         required: false
         default: ''
 

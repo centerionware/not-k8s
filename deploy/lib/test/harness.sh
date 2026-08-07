@@ -77,9 +77,25 @@ run_all_registered_tests() {
     # signal is enough to start root-causing; more than that is waste,
     # not thoroughness.
     local max_failures="${NOTK8S_E2E_MAX_FAILURES:-0}"
+    # ONLY_PATTERN may be a comma-separated list (round 123) — lets one CI
+    # dispatch cover several known-failing tests back to back instead of
+    # one dispatch per test, without giving up substring matching (each
+    # comma-separated piece is still matched the same way a bare
+    # --only=<substring> always has been). A test matching ANY piece runs.
+    local -a only_patterns=()
+    if [[ -n "$ONLY_PATTERN" ]]; then
+        IFS=',' read -ra only_patterns <<< "$ONLY_PATTERN"
+    fi
     for name in "${TESTS_REGISTERED[@]}"; do
-        if [[ -n "$ONLY_PATTERN" && "$name" != *"$ONLY_PATTERN"* ]]; then
-            continue
+        if ((${#only_patterns[@]} > 0)); then
+            local matched=false
+            for p in "${only_patterns[@]}"; do
+                if [[ "$name" == *"$p"* ]]; then
+                    matched=true
+                    break
+                fi
+            done
+            [[ "$matched" == false ]] && continue
         fi
         run_test "$name"
         if [[ "$max_failures" -gt 0 && "$TESTS_FAILED" -ge "$max_failures" ]]; then

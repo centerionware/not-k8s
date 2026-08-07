@@ -20,6 +20,7 @@
 # Usage:
 #   ./deploy/test-e2e.sh                    # run everything
 #   ./deploy/test-e2e.sh --only=probes      # only tests whose function name contains "probes"
+#   ./deploy/test-e2e.sh --only=probes,dns  # comma-separated: contains "probes" OR "dns" (round 123)
 #   ./deploy/test-e2e.sh --keep             # don't delete the test namespace at the end (debugging)
 #   ./deploy/test-e2e.sh --namespace=foo    # use a specific namespace instead of a generated one
 #
