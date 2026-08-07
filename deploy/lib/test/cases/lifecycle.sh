@@ -523,8 +523,53 @@ EOF
     delete_pod_if_exists "$name"
 }
 
-test_image_pull_policy_if_not_present_manual_note() {
-    skip_test "proving IfNotPresent/Never actually SKIP the registry round-trip (not just that Never fails when absent, which test_image_pull_policy_never_fails_when_image_is_absent already covers live) needs reading nodelet's own logs or observing network activity — not something this suite does. Manual spot-check: pull $TEST_IMAGE once via a Running pod, then create a second pod referencing the same image with imagePullPolicy: IfNotPresent and (if your registry supports it) point nodelet at an unreachable/offline registry mirror — confirm the second pod still reaches Running quickly (no failed registry call blocking it), and check nodelet's logs show no new ImageStatus miss or PullImage call for that image."
+test_image_pull_policy_if_not_present_skips_the_registry_round_trip() {
+    # Round 123: previously manual-only, but "read nodelet's own logs or
+    # observe network activity" is exactly something this suite already
+    # does elsewhere (sudo journalctl -u containerd, same as gc.sh's own
+    # ctr-based checks) — containerd itself logs every real PullImage RPC
+    # at INFO level, independent of anything nodelet logs. A distinct
+    # image tag (not used elsewhere in this suite) so no other test's
+    # activity can be mistaken for this one's.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local image="busybox:1.31.1"
+    local first="pull-ifnotpresent-first"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $first
+spec:
+  containers:
+    - name: app
+      image: $image
+      command: ["sleep", "3600"]
+EOF
+    wait_until 60 "$first Running" pod_is_phase "$first" Running
+    delete_pod_if_exists "$first"
+    wait_until 30 "$first gone" pod_gone "$first"
+
+    local since
+    since="$(date -u '+%Y-%m-%d %H:%M:%S')"
+    local second="pull-ifnotpresent-second"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $second
+spec:
+  containers:
+    - name: app
+      image: $image
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "3600"]
+EOF
+    wait_until 30 "$second Running" pod_is_phase "$second" Running
+    delete_pod_if_exists "$second"
+
+    local pulls_since
+    pulls_since="$(sudo journalctl -u containerd --since "$since" --no-pager 2>/dev/null | grep -c "PullImage.*$image" || true)"
+    assert_eq "$pulls_since" "0" "a second pod with imagePullPolicy: IfNotPresent for an image already present shouldn't trigger a new PullImage call at all — containerd's own journal should show none since the image was already pulled by the first pod"
 }
 
 register_test test_basic_pod_runs
@@ -576,4 +621,4 @@ register_test test_pod_status_reports_qos_class
 register_test test_pod_condition_reports_observed_generation
 register_test test_container_status_reports_a_real_image_id
 register_test test_image_pull_policy_never_fails_when_image_is_absent
-register_test test_image_pull_policy_if_not_present_manual_note
+register_test test_image_pull_policy_if_not_present_skips_the_registry_round_trip
