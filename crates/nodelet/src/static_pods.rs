@@ -199,8 +199,23 @@ pub async fn run(client: Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
             if let Err(e) = runtime.remove_pod(&entry.prepared_pod).await {
                 warn!(pod = %entry.mirror_name, error = ?e, "static pod: remove_pod failed");
             }
+            // Round 123 (found live in CI): `DeleteParams::default()` only
+            // soft-deletes — sets deletionTimestamp with the mirror pod's
+            // own default terminationGracePeriodSeconds (30s), same as any
+            // other pod delete, and nothing ever comes back to force it the
+            // rest of the way. `pods.rs`'s own regular (non-static) pod
+            // teardown already gets this right
+            // (`DeleteParams { grace_period_seconds: Some(0), .. }`) for
+            // exactly this reason: by the time delete() runs, `remove_pod()`
+            // just above has already synchronously confirmed the real
+            // containers are stopped, so there's nothing left to wait a
+            // grace period *for* — force-deleting immediately is correct
+            // and safe, not a shortcut. Confirmed live: without this, a
+            // mirror pod sat "Terminating" well past 60s after its manifest
+            // was deleted.
+            let dp = kube::api::DeleteParams { grace_period_seconds: Some(0), ..Default::default() };
             let api: Api<Pod> = Api::namespaced(client.clone(), &entry.namespace);
-            if let Err(e) = api.delete(&entry.mirror_name, &kube::api::DeleteParams::default()).await {
+            if let Err(e) = api.delete(&entry.mirror_name, &dp).await {
                 warn!(pod = %entry.mirror_name, error = ?e, "static pod: failed to delete mirror pod");
             }
         }

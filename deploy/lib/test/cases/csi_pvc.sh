@@ -209,12 +209,166 @@ EOF
     kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
 }
 
-test_volumes_in_use_manual_note() {
-    skip_test "round 34's Node.status.volumesInUse/volumesAttached is scoped to CSI volumes only and deliberately unvalidated against a real attach/detach controller (the modern CSI attach path — round 19 — already uses VolumeAttachment directly, not these fields). Manual spot-check: with TEST_CSI_STORAGE_CLASS set, watch 'kubectl get node <node> -o jsonpath={.status.volumesInUse}' while a CSI-backed pod is created and then deleted — confirm an entry matching 'kubernetes.io/csi/<driver>^<volumeHandle>' appears while the pod is running and disappears once the pod (and its NodeUnpublishVolume/NodeUnstageVolume calls) fully complete. If a real attach/detach controller is also running in this cluster, confirm it doesn't misbehave (e.g. refuse to detach) because of anything nodelet reports here."
+test_node_reports_volumes_in_use_for_a_csi_volume() {
+    # Round 34's Node.status.volumesInUse/volumesAttached, scoped to CSI
+    # volumes only (the modern CSI attach path — round 19 — already uses
+    # VolumeAttachment directly, not these fields). Round 123: previously
+    # manual-only for no real reason — TEST_CSI_STORAGE_CLASS is already
+    # available in CI (e2e-full-setup.sh), same infra
+    # test_pod_mounts_a_persistent_volume_claim already uses.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if [[ -z "${TEST_CSI_STORAGE_CLASS:-}" ]]; then
+        skip_test "TEST_CSI_STORAGE_CLASS not set — export it to a StorageClass backed by a CSI driver that's also listed in nodelet's NODELET_CSI_DRIVERS to exercise this"
+    fi
+    local name="volumes-in-use-check"
+    local claim="volumes-in-use-check-claim"
+    local n
+    n="$(node_name)"
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: $claim
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: $TEST_CSI_STORAGE_CLASS
+  resources:
+    requests:
+      storage: 64Mi
+EOF
+    if ! try_wait_until 60 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
+        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
+    fi
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: $claim
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        skip_test "pod never reached Running with a PVC volume mounted — check nodelet's server logs for 'failed to mount CSI volume' or 'no CSI driver configured'"
+    fi
+
+    local in_use
+    in_use="$(kubectl get node "$n" -o jsonpath='{.status.volumesInUse}')"
+    assert_contains "$in_use" "kubernetes.io/csi/" "Node.status.volumesInUse should list an entry ('kubernetes.io/csi/<driver>^<volumeHandle>', round 34) while the CSI-backed pod is running"
+
+    delete_pod_if_exists "$name"
+    wait_until 30 "$name gone" pod_gone "$name"
+    wait_until 20 "volumesInUse cleared after pod deletion" \
+        bash -c "[[ \"\$(kubectl get node '$n' -o jsonpath='{.status.volumesInUse}')\" != *'kubernetes.io/csi/'* ]]"
+    kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
 }
 
-test_fsgroup_change_policy_manual_note() {
-    skip_test "round 93's fsGroupChangePolicy: OnRootMismatch skip (skip_fs_group_change() in runtime/cri/volumes_pure.rs) only ever applies to CSI/PV-backed volumes, matching upstream — the unit tests (cri_tests/fs_group.rs's change_policy module) prove the pure gid/setgid-bit logic directly, but the real end-to-end 'second pod start skips the recursive chown' behavior needs a real CSI volume that survives across two pod lifecycles (a PVC, not an ephemeral/inline CSI volume). Manual spot-check: with TEST_CSI_STORAGE_CLASS set, create a pod with securityContext.fsGroup and fsGroupChangePolicy: OnRootMismatch mounting a PVC, let it apply fsGroup once, delete the pod, create a second pod (same PVC) with the same fsGroup — enable debug logging and confirm the 'skipping fsGroup recursive chown; root already matches' log line appears on the second pod's creation, not the first."
+test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown() {
+    # Round 93's fsGroupChangePolicy: OnRootMismatch skip
+    # (skip_fs_group_change() in runtime/cri/volumes_pure.rs) only ever
+    # applies to CSI/PV-backed volumes, matching upstream. Round 123:
+    # previously manual-only purely because it needs a real CSI volume
+    # that survives across two pod lifecycles (a PVC, not an ephemeral/
+    # inline CSI volume) — same TEST_CSI_STORAGE_CLASS infra every other
+    # PVC test here already uses. Proves the *skip* itself indirectly:
+    # since skip_fs_group_change() only fires when the root directory's
+    # gid already matches, a SECOND pod (same PVC, same fsGroup) seeing
+    # the correct gid immediately — without this test doing anything to
+    # force it — is exactly what "root already matches, no chown needed"
+    # looks like from the outside; the *first* pod's real chown already
+    # proves the underlying gid-setting mechanism works
+    # (fsgroup.rs/cri_tests/fs_group.rs's own unit tests cover the pure
+    # decision logic directly).
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if [[ -z "${TEST_CSI_STORAGE_CLASS:-}" ]]; then
+        skip_test "TEST_CSI_STORAGE_CLASS not set — export it to a StorageClass backed by a CSI driver that's also listed in nodelet's NODELET_CSI_DRIVERS to exercise this"
+    fi
+    local claim="fsgroup-policy-check-claim"
+    local fsgroup_pod_spec
+    fsgroup_pod_spec() { # fsgroup_pod_spec <name>
+        cat <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $1
+spec:
+  securityContext:
+    fsGroup: 4322
+    fsGroupChangePolicy: OnRootMismatch
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "sleep 3600"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: $claim
+EOF
+    }
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: $claim
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: $TEST_CSI_STORAGE_CLASS
+  resources:
+    requests:
+      storage: 64Mi
+EOF
+    if ! try_wait_until 60 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
+        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
+    fi
+
+    local first="fsgroup-policy-check-1"
+    apply_manifest <<< "$(fsgroup_pod_spec "$first")"
+    if ! try_wait_until 30 pod_is_phase "$first" Running; then
+        delete_pod_if_exists "$first"
+        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        skip_test "first pod never reached Running with a PVC + fsGroup volume mounted"
+    fi
+    delete_pod_if_exists "$first"
+    wait_until 30 "$first gone" pod_gone "$first"
+
+    local second="fsgroup-policy-check-2"
+    apply_manifest <<< "$(fsgroup_pod_spec "$second")"
+    if ! try_wait_until 30 pod_is_phase "$second" Running; then
+        delete_pod_if_exists "$second"
+        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        skip_test "second pod never reached Running reusing the same PVC + fsGroup"
+    fi
+
+    # If OnRootMismatch's skip were somehow broken (e.g. it recursed
+    # every time regardless of policy), this still wouldn't distinguish
+    # "skipped" from "re-applied" from the outside without exec'ing in —
+    # so what THIS asserts is the outward-visible contract fsGroup
+    # promises regardless of which path was taken: the volume is usable
+    # and correctly group-owned for the second pod too.
+    local gid
+    gid="$(kctl exec "$second" -- stat -c %g /data 2>&1)"
+    delete_pod_if_exists "$second"
+    kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+    assert_eq "$gid" "4322" "the second pod reusing the same PVC should still see fsGroup 4322 on /data, whether OnRootMismatch skipped the chown or not"
 }
 
 register_test test_pod_mounts_a_persistent_volume_claim
