@@ -772,3 +772,6 @@ mod tests_hugepage_cri_page_size;
 #[cfg(test)]
 #[path = "cri_tests/volume_mount_status_tuples.rs"]
 mod tests_volume_mount_status_tuples;
+#[cfg(test)]
+#[path = "cri_tests/pending_csi_volume_names.rs"]
+mod tests_pending_csi_volume_names;

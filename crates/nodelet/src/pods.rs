@@ -335,6 +335,21 @@ impl PodController {
                 if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev, &gates, &self.health, qos, pod.metadata.generation).await {
                     warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status");
                 }
+                // Round 124: a still-pending CSI volume attach
+                // (pending_csi_volume_names(), volumes_pure.rs) touches
+                // nothing on the Pod object itself, so — unlike almost
+                // every other state change this controller reacts to —
+                // there's no future watch event to wait for. Without an
+                // explicit retry here, the pod would simply stay Pending
+                // forever once the external-attacher's own timing lost
+                // the race with this reconcile. schedule_retry() already
+                // exists for exactly this "nothing else will retry this"
+                // shape (originally for a failed ensure_pod); it now also
+                // recognizes and chains on this specific condition — see
+                // its own doc comment.
+                if is_waiting_for_csi_volume(&status) {
+                    self.schedule_retry(ns, name);
+                }
             }
             Err(e) => {
                 // A failed ensure_pod (e.g. a CNI plugin racing flanneld's own
@@ -351,36 +366,57 @@ impl PodController {
         }
     }
 
-    /// One delayed retry for a pod whose first ensure_pod failed. Runs
-    /// detached from the reconcile loop (needs to outlive this call), so it
-    /// re-fetches the Pod rather than reusing the possibly-stale one — if
-    /// it's gone or being deleted by the time the retry fires, there's
-    /// nothing to do. Deliberately doesn't retry again on a second failure:
-    /// a persistent failure should surface as a stuck Pending pod for a
-    /// human to look at, not retry forever in the background.
+    /// A delayed retry for a pod whose first ensure_pod failed, OR (round
+    /// 124) is waiting on a still-pending CSI volume attach
+    /// (`is_waiting_for_csi_volume()`). Runs detached from the reconcile
+    /// loop (needs to outlive this call), so it re-fetches the Pod rather
+    /// than reusing the possibly-stale one — if it's gone or being deleted
+    /// by the time a retry fires, there's nothing to do.
+    ///
+    /// The two cases get different persistence on purpose. A generic
+    /// ensure_pod() *error* stays one-shot: a persistent failure should
+    /// surface as a stuck Pending pod for a human to look at, not retry
+    /// forever in the background. A pending CSI volume is different — it's
+    /// not a failure at all, just an ordinary wait on an external-attacher
+    /// that can legitimately take well over a minute under load (confirmed
+    /// live in CI), so this keeps re-polling on the same 5s cadence for as
+    /// long as that specific condition holds, bounded so a genuinely wedged
+    /// attach still eventually stops retrying instead of polling forever.
     fn schedule_retry(&self, ns: String, name: String) {
         let client = self.client.clone();
         let runtime = self.runtime.clone();
         let host_ip = self.host_ip.clone();
         let health = self.health.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            let api: Api<Pod> = Api::namespaced(client.clone(), &ns);
-            let pod = match api.get_opt(&name).await {
-                Ok(Some(p)) if p.metadata.deletion_timestamp.is_none() => p,
-                _ => return,
-            };
-            match runtime.ensure_pod(&pod).await {
-                Ok(status) => {
-                    debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured (retry)");
-                    let prev = pod.status.as_ref();
-                    let gates = readiness_gate_types(&pod);
-                    let qos = crate::eviction::qos_class(&pod);
-                    if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev, &gates, &health, qos, pod.metadata.generation).await {
-                        warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status (retry)");
+            const MAX_VOLUME_ATTEMPTS: u32 = 24; // ~2 minutes at 5s apart
+            for attempt in 1..=MAX_VOLUME_ATTEMPTS {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let api: Api<Pod> = Api::namespaced(client.clone(), &ns);
+                let pod = match api.get_opt(&name).await {
+                    Ok(Some(p)) if p.metadata.deletion_timestamp.is_none() => p,
+                    _ => return,
+                };
+                match runtime.ensure_pod(&pod).await {
+                    Ok(status) => {
+                        debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), attempt, "ensured (retry)");
+                        let prev = pod.status.as_ref();
+                        let gates = readiness_gate_types(&pod);
+                        let qos = crate::eviction::qos_class(&pod);
+                        if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev, &gates, &health, qos, pod.metadata.generation).await {
+                            warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status (retry)");
+                        }
+                        if !is_waiting_for_csi_volume(&status) {
+                            return; // resolved, or failed for some other reason — either way, done retrying
+                        }
+                        if attempt == MAX_VOLUME_ATTEMPTS {
+                            warn!(pod = %format!("{ns}/{name}"), "still waiting for a CSI volume attach after {MAX_VOLUME_ATTEMPTS} retries — giving up; pod stays Pending until the next real watch event");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(pod = %format!("{ns}/{name}"), error = ?e, "retry ensure_pod also failed — waiting for the next watch event instead of retrying indefinitely");
+                        return;
                     }
                 }
-                Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "retry ensure_pod also failed — waiting for the next watch event instead of retrying indefinitely"),
             }
         });
     }
@@ -898,6 +934,17 @@ async fn next_event(events: &mut Option<UnboundedReceiver<String>>) -> String {
         },
         None => std::future::pending().await,
     }
+}
+
+/// Whether `status` is `ensure_pod()`'s "waiting for CSI volume(s) to be
+/// mounted" Pending case (`pending_csi_volume_names()`,
+/// runtime/cri/volumes_pure.rs) — matched by message prefix since
+/// `RuntimeStatus` has no dedicated reason enum for this yet, same
+/// shortcut real kubelet's own event-message matching in similar spots
+/// takes. Used by both `reconcile()` (decide whether to schedule a retry
+/// at all) and `schedule_retry()` (decide whether to keep chaining one).
+fn is_waiting_for_csi_volume(status: &RuntimeStatus) -> bool {
+    status.phase == Phase::Pending && status.message.as_deref().is_some_and(|m| m.starts_with("waiting for CSI volume(s) to be mounted"))
 }
 
 fn key_parts(pod: &Pod) -> Option<(String, String)> {

@@ -21,6 +21,37 @@ pub(crate) enum ResolvedVolume {
     BlockDevice(PathBuf),
 }
 
+/// Which of `pod`'s declared PVC-backed (or generic-ephemeral, which
+/// resolves through the same PVC machinery — round 31) volumes
+/// `resolve_volumes()` was *unable* to resolve — i.e. still-pending, not
+/// permanently missing. Round 124 (found live in CI): before this
+/// existed, `ensure_pod()` let a container start regardless of whether its
+/// declared CSI volume actually resolved — `resolve_volumes()`'s own doc
+/// comment even says so explicitly ("container starts without it"). That
+/// doesn't match real kubelet at all: real kubelet's volume manager
+/// (`WaitForAttachAndMount`) blocks a pod in `ContainerCreating` until
+/// every volume it needs is actually mounted, precisely because a
+/// container silently starting without its data volume is a correctness
+/// bug, not a graceful degradation — confirmed live: a pod reached
+/// `Running` with `/data` never mounted at all, purely because its CSI
+/// driver's attach hadn't finished by the time this reconcile ran, and
+/// nothing ever retried it since reconciliation here is watch-driven, not
+/// polled. `resolved` is `resolve_volumes()`'s own output map (volume name
+/// -> what it actually mounted) — anything PVC/ephemeral-shaped in
+/// `pod.spec.volumes` that isn't a key in there didn't resolve yet. CSI
+/// *ephemeral inline* volumes (`volumes[].csi` directly, round 46) are
+/// deliberately excluded — those have no attach/Bound concept at all, so
+/// an unresolved one there is a real driver error, not a timing race, and
+/// blocking forever on it would just wedge the pod.
+pub(crate) fn pending_csi_volume_names(pod: &Pod, resolved: &HashMap<String, ResolvedVolume>) -> Vec<String> {
+    let Some(volumes) = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()) else { return Vec::new() };
+    volumes
+        .iter()
+        .filter(|v| (v.persistent_volume_claim.is_some() || v.ephemeral.is_some()) && !resolved.contains_key(&v.name))
+        .map(|v| v.name.clone())
+        .collect()
+}
+
 /// `volumes[].hostPath.type`'s validate-and-maybe-create semantics
 /// (round 65; found in a fresh gap re-audit) — matches real kubelet's own
 /// hostPath type checking: an unset/empty type performs no check at all

@@ -109,6 +109,29 @@ impl PodRuntime for CriRuntime {
             .unwrap_or_default();
 
         let volumes = self.resolve_volumes(pod, &id, &pull_secrets).await;
+        // Round 124 (found live in CI): don't let any container start
+        // (not even an init container) while a declared PVC/generic-
+        // ephemeral volume is still waiting on its CSI attach/mount —
+        // see pending_csi_volume_names()'s own doc comment for the real
+        // bug this closes (a pod reaching Running with its data volume
+        // silently never mounted, permanently, because reconciliation
+        // here is watch-driven and nothing else would ever retry it).
+        // pods.rs's reconcile() recognizes this exact message and
+        // schedules a real retry — matching real kubelet's own
+        // WaitForAttachAndMount blocking behavior, not a one-shot skip.
+        let pending_volumes = pending_csi_volume_names(pod, &volumes);
+        if !pending_volumes.is_empty() {
+            return Ok(RuntimeStatus {
+                phase: Phase::Pending,
+                message: Some(format!("waiting for CSI volume(s) to be mounted: {}", pending_volumes.join(", "))),
+                started_at: None,
+                pod_ip: None,
+                containers: Vec::new(),
+                init_containers: Vec::new(),
+                ephemeral_containers: Vec::new(),
+                initialized: false,
+            });
+        }
         let service_env = if pod.spec.as_ref().and_then(|s| s.enable_service_links) == Some(false) {
             BTreeMap::new()
         } else {
