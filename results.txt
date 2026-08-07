@@ -1,117 +1,121 @@
-commit: ecb6620eaaab8e75900c5889cb6b0b490bed51bf
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31165197031
-timestamp (UTC): 2026-08-07T09:27:19Z
+commit: 618bed70441bd0c3d8e5ad46ee0a71f3e7979768
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31166274171
+timestamp (UTC): 2026-08-07T09:43:48Z
 exit code: 1
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786094440
+==> Test namespace: not-k8s-e2e-1786095372
 ==> Running 151 registered test(s)...
 ▶ test_config_file_sets_a_value_env_did_not_override
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_config_file_precedence_a_real_env_var_still_wins
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (4s)
+  ✔ PASS (4s)
 ▶ test_config_dir_merges_files_in_filename_order
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_dynamic_csi_registration_actually_registered_the_driver
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (2s)
+  ✔ PASS (1s)
 ▶ test_node_reports_volumes_in_use_for_a_csi_volume
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (121s)
+  ✔ PASS (121s)
 ▶ test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> WARNING: old VolumeAttachment for pvc-bdc4c080-e078-429d-8de6-24244c873f4d didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> WARNING: [diag] pod2 right after Running: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedNAME                     READY   STATUS    RESTARTS   AGE   IP           NODE            NOMINATED NODE   READINESS GATES
-fsgroup-policy-check-2   1/1     Running   0          2s    10.42.0.10   runnervmvrwv9   <none>           <none>
-==> WARNING: [diag] default-ns pods (CSI driver state): kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedNAME                   READY   STATUS    RESTARTS   AGE     IP          NODE            NOMINATED NODE   READINESS GATES
-csi-hostpath-socat-0   1/1     Running   0          3m54s   10.42.0.5   runnervmvrwv9   <none>           <none>
-csi-hostpathplugin-0   8/8     Running   0          3m54s   10.42.0.4   runnervmvrwv9   <none>           <none>
-smoke-test             1/1     Running   0          4m18s   10.42.0.3   runnervmvrwv9   <none>           <none>
-  ✔ PASS (99s)
+==> WARNING: old VolumeAttachment for pvc-85a09280-1458-4f12-b77d-d14f287aebcb didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
+==> WARNING: [diag] pod2 right after Running: NAME                     READY   STATUS    RESTARTS   AGE   IP           NODE            NOMINATED NODE   READINESS GATES
+fsgroup-policy-check-2   1/1     Running   0          3s    10.42.0.10   runnervmvrwv9   <none>           <none>
+==> WARNING: [diag] default-ns pods (CSI driver state): NAME                   READY   STATUS    RESTARTS   AGE     IP          NODE            NOMINATED NODE   READINESS GATES
+csi-hostpath-socat-0   1/1     Running   0          3m58s   10.42.0.5   runnervmvrwv9   <none>           <none>
+csi-hostpathplugin-0   8/8     Running   0          3m59s   10.42.0.4   runnervmvrwv9   <none>           <none>
+smoke-test             1/1     Running   0          4m25s   10.42.0.3   runnervmvrwv9   <none>           <none>
+  ✔ PASS (101s)
 ▶ test_pod_exceeding_its_active_deadline_is_terminated
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (40s)
+  ✔ PASS (42s)
 ▶ test_log_rotation_creates_a_rotated_file
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786094440_log-rotation_a3f50aef-7ab0-4209-91b0-c6cc89ad9df3 (log_rotate_interval, default 10s)...
-  ✔ PASS (14s)
+==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786095372_log-rotation_17c4810e-231f-4c67-a9eb-a51755bbe85c (log_rotate_interval, default 10s)...
+  ✔ PASS (13s)
 ▶ test_limited_swap_gives_burstable_pods_proportional_swap
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> FATAL: timed out after 60s waiting for: limited-swap-guaranteed Running
-  ✘ FAIL (66s, exit 1)
-  [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
-  [diag] nodelet tail:
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.527361Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.531127Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.534993Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.555137Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-a8f08acd-9696-42f9-89dc-4184b98d4d1d.sock plugin_type=DRAPlugin
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.566258Z  INFO node registered and Ready node=runnervmvrwv9
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.566782Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.567301Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.567547Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.569790Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.649085Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.670857Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.704454Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.751803Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-xssv2 namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.789339Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-qlf59 namespace="kube-system" name="coredns" kind=ConfigMap
-    Aug 07 09:26:34 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:34.577147Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-qlf59 namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+  ✔ PASS (68s)
 ▶ test_host_users_volume_ownership_translation_is_correct
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> FATAL: assertion failed: a host-side file owned by the pod's own userns base uid (100000) should show as uid 0 inside the container (real ownership translation via the sandbox's ambient user namespace), not 65534/nobody — got 'kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied0', want '0'
-  ✘ FAIL (8s, exit 1)
-  [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
+==> FATAL: pod never reached Running with hostUsers: false — see the sibling real-userns test's own doc comment for known causes
+  ✘ FAIL (31s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
   [diag] nodelet tail:
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.534993Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.555137Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-a8f08acd-9696-42f9-89dc-4184b98d4d1d.sock plugin_type=DRAPlugin
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.566258Z  INFO node registered and Ready node=runnervmvrwv9
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.566782Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.567301Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.567547Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.569790Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.649085Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.670857Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.704454Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.751803Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-xssv2 namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:33 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:33.789339Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-qlf59 namespace="kube-system" name="coredns" kind=ConfigMap
-    Aug 07 09:26:34 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:34.577147Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-qlf59 namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:34 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:34.683000Z  INFO re-materializing volumes after referenced object changed pod=not-k8s-e2e-1786094440/limited-swap-guaranteed namespace="not-k8s-e2e-1786094440" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:42 runnervmvrwv9 run-nodelet.sh[27184]: 2026-08-07T09:26:42.584665Z  WARN hostPath volume failed validation; container(s) mounting it won't get this path volume=hostvol path=/tmp/nodelet-hostusers-ownership-test.8N75tL host_path_type=Directory error=hostPath: /tmp/nodelet-hostusers-ownership-test.8N75tL does not exist (type: Directory requires it to already)
+    Aug 07 09:42:06 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:06.901408Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
+    Aug 07 09:42:06 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:06.904094Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 09:42:06 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:06.923288Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-3d8f4582-e216-49d7-a2eb-edcafbd02111.sock plugin_type=DRAPlugin
+    Aug 07 09:42:06 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:06.930039Z  INFO node registered and Ready node=runnervmvrwv9
+    Aug 07 09:42:06 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:06.930408Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
+    Aug 07 09:42:06 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:06.930921Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
+    Aug 07 09:42:06 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:06.931447Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
+    Aug 07 09:42:06 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:06.936320Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
+    Aug 07 09:42:07 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:07.700033Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:42:07 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:07.725691Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:42:07 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:07.801801Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:42:07 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:07.836940Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-jmzvv namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:42:07 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:07.872715Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-26zpl namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 07 09:42:08 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:08.691455Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-26zpl namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:42:08 runnervmvrwv9 run-nodelet.sh[27111]: 2026-08-07T09:42:08.812338Z  INFO re-materializing volumes after referenced object changed pod=not-k8s-e2e-1786095372/limited-swap-guaranteed namespace="not-k8s-e2e-1786095372" name="kube-root-ca.crt" kind=ConfigMap
 ▶ test_client_certificate_authentication_works
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied.+......+.+..+..........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+...+...............+............+..+...+..........+...........+.+...+...+.....+....+......+........+.......+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+..................+..+......+......+.............+...+........+....+..+................+.........+...........+...+.........+.+.....+....+...+..+.............+...+............+.....+...+............+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+.....+..........+.........+..............+.......+...+......+..+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..........+......+.........+...+...+....+......+.....+.........+...+...+....+...+..+.........+.......+..+..........+...+.........+.....+.+...+......+...+..+.+..............+.+...+.....+.........+...............+.+...............+......+...+..+.+........+...............+.......+.....+...+....+...........+............+....+.....+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+..........+..................+..+......+....+...+...+.................+...+....+...........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....................+......+.......................+............+.........+...+.+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+............+..+.+..+.......+......+............+..+...+...+....+......+...+..+...+......+...+................+.........+...+.........+.........+.................+...+.+...+.....+..........+..+......+..........+.....+...................+...+......+....................+.+...........+............+............+....+..+...+..........+..+.......+..+...+.+..+...+.+...+......+......+...+..+..........+........+...+...+.......+.....+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.+......+..+.+.....+.+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+..+.+...........+.+..+.+...........+...+...+...+......+....+..+...+............+.......+......+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*........+..............+.+.....+....+........+.+............+...+.....+........................+.......+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 -----
-.+.......+..................+..............+.......+.....+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+...+..+...+......+.......+..+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.............+.....+.........+.+..+.......+.........+.................+...+....+..+.+.........+.....+......+...+....+...+............+..+....+.........+..+.............+..+...+......+....+...+.........+........+.+......+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-....+...+.+.....+....+...+..+.+..+....+.....+.+..+.+.....................+...+..+.........+.+.....+......+.......+.....+...+.............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+..........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...................+.+.....+.+...+..+.......+...+.........+...+........+...+.........+............+.........+......+......+...+.+...........+...+.+...+...+............+.....+.......+...+.....+......+.....................+.+..+......+.......+...+......+.....+.+.....+.........+......+..........+...+.........+......+..+.......+......+..+...+.........+................+.....+.+...+..........................+......+..................+.............+...+......+......+...+..............+.+..+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.......+...+..........+..+......+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+.......+.........+..+...+............+.......+....................+.+..+....+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*......+..............+.+.....+..........+...+...+..+......+......+......+.......+...+...+.........+......+....................+.+........+.+.....+...............+.+......+.........+......+.....+.......+..+....+.........+........+..........+.....+.......+..+...+...............+.+..+.........+.+.....+...+.+.........+..........................+.........+.+......+...+..+.........+.+...+..............+.+.....+.+...+.....+......+......+.............+...+.........+........+.+.....+.....................+..........+.....+...+...+...+.......+....................+.........+.+...+.................+...+....+......+............+........+.......+..+......+....+...+........+.+...+.................+.+...+..+.........+....+..+.............+............+..+.+.....+......+.+.................+...+.............+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+..............+.........+..+...+....+....................+...+...+....+...+..+......+.+...+...+..................+..+...+.+...+..+.+.........+......+.....+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*........+.....+....+..............+.......+.....+.+...+.....+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+....+...+..+............+...+.+.........+......+..+...+......+.+..+......+......+.+...............+.....+.........+......+.......+...+.....+.......+..+...+......+.+...+........+............+...............+......+....+..+...+.............+........+....+.....+.+....................+.+......+..+...+....+....................+.+...+..+....+...........+...+.+.....+....+.....+......+..................+.+..............+..........+..+.........+.+.....+....+..............+......+....+..+......+........................+...+...+...+....+.....+...+....+.....+.........+......+.+........+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 -----
 Certificate request self-signature ok
 subject=CN = alice, O = system:masters
-..........+........+...+....+..+.+...+.....+.+...............+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+....+.....+....+...+.........+...+......+..+...+....+...+...+......+.....+...+.+......+.....+.+...+..+....+..................+......+..+.......+..+.+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+.........+.+...+......+...+...........+....+...+.........+.....+...+.............+..............+.............+..+......+..........+..+...+.............+.....+.+......+...+......+.....+.+...+............+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-.+...+......+...+......+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+.....+.......+.....+...................+...+......+......+........+.+......+.....+...+...+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+..................+.............+...............+..+....+......+..+...+....+.....+.+.....+..........+..+.+......+...........+...+..........+.....+......+...+......+.......+............+..+.........+......+.............+......+......+........+.......+........+...+.......+............+......+...+.....+....+.....+...+.......+..+......+...+......+.+..............+.............+........+...+......+.+..+.+............+........+......+..........+......+...............+.....+.......+.....+.............+.....+....+.....+....+......+.........+.........+.......................+.........+.+.........+.........+..+...+.+........+..........+.................+...+...+...+....+...+..+......+.+.....+.+............+...+.................+......+.......+...+......+...+...+..+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.+.+..+.......+............+...+........+.......+...+..+.+......+...+........+.............+..+.......+..+...+..................+....+...+........+.........+....+...........+....+..+....+........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+..+.+......+.....+...+.+..+...+.+......+..+.+..+.............+.....+.+...............+...+...+.....+....+...+..+.+.....+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+..................+..+...+.+..............+.+......+......+.........+...+...+..+.......+........+......+....+...+..+...+....+.....+......+...+............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+......+..............+......+.+........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+...+..+.+..+......+......+.............+.....+.+...............+..+....+...+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+...+..+...+.+.....+.+...........+.............+.....+...............+....+...+........+....+...........+....+.....+.+......+...+..+...+......+.+.....................+..+.............+...+....................+......+...............+...+.......+...+..+......+...+.+......+...+.........+..+...+......+.......+.....+....+..............+..........+.........+...+.................+.............+..+.+.....+.+.........+..............+.+..+....+...+..+...+...+....+.....+....+.....+............+....+...+...........+.+...........+....+.....+.+........+.+.....+....+..+...+..............................+......+...+...+....+.....+....+..............+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 -----
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (3s)
+  ✔ PASS (3s)
 ▶ test_mount_propagation_host_to_container_still_mounts_normally
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> FATAL: pod never reached Running with mountPropagation: HostToContainer set — check mount_propagation_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects a nonzero Mount.propagation entirely
-  ✘ FAIL (31s, exit 1)
-  [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
+  ✔ PASS (3s)
+▶ test_mount_propagation_host_to_container_sees_a_new_host_mount
+==> FATAL: pod never reached Running with mountPropagation: HostToContainer set — check mount_propagation_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects a nonzero Mount.propagation entirely
+  ✘ FAIL (30s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
   [diag] nodelet tail:
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.367044Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.370388Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.393383Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-a8f08acd-9696-42f9-89dc-4184b98d4d1d.sock plugin_type=DRAPlugin
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.400672Z  INFO node registered and Ready node=runnervmvrwv9
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.400974Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.401056Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.403775Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.404070Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.579627Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.608016Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.672889Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.700692Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-xssv2 namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:46 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:46.734067Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-qlf59 namespace="kube-system" name="coredns" kind=ConfigMap
-    Aug 07 09:26:47 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:47.574952Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-qlf59 namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 09:26:47 runnervmvrwv9 run-nodelet.sh[27823]: 2026-08-07T09:26:47.867210Z  INFO re-materializing volumes after referenced object changed pod=not-k8s-e2e-1786094440/hostusers-ownership-check namespace="not-k8s-e2e-1786094440" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.545582Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-3d8f4582-e216-49d7-a2eb-edcafbd02111.sock plugin_type=DRAPlugin
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.548611Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.568884Z  INFO node registered and Ready node=runnervmvrwv9
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.569820Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.570161Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.571025Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.573863Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.692633Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.717643Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.785649Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.814318Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-jmzvv namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.849013Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-26zpl namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.888703Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-26zpl namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:43:14 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:43:14.714729Z  INFO torn down pod=not-k8s-e2e-1786095372/mount-propagation-check
+    Aug 07 09:43:14 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:43:14.810637Z  WARN hostPath volume failed validation; container(s) mounting it won't get this path volume=hostvol path=/tmp/nodelet-mountprop-h2c-test.ADt1Fx host_path_type=Directory error=hostPath: /tmp/nodelet-mountprop-h2c-test.ADt1Fx does not exist (type: Directory requires it to already)
+▶ test_mount_propagation_private_default_does_not_see_a_new_host_mount
+==> FATAL: pod never reached Running with a plain hostPath mount
+  ✘ FAIL (31s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.785649Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.814318Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-jmzvv namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.849013Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-26zpl namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 07 09:42:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:42:41.888703Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-26zpl namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 09:43:14 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:43:14.714729Z  INFO torn down pod=not-k8s-e2e-1786095372/mount-propagation-check
+    Aug 07 09:43:14 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:43:14.810637Z  WARN hostPath volume failed validation; container(s) mounting it won't get this path volume=hostvol path=/tmp/nodelet-mountprop-h2c-test.ADt1Fx host_path_type=Directory error=hostPath: /tmp/nodelet-mountprop-h2c-test.ADt1Fx does not exist (type: Directory requires it to already)
+    Aug 07 09:43:41 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:43:41.611959Z  INFO node status pushed
+    Aug 07 09:43:45 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:43:45.144055Z  INFO torn down pod=not-k8s-e2e-1786095372/mount-propagation-h2c-check
+    Aug 07 09:43:45 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:43:45.179935Z  INFO torn down pod=not-k8s-e2e-1786095372/mount-propagation-check
+    Aug 07 09:43:45 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:43:45.468565Z  WARN ensure_pod failed; retrying once in 5s pod=not-k8s-e2e-1786095372/mount-propagation-private-check error=starting container
+    Aug 07 09:43:45 runnervmvrwv9 run-nodelet.sh[27994]: Caused by:
+    Aug 07 09:43:45 runnervmvrwv9 run-nodelet.sh[27994]:     code: 'Unknown error', message: "failed to create containerd task: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: failed to fulfil mount request: open /tmp/nodelet-mountprop-private-test.qmiTBe: no such file or directory"
+    Aug 07 09:43:45 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:43:45.516890Z  INFO torn down pod=not-k8s-e2e-1786095372/mount-propagation-h2c-check
+    Aug 07 09:43:45 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:43:45.780202Z  INFO torn down pod=not-k8s-e2e-1786095372/mount-propagation-private-check
+    Aug 07 09:43:45 runnervmvrwv9 run-nodelet.sh[27994]: 2026-08-07T09:43:45.795239Z  INFO torn down pod=not-k8s-e2e-1786095372/mount-propagation-private-check
 ==> WARNING: stopping early: 3 failures reached NOTK8S_E2E_MAX_FAILURES=3 (151 tests registered total, not all of them ran) — see the failures above/print_summary below for what's already known, rather than burning time re-discovering the same root cause across the rest of the suite.
 
 ════════════════════════════════════════
-Results: 9 passed, 3 failed, 0 skipped
+Results: 11 passed, 3 failed, 0 skipped
 Failed:
-  - test_limited_swap_gives_burstable_pods_proportional_swap
   - test_host_users_volume_ownership_translation_is_correct
-  - test_mount_propagation_host_to_container_still_mounts_normally
+  - test_mount_propagation_host_to_container_sees_a_new_host_mount
+  - test_mount_propagation_private_default_does_not_see_a_new_host_mount
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786094440...
+==> Cleaning up test namespace not-k8s-e2e-1786095372...
