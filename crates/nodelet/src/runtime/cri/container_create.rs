@@ -498,6 +498,7 @@ impl CriRuntime {
                 pod_sc,
                 container.security_context.as_ref(),
                 pid_namespace_mode(id.host_pid, id.share_process_namespace),
+                userns_mapping,
             )),
         });
 

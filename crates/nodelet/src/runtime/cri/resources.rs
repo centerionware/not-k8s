@@ -326,6 +326,7 @@ pub(crate) fn linux_security_context(
     pod_sc: Option<&PodSecurityContext>,
     container_sc: Option<&SecurityContext>,
     pid_mode: NamespaceMode,
+    userns_mapping: Option<(u32, u32)>,
 ) -> LinuxContainerSecurityContext {
     let run_as_user = container_sc
         .and_then(|s| s.run_as_user)
@@ -357,7 +358,11 @@ pub(crate) fn linux_security_context(
         supplemental_groups,
         supplemental_groups_policy: supplemental_groups_policy_cri(pod_sc.and_then(|s| s.supplemental_groups_policy.as_deref())) as i32,
         seccomp,
-        namespace_options: Some(NamespaceOption { pid: pid_mode as i32, ..Default::default() }),
+        // Round 123 (found live in CI): a container must join the exact
+        // same user namespace `sandbox_config()` requested for the
+        // sandbox, or it silently gets the default (host) one instead —
+        // see `userns_options_for()`'s doc comment for the full story.
+        namespace_options: Some(NamespaceOption { pid: pid_mode as i32, userns_options: userns_options_for(userns_mapping), ..Default::default() }),
         masked_paths,
         readonly_paths,
         ..Default::default()

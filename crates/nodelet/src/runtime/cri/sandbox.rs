@@ -71,6 +71,31 @@ pub(crate) fn pid_namespace_mode(host_pid: bool, share_process_namespace: bool) 
     }
 }
 
+/// Build the CRI `UserNamespace` block from this pod's allocated
+/// `(host_id_base, length)` range, if it has one — `POD` mode with a
+/// single UID and single GID `IDMapping` each covering the whole range
+/// (container ID 0 -> host `host_id_base`), the same "remap everything
+/// into one block" shape upstream itself uses for the common case.
+///
+/// Round 123 (found live in CI): this must be set identically on BOTH the
+/// sandbox's own `LinuxSandboxSecurityContext.namespace_options` (via
+/// `sandbox_config()`, round 25) AND every container's own
+/// `LinuxContainerSecurityContext.namespace_options` (via
+/// `linux_security_context()` — this was the actual bug: it built its
+/// `NamespaceOption` with only `pid` set, leaving `userns_options` at the
+/// proto's default/unset). Confirmed via a live OCI-spec dump: the
+/// SANDBOX's own runc spec correctly showed `uidMappings`/`gidMappings`
+/// and a real pinned user namespace — `RunPodSandbox` genuinely works —
+/// but the APP CONTAINER's own `/proc/self/uid_map` still showed the
+/// host's full identity range, because nothing ever told `CreateContainer`
+/// to join that same namespace instead of getting the default one.
+pub(crate) fn userns_options_for(userns_mapping: Option<(u32, u32)>) -> Option<UserNamespace> {
+    userns_mapping.map(|(host_id, length)| {
+        let mapping = |container_id| IdMapping { host_id, container_id, length };
+        UserNamespace { mode: NamespaceMode::Pod as i32, uids: vec![mapping(0)], gids: vec![mapping(0)] }
+    })
+}
+
 
 /// `EphemeralContainer` has the same shape as `Container` minus a couple of
 /// fields real kubelet itself doesn't honor for debug containers (`ports`,
@@ -217,10 +242,7 @@ pub(crate) fn sandbox_config(
     // `pid` mode is `POD` (every container shares one PID namespace), the
     // *opposite* of real Kubernetes' actual default (each container gets its
     // own); always setting it explicitly is the fix, not an edge case.
-    let userns_options = userns_mapping.map(|(host_id, length)| {
-        let mapping = |container_id| IdMapping { host_id, container_id, length };
-        UserNamespace { mode: NamespaceMode::Pod as i32, uids: vec![mapping(0)], gids: vec![mapping(0)] }
-    });
+    let userns_options = userns_options_for(userns_mapping);
     // IPC has no CONTAINER-scope concept in the Kubernetes API — containers
     // in a pod always share it unless `hostIPC` opts into sharing the host's.
     let ipc = if id.host_ipc { NamespaceMode::Node } else { NamespaceMode::Pod };
