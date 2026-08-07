@@ -884,6 +884,10 @@ spec:
           mountPropagation: HostToContainer
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        warn "[diag] pod status: $(kctl get pod "$name" -o wide 2>&1)"
+        warn "[diag] pod events: $(kctl describe pod "$name" 2>&1 | grep -A20 '^Events:')"
+        warn "[diag] nodelet log mentioning $name:"
+        sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -E "$name" | tail -30 | while IFS= read -r line; do warn "[diag]   $line"; done
         die "pod never reached Running with mountPropagation: HostToContainer set — check mount_propagation_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects a nonzero Mount.propagation entirely"
     fi
 
@@ -938,6 +942,10 @@ spec:
           mountPath: /hostvol
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        warn "[diag] pod status: $(kctl get pod "$name" -o wide 2>&1)"
+        warn "[diag] pod events: $(kctl describe pod "$name" 2>&1 | grep -A20 '^Events:')"
+        warn "[diag] nodelet log mentioning $name:"
+        sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -E "$name" | tail -30 | while IFS= read -r line; do warn "[diag]   $line"; done
         die "pod never reached Running with a plain hostPath mount"
     fi
 

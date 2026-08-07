@@ -371,6 +371,10 @@ spec:
         - {name: hostvol, mountPath: /hostvol}
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        warn "[diag] pod status: $(kctl get pod "$name" -o wide 2>&1)"
+        warn "[diag] pod events: $(kctl describe pod "$name" 2>&1 | grep -A20 '^Events:')"
+        warn "[diag] nodelet log mentioning $name or user namespace:"
+        sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -E "$name|user namespace|RunPodSandbox|CreateContainer" | tail -30 | while IFS= read -r line; do warn "[diag]   $line"; done
         delete_pod_if_exists "$name"
         sudo rm -rf "$host_dir"
         die "pod never reached Running with hostUsers: false — see the sibling real-userns test's own doc comment for known causes"
