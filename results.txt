@@ -1,16 +1,14 @@
-commit: eca1c577c264b51a2cc14d073b541ff6bea681fd
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31139857231
-timestamp (UTC): 2026-08-07T02:05:27Z
+commit: b2ae24fd162eb1ca601ceb34f26085b2a124f2ba
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31143087556
+timestamp (UTC): 2026-08-07T03:07:07Z
 exit code: 0
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786068290
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786071983
 ==> Running 142 registered test(s)...
-▶ test_host_users_false_gets_a_real_user_namespace
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (4s)
-▶ test_host_users_false_volume_still_reads_and_writes_normally
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (33s)
+▶ test_liveness_probe_failure_restarts_the_container
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (44s)
 
 ════════════════════════════════════════
-Results: 2 passed, 0 failed, 0 skipped
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786068290...
+==> Cleaning up test namespace not-k8s-e2e-1786071983...
