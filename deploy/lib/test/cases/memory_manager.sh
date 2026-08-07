@@ -31,7 +31,7 @@ EOF
     wait_until 60 "$name Running" pod_is_phase "$name" Running
 
     local cid path cpuset_mems
-    cid="$(kubectl get pod "$name" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"
+    cid="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"
     path="$(find "$cgroup_root" -maxdepth 8 -type d -iname "*${cid}*" 2>/dev/null | head -1)"
     if [[ -z "$path" ]]; then
         delete_pod_if_exists "$name"

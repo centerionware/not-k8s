@@ -48,7 +48,17 @@ spec:
 EOF
     wait_until 60 "$name Running" pod_is_phase "$name" Running
     local uid
-    uid="$(kubectl get pod "$name" -o jsonpath='{.metadata.uid}')"
+    # Round 123 (found live in CI, reproduced twice): this was raw
+    # `kubectl get pod`, not `kctl` -- every other lookup in this suite
+    # goes through kctl's `--namespace "$TEST_NAMESPACE"` scoping (see
+    # k8s.sh), but this one queried the ambient kubeconfig context's
+    # default namespace instead, where "$name" never existed at all.
+    # Confirmed live: "Error from server (NotFound): pods
+    # \"cgroup-qos-check\" not found" fired mere milliseconds after
+    # wait_until above had *already* confirmed the pod Running (via the
+    # correctly-namespaced pod_is_phase/pod_field/kctl path) -- a
+    # namespace mismatch, not a real timing race or a nodelet bug.
+    uid="$(kctl get pod "$name" -o jsonpath='{.metadata.uid}')"
 
     # This pod has no resources.requests/limits set, so it's BestEffort —
     # its cgroup should land under kubepods/besteffort somewhere, named

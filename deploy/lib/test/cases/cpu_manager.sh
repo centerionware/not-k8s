@@ -38,8 +38,8 @@ EOF
     wait_until 60 "$name_b Running" pod_is_phase "$name_b" Running
 
     local cid_a cid_b path_a path_b cpuset_a cpuset_b
-    cid_a="$(kubectl get pod "$name_a" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"
-    cid_b="$(kubectl get pod "$name_b" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"
+    cid_a="$(kctl get pod "$name_a" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"
+    cid_b="$(kctl get pod "$name_b" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"
 
     path_a="$(find "$cgroup_root" -maxdepth 8 -type d -iname "*${cid_a}*" 2>/dev/null | head -1)"
     path_b="$(find "$cgroup_root" -maxdepth 8 -type d -iname "*${cid_b}*" 2>/dev/null | head -1)"
@@ -88,7 +88,7 @@ EOF
     wait_until 60 "$shared_name Running" pod_is_phase "$shared_name" Running
 
     local shared_cid shared_path cpuset_before
-    shared_cid="$(kubectl get pod "$shared_name" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"
+    shared_cid="$(kctl get pod "$shared_name" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"
     shared_path="$(find "$cgroup_root" -maxdepth 8 -type d -iname "*${shared_cid}*" 2>/dev/null | head -1)"
     if [[ -z "$shared_path" ]]; then
         delete_pod_if_exists "$shared_name"
