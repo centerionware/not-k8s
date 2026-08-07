@@ -96,6 +96,38 @@ fn hugepages_capacity_map(base_path: &str) -> BTreeMap<String, Quantity> {
     m
 }
 
+/// Every `"hugepages-<size>"` capacity key this kernel could *ever* report
+/// — i.e. every `hugepages-<N>kB` directory under `base_path`, regardless
+/// of whether it's currently reserved (`hugepages_capacity_map()` only
+/// returns the reserved ones). Round 124 (found live in CI): status
+/// patches go out via `Patch::Merge` (RFC 7396 JSON merge patch), which
+/// only ever *adds/overwrites* keys present in the patch body — a key
+/// omitted because its pool dropped to zero is NOT the same as a key
+/// explicitly cleared, so a hugepage size that was ever reserved even
+/// once (by this nodelet process or, per the live evidence, seemingly
+/// transient kernel-level allocation activity around boot) then later
+/// unreserved would keep reporting its last real byte count *forever*,
+/// with no live code path ever able to produce that stale value again on
+/// its own — confirmed live: `capacity.hugepages-1Gi` read a real "0"
+/// while `/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages`
+/// simultaneously read 0 too, and `hugepages_capacity_map()` provably
+/// cannot itself ever write a literal "0" (see its own unit tests). This
+/// lets `push_status()` explicitly null out any known size that's
+/// currently zero, so RFC 7396 actually deletes it instead of leaving
+/// whatever was there.
+fn known_hugepage_suffixes(base_path: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(base_path) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let file_name = entry.file_name();
+            let name = file_name.to_str()?;
+            let size_kb: u64 = name.strip_prefix("hugepages-")?.strip_suffix("kB")?.parse().ok()?;
+            Some(hugepage_size_kb_to_k8s_suffix(size_kb))
+        })
+        .collect()
+}
+
 fn capacity_map(cfg: &Config) -> BTreeMap<String, Quantity> {
     let mut m = BTreeMap::new();
     m.insert("cpu".to_string(), Quantity(cfg.cpu_cores.to_string()));
@@ -452,7 +484,20 @@ pub async fn push_status(
 ) -> Result<()> {
     let api: Api<Node> = Api::all(client.clone());
     let status = build_status(cfg, ready, extra_capacity, images, mounted_csi_volumes, runtime_handlers);
-    let patch = serde_json::json!({ "status": status });
+    let current_keys: std::collections::BTreeSet<String> = status.capacity.iter().flatten().map(|(k, _)| k.clone()).collect();
+    let mut patch = serde_json::json!({ "status": status });
+    // Round 124: explicitly null out any hugepage size this kernel could
+    // report but isn't reserved right now — see known_hugepage_suffixes()'s
+    // own doc comment for why omission alone (what capacity_map() already
+    // does by simply not including the key) isn't enough under a JSON
+    // Merge Patch.
+    for suffix in known_hugepage_suffixes(HUGEPAGES_SYSFS_ROOT) {
+        let key = format!("hugepages-{suffix}");
+        if !current_keys.contains(key.as_str()) {
+            patch["status"]["capacity"][key.as_str()] = serde_json::Value::Null;
+            patch["status"]["allocatable"][key.as_str()] = serde_json::Value::Null;
+        }
+    }
     api.patch_status(&cfg.node_name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
     Ok(())
 }

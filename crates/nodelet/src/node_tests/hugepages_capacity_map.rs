@@ -70,3 +70,38 @@ fn multiple_reserved_pool_sizes_are_all_reported() {
     assert_eq!(m.get("hugepages-1Gi").unwrap().0, "1073741824");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// known_hugepage_suffixes(): round 124 — every size the kernel structurally
+// supports, regardless of current reservation, so push_status() can null
+// out a size that's dropped to zero instead of leaving a merge-patch-stale
+// value behind forever.
+
+#[test]
+fn nonexistent_root_reports_no_known_sizes() {
+    let root = std::env::temp_dir().join("nodelet-hugepages-test-does-not-exist-2");
+    assert!(known_hugepage_suffixes(root.to_str().unwrap()).is_empty());
+}
+
+#[test]
+fn an_unreserved_pool_is_still_a_known_size() {
+    // The whole point: hugepages_capacity_map() omits this (nr_hugepages
+    // is 0), but known_hugepage_suffixes() must still report it — the
+    // directory existing at all means the kernel supports this size,
+    // whether or not anything is currently reserved.
+    let root = scratch_dir();
+    write_pool(&root, 1_048_576, 0);
+    let sizes = known_hugepage_suffixes(root.to_str().unwrap());
+    assert_eq!(sizes, vec!["1Gi".to_string()]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn reserved_and_unreserved_sizes_are_both_reported() {
+    let root = scratch_dir();
+    write_pool(&root, 2048, 4);
+    write_pool(&root, 1_048_576, 0);
+    let mut sizes = known_hugepage_suffixes(root.to_str().unwrap());
+    sizes.sort();
+    assert_eq!(sizes, vec!["1Gi".to_string(), "2Mi".to_string()]);
+    let _ = std::fs::remove_dir_all(&root);
+}
