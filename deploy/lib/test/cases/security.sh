@@ -254,6 +254,21 @@ EOF
     uid_map="$(wait_for_check_file "$name" shared uid_map.txt 30)"
     assert_not_empty "$uid_map" "/proc/self/uid_map should have content"
     if echo "$uid_map" | grep -q "^\s*0\s\+0\s\+4294967295"; then
+        # Round 123 diagnostics: this now reproduces live (previously
+        # masked by the write-EACCES bug fixed alongside this round's chown
+        # fix -- this is the first time this check ever saw real uid_map
+        # content). Before failing, pull the actual OCI runtime spec CRI
+        # handed to runc for this exact container, straight off the host
+        # filesystem, to see whether linux.uidMappings ever reached runc at
+        # all (nodelet bug: request built wrong or dropped) or arrived
+        # correctly and runc/the kernel still didn't apply it (a real
+        # runtime/environment limitation, not a nodelet bug).
+        local container_id
+        container_id="$(pod_field "$name" '{.status.containerStatuses[0].containerID}')"
+        container_id="${container_id#containerd://}"
+        log "    [diag] container id: ${container_id:-<empty>}"
+        log "    [diag] runc OCI spec linux.uidMappings/gidMappings for this container:"
+        log "$(sudo find /run/containerd/io.containerd.runtime.v2.task -name config.json -path "*$container_id*" -exec cat {} \; 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("uidMappings:", d.get("linux",{}).get("uidMappings")); print("gidMappings:", d.get("linux",{}).get("gidMappings"))' 2>&1)"
         delete_pod_if_exists "$name"
         die "uid_map shows the host's own full identity range ('0 0 4294967295') — this container is NOT in a user namespace at all; check runtime/cri.rs's userns_mapping wiring and that the CRI runtime actually honors LinuxSandboxSecurityContext.namespace_options.userns_options"
     fi
