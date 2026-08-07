@@ -189,7 +189,14 @@ spec:
         claimName: $claim
 EOF
 
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    # Round 124 (found live in CI, full-suite run only): 30s wasn't always
+    # enough for a real CSI attach+publish to complete when the whole
+    # unfiltered suite is hammering the same reference driver/attacher —
+    # this test passes reliably in isolation/small batches but timed out
+    # here twice across two separate full-pipeline runs. Bumped to match
+    # the same generous budget csi_pvc.sh's other attach-dependent waits
+    # already use.
+    if ! try_wait_until 60 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
         die "pod never reached Running with a raw block volumeDevice — check nodelet's logs for 'failed to mount CSI volume' or build_devices()/ResolvedVolume::BlockDevice wiring in runtime/cri/volumes_pure.rs"
@@ -288,7 +295,14 @@ EOF
     # tests' worth of contention on the same reference driver) — bumped
     # to match the same generous budget the volumesInUse wait below uses.
     wait_until 90 "$name gone" pod_gone "$name"
-    wait_until 75 "volumesInUse cleared after pod deletion" \
+    # Round 124 (found live in CI, full-suite runs only): 75s wasn't always
+    # enough for the CSI unpublish/detach to fully propagate to a fresh
+    # Node.status.volumesInUse push when the whole unfiltered suite is
+    # hammering the same reference driver/attacher — this test passed
+    # cleanly in a targeted 14-test batch but timed out here across two
+    # separate full-pipeline runs. Bumped, same reasoning as the pod_gone
+    # wait immediately above.
+    wait_until 120 "volumesInUse cleared after pod deletion" \
         bash -c "[[ \"\$(kubectl get node '$n' -o jsonpath='{.status.volumesInUse}')\" != *'kubernetes.io/csi/'* ]]"
     kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
 }

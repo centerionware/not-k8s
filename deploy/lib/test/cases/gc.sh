@@ -213,7 +213,11 @@ EOF
     wait_until 60 "$name Running" pod_is_phase "$name" Running
     assert_true bash -c "sudo ctr -n k8s.io images ls -q | grep -q '$image'"
     kctl delete pod "$name" --wait=false >/dev/null
-    wait_until 30 "$name gone" pod_gone "$name"
+    # Round 124 (found live in CI, full-suite runs only): 30s wasn't always
+    # enough for real pod teardown to complete when the whole unfiltered
+    # suite is contending for the same node/containerd — same reasoning
+    # csi_pvc.sh's own post-delete pod_gone wait already documents.
+    wait_until 90 "$name gone" pod_gone "$name"
 
     log "    waiting through at least one NODELET_GC_INTERVAL_SECS cycle (default 300s) to confirm $image survives it..."
     sleep 60

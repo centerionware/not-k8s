@@ -55,7 +55,14 @@ EOF
         skip_test "PVC '$expected_claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
     fi
 
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    # Round 124 (found live in CI, full-suite runs only): nodelet's own log
+    # confirmed a real attach race under load — "driver requires attach but
+    # no matching VolumeAttachment exists yet (external-attacher hasn't
+    # created it); will retry next reconcile" — not a mount bug, just attach
+    # latency from the whole unfiltered suite sharing one CSI
+    # driver/attacher. 30s was tight enough to fail across two separate
+    # full-pipeline runs despite passing reliably in smaller batches.
+    if ! try_wait_until 60 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         kubectl delete pvc "$expected_claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
         die "pod never reached Running with the ephemeral volume mounted — check nodelet's logs for 'failed to mount CSI volume for generic ephemeral volume' or 'isn't owned by this pod'"
