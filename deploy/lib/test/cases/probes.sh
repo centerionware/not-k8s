@@ -197,8 +197,63 @@ EOF
     delete_pod_if_exists "$name"
 }
 
-test_grpc_probe_manual_note() {
-    skip_test "exercising grpc probes for real needs a container that actually speaks grpc.health.v1.Health/Check — TEST_IMAGE (busybox-style) doesn't, and this suite doesn't bundle a gRPC server image. Manual spot-check: deploy a pod running something that exposes the standard health-checking protocol (etcd does, out of the box, on its client port; or any grpc-health-probe-compatible workload), set readinessProbe.grpc.port to that port (and .service if the workload registers a named service rather than reporting overall health), and confirm the pod reaches Ready. Also worth checking: an unreachable/wrong port should leave the pod NOT Ready (proof check_grpc()'s timeout/connect-failure path works, not just the success path) — probes_tests/network_checks.rs already covers those failure paths against a real (non-grpc) TCP listener, so this is really just proving the success path end to end."
+test_grpc_probe_gates_readiness_against_a_real_grpc_server() {
+    # Round 123: previously manual-only purely because TEST_IMAGE
+    # (busybox-style) doesn't speak grpc.health.v1.Health/Check — etcd
+    # does, out of the box, on its client port, exactly as this test's
+    # own old manual-note suggested. registry.k8s.io/etcd is the same
+    # image real Kubernetes e2e/conformance tests already pull.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="grpc-probe-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: etcd
+      image: registry.k8s.io/etcd:3.5.9-0
+      command: ["etcd", "--listen-client-urls=http://0.0.0.0:2379", "--advertise-client-urls=http://127.0.0.1:2379"]
+      readinessProbe:
+        grpc:
+          port: 2379
+        periodSeconds: 2
+        failureThreshold: 5
+        initialDelaySeconds: 3
+EOF
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
+    wait_until 30 "$name Ready via a real gRPC health check" bash -c "[[ \"\$(pod_condition_status '$name' Ready)\" == 'True' ]]"
+    delete_pod_if_exists "$name"
+}
+
+test_grpc_probe_leaves_pod_not_ready_against_the_wrong_port() {
+    # The other side of the same coin: check_grpc()'s timeout/
+    # connect-failure path — an unreachable port must leave the pod NOT
+    # Ready, not just that a correct port works.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="grpc-probe-wrong-port-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: etcd
+      image: registry.k8s.io/etcd:3.5.9-0
+      command: ["etcd", "--listen-client-urls=http://0.0.0.0:2379", "--advertise-client-urls=http://127.0.0.1:2379"]
+      readinessProbe:
+        grpc:
+          port: 9999
+        periodSeconds: 2
+        failureThreshold: 1
+        initialDelaySeconds: 3
+EOF
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
+    sleep 10 # give the probe a fair chance to succeed if it were (wrongly) going to
+    assert_eq "$(pod_condition_status "$name" Ready)" "False" "a gRPC probe against a port nothing is listening on should leave the pod NOT Ready"
+    delete_pod_if_exists "$name"
 }
 
 register_test test_readiness_probe_gates_ready_condition
@@ -207,4 +262,5 @@ register_test test_liveness_probes_own_grace_period_overrides_the_pods
 register_test test_startup_probe_gates_liveness_and_readiness
 register_test test_startup_probe_failure_past_threshold_restarts_the_container
 register_test test_http_get_readiness_probe_against_a_real_server
-register_test test_grpc_probe_manual_note
+register_test test_grpc_probe_gates_readiness_against_a_real_grpc_server
+register_test test_grpc_probe_leaves_pod_not_ready_against_the_wrong_port

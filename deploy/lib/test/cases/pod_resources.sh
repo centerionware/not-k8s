@@ -26,9 +26,50 @@ test_pod_resources_socket_is_created_on_a_cri_node() {
     assert_true test -S "$sock"
 }
 
-test_pod_resources_grpc_query_manual_note() {
-    skip_test "proving the actual List/GetAllocatableResources/Get RPCs return correct data against a live pod needs a gRPC client this suite doesn't assume is installed (grpcurl, or a real exporter like NVIDIA DCGM) — the pure proto-conversion logic and the RPC handlers' request/response wiring both have solid unit-test confidence (pod_resources_tests/) but the actual wire behavior against a real client is unexercised here. Manual spot-check: with grpcurl installed, 'grpcurl -plaintext -unix \$NODELET_POD_RESOURCES_SOCKET_PATH v1.PodResourcesLister/List' against a node running a Guaranteed-QoS pod with NODELET_CPU_MANAGER_POLICY=static should show that pod's containerResources[].cpuIds populated with its exclusively-pinned cores; a pod using a device-plugin resource should show containerResources[].devices with the allocated device IDs. 'GetAllocatableResources' should report the whole static-policy-managed CPU/device pool regardless of current allocation. Confirm 'Get' with a real podName/podNamespace returns just that one pod, and with a nonexistent one returns a NotFound gRPC status (not a crash or an empty-but-ok response)."
+test_pod_resources_grpc_query_returns_real_data() {
+    # Round 123: previously manual-only purely because it needed a real
+    # gRPC client this suite didn't assume was installed — e2e-full-setup.sh
+    # now installs grpcurl for exactly this. Uses the vendored
+    # podresources.proto directly (no server reflection needed).
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local sock="${NODELET_POD_RESOURCES_SOCKET_PATH:-/var/lib/nodelet/pod-resources/kubelet.sock}"
+    if [[ -z "$sock" ]]; then
+        skip_test "NODELET_POD_RESOURCES_SOCKET_PATH is explicitly empty on this deployment — the PodResources API is intentionally disabled here"
+    fi
+    if ! command -v grpcurl >/dev/null 2>&1; then
+        skip_test "grpcurl not on PATH — e2e-full-setup.sh should have installed it for this run"
+    fi
+    if ! try_wait_until 15 bash -c "[[ -S '$sock' ]]"; then
+        skip_test "no Unix socket at $sock after 15s"
+    fi
+    local proto="$REPO_ROOT/crates/nodelet/proto/podresources.proto"
+    if [[ ! -f "$proto" ]]; then
+        skip_test "podresources.proto not found at $proto — is REPO_ROOT set correctly?"
+    fi
+
+    local name="pod-resources-grpc-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
+
+    local list_response
+    list_response="$(sudo grpcurl -plaintext -unix -proto "$proto" "$sock" v1.PodResourcesLister/List 2>&1)"
+    assert_contains "$list_response" "$name" "PodResourcesLister/List should include the running pod's own name"
+
+    local get_response
+    get_response="$(sudo grpcurl -plaintext -unix -proto "$proto" -d "{\"podName\":\"does-not-exist\",\"podNamespace\":\"$TEST_NAMESPACE\"}" "$sock" v1.PodResourcesLister/Get 2>&1)"
+    delete_pod_if_exists "$name"
+    assert_contains "$get_response" "NotFound" "PodResourcesLister/Get for a nonexistent pod should return a real NotFound gRPC status, not a crash or an empty-but-ok response"
 }
 
 register_test test_pod_resources_socket_is_created_on_a_cri_node
-register_test test_pod_resources_grpc_query_manual_note
+register_test test_pod_resources_grpc_query_returns_real_data

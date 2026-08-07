@@ -42,6 +42,22 @@ if [[ "$(cat /proc/sys/vm/nr_hugepages 2>/dev/null || echo 0)" -eq 0 ]]; then
     echo 64 | sudo tee /proc/sys/vm/nr_hugepages >/dev/null || log "couldn't reserve hugepages (not fatal — hugepages-dependent tests will just skip)"
 fi
 
+# ── grpcurl: the gRPC client pod_resources.sh's real query test needs ──────
+if ! command -v grpcurl &>/dev/null; then
+    log "installing grpcurl..."
+    GRPCURL_VERSION="1.9.1"
+    ARCH_RAW="$(uname -m)"
+    case "$ARCH_RAW" in
+        x86_64) GRPCURL_ARCH=x86_64 ;;
+        aarch64) GRPCURL_ARCH=arm64 ;;
+        armv7l) GRPCURL_ARCH=armv7 ;;
+        *) echo "unsupported arch for grpcurl install: $ARCH_RAW" >&2; exit 1 ;;
+    esac
+    curl -fsSL "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_${GRPCURL_ARCH}.tar.gz" -o "$WORK_DIR/grpcurl.tar.gz"
+    tar -xzf "$WORK_DIR/grpcurl.tar.gz" -C "$WORK_DIR" grpcurl
+    sudo install -m 0755 "$WORK_DIR/grpcurl" /usr/local/bin/grpcurl
+fi
+
 # ── helm ─────────────────────────────────────────────────────────────────
 if ! command -v helm &>/dev/null; then
     log "installing helm..."
