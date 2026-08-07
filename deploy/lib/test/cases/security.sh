@@ -257,18 +257,27 @@ EOF
         # Round 123 diagnostics: this now reproduces live (previously
         # masked by the write-EACCES bug fixed alongside this round's chown
         # fix -- this is the first time this check ever saw real uid_map
-        # content). Before failing, pull the actual OCI runtime spec CRI
-        # handed to runc for this exact container, straight off the host
-        # filesystem, to see whether linux.uidMappings ever reached runc at
-        # all (nodelet bug: request built wrong or dropped) or arrived
-        # correctly and runc/the kernel still didn't apply it (a real
-        # runtime/environment limitation, not a nodelet bug).
-        local container_id
-        container_id="$(pod_field "$name" '{.status.containerStatuses[0].containerID}')"
-        container_id="${container_id#containerd://}"
-        log "    [diag] container id: ${container_id:-<empty>}"
-        log "    [diag] runc OCI spec linux.uidMappings/gidMappings for this container:"
-        log "$(sudo find /run/containerd/io.containerd.runtime.v2.task -name config.json -path "*$container_id*" -exec cat {} \; 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("uidMappings:", d.get("linux",{}).get("uidMappings")); print("gidMappings:", d.get("linux",{}).get("gidMappings"))' 2>&1)"
+        # content). First attempt at this checked the APP CONTAINER's own
+        # OCI spec and found no uidMappings/gidMappings at all -- but that
+        # was checking the wrong object: a container JOINS its pod's
+        # already-created user namespace by path reference
+        # (linux.namespaces: [{type: user, path: /proc/<sandbox-pid>/ns/user}]),
+        # it doesn't redeclare uidMappings itself; only the SANDBOX's own
+        # (pause container's) OCI spec, built straight from RunPodSandbox's
+        # userns_options, would actually carry them. Pulling that one
+        # instead this time, straight off the host filesystem via the
+        # sandbox id containerd's own journal logged for this pod, to see
+        # whether linux.uidMappings ever reached runc at all (nodelet bug:
+        # request built wrong or dropped) or arrived correctly and runc/the
+        # kernel still didn't apply it (a real runtime/environment
+        # limitation, not a nodelet bug).
+        local sandbox_id
+        sandbox_id="$(sudo journalctl -u containerd --no-pager 2>/dev/null | grep -F "RunPodSandbox for name:\"$name\"" | tail -1 | grep -oE '[a-f0-9]{64}' | tail -1 || true)"
+        log "    [diag] sandbox id: ${sandbox_id:-<not found in containerd journal>}"
+        if [[ -n "$sandbox_id" ]]; then
+            log "    [diag] runc OCI spec linux.uidMappings/gidMappings/namespaces for this SANDBOX:"
+            log "$(sudo find /run/containerd/io.containerd.runtime.v2.task -name config.json -path "*$sandbox_id*" -exec cat {} \; 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); l=d.get("linux",{}); print("uidMappings:", l.get("uidMappings")); print("gidMappings:", l.get("gidMappings")); print("namespaces:", [n for n in l.get("namespaces",[]) if n.get("type")=="user"])' 2>&1)"
+        fi
         delete_pod_if_exists "$name"
         die "uid_map shows the host's own full identity range ('0 0 4294967295') — this container is NOT in a user namespace at all; check runtime/cri.rs's userns_mapping wiring and that the CRI runtime actually honors LinuxSandboxSecurityContext.namespace_options.userns_options"
     fi
