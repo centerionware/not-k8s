@@ -1,14 +1,35 @@
-commit: 43733329343468f7cc6873c3005651cae2623f56
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31147208182
-timestamp (UTC): 2026-08-07T04:26:38Z
-exit code: 0
+commit: 7a3e6a663240052e0d78311f4d993a4ddf144156
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31147492418
+timestamp (UTC): 2026-08-07T04:33:51Z
+exit code: 1
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786076794
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786077141
 ==> Running 142 registered test(s)...
-▶ test_host_path_directory_or_create_creates_a_missing_directory
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (3s)
+▶ test_static_pod_creates_a_mirror_pod
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> FATAL: timed out after 60s waiting for: mirror pod static-e2e-check-runnervmvrwv9 removed after manifest deletion
+  ✘ FAIL (87s, exit 1)
+  [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
+  [diag] nodelet tail:
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.013469Z  INFO starting nodelet node=runnervmvrwv9 runtime=Cri cpu=4 memory_bytes=16766423040 max_pods=110
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.015220Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.018249Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.021935Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-91f5031c-646e-4963-b6a0-9b5676f819be.sock plugin_type=DRAPlugin
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.024823Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.050304Z  INFO node registered and Ready node=runnervmvrwv9
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.051262Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.052249Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.052445Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.056382Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.811996Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.913616Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.948887Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 04:33:49 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:49.970877Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-l79z9 namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 04:33:50 runnervmvrwv9 run-nodelet.sh[17830]: 2026-08-07T04:33:50.002429Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-jvd5d namespace="kube-system" name="coredns" kind=ConfigMap
 
 ════════════════════════════════════════
-Results: 1 passed, 0 failed, 0 skipped
+Results: 0 passed, 1 failed, 0 skipped
+Failed:
+  - test_static_pod_creates_a_mirror_pod
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786076794...
+==> Cleaning up test namespace not-k8s-e2e-1786077141...
