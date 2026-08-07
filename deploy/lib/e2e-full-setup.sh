@@ -131,6 +131,12 @@ done
 # ── env vars the e2e suite's CSI/DRA-gated tests key off ───────────────────
 ENV_FILE="${GITHUB_ENV:-$WORK_DIR/e2e-setup.env}"
 {
+    # dra-example-driver's own DeviceClass (see its demo/examples/*/*.yaml —
+    # every one of them references "gpu.example.com"), matching the
+    # numDevices=4 fake-GPU pool the helm install above configured. Round
+    # 123: previously nothing wrote this, so dra.sh's real allocation test
+    # stayed manual-only even though the driver was already installed here.
+    echo "TEST_DRA_DEVICE_CLASS=gpu.example.com"
     echo "TEST_CSI_STORAGE_CLASS=csi-hostpath-sc"
     echo "TEST_CSI_ATTACH_STORAGE_CLASS=csi-hostpath-sc"
     echo "TEST_CSI_INLINE_DRIVER=hostpath.csi.k8s.io"

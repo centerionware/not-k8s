@@ -19,13 +19,13 @@
 # now transcribed directly from upstream, not reconstructed — that
 # specific caveat is resolved.
 #
-# Still the same honest limitation device_plugins.sh documents, though:
-# this bash-only harness can't itself stand up a Helm chart + driver
-# DaemonSet, so the manual-spot-check tests below remain manual rather
-# than becoming a real `register_test` — automating this (installing helm,
-# deploying the reference driver, running a real ResourceClaim round-trip)
-# is a natural fit for the GitHub Actions e2e job rather than this local
-# suite.
+# Round 123: that GitHub Actions automation now exists —
+# e2e-full-setup.sh installs the reference driver (Helm) and writes
+# TEST_DRA_DEVICE_CLASS — so test_dra_claim_is_allocated_and_reserved_for_the_pod
+# below is a real `register_test`, not a manual spot-check, when run
+# there. Running this file's tests against a bare local nodelet (no
+# e2e-full-setup.sh) still skips them cleanly via the same
+# TEST_DRA_DEVICE_CLASS gate CSI's own tests use for TEST_CSI_*.
 
 test_plugin_registry_watches_for_dra_drivers_too() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
@@ -36,14 +36,86 @@ test_plugin_registry_watches_for_dra_drivers_too() {
     assert_true test -d "$dir"
 }
 
-test_resource_api_group_manual_note() {
-    skip_test "checking whether resource.k8s.io is even enabled on this cluster's apiserver (DynamicResourceAllocation feature gate) needs 'kubectl api-resources' against a live cluster with a version/build matching what this deployment actually runs — not assumed here since it varies by how deploy/ was configured. Manual spot-check: 'kubectl api-resources | grep resourceclaims' to confirm the API group exists at all before attempting any of the checks below."
+test_resource_api_group_is_enabled() {
+    # Round 123: this used to be a "manual spot-check" purely because the
+    # skip message hedged on whether the apiserver's own version/build
+    # actually has the DynamicResourceAllocation feature gate on — but
+    # that's exactly what a real `kubectl api-resources` call answers,
+    # automatically, no guessing needed.
+    local resourceclaims
+    resourceclaims="$(kubectl api-resources 2>/dev/null | grep -c '^resourceclaims ' || true)"
+    if [[ "$resourceclaims" -eq 0 ]]; then
+        skip_test "resource.k8s.io/resourceclaims isn't registered on this apiserver — DynamicResourceAllocation feature gate is off on this deployment's k3s build"
+    fi
+    assert_true bash -c "kubectl api-resources 2>/dev/null | grep -q '^resourceclaims '"
 }
 
-test_dra_manual_note() {
-    skip_test "exercising a real NodePrepareResources/CDI device injection round-trip needs an actual DRA driver (a kubelet-plugin binary/DaemonSet implementing NodePrepareResources/NodeUnprepareResources) pointed at NODELET_PLUGIN_REGISTRY_PATH, plus a DeviceClass/ResourceSlice/ResourceClaim the scheduler can actually allocate — not something this suite can set up. Manual spot-check: deploy a DRA driver DaemonSet configured to register against this node's registry path (PluginInfo.type: DRAPlugin), create a DeviceClass + ResourceClaim + a Pod with spec.resourceClaims referencing it and a container with resources.claims: [{name: <pod-claim-name>}], wait for the scheduler to allocate the claim AND record this pod in status.reservedFor (kubectl get resourceclaim -o yaml, check both status.allocation and status.reservedFor — round 64: nodelet now gates NodePrepareResources on reservedFor actually listing this pod, so a claim allocated but not yet reserved for it will just be retried on a later reconcile, not treated as an error; watch for 'DRA: claim not yet reserved for this pod' at debug level if it seems stuck), then confirm the pod reaches Running and that 'kubectl exec' into the container shows the CDI device the driver's NodePrepareResources response specified (watch nodelet's logs for 'DRA: NodePrepareResources failed' — its absence plus a Running pod is the proof it worked). If the pod has multiple resourceClaims backed by the same driver, confirm (via the driver's own logs) that only ONE NodePrepareResources call was made covering all of them, not one call per claim (round 64's batching). Also confirm NodeUnprepareResources is called on pod deletion (driver-side logs, since nodelet doesn't expose this in kubectl-visible state)."
+test_dra_claim_is_allocated_and_reserved_for_the_pod() {
+    # Round 123: dra-example-driver is already installed in CI
+    # (e2e-full-setup.sh), same as csi-driver-host-path — this used to be
+    # manual-only anyway, purely because nothing ever wired
+    # TEST_DRA_DEVICE_CLASS through. Real round-trip: a ResourceClaimTemplate
+    # + a Pod referencing it via spec.resourceClaims, exactly
+    # dra-example-driver's own basic-resourceclaimtemplate demo shape.
+    if [[ -z "${TEST_DRA_DEVICE_CLASS:-}" ]]; then
+        skip_test "TEST_DRA_DEVICE_CLASS not set — export it to a real DeviceClass name (e.g. 'gpu.example.com' for dra-example-driver) once a DRA driver is registered to exercise this"
+    fi
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="dra-claim-check"
+    local template="$name-template"
+    apply_manifest <<EOF
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: $template
+spec:
+  spec:
+    devices:
+      requests:
+        - name: gpu
+          exactly:
+            deviceClassName: $TEST_DRA_DEVICE_CLASS
+EOF
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "env; sleep 3600"]
+      resources:
+        claims:
+          - name: gpu
+  resourceClaims:
+    - name: gpu
+      resourceClaimTemplateName: $template
+EOF
+    if ! try_wait_until 60 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        kctl delete resourceclaimtemplate "$template" --ignore-not-found >/dev/null 2>&1
+        skip_test "pod never reached Running with a DRA resourceClaim — check nodelet's logs for 'DRA: NodePrepareResources failed' or 'DRA: claim not yet reserved for this pod'"
+    fi
+
+    # The claim the template minted takes the pod's own generated-name
+    # shape (<pod>-<claim-name>-<suffix>) — find it by owner reference
+    # instead of guessing the exact generated name.
+    local claim_name
+    claim_name="$(kctl get resourceclaims -o jsonpath="{.items[?(@.metadata.ownerReferences[0].name==\"$name\")].metadata.name}")"
+    assert_not_empty "$claim_name" "a ResourceClaim owned by pod $name"
+
+    local allocation reserved_for
+    allocation="$(kctl get resourceclaim "$claim_name" -o jsonpath='{.status.allocation}')"
+    reserved_for="$(kctl get resourceclaim "$claim_name" -o jsonpath="{.status.reservedFor[?(@.name==\"$name\")].name}")"
+    assert_not_empty "$allocation" "status.allocation on the ResourceClaim — the driver's own controller must have allocated a real device"
+    assert_eq "$reserved_for" "$name" "status.reservedFor should list this pod — round 64's gate on NodePrepareResources"
+
+    delete_pod_if_exists "$name"
+    kctl delete resourceclaimtemplate "$template" --ignore-not-found >/dev/null 2>&1
 }
 
 register_test test_plugin_registry_watches_for_dra_drivers_too
-register_test test_resource_api_group_manual_note
-register_test test_dra_manual_note
+register_test test_resource_api_group_is_enabled
+register_test test_dra_claim_is_allocated_and_reserved_for_the_pod

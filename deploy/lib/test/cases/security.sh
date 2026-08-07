@@ -324,12 +324,117 @@ EOF
     assert_contains "$content" "hello-from-userns-pod" "a hostUsers: false pod's volume should still read/write normally via the sandbox's own ambient user namespace"
 }
 
-test_host_users_volume_ownership_translation_manual_note() {
-    skip_test "genuinely proving OWNERSHIP TRANSLATION (that a host-side file owned by a UID within the pod's own mapped range shows up as the correct small container-relative UID inside the container, rather than the overflow/nobody UID a file outside that range would show) needs a host-side file pre-chowned into a specific UID before the pod starts -- root required, and needs to read this node's live NODELET_USERNS_BASE_UID value. Manual spot-check: (1) note NODELET_USERNS_BASE_UID (default 100000), (2) create a hostPath directory, chown a file inside it to that exact UID ('chown 100000 <dir>/marker' -- this is the FIRST pod's allocated range base, container-relative UID 0), (3) create a hostUsers: false pod mounting that hostPath directory, (4) confirm 'stat -c %u /hostvol/marker' INSIDE the container reports '0' (proof the sandbox's own ambient user namespace, round 25, correctly translates a plain bind mount on its own) rather than 65534/nobody (proof no real user namespace is active at all). Round 123 found (live, via the automated volume-roundtrip test finally reaching this deep in the suite, and confirmed with an A/B `stat /` comparison inside a failing container) that round 88's own attempt at this -- setting CRI's Mount.uidMappings/.gidMappings per-mount, on top of the sandbox's own userns_options -- was actively wrong: that field is interpreted relative to the host's own init user namespace by mount_setattr(), not the sandbox's, so it double-translates against the sandbox's already-correct ambient mapping and produces the overflow uid instead. Round 123 removed the per-mount mapping entirely; nodelet's own emptyDir/ConfigMap/Secret/etc-hosts/terminationMessagePath mounts (which it materializes itself, unlike a real hostPath) are now just chowned to the pod's userns base uid/gid right after creation (see chown_userns_base()'s call sites in volumes_resolve.rs and container_create.rs) so the SAME ambient-namespace translation this manual check exercises for a real hostPath handles them too, with nothing mount-specific layered on top. To spot-check those: (5) 'stat -c %u <nodelet-state-dir>/pods/<uid>/etc-hosts' and the termination-log file under NODELET_VOLUME_ROOT should show NODELET_USERNS_BASE_UID itself (not real host root, uid 0) on disk, while (6) 'stat -c %u /etc/hosts' and 'stat -c %u /dev/termination-log' INSIDE the container should report '0' (translated), not 65534/nobody."
+test_host_users_volume_ownership_translation_is_correct() {
+    # Round 123: proving OWNERSHIP TRANSLATION (that a host-side file owned
+    # by a UID within the pod's own mapped range shows up as the correct
+    # small container-relative UID inside the container, rather than the
+    # overflow/nobody UID a file outside that range would show) needs a
+    # host-side file pre-chowned to the pod's own allocated userns base
+    # UID -- but that's only known once the pod is already running (it's
+    # assigned by nodelet's own allocator, keyed by pod uid, at
+    # RunPodSandbox time). Sidesteps the "needs NODELET_USERNS_BASE_UID's
+    # live value" problem the old manual-note version of this test had by
+    # discovering it live: mount BOTH an emptyDir (already correctly
+    # chowned to the pod's base uid by resolve_volumes()'s own
+    # chown_userns_base(), confirmed working earlier this round) AND a
+    # real hostPath directory in the SAME pod. Once Running, `stat` the
+    # emptyDir's real host directory to learn the live base uid, chown the
+    # hostPath directory's marker file to it (a bind mount is a live view
+    # of the same filesystem, not a snapshot -- a host-side chown made
+    # *after* mounting is immediately visible inside the already-running
+    # container), then confirm the container sees it translated to uid 0.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local name="hostusers-ownership-check"
+    local host_dir
+    host_dir="$(mktemp -d /tmp/nodelet-hostusers-ownership-test.XXXXXX)"
+    : > "$host_dir/marker"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  hostUsers: false
+  volumes:
+    - name: shared
+      emptyDir: {}
+    - name: hostvol
+      hostPath:
+        path: $host_dir
+        type: Directory
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "sleep 3600"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+        - {name: hostvol, mountPath: /hostvol}
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        delete_pod_if_exists "$name"
+        sudo rm -rf "$host_dir"
+        skip_test "pod never reached Running with hostUsers: false — see the sibling real-userns test's own doc comment for known causes"
+    fi
+
+    local base_uid
+    base_uid="$(stat -c %u "$(pod_volume_host_path "$name" shared)")"
+    assert_not_empty "$base_uid" "the pod's live userns base uid, read from its own chowned emptyDir"
+    sudo chown "$base_uid:$base_uid" "$host_dir/marker"
+
+    local translated_uid
+    translated_uid="$(kctl exec "$name" -- stat -c %u /hostvol/marker 2>&1)"
+    delete_pod_if_exists "$name"
+    sudo rm -rf "$host_dir"
+    assert_eq "$translated_uid" "0" "a host-side file owned by the pod's own userns base uid ($base_uid) should show as uid 0 inside the container (real ownership translation via the sandbox's ambient user namespace), not 65534/nobody"
 }
 
-test_client_certificate_authentication_manual_note() {
-    skip_test "round 95: TLS client certificate authentication (NODELET_CLIENT_CA_FILE) needs nodelet started with that env var set to a CA bundle path before the server binds its listener -- this test harness starts nodelet once, before any per-test env var can be injected, same limitation round 94's --config file e2e coverage hit. Manual spot-check: (1) generate a CA: 'openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt -days 1 -subj /CN=test-ca', (2) generate a client cert signed by it with a CN/O of your choice: 'openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj /CN=alice/O=system:masters && openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt -days 1', (3) start nodelet with NODELET_CLIENT_CA_FILE=/path/to/ca.crt, (4) 'curl -k --cert client.crt --key client.key https://<node>:<server-port>/stats/summary' should succeed with NO Authorization header at all (proof the cert alone authenticated), (5) the same curl call with a self-signed cert NOT signed by ca.crt should fail the TLS handshake outright (curl reports a certificate verify failure, not a 401 -- proof rustls itself rejects it before nodelet code runs), (6) a plain 'curl -k https://<node>:<server-port>/stats/summary' with no cert and no Authorization header should still get the existing 401 bearer-token response (proof the fallback path is unchanged)."
+test_client_certificate_authentication_works() {
+    # Round 95's original feature; round 123 automates what used to be a
+    # manual spot-check purely because this harness had no way to restart
+    # nodelet with NODELET_CLIENT_CA_FILE set before its server binds —
+    # nodelet_restart_with_env (nodelet_env.sh) now does exactly that.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with NODELET_CLIENT_CA_FILE set"; fi
+    command -v openssl >/dev/null 2>&1 || skip_test "needs openssl to generate a test CA/client cert"
+
+    local work_dir
+    work_dir="$(mktemp -d /tmp/nodelet-client-cert-test.XXXXXX)"
+    client_cert_test_cleanup() {
+        nodelet_restore_env
+        rm -rf "${work_dir:-}"
+    }
+    trap client_cert_test_cleanup EXIT
+
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$work_dir/ca.key" -out "$work_dir/ca.crt" -days 1 -subj /CN=test-ca >/dev/null 2>&1
+    openssl req -newkey rsa:2048 -nodes -keyout "$work_dir/client.key" -out "$work_dir/client.csr" -subj /CN=alice/O=system:masters >/dev/null 2>&1
+    openssl x509 -req -in "$work_dir/client.csr" -CA "$work_dir/ca.crt" -CAkey "$work_dir/ca.key" -CAcreateserial -out "$work_dir/client.crt" -days 1 >/dev/null 2>&1
+    # A second, self-signed cert NOT signed by our CA — proves rejection,
+    # not just success.
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$work_dir/other.key" -out "$work_dir/other.crt" -days 1 -subj /CN=mallory >/dev/null 2>&1
+
+    nodelet_restart_with_env "NODELET_CLIENT_CA_FILE=$work_dir/ca.crt"
+
+    local node_ip port
+    node_ip="$(kubectl get node "$(node_name)" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
+    port="${NODELET_SERVER_PORT:-10250}"
+
+    # (1) the client cert alone, no Authorization header at all, should
+    # authenticate successfully.
+    local cert_response
+    cert_response="$(curl -ksS --max-time 5 --cert "$work_dir/client.crt" --key "$work_dir/client.key" "https://$node_ip:$port/stats/summary")"
+    assert_contains "$cert_response" "nodeName" "TLS client cert alone should authenticate against /stats/summary with no bearer token"
+
+    # (2) a cert NOT signed by NODELET_CLIENT_CA_FILE should fail the TLS
+    # handshake outright (rustls itself rejects it before nodelet code
+    # ever runs) — a connection failure, not a 401 response.
+    curl -ksS --max-time 5 --cert "$work_dir/other.crt" --key "$work_dir/other.key" "https://$node_ip:$port/stats/summary" >/dev/null 2>&1
+    assert_true bash -c "[[ $? -ne 0 ]]" "a client cert not signed by NODELET_CLIENT_CA_FILE should fail the TLS handshake, not just get a 401"
+
+    # (3) no cert and no bearer token should still get the existing 401
+    # fallback — the cert-auth path must not have replaced it.
+    local no_auth_status
+    no_auth_status="$(curl -ksS --max-time 5 -o /dev/null -w '%{http_code}' "https://$node_ip:$port/stats/summary")"
+    assert_eq "$no_auth_status" "401" "no cert and no Authorization header should still get the existing 401 bearer-token fallback"
 }
 
 test_containers_get_isolated_pid_namespaces_by_default() {
@@ -640,8 +745,8 @@ register_test test_proc_mount_default_masks_proc_kcore
 register_test test_proc_mount_unmasked_leaves_proc_kcore_readable
 register_test test_host_users_false_gets_a_real_user_namespace
 register_test test_host_users_false_volume_still_reads_and_writes_normally
-register_test test_host_users_volume_ownership_translation_manual_note
-register_test test_client_certificate_authentication_manual_note
+register_test test_host_users_volume_ownership_translation_is_correct
+register_test test_client_certificate_authentication_works
 register_test test_containers_get_isolated_pid_namespaces_by_default
 register_test test_share_process_namespace_puts_every_container_in_one_pid_namespace
 register_test test_host_pid_sees_host_processes
