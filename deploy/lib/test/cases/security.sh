@@ -264,16 +264,15 @@ EOF
         # (linux.namespaces: [{type: user, path: /proc/<sandbox-pid>/ns/user}]),
         # it doesn't redeclare uidMappings itself; only the SANDBOX's own
         # (pause container's) OCI spec, built straight from RunPodSandbox's
-        # userns_options, would actually carry them. Pulling that one
-        # instead this time, straight off the host filesystem via the
-        # sandbox id containerd's own journal logged for this pod, to see
-        # whether linux.uidMappings ever reached runc at all (nodelet bug:
-        # request built wrong or dropped) or arrived correctly and runc/the
-        # kernel still didn't apply it (a real runtime/environment
-        # limitation, not a nodelet bug).
+        # userns_options, would actually carry them. Second attempt tried
+        # parsing the sandbox id out of containerd's own journal via
+        # `journalctl -u containerd`, which came back empty -- switched to
+        # asking containerd directly instead (`ctr containers list` with
+        # its own label filter), which doesn't depend on journal
+        # availability/rotation/unit-name assumptions at all.
         local sandbox_id
-        sandbox_id="$(sudo journalctl -u containerd --no-pager 2>/dev/null | grep -F "RunPodSandbox for name:\"$name\"" | tail -1 | grep -oE '[a-f0-9]{64}' | tail -1 || true)"
-        log "    [diag] sandbox id: ${sandbox_id:-<not found in containerd journal>}"
+        sandbox_id="$(sudo ctr -n k8s.io containers list -q "labels.\"io.kubernetes.pod.name\"==$name,labels.\"io.cri-containerd.kind\"==sandbox" 2>/dev/null | head -1 || true)"
+        log "    [diag] sandbox id: ${sandbox_id:-<not found via ctr containers list>}"
         if [[ -n "$sandbox_id" ]]; then
             log "    [diag] runc OCI spec linux.uidMappings/gidMappings/namespaces for this SANDBOX:"
             log "$(sudo find /run/containerd/io.containerd.runtime.v2.task -name config.json -path "*$sandbox_id*" -exec cat {} \; 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); l=d.get("linux",{}); print("uidMappings:", l.get("uidMappings")); print("gidMappings:", l.get("gidMappings")); print("namespaces:", [n for n in l.get("namespaces",[]) if n.get("type")=="user"])' 2>&1)"
