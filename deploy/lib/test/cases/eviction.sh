@@ -134,6 +134,7 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+register_test test_pod_exceeding_its_active_deadline_is_terminated
 register_test test_eviction_manual_procedure
 register_test test_eviction_priority_tiebreak_manual_procedure
 register_test test_eviction_exceeds_requests_tiebreak_manual_procedure

@@ -379,7 +379,17 @@ EOF
     local base_uid
     base_uid="$(stat -c %u "$(pod_volume_host_path "$name" shared)")"
     assert_not_empty "$base_uid" "the pod's live userns base uid, read from its own chowned emptyDir"
-    sudo chown "$base_uid:$base_uid" "$host_dir/marker"
+    # Round 123 (found live in CI): chowning only the marker file isn't
+    # enough — `mktemp -d` made $host_dir mode 0700, owned by this script's
+    # own (real host) user. From the container's mapped view, that real
+    # owner falls outside the pod's userns range and shows as the overflow
+    # uid, so 0700 denies the mapped root even *traversal* into the
+    # directory (stat failed with EACCES, not just showing the wrong
+    # owner). Chowning the directory too — not just the file inside it —
+    # makes it show as uid 0 from the container's view, and its own 0700
+    # bits then grant that (translated) owner full access, same as any
+    # real hostPath directory a cluster operator actually owns would.
+    sudo chown "$base_uid:$base_uid" "$host_dir" "$host_dir/marker"
 
     local translated_uid
     translated_uid="$(kctl exec "$name" -- stat -c %u /hostvol/marker 2>&1)"
@@ -405,12 +415,21 @@ test_client_certificate_authentication_works() {
     }
     trap client_cert_test_cleanup EXIT
 
-    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$work_dir/ca.key" -out "$work_dir/ca.crt" -days 1 -subj /CN=test-ca >/dev/null 2>&1
-    openssl req -newkey rsa:2048 -nodes -keyout "$work_dir/client.key" -out "$work_dir/client.csr" -subj /CN=alice/O=system:masters >/dev/null 2>&1
-    openssl x509 -req -in "$work_dir/client.csr" -CA "$work_dir/ca.crt" -CAkey "$work_dir/ca.key" -CAcreateserial -out "$work_dir/client.crt" -days 1 >/dev/null 2>&1
+    # Explicit -addext for basicConstraints/keyUsage/extendedKeyUsage
+    # rather than relying on the OS's own openssl.cnf defaults for -x509
+    # mode (which vary) — rustls's WebPkiClientVerifier is a real X.509
+    # path validator, not OpenSSL's own (more permissive) verify, so a
+    # cert missing CA:true on the root or clientAuth EKU on the leaf can
+    # fail the handshake even though `openssl verify` would accept it.
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$work_dir/ca.key" -out "$work_dir/ca.crt" -days 1 -subj /CN=test-ca \
+        -addext basicConstraints=critical,CA:true -addext keyUsage=critical,keyCertSign,cRLSign
+    openssl req -newkey rsa:2048 -nodes -keyout "$work_dir/client.key" -out "$work_dir/client.csr" -subj /CN=alice/O=system:masters
+    openssl x509 -req -in "$work_dir/client.csr" -CA "$work_dir/ca.crt" -CAkey "$work_dir/ca.key" -CAcreateserial -out "$work_dir/client.crt" -days 1 \
+        -copy_extensions none -extfile <(printf 'basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=clientAuth')
     # A second, self-signed cert NOT signed by our CA — proves rejection,
     # not just success.
-    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$work_dir/other.key" -out "$work_dir/other.crt" -days 1 -subj /CN=mallory >/dev/null 2>&1
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$work_dir/other.key" -out "$work_dir/other.crt" -days 1 -subj /CN=mallory \
+        -addext basicConstraints=critical,CA:true -addext keyUsage=critical,keyCertSign,cRLSign
 
     nodelet_restart_with_env "NODELET_CLIENT_CA_FILE=$work_dir/ca.crt"
 
@@ -548,6 +567,8 @@ EOF
     delete_pod_if_exists "$name"
 }
 
+register_test test_container_status_reports_resolved_user
+register_test test_container_status_reports_recursive_read_only
 register_test test_run_as_user_is_applied
 register_test test_read_only_root_filesystem_is_enforced
 register_test test_without_read_only_root_filesystem_writes_succeed
