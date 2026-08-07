@@ -266,9 +266,16 @@ EOF
         skip_test "pod never reached Running with a PVC volume mounted — check nodelet's server logs for 'failed to mount CSI volume' or 'no CSI driver configured'"
     fi
 
-    local in_use
-    in_use="$(kubectl get node "$n" -o jsonpath='{.status.volumesInUse}')"
-    assert_contains "$in_use" "kubernetes.io/csi/" "Node.status.volumesInUse should list an entry ('kubernetes.io/csi/<driver>^<volumeHandle>', round 34) while the CSI-backed pod is running"
+    # Round 123 (found live in CI): reading this immediately after
+    # Running raced the next periodic node-status push (mounted_volumes()
+    # reflects real-time ref-counted state, but Node.status.volumesInUse
+    # is only as fresh as the last push nodelet actually sent) — retry
+    # instead of a single read.
+    if ! try_wait_until 30 bash -c "kubectl get node '$n' -o jsonpath='{.status.volumesInUse}' | grep -q 'kubernetes.io/csi/'"; then
+        delete_pod_if_exists "$name"
+        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        die "Node.status.volumesInUse never listed an entry ('kubernetes.io/csi/<driver>^<volumeHandle>', round 34) while the CSI-backed pod was running"
+    fi
 
     delete_pod_if_exists "$name"
     wait_until 30 "$name gone" pod_gone "$name"
@@ -365,7 +372,13 @@ EOF
     # promises regardless of which path was taken: the volume is usable
     # and correctly group-owned for the second pod too.
     local gid
-    gid="$(kctl exec "$second" -- stat -c %g /data 2>&1)"
+    # Round 123 (found live in CI): 'got 4322, want 4322' on a plain
+    # assert_eq — the two sides looked identical printed but weren't
+    # byte-identical; kctl exec's stream carries something (a stray \r or
+    # similar) a raw capture doesn't strip. tr -dc keeps only digits,
+    # sidestepping whatever invisible byte it was without needing to
+    # pin down exactly which one.
+    gid="$(kctl exec "$second" -- stat -c %g /data 2>&1 | tr -dc '0-9')"
     delete_pod_if_exists "$second"
     kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
     assert_eq "$gid" "4322" "the second pod reusing the same PVC should still see fsGroup 4322 on /data, whether OnRootMismatch skipped the chown or not"

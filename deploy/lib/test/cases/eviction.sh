@@ -129,7 +129,14 @@ spec:
       command: ["sleep", "3600"]
 EOF
     wait_until 60 "$name Running" pod_is_phase "$name" Running
-    wait_until 30 "$name terminated for exceeding its activeDeadlineSeconds" bash -c \
+    # 60s, not 30 — this check only runs once per NODELET_EVICTION_CHECK_SECS
+    # (default 10s) eviction_loop tick, and this is the first time this
+    # test has ever actually executed (round 123: it was defined but never
+    # registered until now) — give it real headroom before assuming a
+    # genuine bug rather than a tight first-run timeout, same lesson this
+    # suite already learned the hard way for its own wait_until 30s
+    # timeouts elsewhere.
+    wait_until 60 "$name terminated for exceeding its activeDeadlineSeconds" bash -c \
         "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.reason}')\" == 'DeadlineExceeded' ]]"
     delete_pod_if_exists "$name"
 }
