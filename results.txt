@@ -1,65 +1,80 @@
-commit: 1992e722bf09c13fc8e68db6cde22eefae9826ef
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31147975627
-timestamp (UTC): 2026-08-07T04:43:25Z
+commit: 4c9d6fd2e72fd500021d909b5a21f1aba26eacff
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31148536187
+timestamp (UTC): 2026-08-07T04:53:53Z
 exit code: 1
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786077685
-==> Running 142 registered test(s)...
-▶ test_resource_api_group_is_enabled
-  ✔ PASS (0s)
-▶ test_dra_claim_is_allocated_and_reserved_for_the_pod
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (4s)
-▶ test_host_users_volume_ownership_translation_is_correct
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> FATAL: assertion failed: a host-side file owned by the pod's own userns base uid (100000) should show as uid 0 inside the container (real ownership translation via the sandbox's ambient user namespace), not 65534/nobody — got 'kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedstat: can't stat '/hostvol/marker': Permission denied
-command terminated with exit code 1', want '0'
-  ✘ FAIL (33s, exit 1)
-  [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
-  [diag] nodelet tail:
-    Aug 07 04:41:27 runnervmvrwv9 run-nodelet.sh[10996]:     1: No such file or directory (os error 2)
-    Aug 07 04:41:27 runnervmvrwv9 run-nodelet.sh[10996]:     2: No such file or directory (os error 2)
-    Aug 07 04:41:29 runnervmvrwv9 run-nodelet.sh[10996]: 2026-08-07T04:41:29.674839Z  WARN DRA: NodePrepareResources failed for this driver's whole batch; container(s) referencing its claims will start without them driver=gpu.example.com error=connecting to DRA plugin unix socket
-    Aug 07 04:41:29 runnervmvrwv9 run-nodelet.sh[10996]: Caused by:
-    Aug 07 04:41:29 runnervmvrwv9 run-nodelet.sh[10996]:     0: transport error
-    Aug 07 04:41:29 runnervmvrwv9 run-nodelet.sh[10996]:     1: No such file or directory (os error 2)
-    Aug 07 04:41:29 runnervmvrwv9 run-nodelet.sh[10996]:     2: No such file or directory (os error 2)
-    Aug 07 04:41:32 runnervmvrwv9 run-nodelet.sh[10996]: 2026-08-07T04:41:32.314921Z  INFO plugin registry: socket disappeared; deregistering name="gpu.example.com" path=/var/lib/nodelet/plugins_registry/gpu.example.com-06508892-b312-4020-80b3-5e9ff50958ff-reg.sock
-    Aug 07 04:41:32 runnervmvrwv9 run-nodelet.sh[10996]: 2026-08-07T04:41:32.317264Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-382412df-9368-4d80-a261-0460804c418f.sock plugin_type=DRAPlugin
-    Aug 07 04:42:00 runnervmvrwv9 run-nodelet.sh[10996]: 2026-08-07T04:42:00.135182Z  INFO torn down pod=not-k8s-e2e-1786077685/dra-claim-check
-    Aug 07 04:42:00 runnervmvrwv9 run-nodelet.sh[10996]: 2026-08-07T04:42:00.796757Z  WARN DRA teardown: failed to fetch ResourceClaim; driver(s) not notified to unprepare pod_claim=gpu claim=dra-claim-check-gpu-twsx5 error=ResourceClaim GET
-    Aug 07 04:42:00 runnervmvrwv9 run-nodelet.sh[10996]: Caused by:
-    Aug 07 04:42:00 runnervmvrwv9 run-nodelet.sh[10996]:     0: ApiError: resourceclaims.resource.k8s.io "dra-claim-check-gpu-twsx5" not found: NotFound (Status { status: Some(Failure), code: 404, message: "resourceclaims.resource.k8s.io \"dra-claim-check-gpu-twsx5\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "dra-claim-check-gpu-twsx5", group: "resource.k8s.io", kind: "resourceclaims", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 07 04:42:00 runnervmvrwv9 run-nodelet.sh[10996]:     1: resourceclaims.resource.k8s.io "dra-claim-check-gpu-twsx5" not found: NotFound
-    Aug 07 04:42:00 runnervmvrwv9 run-nodelet.sh[10996]: 2026-08-07T04:42:00.796866Z  INFO torn down pod=not-k8s-e2e-1786077685/dra-claim-check
-▶ test_client_certificate_authentication_works
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedcurl: (56) OpenSSL SSL_read: OpenSSL/3.0.13: error:0A000416:SSL routines::sslv3 alert certificate unknown, errno 0
-==> FATAL: assertion failed: TLS client cert alone should authenticate against /stats/summary with no bearer token — '' does not contain 'nodeName'
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786078322
+==> Running 146 registered test(s)...
+▶ test_node_reports_volumes_in_use_for_a_csi_volume
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> FATAL: assertion failed: Node.status.volumesInUse should list an entry ('kubernetes.io/csi/<driver>^<volumeHandle>', round 34) while the CSI-backed pod is running — '' does not contain 'kubernetes.io/csi/'
   ✘ FAIL (4s, exit 1)
   [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
   [diag] nodelet tail:
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]:   CRI endpoint:  unix:///run/containerd/containerd.sock
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]:   IP family:     ipv4
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]:   LB method:     random
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]: ========================================
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]: 2026-08-07T04:42:07.138288Z  INFO starting nodelet node=runnervmvrwv9 runtime=Cri cpu=4 memory_bytes=16766423040 max_pods=110
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]: 2026-08-07T04:42:07.140368Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]: 2026-08-07T04:42:07.143724Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]: 2026-08-07T04:42:07.147140Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-382412df-9368-4d80-a261-0460804c418f.sock plugin_type=DRAPlugin
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]: 2026-08-07T04:42:07.151145Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]: 2026-08-07T04:42:07.181038Z  INFO node registered and Ready node=runnervmvrwv9
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]: 2026-08-07T04:42:07.181554Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]: 2026-08-07T04:42:07.181670Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]: 2026-08-07T04:42:07.182074Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]: 2026-08-07T04:42:07.186967Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
-    Aug 07 04:42:07 runnervmvrwv9 run-nodelet.sh[17692]: 2026-08-07T04:42:07.676121Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-▶ test_static_pod_creates_a_mirror_pod
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (75s)
+    Aug 07 04:51:16 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:16.363186Z ERROR failed with status 503 Service Unavailable
+    Aug 07 04:51:16 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:16.364223Z ERROR failed with status 503 Service Unavailable
+    Aug 07 04:51:16 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:16.931367Z  WARN endpointslice watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 420 (427)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 04:51:16 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:16.932344Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 416 (427)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 04:51:16 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:16.933303Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 426 (427)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 04:51:16 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:16.934990Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 416 (427)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 04:51:16 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:16.946953Z  WARN service watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 416 (427)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 04:51:17 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:17.422974Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 04:51:17 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:17.500290Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-l7bwv namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 07 04:51:17 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:17.531532Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-l7bwv namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 04:51:41 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:41.404026Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 04:51:56 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:56.465224Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-5bdbd
+    Aug 07 04:51:56 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:56.993947Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-5bdbd
+    Aug 07 04:52:01 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:52:01.422682Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-9a44a512-fb19-4dec-bb04-d315ccf0ef00.sock plugin_type=DRAPlugin
+    Aug 07 04:52:01 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:52:01.512045Z  INFO node status pushed
+▶ test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> FATAL: assertion failed: the second pod reusing the same PVC should still see fsGroup 4322 on /data, whether OnRootMismatch skipped the chown or not — got 'kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied4322', want '4322'
+  ✘ FAIL (68s, exit 1)
+  [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
+  [diag] nodelet tail:
+    Aug 07 04:51:17 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:17.500290Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-l7bwv namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 07 04:51:17 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:17.531532Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-l7bwv namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 04:51:41 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:41.404026Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 04:51:56 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:56.465224Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-5bdbd
+    Aug 07 04:51:56 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:56.993947Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-5bdbd
+    Aug 07 04:52:01 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:52:01.422682Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-9a44a512-fb19-4dec-bb04-d315ccf0ef00.sock plugin_type=DRAPlugin
+    Aug 07 04:52:01 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:52:01.512045Z  INFO node status pushed
+    Aug 07 04:52:40 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:52:40.771679Z  INFO torn down pod=not-k8s-e2e-1786078322/fsgroup-policy-check-1
+    Aug 07 04:52:40 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:52:40.879225Z  INFO torn down pod=not-k8s-e2e-1786078322/fsgroup-policy-check-1
+    Aug 07 04:53:01 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:53:01.555402Z  INFO node status pushed
+    Aug 07 04:53:15 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:53:15.394860Z  INFO torn down pod=not-k8s-e2e-1786078322/fsgroup-policy-check-2
+    Aug 07 04:53:16 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:53:16.418696Z  WARN CSI teardown: failed to unmount volume volume=data driver=hostpath.csi.k8s.io error=NodeUnpublishVolume
+    Aug 07 04:53:16 runnervmvrwv9 run-nodelet.sh[10864]: Caused by:
+    Aug 07 04:53:16 runnervmvrwv9 run-nodelet.sh[10864]:     code: 'Some requested entity was not found', message: "volume id be45859d-921b-11f1-8753-ce317a8f673f does not exist in the volumes list"
+    Aug 07 04:53:16 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:53:16.418801Z  INFO torn down pod=not-k8s-e2e-1786078322/fsgroup-policy-check-2
+▶ test_pod_exceeding_its_active_deadline_is_terminated
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> FATAL: timed out after 30s waiting for: active-deadline-check terminated for exceeding its activeDeadlineSeconds
+  ✘ FAIL (35s, exit 1)
+  [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
+  [diag] nodelet tail:
+    Aug 07 04:51:17 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:17.500290Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-l7bwv namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 07 04:51:17 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:17.531532Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-l7bwv namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 04:51:41 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:41.404026Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 04:51:56 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:56.465224Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-5bdbd
+    Aug 07 04:51:56 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:51:56.993947Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-5bdbd
+    Aug 07 04:52:01 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:52:01.422682Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-9a44a512-fb19-4dec-bb04-d315ccf0ef00.sock plugin_type=DRAPlugin
+    Aug 07 04:52:01 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:52:01.512045Z  INFO node status pushed
+    Aug 07 04:52:40 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:52:40.771679Z  INFO torn down pod=not-k8s-e2e-1786078322/fsgroup-policy-check-1
+    Aug 07 04:52:40 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:52:40.879225Z  INFO torn down pod=not-k8s-e2e-1786078322/fsgroup-policy-check-1
+    Aug 07 04:53:01 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:53:01.555402Z  INFO node status pushed
+    Aug 07 04:53:15 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:53:15.394860Z  INFO torn down pod=not-k8s-e2e-1786078322/fsgroup-policy-check-2
+    Aug 07 04:53:16 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:53:16.418696Z  WARN CSI teardown: failed to unmount volume volume=data driver=hostpath.csi.k8s.io error=NodeUnpublishVolume
+    Aug 07 04:53:16 runnervmvrwv9 run-nodelet.sh[10864]: Caused by:
+    Aug 07 04:53:16 runnervmvrwv9 run-nodelet.sh[10864]:     code: 'Some requested entity was not found', message: "volume id be45859d-921b-11f1-8753-ce317a8f673f does not exist in the volumes list"
+    Aug 07 04:53:16 runnervmvrwv9 run-nodelet.sh[10864]: 2026-08-07T04:53:16.418801Z  INFO torn down pod=not-k8s-e2e-1786078322/fsgroup-policy-check-2
+==> WARNING: stopping early: 3 failures reached NOTK8S_E2E_MAX_FAILURES=3 (146 tests registered total, not all of them ran) — see the failures above/print_summary below for what's already known, rather than burning time re-discovering the same root cause across the rest of the suite.
 
 ════════════════════════════════════════
-Results: 3 passed, 2 failed, 0 skipped
+Results: 0 passed, 3 failed, 0 skipped
 Failed:
-  - test_host_users_volume_ownership_translation_is_correct
-  - test_client_certificate_authentication_works
+  - test_node_reports_volumes_in_use_for_a_csi_volume
+  - test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
+  - test_pod_exceeding_its_active_deadline_is_terminated
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786077685...
+==> Cleaning up test namespace not-k8s-e2e-1786078322...
