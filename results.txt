@@ -1,42 +1,80 @@
-commit: 1106b804f2929f1a0848e751a824acb2600384fd
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31137478028
-timestamp (UTC): 2026-08-07T01:21:20Z
+commit: 6ed0fa65f19a35eca25030b821af4e5e4a2703cb
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31137794327
+timestamp (UTC): 2026-08-07T01:26:51Z
 exit code: 1
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786065667
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786065997
 ==> Running 142 registered test(s)...
 ▶ test_host_users_false_gets_a_real_user_namespace
 kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==>     [diag] id inside container: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denieduid=0(root) gid=0(root) groups=0(root),1(bin),2(daemon),3(sys),4(adm),6(disk),10(wheel),11(floppy),20(dialout),26(tape),27(video)
 ==>     [diag] ls -la /shared inside container: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedtotal 12
-drwxr-xr-x    2 100000   100000        4096 Aug  7 01:21 .
-drwxr-xr-x    1 root     root          4096 Aug  7 01:21 ..
--rw-r--r--    1 100000   100000          33 Aug  7 01:21 uid_map.txt
-==>     [diag] stat /shared host dir: 100000:100000 /var/lib/nodelet/pods/6370253e-e091-4d07-b3e2-e496cbd21a81/volumes/shared
-==>     [diag] sandbox id: <not found via ctr containers list>
+drwxr-xr-x    2 100000   100000        4096 Aug  7 01:26 .
+drwxr-xr-x    1 root     root          4096 Aug  7 01:26 ..
+-rw-r--r--    1 100000   100000          33 Aug  7 01:26 uid_map.txt
+==>     [diag] stat /shared host dir: 100000:100000 /var/lib/nodelet/pods/1bc39e55-bdbc-4aa0-a964-afe3c6f53dee/volumes/shared
+==>     [diag] all sandbox containers and their labels:
+==> --- 1596dfe6ba7d8112021d15d11542efb4d756689790887f1c662cea0950d331f0 ---
+{'description': 'CSI External Resizer', 'io.cri-containerd.kind': 'container', 'maintainers': 'Kubernetes Authors', 'nodelet.dev/container-name': 'csi-resizer', 'nodelet.dev/pod-name': 'csi-hostpathplugin-0', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': 'a3ff3d70-1618-4ac0-8f64-a336bb2fa88c', 'revision': 'v2.2.1'}
+--- 1c0969f8072bde5833da4c22f354de20585c1fee22aa0f94c87968e95fcdb155 ---
+{'description': 'CSI External Provisioner', 'io.cri-containerd.kind': 'container', 'maintainers': 'Kubernetes Authors', 'nodelet.dev/container-name': 'csi-provisioner', 'nodelet.dev/pod-name': 'csi-hostpathplugin-0', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': 'a3ff3d70-1618-4ac0-8f64-a336bb2fa88c', 'revision': 'v6.3.0'}
+--- 266cbf6749cba79171bc30a91008f0628d909eacf43138b4c2e082a152b787dd ---
+{'description': 'CSI External Snapshotter Sidecar', 'io.cri-containerd.kind': 'container', 'maintainers': 'Kubernetes Authors', 'nodelet.dev/container-name': 'csi-snapshotter', 'nodelet.dev/pod-name': 'csi-hostpathplugin-0', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': 'a3ff3d70-1618-4ac0-8f64-a336bb2fa88c', 'revision': 'v8.6.0'}
+--- 29f3cb1b0b4151af45b6585f52348cc03338883b93e811f571b58ecb42df94b9 ---
+{'io.cri-containerd.kind': 'container', 'nodelet.dev/container-name': 'app', 'nodelet.dev/pod-name': 'hostusers-false-check', 'nodelet.dev/pod-namespace': 'not-k8s-e2e-1786065997', 'nodelet.dev/pod-uid': '1bc39e55-bdbc-4aa0-a964-afe3c6f53dee'}
+--- 32b5c93a9aa4815e4ed32cd2ca03928d6f65162b1849197720ad3188451b7570 ---
+{'description': 'See summary', 'io.cri-containerd.kind': 'container', 'io.k8s.display-name': 'Example Resource Driver for Dynamic Resource Allocation (DRA)', 'name': 'Example Resource Driver for Dynamic Resource Allocation (DRA)', 'nodelet.dev/container-name': 'plugin', 'nodelet.dev/pod-name': 'dra-example-driver-kubeletplugin-m6tff', 'nodelet.dev/pod-namespace': 'dra-example-driver', 'nodelet.dev/pod-uid': 'c84c4f09-31c9-4998-b9c4-dd51ce579613', 'org.opencontainers.image.version': '22.04', 'release': 'N/A', 'summary': 'Example DRA resource driver for Kubernetes', 'vendor': 'example.com', 'version': 'v0.4.0'}
+--- 3cc024e4976592f81a2f016062f75b797f5b5e0d6a26279fa74f07bc6934b9b7 ---
+{'io.cri-containerd.kind': 'sandbox', 'nodelet.dev/pod-name': 'smoke-test', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': '35475c45-3d66-4c11-808e-3992d7d72d16'}
+--- 44d8b207f975b1c5a40a930a7877d4229b03ea2c959a2b7eed2476079efd46f0 ---
+{'io.cri-containerd.kind': 'sandbox', 'nodelet.dev/pod-name': 'csi-hostpath-socat-0', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': 'f4e74198-f47f-4be6-bbc8-4ad2b06f92dc'}
+--- 476bccd4ad2f0c8da8384f130e65ffe810f70062bfbc0b5dee5e9fe7b1c254c7 ---
+{'description': 'CSI Driver liveness probe', 'io.cri-containerd.kind': 'container', 'maintainers': 'Kubernetes Authors', 'nodelet.dev/container-name': 'liveness-probe', 'nodelet.dev/pod-name': 'csi-hostpathplugin-0', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': 'a3ff3d70-1618-4ac0-8f64-a336bb2fa88c', 'revision': 'v2.19.0'}
+--- 49a2497a9ccd5522660fd3a672670f4af448543c2c3d0f053daad0b51fdea7de ---
+{'io.cri-containerd.kind': 'sandbox', 'nodelet.dev/pod-name': 'coredns-54996dc9b4-88gnk', 'nodelet.dev/pod-namespace': 'kube-system', 'nodelet.dev/pod-uid': '8056c0ee-d998-448b-a304-72122fe29892'}
+--- 50932ba80bc52bdc74a345c9aa61f2176aa5133344f7b10995265c3c6fb7403e ---
+{'description': 'CSI External Health Monitor Controller', 'io.cri-containerd.kind': 'container', 'maintainers': 'Kubernetes Authors', 'nodelet.dev/container-name': 'csi-external-health-monitor-controller', 'nodelet.dev/pod-name': 'csi-hostpathplugin-0', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': 'a3ff3d70-1618-4ac0-8f64-a336bb2fa88c', 'revision': 'v0.18.0'}
+--- 63a3974be15a2c20d2387caca739275c66458042078195cb8cb1139918973de3 ---
+{'io.cri-containerd.kind': 'sandbox', 'nodelet.dev/pod-name': 'dra-example-driver-kubeletplugin-m6tff', 'nodelet.dev/pod-namespace': 'dra-example-driver', 'nodelet.dev/pod-uid': 'c84c4f09-31c9-4998-b9c4-dd51ce579613'}
+--- 83e9a8227f94769483becf3a2ecb67c798c1e3906c6e818bd8b949df2fe6a787 ---
+{'io.cri-containerd.kind': 'sandbox', 'nodelet.dev/pod-name': 'hostusers-false-check', 'nodelet.dev/pod-namespace': 'not-k8s-e2e-1786065997', 'nodelet.dev/pod-uid': '1bc39e55-bdbc-4aa0-a964-afe3c6f53dee'}
+--- 951fd99cdb610e507e5a75787588d576e692b0f4bb84ca7b41f6adfff637d014 ---
+{'io.cri-containerd.kind': 'container', 'nodelet.dev/container-name': 'busybox', 'nodelet.dev/pod-name': 'smoke-test', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': '35475c45-3d66-4c11-808e-3992d7d72d16'}
+--- 97f8cb847567fa31bf0d35af579bbb7e2d35e42b7bfb51f03e5d4285269cc831 ---
+{'description': 'HostPath Driver', 'io.cri-containerd.kind': 'container', 'maintainers': 'Kubernetes Authors', 'nodelet.dev/container-name': 'socat', 'nodelet.dev/pod-name': 'csi-hostpath-socat-0', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': 'f4e74198-f47f-4be6-bbc8-4ad2b06f92dc', 'revision': 'v1.17.1'}
+--- 9b2dbdae0ccb2b917a67bffbffb97ea3122eb072e01e89edd07e698dbdd5f054 ---
+{'description': 'CSI External Attacher', 'io.cri-containerd.kind': 'container', 'maintainers': 'Kubernetes Authors', 'nodelet.dev/container-name': 'csi-attacher', 'nodelet.dev/pod-name': 'csi-hostpathplugin-0', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': 'a3ff3d70-1618-4ac0-8f64-a336bb2fa88c', 'revision': 'v4.12.0'}
+--- b998a6ea8db99c3255dfbe533715457fd8a93b412f09fe7ae53c138343814480 ---
+{'io.cri-containerd.kind': 'sandbox', 'nodelet.dev/pod-name': 'csi-hostpathplugin-0', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': 'a3ff3d70-1618-4ac0-8f64-a336bb2fa88c'}
+--- bc43e464666c11c5f261df6944e0e5d53be824395709bd65e816e79b69102401 ---
+{'description': 'CSI Node driver registrar', 'io.cri-containerd.kind': 'container', 'maintainers': 'Kubernetes Authors', 'nodelet.dev/container-name': 'node-driver-registrar', 'nodelet.dev/pod-name': 'csi-hostpathplugin-0', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': 'a3ff3d70-1618-4ac0-8f64-a336bb2fa88c', 'revision': 'v2.17.0'}
+--- db7bd08c9bfdf49f1b386e38f63f786f468bdcde13673ec6dcdcd6ade6999771 ---
+{'io.cri-containerd.kind': 'container', 'nodelet.dev/container-name': 'coredns', 'nodelet.dev/pod-name': 'coredns-54996dc9b4-88gnk', 'nodelet.dev/pod-namespace': 'kube-system', 'nodelet.dev/pod-uid': '8056c0ee-d998-448b-a304-72122fe29892'}
+--- f301a1b0475ed46f14ff064be163c0f791bc3d97c7a944058c7fa1d53560cd70 ---
+{'description': 'HostPath Driver', 'io.cri-containerd.kind': 'container', 'maintainers': 'Kubernetes Authors', 'nodelet.dev/container-name': 'hostpath', 'nodelet.dev/pod-name': 'csi-hostpathplugin-0', 'nodelet.dev/pod-namespace': 'default', 'nodelet.dev/pod-uid': 'a3ff3d70-1618-4ac0-8f64-a336bb2fa88c', 'revision': 'v1.17.1'}
 ==> FATAL: uid_map shows the host's own full identity range ('0 0 4294967295') — this container is NOT in a user namespace at all; check runtime/cri.rs's userns_mapping wiring and that the CRI runtime actually honors LinuxSandboxSecurityContext.namespace_options.userns_options
-  ✘ FAIL (10s, exit 1)
+  ✘ FAIL (11s, exit 1)
   [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
   [diag] nodelet tail:
-    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.122584Z ERROR failed with status 503 Service Unavailable
-    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.123424Z ERROR failed with status 503 Service Unavailable
-    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.124432Z ERROR failed with status 503 Service Unavailable
-    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.647362Z  WARN service watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 417 (431)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.648280Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 414 (431)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.650180Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 414 (431)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.657220Z  WARN endpointslice watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 422 (431)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.662889Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 01:20:11 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:11.692117Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-fdsgg namespace="kube-system" name="coredns" kind=ConfigMap
-    Aug 07 01:20:11 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:11.724791Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-fdsgg namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 01:20:37 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:37.325264Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 07 01:20:47 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:47.472545Z  INFO node status pushed
-    Aug 07 01:21:04 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:21:04.762221Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-lt6zw
-    Aug 07 01:21:05 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:21:05.745432Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-lt6zw
-    Aug 07 01:21:07 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:21:07.348585Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-69a3dd2e-a693-4d01-8de8-867d352cf7cb.sock plugin_type=DRAPlugin
+    Aug 07 01:26:11 runnervmd93pd run-nodelet.sh[10736]: 2026-08-07T01:26:11.997851Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 01:26:22 runnervmd93pd run-nodelet.sh[10736]: 2026-08-07T01:26:22.096092Z  INFO node status pushed
+    Aug 07 01:26:32 runnervmd93pd run-nodelet.sh[10736]: 2026-08-07T01:26:32.013294Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-d031fda7-c366-42ba-8b3e-5099e051e73a-reg.sock error=connecting to plugin registration socket
+    Aug 07 01:26:32 runnervmd93pd run-nodelet.sh[10736]: Caused by:
+    Aug 07 01:26:32 runnervmd93pd run-nodelet.sh[10736]:     0: transport error
+    Aug 07 01:26:32 runnervmd93pd run-nodelet.sh[10736]:     1: Connection refused (os error 111)
+    Aug 07 01:26:32 runnervmd93pd run-nodelet.sh[10736]:     2: Connection refused (os error 111)
+    Aug 07 01:26:32 runnervmd93pd run-nodelet.sh[10736]: 2026-08-07T01:26:32.282149Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-lh8n5
+    Aug 07 01:26:32 runnervmd93pd run-nodelet.sh[10736]: 2026-08-07T01:26:32.766179Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-lh8n5
+    Aug 07 01:26:42 runnervmd93pd run-nodelet.sh[10736]: 2026-08-07T01:26:42.016055Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-c84c4f09-31c9-4998-b9c4-dd51ce579613.sock plugin_type=DRAPlugin
+    Aug 07 01:26:42 runnervmd93pd run-nodelet.sh[10736]: 2026-08-07T01:26:42.016219Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-d031fda7-c366-42ba-8b3e-5099e051e73a-reg.sock error=connecting to plugin registration socket
+    Aug 07 01:26:42 runnervmd93pd run-nodelet.sh[10736]: Caused by:
+    Aug 07 01:26:42 runnervmd93pd run-nodelet.sh[10736]:     0: transport error
+    Aug 07 01:26:42 runnervmd93pd run-nodelet.sh[10736]:     1: Connection refused (os error 111)
+    Aug 07 01:26:42 runnervmd93pd run-nodelet.sh[10736]:     2: Connection refused (os error 111)
 
 ════════════════════════════════════════
 Results: 0 passed, 1 failed, 0 skipped
 Failed:
   - test_host_users_false_gets_a_real_user_namespace
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786065667...
+==> Cleaning up test namespace not-k8s-e2e-1786065997...
