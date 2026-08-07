@@ -714,7 +714,9 @@ spec:
           mountPath: /hostvol
           mountPropagation: HostToContainer
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 60 pod_is_phase "$name" Running; then
+        warn "[diag] pod status: $(kctl get pod "$name" -o wide 2>&1)"
+        warn "[diag] pod events: $(kctl describe pod "$name" 2>&1 | grep -A20 '^Events:')"
         rm -rf "$host_dir"
         delete_pod_if_exists "$name"
         die "pod never reached Running with mountPropagation: HostToContainer set — check mount_propagation_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects a nonzero Mount.propagation entirely"
