@@ -1,15 +1,14 @@
-# lib/test/cases/gc.sh — garbage collection. Orphaned-sandbox GC and
-# node-pressure eviction genuinely need to stop nodelet or exhaust real
-# resources to trigger — this suite won't do either to a service/host you
-# may be relying on, so those are documented manual procedures (skipped by
-# default) rather than automated tests. Image GC (round 70) is now real
-# kubelet's own watermark policy too — an unreferenced image is left alone
-# entirely unless disk usage crosses NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT
-# (default 85%), so exercising *actual* removal joins the manual-procedure
-# group above; what's still safely automatable is proving the negative —
-# a freshly-unreferenced image is NOT swept away just because it's unused,
-# which is the whole point of round 70's change from the old unconditional
-# sweep.
+# lib/test/cases/gc.sh — garbage collection. Orphaned-sandbox GC needs
+# stopping nodelet, and image-GC watermark removal (round 70's real
+# kubelet-style policy — an unreferenced image is left alone entirely
+# unless disk usage crosses NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT,
+# default 85%) needs a threshold this node will never naturally cross —
+# round 123 automated both anyway via nodelet_restart_with_env
+# (nodelet_env.sh: stop/reconfigure/restart nodelet for the one test that
+# needs it, restore defaults after). test_unreferenced_image_is_not_removed_
+# below_the_watermark still separately proves the negative case (a
+# freshly-unreferenced image is NOT swept just because it's unused) against
+# nodelet's own normal, unmodified startup config.
 #
 # Round 123: every `ctr` call below runs under `sudo` — found live on CI
 # that the e2e suite's own step doesn't run as root (unlike the earlier
@@ -143,8 +142,49 @@ EOF
     wait_until 30 "$name gone once its finalizer is removed" pod_gone "$name"
 }
 
-test_orphaned_sandbox_gc_manual_procedure() {
-    skip_test "needs stopping nodelet, deleting a pod from the apiserver while it's down, then restarting and watching gc_loop clean up the now-orphaned sandbox — not something this suite automates against a live service. Manual steps: (1) apply a test pod and wait Running, (2) sudo systemctl stop nodelet, (3) kubectl delete pod <name> --wait=false, (4) sudo systemctl start nodelet, (5) within NODELET_GC_INTERVAL_SECS confirm 'ctr -n k8s.io containers ls' no longer shows it."
+test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down() {
+    # Round 123: previously manual-only purely because this harness had
+    # no way to stop/start nodelet with a short NODELET_GC_INTERVAL_SECS
+    # (default 300s -- far too slow for a test window) — now uses
+    # nodelet_restart_with_env (nodelet_env.sh) for that, and systemctl
+    # stop/start directly (the harness already depends on systemd for
+    # nodelet_restart_supported).
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if ! command -v ctr >/dev/null 2>&1; then
+        skip_test "no 'ctr' (containerd CLI) on PATH to verify sandbox removal"
+    fi
+    if ! nodelet_restart_supported; then skip_test "needs systemd to stop/start nodelet and set a short NODELET_GC_INTERVAL_SECS"; fi
+
+    orphaned_gc_test_cleanup() { nodelet_restore_env; }
+    trap orphaned_gc_test_cleanup EXIT
+    nodelet_restart_with_env "NODELET_GC_INTERVAL_SECS=10"
+
+    local name="orphaned-sandbox-gc-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    local container_id
+    container_id="$(pod_field "$name" '{.status.containerStatuses[0].containerID}')"
+    container_id="${container_id#containerd://}"
+    assert_not_empty "$container_id" "container ID before nodelet goes down"
+
+    sudo systemctl stop nodelet.service
+    kctl delete pod "$name" --wait=false >/dev/null
+    wait_until 30 "$name gone from apiserver" pod_gone "$name"
+    sudo systemctl start nodelet.service
+    _nodelet_wait_ready "node Ready after restarting nodelet post-stop"
+
+    try_wait_until 40 bash -c "! sudo ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
+        || die "orphaned sandbox for $container_id was never GC'd within a couple of NODELET_GC_INTERVAL_SECS=10 cycles after restarting nodelet"
 }
 
 test_unreferenced_image_is_not_removed_below_the_watermark() {
@@ -181,12 +221,57 @@ EOF
         "an unreferenced image below the image-GC high watermark must NOT be removed — if this fails, either disk usage on this node genuinely is at/above NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT (check 'df' on NODELET_DISK_PATH), or should_start_image_gc()'s gating broke"
 }
 
-test_image_gc_watermark_removal_manual_procedure() {
-    skip_test "exercising *actual* image removal under real disk pressure needs either genuinely filling NODELET_DISK_PATH's filesystem or restarting nodelet with an artificially-low NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT — neither is something this suite does to a live node automatically (same reasoning as the orphaned-sandbox/eviction manual procedures above). Manual procedure: (1) note current disk usage via 'df' on NODELET_DISK_PATH, (2) restart nodelet with NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT set at or below current usage and NODELET_IMAGE_GC_MIN_AGE_SECS set low (e.g. 5) for a fast test, (3) apply and delete a pod using a distinct scratch image tag (same pattern as test_unreferenced_image_is_not_removed_below_the_watermark), (4) within NODELET_GC_INTERVAL_SECS confirm 'ctr -n k8s.io images ls' no longer shows it, (5) confirm images NOT unreferenced (or referenced by other running pods) are left alone, (6) restore normal thresholds and restart nodelet."
+test_image_gc_removes_unreferenced_images_above_the_watermark() {
+    # Round 123: previously manual-only purely because it needs an
+    # artificially-low NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT (this
+    # node's REAL disk usage is never going to naturally cross 85%) and a
+    # short NODELET_IMAGE_GC_MIN_AGE_SECS/NODELET_GC_INTERVAL_SECS — all
+    # three now set via nodelet_restart_with_env (nodelet_env.sh). Uses a
+    # distinct image tag from test_unreferenced_image_is_not_removed_below_
+    # the_watermark (the negative-case sibling test) so the two don't
+    # interfere with each other's unreferenced-since tracking.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if ! command -v ctr >/dev/null 2>&1; then
+        skip_test "no 'ctr' (containerd CLI) on PATH to verify image state"
+    fi
+    if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with a low image-GC watermark/interval"; fi
+
+    local current_usage
+    current_usage="$(df --output=pcent "${NODELET_DISK_PATH:-/}" 2>/dev/null | tail -1 | tr -dc '0-9')"
+    if [[ -z "$current_usage" || "$current_usage" -ge 99 ]]; then
+        skip_test "couldn't read a usable disk usage percentage from df to pick a watermark below it"
+    fi
+
+    image_gc_test_cleanup() { nodelet_restore_env; }
+    trap image_gc_test_cleanup EXIT
+    nodelet_restart_with_env \
+        "NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT=$current_usage" \
+        "NODELET_IMAGE_GC_MIN_AGE_SECS=1" \
+        "NODELET_GC_INTERVAL_SECS=10"
+
+    local image="busybox:1.33.1" name="image-gc-watermark-check"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $image
+      command: ["sleep", "60"]
+EOF
+    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    assert_true bash -c "sudo ctr -n k8s.io images ls -q | grep -q '$image'"
+    kctl delete pod "$name" --wait=false >/dev/null
+    wait_until 30 "$name gone" pod_gone "$name"
+
+    try_wait_until 40 bash -c "! sudo ctr -n k8s.io images ls -q 2>/dev/null | grep -q '$image'" \
+        || die "unreferenced image $image was never GC'd despite the watermark being set at/below this node's real disk usage ($current_usage%) and past NODELET_IMAGE_GC_MIN_AGE_SECS — check should_start_image_gc()'s gating"
 }
 
 register_test test_pod_teardown_actually_removes_the_sandbox
 register_test test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed
-register_test test_orphaned_sandbox_gc_manual_procedure
+register_test test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down
 register_test test_unreferenced_image_is_not_removed_below_the_watermark
-register_test test_image_gc_watermark_removal_manual_procedure
+register_test test_image_gc_removes_unreferenced_images_above_the_watermark
