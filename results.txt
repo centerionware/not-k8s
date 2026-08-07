@@ -1,75 +1,74 @@
-commit: 46079c04ba790595fa7fd6a4aa68a500ceb460f6
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31158172266
-timestamp (UTC): 2026-08-07T07:41:39Z
+commit: 9e9482f65c4e3dbedc3634ee7818502544a0271d
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31158896739
+timestamp (UTC): 2026-08-07T07:52:41Z
 exit code: 1
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786088299
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786088961
 ==> Running 151 registered test(s)...
 ▶ test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> WARNING: old VolumeAttachment for pvc-325ee10a-e7be-4160-8343-e73c3426100e didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> WARNING: never got a stable 'stat /data' read from fsgroup-policy-check-2 within 30s — pod may still be unstable; using whatever the last attempt captured
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> WARNING: old VolumeAttachment for pvc-b1357f96-6bbc-4b6b-b289-ead40bb984f1 didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> WARNING: [diag] pod2 right after Running: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedNAME                     READY   STATUS    RESTARTS   AGE   IP          NODE            NOMINATED NODE   READINESS GATES
+fsgroup-policy-check-2   1/1     Running   0          2s    10.42.0.9   runnervmvrwv9   <none>           <none>
+==> WARNING: [diag] default-ns pods (CSI driver state): kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedNAME                   READY   STATUS    RESTARTS   AGE    IP          NODE            NOMINATED NODE   READINESS GATES
+csi-hostpath-socat-0   1/1     Running   0          91s    10.42.0.5   runnervmvrwv9   <none>           <none>
+csi-hostpathplugin-0   8/8     Running   0          91s    10.42.0.4   runnervmvrwv9   <none>           <none>
+smoke-test             1/1     Running   0          117s   10.42.0.3   runnervmvrwv9   <none>           <none>
+==> WARNING: never got a stable 'stat /data' read from fsgroup-policy-check-2 within 30s — pod may still be unstable; using whatever the last attempt captured
 ==> WARNING: [diag] /data on fsgroup-policy-check-2: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedError from server (NotFound): pods "fsgroup-policy-check-2" not found
 ==> WARNING: [diag] nodelet log mentioning fsgroup-policy-check-2 or fsGroup/skip_fs_group_change:
 ==> FATAL: assertion failed: the second pod reusing the same PVC should still see fsGroup 4322 on /data, whether OnRootMismatch skipped the chown or not — got '', want '4322'
-  ✘ FAIL (127s, exit 1)
+  ✘ FAIL (128s, exit 1)
   [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
   [diag] nodelet tail:
-    Aug 07 07:37:53 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:37:53.526691Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 07 07:38:13 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:38:13.668861Z  INFO node status pushed
-    Aug 07 07:38:17 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:38:17.406164Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-7vtt2
-    Aug 07 07:38:17 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:38:17.746098Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-7vtt2
-    Aug 07 07:38:23 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:38:23.546621Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-80ebfad8-3560-44b0-a970-a83ca04881f7.sock plugin_type=DRAPlugin
-    Aug 07 07:38:54 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:38:54.590782Z  INFO torn down pod=not-k8s-e2e-1786088299/fsgroup-policy-check-1
-    Aug 07 07:38:54 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:38:54.622382Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=fsgroup-policy-check-claim volume=pvc-325ee10a-e7be-4160-8343-e73c3426100e driver=hostpath.csi.k8s.io
-    Aug 07 07:38:54 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:38:54.622490Z  INFO torn down pod=not-k8s-e2e-1786088299/fsgroup-policy-check-1
-    Aug 07 07:39:13 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:39:13.712247Z  INFO node status pushed
-    Aug 07 07:40:13 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:40:13.752593Z  INFO node status pushed
-    Aug 07 07:40:27 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:40:27.666888Z  INFO torn down pod=not-k8s-e2e-1786088299/fsgroup-policy-check-2
-    Aug 07 07:40:27 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:40:27.705449Z  WARN CSI teardown: failed to unmount volume volume=data driver=hostpath.csi.k8s.io error=NodeUnpublishVolume
-    Aug 07 07:40:27 runnervmvrwv9 run-nodelet.sh[10838]: Caused by:
-    Aug 07 07:40:27 runnervmvrwv9 run-nodelet.sh[10838]:     code: 'Some requested entity was not found', message: "volume id f6a2123c-9232-11f1-9814-eaa5820ff854 does not exist in the volumes list"
-    Aug 07 07:40:27 runnervmvrwv9 run-nodelet.sh[10838]: 2026-08-07T07:40:27.705568Z  INFO torn down pod=not-k8s-e2e-1786088299/fsgroup-policy-check-2
+    Aug 07 07:48:42 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:48:42.679803Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-l29cw namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 07:49:05 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:49:05.284189Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 07:49:19 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:49:19.343079Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-8nnd9
+    Aug 07 07:49:19 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:49:19.635323Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-8nnd9
+    Aug 07 07:49:25 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:49:25.300999Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-6763eb03-e4ce-48d6-aabf-100c1ba45f2d.sock plugin_type=DRAPlugin
+    Aug 07 07:49:25 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:49:25.393193Z  INFO node status pushed
+    Aug 07 07:49:55 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:49:55.779876Z  INFO torn down pod=not-k8s-e2e-1786088961/fsgroup-policy-check-1
+    Aug 07 07:49:56 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:49:56.170183Z  INFO torn down pod=not-k8s-e2e-1786088961/fsgroup-policy-check-1
+    Aug 07 07:50:25 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:50:25.430728Z  INFO node status pushed
+    Aug 07 07:51:25 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:51:25.470536Z  INFO node status pushed
+    Aug 07 07:51:30 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:51:30.658469Z  INFO torn down pod=not-k8s-e2e-1786088961/fsgroup-policy-check-2
+    Aug 07 07:51:31 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:51:31.236370Z  WARN CSI teardown: failed to unmount volume volume=data driver=hostpath.csi.k8s.io error=NodeUnpublishVolume
+    Aug 07 07:51:31 runnervmvrwv9 run-nodelet.sh[10856]: Caused by:
+    Aug 07 07:51:31 runnervmvrwv9 run-nodelet.sh[10856]:     code: 'Some requested entity was not found', message: "volume id 81317cc0-9234-11f1-a6fa-022543da9bbb does not exist in the volumes list"
+    Aug 07 07:51:31 runnervmvrwv9 run-nodelet.sh[10856]: 2026-08-07T07:51:31.236456Z  INFO torn down pod=not-k8s-e2e-1786088961/fsgroup-policy-check-2
 ▶ test_log_rotation_creates_a_rotated_file
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786088299_log-rotation_4579b993-a341-47c3-b58e-8b01b435f46a (log_rotate_interval, default 10s)...
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/log_rotation.sh: line 59: /proc/18101/environ: Permission denied
-==> WARNING: [diag] nodelet.service MainPID=18101 env: 
-==> WARNING: [diag] app_0.log size over time (10s samples): /var/log/pods/not-k8s-e2e-1786088299_log-rotation_4579b993-a341-47c3-b58e-8b01b435f46a/app_0.log 9386 bytes
-/var/log/pods/not-k8s-e2e-1786088299_log-rotation_4579b993-a341-47c3-b58e-8b01b435f46a/app_0.log 43848 bytes
-/var/log/pods/not-k8s-e2e-1786088299_log-rotation_4579b993-a341-47c3-b58e-8b01b435f46a/app_0.log 43932 bytes
-/var/log/pods/not-k8s-e2e-1786088299_log-rotation_4579b993-a341-47c3-b58e-8b01b435f46a/app_0.log 43832 bytes
-/var/log/pods/not-k8s-e2e-1786088299_log-rotation_4579b993-a341-47c3-b58e-8b01b435f46a/app_0.log 43685 bytes
-/var/log/pods/not-k8s-e2e-1786088299_log-rotation_4579b993-a341-47c3-b58e-8b01b435f46a/app_0.log 43602 bytes
-==> WARNING: [diag] contents of /var/log/pods/not-k8s-e2e-1786088299_log-rotation_4579b993-a341-47c3-b58e-8b01b435f46a: total 360
-drwxr-xr-x  2 root root  4096 Aug  7 07:41 .
-drwxr-x--- 11 root root  4096 Aug  7 07:40 ..
--rw-r-----  1 root root 46001 Aug  7 07:41 app_0.log
--rw-r-----  1 root root 76198 Aug  7 07:41 app_0.log.1
--rw-r-----  1 root root 76285 Aug  7 07:41 app_0.log.2
--rw-r-----  1 root root 76357 Aug  7 07:41 app_0.log.3
--rw-r-----  1 root root 76284 Aug  7 07:40 app_0.log.4
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786088961_log-rotation_bd91344c-e41a-449e-8ae2-8e9f627673b4 (log_rotate_interval, default 10s)...
+==> WARNING: [diag] resolved nodelet.service unit: # /etc/systemd/system/nodelet.service|[Unit]|Description=nodelet — not-k8s node agent (kubelet replacement)|Documentation=https://github.com/centerionware/not-k8s|After=k3s.service network-online.target|Wants=k3s.service network-online.target|# The e2e suite's nodelet_restart_with_env (round 123) deliberately issues|# many real "systemctl restart" calls back-to-back to exercise different|# NODELET_* startup envs — confirmed for real in CI: systemd's own default|# start-limit (5 starts / 10s) hit this legitimately, failing the restart|# with "start-limit-hit" and leaving nodelet down for every test after it|# in the same run. Restart=always/RestartSec=5s below is this unit's real|# crash-loop backoff; the start-limit is redundant with that for our|# purposes and only gets in the way of intentional, external restarts.|StartLimitIntervalSec=0||[Service]|Type=simple|WorkingDirectory=/home/runner/work/not-k8s/not-k8s|ExecStart=/home/runner/work/not-k8s/not-k8s/deploy/run-nodelet.sh|Restart=always|RestartSec=5s|Environment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml|Environment=NODELET_RUNTIME=cri|Environment=NODELET_IP_FAMILY=ipv4|Environment=NODELET_LB_METHOD=random|Environment=NODELET_CRI_ENDPOINT=unix:///run/containerd/containerd.sock|Environment=NODELET_CLIENT_CA_FILE=/var/lib/rancher/k3s/server/tls/client-ca.crt|[Install]|WantedBy=multi-user.target||# /etc/systemd/system/nodelet.service.d/99-e2e-test-override.conf|[Service]|Environment=NODELET_CONTAINER_LOG_MAX_SIZE_BYTES=4096|
+==> WARNING: [diag] contents of /var/log/pods/not-k8s-e2e-1786088961_log-rotation_bd91344c-e41a-449e-8ae2-8e9f627673b4: total 356
+drwxr-xr-x  2 root root  4096 Aug  7 07:52 .
+drwxr-x--- 11 root root  4096 Aug  7 07:51 ..
+-rw-r-----  1 root root 43028 Aug  7 07:52 app_0.log
+-rw-r-----  1 root root 76453 Aug  7 07:52 app_0.log.1
+-rw-r-----  1 root root 76280 Aug  7 07:52 app_0.log.2
+-rw-r-----  1 root root 76442 Aug  7 07:52 app_0.log.3
+-rw-r-----  1 root root 76428 Aug  7 07:52 app_0.log.4
 ==> WARNING: [diag] nodelet log mentioning rotation:
-==> WARNING: [diag]   Aug 07 07:40:33 runnervmvrwv9 run-nodelet.sh[18101]: 2026-08-07T07:40:33.703705Z  INFO re-materializing volumes after referenced object changed pod=not-k8s-e2e-1786088299/log-rotation namespace="not-k8s-e2e-1786088299" name="kube-root-ca.crt" kind=ConfigMap
+==> WARNING: [diag]   Aug 07 07:51:36 runnervmvrwv9 run-nodelet.sh[18013]: 2026-08-07T07:51:36.642128Z  INFO re-materializing volumes after referenced object changed pod=not-k8s-e2e-1786088961/log-rotation namespace="not-k8s-e2e-1786088961" name="kube-root-ca.crt" kind=ConfigMap
 ==> FATAL: no rotated log file appeared within 60s despite NODELET_CONTAINER_LOG_MAX_SIZE_BYTES=4096 — check log rotation wiring
-  ✘ FAIL (68s, exit 1)
+  ✘ FAIL (67s, exit 1)
   [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
   [diag] nodelet tail:
-    Aug 07 07:41:35 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:35.980840Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
-    Aug 07 07:41:35 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:35.984000Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 07 07:41:36 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:36.006112Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-80ebfad8-3560-44b0-a970-a83ca04881f7.sock plugin_type=DRAPlugin
-    Aug 07 07:41:36 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:36.012901Z  INFO node registered and Ready node=runnervmvrwv9
-    Aug 07 07:41:36 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:36.013295Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
-    Aug 07 07:41:36 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:36.013896Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 07 07:41:36 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:36.015732Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 07 07:41:36 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:36.016708Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
-    Aug 07 07:41:36 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:36.592880Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 07:41:36 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:36.620891Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 07:41:36 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:36.660003Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 07:41:36 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:36.693859Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-2nctx namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 07:41:36 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:36.735680Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-t557k namespace="kube-system" name="coredns" kind=ConfigMap
-    Aug 07 07:41:37 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:37.591963Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-t557k namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 07:41:37 runnervmvrwv9 run-nodelet.sh[24669]: 2026-08-07T07:41:37.623378Z  INFO re-materializing volumes after referenced object changed pod=not-k8s-e2e-1786088299/log-rotation namespace="not-k8s-e2e-1786088299" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]:   RUST_LOG:    info
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]:   CRI endpoint:  unix:///run/containerd/containerd.sock
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]:   IP family:     ipv4
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]:   LB method:     random
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]: ========================================
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]: 2026-08-07T07:52:38.370114Z  INFO starting nodelet node=runnervmvrwv9 runtime=Cri cpu=4 memory_bytes=16770756608 max_pods=110
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]: 2026-08-07T07:52:38.372331Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]: 2026-08-07T07:52:38.376185Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]: 2026-08-07T07:52:38.379094Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]: 2026-08-07T07:52:38.404095Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-6763eb03-e4ce-48d6-aabf-100c1ba45f2d.sock plugin_type=DRAPlugin
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]: 2026-08-07T07:52:38.413351Z  INFO node registered and Ready node=runnervmvrwv9
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]: 2026-08-07T07:52:38.413999Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]: 2026-08-07T07:52:38.414408Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]: 2026-08-07T07:52:38.415985Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
+    Aug 07 07:52:38 runnervmvrwv9 run-nodelet.sh[24498]: 2026-08-07T07:52:38.417451Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
 
 ════════════════════════════════════════
 Results: 0 passed, 2 failed, 0 skipped
@@ -77,4 +76,4 @@ Failed:
   - test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
   - test_log_rotation_creates_a_rotated_file
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786088299...
+==> Cleaning up test namespace not-k8s-e2e-1786088961...
