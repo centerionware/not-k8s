@@ -2,8 +2,41 @@
 # Expects TEST_NAMESPACE set. Every helper here operates in that namespace
 # unless told otherwise, so test cases never have to repeat --namespace.
 
+# Shadows the real `kubectl` binary for every caller in this suite
+# (test cases routinely call bare `kubectl` directly for node-level
+# queries, not just kctl's namespace-scoped wrapper). A bare `kubectl`
+# call has NO client-side deadline by default — if the apiserver
+# connection ever wedges (stalled TLS handshake, half-open TCP), a single
+# call can hang indefinitely, completely outside every test's own bounded
+# wait_until/try_wait_until loops (confirmed for real: round 123's batch-3
+# run sat well past what even a full-timeout worst case across all 12
+# tests could explain). --request-timeout closes that gap for the
+# ordinary request/response verbs. Streaming subcommands
+# (exec/attach/port-forward, and `logs -f`) are deliberately excluded —
+# they're long-lived by design and this timeout would truncate them
+# mid-stream. `command kubectl` reaches the real binary, not this
+# function, avoiding infinite recursion.
+kubectl() {
+    # "$1" is reliably the real verb here — kctl below appends its
+    # "--namespace <ns>" AFTER "$@" rather than before, specifically so
+    # this switch never has to parse around it.
+    case "$1" in
+        exec|attach|port-forward)
+            command kubectl "$@" ;;
+        logs)
+            if [[ " $* " == *" -f "* ]]; then
+                command kubectl "$@"
+            else
+                command kubectl --request-timeout=30s "$@"
+            fi
+            ;;
+        *)
+            command kubectl --request-timeout=30s "$@" ;;
+    esac
+}
+
 kctl() { # kctl <kubectl args...> — namespace-scoped kubectl
-    kubectl --namespace "$TEST_NAMESPACE" "$@"
+    kubectl "$@" --namespace "$TEST_NAMESPACE"
 }
 
 apply_manifest() { # apply_manifest <<< "$yaml"
@@ -91,7 +124,7 @@ node_uses_cri_runtime() {
 # process) the same way it is from this file itself. TEST_NAMESPACE also
 # has to be `export`ed by whatever sets it (test-e2e.sh does) — these
 # functions are worthless in a child process without it.
-export -f kctl apply_manifest delete_pod_if_exists pod_json pod_field \
+export -f kubectl kctl apply_manifest delete_pod_if_exists pod_json pod_field \
     pod_is_phase pod_condition_status pod_container_ready pod_container_restart_count \
     pod_exists pod_gone node_name node_condition_status node_uses_cri_runtime
 
