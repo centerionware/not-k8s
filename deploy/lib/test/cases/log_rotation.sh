@@ -34,6 +34,15 @@ EOF
 
     log "    waiting for a rotated log file under $log_dir (log_rotate_interval, default 10s)..."
     if ! try_wait_until 60 bash -c "ls '$log_dir'/app_*.log.1 >/dev/null 2>&1"; then
+        # Temporary diagnostic (round 123): found live in CI, not yet
+        # root-caused — print what's actually under log_dir (wrong
+        # naming? nothing at all? the file present but under max size?)
+        # and nodelet's own log rotation activity before cleanup destroys
+        # the evidence.
+        warn "[diag] contents of $log_dir: $(sudo ls -la "$log_dir" 2>&1)"
+        warn "[diag] size of the live log file: $(sudo bash -c "stat -c '%n %s bytes' '$log_dir'/app_*.log 2>&1")"
+        warn "[diag] nodelet log mentioning rotation:"
+        sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -iE "rotat" | tail -20 | while IFS= read -r line; do warn "[diag]   $line"; done
         delete_pod_if_exists "$name"
         die "no rotated log file appeared within 60s despite NODELET_CONTAINER_LOG_MAX_SIZE_BYTES=4096 — check log rotation wiring"
     fi

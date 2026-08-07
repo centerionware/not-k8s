@@ -266,12 +266,17 @@ EOF
         skip_test "pod never reached Running with a PVC volume mounted — check nodelet's server logs for 'failed to mount CSI volume' or 'no CSI driver configured'"
     fi
 
-    # Round 123 (found live in CI): reading this immediately after
-    # Running raced the next periodic node-status push (mounted_volumes()
-    # reflects real-time ref-counted state, but Node.status.volumesInUse
-    # is only as fresh as the last push nodelet actually sent) — retry
-    # instead of a single read.
-    if ! try_wait_until 30 bash -c "kubectl get node '$n' -o jsonpath='{.status.volumesInUse}' | grep -q 'kubernetes.io/csi/'"; then
+    # Round 123 (found live in CI): reading this immediately after Running
+    # raced the next periodic node-status push (mounted_volumes() reflects
+    # real-time ref-counted state, but Node.status.volumesInUse is only as
+    # fresh as the last push nodelet actually sent) — retry instead of a
+    # single read. The retry budget must comfortably exceed
+    # NODELET_STATUS_SECS's own default (60s, config.rs's status_interval)
+    # — 30s was found live in CI to be shorter than a full push cycle, so
+    # a run unlucky enough to start its wait right after a push had
+    # already gone out would systematically miss the next one and fail
+    # every time, not flakily.
+    if ! try_wait_until 75 bash -c "kubectl get node '$n' -o jsonpath='{.status.volumesInUse}' | grep -q 'kubernetes.io/csi/'"; then
         delete_pod_if_exists "$name"
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
         die "Node.status.volumesInUse never listed an entry ('kubernetes.io/csi/<driver>^<volumeHandle>', round 34) while the CSI-backed pod was running"
@@ -279,7 +284,7 @@ EOF
 
     delete_pod_if_exists "$name"
     wait_until 30 "$name gone" pod_gone "$name"
-    wait_until 20 "volumesInUse cleared after pod deletion" \
+    wait_until 75 "volumesInUse cleared after pod deletion" \
         bash -c "[[ \"\$(kubectl get node '$n' -o jsonpath='{.status.volumesInUse}')\" != *'kubernetes.io/csi/'* ]]"
     kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
 }
@@ -379,6 +384,15 @@ EOF
     # sidestepping whatever invisible byte it was without needing to
     # pin down exactly which one.
     gid="$(kctl exec "$second" -- stat -c %g /data 2>&1 | tr -dc '0-9')"
+    if [[ "$gid" != "4322" ]]; then
+        # Temporary diagnostic (round 123): found live in CI, not yet
+        # root-caused — print what's actually mounted and what nodelet's
+        # own fsGroup/CSI-mount code logged for this pod before cleanup
+        # destroys the evidence.
+        warn "[diag] /data on $second: $(kctl exec "$second" -- ls -la /data 2>&1)"
+        warn "[diag] nodelet log mentioning $second or fsGroup/skip_fs_group_change:"
+        sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -E "$second|skip_fs_group_change|fsGroup|chown" | tail -30 | while IFS= read -r line; do warn "[diag]   $line"; done
+    fi
     delete_pod_if_exists "$second"
     kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
     assert_eq "$gid" "4322" "the second pod reusing the same PVC should still see fsGroup 4322 on /data, whether OnRootMismatch skipped the chown or not"
