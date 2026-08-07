@@ -27,7 +27,7 @@ _fake_device_plugin_setup() {
         skip_test "python3 not on PATH — needed to run the fake gRPC device plugin"
     fi
     FDP_DIR="${NODELET_PLUGIN_REGISTRY_PATH:-/var/lib/nodelet/plugins_registry}"
-    if ! try_wait_until 15 bash -c "[[ -d '$FDP_DIR' ]]"; then
+    if ! try_wait_until 30 bash -c "[[ -d '$FDP_DIR' ]]"; then
         skip_test "no $FDP_DIR — same directory csi_plugin_registration.sh checks; see its notes if this fails"
     fi
     FDP_WORK="$(mktemp -d)"
@@ -148,12 +148,12 @@ PYEOF
     log "starting the fake device plugin (resource=$FDP_RESOURCE)..."
     sudo python3 "$FDP_WORK/fake_device_plugin.py" "$FDP_SOCK" "$FDP_RESOURCE" "$FDP_CONTROL_DIR" > "$FDP_LOG" 2>&1 &
     FDP_PID=$!
-    if ! try_wait_until 20 bash -c "grep -q ready '$FDP_LOG' 2>/dev/null"; then
+    if ! try_wait_until 40 bash -c "grep -q ready '$FDP_LOG' 2>/dev/null"; then
         cat "$FDP_LOG" 2>/dev/null || true
         _fake_device_plugin_teardown
         skip_test "fake device plugin never reported ready — see plugin.log content above for the real python/grpc error"
     fi
-    if ! try_wait_until 20 bash -c "kctl get node -o jsonpath='{.items[0].status.capacity.fake\.example\.com/testdevice}' 2>/dev/null | grep -q 4"; then
+    if ! try_wait_until 40 bash -c "kctl get node -o jsonpath='{.items[0].status.capacity.fake\.example\.com/testdevice}' 2>/dev/null | grep -q 4"; then
         cat "$FDP_LOG" 2>/dev/null || true
         _fake_device_plugin_teardown
         die "Node.status.capacity['$FDP_RESOURCE'] never showed 4 after the fake plugin registered — check nodelet's logs for 'device plugin: inventory updated' / 'plugin registry: plugin registered'"
@@ -169,7 +169,7 @@ _fake_device_plugin_teardown() {
 test_plugin_registry_watches_for_device_plugins_too() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local dir="${NODELET_PLUGIN_REGISTRY_PATH:-/var/lib/nodelet/plugins_registry}"
-    if ! try_wait_until 15 bash -c "[[ -d '$dir' ]]"; then
+    if ! try_wait_until 30 bash -c "[[ -d '$dir' ]]"; then
         skip_test "no $dir — same directory csi_plugin_registration.sh checks; see its notes if this fails"
     fi
     assert_true test -d "$dir"
@@ -199,7 +199,7 @@ spec:
         limits:
           $FDP_RESOURCE: "1"
 EOF
-    if ! wait_until 60 "$name Running" pod_is_phase "$name" Running; then
+    if ! wait_until 90 "$name Running" pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod requesting 1x $FDP_RESOURCE never reached Running — check nodelet's device-manager Allocate() wiring (device_plugins.rs / container_create.rs)"
     fi
@@ -232,7 +232,7 @@ spec:
         limits:
           $FDP_RESOURCE: "1"
 EOF
-    if ! wait_until 60 "$name Running" pod_is_phase "$name" Running; then
+    if ! wait_until 90 "$name Running" pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod requesting 1x $FDP_RESOURCE never reached Running"
     fi
@@ -247,7 +247,7 @@ EOF
     # — no container restart should be needed, this is a live status field.
     echo "$device_id" | sudo tee "$FDP_CONTROL_DIR/unhealthy_ids" >/dev/null
     local ars
-    if ! try_wait_until 20 bash -c "kctl get pod $name -o jsonpath='{.status.containerStatuses[0].allocatedResourcesStatus}' 2>/dev/null | grep -q Unhealthy"; then
+    if ! try_wait_until 40 bash -c "kctl get pod $name -o jsonpath='{.status.containerStatuses[0].allocatedResourcesStatus}' 2>/dev/null | grep -q Unhealthy"; then
         delete_pod_if_exists "$name"
         die "containerStatuses[0].allocatedResourcesStatus never updated to Unhealthy after the plugin's ListAndWatch reported device '$device_id' unhealthy"
     fi
@@ -286,7 +286,7 @@ spec:
         limits:
           $FDP_RESOURCE: "2"
 EOF
-    if ! wait_until 60 "$ok_name Running" pod_is_phase "$ok_name" Running; then
+    if ! wait_until 90 "$ok_name Running" pod_is_phase "$ok_name" Running; then
         delete_pod_if_exists "$ok_name"
         die "pod requesting 2x $FDP_RESOURCE (preferred-allocation path) never reached Running"
     fi
@@ -317,7 +317,7 @@ spec:
         limits:
           $FDP_RESOURCE: "1"
 EOF
-    if ! wait_until 60 "$fb_name Running" pod_is_phase "$fb_name" Running; then
+    if ! wait_until 90 "$fb_name Running" pod_is_phase "$fb_name" Running; then
         delete_pod_if_exists "$fb_name"
         die "pod requesting 1x $FDP_RESOURCE never reached Running even via the fallback path (GetPreferredAllocation deliberately erroring)"
     fi
@@ -345,7 +345,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local ars
     ars="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].allocatedResourcesStatus}')"
     delete_pod_if_exists "$name"

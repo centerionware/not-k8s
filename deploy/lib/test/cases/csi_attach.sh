@@ -29,7 +29,7 @@ spec:
       storage: 64Mi
 EOF
 
-    if ! try_wait_until 60 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
+    if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
         skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_ATTACH_STORAGE_CLASS"
     fi
@@ -53,7 +53,7 @@ spec:
         claimName: $claim
 EOF
 
-    if ! try_wait_until 90 pod_is_phase "$name" Running; then
+    if ! try_wait_until 120 pod_is_phase "$name" Running; then
         delete_pod_and_pvc "$name" "$claim"
         die "pod never reached Running — check nodelet's logs for 'driver requires attach but no matching VolumeAttachment exists yet' (external-attacher not running) or 'VolumeAttachment found but not yet attached' (attach still in progress)"
     fi

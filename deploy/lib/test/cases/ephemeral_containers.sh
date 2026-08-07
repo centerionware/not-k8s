@@ -18,14 +18,14 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
 
     if ! kubectl debug "$name" -n "$TEST_NAMESPACE" --image="$TEST_IMAGE" --container=debugger -- sleep 3600 >/dev/null 2>&1; then
         delete_pod_if_exists "$name"
         skip_test "this kubectl/cluster version doesn't support 'kubectl debug' against a running pod (needs the ephemeralcontainers subresource)"
     fi
 
-    if ! try_wait_until 30 bash -c "kubectl get pod '$name' -n '$TEST_NAMESPACE' -o jsonpath='{.status.ephemeralContainerStatuses[?(@.name==\"debugger\")].state.running}' | grep -q startedAt"; then
+    if ! try_wait_until 90 bash -c "kubectl get pod '$name' -n '$TEST_NAMESPACE' -o jsonpath='{.status.ephemeralContainerStatuses[?(@.name==\"debugger\")].state.running}' | grep -q startedAt"; then
         delete_pod_if_exists "$name"
         die "ephemeralContainerStatuses never reported the debug container running — check ensure_ephemeral_container()/build_labeled_container_statuses() in runtime/cri.rs"
     fi

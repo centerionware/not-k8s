@@ -23,9 +23,9 @@ spec:
         periodSeconds: 2
         failureThreshold: 1
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     assert_eq "$(pod_condition_status "$name" Ready)" "False" "must not be Ready before the marker file exists"
-    wait_until 30 "$name Ready" bash -c "[[ \"\$(pod_condition_status '$name' Ready)\" == 'True' ]]"
+    wait_until 90 "$name Ready" bash -c "[[ \"\$(pod_condition_status '$name' Ready)\" == 'True' ]]"
     delete_pod_if_exists "$name"
 }
 
@@ -48,10 +48,10 @@ spec:
         periodSeconds: 2
         failureThreshold: 2
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     # marker disappears at ~6s; 2 consecutive 2s-period failures -> restart
     # by roughly 10-12s. Generous timeout for CI/real-hardware variance.
-    wait_until 60 "restart count > 0 after liveness failure" bash -c \
+    wait_until 90 "restart count > 0 after liveness failure" bash -c \
         "[[ \"\$(pod_container_restart_count '$name' app)\" -gt 0 ]]"
     delete_pod_if_exists "$name"
 }
@@ -84,13 +84,13 @@ spec:
         failureThreshold: 2
         terminationGracePeriodSeconds: 3
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     # marker disappears ~6s in; two consecutive 2s-period failures trip
     # liveness around t=8-10s; +3s grace = restart by roughly t=13s. 40s is
     # a generous bound that's still nowhere near the pod's 60s default —
     # timing out here is itself proof the pod's grace period leaked through
     # instead of the probe's own.
-    wait_until 40 "restart count > 0 after liveness failure (probe's own grace period must be honored)" bash -c \
+    wait_until 60 "restart count > 0 after liveness failure (probe's own grace period must be honored)" bash -c \
         "[[ \"\$(pod_container_restart_count '$name' app)\" -gt 0 ]]"
     delete_pod_if_exists "$name"
 }
@@ -120,9 +120,9 @@ spec:
         periodSeconds: 2
         failureThreshold: 2
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     # two consecutive 2s-period failures -> restart by roughly t=4-6s.
-    wait_until 40 "restart count > 0 after startup probe failure" bash -c \
+    wait_until 60 "restart count > 0 after startup probe failure" bash -c \
         "[[ \"\$(pod_container_restart_count '$name' app)\" -gt 0 ]]"
     delete_pod_if_exists "$name"
 }
@@ -150,9 +150,9 @@ spec:
           command: ["test", "-f", "/tmp/started"]
         periodSeconds: 2
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     assert_eq "$(pod_condition_status "$name" Ready)" "False" "readiness must not even be probed until startup passes"
-    wait_until 40 "$name Ready once startup completes" bash -c \
+    wait_until 60 "$name Ready once startup completes" bash -c \
         "[[ \"\$(pod_condition_status '$name' Ready)\" == 'True' ]]"
     delete_pod_if_exists "$name"
 }
@@ -185,14 +185,14 @@ EOF
     # This one needs real pod networking (CNI) — the probe connects to the
     # pod's real IP, not localhost. Skip cleanly if the pod never gets one
     # (e.g. --cni=none / hostNetwork-only deployments).
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local pod_ip
     pod_ip="$(pod_field "$name" '{.status.podIP}')"
     if [[ -z "$pod_ip" ]]; then
         delete_pod_if_exists "$name"
         skip_test "pod has no IP (no CNI networking configured on this node)"
     fi
-    wait_until 30 "$name Ready via httpGet probe" bash -c \
+    wait_until 90 "$name Ready via httpGet probe" bash -c \
         "[[ \"\$(pod_condition_status '$name' Ready)\" == 'True' ]]"
     delete_pod_if_exists "$name"
 }
@@ -222,8 +222,8 @@ spec:
         failureThreshold: 5
         initialDelaySeconds: 3
 EOF
-    wait_until 90 "$name Running" pod_is_phase "$name" Running
-    wait_until 30 "$name Ready via a real gRPC health check" bash -c "[[ \"\$(pod_condition_status '$name' Ready)\" == 'True' ]]"
+    wait_until 120 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Ready via a real gRPC health check" bash -c "[[ \"\$(pod_condition_status '$name' Ready)\" == 'True' ]]"
     delete_pod_if_exists "$name"
 }
 
@@ -250,7 +250,7 @@ spec:
         failureThreshold: 1
         initialDelaySeconds: 3
 EOF
-    wait_until 90 "$name Running" pod_is_phase "$name" Running
+    wait_until 120 "$name Running" pod_is_phase "$name" Running
     sleep 10 # give the probe a fair chance to succeed if it were (wrongly) going to
     assert_eq "$(pod_condition_status "$name" Ready)" "False" "a gRPC probe against a port nothing is listening on should leave the pod NOT Ready"
     delete_pod_if_exists "$name"

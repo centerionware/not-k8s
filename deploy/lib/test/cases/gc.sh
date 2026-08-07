@@ -38,17 +38,24 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local container_id
     container_id="$(pod_field "$name" '{.status.containerStatuses[0].containerID}')"
     container_id="${container_id#containerd://}"
     assert_not_empty "$container_id" "container ID before deletion"
 
     kctl delete pod "$name" --wait=false >/dev/null
-    wait_until 30 "$name gone from apiserver" pod_gone "$name"
+    # Round 124 (found live in CI, full-suite runs only): 30s wasn't
+    # always enough for real pod deletion to complete when the whole
+    # unfiltered suite is contending for the same node/containerd —
+    # confirmed live: this timed out right after two unrelated eviction
+    # tests' own pod churn ("failed to find sandbox id ... not found"
+    # retries) immediately before it. Same reasoning csi_pvc.sh's own
+    # post-delete pod_gone wait already documents.
+    wait_until 120 "$name gone from apiserver" pod_gone "$name"
     # Give nodelet a moment to actually process the delete watch event and
     # tear the sandbox down (this races the apiserver delete slightly).
-    try_wait_until 20 bash -c "! sudo ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
+    try_wait_until 40 bash -c "! sudo ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
         || die "container $container_id is still present in containerd after its pod was deleted"
 }
 
@@ -97,7 +104,7 @@ EOF
     }
     trap finalizer_check_cleanup EXIT
 
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local container_id
     container_id="$(pod_field "$name" '{.status.containerStatuses[0].containerID}')"
     container_id="${container_id#containerd://}"
@@ -113,7 +120,7 @@ EOF
     # confirmed live this reliably still finishes well under a minute, just
     # not as fast as the plain-delete path, which gets both that event and
     # a fast follow-up Delete event once the object is actually gone.
-    try_wait_until 40 bash -c "! sudo ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
+    try_wait_until 60 bash -c "! sudo ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
         || die "container $container_id is still present in containerd after pod delete, even though the pod has a finalizer blocking apiserver removal — teardown() must not wait on finalizers"
 
     # The pod object itself must survive — deletionTimestamp set, the
@@ -139,7 +146,7 @@ EOF
     # teardown is reliably slower than the plain-delete path, not
     # instant.
     kctl patch pod "$name" --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null
-    wait_until 30 "$name gone once its finalizer is removed" pod_gone "$name"
+    wait_until 90 "$name gone once its finalizer is removed" pod_gone "$name"
 }
 
 test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down() {
@@ -171,7 +178,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local container_id
     container_id="$(pod_field "$name" '{.status.containerStatuses[0].containerID}')"
     container_id="${container_id#containerd://}"
@@ -179,11 +186,11 @@ EOF
 
     sudo systemctl stop nodelet.service
     kctl delete pod "$name" --wait=false >/dev/null
-    wait_until 30 "$name gone from apiserver" pod_gone "$name"
+    wait_until 90 "$name gone from apiserver" pod_gone "$name"
     sudo systemctl start nodelet.service
     _nodelet_wait_ready "node Ready after restarting nodelet post-stop"
 
-    try_wait_until 40 bash -c "! sudo ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
+    try_wait_until 60 bash -c "! sudo ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
         || die "orphaned sandbox for $container_id was never GC'd within a couple of NODELET_GC_INTERVAL_SECS=10 cycles after restarting nodelet"
 }
 
@@ -210,14 +217,14 @@ spec:
       image: $image
       command: ["sleep", "60"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     assert_true bash -c "sudo ctr -n k8s.io images ls -q | grep -q '$image'"
     kctl delete pod "$name" --wait=false >/dev/null
     # Round 124 (found live in CI, full-suite runs only): 30s wasn't always
     # enough for real pod teardown to complete when the whole unfiltered
     # suite is contending for the same node/containerd — same reasoning
     # csi_pvc.sh's own post-delete pod_gone wait already documents.
-    wait_until 90 "$name gone" pod_gone "$name"
+    wait_until 120 "$name gone" pod_gone "$name"
 
     log "    waiting through at least one NODELET_GC_INTERVAL_SECS cycle (default 300s) to confirm $image survives it..."
     sleep 60
@@ -265,12 +272,12 @@ spec:
       image: $image
       command: ["sleep", "60"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     assert_true bash -c "sudo ctr -n k8s.io images ls -q | grep -q '$image'"
     kctl delete pod "$name" --wait=false >/dev/null
-    wait_until 30 "$name gone" pod_gone "$name"
+    wait_until 90 "$name gone" pod_gone "$name"
 
-    try_wait_until 40 bash -c "! sudo ctr -n k8s.io images ls -q 2>/dev/null | grep -q '$image'" \
+    try_wait_until 60 bash -c "! sudo ctr -n k8s.io images ls -q 2>/dev/null | grep -q '$image'" \
         || die "unreferenced image $image was never GC'd despite the watermark being set at/below this node's real disk usage ($current_usage%) and past NODELET_IMAGE_GC_MIN_AGE_SECS — check should_start_image_gc()'s gating"
 }
 

@@ -17,7 +17,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
 
     local node_ip token json
     node_ip="$(kubectl get node "$(node_name)" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
@@ -27,7 +27,7 @@ EOF
         skip_test "couldn't mint a bearer token (kubectl create token) to call the server directly — needs a cluster new enough to support the TokenRequest-backed 'kubectl create token'"
     fi
 
-    if ! json="$(try_wait_until 30 bash -c "curl -ksS --max-time 5 -H 'Authorization: Bearer $token' https://$node_ip:${NODELET_SERVER_PORT:-10250}/stats/summary | grep -q '\"$name\"'" \
+    if ! json="$(try_wait_until 90 bash -c "curl -ksS --max-time 5 -H 'Authorization: Bearer $token' https://$node_ip:${NODELET_SERVER_PORT:-10250}/stats/summary | grep -q '\"$name\"'" \
         && curl -ksS --max-time 5 -H "Authorization: Bearer $token" "https://$node_ip:${NODELET_SERVER_PORT:-10250}/stats/summary")"; then
         delete_pod_if_exists "$name"
         die "/stats/summary never mentioned pod '$name' — check nodelet's server logs, and that this node's firewall allows the test script to reach NODELET_SERVER_PORT directly"

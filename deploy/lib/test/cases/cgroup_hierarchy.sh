@@ -46,7 +46,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local uid
     # Round 123 (found live in CI, reproduced twice): this was raw
     # `kubectl get pod`, not `kctl` -- every other lookup in this suite

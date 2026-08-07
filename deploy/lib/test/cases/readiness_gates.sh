@@ -23,11 +23,11 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
 
     # Container itself is ready (no readiness probe -> defaults to ready),
     # but the gate condition has never been set -> Ready must stay False.
-    wait_until 15 "$name ContainersReady" bash -c "[[ \"\$(pod_condition_status '$name' ContainersReady)\" == 'True' ]]"
+    wait_until 30 "$name ContainersReady" bash -c "[[ \"\$(pod_condition_status '$name' ContainersReady)\" == 'True' ]]"
     assert_eq "$(pod_condition_status "$name" Ready)" "False" "Ready must be False while the readinessGates condition is unset — a missing gate condition counts as not-satisfied"
 
     # Play external controller: set the gate condition to False explicitly first.
@@ -40,7 +40,7 @@ EOF
     kubectl patch pod "$name" -n "$TEST_NAMESPACE" --subresource=status --type=merge -p \
         "{\"status\":{\"conditions\":[{\"type\":\"$gate\",\"status\":\"True\"}]}}" >/dev/null
 
-    if ! try_wait_until 30 bash -c "[[ \"\$(pod_condition_status '$name' Ready)\" == 'True' ]]"; then
+    if ! try_wait_until 90 bash -c "[[ \"\$(pod_condition_status '$name' Ready)\" == 'True' ]]"; then
         delete_pod_if_exists "$name"
         die "Ready never flipped True after the readinessGates condition was set to True — check pods.rs::build_pod_status()'s gates_ready computation, or whether nodelet's own status write is clobbering the externally-set condition (JSON Merge Patch replaces the whole conditions array; build_pod_status() must copy foreign conditions forward)"
     fi

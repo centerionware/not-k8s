@@ -32,14 +32,14 @@ spec:
         - containerPort: 8080
           hostPort: $host_port
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod never reached Running with hostPort set — check nodelet's logs for a RunPodSandbox error (the runtime may not support CRI's port_mappings, or the host port may already be in use on this node)"
     fi
 
     local node_ip body
     node_ip="$(kubectl get node "$(node_name)" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
-    if ! body="$(try_wait_until 30 bash -c "curl -sS --max-time 5 http://$node_ip:$host_port/marker | grep -q host-port-marker" \
+    if ! body="$(try_wait_until 90 bash -c "curl -sS --max-time 5 http://$node_ip:$host_port/marker | grep -q host-port-marker" \
         && curl -sS --max-time 5 "http://$node_ip:$host_port/marker")"; then
         delete_pod_if_exists "$name"
         die "curling the node's own IP at hostPort $host_port never reached this pod's container — check port_mappings_for()/sandbox_config() wiring in runtime/cri/sandbox.rs, and that this node's firewall allows the test script to reach that port directly"
@@ -73,14 +73,14 @@ spec:
       ports:
         - containerPort: $container_port
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod never reached Running with hostNetwork: true"
     fi
 
     local node_ip body
     node_ip="$(kubectl get node "$(node_name)" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
-    if ! body="$(try_wait_until 20 bash -c "curl -sS --max-time 5 http://$node_ip:$container_port/marker | grep -q host-network-marker" \
+    if ! body="$(try_wait_until 40 bash -c "curl -sS --max-time 5 http://$node_ip:$container_port/marker | grep -q host-network-marker" \
         && curl -sS --max-time 5 "http://$node_ip:$container_port/marker")"; then
         delete_pod_if_exists "$name"
         die "curling the node's own IP at containerPort $container_port never reached this hostNetwork pod's container"

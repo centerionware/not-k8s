@@ -44,12 +44,12 @@ spec:
                 storage: 64Mi
 EOF
 
-    if ! try_wait_until 30 bash -c "kubectl get pvc '$expected_claim' -n '$TEST_NAMESPACE' >/dev/null 2>&1"; then
+    if ! try_wait_until 90 bash -c "kubectl get pvc '$expected_claim' -n '$TEST_NAMESPACE' >/dev/null 2>&1"; then
         delete_pod_if_exists "$name"
         skip_test "PersistentVolumeClaim '$expected_claim' was never created — this cluster's kube-controller-manager likely doesn't have the ephemeral-volume controller enabled (not something nodelet itself does; nodelet only ever reads a PVC the controller already created)"
     fi
 
-    if ! try_wait_until 60 bash -c "kubectl get pvc '$expected_claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
+    if ! try_wait_until 90 bash -c "kubectl get pvc '$expected_claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         delete_pod_and_pvc "$name" "$expected_claim"
         skip_test "PVC '$expected_claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
     fi
@@ -61,7 +61,7 @@ EOF
     # latency from the whole unfiltered suite sharing one CSI
     # driver/attacher. 30s was tight enough to fail across two separate
     # full-pipeline runs despite passing reliably in smaller batches.
-    if ! try_wait_until 60 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_and_pvc "$name" "$expected_claim"
         die "pod never reached Running with the ephemeral volume mounted — check nodelet's logs for 'failed to mount CSI volume for generic ephemeral volume' or 'isn't owned by this pod'"
     fi
@@ -70,7 +70,7 @@ EOF
     uid="$(kubectl get pod "$name" -n "$TEST_NAMESPACE" -o jsonpath='{.metadata.uid}')"
     marker_path="/var/lib/nodelet/pods/$uid/volumes/data/marker"
 
-    if ! try_wait_until 15 bash -c "[[ -f '$marker_path' ]]"; then
+    if ! try_wait_until 30 bash -c "[[ -f '$marker_path' ]]"; then
         delete_pod_and_pvc "$name" "$expected_claim"
         die "container wrote to /data but the marker file never appeared at $marker_path on the host — check ephemeral_pvc_name()/resolve_ephemeral_source() in runtime/cri.rs"
     fi

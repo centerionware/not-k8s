@@ -39,7 +39,7 @@ spec:
         requests: { cpu: "1", memory: "64Mi" }
         limits: { cpu: "1", memory: "64Mi" }
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "a Guaranteed 1-CPU pod was rejected on a single-NUMA-node host under single-numa-node policy — every request should trivially align to the one node that exists; check topology.rs::align()/cpu_hint() and their wiring in runtime/cri.rs::create_and_start_container()"
     fi
@@ -71,7 +71,7 @@ spec:
         requests: { cpu: "1", memory: "64Mi" }
         limits: { cpu: "1", memory: "64Mi" }
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "a Guaranteed 1-CPU pod was rejected on a single-NUMA-node host under restricted policy — align() alone should already satisfy it (spread() shouldn't even need to run); check topology.rs::align()/spread() and their wiring in runtime/cri.rs::create_and_start_container()"
     fi

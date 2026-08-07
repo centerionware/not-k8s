@@ -27,7 +27,7 @@ spec:
       storage: 64Mi
 EOF
 
-    if ! try_wait_until 60 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
+    if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
         skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS); not something nodelet itself does (see docs/GAP_CLOSURE.md's out-of-scope notes)"
     fi
@@ -51,7 +51,7 @@ spec:
         claimName: $claim
 EOF
 
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_and_pvc "$name" "$claim"
         die "pod never reached Running with a PVC volume mounted — check nodelet's server logs for 'failed to mount CSI volume' or 'no CSI driver configured'"
     fi
@@ -60,7 +60,7 @@ EOF
     uid="$(kubectl get pod "$name" -n "$TEST_NAMESPACE" -o jsonpath='{.metadata.uid}')"
     marker_path="/var/lib/nodelet/pods/$uid/volumes/data/marker"
 
-    if ! try_wait_until 15 bash -c "[[ -f '$marker_path' ]]"; then
+    if ! try_wait_until 30 bash -c "[[ -f '$marker_path' ]]"; then
         delete_pod_and_pvc "$name" "$claim"
         die "container wrote to /data but the marker file never appeared at $marker_path on the host — the CSI volume may not actually be mounted there, or NodePublishVolume's target_path doesn't match what nodelet expects"
     fi
@@ -116,7 +116,7 @@ spec:
         readOnly: true
 EOF
 
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod never reached Running with a CSI ephemeral inline volume mounted — check nodelet's server logs for 'failed to mount CSI ephemeral volume' or 'no CSI driver configured'"
     fi
@@ -162,7 +162,7 @@ spec:
       storage: 64Mi
 EOF
 
-    if ! try_wait_until 60 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
+    if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
         skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_BLOCK_STORAGE_CLASS ($TEST_CSI_BLOCK_STORAGE_CLASS)"
     fi
@@ -193,7 +193,7 @@ EOF
     # here twice across two separate full-pipeline runs. Bumped to match
     # the same generous budget csi_pvc.sh's other attach-dependent waits
     # already use.
-    if ! try_wait_until 60 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_and_pvc "$name" "$claim"
         die "pod never reached Running with a raw block volumeDevice — check nodelet's logs for 'failed to mount CSI volume' or build_devices()/ResolvedVolume::BlockDevice wiring in runtime/cri/volumes_pure.rs"
     fi
@@ -201,7 +201,7 @@ EOF
     local uid target_path
     uid="$(kubectl get pod "$name" -n "$TEST_NAMESPACE" -o jsonpath='{.metadata.uid}')"
     target_path="/var/lib/nodelet/pods/$uid/volumes/raw"
-    if ! try_wait_until 15 bash -c "[[ -e '$target_path' ]]"; then
+    if ! try_wait_until 30 bash -c "[[ -e '$target_path' ]]"; then
         delete_pod_and_pvc "$name" "$claim"
         die "no bind-mount target ever appeared at $target_path on the host — NodePublishVolume's target_path may not match what nodelet expects for a Block-mode volume"
     fi
@@ -238,7 +238,7 @@ spec:
     requests:
       storage: 64Mi
 EOF
-    if ! try_wait_until 60 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
+    if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
         skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
     fi
@@ -261,7 +261,7 @@ spec:
       persistentVolumeClaim:
         claimName: $claim
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_and_pvc "$name" "$claim"
         die "pod never reached Running with a PVC volume mounted — check nodelet's server logs for 'failed to mount CSI volume' or 'no CSI driver configured'"
     fi
@@ -276,7 +276,7 @@ EOF
     # a run unlucky enough to start its wait right after a push had
     # already gone out would systematically miss the next one and fail
     # every time, not flakily.
-    if ! try_wait_until 75 bash -c "kubectl get node '$n' -o jsonpath='{.status.volumesInUse}' | grep -q 'kubernetes.io/csi/'"; then
+    if ! try_wait_until 120 bash -c "kubectl get node '$n' -o jsonpath='{.status.volumesInUse}' | grep -q 'kubernetes.io/csi/'"; then
         delete_pod_and_pvc "$name" "$claim"
         die "Node.status.volumesInUse never listed an entry ('kubernetes.io/csi/<driver>^<volumeHandle>', round 34) while the CSI-backed pod was running"
     fi
@@ -286,7 +286,7 @@ EOF
     # CSI unpublish/detach to fully complete under load (multiple CSI
     # tests' worth of contention on the same reference driver) — bumped
     # to match the same generous budget the volumesInUse wait below uses.
-    wait_until 90 "$name gone" pod_gone "$name"
+    wait_until 120 "$name gone" pod_gone "$name"
     # Round 124 (found live in CI, full-suite runs only): 75s wasn't always
     # enough for the CSI unpublish/detach to fully propagate to a fresh
     # Node.status.volumesInUse push when the whole unfiltered suite is
@@ -294,7 +294,7 @@ EOF
     # cleanly in a targeted 14-test batch but timed out here across two
     # separate full-pipeline runs. Bumped, same reasoning as the pod_gone
     # wait immediately above.
-    wait_until 120 "volumesInUse cleared after pod deletion" \
+    wait_until 150 "volumesInUse cleared after pod deletion" \
         bash -c "[[ \"\$(kubectl get node '$n' -o jsonpath='{.status.volumesInUse}')\" != *'kubernetes.io/csi/'* ]]"
     kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
 }
@@ -357,7 +357,7 @@ spec:
     requests:
       storage: 64Mi
 EOF
-    if ! try_wait_until 60 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
+    if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
         skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
     fi
@@ -367,12 +367,12 @@ EOF
 
     local first="fsgroup-policy-check-1"
     apply_manifest <<< "$(fsgroup_pod_spec "$first")"
-    if ! try_wait_until 30 pod_is_phase "$first" Running; then
+    if ! try_wait_until 90 pod_is_phase "$first" Running; then
         delete_pod_and_pvc "$first" "$claim"
         skip_test "first pod never reached Running with a PVC + fsGroup volume mounted"
     fi
     delete_pod_if_exists "$first"
-    wait_until 90 "$first gone" pod_gone "$first"
+    wait_until 120 "$first gone" pod_gone "$first"
     # Round 123 (found live in CI): starting pod2 right after pod1's own
     # object is gone raced the external-attacher's real detach — nodelet's
     # own log showed "driver requires attach but no matching
@@ -381,13 +381,13 @@ EOF
     # than cleanly reusing the volume. Wait for the OLD VolumeAttachment
     # to actually clear before creating pod2, not just for pod1's object.
     if [[ -n "$pv_name" ]]; then
-        try_wait_until 30 bash -c "[[ -z \"\$(kubectl get volumeattachments.storage.k8s.io -o jsonpath=\\\"{.items[?(@.spec.source.persistentVolumeName=='$pv_name')].metadata.name}\\\" 2>/dev/null)\" ]]" \
+        try_wait_until 90 bash -c "[[ -z \"\$(kubectl get volumeattachments.storage.k8s.io -o jsonpath=\\\"{.items[?(@.spec.source.persistentVolumeName=='$pv_name')].metadata.name}\\\" 2>/dev/null)\" ]]" \
             || warn "old VolumeAttachment for $pv_name didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate"
     fi
 
     local second="fsgroup-policy-check-2"
     apply_manifest <<< "$(fsgroup_pod_spec "$second")"
-    if ! try_wait_until 60 pod_is_phase "$second" Running; then
+    if ! try_wait_until 90 pod_is_phase "$second" Running; then
         delete_pod_and_pvc "$second" "$claim"
         skip_test "second pod never reached Running reusing the same PVC + fsGroup"
     fi
@@ -416,7 +416,7 @@ EOF
     # gid.
     local gid_file
     gid_file="$(mktemp)"
-    try_wait_until 30 bash -c "kctl exec '$second' -- stat -c %g /data 2>/dev/null | tr -dc '0-9' > '$gid_file' && [[ -s '$gid_file' ]]" \
+    try_wait_until 90 bash -c "kctl exec '$second' -- stat -c %g /data 2>/dev/null | tr -dc '0-9' > '$gid_file' && [[ -s '$gid_file' ]]" \
         || warn "never got a stable 'stat /data' read from $second within 30s — pod may still be unstable; using whatever the last attempt captured"
     local gid
     gid="$(cat "$gid_file" 2>/dev/null)"

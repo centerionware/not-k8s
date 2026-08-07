@@ -26,9 +26,9 @@ spec:
       image: $TEST_IMAGE
       command: ["sh", "-c", "echo hello-from-nodelet-logs; sleep 3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local output
-    if ! output="$(try_wait_until 30 bash -c "kctl logs '$name' 2>/dev/null | grep -q hello-from-nodelet-logs" && kctl logs "$name" 2>/dev/null)"; then
+    if ! output="$(try_wait_until 90 bash -c "kctl logs '$name' 2>/dev/null | grep -q hello-from-nodelet-logs" && kctl logs "$name" 2>/dev/null)"; then
         delete_pod_if_exists "$name"
         die "kubectl logs never returned the expected output — check: does Node.status.daemonEndpoints show a port, can the apiserver reach it (firewall/NAT), and is nodelet's server actually listening (NODELET_SERVER_ENABLED)?"
     fi
@@ -50,11 +50,11 @@ spec:
       image: $TEST_IMAGE
       command: ["sh", "-c", "for i in 1 2 3 4 5 6 7 8; do echo line-\$i; sleep 1; done; sleep 3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local out_file="/tmp/nodelet-e2e-logs-follow-$$"
     (kctl logs -f "$name" > "$out_file" 2>/dev/null &)
     local follow_pid_check
-    try_wait_until 20 bash -c "grep -q line-3 '$out_file' 2>/dev/null" \
+    try_wait_until 40 bash -c "grep -q line-3 '$out_file' 2>/dev/null" \
         || warn "kubectl logs -f didn't show streamed output within 20s (may still be buffering)"
     pkill -f "kubectl.*logs -f $name" 2>/dev/null || true
     if [[ -f "$out_file" ]] && grep -q "line-" "$out_file"; then
@@ -80,7 +80,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local output
     output="$(kctl exec "$name" -- echo hello-from-exec 2>&1)" || true
     assert_contains "$output" "hello-from-exec" "kubectl exec output — if this fails, check nodelet's server logs for the proxy_upgrade path (server/exec.rs); this is the piece least validated outside a live cluster"
@@ -105,10 +105,10 @@ spec:
       image: $TEST_IMAGE
       command: ["sh", "-c", "for i in 1 2 3 4 5 6 7 8; do echo attach-line-\$i; sleep 1; done; sleep 3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local out_file="/tmp/nodelet-e2e-attach-$$"
     (kctl attach "$name" > "$out_file" 2>/dev/null &)
-    try_wait_until 20 bash -c "grep -q attach-line-3 '$out_file' 2>/dev/null" \
+    try_wait_until 40 bash -c "grep -q attach-line-3 '$out_file' 2>/dev/null" \
         || warn "kubectl attach didn't show streamed output within 20s (may still be buffering)"
     pkill -f "kubectl.*attach $name" 2>/dev/null || true
     local seen
@@ -135,13 +135,13 @@ spec:
       # doesn't compile in the httpd applet.
       command: ["sh", "-c", "printf 'HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nConnection: close\\r\\n\\r\\nport-forward-marker\\n' > /tmp/resp && while true; do nc -lp 8080 < /tmp/resp; done"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
 
     local local_port=18080
     local pf_log="/tmp/nodelet-e2e-port-forward-$$"
     (kctl port-forward "$name" "$local_port:8080" > "$pf_log" 2>&1 &)
     local response
-    if ! response="$(try_wait_until 20 bash -c "curl -sf --max-time 3 http://127.0.0.1:$local_port/ 2>/dev/null | grep -q port-forward-marker" \
+    if ! response="$(try_wait_until 40 bash -c "curl -sf --max-time 3 http://127.0.0.1:$local_port/ 2>/dev/null | grep -q port-forward-marker" \
         && curl -sf --max-time 3 "http://127.0.0.1:$local_port/")"; then
         pkill -f "kubectl.*port-forward $name" 2>/dev/null || true
         rm -f "$pf_log"

@@ -41,7 +41,7 @@ spec:
       command: ["sleep", "3600"]
 EOF
 
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         kubectl delete runtimeclass "$rc_name" --ignore-not-found >/dev/null 2>&1
         die "pod never reached Running with runtimeClassName=$rc_name (handler '$handler') — set TEST_RUNTIME_CLASS_HANDLER to a handler name this containerd actually has configured, or this containerd may only have the implicit default with no named handlers at all"

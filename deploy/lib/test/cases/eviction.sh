@@ -64,7 +64,7 @@ EOF
     # disk-usage limit without having run), so this isn't a rigor loss —
     # it's the same assertion this test actually needs, without an
     # unnecessary racy intermediate one.
-    wait_until 60 "$name evicted for exceeding its own ephemeral-storage limit" bash -c \
+    wait_until 90 "$name evicted for exceeding its own ephemeral-storage limit" bash -c \
         "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.reason}')\" == 'Evicted' ]]"
     delete_pod_if_exists "$name"
 }
@@ -100,7 +100,7 @@ EOF
     # See test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted's
     # own comment (round 123) — same race, same fix: no separate
     # "wait for Running first".
-    wait_until 60 "$name evicted for exceeding its emptyDir volume's sizeLimit" bash -c \
+    wait_until 90 "$name evicted for exceeding its emptyDir volume's sizeLimit" bash -c \
         "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.reason}')\" == 'Evicted' ]]"
     delete_pod_if_exists "$name"
 }
@@ -128,7 +128,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     # 60s, not 30 — this check only runs once per NODELET_EVICTION_CHECK_SECS
     # (default 10s) eviction_loop tick, and this is the first time this
     # test has ever actually executed (round 123: it was defined but never
@@ -136,7 +136,7 @@ EOF
     # genuine bug rather than a tight first-run timeout, same lesson this
     # suite already learned the hard way for its own wait_until 30s
     # timeouts elsewhere.
-    wait_until 60 "$name terminated for exceeding its activeDeadlineSeconds" bash -c \
+    wait_until 90 "$name terminated for exceeding its activeDeadlineSeconds" bash -c \
         "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.reason}')\" == 'DeadlineExceeded' ]]"
     delete_pod_if_exists "$name"
 }

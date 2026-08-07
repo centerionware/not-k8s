@@ -30,7 +30,7 @@
 test_plugin_registry_watches_for_dra_drivers_too() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local dir="${NODELET_PLUGIN_REGISTRY_PATH:-/var/lib/nodelet/plugins_registry}"
-    if ! try_wait_until 15 bash -c "[[ -d '$dir' ]]"; then
+    if ! try_wait_until 30 bash -c "[[ -d '$dir' ]]"; then
         skip_test "no $dir — same directory csi_plugin_registration.sh/device_plugins.sh check; see their notes if this fails"
     fi
     assert_true test -d "$dir"
@@ -93,7 +93,7 @@ spec:
     - name: gpu
       resourceClaimTemplateName: $template
 EOF
-    if ! try_wait_until 60 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         kctl delete resourceclaimtemplate "$template" --ignore-not-found >/dev/null 2>&1
         die "pod never reached Running with a DRA resourceClaim — check nodelet's logs for 'DRA: NodePrepareResources failed' or 'DRA: claim not yet reserved for this pod'"

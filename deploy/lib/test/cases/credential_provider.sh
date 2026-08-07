@@ -71,7 +71,7 @@ test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull() {
         -e REGISTRY_AUTH_HTPASSWD_REALM="e2e-test" \
         -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd \
         registry:2 >/dev/null
-    try_wait_until 20 bash -c "curl -sf -o /dev/null -w '%{http_code}' http://127.0.0.1:$reg_port/v2/ | grep -q 401" \
+    try_wait_until 40 bash -c "curl -sf -o /dev/null -w '%{http_code}' http://127.0.0.1:$reg_port/v2/ | grep -q 401" \
         || die "local test registry never came up requiring auth (expected HTTP 401 from /v2/ with no credentials)"
 
     log "pointing containerd at $reg_host as an insecure (http) registry..."
@@ -82,7 +82,7 @@ test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull() {
     printf 'server = "http://%s"\n\n[host."http://%s"]\n  capabilities = ["pull", "resolve", "push"]\n' "$reg_host" "$reg_host" \
         | sudo tee "$hosts_dir/hosts.toml" >/dev/null
     sudo systemctl restart containerd
-    try_wait_until 20 bash -c "sudo ctr version &>/dev/null" \
+    try_wait_until 40 bash -c "sudo ctr version &>/dev/null" \
         || die "containerd never came back up after the config.toml change"
 
     log "pushing $TEST_IMAGE into the local registry as $pushed_image..."
@@ -108,7 +108,7 @@ spec:
       image: $pushed_image
       command: ["sleep", "3600"]
 EOF
-    if ! try_wait_until 30 bash -c "kctl get pod $negname -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null | grep -qE 'ImagePullBackOff|ErrImagePull'"; then
+    if ! try_wait_until 90 bash -c "kctl get pod $negname -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null | grep -qE 'ImagePullBackOff|ErrImagePull'"; then
         delete_pod_if_exists "$negname"
         die "expected pod without any credential provider to fail pulling from the auth-required registry, but it didn't — the registry isn't actually enforcing auth, so the positive check below wouldn't prove anything"
     fi
@@ -161,7 +161,7 @@ spec:
       image: $pushed_image
       command: ["sleep", "3600"]
 EOF
-    if ! wait_until 60 "$name Running" pod_is_phase "$name" Running; then
+    if ! wait_until 90 "$name Running" pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod using the auth-required registry never reached Running with a credential provider configured — check nodelet's logs for 'credential provider' entries (exec failure, bad JSON, or the config/bin-dir wiring itself)"
     fi

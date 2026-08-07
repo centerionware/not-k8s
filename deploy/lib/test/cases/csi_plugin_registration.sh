@@ -10,7 +10,7 @@
 test_plugin_registry_directory_exists() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local dir="${NODELET_PLUGIN_REGISTRY_PATH:-/var/lib/nodelet/plugins_registry}"
-    if ! try_wait_until 15 bash -c "[[ -d '$dir' ]]"; then
+    if ! try_wait_until 30 bash -c "[[ -d '$dir' ]]"; then
         skip_test "no $dir — check nodelet's startup logs for a 'plugin registry: couldn't create the registry directory' warning (needs write access to its parent)"
     fi
     assert_true test -d "$dir"

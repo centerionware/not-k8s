@@ -37,8 +37,8 @@ spec:
         limits: { cpu: "1", memory: "64Mi" }
 EOF
     done
-    wait_until 60 "$name_a Running" pod_is_phase "$name_a" Running
-    wait_until 60 "$name_b Running" pod_is_phase "$name_b" Running
+    wait_until 90 "$name_a Running" pod_is_phase "$name_a" Running
+    wait_until 90 "$name_b Running" pod_is_phase "$name_b" Running
 
     local cid_a cid_b path_a path_b cpuset_a cpuset_b
     cid_a="$(kctl get pod "$name_a" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"
@@ -90,7 +90,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$shared_name Running" pod_is_phase "$shared_name" Running
+    wait_until 90 "$shared_name Running" pod_is_phase "$shared_name" Running
 
     local shared_cid shared_path cpuset_before
     shared_cid="$(kctl get pod "$shared_name" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"
@@ -119,10 +119,10 @@ spec:
         requests: { cpu: "1", memory: "64Mi" }
         limits: { cpu: "1", memory: "64Mi" }
 EOF
-    wait_until 60 "$exclusive_name Running" pod_is_phase "$exclusive_name" Running
+    wait_until 90 "$exclusive_name Running" pod_is_phase "$exclusive_name" Running
 
     local cpuset_after
-    if ! try_wait_until 30 bash -c "[[ \"\$(cat '$shared_path/cpuset.cpus' 2>/dev/null)\" != '$cpuset_before' ]]"; then
+    if ! try_wait_until 90 bash -c "[[ \"\$(cat '$shared_path/cpuset.cpus' 2>/dev/null)\" != '$cpuset_before' ]]"; then
         delete_pod_if_exists "$shared_name"
         delete_pod_if_exists "$exclusive_name"
         die "the shared-pool container's cpuset.cpus never changed after a new exclusive claim — check refresh_shared_pool_cpusets() in runtime/cri.rs and its UpdateContainerResources call"

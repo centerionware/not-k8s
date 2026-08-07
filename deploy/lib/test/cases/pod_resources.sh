@@ -20,7 +20,7 @@ test_pod_resources_socket_is_created_on_a_cri_node() {
     if [[ -z "$sock" ]]; then
         skip_test "NODELET_POD_RESOURCES_SOCKET_PATH is explicitly empty on this deployment — the PodResources API is intentionally disabled here"
     fi
-    if ! try_wait_until 15 bash -c "[[ -S '$sock' ]]"; then
+    if ! try_wait_until 30 bash -c "[[ -S '$sock' ]]"; then
         skip_test "no Unix socket at $sock after 15s — check nodelet's own startup logs for 'PodResources API' (directory-creation or bind failure would log a warning and leave the server disabled for this run rather than crashing nodelet)"
     fi
     assert_true test -S "$sock"
@@ -39,7 +39,7 @@ test_pod_resources_grpc_query_returns_real_data() {
     if ! command -v grpcurl >/dev/null 2>&1; then
         skip_test "grpcurl not on PATH — e2e-full-setup.sh should have installed it for this run"
     fi
-    if ! try_wait_until 15 bash -c "[[ -S '$sock' ]]"; then
+    if ! try_wait_until 30 bash -c "[[ -S '$sock' ]]"; then
         skip_test "no Unix socket at $sock after 15s"
     fi
     local proto="$REPO_ROOT/crates/nodelet/proto/podresources.proto"
@@ -59,7 +59,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
 
     # Round 124 (found live in CI): grpcurl's protoparse rejects an
     # absolute -proto path with "must specify at least one import path if

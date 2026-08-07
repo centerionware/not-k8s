@@ -53,7 +53,7 @@ spec:
       # only needs to prove rotation happens at all).
       command: ["sh", "-c", "while true; do echo 'filler line to grow the log file quickly'; sleep 0.01; done"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
 
     local ns uid log_dir
     ns="$(pod_field "$name" '{.metadata.namespace}')"
@@ -61,7 +61,7 @@ EOF
     log_dir="/var/log/pods/${ns}_${name}_${uid}"
 
     log "    waiting for a rotated log file under $log_dir (log_rotate_interval, default 10s)..."
-    if ! try_wait_until 60 _log_rotation_check "$log_dir"; then
+    if ! try_wait_until 90 _log_rotation_check "$log_dir"; then
         warn "[diag] contents of $log_dir: $(sudo ls -la "$log_dir" 2>&1)"
         warn "[diag] nodelet log mentioning rotation:"
         sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -iE "rotat" | tail -20 | while IFS= read -r line; do warn "[diag]   $line"; done

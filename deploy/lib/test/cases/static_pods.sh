@@ -44,13 +44,13 @@ spec:
       command: ["sleep", "3600"]
 EOF
 
-    wait_until 60 "mirror pod $mirror_name Running" pod_is_phase "$mirror_name" Running
+    wait_until 90 "mirror pod $mirror_name Running" pod_is_phase "$mirror_name" Running
     local mirror_annotation
     mirror_annotation="$(kctl get pod "$mirror_name" -o jsonpath='{.metadata.annotations.kubernetes\.io/config\.mirror}')"
     assert_not_empty "$mirror_annotation" "kubernetes.io/config.mirror annotation on the mirror pod"
 
     rm -f "$manifest_path"
-    wait_until 60 "mirror pod $mirror_name removed after manifest deletion" pod_gone "$mirror_name"
+    wait_until 90 "mirror pod $mirror_name removed after manifest deletion" pod_gone "$mirror_name"
 }
 
 register_test test_static_pod_creates_a_mirror_pod

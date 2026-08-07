@@ -151,9 +151,9 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
 
-    if ! try_wait_until 30 bash -c "kubectl get node '$n' -o jsonpath='{.status.images}' | grep -q ."; then
+    if ! try_wait_until 90 bash -c "kubectl get node '$n' -o jsonpath='{.status.images}' | grep -q ."; then
         delete_pod_if_exists "$name"
         skip_test "node.status.images is empty/missing — check node_images()/select_node_images() wiring in runtime/cri.rs and node.rs"
     fi

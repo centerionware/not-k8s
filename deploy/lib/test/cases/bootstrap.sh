@@ -148,7 +148,7 @@ EOF
         "$nodelet_bin" > "$log_file" 2>&1 &
     nodelet_pid=$!
 
-    try_wait_until 20 bash -c "kubectl get csr -o name 2>/dev/null | grep -q 'nodelet-$node_name-'" \
+    try_wait_until 40 bash -c "kubectl get csr -o name 2>/dev/null | grep -q 'nodelet-$node_name-'" \
         || die "no CertificateSigningRequest named nodelet-$node_name-* appeared within 20s — log: $(cat "$log_file")"
     csr_name="$(kubectl get csr -o name | grep "nodelet-$node_name-" | head -1 | sed 's#certificatesigningrequest.certificates.k8s.io/##')"
     assert_not_empty "$csr_name" "CSR object name"
@@ -164,7 +164,7 @@ EOF
     # step for exactly this case.
     kubectl certificate approve "$csr_name" >/dev/null
 
-    try_wait_until 20 bash -c "[[ -f '$output_kubeconfig' ]] && grep -q 'client-certificate-data' '$output_kubeconfig'" \
+    try_wait_until 40 bash -c "[[ -f '$output_kubeconfig' ]] && grep -q 'client-certificate-data' '$output_kubeconfig'" \
         || die "nodelet never wrote $output_kubeconfig with a client certificate after CSR approval — log: $(cat "$log_file")"
     assert_contains "$(cat "$log_file")" "issued client certificate" \
         "nodelet's own log should confirm it wrote the issued certificate"

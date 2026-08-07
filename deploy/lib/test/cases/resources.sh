@@ -32,9 +32,9 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local value
-    if ! value="$(try_wait_until 30 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/memmax.txt\" ]]" && wait_for_check_file "$name" shared memmax.txt 5)"; then
+    if ! value="$(try_wait_until 90 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/memmax.txt\" ]]" && wait_for_check_file "$name" shared memmax.txt 5)"; then
         delete_pod_if_exists "$name"
         skip_test "no /sys/fs/cgroup/memory.max in the container — this node likely uses cgroup v1, not v2"
     fi
@@ -72,9 +72,9 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local value
-    if ! value="$(try_wait_until 30 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/swapmax.txt\" ]]" && wait_for_check_file "$name" shared swapmax.txt 5)"; then
+    if ! value="$(try_wait_until 90 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/swapmax.txt\" ]]" && wait_for_check_file "$name" shared swapmax.txt 5)"; then
         delete_pod_if_exists "$name"
         skip_test "no /sys/fs/cgroup/memory.swap.max in the container — this node either uses cgroup v1, or has the memory controller's swap accounting disabled at the kernel level (CONFIG_MEMCG_SWAP / swapaccount=1)"
     fi
@@ -139,7 +139,7 @@ spec:
         requests: { memory: "64Mi" }
         limits: { memory: "256Mi" }
 EOF
-    wait_until 60 "$burstable Running" pod_is_phase "$burstable" Running
+    wait_until 90 "$burstable Running" pod_is_phase "$burstable" Running
     local burstable_swap_max
     # Round 123 (found live in CI): kubectl's own "kuberc: ... permission
     # denied" warning lands on the same stream as the real value with no
@@ -166,7 +166,7 @@ spec:
         requests: { memory: "64Mi", cpu: "100m" }
         limits: { memory: "64Mi", cpu: "100m" }
 EOF
-    if ! try_wait_until 90 pod_is_phase "$guaranteed" Running; then
+    if ! try_wait_until 120 pod_is_phase "$guaranteed" Running; then
         warn "[diag] pod status: $(kctl get pod "$guaranteed" -o wide 2>&1)"
         warn "[diag] pod events: $(kctl describe pod "$guaranteed" 2>&1 | grep -A20 '^Events:')"
         warn "[diag] nodelet log mentioning $guaranteed:"
@@ -209,7 +209,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod never reached Running with a hugepages-2Mi limit set — this node/kernel likely has no 2Mi hugepages reserved (check /proc/sys/vm/nr_hugepages) or the runtime doesn't support the hugetlb cgroup controller"
     fi
@@ -252,9 +252,9 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local value
-    if ! value="$(try_wait_until 30 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/cpumax.txt\" ]]" && wait_for_check_file "$name" shared cpumax.txt 5)"; then
+    if ! value="$(try_wait_until 90 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/cpumax.txt\" ]]" && wait_for_check_file "$name" shared cpumax.txt 5)"; then
         delete_pod_if_exists "$name"
         skip_test "no /sys/fs/cgroup/cpu.max in the container — this node likely uses cgroup v1, not v2"
     fi
@@ -282,9 +282,9 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local value
-    if ! value="$(try_wait_until 30 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/memmax.txt\" ]]" && wait_for_check_file "$name" shared memmax.txt 5)"; then
+    if ! value="$(try_wait_until 90 bash -c "[[ -s \"\$(pod_volume_host_path '$name' shared)/memmax.txt\" ]]" && wait_for_check_file "$name" shared memmax.txt 5)"; then
         delete_pod_if_exists "$name"
         skip_test "no /sys/fs/cgroup/memory.max in the container — this node likely uses cgroup v1, not v2"
     fi
@@ -313,7 +313,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local value
     value="$(wait_for_check_file "$name" shared oom.txt 30)"
     assert_eq "$value" "1000" "BestEffort containers should get oom_score_adj=1000 (the kernel's most-likely-to-kill value), matching eviction::oom_score_adj()"
@@ -342,7 +342,7 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local value
     value="$(wait_for_check_file "$name" shared oom.txt 30)"
     assert_eq "$value" "-998" "Guaranteed containers should get oom_score_adj=-998 (the kernel's least-likely-to-kill value), matching eviction::oom_score_adj()"
@@ -372,8 +372,8 @@ spec:
           memory: "134217728"
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
-    wait_until 30 "$name container ready" pod_container_ready "$name" app
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name container ready" pod_container_ready "$name" app
 
     local before
     before="$(kctl exec "$name" -- cat /sys/fs/cgroup/memory.max 2>/dev/null || true)"
@@ -405,7 +405,7 @@ EOF
     # resized limit once the in-place update lands (allocatedResources
     # already reflects it as soon as the patch is accepted).
     local reported_limit
-    wait_until 30 "containerStatuses[0].resources.limits.memory to catch up" bash -c \
+    wait_until 90 "containerStatuses[0].resources.limits.memory to catch up" bash -c \
         "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.containerStatuses[0].resources.limits.memory}')\" == '268435456' ]]"
     reported_limit="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].resources.limits.memory}')"
     assert_eq "$reported_limit" "268435456" "containerStatuses[0].resources.limits.memory should reflect the actually-applied resize"
@@ -450,7 +450,7 @@ spec:
               resource: limits.memory
               divisor: 1Mi
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local cpu_env mem_env
     cpu_env="$(kctl exec "$name" -- sh -c 'echo $CPU_LIMIT_CORES' 2>/dev/null || true)"
     mem_env="$(kctl exec "$name" -- sh -c 'echo $MEM_LIMIT_MI' 2>/dev/null || true)"

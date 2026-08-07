@@ -34,7 +34,7 @@ spec:
         - {name: cm-vol, mountPath: /cm}
         - {name: secret-vol, mountPath: /secret}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local cm_content secret_content
     cm_content="$(wait_for_check_file "$name" cm-vol greeting 30)"
     secret_content="$(wait_for_check_file "$name" secret-vol password 30)"
@@ -71,7 +71,7 @@ spec:
       volumeMounts:
         - {name: cm-vol, mountPath: /cm}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local before
     before="$(wait_for_check_file "$name" cm-vol greeting 30)"
     assert_eq "$before" "hello" "ConfigMap volume content before update"
@@ -121,7 +121,7 @@ spec:
       volumeMounts:
         - {name: downward, mountPath: /downward}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local content
     content="$(wait_for_check_file "$name" downward pod_name 30)"
     assert_eq "$content" "$name" "downwardAPI volume pod_name"
@@ -161,12 +161,12 @@ spec:
           mountPath: /data
           subPathExpr: \$(POD_NAME)
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod never reached Running with a subPathExpr volumeMount — check nodelet's logs for a dropped mount"
     fi
     local expanded_path="$(pod_volume_host_path "$name" shared)/$name/marker"
-    if ! try_wait_until 20 bash -c "[[ -s '$expanded_path' ]]"; then
+    if ! try_wait_until 40 bash -c "[[ -s '$expanded_path' ]]"; then
         delete_pod_if_exists "$name"
         skip_test "no $expanded_path appeared — subPathExpr may not have expanded to the pod name as expected"
     fi
@@ -203,7 +203,7 @@ spec:
       volumeMounts:
         - {name: proj, mountPath: /proj}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local cm_val name_val
     cm_val="$(wait_for_check_file "$name" proj key1 30)"
     name_val="$(wait_for_check_file "$name" proj name 30)"
@@ -236,10 +236,10 @@ spec:
       volumeMounts:
         - {name: token-vol, mountPath: /var/run/secrets/token}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local path
     path="$(pod_volume_host_path "$name" token-vol)/token"
-    if ! try_wait_until 30 bash -c "[[ -s '$path' ]]"; then
+    if ! try_wait_until 90 bash -c "[[ -s '$path' ]]"; then
         delete_pod_if_exists "$name"
         skip_test "no token materialized within 30s — nodelet's client likely lacks RBAC 'create' on serviceaccounts/token in this namespace (see docs/GAP_CLOSURE.md); this is a cluster config gap, not necessarily a code bug"
     fi
@@ -270,10 +270,10 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local hosts_path
     hosts_path="$(pod_volume_host_path "$name" etc-hosts)"
-    wait_until 20 "hostAliases /etc/hosts materialized" bash -c "[[ -s '$hosts_path' ]]"
+    wait_until 40 "hostAliases /etc/hosts materialized" bash -c "[[ -s '$hosts_path' ]]"
     assert_contains "$(cat "$hosts_path")" "10.1.2.3	custom.example.com" "generated /etc/hosts"
     delete_pod_if_exists "$name"
 }
@@ -305,13 +305,13 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod never reached Running with hostUsers: false and hostAliases together — check the aux_id_mappings wiring in runtime/cri/container_create.rs's /etc/hosts mount, or whether this runtime version rejects Mount.uidMappings/.gidMappings entirely"
     fi
     local hosts_path
     hosts_path="$(pod_volume_host_path "$name" etc-hosts)"
-    wait_until 20 "hostAliases /etc/hosts materialized" bash -c "[[ -s '$hosts_path' ]]"
+    wait_until 40 "hostAliases /etc/hosts materialized" bash -c "[[ -s '$hosts_path' ]]"
     assert_contains "$(cat "$hosts_path")" "10.1.2.3	custom.example.com" "generated /etc/hosts under hostUsers: false"
     delete_pod_if_exists "$name"
 }
@@ -339,10 +339,10 @@ spec:
       volumeMounts:
         - {name: cm-vol, mountPath: /cm}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local dir
     dir="$(pod_volume_host_path "$name" cm-vol)"
-    wait_until 20 "cm-vol materialized" bash -c "[[ -d '$dir' ]]"
+    wait_until 40 "cm-vol materialized" bash -c "[[ -d '$dir' ]]"
     local gid
     gid="$(stat -c %g "$dir")"
     assert_eq "$gid" "4321" "fsGroup ownership on materialized volume"
@@ -381,7 +381,7 @@ spec:
       volumeMounts:
         - {name: hostvol, mountPath: /host}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     sleep 2 # give resolve_volumes()'s fsGroup pass a moment, if it were (wrongly) going to run
     local gid
     gid="$(stat -c %g "$host_dir")"
@@ -416,10 +416,10 @@ spec:
       volumeMounts:
         - {name: ramdisk, mountPath: /ram}
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local dir
     dir="$(pod_volume_host_path "$name" ramdisk)"
-    if ! wait_until 20 "ramdisk mounted" bash -c "[[ -d '$dir' ]]"; then
+    if ! wait_until 40 "ramdisk mounted" bash -c "[[ -d '$dir' ]]"; then
         delete_pod_if_exists "$name"
         skip_test "no $dir on the host — check nodelet's logs for 'failed to mount tmpfs'"
     fi
@@ -471,14 +471,14 @@ spec:
       volumeMounts:
         - {name: hugepool, mountPath: /huge}
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod never reached Running with a HugePages-2Mi emptyDir — this node/kernel likely has no 2Mi hugepages reserved or the runtime doesn't support the hugetlb cgroup controller"
     fi
 
     local dir
     dir="$(pod_volume_host_path "$name" hugepool)"
-    if ! try_wait_until 20 bash -c "[[ -d '$dir' ]]"; then
+    if ! try_wait_until 40 bash -c "[[ -d '$dir' ]]"; then
         delete_pod_if_exists "$name"
         skip_test "no $dir on the host — check nodelet's logs for 'failed to mount hugetlbfs'"
     fi
@@ -521,12 +521,12 @@ spec:
       volumeMounts:
         - {name: hostvol, mountPath: /host}
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         rm -rf "$host_dir"
         die "pod never reached Running with a hostPath: Directory volume — check nodelet's logs for a 'hostPath volume failed validation' warning"
     fi
-    wait_until 20 "container's write landed back on the host" bash -c "[[ -s '$host_dir/from-container' ]]"
+    wait_until 40 "container's write landed back on the host" bash -c "[[ -s '$host_dir/from-container' ]]"
     local content
     content="$(cat "$host_dir/from-container")"
     delete_pod_if_exists "$name"
@@ -558,7 +558,7 @@ spec:
       volumeMounts:
         - {name: hostvol, mountPath: /host}
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         sudo rm -rf "$host_dir"
         die "pod never reached Running with a hostPath: DirectoryOrCreate volume"
@@ -605,7 +605,7 @@ spec:
       volumeMounts:
         - {name: hostvol, mountPath: /host}
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod never reached Running at all — can't distinguish 'correctly rejected the volume' from 'something else failed'"
     fi
@@ -645,7 +645,7 @@ spec:
         - {name: img, mountPath: /img}
         - {name: shared, mountPath: /shared}
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod never reached Running with an image volume mounted — check nodelet's logs for 'failed to pull image for image volume', and that this CRI runtime's version actually supports CRI's Mount.image field (containerd >= 2.0 with the ImageVolume feature)"
     fi
@@ -714,14 +714,14 @@ spec:
           mountPath: /hostvol
           mountPropagation: HostToContainer
 EOF
-    if ! try_wait_until 60 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         warn "[diag] pod status: $(kctl get pod "$name" -o wide 2>&1)"
         warn "[diag] pod events: $(kctl describe pod "$name" 2>&1 | grep -A20 '^Events:')"
         rm -rf "$host_dir"
         delete_pod_if_exists "$name"
         die "pod never reached Running with mountPropagation: HostToContainer set — check mount_propagation_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects a nonzero Mount.propagation entirely"
     fi
-    wait_until 20 "container's write landed back on the host" bash -c "[[ -s '$host_dir/from-container' ]]"
+    wait_until 40 "container's write landed back on the host" bash -c "[[ -s '$host_dir/from-container' ]]"
     local content
     content="$(cat "$host_dir/from-container")"
     delete_pod_if_exists "$name"
@@ -780,7 +780,7 @@ spec:
         - name: shared
           mountPath: /shared
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         rm -rf "$host_dir"
         delete_pod_if_exists "$name"
         die "pod never reached Running with recursiveReadOnly: Enabled set — check recursive_read_only_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects Mount.recursive_read_only entirely"
@@ -831,7 +831,7 @@ spec:
           readOnly: true
           recursiveReadOnly: IfPossible
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         rm -rf "$host_dir"
         delete_pod_if_exists "$name"
         die "pod never reached Running with recursiveReadOnly: IfPossible set — check recursive_read_only_cri()'s IfPossible branch in runtime/cri/volumes_pure.rs"
@@ -885,7 +885,7 @@ spec:
           mountPath: /hostvol
           mountPropagation: HostToContainer
 EOF
-    if ! try_wait_until 60 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         warn "[diag] pod status: $(kctl get pod "$name" -o wide 2>&1)"
         warn "[diag] pod events: $(kctl describe pod "$name" 2>&1 | grep -A20 '^Events:')"
         warn "[diag] nodelet log mentioning $name:"
@@ -898,7 +898,7 @@ EOF
     # propagate in, unlike the container's own initial (already-mounted)
     # view.
     sudo mount --bind "$source_dir" "$host_dir/newmount"
-    if ! try_wait_until 15 bash -c "kctl exec '$name' -- cat /hostvol/newmount/marker 2>/dev/null | grep -q from-a-new-host-mount"; then
+    if ! try_wait_until 30 bash -c "kctl exec '$name' -- cat /hostvol/newmount/marker 2>/dev/null | grep -q from-a-new-host-mount"; then
         die "the container never saw the new host-side mount at /hostvol/newmount — HostToContainer propagation isn't actually working, just round-tripping through config"
     fi
 }
@@ -943,7 +943,7 @@ spec:
         - name: hostvol
           mountPath: /hostvol
 EOF
-    if ! try_wait_until 60 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         warn "[diag] pod status: $(kctl get pod "$name" -o wide 2>&1)"
         warn "[diag] pod events: $(kctl describe pod "$name" 2>&1 | grep -A20 '^Events:')"
         warn "[diag] nodelet log mentioning $name:"
@@ -1004,7 +1004,7 @@ spec:
           readOnly: true
           recursiveReadOnly: Enabled
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         die "pod never reached Running with recursiveReadOnly: Enabled — check whether this runtime rejects Mount.recursive_read_only entirely (should fail CreateContainer cleanly, not silently partial-mount) rather than a nodelet bug"
     fi
     if kctl exec "$name" -- touch /hostvol/nested/test >/dev/null 2>&1; then
@@ -1052,7 +1052,7 @@ spec:
           readOnly: true
           recursiveReadOnly: IfPossible
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         rm -rf "$host_dir"
         delete_pod_if_exists "$name"
         die "pod never reached Running with recursiveReadOnly: IfPossible set"

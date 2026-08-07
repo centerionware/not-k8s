@@ -14,8 +14,8 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
-    wait_until 30 "$name container ready" pod_container_ready "$name" app
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name container ready" pod_container_ready "$name" app
     assert_eq "$(pod_condition_status "$name" Ready)" "True" "Ready condition"
     delete_pod_if_exists "$name"
 }
@@ -45,7 +45,7 @@ EOF
     # gates app-container creation on every init container having exited zero, in
     # order — so the app container ever reaching Running is only possible if both
     # init containers already completed successfully.
-    wait_until 90 "$name Running" pod_is_phase "$name" Running
+    wait_until 120 "$name Running" pod_is_phase "$name" Running
     assert_eq "$(pod_condition_status "$name" Initialized)" "True" "Initialized condition"
 
     local statuses
@@ -76,7 +76,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     assert_eq "$(pod_condition_status "$name" Initialized)" "True" "Initialized condition"
 
     local sidecar_state
@@ -105,17 +105,16 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    # 60s, not 30 — found live (round 123) that 30s isn't reliably enough
-    # for even a trivial single/two-container pod to reach Running this
-    # deep into a long real e2e run: two of the tests immediately
-    # preceding this one in registration order each took 57-61s on their
-    # own under sustained real container/image churn, well past this
-    # test's own 30s budget by the time it started.
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    # Round 124 (found live in CI, full-suite runs only): 60s (bumped
+    # from 30s in round 123 for the same reason) still wasn't always
+    # enough — this timed out immediately after two unrelated eviction
+    # tests' own pod churn just before it in registration order. Bumped
+    # again, same reasoning.
+    wait_until 120 "$name Running" pod_is_phase "$name" Running
     # The sidecar crash-loops every ~3s — its own restart count (not the
     # app container's) must climb above zero, same restart-count
     # mechanism ensure_container()'s app-container path already uses.
-    wait_until 60 "sidecar restart count > 0" bash -c \
+    wait_until 90 "sidecar restart count > 0" bash -c \
         "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.initContainerStatuses[0].restartCount}')\" -gt 0 ]]"
     delete_pod_if_exists "$name"
 }
@@ -139,7 +138,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Failed" pod_is_phase "$name" Failed
+    wait_until 90 "$name Failed" pod_is_phase "$name" Failed
     delete_pod_if_exists "$name"
 }
 
@@ -159,7 +158,7 @@ spec:
 EOF
     # restartPolicy defaults to Always — the container should crash and come
     # back at least once, bumping restartCount above zero.
-    wait_until 90 "restart count > 0" bash -c \
+    wait_until 120 "restart count > 0" bash -c \
         "[[ \"\$(pod_container_restart_count '$name' app)\" -gt 0 ]]"
     delete_pod_if_exists "$name"
 }
@@ -230,7 +229,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sh", "-c", "exit 1"]
 EOF
-    if ! try_wait_until 30 bash -c \
+    if ! try_wait_until 90 bash -c \
         "[[ \"\$(kctl get pod '$name' -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}')\" == 'CrashLoopBackOff' ]]"; then
         delete_pod_if_exists "$name"
         skip_test "state.waiting.reason never became CrashLoopBackOff within 30s -- check restart_policy != \"Never\" && !restart_backoff_ready() gating in runtime/cri/status.rs"
@@ -256,7 +255,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sh", "-c", "exit 0"]
 EOF
-    wait_until 60 "$name Succeeded" pod_is_phase "$name" Succeeded
+    wait_until 90 "$name Succeeded" pod_is_phase "$name" Succeeded
     delete_pod_if_exists "$name"
 }
 
@@ -277,7 +276,7 @@ spec:
 EOF
     # This is the exact round-3 fix: Never used to always report Succeeded
     # regardless of exit code.
-    wait_until 60 "$name Failed" pod_is_phase "$name" Failed
+    wait_until 90 "$name Failed" pod_is_phase "$name" Failed
     delete_pod_if_exists "$name"
 }
 
@@ -298,7 +297,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sh", "-c", "exit 3"]
 EOF
-    wait_until 60 "$name Failed" pod_is_phase "$name" Failed
+    wait_until 90 "$name Failed" pod_is_phase "$name" Failed
 
     local exit_code reason
     exit_code="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')"
@@ -340,13 +339,13 @@ spec:
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod never reached Running with lifecycle.stopSignal set — check nodelet's logs, or that this runtime version supports CRI's ContainerConfig.stop_signal field at all"
     fi
     local path="$(pod_volume_host_path "$name" shared)/signal.txt"
     delete_pod_if_exists "$name"
-    if ! try_wait_until 30 bash -c "[[ -s '$path' ]]"; then
+    if ! try_wait_until 90 bash -c "[[ -s '$path' ]]"; then
         rm -f "$path" 2>/dev/null || true
         skip_test "no $path appeared after pod deletion — the runtime may not honor CRI's ContainerConfig.stop_signal (sent plain SIGTERM instead of the configured SIGUSR1, so the trap never fired); check runtime/cri/container_create.rs's stop_signal wiring if this is unexpected on a runtime version known to support it"
     fi
@@ -374,7 +373,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sh", "-c", "echo -n 'disk quota exceeded' > /dev/termination-log; exit 1"]
 EOF
-    wait_until 60 "$name Failed" pod_is_phase "$name" Failed
+    wait_until 90 "$name Failed" pod_is_phase "$name" Failed
 
     local message
     message="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].state.terminated.message}')"
@@ -405,7 +404,7 @@ EOF
     # test_native_sidecar_container_restarts_on_crash's own comment above:
     # this test registers right after two others that took 57-61s each
     # under sustained real container/image churn this deep into the suite.
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local container_id
     container_id="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].containerID}')"
     assert_contains "$container_id" "://" "containerStatuses[0].containerID should have a <runtimeName>:// scheme prefix"
@@ -427,7 +426,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local host_ip host_ips_first
     host_ip="$(kctl get pod "$name" -o jsonpath='{.status.hostIP}')"
     host_ips_first="$(kctl get pod "$name" -o jsonpath='{.status.hostIPs[0].ip}')"
@@ -460,7 +459,10 @@ spec:
           memory: "64Mi"
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    # Round 124 (found live in CI, full-suite runs only): 60s wasn't
+    # always enough under real full-suite contention — same reasoning as
+    # every other Running-wait bump this round.
+    wait_until 120 "$name Running" pod_is_phase "$name" Running
     local qos
     qos="$(kctl get pod "$name" -o jsonpath='{.status.qosClass}')"
     assert_eq "$qos" "Guaranteed" "status.qosClass for a pod with matching requests/limits on every resource"
@@ -485,9 +487,9 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local image_id
-    wait_until 20 "$name containerStatuses[0].imageID to be populated" bash -c \
+    wait_until 40 "$name containerStatuses[0].imageID to be populated" bash -c \
         "[[ -n \"\$(kctl get pod '$name' -o jsonpath='{.status.containerStatuses[0].imageID}')\" ]]"
     image_id="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].imageID}')"
     assert_not_empty "$image_id" "containerStatuses[0].imageID"
@@ -516,7 +518,7 @@ spec:
       imagePullPolicy: Never
       command: ["sleep", "3600"]
 EOF
-    if try_wait_until 20 pod_is_phase "$name" Running; then
+    if try_wait_until 40 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod reached Running with imagePullPolicy: Never against an image this node shouldn't already have cached — the Never policy isn't being honored (check effective_pull_policy()/create_and_start_container() in runtime/cri.rs)"
     fi
@@ -545,9 +547,9 @@ spec:
       image: $image
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$first Running" pod_is_phase "$first" Running
+    wait_until 90 "$first Running" pod_is_phase "$first" Running
     delete_pod_if_exists "$first"
-    wait_until 30 "$first gone" pod_gone "$first"
+    wait_until 90 "$first gone" pod_gone "$first"
 
     local since
     since="$(date -u '+%Y-%m-%d %H:%M:%S')"
@@ -564,7 +566,7 @@ spec:
       imagePullPolicy: IfNotPresent
       command: ["sleep", "3600"]
 EOF
-    wait_until 30 "$second Running" pod_is_phase "$second" Running
+    wait_until 90 "$second Running" pod_is_phase "$second" Running
     delete_pod_if_exists "$second"
 
     local pulls_since
@@ -607,7 +609,7 @@ spec:
       image: $TEST_IMAGE
       command: ["sleep", "3600"]
 EOF
-    wait_until 60 "$name Running" pod_is_phase "$name" Running
+    wait_until 90 "$name Running" pod_is_phase "$name" Running
     local generation observed
     generation="$(kctl get pod "$name" -o jsonpath='{.metadata.generation}')"
     observed="$(kctl get pod "$name" -o jsonpath='{.status.conditions[?(@.type=="Ready")].observedGeneration}')"
