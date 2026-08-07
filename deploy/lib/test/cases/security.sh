@@ -218,34 +218,29 @@ test_host_users_false_gets_a_real_user_namespace() {
     # outside one it shows the host's full identity range
     # ("0 0 4294967295").
     #
-    # Round 123: this pod reaching Running at all now depends on the
-    # runtime accepting the SAME userns config on both the sandbox
+    # Round 123: this pod reaching Running at all depends on the runtime
+    # accepting the SAME userns config on both the sandbox
     # (LinuxSandboxSecurityContext.namespace_options.userns_options, round
     # 25) and every container (LinuxContainerSecurityContext's own copy,
     # round 123 — linux_security_context() used to leave this unset
     # entirely, which is the actual reason this check used to see the
     # host's own full identity range even when the sandbox itself was
-    # correctly namespaced). Confirmed live: on this CI environment's
-    # containerd 1.7.23, CreateContainer rejects the container outright
-    # with "user namespace config for sandbox is different from
-    # container. Sandbox userns config: <nil> - Container userns config:
-    # uids:{host_id:100000 length:65536} ..." — containerd's own CRI layer
-    # built the sandbox's real OCI spec correctly (confirmed via a live
-    # OCI-spec dump: real uidMappings, a real pinned user namespace) but
-    # doesn't persist that config anywhere CreateContainer's own
-    # consistency check can read it back, so it always sees the sandbox
-    # side as nil and rejects any non-nil container-side value as
-    # "different" — a real gap in this containerd version's own
-    # implementation, not something nodelet's request can work around
-    # (nodelet's own request is correct and matches what real kubelet
-    # sends). Skip gracefully rather than fail — genuinely can't
-    # distinguish "runtime too old to have userns_options at all" from
-    # "runtime has it but this specific consistency check is broken"
-    # without a second, newer containerd to compare against, but either
-    # way it's an environment limitation this suite can't fix or work
-    # around, matching this test's own original documented caveat (see
-    # docs/GAP_CLOSURE.md round 25: "this suite can't independently
-    # verify runtime version support").
+    # correctly namespaced). First live symptom looked like a containerd
+    # bug (CreateContainer rejecting with "user namespace config for
+    # sandbox is different from container. Sandbox userns config: <nil>
+    # ...") but reading containerd's real source
+    # (internal/cri/server/container_create.go's sameUsernsConfig check)
+    # found the actual cause: CreateContainerRequest.sandbox_config is
+    # CRI's own *redundant* resend of the sandbox's config (see its own
+    # proto doc comment) — containerd's consistency check reads the
+    # sandbox's userns straight from THAT redundant copy, not from
+    # whatever RunPodSandbox itself received, and container_create.rs's
+    # CreateContainer call site was hardcoding `None` for it regardless of
+    # the pod's real userns range (the exact same bug class an earlier
+    # round already hit for this same redundant field's `privileged`
+    # value — see that call site's own doc comment). Nothing wrong with
+    # containerd at all; fixed by passing the real userns_mapping through
+    # to that redundant copy too.
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="hostusers-false-check"
     apply_manifest <<EOF
@@ -267,7 +262,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted), or for CreateContainer's own 'user namespace config for sandbox is different from container' error (a real containerd-side gap where RunPodSandbox doesn't persist the sandbox's userns config anywhere CreateContainer's own consistency check can read it back — confirmed on containerd 1.7.23; a genuine environment limitation this suite can't work around, not a nodelet bug — nodelet's own container-level userns_options request is correct and matches real kubelet's)"
+        skip_test "pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted), a RunPodSandbox error (runtime doesn't support CRI's userns_options at all, e.g. too old containerd), or CreateContainer's own 'user namespace config for sandbox is different from container' error (check that CreateContainerRequest.sandbox_config in container_create.rs is passing the pod's real userns_mapping, not None — see this test's own doc comment for the full story)"
     fi
 
     local uid_map
@@ -296,9 +291,10 @@ test_host_users_false_volume_still_reads_and_writes_normally() {
     # test proves the more basic thing, fully automated: a plain
     # read/write into a hostUsers: false pod's own emptyDir doesn't
     # silently fail. Same as the real-userns sibling test above, this
-    # pod reaching Running at all also depends on containerd correctly
-    # handling the container's own userns_options (round 123) — same
-    # containerd 1.7.23 gap documented there if it doesn't.
+    # pod reaching Running at all also depends on CreateContainer's own
+    # redundant sandbox_config resend correctly carrying the container's
+    # userns_mapping (round 123) — see that test's own doc comment for
+    # the full story.
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="hostusers-false-volume-check"
     apply_manifest <<EOF
@@ -320,7 +316,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with hostUsers: false and a volume mounted — check build_mounts()/resolve_volumes() wiring in runtime/cri/volumes_pure.rs and volumes_resolve.rs, run_sandbox()'s own userns_options setup, or the real-userns sibling test's own documented containerd 1.7.23 CreateContainer gap"
+        skip_test "pod never reached Running with hostUsers: false and a volume mounted — check build_mounts()/resolve_volumes() wiring in runtime/cri/volumes_pure.rs and volumes_resolve.rs, run_sandbox()'s own userns_options setup, or CreateContainer's redundant sandbox_config resend (see the real-userns sibling test's own doc comment)"
     fi
     local content
     content="$(wait_for_check_file "$name" shared roundtrip 30)"
