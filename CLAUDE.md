@@ -97,6 +97,17 @@ node conditions/taints + nodelet's log tail right after each failure — CI sets
 1) make a systemic break fail fast with real signal instead of burning 30+
 minutes re-discovering the same root cause across the rest of the suite.
 
+**Iterating on a known e2e failure: use `.github/workflows/e2e.yml` (manual
+`workflow_dispatch`, `only` input), not the full `release.yml` pipeline.**
+`gh workflow run e2e.yml --ref main -f only=<pattern>` runs just the matching
+tests (~5-7 min: build+deploy+CSI/DRA-driver setup dominate, not test count)
+against a fresh cluster, instead of the full pipeline's `build-and-test` →
+full unfiltered `e2e` → `build-release` → `publish-release` chain (30-40+
+min). Fix, dispatch a targeted `e2e.yml` run, read the result, repeat — only
+dispatch the full `release.yml` once the targeted runs are believed green,
+to confirm end-to-end (including that the fix didn't regress unit tests or
+anything the `--only` filter excluded) and actually attempt a release.
+
 ## CI/CD (`.github/workflows/`)
 
 `release.yml` is the real pipeline, triggered on every push to `main` (direct
