@@ -58,6 +58,35 @@ delete_pod_if_exists() { # delete_pod_if_exists <name>
     kctl delete pod "$1" --ignore-not-found --wait=false >/dev/null 2>&1 || true
 }
 
+# delete_pod_and_pvc <pod-name> <pvc-name> [pod-gone-timeout=90] — the CSI
+# test cleanup pattern, done right. Round 124 (found live in CI, full-suite
+# runs only): deleting the pod with --wait=false and then IMMEDIATELY
+# deleting its PVC (the pattern nearly every CSI test used) races nodelet's
+# own async teardown — unmount_csi_volumes() (volumes_resolve.rs) needs to
+# re-fetch the PVC to resolve which driver/volume_handle to call
+# NodeUnpublishVolume with, and that fetch is a documented, deliberate "real
+# but narrow gap": if the PVC is already gone by the time it runs, nodelet
+# logs "CSI teardown: failed to resolve PersistentVolumeClaim; volume left
+# mounted" and gives up on that volume for good — no retry. Under real
+# full-suite CI load (reconciliation queued behind other work), the
+# --wait=false pod delete returning to bash and the immediately-following
+# PVC delete both routinely beat nodelet to it, so this raced on nearly
+# every single CSI test run and left a permanently-phantom "still mounted"
+# entry in Node.status.volumesInUse — which is why a LATER, unrelated test
+# (test_node_reports_volumes_in_use_for_a_csi_volume, which only asserts
+# volumesInUse has no kubernetes.io/csi/ entries at all) kept timing out no
+# matter how generous its own budget got: it was waiting on a stale entry
+# from a completely different pod's botched teardown, not its own. Waiting
+# for the pod to actually be gone (which is when unmount_csi_volumes() runs)
+# before deleting the PVC closes the window this suite itself was creating.
+delete_pod_and_pvc() {
+    local pod="$1" pvc="$2" timeout="${3:-90}"
+    delete_pod_if_exists "$pod"
+    try_wait_until "$timeout" pod_gone "$pod" \
+        || warn "delete_pod_and_pvc: $pod still not gone after ${timeout}s — deleting its PVC anyway, but nodelet's CSI teardown may lose the PVC->volume mapping race (see this function's own comment)"
+    kctl delete pvc "$pvc" --ignore-not-found >/dev/null 2>&1 || true
+}
+
 pod_json() { # pod_json <name> — prints the Pod's full JSON, or "" if gone
     kctl get pod "$1" -o json 2>/dev/null || true
 }
@@ -139,7 +168,7 @@ node_uses_cri_runtime() {
 # process) the same way it is from this file itself. TEST_NAMESPACE also
 # has to be `export`ed by whatever sets it (test-e2e.sh does) — these
 # functions are worthless in a child process without it.
-export -f kubectl kctl apply_manifest delete_pod_if_exists pod_json pod_field \
+export -f kubectl kctl apply_manifest delete_pod_if_exists delete_pod_and_pvc pod_json pod_field \
     pod_is_phase pod_condition_status pod_container_ready pod_container_restart_count \
     pod_exists pod_gone node_name node_condition_status node_uses_cri_runtime
 

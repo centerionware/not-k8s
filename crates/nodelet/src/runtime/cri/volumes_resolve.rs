@@ -599,17 +599,32 @@ impl CriRuntime {
             } else {
                 continue;
             };
-            let source = match self.resolve_csi_source(&id.namespace, &claim_name).await {
-                Ok(Some(source)) => source,
-                Ok(None) => continue, // already logged why in resolve_csi_source()
-                Err(e) => {
-                    warn!(volume = %v.name, claim = %claim_name, error = ?e, "CSI teardown: failed to resolve PersistentVolumeClaim; volume left mounted");
-                    continue;
+            let vol_dir = pod_dir.join(&v.name);
+            // Round 124 (found live in CI): prefer what `mount()` already
+            // recorded (CsiDrivers::mounted, backed by an on-disk sidecar
+            // so it survives a nodelet restart too — keyed by this exact
+            // target_path) over re-fetching the PVC — the PVC is routinely
+            // gone by teardown (pod deleted, then its PVC, is completely
+            // ordinary cleanup) and re-resolving via a live API call used
+            // to permanently abandon the volume the instant that fetch
+            // 404'd. Only falls back to the PVC-based resolution below when
+            // nothing was recorded at all (this volume predates round 124,
+            // or the sidecar write itself failed at mount time) — see
+            // `mounted`'s own doc comment in csi.rs for the full story.
+            let (driver, volume_handle) = if let Some(cached) = self.csi.mounted_source_for(&vol_dir) {
+                cached
+            } else {
+                match self.resolve_csi_source(&id.namespace, &claim_name).await {
+                    Ok(Some(source)) => (source.driver, source.volume_handle),
+                    Ok(None) => continue, // already logged why in resolve_csi_source()
+                    Err(e) => {
+                        warn!(volume = %v.name, claim = %claim_name, error = ?e, "CSI teardown: failed to resolve PersistentVolumeClaim; volume left mounted");
+                        continue;
+                    }
                 }
             };
-            let vol_dir = pod_dir.join(&v.name);
-            if let Err(e) = self.csi.unmount(&source.driver, &source.volume_handle, &vol_dir, &id.uid, false).await {
-                warn!(volume = %v.name, driver = %source.driver, error = ?e, "CSI teardown: failed to unmount volume");
+            if let Err(e) = self.csi.unmount(&driver, &volume_handle, &vol_dir, &id.uid, false).await {
+                warn!(volume = %v.name, driver = %driver, error = ?e, "CSI teardown: failed to unmount volume");
             }
         }
     }

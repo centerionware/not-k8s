@@ -54,8 +54,7 @@ spec:
 EOF
 
     if ! try_wait_until 90 pod_is_phase "$name" Running; then
-        delete_pod_if_exists "$name"
-        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        delete_pod_and_pvc "$name" "$claim"
         die "pod never reached Running — check nodelet's logs for 'driver requires attach but no matching VolumeAttachment exists yet' (external-attacher not running) or 'VolumeAttachment found but not yet attached' (attach still in progress)"
     fi
 
@@ -64,8 +63,7 @@ EOF
     attached="$(kubectl get volumeattachments.storage.k8s.io -o jsonpath="{.items[?(@.spec.source.persistentVolumeName=='$pv_name')].status.attached}")"
     assert_eq "$attached" "true" "the pod only reached Running because nodelet found this PersistentVolume's VolumeAttachment already attached"
 
-    delete_pod_if_exists "$name"
-    kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+    delete_pod_and_pvc "$name" "$claim"
 }
 
 register_test test_pod_with_an_attach_required_pvc_waits_for_volumeattachment

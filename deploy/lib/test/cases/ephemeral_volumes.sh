@@ -50,8 +50,7 @@ EOF
     fi
 
     if ! try_wait_until 60 bash -c "kubectl get pvc '$expected_claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
-        delete_pod_if_exists "$name"
-        kubectl delete pvc "$expected_claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        delete_pod_and_pvc "$name" "$expected_claim"
         skip_test "PVC '$expected_claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
     fi
 
@@ -63,8 +62,7 @@ EOF
     # driver/attacher. 30s was tight enough to fail across two separate
     # full-pipeline runs despite passing reliably in smaller batches.
     if ! try_wait_until 60 pod_is_phase "$name" Running; then
-        delete_pod_if_exists "$name"
-        kubectl delete pvc "$expected_claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        delete_pod_and_pvc "$name" "$expected_claim"
         die "pod never reached Running with the ephemeral volume mounted — check nodelet's logs for 'failed to mount CSI volume for generic ephemeral volume' or 'isn't owned by this pod'"
     fi
 
@@ -73,14 +71,12 @@ EOF
     marker_path="/var/lib/nodelet/pods/$uid/volumes/data/marker"
 
     if ! try_wait_until 15 bash -c "[[ -f '$marker_path' ]]"; then
-        delete_pod_if_exists "$name"
-        kubectl delete pvc "$expected_claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        delete_pod_and_pvc "$name" "$expected_claim"
         die "container wrote to /data but the marker file never appeared at $marker_path on the host — check ephemeral_pvc_name()/resolve_ephemeral_source() in runtime/cri.rs"
     fi
     assert_contains "$(cat "$marker_path")" "hello-from-ephemeral-vol" "marker file content"
 
-    delete_pod_if_exists "$name"
-    kubectl delete pvc "$expected_claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+    delete_pod_and_pvc "$name" "$expected_claim"
 }
 
 register_test test_pod_mounts_a_generic_ephemeral_volume

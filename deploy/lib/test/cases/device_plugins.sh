@@ -42,7 +42,12 @@ _fake_device_plugin_setup() {
 
     if ! sudo python3 -c "import grpc" 2>/dev/null; then
         log "installing grpcio/grpcio-tools for the fake device plugin..."
-        sudo python3 -m pip install --quiet grpcio grpcio-tools \
+        # Round 124 (found live in CI): ubuntu-latest is now 24.04, which
+        # enforces PEP 668 "externally-managed-environment" — a bare `pip
+        # install` fails outright (not a network issue) unless told this is
+        # a throwaway CI runner, not a shared system Python. Safe here:
+        # this whole box is ephemeral per-run.
+        sudo python3 -m pip install --quiet --break-system-packages grpcio grpcio-tools \
             || skip_test "couldn't install grpcio (no network access to PyPI?) — genuinely can't stand up a fake gRPC device plugin without it"
     fi
 

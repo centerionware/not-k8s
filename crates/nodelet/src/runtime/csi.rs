@@ -98,6 +98,27 @@ fn staging_path(driver: &str, volume_handle: &str) -> std::path::PathBuf {
         .join("globalmount")
 }
 
+/// (driver, volume_handle) as written to/read from disk, keyed by
+/// target_path — see `CsiDrivers::mounted`'s doc comment for why this
+/// exists on disk at all, not just in memory.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MountMeta {
+    driver: String,
+    volume_handle: String,
+}
+
+/// Where `mount()`/`unmount()` persist a target_path's `MountMeta` — a
+/// hidden sibling file next to target_path itself, never inside it (a
+/// regular volume's target_path IS the mounted directory; a block volume's
+/// is a bind-mounted device-node file — writing into either would corrupt
+/// the mount, not just the metadata).
+fn mount_meta_path(target_path: &Path) -> std::path::PathBuf {
+    let mut file_name = std::ffi::OsString::from(".");
+    file_name.push(target_path.file_name().unwrap_or_default());
+    file_name.push(".csi-meta.json");
+    target_path.with_file_name(file_name)
+}
+
 /// `block`: raw block volumes (round 77; `volumeMode: Block`, found in
 /// round 76's re-audit) skip the filesystem entirely — `AccessType::Block`
 /// instead of `Mount`, and `fs_type` is meaningless for it (the CSI spec
@@ -171,11 +192,58 @@ pub struct CsiDrivers {
     /// self-heals since every still-running pod's next reconcile calls
     /// `mount()` again.
     refs: Mutex<HashMap<(String, String), HashSet<String>>>,
+    /// target_path -> (driver, volume_handle) for every volume currently
+    /// published via `mount()` — an in-memory hot cache in front of the
+    /// on-disk `MountMeta` sidecar `mount()`/`unmount()` also
+    /// write/remove next to each target_path (`mount_meta_path()`).
+    /// Round 124 (found live in CI): before either existed,
+    /// `unmount_csi_volumes()` (volumes_resolve.rs) had no way to know
+    /// which driver/volume_handle a target_path belonged to except by
+    /// re-fetching the owning PersistentVolumeClaim from the API server at
+    /// teardown time — and a PVC deleted before or during teardown (a
+    /// completely ordinary sequence: pod deleted, then its PVC) made that
+    /// fetch 404, permanently abandoning the volume with no retry (leaked
+    /// host mount, and a phantom entry stuck in Node.status.volumesInUse
+    /// forever, since `mounted_volumes()` below reads straight from `refs`,
+    /// which `unmount()` never got the chance to clear). The on-disk sidecar
+    /// (not just this in-memory map) matters specifically because the mount
+    /// itself survives a nodelet restart, so the metadata needed to unwind
+    /// it later must too — an in-memory-only cache would silently reopen
+    /// the exact same gap for any pod torn down after a restart. Real
+    /// kubelet's own volume reconciler works the same way: off its own
+    /// actual-state-of-world, not a live PVC re-fetch.
+    mounted: Mutex<HashMap<String, (String, String)>>,
 }
 
 impl CsiDrivers {
     pub fn new(endpoints: BTreeMap<String, String>) -> Self {
-        Self { endpoints: Mutex::new(endpoints), stage_capable: Mutex::new(HashMap::new()), refs: Mutex::new(HashMap::new()) }
+        Self {
+            endpoints: Mutex::new(endpoints),
+            stage_capable: Mutex::new(HashMap::new()),
+            refs: Mutex::new(HashMap::new()),
+            mounted: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Look up the (driver, volume_handle) a target_path was published with,
+    /// if `mount()` recorded it and nothing has unmounted it since. See the
+    /// `mounted` field's own doc comment for why this exists. Checks the
+    /// in-memory map first, falling back to the on-disk `MountMeta` sidecar
+    /// `mount()` also writes — the in-memory map alone doesn't survive a
+    /// nodelet restart, but the mount itself (and its sidecar file) does,
+    /// so a pod torn down after a restart must still be able to recover
+    /// this rather than falling all the way back to re-fetching a PVC that
+    /// may already be gone. A disk hit backfills the in-memory map too, so
+    /// this only touches disk once per target_path per process lifetime.
+    pub fn mounted_source_for(&self, target_path: &Path) -> Option<(String, String)> {
+        let key = target_path.to_string_lossy().into_owned();
+        if let Some(hit) = self.mounted.lock().unwrap().get(&key).cloned() {
+            return Some(hit);
+        }
+        let meta: MountMeta = std::fs::read_to_string(mount_meta_path(target_path)).ok().and_then(|s| serde_json::from_str(&s).ok())?;
+        let value = (meta.driver, meta.volume_handle);
+        self.mounted.lock().unwrap().insert(key, value.clone());
+        Some(value)
     }
 
     pub fn driver_configured(&self, driver: &str) -> bool {
@@ -328,6 +396,17 @@ impl CsiDrivers {
             .await
             .context("NodePublishVolume")?;
 
+        self.mounted
+            .lock()
+            .unwrap()
+            .insert(target_path.to_string_lossy().into_owned(), (source.driver.clone(), source.volume_handle.clone()));
+        let meta = MountMeta { driver: source.driver.clone(), volume_handle: source.volume_handle.clone() };
+        if let Ok(json) = serde_json::to_string(&meta) {
+            if let Err(e) = std::fs::write(mount_meta_path(target_path), json) {
+                warn!(target_path = %target_path.display(), error = ?e, "CSI: failed to persist mount metadata sidecar — teardown after a nodelet restart may have to fall back to re-resolving the PVC");
+            }
+        }
+
         Ok(())
     }
 
@@ -345,6 +424,9 @@ impl CsiDrivers {
             })
             .await
             .context("NodeUnpublishVolume")?;
+
+        self.mounted.lock().unwrap().remove(&target_path.to_string_lossy().into_owned());
+        let _ = std::fs::remove_file(mount_meta_path(target_path));
 
         let key = (driver.to_string(), volume_handle.to_string());
         let last_reference = {

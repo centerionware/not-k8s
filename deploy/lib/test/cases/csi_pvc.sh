@@ -52,8 +52,7 @@ spec:
 EOF
 
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
-        delete_pod_if_exists "$name"
-        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        delete_pod_and_pvc "$name" "$claim"
         die "pod never reached Running with a PVC volume mounted — check nodelet's server logs for 'failed to mount CSI volume' or 'no CSI driver configured'"
     fi
 
@@ -62,8 +61,7 @@ EOF
     marker_path="/var/lib/nodelet/pods/$uid/volumes/data/marker"
 
     if ! try_wait_until 15 bash -c "[[ -f '$marker_path' ]]"; then
-        delete_pod_if_exists "$name"
-        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        delete_pod_and_pvc "$name" "$claim"
         die "container wrote to /data but the marker file never appeared at $marker_path on the host — the CSI volume may not actually be mounted there, or NodePublishVolume's target_path doesn't match what nodelet expects"
     fi
     assert_contains "$(cat "$marker_path")" "hello-from-csi-pvc" "marker file content"
@@ -82,8 +80,7 @@ EOF
         warn "Node.status.volumesInUse has no kubernetes.io/csi/ entry while a CSI volume is mounted — check mounted_csi_volumes()/csi_unique_volume_name() wiring in runtime/cri.rs and node.rs (round 34; not failing the test outright since the exact naming scheme is unvalidated against a real attach/detach controller)"
     fi
 
-    delete_pod_if_exists "$name"
-    kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+    delete_pod_and_pvc "$name" "$claim"
 }
 
 test_csi_ephemeral_inline_volume_is_mounted() {
@@ -197,8 +194,7 @@ EOF
     # the same generous budget csi_pvc.sh's other attach-dependent waits
     # already use.
     if ! try_wait_until 60 pod_is_phase "$name" Running; then
-        delete_pod_if_exists "$name"
-        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        delete_pod_and_pvc "$name" "$claim"
         die "pod never reached Running with a raw block volumeDevice — check nodelet's logs for 'failed to mount CSI volume' or build_devices()/ResolvedVolume::BlockDevice wiring in runtime/cri/volumes_pure.rs"
     fi
 
@@ -206,14 +202,12 @@ EOF
     uid="$(kubectl get pod "$name" -n "$TEST_NAMESPACE" -o jsonpath='{.metadata.uid}')"
     target_path="/var/lib/nodelet/pods/$uid/volumes/raw"
     if ! try_wait_until 15 bash -c "[[ -e '$target_path' ]]"; then
-        delete_pod_if_exists "$name"
-        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        delete_pod_and_pvc "$name" "$claim"
         die "no bind-mount target ever appeared at $target_path on the host — NodePublishVolume's target_path may not match what nodelet expects for a Block-mode volume"
     fi
     assert_true bash -c "[[ ! -d '$target_path' ]]" # must be a file (or device node), never a directory, for Block mode
 
-    delete_pod_if_exists "$name"
-    kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+    delete_pod_and_pvc "$name" "$claim"
 }
 
 test_node_reports_volumes_in_use_for_a_csi_volume() {
@@ -268,8 +262,7 @@ spec:
         claimName: $claim
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
-        delete_pod_if_exists "$name"
-        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        delete_pod_and_pvc "$name" "$claim"
         die "pod never reached Running with a PVC volume mounted — check nodelet's server logs for 'failed to mount CSI volume' or 'no CSI driver configured'"
     fi
 
@@ -284,8 +277,7 @@ EOF
     # already gone out would systematically miss the next one and fail
     # every time, not flakily.
     if ! try_wait_until 75 bash -c "kubectl get node '$n' -o jsonpath='{.status.volumesInUse}' | grep -q 'kubernetes.io/csi/'"; then
-        delete_pod_if_exists "$name"
-        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        delete_pod_and_pvc "$name" "$claim"
         die "Node.status.volumesInUse never listed an entry ('kubernetes.io/csi/<driver>^<volumeHandle>', round 34) while the CSI-backed pod was running"
     fi
 
@@ -376,8 +368,7 @@ EOF
     local first="fsgroup-policy-check-1"
     apply_manifest <<< "$(fsgroup_pod_spec "$first")"
     if ! try_wait_until 30 pod_is_phase "$first" Running; then
-        delete_pod_if_exists "$first"
-        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        delete_pod_and_pvc "$first" "$claim"
         skip_test "first pod never reached Running with a PVC + fsGroup volume mounted"
     fi
     delete_pod_if_exists "$first"
@@ -397,8 +388,7 @@ EOF
     local second="fsgroup-policy-check-2"
     apply_manifest <<< "$(fsgroup_pod_spec "$second")"
     if ! try_wait_until 60 pod_is_phase "$second" Running; then
-        delete_pod_if_exists "$second"
-        kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        delete_pod_and_pvc "$second" "$claim"
         skip_test "second pod never reached Running reusing the same PVC + fsGroup"
     fi
     # Temporary diagnostic (round 123): capture pod2's own state the
@@ -445,8 +435,7 @@ EOF
         warn "[diag] nodelet log mentioning $second, the claim, or CSI/mount activity:"
         sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -E "$second|$claim|skip_fs_group_change|fsGroup|chown|CSI|NodePublish|NodeStage|resolve_volumes|hostpath\.csi" | tail -50 | while IFS= read -r line; do warn "[diag]   $line"; done
     fi
-    delete_pod_if_exists "$second"
-    kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
+    delete_pod_and_pvc "$second" "$claim"
     assert_eq "$gid" "4322" "the second pod reusing the same PVC should still see fsGroup 4322 on /data, whether OnRootMismatch skipped the chown or not"
 }
 
