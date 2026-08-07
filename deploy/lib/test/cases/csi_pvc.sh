@@ -352,6 +352,9 @@ EOF
         skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
     fi
 
+    local pv_name
+    pv_name="$(kubectl get pvc "$claim" -n "$TEST_NAMESPACE" -o jsonpath='{.spec.volumeName}')"
+
     local first="fsgroup-policy-check-1"
     apply_manifest <<< "$(fsgroup_pod_spec "$first")"
     if ! try_wait_until 30 pod_is_phase "$first" Running; then
@@ -361,10 +364,21 @@ EOF
     fi
     delete_pod_if_exists "$first"
     wait_until 30 "$first gone" pod_gone "$first"
+    # Round 123 (found live in CI): starting pod2 right after pod1's own
+    # object is gone raced the external-attacher's real detach — nodelet's
+    # own log showed "driver requires attach but no matching
+    # VolumeAttachment exists yet; will retry next reconcile" for pod2,
+    # and pod2 was observed flapping (briefly Running, then gone) rather
+    # than cleanly reusing the volume. Wait for the OLD VolumeAttachment
+    # to actually clear before creating pod2, not just for pod1's object.
+    if [[ -n "$pv_name" ]]; then
+        try_wait_until 30 bash -c "[[ -z \"\$(kubectl get volumeattachments.storage.k8s.io -o jsonpath=\\\"{.items[?(@.spec.source.persistentVolumeName=='$pv_name')].metadata.name}\\\" 2>/dev/null)\" ]]" \
+            || warn "old VolumeAttachment for $pv_name didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate"
+    fi
 
     local second="fsgroup-policy-check-2"
     apply_manifest <<< "$(fsgroup_pod_spec "$second")"
-    if ! try_wait_until 30 pod_is_phase "$second" Running; then
+    if ! try_wait_until 60 pod_is_phase "$second" Running; then
         delete_pod_if_exists "$second"
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
         skip_test "second pod never reached Running reusing the same PVC + fsGroup"
@@ -376,14 +390,22 @@ EOF
     # so what THIS asserts is the outward-visible contract fsGroup
     # promises regardless of which path was taken: the volume is usable
     # and correctly group-owned for the second pod too.
+    # Round 123 (found live in CI): pod2 was observed flapping — Running
+    # at the phase check above, then gone by the time this exec ran a
+    # moment later (the same transient VolumeAttachment race the wait
+    # above targets). Poll for a stable read instead of one point-in-time
+    # exec, so a brief post-Running hiccup doesn't get misread as a wrong
+    # gid.
+    local gid_file
+    gid_file="$(mktemp)"
+    try_wait_until 30 bash -c "kctl exec '$second' -- stat -c %g /data 2>/dev/null | tr -dc '0-9' > '$gid_file' && [[ -s '$gid_file' ]]" \
+        || warn "never got a stable 'stat /data' read from $second within 30s — pod may still be unstable; using whatever the last attempt captured"
     local gid
-    # Round 123 (found live in CI): 'got 4322, want 4322' on a plain
-    # assert_eq — the two sides looked identical printed but weren't
-    # byte-identical; kctl exec's stream carries something (a stray \r or
-    # similar) a raw capture doesn't strip. tr -dc keeps only digits,
-    # sidestepping whatever invisible byte it was without needing to
-    # pin down exactly which one.
-    gid="$(kctl exec "$second" -- stat -c %g /data 2>&1 | tr -dc '0-9')"
+    gid="$(cat "$gid_file" 2>/dev/null)"
+    rm -f "$gid_file"
+    # ('got 4322, want 4322' on a plain assert_eq was an earlier finding —
+    # kctl exec's stream can carry a stray byte a raw capture doesn't
+    # strip; tr -dc above already keeps only digits, sidestepping that.)
     if [[ "$gid" != "4322" ]]; then
         # Temporary diagnostic (round 123): found live in CI, not yet
         # root-caused — print what's actually mounted and what nodelet's
