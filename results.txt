@@ -1,18 +1,80 @@
-commit: 7b18a2b02e364664bb8e89a2706a254a9eec117d
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31167316310
-timestamp (UTC): 2026-08-07T09:51:26Z
-exit code: 0
+commit: 35f0015b61f7a343ad14c33e9660539bd626f6e6
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31167771074
+timestamp (UTC): 2026-08-07T10:04:43Z
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786096241
+==> Test namespace: not-k8s-e2e-1786096646
 ==> Running 151 registered test(s)...
+▶ test_config_file_sets_a_value_env_did_not_override
+  ✔ PASS (2s)
+▶ test_config_file_precedence_a_real_env_var_still_wins
+  ✔ PASS (3s)
+▶ test_config_dir_merges_files_in_filename_order
+  ✔ PASS (3s)
+▶ test_dynamic_csi_registration_actually_registered_the_driver
+  ✔ PASS (1s)
+▶ test_node_reports_volumes_in_use_for_a_csi_volume
+  ✔ PASS (121s)
+▶ test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
+==> WARNING: old VolumeAttachment for pvc-f0843ece-ea25-4935-a869-5f42b1572e31 didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
+==> WARNING: [diag] pod2 right after Running: NAME                     READY   STATUS    RESTARTS   AGE   IP           NODE            NOMINATED NODE   READINESS GATES
+fsgroup-policy-check-2   1/1     Running   0          2s    10.42.0.10   runnervmd93pd   <none>           <none>
+==> WARNING: [diag] default-ns pods (CSI driver state): NAME                   READY   STATUS    RESTARTS   AGE     IP          NODE            NOMINATED NODE   READINESS GATES
+csi-hostpath-socat-0   1/1     Running   0          3m41s   10.42.0.5   runnervmd93pd   <none>           <none>
+csi-hostpathplugin-0   8/8     Running   0          3m42s   10.42.0.4   runnervmd93pd   <none>           <none>
+smoke-test             1/1     Running   0          4m8s    10.42.0.3   runnervmd93pd   <none>           <none>
+  ✔ PASS (99s)
+▶ test_pod_exceeding_its_active_deadline_is_terminated
+  ✔ PASS (43s)
+▶ test_log_rotation_creates_a_rotated_file
+==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786096646_log-rotation_4e0e74fa-6ec9-47b0-a6af-b809de508fe8 (log_rotate_interval, default 10s)...
+  ✔ PASS (13s)
+▶ test_limited_swap_gives_burstable_pods_proportional_swap
+==> FATAL: timed out after 60s waiting for: limited-swap-guaranteed Running
+  ✘ FAIL (66s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]:   IP family:     ipv4
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]:   LB method:     random
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]: ========================================
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]: 2026-08-07T10:03:17.746023Z  INFO starting nodelet node=runnervmd93pd runtime=Cri cpu=4 memory_bytes=16766414848 max_pods=110
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]: 2026-08-07T10:03:17.747822Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]: 2026-08-07T10:03:17.751213Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]: 2026-08-07T10:03:17.754516Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-0e0c8a51-55ab-475b-8dd1-1d223b95ded2.sock plugin_type=DRAPlugin
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]: 2026-08-07T10:03:17.757871Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]: 2026-08-07T10:03:17.782826Z  INFO node registered and Ready node=runnervmd93pd
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]: 2026-08-07T10:03:17.783263Z  INFO pod controller watching pods bound to this node node=runnervmd93pd
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]: 2026-08-07T10:03:17.783800Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]: 2026-08-07T10:03:17.784568Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
+    Aug 07 10:03:17 runnervmd93pd run-nodelet.sh[26872]: 2026-08-07T10:03:17.786664Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
+    Aug 07 10:03:18 runnervmd93pd run-nodelet.sh[26872]: 2026-08-07T10:03:18.649842Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 10:03:18 runnervmd93pd run-nodelet.sh[26872]: 2026-08-07T10:03:18.748443Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
 ▶ test_host_users_volume_ownership_translation_is_correct
-  ✔ PASS (4s)
-▶ test_mount_propagation_host_to_container_sees_a_new_host_mount
+  ✔ PASS (7s)
+▶ test_client_certificate_authentication_works
+.............+...+...+........+.+........+...+....+.....+......+....+...........+.......+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+..+...+....+...........+.+...+...+...+..+.......+............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+....+.....+...+.........+...+....+.....+.+...+.....+....+..+..........+.....+....+.....+....+.................+...+......+.....................+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+........+...+....+..+...+................+.....+.+...............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+...+....+..+.+...+......+...+......+....................+................+.....+.+..+.+..+...............+...+..........+..+...+......+..........+...............+...+...+.....+...+....+..+.+........+......+.........+....+.....+...+...+......+..................+...+....+...............+........+.+......+...+..+...+.+.....+..........+.................+...+.+...........+...+......+....+.........+..................+..+.+..+...+....+...+.......................+.+......+..+.......+......+.....+...+.........+...+....+...+..+..................+...+....+..............+.+.....+....+...........+......+....+......+........+....+..+.+..+..........+..+...+......+.+......+...+...........+.+........+.........+...+....+..............+......+.+........+....+.....+.......+.....+....+.........+...+........+....+...........+......+....+.....+.........+...+...+..........+...............+..+.......+..+...+.......+........+.......+...+...+...............+.....+...+......+...............+.............+...+..+.+..+.........+...+..........+...+.....+.........+....+......+.....+.+..+...+...+.+.....+.........+......+......+...+....+.....+..........+.....+.......+...........+...+..........+.....+.+...........+...+....+.....+.......+......+...+..+.........+...+.+..+.......+..+..........+........+.+......+...+...+..+......+.+......+............+...+.....+...+....+...+...+...........+...............+......+...+.......+..+............+.+.........+......+.........+...+.....+..........+..+......+.......+..+.+.........+.....+..................+.+....................+......+......+...+.......+...............+.................+.+..+............+...+....+........+......+......+...............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+..+...........+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+............+..+....+............+........+......................+...+.....+.+........+...+.........+.........................+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.....+................+...+...+.....+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+.......+.....+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+......+..+....+.......................+...+.......+........+....+...........+.......+..+.+.........+.....+.........+.......+.....+.........+....+...............+.....+............+.......+..+.+.....+.......+..+...+.+......+.........+..+....+...+........+....+...+......+............+...+..+.......+........+...+....+..+....+..+...+..........+.........+.....+...+...+.+..................+...+..+.......+...............+...+..+.+..+.......+...+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+Certificate request self-signature ok
+subject=CN = alice, O = system:masters
+..+.........+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+...............+....+......+....................+.+..............+......+.+..+.+............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+....+......+...+..+.........+.......+........+....+.......................+....+...+...+........+....+..+.+.........+........+...+..........+........+...............+......+....+......+...+......+..+.......+........+...+.+.....+.........+......+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+...+......+...+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.......+...........+...+....+..+.............+..+..........+......+...+..+...+.+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+..........+........+....+...+..+.+..+.+......+...........+...+.......+..+...+...+......+.............+..+...+............+..............................+.........+......+.+........+.+......+..+..........+...+............+.....+..........+........+...+.+......+............+.....+......+......+.+..+.......+........................+.................+....+...............+...+.....+...+...+....+.....+...............+......+....+........+..........+...+...........+...+............+.........+.......+..+.+...........+....+...........+....+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+  ✔ PASS (3s)
+▶ test_mount_propagation_host_to_container_still_mounts_normally
   ✔ PASS (32s)
+▶ test_mount_propagation_host_to_container_sees_a_new_host_mount
+  ✔ PASS (33s)
 ▶ test_mount_propagation_private_default_does_not_see_a_new_host_mount
   ✔ PASS (8s)
 
 ════════════════════════════════════════
-Results: 3 passed, 0 failed, 0 skipped
+Results: 13 passed, 1 failed, 0 skipped
+Failed:
+  - test_limited_swap_gives_burstable_pods_proportional_swap
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786096241...
+==> Cleaning up test namespace not-k8s-e2e-1786096646...
