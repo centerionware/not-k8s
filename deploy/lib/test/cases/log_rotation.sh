@@ -46,12 +46,24 @@ EOF
     # this suite's own process runs as an unprivileged user (test-e2e.sh
     # itself isn't run under sudo). sudo here, matching how every other
     # host-log/host-path read in this suite already needs it.
-    # Temporary diagnostic (round 123): the FULL resolved unit (base +
-    # drop-in merged) as systemd itself sees it — decisive proof of
-    # whether NODELET_CONTAINER_LOG_MAX_SIZE_BYTES=4096 is really part of
-    # what gets exec'd, sidestepping any ambiguity in reading a live
-    # process's /proc/<pid>/environ.
-    warn "[diag] resolved nodelet.service unit: $(sudo systemctl cat nodelet.service 2>&1 | tr '\n' '|')"
+    # Round 123: config-loading confirmed clean (systemctl cat showed
+    # NODELET_CONTAINER_LOG_MAX_SIZE_BYTES=4096 correctly merged into the
+    # resolved unit) — so the remaining live question is whether CRI's
+    # own ContainerStatus.log_path is what rotate_logs() actually expects
+    # (container_create.rs sets a bare "app_0.log", relying on containerd
+    # to report it back already joined with the sandbox's log_directory;
+    # if containerd instead echoes the bare relative string back
+    # unjoined, std::fs::metadata() on it would silently fail — resolving
+    # against nodelet's own cwd, not the pod's log dir — and rotate_logs()
+    # would skip forever with no warning, matching exactly what's been
+    # observed). Ask crictl directly instead of guessing.
+    local cid
+    cid="$(sudo crictl ps --name app -o json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["containers"][0]["id"] if d.get("containers") else "")' 2>/dev/null)"
+    if [[ -n "$cid" ]]; then
+        warn "[diag] crictl inspect log_path for container $cid: $(sudo crictl inspect "$cid" 2>&1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status",{}).get("logPath"))' 2>&1)"
+    else
+        warn "[diag] couldn't resolve the app container's own ID via crictl ps"
+    fi
 
     if ! try_wait_until 60 bash -c "sudo ls '$log_dir'/app_*.log.1 >/dev/null 2>&1"; then
         warn "[diag] contents of $log_dir: $(sudo ls -la "$log_dir" 2>&1)"

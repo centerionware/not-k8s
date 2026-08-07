@@ -17,9 +17,7 @@
 # mid-stream. `command kubectl` reaches the real binary, not this
 # function, avoiding infinite recursion.
 kubectl() {
-    # "$1" is reliably the real verb here — kctl below appends its
-    # "--namespace <ns>" AFTER "$@" rather than before, specifically so
-    # this switch never has to parse around it.
+    # "$1" is reliably the real verb here.
     case "$1" in
         exec|attach|port-forward)
             command kubectl "$@" ;;
@@ -36,7 +34,20 @@ kubectl() {
 }
 
 kctl() { # kctl <kubectl args...> — namespace-scoped kubectl
-    kubectl "$@" --namespace "$TEST_NAMESPACE"
+    # Round 123 (found live in CI): appending "--namespace $TEST_NAMESPACE"
+    # AFTER "$@" broke every caller using kubectl's own "--" remote-command
+    # separator (kctl exec <pod> -- <cmd>, the exact shape streaming.sh and
+    # csi_pvc.sh's fsGroup test both use) — anything after "--" is opaque
+    # remote-command argv to kubectl exec, so --namespace silently landed
+    # inside the CONTAINER's own command instead of being parsed as a
+    # kubectl flag, and kubectl quietly fell back to the default namespace.
+    # That's exactly what made a real, Running pod look like "not found" —
+    # it was being looked for in the wrong namespace. Inserting it
+    # immediately after the verb keeps it safely before any "--" the
+    # caller's own remaining args might contain.
+    local verb="$1"
+    shift
+    kubectl "$verb" --namespace "$TEST_NAMESPACE" "$@"
 }
 
 apply_manifest() { # apply_manifest <<< "$yaml"
