@@ -16,9 +16,27 @@ test_plugin_registry_directory_exists() {
     assert_true test -d "$dir"
 }
 
-test_dynamic_csi_registration_manual_note() {
-    skip_test "exercising the full registration handshake (GetInfo/NotifyRegistrationStatus) needs a real CSI driver's node-driver-registrar sidecar pointed at NODELET_PLUGIN_REGISTRY_PATH (not kubelet's usual /var/lib/kubelet/plugins_registry) via its --kubelet-registration-path flag — not something this suite deploys itself. Manual spot-check: point a driver's registrar at this node's NODELET_PLUGIN_REGISTRY_PATH, watch nodelet's logs for 'plugin registry: CSI driver registered', then run csi_pvc.sh's test WITHOUT setting NODELET_CSI_DRIVERS statically — it should still pass, proving the driver was discovered dynamically rather than via static config."
+test_dynamic_csi_registration_actually_registered_the_driver() {
+    # Round 123: previously manual-only, but a real CSI driver's
+    # node-driver-registrar sidecar has been pointed at nodelet's registry
+    # directory in CI all along (e2e-full-setup.sh installs
+    # csi-driver-host-path via its own real deploy tooling, which already
+    # configures --kubelet-registration-path for exactly this node). The
+    # full GetInfo/NotifyRegistrationStatus handshake having actually
+    # completed is directly observable: CSINode.spec.drivers is populated
+    # by the apiserver *from* a successful CSI registration, not
+    # something nodelet writes itself — so a driver showing up there at
+    # all is real, independent proof the handshake worked.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if [[ -z "${TEST_CSI_INLINE_DRIVER:-}" ]]; then
+        skip_test "TEST_CSI_INLINE_DRIVER not set — export it to a CSI driver name whose node-driver-registrar is pointed at this node's NODELET_PLUGIN_REGISTRY_PATH to exercise this"
+    fi
+    local n
+    n="$(node_name)"
+    local drivers
+    drivers="$(kubectl get csinodes "$n" -o jsonpath='{.spec.drivers[*].name}' 2>/dev/null)"
+    assert_contains "$drivers" "$TEST_CSI_INLINE_DRIVER" "CSINode.spec.drivers should list $TEST_CSI_INLINE_DRIVER — proof plugin_registry.rs's GetInfo/NotifyRegistrationStatus handshake actually completed for a real driver, not just that the registry directory exists"
 }
 
 register_test test_plugin_registry_directory_exists
-register_test test_dynamic_csi_registration_manual_note
+register_test test_dynamic_csi_registration_actually_registered_the_driver

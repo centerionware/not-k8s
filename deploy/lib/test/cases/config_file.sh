@@ -7,14 +7,78 @@
 #
 # The pure parsing/merge logic (parse_config_yaml(), merge_config_layers())
 # has full unit-test coverage in config.rs's own tests_config_file module.
-# What's NOT automatable here: this suite runs against an already-running
-# nodelet process and has no way to change its environment or restart it
-# (same limitation TEST_CPU_MANAGER_STATIC=true and similar opt-in
-# NODELET_* settings already carry) — so this is a manual spot-check, not
-# a skip due to missing infrastructure otherwise available.
+# Round 123: the "this suite has no way to restart nodelet with a
+# different startup environment" limitation these tests used to note is
+# gone — nodelet_restart_with_env (nodelet_env.sh) does exactly that.
 
-test_config_file_manual_note() {
-    skip_test "NODELET_CONFIG_FILE/NODELET_CONFIG_DIR (round 94) load NODELET_* settings from a YAML file instead of the environment — the pure parsing/precedence logic is fully unit-tested (config.rs's tests_config_file module), but exercising this for real needs controlling nodelet's own startup environment, which this e2e suite (running against an already-started nodelet) can't do. Manual spot-check: write a YAML file (e.g. /etc/nodelet/config.yaml) with 'NODELET_MAX_PODS: 42', set NODELET_CONFIG_FILE=/etc/nodelet/config.yaml in nodelet's own environment (systemd unit / docker-compose / etc.), restart nodelet, and confirm 'kubectl get node <node> -o jsonpath={.status.capacity.pods}' reports 42. Then set NODELET_MAX_PODS=10 directly in the environment alongside the same config file and confirm the explicit environment variable wins (reports 10, not 42) — proving the precedence order, not just that the file loads at all. Repeat with a NODELET_CONFIG_DIR of two files (e.g. 00-base.yaml, 01-override.yaml both setting the same key) to confirm the later filename wins."
+test_config_file_sets_a_value_env_did_not_override() {
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with NODELET_CONFIG_FILE set"; fi
+
+    local config_file
+    config_file="$(mktemp /tmp/nodelet-config-file-test.XXXXXX.yaml)"
+    echo "NODELET_MAX_PODS: 42" > "$config_file"
+
+    config_file_test_cleanup() {
+        nodelet_restore_env
+        rm -f "${config_file:-}"
+    }
+    trap config_file_test_cleanup EXIT
+
+    nodelet_restart_with_env "NODELET_CONFIG_FILE=$config_file"
+
+    local pods
+    pods="$(kubectl get node "$(node_name)" -o jsonpath='{.status.capacity.pods}')"
+    assert_eq "$pods" "42" "Node.status.capacity.pods should reflect NODELET_MAX_PODS loaded from NODELET_CONFIG_FILE"
 }
 
-register_test test_config_file_manual_note
+test_config_file_precedence_a_real_env_var_still_wins() {
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with NODELET_CONFIG_FILE + an env override set"; fi
+
+    local config_file
+    config_file="$(mktemp /tmp/nodelet-config-file-precedence-test.XXXXXX.yaml)"
+    echo "NODELET_MAX_PODS: 42" > "$config_file"
+
+    config_file_precedence_test_cleanup() {
+        nodelet_restore_env
+        rm -f "${config_file:-}"
+    }
+    trap config_file_precedence_test_cleanup EXIT
+
+    # Same file as above, but this time a real environment variable is
+    # ALSO set for the same key — matching kubelet's own
+    # flag-beats-config-file precedence, the actual explicit env var must
+    # win over the file, not just "the file loads at all".
+    nodelet_restart_with_env "NODELET_CONFIG_FILE=$config_file" "NODELET_MAX_PODS=10"
+
+    local pods
+    pods="$(kubectl get node "$(node_name)" -o jsonpath='{.status.capacity.pods}')"
+    assert_eq "$pods" "10" "a real NODELET_MAX_PODS environment variable should win over the same key set in NODELET_CONFIG_FILE"
+}
+
+test_config_dir_merges_files_in_filename_order() {
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with NODELET_CONFIG_DIR set"; fi
+
+    local config_dir
+    config_dir="$(mktemp -d /tmp/nodelet-config-dir-test.XXXXXX)"
+    echo "NODELET_MAX_PODS: 42" > "$config_dir/00-base.yaml"
+    echo "NODELET_MAX_PODS: 77" > "$config_dir/01-override.yaml"
+
+    config_dir_test_cleanup() {
+        nodelet_restore_env
+        rm -rf "${config_dir:-}"
+    }
+    trap config_dir_test_cleanup EXIT
+
+    nodelet_restart_with_env "NODELET_CONFIG_DIR=$config_dir"
+
+    local pods
+    pods="$(kubectl get node "$(node_name)" -o jsonpath='{.status.capacity.pods}')"
+    assert_eq "$pods" "77" "NODELET_CONFIG_DIR should merge its files in filename sort order, later file wins (01-override.yaml over 00-base.yaml)"
+}
+
+register_test test_config_file_sets_a_value_env_did_not_override
+register_test test_config_file_precedence_a_real_env_var_still_wins
+register_test test_config_dir_merges_files_in_filename_order
