@@ -82,8 +82,81 @@ EOF
     delete_pod_if_exists "$name"
 }
 
-test_limited_swap_manual_note() {
-    skip_test "exercising memorySwap.swapBehavior: LimitedSwap needs restarting nodelet with NODELET_MEMORY_SWAP_BEHAVIOR=LimitedSwap set — not something this suite does to a running node automatically (same reasoning as eviction.sh's pressure-based manual procedures). Manual spot-check: (1) confirm the node actually has swap enabled (swapon --show, or a nonzero SwapTotal in /proc/meminfo — LimitedSwap grants nothing on a swapless node regardless of config), (2) restart nodelet with NODELET_MEMORY_SWAP_BEHAVIOR=LimitedSwap, (3) apply a Burstable pod (memory request set, no limit or a limit above the request) and read /sys/fs/cgroup/memory.swap.max from inside it — it should be a nonzero value roughly proportional to (memory request / node memory) * node swap, per KEP-2400's formula (container_swap_limit_bytes() in resources.rs), (4) apply a Guaranteed pod (request == limit) and confirm its memory.swap.max is still exactly 0 — LimitedSwap explicitly grants Guaranteed-shaped containers no swap at all, same as BestEffort."
+test_limited_swap_gives_burstable_pods_proportional_swap() {
+    # Round 123: previously manual-only for two reasons — nodelet needing
+    # a real restart with NODELET_MEMORY_SWAP_BEHAVIOR=LimitedSwap
+    # (nodelet_restart_with_env, nodelet_env.sh, fixes that), and needing
+    # a node with swap actually enabled (LimitedSwap grants nothing on a
+    # swapless node regardless of config) — this now creates a real
+    # temporary swapfile via sudo if the node doesn't already have one,
+    # rather than skip.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with NODELET_MEMORY_SWAP_BEHAVIOR=LimitedSwap"; fi
+
+    local swap_total
+    swap_total="$(grep -m1 '^SwapTotal:' /proc/meminfo | awk '{print $2}')"
+    local created_swapfile=""
+    if [[ -z "$swap_total" || "$swap_total" -eq 0 ]]; then
+        created_swapfile="$(mktemp /tmp/nodelet-e2e-swapfile.XXXXXX)"
+        sudo fallocate -l 512M "$created_swapfile" 2>/dev/null || sudo dd if=/dev/zero of="$created_swapfile" bs=1M count=512 status=none
+        sudo chmod 600 "$created_swapfile"
+        if ! sudo mkswap "$created_swapfile" >/dev/null 2>&1 || ! sudo swapon "$created_swapfile" 2>/dev/null; then
+            sudo rm -f "$created_swapfile"
+            skip_test "couldn't create/enable a real swapfile on this node (mkswap/swapon failed) — LimitedSwap needs real swap to exercise"
+        fi
+    fi
+
+    limited_swap_test_cleanup() {
+        nodelet_restore_env
+        if [[ -n "${created_swapfile:-}" ]]; then
+            sudo swapoff "$created_swapfile" 2>/dev/null || true
+            sudo rm -f "$created_swapfile"
+        fi
+    }
+    trap limited_swap_test_cleanup EXIT
+    nodelet_restart_with_env "NODELET_MEMORY_SWAP_BEHAVIOR=LimitedSwap"
+
+    local burstable="limited-swap-burstable"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $burstable
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+      resources:
+        requests: { memory: "64Mi" }
+EOF
+    wait_until 60 "$burstable Running" pod_is_phase "$burstable" Running
+    local burstable_swap_max
+    burstable_swap_max="$(kctl exec "$burstable" -- cat /sys/fs/cgroup/memory.swap.max 2>&1)"
+    delete_pod_if_exists "$burstable"
+    assert_true bash -c "[[ '$burstable_swap_max' =~ ^[0-9]+$ && '$burstable_swap_max' -gt 0 ]]" \
+        "a Burstable pod under LimitedSwap should get a nonzero memory.swap.max (KEP-2400's proportional formula) — got '$burstable_swap_max'"
+
+    local guaranteed="limited-swap-guaranteed"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $guaranteed
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+      resources:
+        requests: { memory: "64Mi", cpu: "100m" }
+        limits: { memory: "64Mi", cpu: "100m" }
+EOF
+    wait_until 60 "$guaranteed Running" pod_is_phase "$guaranteed" Running
+    local guaranteed_swap_max
+    guaranteed_swap_max="$(kctl exec "$guaranteed" -- cat /sys/fs/cgroup/memory.swap.max 2>&1)"
+    delete_pod_if_exists "$guaranteed"
+    assert_eq "$guaranteed_swap_max" "0" "a Guaranteed pod should get memory.swap.max = 0 even under LimitedSwap — Guaranteed-shaped containers get no swap at all, same as BestEffort"
 }
 
 test_hugepages_limit_is_enforced_via_cgroup() {
@@ -368,7 +441,7 @@ EOF
 register_test test_memory_limit_is_enforced_via_cgroup
 register_test test_hugepages_limit_is_enforced_via_cgroup
 register_test test_no_swap_default_disables_swap_via_cgroup
-register_test test_limited_swap_manual_note
+register_test test_limited_swap_gives_burstable_pods_proportional_swap
 register_test test_in_place_resize_updates_memory_limit_without_restarting
 register_test test_env_resource_field_ref_reports_the_containers_own_limits
 register_test test_cpu_limit_is_enforced_via_cgroup
