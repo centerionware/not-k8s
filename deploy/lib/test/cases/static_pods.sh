@@ -1,18 +1,32 @@
 # lib/test/cases/static_pods.sh — static pod manifest directory + mirror
 # pod reconciliation (static_pods.rs). Needs nodelet actually running with
 # NODELET_STATIC_POD_PATH set — off by default (matches real kubelet's
-# optional staticPodPath), so this test needs to be told where that
-# directory is via TEST_STATIC_POD_PATH; skips cleanly otherwise.
+# optional staticPodPath). Round 123: previously a "manual spot-check
+# only" test (this harness had no way to inject nodelet startup env vars
+# per test) — now uses nodelet_restart_with_env (nodelet_env.sh) to
+# actually restart nodelet with a real static-pod directory for the
+# duration of this one test, then restart it back to normal.
 
 test_static_pod_creates_a_mirror_pod() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
-    if [[ -z "${TEST_STATIC_POD_PATH:-}" ]]; then
-        skip_test "TEST_STATIC_POD_PATH not set — export it to the directory nodelet was started with NODELET_STATIC_POD_PATH=<that same dir> to exercise this"
-    fi
-    [[ -d "$TEST_STATIC_POD_PATH" ]] || die "TEST_STATIC_POD_PATH=$TEST_STATIC_POD_PATH is not a directory"
+    if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with a different NODELET_STATIC_POD_PATH"; fi
+
+    local static_pod_path
+    static_pod_path="$(mktemp -d /tmp/nodelet-static-pods-test.XXXXXX)"
+    # EXIT, not RETURN — same reasoning gc.sh's finalizer test doc comment
+    # gives: a die()/assert failure exits this test's own subshell outright
+    # rather than returning normally, and a leftover nodelet_env override
+    # would otherwise silently corrupt every test that runs after this one.
+    static_pod_test_cleanup() {
+        nodelet_restore_env
+        rm -rf "${static_pod_path:-}"
+    }
+    trap static_pod_test_cleanup EXIT
+
+    nodelet_restart_with_env "NODELET_STATIC_POD_PATH=$static_pod_path"
 
     local static_name="static-e2e-check"
-    local manifest_path="$TEST_STATIC_POD_PATH/${static_name}.yaml"
+    local manifest_path="$static_pod_path/${static_name}.yaml"
     local n
     n="$(node_name)"
     local mirror_name="${static_name}-${n}"
