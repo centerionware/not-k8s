@@ -4,6 +4,27 @@
 # for the duration of this one test — round 123: nodelet_restart_with_env
 # (nodelet_env.sh) does that for real now, instead of relying on an
 # externally pre-configured nodelet + a TEST_LOG_MAX_SIZE_BYTES hint.
+#
+# Round 123's own investigation into this test is worth recording: a
+# hand-quoted `try_wait_until 60 bash -c "sudo ls '$log_dir'/app_*.log.1
+# ..."` reliably reported failure for the full 60s run after run, even
+# though sudo-based post-mortem diagnostics AND a direct `crictl inspect`
+# of the container's own real ContainerStatus.log_path (confirming CRI
+# returns it already joined with the sandbox's log_directory, exactly as
+# rotate_logs() expects) both proved real rotation was happening well
+# within that same window — rotation itself was never broken. The actual
+# bug was in the *check*, not the feature: nesting a hand-built
+# single-quoted path inside a double-quoted `bash -c "..."` string is
+# exactly the kind of construct that's fragile to get right blind, even
+# when it happens to parse correctly stand-alone. Using an exported
+# function (the same pattern k8s.sh's own wait_until helpers already
+# establish for this exact reason — see its own comment) instead of a
+# hand-quoted command string sidesteps the whole class of bug.
+
+_log_rotation_check() { # _log_rotation_check <log_dir>
+    sudo ls "$1"/app_*.log.1 >/dev/null 2>&1
+}
+export -f _log_rotation_check
 
 test_log_rotation_creates_a_rotated_file() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
@@ -39,35 +60,7 @@ EOF
     log_dir="/var/log/pods/${ns}_${name}_${uid}"
 
     log "    waiting for a rotated log file under $log_dir (log_rotate_interval, default 10s)..."
-    # Round 123 (found live in CI): the plain (non-sudo) `ls` here
-    # returned nothing for the full 60s even though sudo-based
-    # diagnostics proved app_0.log.1 (and .2/.3/.4) genuinely existed the
-    # whole time — /var/log/pods and/or its contents are root-owned, and
-    # this suite's own process runs as an unprivileged user (test-e2e.sh
-    # itself isn't run under sudo). sudo here, matching how every other
-    # host-log/host-path read in this suite already needs it.
-    # Round 123: config-loading confirmed clean (systemctl cat showed
-    # NODELET_CONTAINER_LOG_MAX_SIZE_BYTES=4096 correctly merged into the
-    # resolved unit) — so the remaining live question is whether CRI's
-    # own ContainerStatus.log_path is what rotate_logs() actually expects
-    # (container_create.rs sets a bare "app_0.log", relying on containerd
-    # to report it back already joined with the sandbox's log_directory;
-    # if containerd instead echoes the bare relative string back
-    # unjoined, std::fs::metadata() on it would silently fail — resolving
-    # against nodelet's own cwd, not the pod's log dir — and rotate_logs()
-    # would skip forever with no warning, matching exactly what's been
-    # observed). Ask crictl directly instead of guessing.
-    local crictl_ep="unix:///run/containerd/containerd.sock"
-    local ps_out cid
-    ps_out="$(sudo crictl --runtime-endpoint "$crictl_ep" ps --name app -o json 2>&1)"
-    cid="$(echo "$ps_out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["containers"][0]["id"] if d.get("containers") else "")' 2>/dev/null)"
-    if [[ -n "$cid" ]]; then
-        warn "[diag] crictl inspect log_path for container $cid: $(sudo crictl --runtime-endpoint "$crictl_ep" inspect "$cid" 2>&1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status",{}).get("logPath"))' 2>&1)"
-    else
-        warn "[diag] couldn't resolve the app container's own ID via crictl ps — raw output: $ps_out"
-    fi
-
-    if ! try_wait_until 60 bash -c "sudo ls '$log_dir'/app_*.log.1 >/dev/null 2>&1"; then
+    if ! try_wait_until 60 _log_rotation_check "$log_dir"; then
         warn "[diag] contents of $log_dir: $(sudo ls -la "$log_dir" 2>&1)"
         warn "[diag] nodelet log mentioning rotation:"
         sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -iE "rotat" | tail -20 | while IFS= read -r line; do warn "[diag]   $line"; done
