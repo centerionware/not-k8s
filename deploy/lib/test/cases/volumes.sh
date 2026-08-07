@@ -560,12 +560,19 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        rm -rf "$host_dir"
+        sudo rm -rf "$host_dir"
         skip_test "pod never reached Running with a hostPath: DirectoryOrCreate volume"
     fi
     delete_pod_if_exists "$name"
     assert_true bash -c "[[ -d '$host_dir' ]]" "DirectoryOrCreate should have created $host_dir on the host"
-    rm -rf "$host_dir"
+    # Round 123 (found live in CI, first time the full suite ever ran to
+    # completion): this directory is genuinely created by nodelet, running
+    # as host root, not by this test script -- a plain `rm -rf` as the
+    # e2e runner's own unprivileged user fails with "Operation not
+    # permitted". Every other host_dir in this file is created via
+    # `mktemp -d` by this script itself (safe to rm without sudo); this
+    # is the one hostPath test where nodelet is the one materializing it.
+    sudo rm -rf "$host_dir"
 }
 
 test_host_path_directory_type_rejects_a_nonexistent_path() {
