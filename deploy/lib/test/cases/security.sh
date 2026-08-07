@@ -370,7 +370,7 @@ spec:
         - {name: shared, mountPath: /shared}
         - {name: hostvol, mountPath: /hostvol}
 EOF
-    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+    if ! try_wait_until 60 pod_is_phase "$name" Running; then
         warn "[diag] pod status: $(kctl get pod "$name" -o wide 2>&1)"
         warn "[diag] pod events: $(kctl describe pod "$name" 2>&1 | grep -A20 '^Events:')"
         warn "[diag] nodelet log mentioning $name or user namespace:"
