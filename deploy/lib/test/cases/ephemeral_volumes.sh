@@ -58,7 +58,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         kubectl delete pvc "$expected_claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "pod never reached Running with the ephemeral volume mounted — check nodelet's logs for 'failed to mount CSI volume for generic ephemeral volume' or 'isn't owned by this pod'"
+        die "pod never reached Running with the ephemeral volume mounted — check nodelet's logs for 'failed to mount CSI volume for generic ephemeral volume' or 'isn't owned by this pod'"
     fi
 
     local uid marker_path

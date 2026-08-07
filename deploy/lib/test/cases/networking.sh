@@ -34,7 +34,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with hostPort set — check nodelet's logs for a RunPodSandbox error (the runtime may not support CRI's port_mappings, or the host port may already be in use on this node)"
+        die "pod never reached Running with hostPort set — check nodelet's logs for a RunPodSandbox error (the runtime may not support CRI's port_mappings, or the host port may already be in use on this node)"
     fi
 
     local node_ip body
@@ -75,7 +75,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with hostNetwork: true"
+        die "pod never reached Running with hostNetwork: true"
     fi
 
     local node_ip body

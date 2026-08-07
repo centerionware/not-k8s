@@ -56,7 +56,7 @@ EOF
     if ! try_wait_until 90 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "pod never reached Running — check nodelet's logs for 'driver requires attach but no matching VolumeAttachment exists yet' (external-attacher not running) or 'VolumeAttachment found but not yet attached' (attach still in progress)"
+        die "pod never reached Running — check nodelet's logs for 'driver requires attach but no matching VolumeAttachment exists yet' (external-attacher not running) or 'VolumeAttachment found but not yet attached' (attach still in progress)"
     fi
 
     local pv_name attached

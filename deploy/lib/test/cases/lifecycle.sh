@@ -342,7 +342,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with lifecycle.stopSignal set — check nodelet's logs, or that this runtime version supports CRI's ContainerConfig.stop_signal field at all"
+        die "pod never reached Running with lifecycle.stopSignal set — check nodelet's logs, or that this runtime version supports CRI's ContainerConfig.stop_signal field at all"
     fi
     local path="$(pod_volume_host_path "$name" shared)/signal.txt"
     delete_pod_if_exists "$name"

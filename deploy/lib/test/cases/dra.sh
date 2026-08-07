@@ -96,7 +96,7 @@ EOF
     if ! try_wait_until 60 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         kctl delete resourceclaimtemplate "$template" --ignore-not-found >/dev/null 2>&1
-        skip_test "pod never reached Running with a DRA resourceClaim — check nodelet's logs for 'DRA: NodePrepareResources failed' or 'DRA: claim not yet reserved for this pod'"
+        die "pod never reached Running with a DRA resourceClaim — check nodelet's logs for 'DRA: NodePrepareResources failed' or 'DRA: claim not yet reserved for this pod'"
     fi
 
     # The claim the template minted takes the pod's own generated-name

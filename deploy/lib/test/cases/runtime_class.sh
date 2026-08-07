@@ -3,8 +3,12 @@
 # alternative-runtime handlers (gVisor's "runsc", Kata's "kata") aren't
 # something this suite can assume are installed, so this only proves the
 # *lookup and wiring* works, using whatever handler name this containerd is
-# already configured with for its default runtime (commonly "runc") —
-# skips cleanly if that assumption doesn't hold.
+# already configured with for its default runtime (defaults to "runc",
+# which every real containerd install has) — override
+# TEST_RUNTIME_CLASS_HANDLER if a given host genuinely configures
+# something else. Round 123: a pod that fails to reach Running here is a
+# hard failure, not a skip — "runc" is never actually absent, so this
+# almost always means real handler-resolution wiring is broken.
 
 test_runtime_class_handler_is_honored() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
@@ -40,7 +44,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         kubectl delete runtimeclass "$rc_name" --ignore-not-found >/dev/null 2>&1
-        skip_test "pod never reached Running with runtimeClassName=$rc_name (handler '$handler') — set TEST_RUNTIME_CLASS_HANDLER to a handler name this containerd actually has configured, or this containerd may only have the implicit default with no named handlers at all"
+        die "pod never reached Running with runtimeClassName=$rc_name (handler '$handler') — set TEST_RUNTIME_CLASS_HANDLER to a handler name this containerd actually has configured, or this containerd may only have the implicit default with no named handlers at all"
     fi
 
     delete_pod_if_exists "$name"

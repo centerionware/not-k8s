@@ -163,7 +163,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with a subPathExpr volumeMount — check nodelet's logs for a dropped mount"
+        die "pod never reached Running with a subPathExpr volumeMount — check nodelet's logs for a dropped mount"
     fi
     local expanded_path="$(pod_volume_host_path "$name" shared)/$name/marker"
     if ! try_wait_until 20 bash -c "[[ -s '$expanded_path' ]]"; then
@@ -307,7 +307,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with hostUsers: false and hostAliases together — check the aux_id_mappings wiring in runtime/cri/container_create.rs's /etc/hosts mount, or whether this runtime version rejects Mount.uidMappings/.gidMappings entirely"
+        die "pod never reached Running with hostUsers: false and hostAliases together — check the aux_id_mappings wiring in runtime/cri/container_create.rs's /etc/hosts mount, or whether this runtime version rejects Mount.uidMappings/.gidMappings entirely"
     fi
     local hosts_path
     hosts_path="$(pod_volume_host_path "$name" etc-hosts)"
@@ -473,7 +473,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with a HugePages-2Mi emptyDir — this node/kernel likely has no 2Mi hugepages reserved or the runtime doesn't support the hugetlb cgroup controller"
+        die "pod never reached Running with a HugePages-2Mi emptyDir — this node/kernel likely has no 2Mi hugepages reserved or the runtime doesn't support the hugetlb cgroup controller"
     fi
 
     local dir
@@ -524,7 +524,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         rm -rf "$host_dir"
-        skip_test "pod never reached Running with a hostPath: Directory volume — check nodelet's logs for a 'hostPath volume failed validation' warning"
+        die "pod never reached Running with a hostPath: Directory volume — check nodelet's logs for a 'hostPath volume failed validation' warning"
     fi
     wait_until 20 "container's write landed back on the host" bash -c "[[ -s '$host_dir/from-container' ]]"
     local content
@@ -561,7 +561,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         sudo rm -rf "$host_dir"
-        skip_test "pod never reached Running with a hostPath: DirectoryOrCreate volume"
+        die "pod never reached Running with a hostPath: DirectoryOrCreate volume"
     fi
     delete_pod_if_exists "$name"
     assert_true bash -c "[[ -d '$host_dir' ]]" "DirectoryOrCreate should have created $host_dir on the host"
@@ -607,7 +607,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running at all — can't distinguish 'correctly rejected the volume' from 'something else failed'"
+        die "pod never reached Running at all — can't distinguish 'correctly rejected the volume' from 'something else failed'"
     fi
     delete_pod_if_exists "$name"
     assert_true bash -c "[[ ! -e '$host_dir' ]]" "type: Directory must never create $host_dir — that's DirectoryOrCreate's job, not Directory's"
@@ -647,7 +647,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with an image volume mounted — check nodelet's logs for 'failed to pull image for image volume', and that this CRI runtime's version actually supports CRI's Mount.image field (containerd >= 2.0 with the ImageVolume feature)"
+        die "pod never reached Running with an image volume mounted — check nodelet's logs for 'failed to pull image for image volume', and that this CRI runtime's version actually supports CRI's Mount.image field (containerd >= 2.0 with the ImageVolume feature)"
     fi
 
     local listing write_result
@@ -717,7 +717,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         rm -rf "$host_dir"
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with mountPropagation: HostToContainer set — check mount_propagation_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects a nonzero Mount.propagation entirely"
+        die "pod never reached Running with mountPropagation: HostToContainer set — check mount_propagation_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects a nonzero Mount.propagation entirely"
     fi
     wait_until 20 "container's write landed back on the host" bash -c "[[ -s '$host_dir/from-container' ]]"
     local content
@@ -781,7 +781,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         rm -rf "$host_dir"
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with recursiveReadOnly: Enabled set — check recursive_read_only_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects Mount.recursive_read_only entirely"
+        die "pod never reached Running with recursiveReadOnly: Enabled set — check recursive_read_only_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects Mount.recursive_read_only entirely"
     fi
     local result
     result="$(wait_for_check_file "$name" shared result.txt 30)"
@@ -832,7 +832,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         rm -rf "$host_dir"
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with recursiveReadOnly: IfPossible set — check recursive_read_only_cri()'s IfPossible branch in runtime/cri/volumes_pure.rs"
+        die "pod never reached Running with recursiveReadOnly: IfPossible set — check recursive_read_only_cri()'s IfPossible branch in runtime/cri/volumes_pure.rs"
     fi
     local status
     status="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].volumeMounts[?(@.name=="hostvol")].recursiveReadOnly}')"
@@ -884,7 +884,7 @@ spec:
           mountPropagation: HostToContainer
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
-        skip_test "pod never reached Running with mountPropagation: HostToContainer set — check mount_propagation_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects a nonzero Mount.propagation entirely"
+        die "pod never reached Running with mountPropagation: HostToContainer set — check mount_propagation_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects a nonzero Mount.propagation entirely"
     fi
 
     # The new mount happens *after* the pod is already running — the whole
@@ -938,7 +938,7 @@ spec:
           mountPath: /hostvol
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
-        skip_test "pod never reached Running with a plain hostPath mount"
+        die "pod never reached Running with a plain hostPath mount"
     fi
 
     sudo mount --bind "$source_dir" "$host_dir/newmount"
@@ -995,7 +995,7 @@ spec:
           recursiveReadOnly: Enabled
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
-        skip_test "pod never reached Running with recursiveReadOnly: Enabled — check whether this runtime rejects Mount.recursive_read_only entirely (should fail CreateContainer cleanly, not silently partial-mount) rather than a nodelet bug"
+        die "pod never reached Running with recursiveReadOnly: Enabled — check whether this runtime rejects Mount.recursive_read_only entirely (should fail CreateContainer cleanly, not silently partial-mount) rather than a nodelet bug"
     fi
     if kctl exec "$name" -- touch /hostvol/nested/test >/dev/null 2>&1; then
         die "a write inside the NESTED mount under a recursiveReadOnly: Enabled volume succeeded — the read-only-ness isn't actually recursive, just applied to the top-level mountpoint"
@@ -1045,7 +1045,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         rm -rf "$host_dir"
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with recursiveReadOnly: IfPossible set"
+        die "pod never reached Running with recursiveReadOnly: IfPossible set"
     fi
     local got
     got="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].volumeMounts[?(@.name=="hostvol")].recursiveReadOnly}')"

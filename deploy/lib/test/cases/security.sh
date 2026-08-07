@@ -262,7 +262,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted), a RunPodSandbox error (runtime doesn't support CRI's userns_options at all, e.g. too old containerd), or CreateContainer's own 'user namespace config for sandbox is different from container' error (check that CreateContainerRequest.sandbox_config in container_create.rs is passing the pod's real userns_mapping, not None — see this test's own doc comment for the full story)"
+        die "pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted), a RunPodSandbox error (runtime doesn't support CRI's userns_options at all, e.g. too old containerd), or CreateContainer's own 'user namespace config for sandbox is different from container' error (check that CreateContainerRequest.sandbox_config in container_create.rs is passing the pod's real userns_mapping, not None — see this test's own doc comment for the full story)"
     fi
 
     local uid_map
@@ -316,7 +316,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with hostUsers: false and a volume mounted — check build_mounts()/resolve_volumes() wiring in runtime/cri/volumes_pure.rs and volumes_resolve.rs, run_sandbox()'s own userns_options setup, or CreateContainer's redundant sandbox_config resend (see the real-userns sibling test's own doc comment)"
+        die "pod never reached Running with hostUsers: false and a volume mounted — check build_mounts()/resolve_volumes() wiring in runtime/cri/volumes_pure.rs and volumes_resolve.rs, run_sandbox()'s own userns_options setup, or CreateContainer's redundant sandbox_config resend (see the real-userns sibling test's own doc comment)"
     fi
     local content
     content="$(wait_for_check_file "$name" shared roundtrip 30)"
@@ -373,7 +373,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         sudo rm -rf "$host_dir"
-        skip_test "pod never reached Running with hostUsers: false — see the sibling real-userns test's own doc comment for known causes"
+        die "pod never reached Running with hostUsers: false — see the sibling real-userns test's own doc comment for known causes"
     fi
 
     local base_uid
@@ -602,7 +602,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with a sysctl set — check nodelet's logs for a RunPodSandbox error (runtime may not support this specific sysctl as namespaced, or reject unknown sysctls)"
+        die "pod never reached Running with a sysctl set — check nodelet's logs for a RunPodSandbox error (runtime may not support this specific sysctl as namespaced, or reject unknown sysctls)"
     fi
     local value
     value="$(wait_for_check_file "$name" shared sysctl.txt 30)"
@@ -669,7 +669,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         kctl delete configmap "$name-etc" --ignore-not-found >/dev/null
-        skip_test "pod never reached Running with supplementalGroupsPolicy set — check nodelet's logs for a RunPodSandbox/CreateContainer error (runtime may not support CRI's SupplementalGroupsPolicy field at all, e.g. too old containerd)"
+        die "pod never reached Running with supplementalGroupsPolicy set — check nodelet's logs for a RunPodSandbox/CreateContainer error (runtime may not support CRI's SupplementalGroupsPolicy field at all, e.g. too old containerd)"
     fi
 
     local merge_groups strict_groups
@@ -716,7 +716,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running -- can't exercise the default procMount masking check"
+        die "pod never reached Running -- can't exercise the default procMount masking check"
     fi
     local bytes
     bytes="$(wait_for_check_file "$name" shared kcore_bytes.txt 30)"
@@ -752,7 +752,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with securityContext.procMount: Unmasked -- check nodelet's logs for a CreateContainer error (the runtime may reject procMount: Unmasked entirely without also setting a permissive seccomp profile, matching real kubelet's own admission-time requirement that this project's apiserver doesn't enforce)"
+        die "pod never reached Running with securityContext.procMount: Unmasked -- check nodelet's logs for a CreateContainer error (the runtime may reject procMount: Unmasked entirely without also setting a permissive seccomp profile, matching real kubelet's own admission-time requirement that this project's apiserver doesn't enforce)"
     fi
     local bytes
     bytes="$(wait_for_check_file "$name" shared kcore_bytes.txt 30)"

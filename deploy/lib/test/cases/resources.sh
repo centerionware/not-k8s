@@ -204,7 +204,7 @@ spec:
 EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with a hugepages-2Mi limit set — this node/kernel likely has no 2Mi hugepages reserved (check /proc/sys/vm/nr_hugepages) or the runtime doesn't support the hugetlb cgroup controller"
+        die "pod never reached Running with a hugepages-2Mi limit set — this node/kernel likely has no 2Mi hugepages reserved (check /proc/sys/vm/nr_hugepages) or the runtime doesn't support the hugetlb cgroup controller"
     fi
 
     local path="$(pod_volume_host_path "$name" shared)/hugetlb.txt"

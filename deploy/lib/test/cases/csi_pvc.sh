@@ -54,7 +54,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "pod never reached Running with a PVC volume mounted — check nodelet's server logs for 'failed to mount CSI volume' or 'no CSI driver configured'"
+        die "pod never reached Running with a PVC volume mounted — check nodelet's server logs for 'failed to mount CSI volume' or 'no CSI driver configured'"
     fi
 
     local uid marker_path
@@ -121,7 +121,7 @@ EOF
 
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
-        skip_test "pod never reached Running with a CSI ephemeral inline volume mounted — check nodelet's server logs for 'failed to mount CSI ephemeral volume' or 'no CSI driver configured'"
+        die "pod never reached Running with a CSI ephemeral inline volume mounted — check nodelet's server logs for 'failed to mount CSI ephemeral volume' or 'no CSI driver configured'"
     fi
 
     local uid vol_dir
@@ -192,7 +192,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "pod never reached Running with a raw block volumeDevice — check nodelet's logs for 'failed to mount CSI volume' or build_devices()/ResolvedVolume::BlockDevice wiring in runtime/cri/volumes_pure.rs"
+        die "pod never reached Running with a raw block volumeDevice — check nodelet's logs for 'failed to mount CSI volume' or build_devices()/ResolvedVolume::BlockDevice wiring in runtime/cri/volumes_pure.rs"
     fi
 
     local uid target_path
@@ -263,7 +263,7 @@ EOF
     if ! try_wait_until 30 pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "pod never reached Running with a PVC volume mounted — check nodelet's server logs for 'failed to mount CSI volume' or 'no CSI driver configured'"
+        die "pod never reached Running with a PVC volume mounted — check nodelet's server logs for 'failed to mount CSI volume' or 'no CSI driver configured'"
     fi
 
     # Round 123 (found live in CI): reading this immediately after Running
