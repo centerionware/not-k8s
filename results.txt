@@ -1,43 +1,227 @@
 commit: 6870ae87fcbd2c8fe9c02cbac2a75d5c6a0a91cb
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31222905894
-timestamp (UTC): 2026-08-07T22:15:56Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31222734689
+timestamp (UTC): 2026-08-07T22:21:56Z
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786140950
+==> Test namespace: not-k8s-e2e-1786140780
 ==> Running 151 registered test(s)...
+▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
+  ✔ PASS (35s)
+▶ test_pod_mounts_a_persistent_volume_claim
+==> WARNING: Node.status.volumesInUse has no kubernetes.io/csi/ entry while a CSI volume is mounted — check mounted_csi_volumes()/csi_unique_volume_name() wiring in runtime/cri.rs and node.rs (round 34; not failing the test outright since the exact naming scheme is unvalidated against a real attach/detach controller)
+  ✔ PASS (36s)
+▶ test_csi_ephemeral_inline_volume_is_mounted
+  ✔ PASS (4s)
+▶ test_pod_uses_a_raw_block_volume
+  ✔ PASS (64s)
+▶ test_node_reports_volumes_in_use_for_a_csi_volume
+  ✔ PASS (93s)
+▶ test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
+==> WARNING: old VolumeAttachment for pvc-7cf772b7-d434-43b3-8fd9-04b45afd2ed3 didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
+==> WARNING: [diag] pod2 right after Running: NAME                     READY   STATUS    RESTARTS   AGE   IP           NODE            NOMINATED NODE   READINESS GATES
+fsgroup-policy-check-2   1/1     Running   0          2s    10.42.0.14   runnervmvrwv9   <none>           <none>
+==> WARNING: [diag] default-ns pods (CSI driver state): NAME                   READY   STATUS    RESTARTS   AGE     IP          NODE            NOMINATED NODE   READINESS GATES
+csi-hostpath-socat-0   1/1     Running   0          5m35s   10.42.0.5   runnervmvrwv9   <none>           <none>
+csi-hostpathplugin-0   8/8     Running   0          5m36s   10.42.0.4   runnervmvrwv9   <none>           <none>
+smoke-test             1/1     Running   0          6m1s    10.42.0.3   runnervmvrwv9   <none>           <none>
+==> WARNING: never got a stable 'stat /data' read from fsgroup-policy-check-2 within 30s — pod may still be unstable; using whatever the last attempt captured
+==> WARNING: [diag] /data on fsgroup-policy-check-2: ls: /data: No such file or directory
+command terminated with exit code 1
+==> WARNING: [diag] /hostvol root on fsgroup-policy-check-2: total 64
+drwxr-xr-x    1 root     root          4096 Aug  7 22:17 .
+drwxr-xr-x    1 root     root          4096 Aug  7 22:17 ..
+drwxr-xr-x    2 root     root          4096 Apr 15 16:09 bin
+drwxr-xr-x    5 root     root           360 Aug  7 22:17 dev
+drwxr-xr-x    1 root     root          4096 Aug  7 22:17 etc
+drwxr-xr-x    2 root     root          4096 Apr 15 16:09 home
+drwxr-xr-x    6 root     root          4096 Apr 15 16:09 lib
+drwxr-xr-x    5 root     root          4096 Apr 15 16:09 media
+drwxr-xr-x    2 root     root          4096 Apr 15 16:09 mnt
+drwxr-xr-x    2 root     root          4096 Apr 15 16:09 opt
+dr-xr-xr-x  252 root     root             0 Aug  7 22:17 proc
+drwx------    2 root     root          4096 Apr 15 16:09 root
+drwxr-xr-x    1 root     root          4096 Aug  7 22:17 run
+drwxr-xr-x    2 root     root          4096 Apr 15 16:09 sbin
+drwxr-xr-x    2 root     root          4096 Apr 15 16:09 srv
+dr-xr-xr-x   12 root     root             0 Aug  7 22:17 sys
+drwxrwxrwt    2 root     root          4096 Apr 15 16:09 tmp
+drwxr-xr-x    7 root     root          4096 Apr 15 16:09 usr
+drwxr-xr-x   12 root     root          4096 Apr 15 16:09 var
+==> WARNING: [diag] pod2 full status: {
+ "conditions": [
+  {
+   "lastProbeTime": null,
+   "lastTransitionTime": "2026-08-07T22:17:59Z",
+   "observedGeneration": 1,
+   "status": "True",
+   "type": "Initialized"
+  },
+  {
+   "lastProbeTime": null,
+   "lastTransitionTime": "2026-08-07T22:17:58Z",
+   "status": "True",
+   "type": "PodScheduled"
+  },
+  {
+   "lastProbeTime": null,
+   "lastTransitionTime": "2026-08-07T22:17:59Z",
+   "observedGeneration": 1,
+   "status": "True",
+   "type": "ContainersReady"
+  },
+  {
+   "lastProbeTime": null,
+   "lastTransitionTime": "2026-08-07T22:17:59Z",
+   "observedGeneration": 1,
+   "status": "True",
+   "type": "Ready"
+  },
+  {
+   "lastProbeTime": null,
+   "lastTransitionTime": "2026-08-07T22:17:59Z",
+   "observedGeneration": 1,
+   "status": "False",
+   "type": "PodResizeInProgress"
+  }
+ ],
+ "containerStatuses": [
+  {
+   "containerID": "containerd://ae5b41b2d5af7ef95136e84e17e50fc76131a123c76fac45d81098d016cf1d20",
+   "image": "alpine:3.20",
+   "imageID": "sha256:bf8527eb54c3680e728d5b4b383a8ba730d72dae7236fbc8dff97ed6b224a731",
+   "lastState": {},
+   "name": "app",
+   "ready": true,
+   "resources": {},
+   "restartCount": 0,
+   "started": true,
+   "state": {
+    "running": {
+     "startedAt": "2026-08-07T22:17:58Z"
+    }
+   },
+   "user": {
+    "linux": {
+     "gid": 0,
+     "supplementalGroups": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      6,
+      10,
+      11,
+      20,
+      26,
+      27
+     ],
+     "uid": 0
+    }
+   },
+   "volumeMounts": [
+    {
+     "mountPath": "/data",
+     "name": "data"
+    },
+    {
+     "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+     "name": "kube-api-access-klkzf",
+     "readOnly": true,
+     "recursiveReadOnly": "Disabled"
+    }
+   ]
+  }
+ ],
+ "hostIP": "10.1.0.98",
+ "hostIPs": [
+  {
+   "ip": "10.1.0.98"
+  }
+ ],
+ "phase": "Running",
+ "podIP": "10.42.0.14",
+ "podIPs": [
+  {
+   "ip": "10.42.0.14"
+  }
+ ],
+ "qosClass": "BestEffort",
+ "startTime": "2026-08-07T22:17:58Z"
+}
+==> WARNING: [diag] nodelet log mentioning fsgroup-policy-check-2, the claim, or CSI/mount activity:
+==> WARNING: [diag]   Aug 07 22:11:52 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:11:52.271625Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
+==> WARNING: [diag]   Aug 07 22:12:32 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:12:32.280835Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+==> WARNING: [diag]   Aug 07 22:14:14 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:14:14.364288Z  WARN failed to mount CSI ephemeral volume volume=data driver=hostpath.csi.k8s.io error=NodePublishVolume
+==> WARNING: [diag]   Aug 07 22:14:15 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:14:15.046449Z  WARN failed to mount CSI ephemeral volume volume=data driver=hostpath.csi.k8s.io error=NodePublishVolume
+==> WARNING: [diag]   Aug 07 22:17:27 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:17:27.107485Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=fsgroup-policy-check-claim volume=pvc-7cf772b7-d434-43b3-8fd9-04b45afd2ed3 driver=hostpath.csi.k8s.io
+==> WARNING: [diag]   Aug 07 22:17:58 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:17:58.785063Z  WARN VolumeAttachment found but not yet attached; will retry next reconcile claim=fsgroup-policy-check-claim volume=pvc-7cf772b7-d434-43b3-8fd9-04b45afd2ed3 driver=hostpath.csi.k8s.io
+==> FATAL: assertion failed: the second pod reusing the same PVC should still see fsGroup 4322 on /data, whether OnRootMismatch skipped the chown or not — got '', want '4322'
+  ✘ FAIL (130s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 07 22:14:52 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:14:52.509142Z  INFO node status pushed
+    Aug 07 22:15:19 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:15:19.255944Z  INFO torn down pod=not-k8s-e2e-1786140780/csi-block-check
+    Aug 07 22:15:19 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:15:19.958641Z  INFO torn down pod=not-k8s-e2e-1786140780/csi-block-check
+    Aug 07 22:15:52 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:15:52.549448Z  INFO node status pushed
+    Aug 07 22:15:55 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:15:55.082954Z  INFO torn down pod=not-k8s-e2e-1786140780/volumes-in-use-check
+    Aug 07 22:15:55 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:15:55.324943Z  INFO torn down pod=not-k8s-e2e-1786140780/volumes-in-use-check
+    Aug 07 22:16:52 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:16:52.589667Z  INFO node status pushed
+    Aug 07 22:17:27 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:17:27.085038Z  INFO torn down pod=not-k8s-e2e-1786140780/fsgroup-policy-check-1
+    Aug 07 22:17:27 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:17:27.107485Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=fsgroup-policy-check-claim volume=pvc-7cf772b7-d434-43b3-8fd9-04b45afd2ed3 driver=hostpath.csi.k8s.io
+    Aug 07 22:17:27 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:17:27.107604Z  INFO torn down pod=not-k8s-e2e-1786140780/fsgroup-policy-check-1
+    Aug 07 22:17:52 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:17:52.629606Z  INFO node status pushed
+    Aug 07 22:17:58 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:17:58.785063Z  WARN VolumeAttachment found but not yet attached; will retry next reconcile claim=fsgroup-policy-check-claim volume=pvc-7cf772b7-d434-43b3-8fd9-04b45afd2ed3 driver=hostpath.csi.k8s.io
+    Aug 07 22:18:52 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:18:52.669710Z  INFO node status pushed
+    Aug 07 22:19:02 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:19:02.170984Z  INFO torn down pod=not-k8s-e2e-1786140780/fsgroup-policy-check-2
+    Aug 07 22:19:02 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:19:02.720126Z  INFO torn down pod=not-k8s-e2e-1786140780/fsgroup-policy-check-2
+▶ test_device_plugin_advertises_capacity_and_allocates_into_a_container
+==> installing grpcio/grpcio-tools for the fake device plugin...
+ERROR: Cannot uninstall typing_extensions 4.10.0, RECORD file not found. Hint: The package was installed by debian.
+    (skip: couldn't install grpcio (no network access to PyPI?) — genuinely can't stand up a fake gRPC device plugin without it)
+  ○ SKIP (3s)
+▶ test_allocated_resources_status_absent_without_device_resources
+  ✔ PASS (2s)
+▶ test_pod_mounts_a_generic_ephemeral_volume
+  ✔ PASS (64s)
+▶ test_unreferenced_image_is_not_removed_below_the_watermark
+==>     waiting through at least one NODELET_GC_INTERVAL_SECS cycle (default 300s) to confirm busybox:1.36.1 survives it...
+  ✔ PASS (96s)
 ▶ test_node_reports_hugepages_capacity_when_reserved
 ==> WARNING: [diag] full Node.status.capacity: {"cpu":"4","ephemeral-storage":"154894188544","hugepages-1Gi":"0","hugepages-2Mi":"134217728","memory":"16766423040","pods":"110"}
 ==> WARNING: [diag] raw sysfs state:
 ==> WARNING: [diag]   /sys/kernel/mm/hugepages/hugepages-1048576kB/ nr_hugepages=0 free_hugepages=0 resv_hugepages=0 surplus_hugepages=0
 ==> WARNING: [diag]   /sys/kernel/mm/hugepages/hugepages-2048kB/ nr_hugepages=64 free_hugepages=64 resv_hugepages=0 surplus_hugepages=0
 ==> FATAL: assertion failed: command failed: bash -c [[ '0' -gt 0 ]] capacity.hugepages-1Gi should be a real positive byte count (got 0)
-  ✘ FAIL (0s, exit 1)
+  ✘ FAIL (1s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 07 22:14:57 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:57.520923Z ERROR failed with status 503 Service Unavailable
-    Aug 07 22:14:57 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:57.522510Z ERROR failed with status 503 Service Unavailable
-    Aug 07 22:14:57 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:57.522722Z ERROR failed with status 503 Service Unavailable
-    Aug 07 22:14:58 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:58.013736Z  WARN endpointslice watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 438 (447)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 22:14:58 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:58.015307Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 435 (447)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 22:14:58 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:58.017666Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 435 (447)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 22:14:58 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:58.018648Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 443 (447)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 22:14:58 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:58.024644Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 22:14:58 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:58.026463Z  WARN service watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 435 (447)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 22:14:59 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:59.152659Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-lpp2g namespace="kube-system" name="coredns" kind=ConfigMap
-    Aug 07 22:14:59 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:59.185082Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-lpp2g namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 22:15:21 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:15:21.753956Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 07 22:15:41 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:15:41.902498Z  INFO node status pushed
-    Aug 07 22:15:48 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:15:48.177860Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-nhvfp
-    Aug 07 22:15:49 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:15:49.223349Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-nhvfp
+    Aug 07 22:17:27 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:17:27.107485Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=fsgroup-policy-check-claim volume=pvc-7cf772b7-d434-43b3-8fd9-04b45afd2ed3 driver=hostpath.csi.k8s.io
+    Aug 07 22:17:27 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:17:27.107604Z  INFO torn down pod=not-k8s-e2e-1786140780/fsgroup-policy-check-1
+    Aug 07 22:17:52 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:17:52.629606Z  INFO node status pushed
+    Aug 07 22:17:58 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:17:58.785063Z  WARN VolumeAttachment found but not yet attached; will retry next reconcile claim=fsgroup-policy-check-claim volume=pvc-7cf772b7-d434-43b3-8fd9-04b45afd2ed3 driver=hostpath.csi.k8s.io
+    Aug 07 22:18:52 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:18:52.669710Z  INFO node status pushed
+    Aug 07 22:19:02 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:19:02.170984Z  INFO torn down pod=not-k8s-e2e-1786140780/fsgroup-policy-check-2
+    Aug 07 22:19:02 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:19:02.720126Z  INFO torn down pod=not-k8s-e2e-1786140780/fsgroup-policy-check-2
+    Aug 07 22:19:41 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:19:41.026213Z  INFO torn down pod=not-k8s-e2e-1786140780/no-device-resources
+    Aug 07 22:19:42 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:19:42.101390Z  INFO torn down pod=not-k8s-e2e-1786140780/no-device-resources
+    Aug 07 22:19:52 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:19:52.751169Z  INFO node status pushed
+    Aug 07 22:20:13 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:20:13.296368Z  INFO torn down pod=not-k8s-e2e-1786140780/ephemeral-vol-check
+    Aug 07 22:20:13 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:20:13.960202Z  INFO torn down pod=not-k8s-e2e-1786140780/ephemeral-vol-check
+    Aug 07 22:20:49 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:20:49.309054Z  INFO torn down pod=not-k8s-e2e-1786140780/image-gc-below-watermark-check
+    Aug 07 22:20:49 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:20:49.319641Z  INFO torn down pod=not-k8s-e2e-1786140780/image-gc-below-watermark-check
+    Aug 07 22:20:52 runnervmvrwv9 run-nodelet.sh[11056]: 2026-08-07T22:20:52.790313Z  INFO node status pushed
 ▶ test_pod_resources_socket_is_created_on_a_cri_node
   ✔ PASS (0s)
 ▶ test_pod_resources_grpc_query_returns_real_data
   ✔ PASS (3s)
 
 ════════════════════════════════════════
-Results: 2 passed, 1 failed, 0 skipped
+Results: 10 passed, 2 failed, 1 skipped
 Failed:
+  - test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
   - test_node_reports_hugepages_capacity_when_reserved
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786140950...
+==> Cleaning up test namespace not-k8s-e2e-1786140780...
