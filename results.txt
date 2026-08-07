@@ -1,20 +1,23 @@
-commit: 060f9013a6b68ee4839699636501396a11fb7c8d
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31143522249
-timestamp (UTC): 2026-08-07T03:16:06Z
+commit: 67dbe18e227d7bf92d3cdd5327711e73b3ab9319
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31143971701
+timestamp (UTC): 2026-08-07T03:23:25Z
 exit code: 0
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786072493
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786073001
 ==> Running 142 registered test(s)...
 ▶ test_pod_cgroup_reflects_its_qos_class
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedError from server (NotFound): pods "cgroup-qos-check" not found
-    (skip: couldn't find a cgroup directory under /sys/fs/cgroup/kubepods containing pod uid  — either this containerd doesn't delegate cgroup creation the way this test expects, or cgroup_parent_for()'s wiring in runtime/cri.rs::ensure_pod needs a look)
-  ○ SKIP (4s)
-▶ test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (36s)
-▶ test_share_process_namespace_puts_every_container_in_one_pid_namespace
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (33s)
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (3s)
+▶ test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied    (skip: TEST_CPU_MANAGER_STATIC not set to 'true' — export it once nodelet is running with NODELET_CPU_MANAGER_POLICY=static to exercise this)
+  ○ SKIP (0s)
+▶ test_cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied    (skip: TEST_CPU_MANAGER_STATIC not set to 'true' — export it once nodelet is running with NODELET_CPU_MANAGER_POLICY=static to exercise this)
+  ○ SKIP (0s)
+▶ test_memory_manager_pins_guaranteed_containers_to_a_numa_node
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied    (skip: TEST_MEMORY_MANAGER_STATIC not set to 'true' — export it once nodelet is running with NODELET_MEMORY_MANAGER_POLICY=static to exercise this)
+  ○ SKIP (0s)
 
 ════════════════════════════════════════
-Results: 2 passed, 0 failed, 1 skipped
+Results: 1 passed, 0 failed, 3 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786072493...
+==> Cleaning up test namespace not-k8s-e2e-1786073001...
