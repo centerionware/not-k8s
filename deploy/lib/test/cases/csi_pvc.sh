@@ -283,7 +283,11 @@ EOF
     fi
 
     delete_pod_if_exists "$name"
-    wait_until 30 "$name gone" pod_gone "$name"
+    # Round 123 (found live in CI): 30s wasn't always enough for a real
+    # CSI unpublish/detach to fully complete under load (multiple CSI
+    # tests' worth of contention on the same reference driver) — bumped
+    # to match the same generous budget the volumesInUse wait below uses.
+    wait_until 90 "$name gone" pod_gone "$name"
     wait_until 75 "volumesInUse cleared after pod deletion" \
         bash -c "[[ \"\$(kubectl get node '$n' -o jsonpath='{.status.volumesInUse}')\" != *'kubernetes.io/csi/'* ]]"
     kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
@@ -363,7 +367,7 @@ EOF
         skip_test "first pod never reached Running with a PVC + fsGroup volume mounted"
     fi
     delete_pod_if_exists "$first"
-    wait_until 30 "$first gone" pod_gone "$first"
+    wait_until 90 "$first gone" pod_gone "$first"
     # Round 123 (found live in CI): starting pod2 right after pod1's own
     # object is gone raced the external-attacher's real detach — nodelet's
     # own log showed "driver requires attach but no matching

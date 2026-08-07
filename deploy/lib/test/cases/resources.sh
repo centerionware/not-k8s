@@ -116,6 +116,14 @@ test_limited_swap_gives_burstable_pods_proportional_swap() {
     trap limited_swap_test_cleanup EXIT
     nodelet_restart_with_env "NODELET_MEMORY_SWAP_BEHAVIOR=LimitedSwap"
 
+    # Round 123 (found live in CI): a request with no limit at all is
+    # ALSO "Burstable-shaped" by the classification in
+    # container_swap_limit_bytes()'s own doc comment, but its actual code
+    # deliberately returns 0 (unconstrained/"max") for that specific
+    # shape — there's no memory limit to combine a swap share with,
+    # matching upstream's own KEP-2400 behavior for a limit-less pod.
+    # This test needs a genuinely bounded Burstable container (a request
+    # AND a higher limit) to exercise the real proportional-share path.
     local burstable="limited-swap-burstable"
     apply_manifest <<EOF
 apiVersion: v1
@@ -129,6 +137,7 @@ spec:
       command: ["sleep", "3600"]
       resources:
         requests: { memory: "64Mi" }
+        limits: { memory: "256Mi" }
 EOF
     wait_until 60 "$burstable Running" pod_is_phase "$burstable" Running
     local burstable_swap_max
