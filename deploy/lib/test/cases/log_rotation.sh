@@ -21,8 +21,11 @@
 # establish for this exact reason — see its own comment) instead of a
 # hand-quoted command string sidesteps the whole class of bug.
 
-_log_rotation_check() { # _log_rotation_check <log_dir>
+_log_rotation_check() { # _log_rotation_check <log_dir> <trace_file>
     sudo ls "$1"/app_*.log.1 >/dev/null 2>&1
+    local rc=$?
+    echo "$(date +%T.%N) rc=$rc" >> "$2"
+    return "$rc"
 }
 export -f _log_rotation_check
 
@@ -60,13 +63,18 @@ EOF
     log_dir="/var/log/pods/${ns}_${name}_${uid}"
 
     log "    waiting for a rotated log file under $log_dir (log_rotate_interval, default 10s)..."
-    if ! try_wait_until 60 _log_rotation_check "$log_dir"; then
+    local trace_file
+    trace_file="$(mktemp)"
+    if ! try_wait_until 60 _log_rotation_check "$log_dir" "$trace_file"; then
+        warn "[diag] per-attempt check trace: $(cat "$trace_file" 2>&1 | tr '\n' '|')"
         warn "[diag] contents of $log_dir: $(sudo ls -la "$log_dir" 2>&1)"
         warn "[diag] nodelet log mentioning rotation:"
         sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -iE "rotat" | tail -20 | while IFS= read -r line; do warn "[diag]   $line"; done
+        rm -f "$trace_file"
         delete_pod_if_exists "$name"
         die "no rotated log file appeared within 60s despite NODELET_CONTAINER_LOG_MAX_SIZE_BYTES=4096 — check log rotation wiring"
     fi
+    rm -f "$trace_file"
     delete_pod_if_exists "$name"
 }
 
