@@ -257,16 +257,19 @@ EOF
         # Round 123 diagnostics: this now reproduces live (previously
         # masked by the write-EACCES bug fixed alongside this round's chown
         # fix -- this is the first time this check ever saw real uid_map
-        # content). Two earlier attempts at finding this pod's sandbox id
-        # (grepping the app container's OCI spec directly, then
-        # journalctl -u containerd, then a guessed ctr label filter) all
-        # came back empty -- rather than guess a fourth filter blind, this
-        # just dumps every sandbox container's own labels unconditionally,
-        # so the real label keys/values this containerd version actually
-        # uses are visible in the transcript to build a correct filter
-        # from next round.
-        log "    [diag] all sandbox containers and their labels:"
-        log "$(sudo ctr -n k8s.io containers list -q 2>/dev/null | while read -r cid; do echo "--- $cid ---"; sudo ctr -n k8s.io containers info "$cid" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("Labels", {}))' 2>&1; done)"
+        # content). Three earlier attempts at finding this pod's sandbox id
+        # all came back empty until an unconditional label dump revealed
+        # nodelet labels containerd's own containers with its own
+        # `nodelet.dev/pod-name` (not `io.kubernetes.pod.name` -- that's
+        # kubelet's own convention, not this codebase's) alongside
+        # `io.cri-containerd.kind: sandbox`; using the real key now.
+        local sandbox_id
+        sandbox_id="$(sudo ctr -n k8s.io containers list -q "labels.\"nodelet.dev/pod-name\"==$name,labels.\"io.cri-containerd.kind\"==sandbox" 2>/dev/null | head -1 || true)"
+        log "    [diag] sandbox id: ${sandbox_id:-<not found via ctr containers list>}"
+        if [[ -n "$sandbox_id" ]]; then
+            log "    [diag] runc OCI spec linux.uidMappings/gidMappings/namespaces for this SANDBOX:"
+            log "$(sudo find /run/containerd/io.containerd.runtime.v2.task -name config.json -path "*$sandbox_id*" -exec cat {} \; 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); l=d.get("linux",{}); print("uidMappings:", l.get("uidMappings")); print("gidMappings:", l.get("gidMappings")); print("namespaces:", [n for n in l.get("namespaces",[]) if n.get("type")=="user"])' 2>&1)"
+        fi
         delete_pod_if_exists "$name"
         die "uid_map shows the host's own full identity range ('0 0 4294967295') — this container is NOT in a user namespace at all; check runtime/cri.rs's userns_mapping wiring and that the CRI runtime actually honors LinuxSandboxSecurityContext.namespace_options.userns_options"
     fi
