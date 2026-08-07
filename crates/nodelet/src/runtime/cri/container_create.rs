@@ -608,12 +608,22 @@ impl CriRuntime {
         // site was rebuilding a *fresh* `sandbox_config()` with a
         // hardcoded `false`, unconditionally, regardless of the pod's
         // actual requirement. Must match what `run_sandbox()` actually
-        // used, or this redundant copy silently overrides it.
+        // used, or this redundant copy silently overrides it. Round 123:
+        // the exact same lesson applied to `userns_mapping` too, missed
+        // the first time — this call site hardcoded `None` here even for
+        // a `hostUsers: false` pod, so containerd's own consistency check
+        // (`internal/cri/server/container_create.go`'s `sameUsernsConfig`,
+        // confirmed by reading its real source) compared the container's
+        // real userns_options against this redundant copy's `None` and
+        // rejected every such container outright with "user namespace
+        // config for sandbox is different from container" — nothing to do
+        // with containerd's version at all; it was correctly enforcing a
+        // real mismatch nodelet's own request introduced.
         let created = match rt
             .create_container(CreateContainerRequest {
                 pod_sandbox_id: sandbox_id.to_string(),
                 config: Some(config),
-                sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new(), None, privileged)),
+                sandbox_config: Some(sandbox_config(id, userns_mapping, &id.name, &HashMap::new(), None, privileged)),
             })
             .await
         {
