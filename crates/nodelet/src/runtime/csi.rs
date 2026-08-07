@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 use tonic::transport::{Channel, Endpoint, Uri};
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// Generated CSI v1 types and gRPC client (from proto/csi.proto, the
 /// upstream container-storage-interface/spec repo's stable v1 API).
@@ -415,15 +415,41 @@ impl CsiDrivers {
     /// removal) shouldn't fail the whole teardown over a CSI driver error —
     /// same treatment `graceful_stop_containers` already gives a failing
     /// `preStop` hook.
+    ///
+    /// Round 124 (found live in CI): `pods.rs`'s `teardown()` deliberately
+    /// calls this twice per pod deletion by design — once when
+    /// `deletionTimestamp` is first set, once more on the real
+    /// `Event::Delete` once the object actually leaves etcd, specifically
+    /// to tolerate "someone already finished this" as a harmless no-op.
+    /// The CSI spec says NodeUnpublishVolume/NodeUnstageVolume SHOULD
+    /// already be idempotent (a no-op success on a target that's already
+    /// unpublished/unstaged), but the reference driver this project tests
+    /// against instead returns a hard `NotFound` gRPC error on that
+    /// expected second call. Previously that error propagated via `?`
+    /// *before* any of this function's own bookkeeping (`refs`/`mounted`/
+    /// the on-disk sidecar) ran — so the redundant second call, which is
+    /// completely normal and expected, permanently prevented
+    /// `mounted_volumes()` from ever clearing that entry, i.e. exactly the
+    /// "Node.status.volumesInUse never clears" symptom this whole round
+    /// was chasing, now traced to here rather than (only) the PVC-refetch
+    /// gap fixed earlier. `NotFound` from either RPC now means "already
+    /// done" and falls through to the same bookkeeping cleanup a real
+    /// success would.
     pub async fn unmount(&self, driver: &str, volume_handle: &str, target_path: &Path, pod_uid: &str, ephemeral: bool) -> Result<()> {
         let mut client = self.client_for(driver).await?;
-        client
+        match client
             .node_unpublish_volume(NodeUnpublishVolumeRequest {
                 volume_id: volume_handle.to_string(),
                 target_path: target_path.to_string_lossy().into_owned(),
             })
             .await
-            .context("NodeUnpublishVolume")?;
+        {
+            Ok(_) => {}
+            Err(status) if status.code() == tonic::Code::NotFound => {
+                debug!(driver, volume_handle, target_path = %target_path.display(), "NodeUnpublishVolume: driver reports this volume already gone — treating a redundant teardown call as already-done");
+            }
+            Err(status) => return Err(status).context("NodeUnpublishVolume"),
+        }
 
         self.mounted.lock().unwrap().remove(&target_path.to_string_lossy().into_owned());
         let _ = std::fs::remove_file(mount_meta_path(target_path));
@@ -446,13 +472,19 @@ impl CsiDrivers {
 
         if last_reference && !ephemeral && self.supports_stage_unstage(driver).await {
             let staging = staging_path(driver, volume_handle);
-            client
+            match client
                 .node_unstage_volume(NodeUnstageVolumeRequest {
                     volume_id: volume_handle.to_string(),
                     staging_target_path: staging.to_string_lossy().into_owned(),
                 })
                 .await
-                .context("NodeUnstageVolume")?;
+            {
+                Ok(_) => {}
+                Err(status) if status.code() == tonic::Code::NotFound => {
+                    debug!(driver, volume_handle, "NodeUnstageVolume: driver reports this volume already gone — treating a redundant teardown call as already-done");
+                }
+                Err(status) => return Err(status).context("NodeUnstageVolume"),
+            }
             let _ = std::fs::remove_dir_all(&staging);
         }
 
