@@ -282,10 +282,14 @@ impl CriRuntime {
 
         // Round 88: this pod's own userns range, if it has one — the same
         // one run_sandbox() already allocated and applied at the sandbox
-        // level (round 25); read-only here, never allocates.
+        // level (round 25); read-only here, never allocates. Round 123: no
+        // longer threaded into build_mounts() as a per-mount idmap — see
+        // volumes_pure.rs's removed mount_id_mappings() doc comment for
+        // why that was actively wrong. Still needed here for the aux
+        // mounts' own chown_userns_base() calls below.
         let userns_mapping = (!id.host_users).then(|| self.userns.assigned(&id.uid)).flatten();
         let handler_supports_recursive_ro = self.handler_supports_recursive_ro(runtime_handler);
-        let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes, envs, userns_mapping, handler_supports_recursive_ro);
+        let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes, envs, handler_supports_recursive_ro);
         // `containerStatuses[].volumeMounts` (round 91; found in round 89's
         // re-audit): entirely derived from the spec, no RPC needed — cached
         // here (same key shape as `container_users`) for `build_status()`
@@ -295,20 +299,21 @@ impl CriRuntime {
             volume_mount_status_tuples(container.volume_mounts.as_deref().unwrap_or(&[]), handler_supports_recursive_ro),
         );
         // Round 98 (found in round 88's own documented follow-up): this
-        // pod's userns id mapping applies to nodelet's own auxiliary
-        // host-bind-mounts too, not just regular volumeMounts -- without
-        // it, /etc/hosts and the termination-message file would show up
-        // owned by the pod's unmapped host-range uid inside the
-        // container, unlike every other mount hostUsers: false already
-        // gets right.
-        let aux_id_mappings = mount_id_mappings(userns_mapping);
+        // pod's userns range applies to nodelet's own auxiliary
+        // host-bind-mounts too, not just regular volumeMounts -- round 123
+        // switched this (like every other mount) from a per-mount idmap to
+        // just chowning the host-side file/dir to host_base, so the
+        // sandbox's own ambient namespace translates it correctly.
         if let Some(ResolvedVolume::HostPath(hosts_path)) = volumes.get(ETC_HOSTS_VOLUME_KEY) {
+            if let Some((host_base, _length)) = userns_mapping {
+                if let Err(e) = chown_userns_base(hosts_path, host_base) {
+                    warn!(path = %hosts_path.display(), host_base, error = ?e, "failed to chown /etc/hosts to the pod's userns base uid/gid");
+                }
+            }
             mounts.push(Mount {
                 container_path: "/etc/hosts".to_string(),
                 host_path: hosts_path.to_string_lossy().into_owned(),
                 readonly: false,
-                uid_mappings: aux_id_mappings.clone(),
-                gid_mappings: aux_id_mappings.clone(),
                 ..Default::default()
             });
         }
@@ -329,13 +334,12 @@ impl CriRuntime {
                 std::fs::File::create(&host_path).context("creating termination-message host file")?;
             }
             // Round 123 (found live in CI): same real ownership requirement
-            // as `resolve_volumes()`'s own userns chown loop — `aux_id_mappings`
-            // above only translates a file actually owned on-disk by
-            // `userns_mapping`'s host_base; left at nodelet's own default
+            // as `resolve_volumes()`'s own userns chown loop and the
+            // /etc/hosts mount just above — left at nodelet's own default
             // (host root, since nodelet creates this file running as host
-            // root), it's outside the mapped range and the container's own
-            // writes to /dev/termination-log would hit the same silent
-            // EACCES the etc-hosts/emptyDir case did.
+            // root), it's outside the sandbox's mapped range and the
+            // container's own writes to /dev/termination-log would hit the
+            // same silent EACCES the etc-hosts/emptyDir case did.
             if let Some((host_base, _length)) = userns_mapping {
                 if let Err(e) = chown_userns_base(&host_path, host_base) {
                     warn!(path = %host_path.display(), host_base, error = ?e, "failed to chown termination-message file to the pod's userns base uid/gid");
@@ -347,8 +351,6 @@ impl CriRuntime {
                 container_path,
                 host_path: host_path.to_string_lossy().into_owned(),
                 readonly: false,
-                uid_mappings: aux_id_mappings.clone(),
-                gid_mappings: aux_id_mappings.clone(),
                 ..Default::default()
             });
         }

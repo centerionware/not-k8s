@@ -235,19 +235,32 @@ pub(crate) fn recursive_read_only_cri(recursive_read_only: Option<&str>, readonl
 /// CRI socket. `subPathExpr` wins over a plain `subPath` when both are
 /// somehow set (the API validates them as mutually exclusive, so this is
 /// purely a defensive tie-break, never expected to matter in practice).
-/// `spec.hostUsers: false` pods (round 25) need every volume mount
-/// idmapped too (round 88; found in round 86's re-audit), not just the
-/// sandbox itself — without this, a file the host sees as owned by e.g.
-/// UID 0 shows up as owned by the pod's *unmapped* host-range UID inside
-/// the container (kernel-level idmapped-mounts translation only applies
-/// to mounts CRI is actually told to map), the same "one UID mapping,
-/// applied consistently everywhere" requirement `run_sandbox()`'s own
-/// `userns_options` already satisfies at the sandbox level. `container_id`
-/// is always `0` — same single-range-covering-the-whole-container-ID-space
-/// shape `sandbox_config()`'s own `UserNamespace` mapping already uses.
-pub(crate) fn mount_id_mappings(userns_mapping: Option<(u32, u32)>) -> Vec<IdMapping> {
-    userns_mapping.map(|(host_id, length)| vec![IdMapping { host_id, container_id: 0, length }]).unwrap_or_default()
-}
+// Round 88 (found in round 86's re-audit) added a `mount_id_mappings()`
+// helper here that set CRI's `Mount.uid_mappings`/`.gid_mappings` on every
+// volume mount for a `hostUsers: false` pod, reasoning that the sandbox's
+// own `userns_options` (round 25) only covers the sandbox itself, not
+// mounts added later at `CreateContainer` time. Round 123 found (live in
+// CI, via an A/B comparison inside a failing container: `stat /` correctly
+// showed `root` while a mount using that helper showed the overflow uid)
+// that this was backwards: `container_id: 0` there is interpreted relative
+// to the *host's* own (init) user namespace by the runtime's
+// `mount_setattr()` call, not relative to the sandbox's own userns — so
+// once the sandbox's ambient namespace (which DOES already translate a
+// plain bind mount correctly, same as it translates the container's own
+// rootfs) applies its own `host_base <-> 0` mapping on top, host UID 0
+// (the wrong intermediate value that produced) falls outside the
+// sandbox's mapped range entirely and shows as the overflow uid — a
+// double-translation bug, not a missing one. The real fix (see
+// `resolve_volumes()`'s and `container_create.rs`'s own
+// `chown_userns_base()` calls) is to leave regular bind mounts alone and
+// just make sure the *host-side* file is actually owned by the pod's
+// allocated `host_base`, so the sandbox's own ambient namespace — proven
+// working by that same A/B comparison — translates it correctly on its
+// own, exactly like it already does for the rootfs. `mount_id_mappings()`
+// and its `Mount.uid_mappings`/`.gid_mappings` wiring were removed
+// entirely rather than left dead, since a future call site "fixing" a
+// missing-translation symptom by resurrecting it would just reintroduce
+// this same double-translation bug.
 
 /// `containerStatuses[].volumeMounts[].recursiveReadOnly` reporting
 /// (round 91; found in round 89's re-audit) — the exact missing
@@ -287,10 +300,8 @@ pub(crate) fn build_mounts(
     volume_mounts: &[k8s_openapi::api::core::v1::VolumeMount],
     volumes: &HashMap<String, ResolvedVolume>,
     envs: &[KeyValue],
-    userns_mapping: Option<(u32, u32)>,
     handler_supports_recursive_ro: bool,
 ) -> Vec<Mount> {
-    let id_mappings = mount_id_mappings(userns_mapping);
     volume_mounts
         .iter()
         .filter_map(|vm| {
@@ -312,8 +323,6 @@ pub(crate) fn build_mounts(
                         readonly,
                         propagation: propagation as i32,
                         recursive_read_only: recursive_read_only_cri(vm.recursive_read_only.as_deref(), readonly, propagation, handler_supports_recursive_ro),
-                        uid_mappings: id_mappings.clone(),
-                        gid_mappings: id_mappings.clone(),
                         ..Default::default()
                     })
                 }
@@ -737,20 +746,20 @@ fn chown_uid_gid(path: &std::path::Path, id: u32) -> std::io::Result<()> {
 
 /// Recursively chown `path` (and everything under it, if it's a directory)
 /// to `host_base:host_base` — the real on-host owner a `hostUsers: false`
-/// pod's own mounts need in order for `build_mounts()`'s per-mount
-/// `uid_mappings`/`gid_mappings` (round 88) to actually translate to
-/// container-visible UID/GID 0. Those CRI `IdMapping`s are `{ host_id:
-/// host_base, container_id: 0, length }` — the *exact same* numbers
-/// `sandbox_config()`'s own sandbox-level `UserNamespace` mapping already
-/// uses (round 25) — so a file genuinely owned on-disk by real host UID
-/// `host_base` is what maps to container UID 0 through either one. Left at
-/// nodelet's own default ownership (real host root, since nodelet itself
-/// materializes these directories running as host root), a file is outside
-/// the mapped range entirely and shows up as the overflow/nobody UID
-/// inside the container instead — confirmed live (round 123): every plain
-/// write into a `hostUsers: false` pod's emptyDir silently failed with
-/// EACCES this way, timing out two automated e2e checks that had never
-/// actually executed this deep into the suite before.
+/// pod's own bind-mounted volumes need for the *sandbox's own ambient user
+/// namespace* (`sandbox_config()`'s `UserNamespace` mapping, round 25) to
+/// translate them to container-visible UID/GID 0, the exact same way it
+/// already translates the container's own rootfs — no per-mount idmapping
+/// needed or wanted, see the removed `mount_id_mappings()`'s doc comment
+/// above for why round 88's attempt at that actively broke this instead.
+/// Left at nodelet's own default ownership (real host root, since nodelet
+/// itself materializes these directories running as host root), a file is
+/// outside the sandbox's mapped range entirely and shows up as the
+/// overflow/nobody UID inside the container instead — confirmed live
+/// (round 123): every plain write into a `hostUsers: false` pod's emptyDir
+/// silently failed with EACCES this way, timing out two automated e2e
+/// checks that had never actually executed this deep into the suite
+/// before.
 pub(crate) fn chown_userns_base(path: &std::path::Path, host_base: u32) -> std::io::Result<()> {
     chown_uid_gid(path, host_base)?;
     if path.is_dir() {

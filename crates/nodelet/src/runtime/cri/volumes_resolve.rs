@@ -270,9 +270,11 @@ impl CriRuntime {
         // above, same exclusion `apply_fs_group()` uses and for the same
         // reason: that's the host's own pre-existing directory, not the
         // pod's to chown) actually owned on-disk by this pod's allocated
-        // userns range base, or `build_mounts()`'s own per-mount id
-        // mappings (round 88) have nothing real to translate — see
-        // `chown_userns_base()`'s doc comment for the full mechanism.
+        // userns range base, or the sandbox's own ambient namespace
+        // (`sandbox_config()`'s `UserNamespace` mapping, round 25) has
+        // nothing real to translate — see `chown_userns_base()`'s doc
+        // comment for the full mechanism, and why round 123 removed the
+        // per-mount idmapping round 88 used to layer on top of this.
         // Independent of `fsGroup` above: this is needed even when no
         // fsGroup is set at all, since it's ownership for the container's
         // own (mapped) root user, not group-shared access.
