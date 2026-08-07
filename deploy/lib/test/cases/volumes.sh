@@ -843,8 +843,109 @@ EOF
     fi
 }
 
-test_mount_propagation_manual_note() {
-    skip_test "genuinely observing mount propagation in effect needs a real mount(2) syscall performed on the HOST (root required) after the pod is already running -- not something this suite does automatically to a live node's filesystem. Manual spot-check: (1) create a hostPath directory and a pod mounting it with mountPropagation: HostToContainer, (2) once Running, on the HOST run 'mount --bind <some-other-dir> <hostPath-dir>/newmount' (or 'mount -t tmpfs tmpfs <hostPath-dir>/newmount'), (3) confirm the new mount is immediately visible inside the container at /hostvol/newmount ('kubectl exec ... -- ls /hostvol') without restarting the pod -- proof HostToContainer propagation is real, not just that the field round-tripped through config. Repeat with mountPropagation unset (or None) and confirm the new host-side mount is NOT visible inside the container -- proof PRIVATE (the default) genuinely isolates mount events. Bidirectional needs the reverse: a mount made INSIDE the container should become visible on the host."
+test_mount_propagation_host_to_container_sees_a_new_host_mount() {
+    # Round 123: previously manual-only purely because it needs a real
+    # mount(2) syscall on the HOST after the pod is already Running — sudo
+    # is already available to this suite for containerd/chown operations
+    # elsewhere, so a real 'mount --bind' works exactly the same way here.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local host_dir source_dir
+    host_dir="$(mktemp -d /tmp/nodelet-mountprop-h2c-test.XXXXXX)"
+    mkdir -p "$host_dir/newmount"
+    source_dir="$(mktemp -d /tmp/nodelet-mountprop-h2c-source.XXXXXX)"
+    echo "from-a-new-host-mount" > "$source_dir/marker"
+
+    local name="mount-propagation-h2c-check"
+    mount_propagation_h2c_cleanup() {
+        delete_pod_if_exists "$name"
+        sudo umount "${host_dir:-}/newmount" 2>/dev/null || true
+        rm -rf "${host_dir:-}" "${source_dir:-}"
+    }
+    trap mount_propagation_h2c_cleanup EXIT
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: hostvol
+      hostPath:
+        path: $host_dir
+        type: Directory
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "sleep 3600"]
+      volumeMounts:
+        - name: hostvol
+          mountPath: /hostvol
+          mountPropagation: HostToContainer
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        skip_test "pod never reached Running with mountPropagation: HostToContainer set — check mount_propagation_cri()/build_mounts() wiring in runtime/cri/volumes_pure.rs, or whether this runtime version rejects a nonzero Mount.propagation entirely"
+    fi
+
+    # The new mount happens *after* the pod is already running — the whole
+    # point of HostToContainer: mount events made on the host later still
+    # propagate in, unlike the container's own initial (already-mounted)
+    # view.
+    sudo mount --bind "$source_dir" "$host_dir/newmount"
+    if ! try_wait_until 15 bash -c "kctl exec '$name' -- cat /hostvol/newmount/marker 2>/dev/null | grep -q from-a-new-host-mount"; then
+        die "the container never saw the new host-side mount at /hostvol/newmount — HostToContainer propagation isn't actually working, just round-tripping through config"
+    fi
+}
+
+test_mount_propagation_private_default_does_not_see_a_new_host_mount() {
+    # The other side of the same coin: with mountPropagation left unset
+    # (Private, the default), a mount made on the host after the pod is
+    # already running must NOT become visible inside the container —
+    # proof Private genuinely isolates mount events, not just that
+    # HostToContainer happens to work.
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    local host_dir source_dir
+    host_dir="$(mktemp -d /tmp/nodelet-mountprop-private-test.XXXXXX)"
+    mkdir -p "$host_dir/newmount"
+    source_dir="$(mktemp -d /tmp/nodelet-mountprop-private-source.XXXXXX)"
+    echo "from-a-new-host-mount" > "$source_dir/marker"
+
+    local name="mount-propagation-private-check"
+    mount_propagation_private_cleanup() {
+        delete_pod_if_exists "$name"
+        sudo umount "${host_dir:-}/newmount" 2>/dev/null || true
+        rm -rf "${host_dir:-}" "${source_dir:-}"
+    }
+    trap mount_propagation_private_cleanup EXIT
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  volumes:
+    - name: hostvol
+      hostPath:
+        path: $host_dir
+        type: Directory
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "sleep 3600"]
+      volumeMounts:
+        - name: hostvol
+          mountPath: /hostvol
+EOF
+    if ! try_wait_until 30 pod_is_phase "$name" Running; then
+        skip_test "pod never reached Running with a plain hostPath mount"
+    fi
+
+    sudo mount --bind "$source_dir" "$host_dir/newmount"
+    sleep 5 # give a real leak a fair chance to show up before asserting its absence
+    local seen
+    seen="$(kctl exec "$name" -- cat /hostvol/newmount/marker 2>&1)"
+    assert_not_contains "$seen" "from-a-new-host-mount" "with mountPropagation left at the default (Private), a mount made on the host after the pod started must NOT be visible inside the container"
 }
 
 test_recursive_read_only_manual_note() {
@@ -852,7 +953,8 @@ test_recursive_read_only_manual_note() {
 }
 
 register_test test_mount_propagation_host_to_container_still_mounts_normally
-register_test test_mount_propagation_manual_note
+register_test test_mount_propagation_host_to_container_sees_a_new_host_mount
+register_test test_mount_propagation_private_default_does_not_see_a_new_host_mount
 register_test test_recursive_read_only_still_mounts_read_only_normally
 register_test test_recursive_read_only_if_possible_falls_back_without_erroring
 register_test test_recursive_read_only_manual_note

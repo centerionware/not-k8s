@@ -133,6 +133,10 @@ assert_contains() { # assert_contains <haystack> <needle> <description>
     [[ "$1" == *"$2"* ]] || die "assertion failed: $3 — '$1' does not contain '$2'"
 }
 
+assert_not_contains() { # assert_not_contains <haystack> <needle> <description>
+    [[ "$1" != *"$2"* ]] || die "assertion failed: $3 — '$1' contains '$2', which it should not"
+}
+
 assert_not_empty() { # assert_not_empty <value> <description>
     [[ -n "$1" ]] || die "assertion failed: $2 — value was empty"
 }
