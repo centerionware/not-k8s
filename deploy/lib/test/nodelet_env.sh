@@ -51,6 +51,13 @@ nodelet_restart_with_env() {
     # otherwise fail this restart outright with "start-limit-hit" after
     # enough back-to-back calls, confirmed for real in CI (round 123).
     sudo systemctl reset-failed nodelet.service 2>/dev/null || true
+    # Temporary diagnostic (round 123): nodelet-service.sh's
+    # StartLimitIntervalSec=0 plus this reset-failed call were both
+    # supposed to make "start-limit-hit" impossible here, but it happened
+    # anyway in CI with both fixes already in place — print what systemd
+    # actually has loaded for this unit right before the restart that
+    # keeps failing, instead of guessing further.
+    echo "[diag] nodelet.service start-limit right before restart: $(sudo systemctl show nodelet.service -p StartLimitIntervalUSec -p StartLimitBurst -p NRestarts --value | tr '\n' ' ')"
     sudo systemctl restart nodelet.service
     _nodelet_wait_ready "node Ready after nodelet restart with env override ($*)"
 }
@@ -61,6 +68,13 @@ nodelet_restore_env() {
     sudo rm -f "$NODELET_OVERRIDE_DROPIN"
     sudo systemctl daemon-reload
     sudo systemctl reset-failed nodelet.service 2>/dev/null || true
+    # Temporary diagnostic (round 123): nodelet-service.sh's
+    # StartLimitIntervalSec=0 plus this reset-failed call were both
+    # supposed to make "start-limit-hit" impossible here, but it happened
+    # anyway in CI with both fixes already in place — print what systemd
+    # actually has loaded for this unit right before the restart that
+    # keeps failing, instead of guessing further.
+    echo "[diag] nodelet.service start-limit right before restart: $(sudo systemctl show nodelet.service -p StartLimitIntervalUSec -p StartLimitBurst -p NRestarts --value | tr '\n' ' ')"
     sudo systemctl restart nodelet.service
     _nodelet_wait_ready "node Ready after nodelet restart (env override removed)"
 }
