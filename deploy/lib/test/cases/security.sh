@@ -322,6 +322,19 @@ test_containers_get_isolated_pid_namespaces_by_default() {
     # zero-value default (POD-shared) nodelet was previously silently
     # relying on. A container's own shell reports pid 1 for itself only
     # when it's truly the init process of its own isolated namespace.
+    #
+    # Round 123 (found live in CI): the command below needs '$$$$', not
+    # '$$' -- real kubelet's own command/args $(VAR_NAME) expansion syntax
+    # (see expand_command_arg() in volumes_pure.rs) treats a literal '$$'
+    # as an ESCAPE for a single literal '$', the same string-substitution
+    # pass every command/args field gets regardless of whether it happens
+    # to invoke a shell. Writing '$$' here (after this heredoc's own bash
+    # unescaping) gets folded to a single '$' before the container's own
+    # shell ever sees it, so 'echo $' just prints the literal character
+    # '$' -- confirmed live: the test failed with "got '$', want '1'", not
+    # a real PID namespace bug. '$$$$' survives this heredoc as '$$$$',
+    # nodelet's own expansion folds each '$$' pair to one '$', leaving the
+    # real '$$' shell syntax the test actually wants reaching the container.
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="pid-isolated-default"
     apply_manifest <<EOF
@@ -339,7 +352,7 @@ spec:
       command: ["sh", "-c", "sleep 3600"]
     - name: second
       image: $TEST_IMAGE
-      command: ["sh", "-c", "echo \$\$ > /shared/second-pid.txt; sleep 3600"]
+      command: ["sh", "-c", "echo \$\$\$\$ > /shared/second-pid.txt; sleep 3600"]
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
@@ -351,6 +364,11 @@ EOF
 }
 
 test_share_process_namespace_puts_every_container_in_one_pid_namespace() {
+    # Round 123: same '$$$$' (not '$$') fix as the sibling isolated-PID
+    # test above, and for the same reason -- this one just never surfaced
+    # as a visible failure, since the pre-fix literal '$' content also
+    # happens to satisfy assert_not_eq(..., "1") (a false-positive pass,
+    # not a real exercise of shareProcessNamespace).
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="pid-shared"
     apply_manifest <<EOF
@@ -369,7 +387,7 @@ spec:
       command: ["sh", "-c", "sleep 3600"]
     - name: second
       image: $TEST_IMAGE
-      command: ["sh", "-c", "echo \$\$ > /shared/second-pid.txt; sleep 3600"]
+      command: ["sh", "-c", "echo \$\$\$\$ > /shared/second-pid.txt; sleep 3600"]
       volumeMounts:
         - {name: shared, mountPath: /shared}
 EOF
