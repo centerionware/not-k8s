@@ -1,6 +1,43 @@
-commit: 8ecce4d6d43f47ba134640161e44a9847ca3e4b0
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31222328746
-timestamp (UTC): 2026-08-07T22:08:41Z
-exit code: unknown
+commit: 6870ae87fcbd2c8fe9c02cbac2a75d5c6a0a91cb
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31222905894
+timestamp (UTC): 2026-08-07T22:15:56Z
+exit code: 1
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+==> Test namespace: not-k8s-e2e-1786140950
+==> Running 151 registered test(s)...
+▶ test_node_reports_hugepages_capacity_when_reserved
+==> WARNING: [diag] full Node.status.capacity: {"cpu":"4","ephemeral-storage":"154894188544","hugepages-1Gi":"0","hugepages-2Mi":"134217728","memory":"16766423040","pods":"110"}
+==> WARNING: [diag] raw sysfs state:
+==> WARNING: [diag]   /sys/kernel/mm/hugepages/hugepages-1048576kB/ nr_hugepages=0 free_hugepages=0 resv_hugepages=0 surplus_hugepages=0
+==> WARNING: [diag]   /sys/kernel/mm/hugepages/hugepages-2048kB/ nr_hugepages=64 free_hugepages=64 resv_hugepages=0 surplus_hugepages=0
+==> FATAL: assertion failed: command failed: bash -c [[ '0' -gt 0 ]] capacity.hugepages-1Gi should be a real positive byte count (got 0)
+  ✘ FAIL (0s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 07 22:14:57 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:57.520923Z ERROR failed with status 503 Service Unavailable
+    Aug 07 22:14:57 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:57.522510Z ERROR failed with status 503 Service Unavailable
+    Aug 07 22:14:57 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:57.522722Z ERROR failed with status 503 Service Unavailable
+    Aug 07 22:14:58 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:58.013736Z  WARN endpointslice watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 438 (447)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 22:14:58 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:58.015307Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 435 (447)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 22:14:58 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:58.017666Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 435 (447)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 22:14:58 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:58.018648Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 443 (447)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 22:14:58 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:58.024644Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 22:14:58 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:58.026463Z  WARN service watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 435 (447)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 22:14:59 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:59.152659Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-lpp2g namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 07 22:14:59 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:14:59.185082Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-lpp2g namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 22:15:21 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:15:21.753956Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 22:15:41 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:15:41.902498Z  INFO node status pushed
+    Aug 07 22:15:48 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:15:48.177860Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-nhvfp
+    Aug 07 22:15:49 runnervmvrwv9 run-nodelet.sh[10892]: 2026-08-07T22:15:49.223349Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-nhvfp
+▶ test_pod_resources_socket_is_created_on_a_cri_node
+  ✔ PASS (0s)
+▶ test_pod_resources_grpc_query_returns_real_data
+  ✔ PASS (3s)
+
+════════════════════════════════════════
+Results: 2 passed, 1 failed, 0 skipped
+Failed:
+  - test_node_reports_hugepages_capacity_when_reserved
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786140950...
