@@ -141,7 +141,12 @@ spec:
 EOF
     wait_until 60 "$burstable Running" pod_is_phase "$burstable" Running
     local burstable_swap_max
-    burstable_swap_max="$(kctl exec "$burstable" -- cat /sys/fs/cgroup/memory.swap.max 2>&1)"
+    # Round 123 (found live in CI): kubectl's own "kuberc: ... permission
+    # denied" warning lands on the same stream as the real value with no
+    # separating newline, so a plain `2>&1` capture polluted a genuine
+    # numeric result into e.g. "...deniedNNNNN" — tr -dc keeps only
+    # digits, the same fix csi_pvc.sh's fsGroup test already needed.
+    burstable_swap_max="$(kctl exec "$burstable" -- cat /sys/fs/cgroup/memory.swap.max 2>&1 | tr -dc '0-9')"
     delete_pod_if_exists "$burstable"
     assert_true bash -c "[[ '$burstable_swap_max' =~ ^[0-9]+$ && '$burstable_swap_max' -gt 0 ]]" \
         "a Burstable pod under LimitedSwap should get a nonzero memory.swap.max (KEP-2400's proportional formula) — got '$burstable_swap_max'"
@@ -163,7 +168,7 @@ spec:
 EOF
     wait_until 60 "$guaranteed Running" pod_is_phase "$guaranteed" Running
     local guaranteed_swap_max
-    guaranteed_swap_max="$(kctl exec "$guaranteed" -- cat /sys/fs/cgroup/memory.swap.max 2>&1)"
+    guaranteed_swap_max="$(kctl exec "$guaranteed" -- cat /sys/fs/cgroup/memory.swap.max 2>&1 | tr -dc '0-9')"
     delete_pod_if_exists "$guaranteed"
     assert_eq "$guaranteed_swap_max" "0" "a Guaranteed pod should get memory.swap.max = 0 even under LimitedSwap — Guaranteed-shaped containers get no swap at all, same as BestEffort"
 }
