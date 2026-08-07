@@ -86,7 +86,12 @@ jobs:
           TEST_CSI_BLOCK_STORAGE_CLASS: csi-hostpath-block-sc
           NOTK8S_E2E_DEBUG_ON_FAIL: "1"
           NOTK8S_E2E_MAX_FAILURES: "3"
-        run: ./deploy/test-e2e.sh
+        run: |
+          # See e2e.yml's own comment on this same line for why —
+          # the earlier sudo -E build step leaves ~/.kube root-owned,
+          # which corrupted some tests' captured kubectl output.
+          sudo chown -R "$(id -u):$(id -g)" ~/.kube 2>/dev/null || sudo rm -rf ~/.kube
+          ./deploy/test-e2e.sh
 
       # Runs if any earlier step in this job failed (driver setup timing
       # out, a test failing, anything) — node/taint status, disk space,

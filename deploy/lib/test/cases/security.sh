@@ -392,7 +392,11 @@ EOF
     sudo chown "$base_uid:$base_uid" "$host_dir" "$host_dir/marker"
 
     local translated_uid
-    translated_uid="$(kctl exec "$name" -- stat -c %u /hostvol/marker 2>&1)"
+    # Round 123 (found live in CI): kubectl's own "kuberc: ... permission
+    # denied" warning lands on the same stream as the real value with no
+    # separating newline — same recurring fix as csi_pvc.sh's fsGroup
+    # test and resources.sh's limited_swap test needed.
+    translated_uid="$(kctl exec "$name" -- stat -c %u /hostvol/marker 2>&1 | tr -dc '0-9')"
     delete_pod_if_exists "$name"
     sudo rm -rf "$host_dir"
     assert_eq "$translated_uid" "0" "a host-side file owned by the pod's own userns base uid ($base_uid) should show as uid 0 inside the container (real ownership translation via the sandbox's ambient user namespace), not 65534/nobody"

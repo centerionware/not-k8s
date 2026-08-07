@@ -60,6 +60,21 @@ jobs:
           NOTK8S_E2E_MAX_FAILURES: "3"
         run: |
           set +e
+          # Round 123 (found live in CI): every kubectl invocation in this
+          # job was printing "kuberc: no preferences loaded from
+          # ~/.kube/kuberc: ... permission denied" to stderr — the earlier
+          # 'Build and deploy' step runs under sudo -E (HOME preserved as
+          # /home/runner but the process itself is root), so kubectl's own
+          # kuberc preferences-file lookup there created ~/.kube root-owned;
+          # this step's own kubectl calls run as the unprivileged runner
+          # user and can't read it. Harmless on its own, but multiple
+          # tests capture a command's combined stdout+stderr (2>&1) and
+          # got this warning silently prepended to their real value,
+          # corrupting numeric/uid assertions in a way that took several
+          # rounds to actually trace back to this. Fixing ownership here
+          # is cheaper than auditing every kubectl-output capture in the
+          # suite for the same latent bug.
+          sudo chown -R "$(id -u):$(id -g)" ~/.kube 2>/dev/null || sudo rm -rf ~/.kube
           ONLY_FLAG=""
           if [ -n "${{ inputs.only }}" ]; then
             ONLY_FLAG="--only=${{ inputs.only }}"
