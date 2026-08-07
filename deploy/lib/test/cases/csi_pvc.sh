@@ -426,8 +426,10 @@ EOF
         # own fsGroup/CSI-mount code logged for this pod before cleanup
         # destroys the evidence.
         warn "[diag] /data on $second: $(kctl exec "$second" -- ls -la /data 2>&1)"
-        warn "[diag] nodelet log mentioning $second or fsGroup/skip_fs_group_change:"
-        sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -E "$second|skip_fs_group_change|fsGroup|chown" | tail -30 | while IFS= read -r line; do warn "[diag]   $line"; done
+        warn "[diag] /hostvol root on $second: $(kctl exec "$second" -- ls -la / 2>&1)"
+        warn "[diag] pod2 full status: $(kctl get pod "$second" -o json 2>&1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps(d.get("status",{}), indent=1))' 2>&1)"
+        warn "[diag] nodelet log mentioning $second, the claim, or CSI/mount activity:"
+        sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -E "$second|$claim|skip_fs_group_change|fsGroup|chown|CSI|NodePublish|NodeStage|resolve_volumes|hostpath\.csi" | tail -50 | while IFS= read -r line; do warn "[diag]   $line"; done
     fi
     delete_pod_if_exists "$second"
     kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
