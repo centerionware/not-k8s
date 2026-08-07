@@ -16,12 +16,13 @@
 
 test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
-    if [[ "${TEST_TOPOLOGY_MANAGER_POLICY:-}" != "single-numa-node" ]]; then
-        skip_test "TEST_TOPOLOGY_MANAGER_POLICY not set to 'single-numa-node' — export it once nodelet is running with NODELET_TOPOLOGY_MANAGER_POLICY=single-numa-node (and NODELET_CPU_MANAGER_POLICY=static) to exercise this"
-    fi
+    if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with NODELET_TOPOLOGY_MANAGER_POLICY=single-numa-node"; fi
     if [[ ! -d /sys/devices/system/node ]] || [[ "$(find /sys/devices/system/node -maxdepth 1 -iname 'node*' -type d 2>/dev/null | wc -l)" -gt 1 ]]; then
         skip_test "this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case; a multi-node host needs the manual cross-provider check below instead"
     fi
+    topology_single_numa_test_cleanup() { nodelet_restore_env; }
+    trap topology_single_numa_test_cleanup EXIT
+    nodelet_restart_with_env "NODELET_TOPOLOGY_MANAGER_POLICY=single-numa-node" "NODELET_CPU_MANAGER_POLICY=static"
 
     local name="topology-manager-check"
     apply_manifest <<EOF
@@ -47,12 +48,13 @@ EOF
 
 test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
-    if [[ "${TEST_TOPOLOGY_MANAGER_POLICY:-}" != "restricted" ]]; then
-        skip_test "TEST_TOPOLOGY_MANAGER_POLICY not set to 'restricted' — export it once nodelet is running with NODELET_TOPOLOGY_MANAGER_POLICY=restricted (and NODELET_CPU_MANAGER_POLICY=static) to exercise this"
-    fi
+    if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with NODELET_TOPOLOGY_MANAGER_POLICY=restricted"; fi
     if [[ ! -d /sys/devices/system/node ]] || [[ "$(find /sys/devices/system/node -maxdepth 1 -iname 'node*' -type d 2>/dev/null | wc -l)" -gt 1 ]]; then
         skip_test "this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case (align() alone should already satisfy it, spread() never needs to trigger)"
     fi
+    topology_restricted_test_cleanup() { nodelet_restore_env; }
+    trap topology_restricted_test_cleanup EXIT
+    nodelet_restart_with_env "NODELET_TOPOLOGY_MANAGER_POLICY=restricted" "NODELET_CPU_MANAGER_POLICY=static"
 
     local name="topology-manager-restricted-check"
     apply_manifest <<EOF

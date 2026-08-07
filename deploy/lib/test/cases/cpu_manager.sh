@@ -5,15 +5,18 @@
 # already-running shared-pool containers get retroactively shrunk/grown
 # via CRI's UpdateContainerResources as exclusive claims are made/released.
 # Opt-in on the running nodelet (NODELET_CPU_MANAGER_POLICY=static) —
-# skips cleanly without TEST_CPU_MANAGER_STATIC=true telling this suite
-# that's actually the case, same pattern log_rotation.sh/static_pods.sh
-# use for their own opt-in NODELET_* settings.
+# round 123: nodelet_restart_with_env (nodelet_env.sh) actually restarts
+# nodelet with that set for the duration of each test below, instead of
+# relying on an externally pre-configured nodelet + a TEST_CPU_MANAGER_STATIC
+# hint that nothing in CI ever set.
 
 test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
-    if [[ "${TEST_CPU_MANAGER_STATIC:-}" != "true" ]]; then
-        skip_test "TEST_CPU_MANAGER_STATIC not set to 'true' — export it once nodelet is running with NODELET_CPU_MANAGER_POLICY=static to exercise this"
-    fi
+    if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with NODELET_CPU_MANAGER_POLICY=static"; fi
+    cpu_manager_pin_test_cleanup() { nodelet_restore_env; }
+    trap cpu_manager_pin_test_cleanup EXIT
+    nodelet_restart_with_env "NODELET_CPU_MANAGER_POLICY=static"
+
     local cgroup_root="${NODELET_CGROUP_FS_ROOT:-/sys/fs/cgroup}"
     local name_a="cpu-manager-check-a"
     local name_b="cpu-manager-check-b"
@@ -66,9 +69,11 @@ EOF
 
 test_cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
-    if [[ "${TEST_CPU_MANAGER_STATIC:-}" != "true" ]]; then
-        skip_test "TEST_CPU_MANAGER_STATIC not set to 'true' — export it once nodelet is running with NODELET_CPU_MANAGER_POLICY=static to exercise this"
-    fi
+    if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with NODELET_CPU_MANAGER_POLICY=static"; fi
+    cpu_manager_shrink_test_cleanup() { nodelet_restore_env; }
+    trap cpu_manager_shrink_test_cleanup EXIT
+    nodelet_restart_with_env "NODELET_CPU_MANAGER_POLICY=static"
+
     local cgroup_root="${NODELET_CGROUP_FS_ROOT:-/sys/fs/cgroup}"
     local shared_name="cpu-manager-shared-check"
     local exclusive_name="cpu-manager-exclusive-check"

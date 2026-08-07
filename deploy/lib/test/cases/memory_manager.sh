@@ -1,16 +1,19 @@
 # lib/test/cases/memory_manager.sh — Memory Manager static policy
 # (memory_manager.rs): Guaranteed-QoS containers with a memory limit get
 # their memory pinned to a single NUMA node via cpuset.mems. Opt-in on the
-# running nodelet (NODELET_MEMORY_MANAGER_POLICY=static) — skips cleanly
-# without TEST_MEMORY_MANAGER_STATIC=true telling this suite that's
-# actually the case, same pattern cpu_manager.sh uses for its own opt-in
-# NODELET_* setting.
+# running nodelet (NODELET_MEMORY_MANAGER_POLICY=static) — round 123:
+# nodelet_restart_with_env (nodelet_env.sh) actually restarts nodelet with
+# that set for the duration of this test now, instead of relying on an
+# externally pre-configured nodelet + a TEST_MEMORY_MANAGER_STATIC hint
+# that nothing in CI ever set.
 
 test_memory_manager_pins_guaranteed_containers_to_a_numa_node() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
-    if [[ "${TEST_MEMORY_MANAGER_STATIC:-}" != "true" ]]; then
-        skip_test "TEST_MEMORY_MANAGER_STATIC not set to 'true' — export it once nodelet is running with NODELET_MEMORY_MANAGER_POLICY=static to exercise this"
-    fi
+    if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with NODELET_MEMORY_MANAGER_POLICY=static"; fi
+    memory_manager_test_cleanup() { nodelet_restore_env; }
+    trap memory_manager_test_cleanup EXIT
+    nodelet_restart_with_env "NODELET_MEMORY_MANAGER_POLICY=static"
+
     local cgroup_root="${NODELET_CGROUP_FS_ROOT:-/sys/fs/cgroup}"
     local name="memory-manager-check"
 
