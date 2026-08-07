@@ -62,13 +62,17 @@ pod_field() { # pod_field <name> <jsonpath, e.g. '{.status.phase}'>
 wait_until() {
     local timeout="$1" description="$2"
     shift 2
-    local waited=0
+    # Real elapsed wall-clock time, not "iterations * 2s" — see
+    # try_wait_until's own comment (harness.sh) for the real CI failure
+    # this fixes: the old accounting ignored how long "$@" itself took to
+    # return, so a slow-but-eventually-returning command could blow a
+    # nominal timeout budget many times over in real wall-clock time.
+    local start_s=$SECONDS
     while ! "$@" >/dev/null 2>&1; do
-        if [[ "$waited" -ge "$timeout" ]]; then
+        if [[ "$((SECONDS - start_s))" -ge "$timeout" ]]; then
             die "timed out after ${timeout}s waiting for: $description"
         fi
         sleep 2
-        waited=$((waited + 2))
     done
 }
 

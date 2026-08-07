@@ -153,11 +153,18 @@ assert_true() { # assert_true <command...> — runs the command, asserts exit 0
 try_wait_until() {
     local timeout="$1"
     shift
-    local waited=0
+    # Real elapsed wall-clock time, not "iterations * 2s" — the old
+    # accounting only counted the `sleep 2` between attempts, silently
+    # ignoring how long "$@" itself took to return. Confirmed for real in
+    # CI (round 123): once kubectl calls started carrying their own
+    # --request-timeout=30s, a condition whose command legitimately took
+    # close to 30s per attempt turned a nominal "timeout 60" into several
+    # real minutes, because each 30s-long failed attempt only "cost" 2s
+    # against the budget.
+    local start_s=$SECONDS
     while ! "$@" >/dev/null 2>&1; do
-        [[ "$waited" -ge "$timeout" ]] && return 1
+        [[ "$((SECONDS - start_s))" -ge "$timeout" ]] && return 1
         sleep 2
-        waited=$((waited + 2))
     done
     return 0
 }

@@ -45,6 +45,12 @@ nodelet_restart_with_env() {
         done
     } | sudo tee "$NODELET_OVERRIDE_DROPIN" >/dev/null
     sudo systemctl daemon-reload
+    # Defensive even with nodelet-service.sh's StartLimitIntervalSec=0 fix
+    # in the unit itself — an already-installed node from before that fix
+    # (or any unit still carrying systemd's own default start-limit) would
+    # otherwise fail this restart outright with "start-limit-hit" after
+    # enough back-to-back calls, confirmed for real in CI (round 123).
+    sudo systemctl reset-failed nodelet.service 2>/dev/null || true
     sudo systemctl restart nodelet.service
     _nodelet_wait_ready "node Ready after nodelet restart with env override ($*)"
 }
@@ -54,6 +60,7 @@ nodelet_restart_with_env() {
 nodelet_restore_env() {
     sudo rm -f "$NODELET_OVERRIDE_DROPIN"
     sudo systemctl daemon-reload
+    sudo systemctl reset-failed nodelet.service 2>/dev/null || true
     sudo systemctl restart nodelet.service
     _nodelet_wait_ready "node Ready after nodelet restart (env override removed)"
 }

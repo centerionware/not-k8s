@@ -82,6 +82,15 @@ Description=nodelet — not-k8s node agent (kubelet replacement)
 Documentation=https://github.com/centerionware/not-k8s
 After=k3s.service network-online.target
 Wants=k3s.service network-online.target
+# The e2e suite's nodelet_restart_with_env (round 123) deliberately issues
+# many real `systemctl restart` calls back-to-back to exercise different
+# NODELET_* startup envs — confirmed for real in CI: systemd's own default
+# start-limit (5 starts / 10s) hit this legitimately, failing the restart
+# with "start-limit-hit" and leaving nodelet down for every test after it
+# in the same run. Restart=always/RestartSec=5s below is this unit's real
+# crash-loop backoff; the start-limit is redundant with that for our
+# purposes and only gets in the way of intentional, external restarts.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
