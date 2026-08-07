@@ -1,15 +1,55 @@
-commit: 00e667aed3f1e7977dcb39059025a47798df68b9
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31138883998
-timestamp (UTC): 2026-08-07T01:47:18Z
+commit: 73910094f037a131bcb561141ec2f54b39fdd0f4
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31139197798
+timestamp (UTC): 2026-08-07T01:53:15Z
 exit code: 0
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786067204
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786067561
 ==> Running 142 registered test(s)...
 ▶ test_host_users_false_gets_a_real_user_namespace
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied    (skip: pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted) or a RunPodSandbox error (runtime doesn't support CRI's userns_options at all, e.g. too old containerd))
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==>     [diag] nodelet tail: Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.441342Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.441831Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.441831Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.443428Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.443624Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.624331Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.624959Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.626674Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.627674Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.627906Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.932071Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.932735Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.933696Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.934634Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:38 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:38.935633Z ERROR failed with status 503 Service Unavailable
+Aug 07 01:51:39 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:39.752671Z  WARN service watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 425 (436)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+Aug 07 01:51:39 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:39.754426Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 434 (436)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+Aug 07 01:51:39 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:39.755345Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 422 (436)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+Aug 07 01:51:39 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:39.757150Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 422 (436)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+Aug 07 01:51:39 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:39.763240Z  WARN endpointslice watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 428 (436)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+Aug 07 01:51:40 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:40.137934Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+Aug 07 01:51:40 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:40.250110Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-xchf9 namespace="kube-system" name="coredns" kind=ConfigMap
+Aug 07 01:51:40 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:51:40.296077Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-xchf9 namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+Aug 07 01:52:13 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:52:13.780246Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+Aug 07 01:52:23 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:52:23.926374Z  INFO node status pushed
+Aug 07 01:52:39 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:52:39.484760Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-f2s9t
+Aug 07 01:52:40 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:52:40.241399Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-f2s9t
+Aug 07 01:52:43 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:52:43.797481Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-d7a7e896-dc56-4fa0-92f8-6c20d484bcb0.sock plugin_type=DRAPlugin
+Aug 07 01:52:45 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:52:45.386150Z  WARN ensure_pod failed; retrying once in 5s pod=not-k8s-e2e-1786067561/hostusers-false-check error=creating container
+Aug 07 01:52:45 runnervmvrwv9 run-nodelet.sh[11054]: Caused by:
+Aug 07 01:52:45 runnervmvrwv9 run-nodelet.sh[11054]:     code: 'Unknown error', message: "failed to generate container \"cc94f3d3853f5b608f764a0fc99582c2bb3ecb081e7556095113644c42458abc\" spec: failed to generate spec opts: user namespace config for sandbox is different from container. Sandbox userns config: <nil> - Container userns config: uids:{host_id:100000  length:65536}  gids:{host_id:100000  length:65536}"
+Aug 07 01:52:46 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:52:46.136179Z  WARN ensure_pod failed; retrying once in 5s pod=not-k8s-e2e-1786067561/hostusers-false-check error=creating container
+Aug 07 01:52:46 runnervmvrwv9 run-nodelet.sh[11054]: Caused by:
+Aug 07 01:52:46 runnervmvrwv9 run-nodelet.sh[11054]:     code: 'Unknown error', message: "failed to generate container \"4c6ad74eac14d6386b2211f84a0b3e0943dcb20446ea893e65464e27c8165e96\" spec: failed to generate spec opts: user namespace config for sandbox is different from container. Sandbox userns config: <nil> - Container userns config: uids:{host_id:100000  length:65536}  gids:{host_id:100000  length:65536}"
+Aug 07 01:52:50 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:52:50.458085Z  WARN retry ensure_pod also failed — waiting for the next watch event instead of retrying indefinitely pod=not-k8s-e2e-1786067561/hostusers-false-check error=creating container
+Aug 07 01:52:50 runnervmvrwv9 run-nodelet.sh[11054]: Caused by:
+Aug 07 01:52:50 runnervmvrwv9 run-nodelet.sh[11054]:     code: 'Unknown error', message: "failed to generate container \"a5a14969ed6ca750aac38178fcb035eef42f03b415c96814be0f6b551f06bca4\" spec: failed to generate spec opts: user namespace config for sandbox is different from container. Sandbox userns config: <nil> - Container userns config: uids:{host_id:100000  length:65536}  gids:{host_id:100000  length:65536}"
+Aug 07 01:52:51 runnervmvrwv9 run-nodelet.sh[11054]: 2026-08-07T01:52:51.159989Z  WARN retry ensure_pod also failed — waiting for the next watch event instead of retrying indefinitely pod=not-k8s-e2e-1786067561/hostusers-false-check error=creating container
+Aug 07 01:52:51 runnervmvrwv9 run-nodelet.sh[11054]: Caused by:
+Aug 07 01:52:51 runnervmvrwv9 run-nodelet.sh[11054]:     code: 'Unknown error', message: "failed to generate container \"567c407cdf43825f216fcbc1337c5d94ed02fa7f2b68cc93b588238c2825a9f7\" spec: failed to generate spec opts: user namespace config for sandbox is different from container. Sandbox userns config: <nil> - Container userns config: uids:{host_id:100000  length:65536}  gids:{host_id:100000  length:65536}"
+    (skip: pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted) or a RunPodSandbox/CreateContainer error (runtime doesn't support CRI's userns_options at all, e.g. too old containerd, or doesn't accept it on a per-container NamespaceOption))
   ○ SKIP (32s)
 
 ════════════════════════════════════════
 Results: 0 passed, 0 failed, 1 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786067204...
+==> Cleaning up test namespace not-k8s-e2e-1786067561...
