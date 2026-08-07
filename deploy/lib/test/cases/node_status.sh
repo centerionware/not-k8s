@@ -70,6 +70,16 @@ test_node_reports_hugepages_capacity_when_reserved() {
         for d in /sys/kernel/mm/hugepages/*/; do
             warn "[diag]   $d nr_hugepages=$(cat "$d/nr_hugepages" 2>/dev/null) free_hugepages=$(cat "$d/free_hugepages" 2>/dev/null) resv_hugepages=$(cat "$d/resv_hugepages" 2>/dev/null) surplus_hugepages=$(cat "$d/surplus_hugepages" 2>/dev/null)"
         done
+        # Round 124: confirmed live that hugepages_capacity_map() (node.rs)
+        # cannot itself produce this — unit tests
+        # (node_tests/hugepages_capacity_map.rs) explicitly assert a
+        # zero-count pool is omitted, never inserted as "0", and a full
+        # repo grep found no other Rust code or manifest that writes a
+        # "hugepages-*" capacity key at all. managedFields records which
+        # field manager actually wrote each field server-side — hard
+        # evidence instead of more guessing about who's responsible.
+        warn "[diag] full managedFields (kubectl hides these unless --show-managed-fields is passed): $(kubectl get node "$n" -o json --show-managed-fields | grep -o '"manager":"[^"]*"' | sort | uniq -c)"
+        warn "[diag] raw managedFields blob: $(kubectl get node "$n" -o jsonpath='{.metadata.managedFields}' --show-managed-fields)"
     fi
     assert_true bash -c "[[ '$cap' -gt 0 ]]" "capacity.$key should be a real positive byte count (got $cap)"
     assert_eq "$alloc" "$cap" "$key allocatable should equal capacity (no reservation knob for hugepages)"
