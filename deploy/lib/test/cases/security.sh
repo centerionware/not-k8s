@@ -257,26 +257,16 @@ EOF
         # Round 123 diagnostics: this now reproduces live (previously
         # masked by the write-EACCES bug fixed alongside this round's chown
         # fix -- this is the first time this check ever saw real uid_map
-        # content). First attempt at this checked the APP CONTAINER's own
-        # OCI spec and found no uidMappings/gidMappings at all -- but that
-        # was checking the wrong object: a container JOINS its pod's
-        # already-created user namespace by path reference
-        # (linux.namespaces: [{type: user, path: /proc/<sandbox-pid>/ns/user}]),
-        # it doesn't redeclare uidMappings itself; only the SANDBOX's own
-        # (pause container's) OCI spec, built straight from RunPodSandbox's
-        # userns_options, would actually carry them. Second attempt tried
-        # parsing the sandbox id out of containerd's own journal via
-        # `journalctl -u containerd`, which came back empty -- switched to
-        # asking containerd directly instead (`ctr containers list` with
-        # its own label filter), which doesn't depend on journal
-        # availability/rotation/unit-name assumptions at all.
-        local sandbox_id
-        sandbox_id="$(sudo ctr -n k8s.io containers list -q "labels.\"io.kubernetes.pod.name\"==$name,labels.\"io.cri-containerd.kind\"==sandbox" 2>/dev/null | head -1 || true)"
-        log "    [diag] sandbox id: ${sandbox_id:-<not found via ctr containers list>}"
-        if [[ -n "$sandbox_id" ]]; then
-            log "    [diag] runc OCI spec linux.uidMappings/gidMappings/namespaces for this SANDBOX:"
-            log "$(sudo find /run/containerd/io.containerd.runtime.v2.task -name config.json -path "*$sandbox_id*" -exec cat {} \; 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); l=d.get("linux",{}); print("uidMappings:", l.get("uidMappings")); print("gidMappings:", l.get("gidMappings")); print("namespaces:", [n for n in l.get("namespaces",[]) if n.get("type")=="user"])' 2>&1)"
-        fi
+        # content). Two earlier attempts at finding this pod's sandbox id
+        # (grepping the app container's OCI spec directly, then
+        # journalctl -u containerd, then a guessed ctr label filter) all
+        # came back empty -- rather than guess a fourth filter blind, this
+        # just dumps every sandbox container's own labels unconditionally,
+        # so the real label keys/values this containerd version actually
+        # uses are visible in the transcript to build a correct filter
+        # from next round.
+        log "    [diag] all sandbox containers and their labels:"
+        log "$(sudo ctr -n k8s.io containers list -q 2>/dev/null | while read -r cid; do echo "--- $cid ---"; sudo ctr -n k8s.io containers info "$cid" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("Labels", {}))' 2>&1; done)"
         delete_pod_if_exists "$name"
         die "uid_map shows the host's own full identity range ('0 0 4294967295') — this container is NOT in a user namespace at all; check runtime/cri.rs's userns_mapping wiring and that the CRI runtime actually honors LinuxSandboxSecurityContext.namespace_options.userns_options"
     fi
