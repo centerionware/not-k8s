@@ -383,6 +383,16 @@ EOF
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
         skip_test "second pod never reached Running reusing the same PVC + fsGroup"
     fi
+    # Temporary diagnostic (round 123): capture pod2's own state the
+    # MOMENT it's confirmed Running, immediately, before anything else —
+    # a prior run's kctl exec reported "pod not found" moments after this
+    # same check passed, and the CSI driver's own hostpath plugin was
+    # separately observed being torn down/restarted around the same
+    # window (losing its in-memory volume registry). This settles whether
+    # pod2 itself is unstable, or whether it's the CSI driver underneath
+    # it that's the real moving part.
+    warn "[diag] pod2 right after Running: $(kctl get pod "$second" -o wide 2>&1)"
+    warn "[diag] default-ns pods (CSI driver state): $(kubectl get pods -n default -o wide 2>&1)"
 
     # If OnRootMismatch's skip were somehow broken (e.g. it recursed
     # every time regardless of policy), this still wouldn't distinguish
