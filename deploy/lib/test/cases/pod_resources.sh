@@ -61,12 +61,21 @@ spec:
 EOF
     wait_until 60 "$name Running" pod_is_phase "$name" Running
 
+    # Round 124 (found live in CI): grpcurl's protoparse rejects an
+    # absolute -proto path with "must specify at least one import path if
+    # any absolute file paths are given" — even though podresources.proto
+    # has zero imports of its own, grpcurl still demands an -import-path
+    # whenever the -proto path itself is absolute (which $proto, built from
+    # $REPO_ROOT, always is here).
+    local proto_dir
+    proto_dir="$(dirname "$proto")"
+
     local list_response
-    list_response="$(sudo grpcurl -plaintext -unix -proto "$proto" "$sock" v1.PodResourcesLister/List 2>&1)"
+    list_response="$(sudo grpcurl -plaintext -unix -import-path "$proto_dir" -proto "$proto" "$sock" v1.PodResourcesLister/List 2>&1)"
     assert_contains "$list_response" "$name" "PodResourcesLister/List should include the running pod's own name"
 
     local get_response
-    get_response="$(sudo grpcurl -plaintext -unix -proto "$proto" -d "{\"podName\":\"does-not-exist\",\"podNamespace\":\"$TEST_NAMESPACE\"}" "$sock" v1.PodResourcesLister/Get 2>&1)"
+    get_response="$(sudo grpcurl -plaintext -unix -import-path "$proto_dir" -proto "$proto" -d "{\"podName\":\"does-not-exist\",\"podNamespace\":\"$TEST_NAMESPACE\"}" "$sock" v1.PodResourcesLister/Get 2>&1)"
     delete_pod_if_exists "$name"
     assert_contains "$get_response" "NotFound" "PodResourcesLister/Get for a nonexistent pod should return a real NotFound gRPC status, not a crash or an empty-but-ok response"
 }

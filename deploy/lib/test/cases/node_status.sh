@@ -54,6 +54,23 @@ test_node_reports_hugepages_capacity_when_reserved() {
     cap="$(kubectl get node "$n" -o jsonpath="{.status.capacity.$key}")"
     alloc="$(kubectl get node "$n" -o jsonpath="{.status.allocatable.$key}")"
     assert_not_empty "$cap" "node capacity.$key"
+    # Round 124 (found live in CI): hugepages_capacity_map() (node.rs)
+    # unconditionally skips inserting any size whose nr_hugepages reads 0 —
+    # there should be no code path that can produce a "0" value for a key
+    # that's present at all. A real "$key: 0" sighting here means either
+    # that guard has a real bug, or (more likely for a 1Gi pool
+    # specifically, which needs a large *physically contiguous* chunk a
+    # VM's memory can struggle to actually back) the kernel's own
+    # reservation for this size is genuinely racing/flapping between
+    # nodelet's read and this assertion. Dumped raw on failure instead of
+    # guessing further.
+    if [[ "$cap" == "0" ]]; then
+        warn "[diag] full Node.status.capacity: $cap_json"
+        warn "[diag] raw sysfs state:"
+        for d in /sys/kernel/mm/hugepages/*/; do
+            warn "[diag]   $d nr_hugepages=$(cat "$d/nr_hugepages" 2>/dev/null) free_hugepages=$(cat "$d/free_hugepages" 2>/dev/null) resv_hugepages=$(cat "$d/resv_hugepages" 2>/dev/null) surplus_hugepages=$(cat "$d/surplus_hugepages" 2>/dev/null)"
+        done
+    fi
     assert_true bash -c "[[ '$cap' -gt 0 ]]" "capacity.$key should be a real positive byte count (got $cap)"
     assert_eq "$alloc" "$cap" "$key allocatable should equal capacity (no reservation knob for hugepages)"
 }
