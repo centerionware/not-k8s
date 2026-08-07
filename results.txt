@@ -1,84 +1,21 @@
-commit: 50ebf58e81fd6a6b5e19c0d71a98fb39e1cd4eba
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31170008544
-timestamp (UTC): 2026-08-07T10:37:31Z
-exit code: 1
+commit: fec70d34af94045b03a527cf47b278c197e3cbfd
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31170928884
+timestamp (UTC): 2026-08-07T10:45:03Z
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786098574
+==> Test namespace: not-k8s-e2e-1786099402
 ==> Running 151 registered test(s)...
-▶ test_dynamic_csi_registration_actually_registered_the_driver
-  ✔ PASS (1s)
-▶ test_node_reports_volumes_in_use_for_a_csi_volume
-  ✔ PASS (112s)
 ▶ test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
-==> WARNING: old VolumeAttachment for pvc-38fb009e-7ebd-407a-92c2-e3b95d194969 didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
-==> WARNING: [diag] pod2 right after Running: NAME                     READY   STATUS    RESTARTS   AGE   IP           NODE            NOMINATED NODE   READINESS GATES
-fsgroup-policy-check-2   1/1     Running   0          2s    10.42.0.10   runnervmd93pd   <none>           <none>
-==> WARNING: [diag] default-ns pods (CSI driver state): NAME                   READY   STATUS    RESTARTS   AGE     IP          NODE            NOMINATED NODE   READINESS GATES
-csi-hostpath-socat-0   1/1     Running   0          3m39s   10.42.0.5   runnervmd93pd   <none>           <none>
-csi-hostpathplugin-0   8/8     Running   0          3m40s   10.42.0.4   runnervmd93pd   <none>           <none>
-smoke-test             1/1     Running   0          4m3s    10.42.0.3   runnervmd93pd   <none>           <none>
-==> WARNING: never got a stable 'stat /data' read from fsgroup-policy-check-2 within 30s — pod may still be unstable; using whatever the last attempt captured
-==> WARNING: [diag] /data on fsgroup-policy-check-2: ls: /data: No such file or directory
-command terminated with exit code 1
-==> WARNING: [diag] nodelet log mentioning fsgroup-policy-check-2 or fsGroup/skip_fs_group_change:
-==> FATAL: assertion failed: the second pod reusing the same PVC should still see fsGroup 4322 on /data, whether OnRootMismatch skipped the chown or not — got '', want '4322'
-  ✘ FAIL (127s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 07 10:33:16 runnervmd93pd run-nodelet.sh[10651]:     0: transport error
-    Aug 07 10:33:16 runnervmd93pd run-nodelet.sh[10651]:     1: Connection refused (os error 111)
-    Aug 07 10:33:16 runnervmd93pd run-nodelet.sh[10651]:     2: Connection refused (os error 111)
-    Aug 07 10:33:26 runnervmd93pd run-nodelet.sh[10651]: 2026-08-07T10:33:26.110313Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-cecf04b3-e80a-4c3b-beac-f0207e54fe00-reg.sock error=connecting to plugin registration socket
-    Aug 07 10:33:26 runnervmd93pd run-nodelet.sh[10651]: Caused by:
-    Aug 07 10:33:26 runnervmd93pd run-nodelet.sh[10651]:     0: transport error
-    Aug 07 10:33:26 runnervmd93pd run-nodelet.sh[10651]:     1: Connection refused (os error 111)
-    Aug 07 10:33:26 runnervmd93pd run-nodelet.sh[10651]:     2: Connection refused (os error 111)
-    Aug 07 10:33:26 runnervmd93pd run-nodelet.sh[10651]: 2026-08-07T10:33:26.349482Z  INFO node status pushed
-    Aug 07 10:33:34 runnervmd93pd run-nodelet.sh[10651]: 2026-08-07T10:33:34.614585Z  INFO torn down pod=not-k8s-e2e-1786098574/fsgroup-policy-check-2
-    Aug 07 10:33:34 runnervmd93pd run-nodelet.sh[10651]: 2026-08-07T10:33:34.633303Z  WARN CSI teardown: failed to resolve PersistentVolumeClaim; volume left mounted volume=data claim=fsgroup-policy-check-claim error=fetching PersistentVolumeClaim fsgroup-policy-check-claim
-    Aug 07 10:33:34 runnervmd93pd run-nodelet.sh[10651]: Caused by:
-    Aug 07 10:33:34 runnervmd93pd run-nodelet.sh[10651]:     0: ApiError: persistentvolumeclaims "fsgroup-policy-check-claim" not found: NotFound (Status { status: Some(Failure), code: 404, message: "persistentvolumeclaims \"fsgroup-policy-check-claim\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "fsgroup-policy-check-claim", group: "", kind: "persistentvolumeclaims", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 07 10:33:34 runnervmd93pd run-nodelet.sh[10651]:     1: persistentvolumeclaims "fsgroup-policy-check-claim" not found: NotFound
-    Aug 07 10:33:34 runnervmd93pd run-nodelet.sh[10651]: 2026-08-07T10:33:34.633407Z  INFO torn down pod=not-k8s-e2e-1786098574/fsgroup-policy-check-2
-▶ test_pod_exceeding_its_active_deadline_is_terminated
-  ✔ PASS (36s)
-▶ test_host_users_volume_ownership_translation_is_correct
-  ✔ PASS (32s)
-▶ test_mount_propagation_host_to_container_still_mounts_normally
-  ✔ PASS (32s)
-▶ test_mount_propagation_host_to_container_sees_a_new_host_mount
-  ✔ PASS (32s)
-▶ test_mount_propagation_private_default_does_not_see_a_new_host_mount
-  ✔ PASS (8s)
-▶ test_config_file_sets_a_value_env_did_not_override
-  ✔ PASS (3s)
-▶ test_config_file_precedence_a_real_env_var_still_wins
-  ✔ PASS (3s)
-▶ test_config_dir_merges_files_in_filename_order
-  ✔ PASS (2s)
-▶ test_log_rotation_creates_a_rotated_file
-==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786098574_log-rotation_299ce4f0-b2fb-4a0f-8d95-df63bc34026b (log_rotate_interval, default 10s)...
-  ✔ PASS (13s)
-▶ test_limited_swap_gives_burstable_pods_proportional_swap
-  ✔ PASS (70s)
-▶ test_client_certificate_authentication_works
-.......+...+.....+...+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+...+...........+...+...+....+...+.....+......+.+...+...+........+...............+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*........+..+...+....+...+............+..+.+...............+...+..............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-.+..+.......+........+....+........+..........+...+..+...+...+......+.+...+...........+...+.+.....................+...........+...+.......+.....+.........+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+...+...........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..................+......+.........+..+...+...+...+................+.....+...+.............+........+................+...........+..........+..+..........+..+......+....+......+...+..+.......+.....+.......+..............+......+...+...+....+...+......+...........+...+.....................+.......+.................+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
------
-............+..+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+...+......+....+.....+.+.....+.+...+..+.......+.....+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+..+.........+...+......+.+..................+..+.............+.....+.............+..............+...+.+...........+......+....+...+...+..+...+...+..........+.....+..........+......+........+.+..+....+...+.....+.......+........+............+...+......+.+........+.............+........+....+......+..+....+...............+..............+......+..........+.........+.....+...........................+.........+...+.......+.........+......+......+..+..........+...+...+.....+.+.....+...+.+.....+....+..+.+.....+.........+....+.........+.....+.+...........+...+.+.....+.......+..+.+......+........+............+...+...+...................+..................+........+..................+....+...+...+......+...+..+.+...+.....+.......+........+.+.....+.+.....+...+.+.........+............+.....+.......+.....+...+...................+........+......+.+.........+...........+...+................+..+...+..........+..+.......+.....+.+............+........+......+.+..+............+.+..+...+...+.+...............+......+............+..+.+..+...+....+........+.+.....+.......+...+..+...................+...........+.......+...+.........+...+..+.+...+...........+.............+..+.........+.+...+.....+.......+......+...+.................+...............+.......+...+..............+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-....+...+....+......+.....+....+..+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*......+..+......+.+.........+..+....+...........+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+.......+...+.....+.......+..+...+.+.........+...............+...+..+......+.+........+......+.......+...+.....+.+...+............+.........+.........+............+.....+...+............................+...+...........+....+..+.......+...+..+...+....+...+..+.........+....+.....+.+..+.......+...............+........+.......+..+.+...+.....+................+...........+...+.+.....+......+............+.+......+........+......+.+.........+..+.........+...+......+...............+.+.....+...+................+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
------
-Certificate request self-signature ok
-subject=CN = alice, O = system:masters
-....+..+...+................+..+...+......+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+....+...+..+.+......+...+.....+......+....+...+...+......+........................+.....+.........+...+...+.+.........+..+......................+..+...+......+.+...........+..........+..+......+.+........+.......+......+..+...+....+...+..+....+.........+..+...+.+..+..................+.......+.....+....+.....+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-..........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*........+...+.......+.........+.....+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+......+..+...+.......+........................+........+.......+......+..+.+............+.....+.........+.............+..+.........+......+...+.......+........+...+...+.......+..+.+..+...+....+...........+......+.........+....+...+.........+...........+...+......+....+..+.......+........+....+.........+..+...+....+...+...............+........+.+........+.......+......+...+.....+....+...............+..+.........+....+............+.....+.........+.+.....+.+.....+....+......+.....+.............+..+.......+..+......+............+...+...+.+...+.....+...+....+...+......+.....+.....................+.+..+...+...+...........................+....+........+.......+........+...+...+.+........+.......+......+..+...+...+.......+........+...................+.....+.......+.....+......+...+.......+........+..........+.....+......+.+...+..+......................+......+.....+.........+...............+...+.......+...+............+...........+.+.....+....+......+.....+......+...............+.......+.....+.+...........+......+....+.........+......+...+.....+............+...+.+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
------
-  ✔ PASS (4s)
+==> WARNING: old VolumeAttachment for pvc-d4d37dc8-63ed-4979-ba69-e261b777bdad didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
+==> WARNING: [diag] pod2 right after Running: NAME                     READY   STATUS    RESTARTS   AGE   IP          NODE            NOMINATED NODE   READINESS GATES
+fsgroup-policy-check-2   1/1     Running   0          2s    10.42.0.9   runnervmvrwv9   <none>           <none>
+==> WARNING: [diag] default-ns pods (CSI driver state): NAME                   READY   STATUS    RESTARTS   AGE    IP          NODE            NOMINATED NODE   READINESS GATES
+csi-hostpath-socat-0   1/1     Running   0          100s   10.42.0.5   runnervmvrwv9   <none>           <none>
+csi-hostpathplugin-0   8/8     Running   0          101s   10.42.0.4   runnervmvrwv9   <none>           <none>
+smoke-test             1/1     Running   0          2m5s   10.42.0.3   runnervmvrwv9   <none>           <none>
+  ✔ PASS (100s)
 
 ════════════════════════════════════════
-Results: 13 passed, 1 failed, 0 skipped
-Failed:
-  - test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786098574...
+==> Cleaning up test namespace not-k8s-e2e-1786099402...
