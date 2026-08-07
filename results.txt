@@ -1,18 +1,15 @@
 commit: 00e667aed3f1e7977dcb39059025a47798df68b9
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31138513481
-timestamp (UTC): 2026-08-07T01:40:59Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31138883998
+timestamp (UTC): 2026-08-07T01:47:18Z
 exit code: 0
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786066793
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786067204
 ==> Running 142 registered test(s)...
 ▶ test_host_users_false_gets_a_real_user_namespace
 kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied    (skip: pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted) or a RunPodSandbox error (runtime doesn't support CRI's userns_options at all, e.g. too old containerd))
   ○ SKIP (32s)
-▶ test_host_users_false_volume_still_reads_and_writes_normally
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied    (skip: pod never reached Running with hostUsers: false and a volume mounted — check build_mounts()/resolve_volumes() wiring in runtime/cri/volumes_pure.rs and volumes_resolve.rs, or run_sandbox()'s own userns_options setup)
-  ○ SKIP (33s)
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 2 skipped
+Results: 0 passed, 0 failed, 1 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786066793...
+==> Cleaning up test namespace not-k8s-e2e-1786067204...
