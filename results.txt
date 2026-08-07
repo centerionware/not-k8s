@@ -1,18 +1,16 @@
-commit: 9e8ab66e08df7f395ffb34f26bf0b9a6871e1f94
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31139649429
-timestamp (UTC): 2026-08-07T02:02:13Z
+commit: eca1c577c264b51a2cc14d073b541ff6bea681fd
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31139857231
+timestamp (UTC): 2026-08-07T02:05:27Z
 exit code: 0
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786068068
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786068290
 ==> Running 142 registered test(s)...
 ▶ test_host_users_false_gets_a_real_user_namespace
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied    (skip: pod never reached Running with hostUsers: false — check nodelet's logs for 'user namespace: no free UID/GID range available' (pool exhausted), or for CreateContainer's own 'user namespace config for sandbox is different from container' error (a real containerd-side gap where RunPodSandbox doesn't persist the sandbox's userns config anywhere CreateContainer's own consistency check can read it back — confirmed on containerd 1.7.23; a genuine environment limitation this suite can't work around, not a nodelet bug — nodelet's own container-level userns_options request is correct and matches real kubelet's))
-  ○ SKIP (32s)
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (4s)
 ▶ test_host_users_false_volume_still_reads_and_writes_normally
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied    (skip: pod never reached Running with hostUsers: false and a volume mounted — check build_mounts()/resolve_volumes() wiring in runtime/cri/volumes_pure.rs and volumes_resolve.rs, run_sandbox()'s own userns_options setup, or the real-userns sibling test's own documented containerd 1.7.23 CreateContainer gap)
-  ○ SKIP (33s)
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (33s)
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 2 skipped
+Results: 2 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786068068...
+==> Cleaning up test namespace not-k8s-e2e-1786068290...
