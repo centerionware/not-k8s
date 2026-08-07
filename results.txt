@@ -1,56 +1,47 @@
-commit: 9d5375ddbea5ed836e6aa8b656c430930f65e558
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31159649757
-timestamp (UTC): 2026-08-07T08:03:55Z
+commit: 58e1fd900f9941deb97df7f6297e2476baf93d8b
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31160285472
+timestamp (UTC): 2026-08-07T08:11:28Z
 exit code: 1
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786089665
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786090213
 ==> Running 151 registered test(s)...
-▶ test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> WARNING: old VolumeAttachment for pvc-53810a77-6351-4a00-a823-5f60ffe018bc didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> WARNING: [diag] pod2 right after Running: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedNAME                     READY   STATUS    RESTARTS   AGE   IP          NODE            NOMINATED NODE   READINESS GATES
-fsgroup-policy-check-2   1/1     Running   0          2s    10.42.0.9   runnervmvrwv9   <none>           <none>
-==> WARNING: [diag] default-ns pods (CSI driver state): kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedNAME                   READY   STATUS    RESTARTS   AGE     IP          NODE            NOMINATED NODE   READINESS GATES
-csi-hostpath-socat-0   1/1     Running   0          112s    10.42.0.5   runnervmvrwv9   <none>           <none>
-csi-hostpathplugin-0   8/8     Running   0          113s    10.42.0.4   runnervmvrwv9   <none>           <none>
-smoke-test             1/1     Running   0          2m20s   10.42.0.3   runnervmvrwv9   <none>           <none>
-  ✔ PASS (99s)
 ▶ test_log_rotation_creates_a_rotated_file
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786089665_log-rotation_478a66e4-888e-4025-90b9-6dfc0c70cfd7 (log_rotate_interval, default 10s)...
-==> WARNING: [diag] couldn't resolve the app container's own ID via crictl ps
-==> WARNING: [diag] contents of /var/log/pods/not-k8s-e2e-1786089665_log-rotation_478a66e4-888e-4025-90b9-6dfc0c70cfd7: total 360
-drwxr-xr-x  2 root root  4096 Aug  7 08:03 .
-drwxr-x--- 11 root root  4096 Aug  7 08:02 ..
--rw-r-----  1 root root 47484 Aug  7 08:03 app_0.log
--rw-r-----  1 root root 76452 Aug  7 08:03 app_0.log.1
--rw-r-----  1 root root 76619 Aug  7 08:03 app_0.log.2
--rw-r-----  1 root root 76612 Aug  7 08:03 app_0.log.3
--rw-r-----  1 root root 76519 Aug  7 08:03 app_0.log.4
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786090213_log-rotation_d28142c0-c723-40c4-83d1-98af5d81b0a7 (log_rotate_interval, default 10s)...
+==> WARNING: [diag] crictl inspect log_path for container e0ee6f69f1a58e837eaaa7bc109d153fb093aeab6c1d25dbfadc6241fdf8a90d: /var/log/pods/not-k8s-e2e-1786090213_log-rotation_d28142c0-c723-40c4-83d1-98af5d81b0a7/app_0.log
+==> WARNING: [diag] contents of /var/log/pods/not-k8s-e2e-1786090213_log-rotation_d28142c0-c723-40c4-83d1-98af5d81b0a7: total 380
+drwxr-xr-x 2 root root  4096 Aug  7 08:11 .
+drwxr-x--- 9 root root  4096 Aug  7 08:10 ..
+-rw-r----- 1 root root 65768 Aug  7 08:11 app_0.log
+-rw-r----- 1 root root 77188 Aug  7 08:11 app_0.log.1
+-rw-r----- 1 root root 77063 Aug  7 08:11 app_0.log.2
+-rw-r----- 1 root root 77158 Aug  7 08:10 app_0.log.3
+-rw-r----- 1 root root 77166 Aug  7 08:10 app_0.log.4
 ==> WARNING: [diag] nodelet log mentioning rotation:
-==> WARNING: [diag]   Aug 07 08:02:50 runnervmvrwv9 run-nodelet.sh[17996]: 2026-08-07T08:02:50.578815Z  INFO re-materializing volumes after referenced object changed pod=not-k8s-e2e-1786089665/log-rotation namespace="not-k8s-e2e-1786089665" name="kube-root-ca.crt" kind=ConfigMap
+==> WARNING: [diag]   Aug 07 08:10:20 runnervmvrwv9 run-nodelet.sh[16815]: 2026-08-07T08:10:20.690607Z  INFO re-materializing volumes after referenced object changed pod=not-k8s-e2e-1786090213/log-rotation namespace="not-k8s-e2e-1786090213" name="kube-root-ca.crt" kind=ConfigMap
 ==> FATAL: no rotated log file appeared within 60s despite NODELET_CONTAINER_LOG_MAX_SIZE_BYTES=4096 — check log rotation wiring
-  ✘ FAIL (68s, exit 1)
+  ✘ FAIL (71s, exit 1)
   [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
   [diag] nodelet tail:
-    Aug 07 08:03:52 runnervmvrwv9 run-nodelet.sh[24564]:     1: Connection refused (os error 111)
-    Aug 07 08:03:52 runnervmvrwv9 run-nodelet.sh[24564]:     2: Connection refused (os error 111)
-    Aug 07 08:03:52 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:52.848018Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-ea998845-5d3b-47a5-979f-79d01b6a0952.sock plugin_type=DRAPlugin
-    Aug 07 08:03:52 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:52.851098Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 07 08:03:52 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:52.875627Z  INFO node registered and Ready node=runnervmvrwv9
-    Aug 07 08:03:52 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:52.875979Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
-    Aug 07 08:03:52 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:52.877203Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 07 08:03:52 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:52.877857Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 07 08:03:52 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:52.879872Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
-    Aug 07 08:03:53 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:53.467943Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 08:03:53 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:53.492494Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 08:03:53 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:53.537026Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 08:03:53 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:53.565685Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-ml7kx namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 08:03:53 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:53.602425Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-czlmd namespace="kube-system" name="coredns" kind=ConfigMap
-    Aug 07 08:03:54 runnervmvrwv9 run-nodelet.sh[24564]: 2026-08-07T08:03:54.466167Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-czlmd namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.020955Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.024983Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.028361Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.050643Z  INFO node registered and Ready node=runnervmvrwv9
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.051127Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.051775Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.051953Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.053861Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.086801Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-9e500596-b607-494c-b271-2df7d45ee000.sock plugin_type=DRAPlugin
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.586382Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.611466Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.653097Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.687730Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-bjd56 namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 08:11:25 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:25.738798Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-zjtp7 namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 07 08:11:26 runnervmvrwv9 run-nodelet.sh[23583]: 2026-08-07T08:11:26.579460Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-zjtp7 namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
 
 ════════════════════════════════════════
-Results: 1 passed, 1 failed, 0 skipped
+Results: 0 passed, 1 failed, 0 skipped
 Failed:
   - test_log_rotation_creates_a_rotated_file
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786089665...
+==> Cleaning up test namespace not-k8s-e2e-1786090213...
