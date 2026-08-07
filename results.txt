@@ -1,41 +1,14 @@
-commit: 9b120c51d1e1cd8a729b0ed5c94291ee1855548e
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31223453528
-timestamp (UTC): 2026-08-07T22:24:19Z
-exit code: 1
+commit: 2a7197ec15ee97fc96e3c97168d863c8fbfbc33b
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31224457273
+timestamp (UTC): 2026-08-07T22:41:38Z
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786141455
+==> Test namespace: not-k8s-e2e-1786142497
 ==> Running 151 registered test(s)...
 ▶ test_node_reports_hugepages_capacity_when_reserved
-==> WARNING: [diag] full Node.status.capacity: {"cpu":"4","ephemeral-storage":"154894188544","hugepages-1Gi":"0","hugepages-2Mi":"0","memory":"16766418944","pods":"110"}
-==> WARNING: [diag] raw sysfs state:
-==> WARNING: [diag]   /sys/kernel/mm/hugepages/hugepages-1048576kB/ nr_hugepages=0 free_hugepages=0 resv_hugepages=0 surplus_hugepages=0
-==> WARNING: [diag]   /sys/kernel/mm/hugepages/hugepages-2048kB/ nr_hugepages=64 free_hugepages=64 resv_hugepages=0 surplus_hugepages=0
-==> WARNING: [diag] full managedFields (kubectl hides these unless --show-managed-fields is passed): 
-==> WARNING: [diag] raw managedFields blob: [{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:metadata":{"f:labels":{"f:kubernetes.io/arch":{},"f:kubernetes.io/hostname":{},"f:kubernetes.io/os":{},"f:node.kubernetes.io/instance-type":{},"f:nodelet.dev/managed":{}}},"f:spec":{}},"manager":"nodelet","operation":"Apply","time":"2026-08-07T22:23:20Z"},{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:metadata":{"f:finalizers":{".":{},"v:\"wrangler.cattle.io/node\"":{}}}},"manager":"k3s-supervisor@runnervmvrwv9","operation":"Update","time":"2026-08-07T22:21:07Z"},{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:metadata":{"f:annotations":{"f:flannel.alpha.coreos.com/backend-data":{},"f:flannel.alpha.coreos.com/backend-type":{},"f:flannel.alpha.coreos.com/kube-subnet-manager":{},"f:flannel.alpha.coreos.com/public-ip":{}}}},"manager":"flanneld","operation":"Update","subresource":"status","time":"2026-08-07T22:23:18Z"},{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:metadata":{"f:annotations":{".":{},"f:alpha.kubernetes.io/provided-node-ip":{},"f:k3s.io/hostname":{},"f:k3s.io/internal-ip":{},"f:k3s.io/node-args":{},"f:k3s.io/node-config-hash":{},"f:k3s.io/node-env":{},"f:node.alpha.kubernetes.io/ttl":{},"f:volumes.kubernetes.io/controller-managed-attach-detach":{}},"f:labels":{".":{},"f:beta.kubernetes.io/arch":{},"f:beta.kubernetes.io/os":{},"f:kubernetes.io/hostname":{},"f:kubernetes.io/os":{}}},"f:spec":{"f:podCIDR":{},"f:podCIDRs":{".":{},"v:\"10.42.0.0/24\"":{}}}},"manager":"k3s","operation":"Update","time":"2026-08-07T22:23:20Z"},{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:status":{"f:allocatable":{"f:ephemeral-storage":{},"f:memory":{}},"f:capacity":{"f:ephemeral-storage":{},"f:memory":{}},"f:conditions":{"k:{\"type\":\"DiskPressure\"}":{"f:lastHeartbeatTime":{},"f:lastTransitionTime":{},"f:message":{},"f:reason":{},"f:status":{}},"k:{\"type\":\"MemoryPressure\"}":{"f:lastHeartbeatTime":{},"f:lastTransitionTime":{},"f:message":{},"f:reason":{},"f:status":{}},"k:{\"type\":\"PIDPressure\"}":{"f:lastHeartbeatTime":{},"f:lastTransitionTime":{},"f:message":{},"f:reason":{},"f:status":{}},"k:{\"type\":\"Ready\"}":{"f:lastHeartbeatTime":{},"f:lastTransitionTime":{},"f:message":{},"f:reason":{},"f:status":{}}},"f:nodeInfo":{"f:architecture":{},"f:containerRuntimeVersion":{},"f:kubeProxyVersion":{},"f:kubeletVersion":{}},"f:runtimeHandlers":{}}},"manager":"unknown","operation":"Update","subresource":"status","time":"2026-08-07T22:23:20Z"},{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:metadata":{"f:labels":{"f:topology.hostpath.csi/node":{}}}},"manager":"unknown","operation":"Update","time":"2026-08-07T22:24:00Z"}]
-==> FATAL: assertion failed: command failed: bash -c [[ '0' -gt 0 ]] capacity.hugepages-1Gi should be a real positive byte count (got 0)
-  ✘ FAIL (1s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 07 22:23:35 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:23:35.145347Z ERROR failed with status 503 Service Unavailable
-    Aug 07 22:23:35 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:23:35.147285Z ERROR failed with status 503 Service Unavailable
-    Aug 07 22:23:35 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:23:35.151226Z ERROR failed with status 503 Service Unavailable
-    Aug 07 22:23:35 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:23:35.152269Z ERROR failed with status 503 Service Unavailable
-    Aug 07 22:23:35 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:23:35.601182Z  WARN endpointslice watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 417 (426)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 22:23:35 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:23:35.605983Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 425 (426)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 22:23:35 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:23:35.609771Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 415 (426)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 22:23:35 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:23:35.610980Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 415 (426)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 22:23:35 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:23:35.614836Z  WARN service watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 415 (426)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 22:23:36 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:23:36.315785Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 22:23:36 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:23:36.391694Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-p6jv8 namespace="kube-system" name="coredns" kind=ConfigMap
-    Aug 07 22:23:36 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:23:36.422065Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-p6jv8 namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 22:24:00 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:24:00.270140Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 07 22:24:14 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:24:14.458048Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-jxtgc
-    Aug 07 22:24:14 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-07T22:24:14.944749Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-jxtgc
+  ✔ PASS (0s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
-Failed:
-  - test_node_reports_hugepages_capacity_when_reserved
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786141455...
+==> Cleaning up test namespace not-k8s-e2e-1786142497...
