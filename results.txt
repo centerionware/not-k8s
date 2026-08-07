@@ -1,40 +1,24 @@
-commit: 0078ce18004967e72f3f2a4de1a8cf6f56d10a79
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31154586054
-timestamp (UTC): 2026-08-07T06:42:09Z
-exit code: 1
+commit: d147d8a76f6d3733492cb8ab4b6b0336c31ef104
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31154961446
+timestamp (UTC): 2026-08-07T06:48:10Z
+exit code: 0
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786084916
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786085279
 ==> Running 151 registered test(s)...
 ▶ test_config_file_sets_a_value_env_did_not_override
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (4s)
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied[diag] nodelet.service start-limit right before restart: 0 0 5 
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied[diag] nodelet.service start-limit right before restart: 0 0 5 
+  ✔ PASS (4s)
 ▶ test_config_file_precedence_a_real_env_var_still_wins
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (3s)
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied[diag] nodelet.service start-limit right before restart: 0 0 5 
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied[diag] nodelet.service start-limit right before restart: 0 0 5 
+  ✔ PASS (4s)
 ▶ test_config_dir_merges_files_in_filename_order
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedJob for nodelet.service failed.
-See "systemctl status nodelet.service" and "journalctl -xeu nodelet.service" for details.
-  ✘ FAIL (2s, exit 1)
-  [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
-  [diag] nodelet tail:
-    Aug 07 06:42:05 runnervmvrwv9 run-nodelet.sh[17169]: 2026-08-07T06:42:05.476534Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 07 06:42:05 runnervmvrwv9 run-nodelet.sh[17169]: 2026-08-07T06:42:05.477059Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 07 06:42:05 runnervmvrwv9 run-nodelet.sh[17169]: 2026-08-07T06:42:05.479581Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
-    Aug 07 06:42:05 runnervmvrwv9 run-nodelet.sh[17169]: 2026-08-07T06:42:05.973337Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 06:42:06 runnervmvrwv9 run-nodelet.sh[17169]: 2026-08-07T06:42:06.000316Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 06:42:06 runnervmvrwv9 run-nodelet.sh[17169]: 2026-08-07T06:42:06.043850Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 06:42:06 runnervmvrwv9 run-nodelet.sh[17169]: 2026-08-07T06:42:06.074099Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-r2mdt namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 06:42:06 runnervmvrwv9 run-nodelet.sh[17169]: 2026-08-07T06:42:06.111791Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-bphxh namespace="kube-system" name="coredns" kind=ConfigMap
-    Aug 07 06:42:06 runnervmvrwv9 run-nodelet.sh[17169]: 2026-08-07T06:42:06.151253Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-bphxh namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 06:42:06 runnervmvrwv9 systemd[1]: Stopping nodelet.service - nodelet — not-k8s node agent (kubelet replacement)...
-    Aug 07 06:42:06 runnervmvrwv9 systemd[1]: nodelet.service: Deactivated successfully.
-    Aug 07 06:42:06 runnervmvrwv9 systemd[1]: Stopped nodelet.service - nodelet — not-k8s node agent (kubelet replacement).
-    Aug 07 06:42:06 runnervmvrwv9 systemd[1]: nodelet.service: Start request repeated too quickly.
-    Aug 07 06:42:06 runnervmvrwv9 systemd[1]: nodelet.service: Failed with result 'start-limit-hit'.
-    Aug 07 06:42:06 runnervmvrwv9 systemd[1]: Failed to start nodelet.service - nodelet — not-k8s node agent (kubelet replacement).
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied[diag] nodelet.service start-limit right before restart: 0 0 5 
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied[diag] nodelet.service start-limit right before restart: 0 0 5 
+  ✔ PASS (2s)
 
 ════════════════════════════════════════
-Results: 2 passed, 1 failed, 0 skipped
-Failed:
-  - test_config_dir_merges_files_in_filename_order
+Results: 3 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786084916...
+==> Cleaning up test namespace not-k8s-e2e-1786085279...
