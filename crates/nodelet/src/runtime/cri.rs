@@ -173,6 +173,33 @@ pub struct CriRuntime {
     // event-driven status() path has no Pod object to read it from directly
     // (only namespace+name), hence the side table instead of a parameter.
     restart_policies: Mutex<HashMap<String, String>>,
+    /// `"namespace/name" -> a per-pod async lock`, held for the whole
+    /// duration of `ensure_pod()` (round 123; found live in CI). `ensure_pod()`
+    /// is called from at least four independent, unsynchronized places for
+    /// the same logical pod — the main watch-event reconcile loop, its own
+    /// `schedule_retry()` (a detached `tokio::spawn`ed task), and
+    /// `probes.rs`'s `restart_and_reensure()` (called directly on `Arc<dyn
+    /// PodRuntime>`, bypassing `PodController` entirely) — and a
+    /// probe-triggered `restart_container()` call itself generates a real
+    /// CRI container-died event that can independently re-trigger the main
+    /// reconcile loop's own `ensure_pod()` concurrently with
+    /// `restart_and_reensure()`'s direct one. Without serialization, two
+    /// concurrent `ensure_pod()` calls for the same pod both compute the
+    /// identical `attempt` number (`restart_count()`, unchanged since
+    /// neither has succeeded yet) and race on `CreateContainer`, which
+    /// containerd correctly rejects with "failed to reserve container
+    /// name ... is reserved for <the other one>" — confirmed live: a
+    /// liveness-triggered restart repeatedly hit exactly this, never
+    /// actually recreating the container within the test's own 60s
+    /// timeout. Keyed by "namespace/name" (not sandbox id, which doesn't
+    /// exist yet on the very first `ensure_pod()` call) — matches the key
+    /// shape every `warn!` log line in this area already uses. Entries are
+    /// never removed (a small, bounded amount of memory per pod that's
+    /// ever existed on this node — same simplification `restart_counts`/
+    /// `restart_backoff` already make, cleaned up implicitly by node
+    /// reboot, not worth the bookkeeping to prune per-pod-deletion for a
+    /// single empty `Mutex<()>` each).
+    pod_ensure_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// `sandbox_id -> pod uid`, same reason/lifecycle as `restart_policies`
     /// (event-driven `status()` only gets namespace+name, no `Pod` object)
     /// — needed to find a container's `terminationMessagePath` host file
@@ -519,6 +546,7 @@ impl CriRuntime {
             cluster_domain,
             rx: Mutex::new(Some(rx)),
             restart_policies: Mutex::new(HashMap::new()),
+            pod_ensure_locks: Mutex::new(HashMap::new()),
             pod_uids: Mutex::new(HashMap::new()),
             sidecar_names: Mutex::new(HashMap::new()),
             userns,
@@ -560,6 +588,13 @@ impl CriRuntime {
     /// result cached at `connect()` time (round 97).
     pub(crate) fn handler_supports_recursive_ro(&self, handler: &str) -> bool {
         self.recursive_read_only_handlers.get(handler).copied().unwrap_or(false)
+    }
+
+    /// The per-pod async lock `ensure_pod()` holds for its whole duration —
+    /// see `pod_ensure_locks`'s own doc comment for why. `key` is
+    /// `"namespace/name"`.
+    pub(crate) fn pod_ensure_lock(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.pod_ensure_locks.lock().unwrap().entry(key.to_string()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
     }
 }
 

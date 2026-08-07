@@ -4,6 +4,13 @@ use super::*;
 impl PodRuntime for CriRuntime {
     async fn ensure_pod(&self, pod: &Pod) -> Result<RuntimeStatus> {
         let id = pod_id(pod);
+        // Round 123 (found live in CI): serialize the whole function body
+        // per pod — see `pod_ensure_locks`'s own doc comment in cri.rs for
+        // why this is needed (multiple unsynchronized callers of
+        // `ensure_pod()` for the same pod can otherwise race on
+        // `CreateContainer`'s attempt-numbered container name).
+        let lock = self.pod_ensure_lock(&format!("{}/{}", id.namespace, id.name));
+        let _ensure_guard = lock.lock().await;
         let found = self.find_sandbox_with_uid(&id.namespace, &id.name).await?;
         let uid_matches = found.as_ref().is_some_and(|(_, _, found_uid)| *found_uid == id.uid);
         let ready_state = v1::PodSandboxState::SandboxReady as i32;
