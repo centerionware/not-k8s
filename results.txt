@@ -1,42 +1,42 @@
-commit: 3e77fce1f59603fda1dd8e9bdc27119eaf91c490
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31137162195
-timestamp (UTC): 2026-08-07T01:14:43Z
+commit: 1106b804f2929f1a0848e751a824acb2600384fd
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31137478028
+timestamp (UTC): 2026-08-07T01:21:20Z
 exit code: 1
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786065275
+kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786065667
 ==> Running 142 registered test(s)...
 ▶ test_host_users_false_gets_a_real_user_namespace
 kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==>     [diag] id inside container: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denieduid=0(root) gid=0(root) groups=0(root),1(bin),2(daemon),3(sys),4(adm),6(disk),10(wheel),11(floppy),20(dialout),26(tape),27(video)
 ==>     [diag] ls -la /shared inside container: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedtotal 12
-drwxr-xr-x    2 100000   100000        4096 Aug  7 01:14 .
-drwxr-xr-x    1 root     root          4096 Aug  7 01:14 ..
--rw-r--r--    1 100000   100000          33 Aug  7 01:14 uid_map.txt
-==>     [diag] stat /shared host dir: 100000:100000 /var/lib/nodelet/pods/b9fc0ca1-727f-4fda-855b-066536e0a2ae/volumes/shared
-==>     [diag] sandbox id: <not found in containerd journal>
+drwxr-xr-x    2 100000   100000        4096 Aug  7 01:21 .
+drwxr-xr-x    1 root     root          4096 Aug  7 01:21 ..
+-rw-r--r--    1 100000   100000          33 Aug  7 01:21 uid_map.txt
+==>     [diag] stat /shared host dir: 100000:100000 /var/lib/nodelet/pods/6370253e-e091-4d07-b3e2-e496cbd21a81/volumes/shared
+==>     [diag] sandbox id: <not found via ctr containers list>
 ==> FATAL: uid_map shows the host's own full identity range ('0 0 4294967295') — this container is NOT in a user namespace at all; check runtime/cri.rs's userns_mapping wiring and that the CRI runtime actually honors LinuxSandboxSecurityContext.namespace_options.userns_options
-  ✘ FAIL (5s, exit 1)
+  ✘ FAIL (10s, exit 1)
   [diag] node conditions: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedReady MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied
   [diag] nodelet tail:
-    Aug 07 01:13:46 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:13:46.428644Z ERROR failed with status 503 Service Unavailable
-    Aug 07 01:13:46 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:13:46.429870Z ERROR failed with status 503 Service Unavailable
-    Aug 07 01:13:46 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:13:46.430006Z ERROR failed with status 503 Service Unavailable
-    Aug 07 01:13:46 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:13:46.430873Z ERROR failed with status 503 Service Unavailable
-    Aug 07 01:13:46 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:13:46.915553Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 406 (416)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 01:13:46 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:13:46.915553Z  WARN service watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 406 (416)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 01:13:46 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:13:46.917638Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 406 (416)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 01:13:46 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:13:46.932409Z  WARN endpointslice watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 412 (416)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 07 01:13:47 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:13:47.875685Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 01:13:47 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:13:47.898244Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-k8jq8 namespace="kube-system" name="coredns" kind=ConfigMap
-    Aug 07 01:13:47 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:13:47.924248Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-k8jq8 namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 07 01:14:13 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:14:13.519241Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 07 01:14:33 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:14:33.590385Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-fl8l4
-    Aug 07 01:14:33 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:14:33.618898Z  INFO node status pushed
-    Aug 07 01:14:33 runnervmvrwv9 run-nodelet.sh[10687]: 2026-08-07T01:14:33.915614Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-fl8l4
+    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.122584Z ERROR failed with status 503 Service Unavailable
+    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.123424Z ERROR failed with status 503 Service Unavailable
+    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.124432Z ERROR failed with status 503 Service Unavailable
+    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.647362Z  WARN service watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 417 (431)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.648280Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 414 (431)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.650180Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 414 (431)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.657220Z  WARN endpointslice watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 422 (431)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 07 01:20:10 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:10.662889Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 01:20:11 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:11.692117Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-fdsgg namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 07 01:20:11 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:11.724791Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-fdsgg namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 07 01:20:37 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:37.325264Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 07 01:20:47 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:20:47.472545Z  INFO node status pushed
+    Aug 07 01:21:04 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:21:04.762221Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-lt6zw
+    Aug 07 01:21:05 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:21:05.745432Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-lt6zw
+    Aug 07 01:21:07 runnervmvrwv9 run-nodelet.sh[11004]: 2026-08-07T01:21:07.348585Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-69a3dd2e-a693-4d01-8de8-867d352cf7cb.sock plugin_type=DRAPlugin
 
 ════════════════════════════════════════
 Results: 0 passed, 1 failed, 0 skipped
 Failed:
   - test_host_users_false_gets_a_real_user_namespace
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786065275...
+==> Cleaning up test namespace not-k8s-e2e-1786065667...
