@@ -72,8 +72,9 @@ entry-point script.
 ## E2E testing
 
 ```bash
-./deploy/test-e2e.sh                        # full suite against an already-running cluster
-./deploy/test-e2e.sh --only=<substring>      # substring match on test *function name*, not filename
+./deploy/test-e2e.sh                              # full suite against an already-running cluster
+./deploy/test-e2e.sh --only=<substring>            # substring match on test *function name*, not filename
+./deploy/test-e2e.sh --only=<substring1>,<substring2>  # comma-separate to match several tests at once
 ```
 
 Test cases live in `deploy/lib/test/cases/*.sh`, one file per feature area,
@@ -98,31 +99,32 @@ node conditions/taints + nodelet's log tail right after each failure — CI sets
 minutes re-discovering the same root cause across the rest of the suite.
 
 **Iterating on a known e2e failure: use `.github/workflows/e2e.yml` (manual
-`workflow_dispatch`, `only` input), not the full `release.yml` pipeline.**
-`gh workflow run e2e.yml --ref main -f only=<pattern>` runs just the matching
-tests (~5-7 min: build+deploy+CSI/DRA-driver setup dominate, not test count)
+`workflow_dispatch`, `only` input — same comma-separated matching as above),
+not the full `release.yml` pipeline.** `gh workflow run e2e.yml --ref main -f
+only=<pattern1>,<pattern2>` runs just the matching tests in one dispatch
+(~5-7 min: build+deploy+CSI/DRA-driver setup dominate, not test count)
 against a fresh cluster, instead of the full pipeline's `build-and-test` →
 full unfiltered `e2e` → `build-release` → `publish-release` chain (30-40+
-min). Fix, dispatch a targeted `e2e.yml` run, read the result, repeat — only
-dispatch the full `release.yml` once the targeted runs are believed green,
-to confirm end-to-end (including that the fix didn't regress unit tests or
-anything the `--only` filter excluded) and actually attempt a release.
+min). Fix, dispatch, read the result, repeat — only dispatch the full
+`release.yml` once the targeted runs are believed green, to confirm
+end-to-end (including that the fix didn't regress unit tests or anything
+the `--only` filter excluded) and actually attempt a release.
 
 ## CI/CD (`.github/workflows/`)
 
-`release.yml` is the real pipeline, triggered on every push to `main` (direct
-push or PR merge — **not** on `pull_request`, since the e2e stage needs real
-sudo/cluster access that must never run against untrusted PR code). Four
-sequential stages, each gating the next: `build-and-test` (debug build + full
-unit tests, both feature sets) → `e2e` (full suite against real CSI/DRA
-reference drivers) → `build-release` (debug+release profiles ×
+`release.yml` is the real pipeline — manual (`workflow_dispatch`) only; see
+its own top comment for why it isn't push-triggered (a real, unexplained
+GitHub-side issue, not a deliberate design choice like `e2e.yml`/`profiling.yml`
+being manual). Four sequential stages, each gating the next: `build-and-test`
+(debug build + full unit tests, both feature sets) → `e2e` (full suite against
+real CSI/DRA reference drivers) → `build-release` (debug+release profiles ×
 x86_64/aarch64/armv7l, concurrently) → `publish-release` (bumps the version
 branch, tags, publishes a GitHub Release with all 6 binaries + `deploy.tar.gz`,
-compiles and publishes the standalone installer scripts). PRs get CodeRabbit
-review only (`.coderabbit.yaml`) — no tests run until merge.
+compiles and publishes the standalone installer scripts). Not triggered on
+`pull_request` either — the e2e stage needs real sudo/cluster access that must
+never run against untrusted PR code; PRs get CodeRabbit review only
+(`.coderabbit.yaml`).
 
-`e2e.yml` is a manual (`workflow_dispatch`) on-demand utility for debugging just
-the e2e suite (optionally `--only=<pattern>`) without the rest of the pipeline.
 `profiling.yml` is a manual job comparing nodelet's idle CPU/RSS against stock
 k3s's real bundled kubelet, publishing results to the `profiling-results`
 branch.
