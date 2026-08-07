@@ -1,14 +1,6 @@
 commit: b2ae24fd162eb1ca601ceb34f26085b2a124f2ba
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31143087556
-timestamp (UTC): 2026-08-07T03:07:07Z
-exit code: 0
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31143370579
+timestamp (UTC): 2026-08-07T03:10:17Z
+exit code: unknown
 ----------------------------------------
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied==> Test namespace: not-k8s-e2e-1786071983
-==> Running 142 registered test(s)...
-▶ test_liveness_probe_failure_restarts_the_container
-kuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission deniedkuberc: no preferences loaded from /home/runner/.kube/kuberc: open /home/runner/.kube/kuberc: permission denied  ✔ PASS (44s)
-
-════════════════════════════════════════
-Results: 1 passed, 0 failed, 0 skipped
-════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786071983...
+(no results captured — the run failed before test-e2e.sh could produce output)
