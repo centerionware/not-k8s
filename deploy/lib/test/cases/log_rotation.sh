@@ -57,12 +57,14 @@ EOF
     # against nodelet's own cwd, not the pod's log dir — and rotate_logs()
     # would skip forever with no warning, matching exactly what's been
     # observed). Ask crictl directly instead of guessing.
-    local cid
-    cid="$(sudo crictl ps --name app -o json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["containers"][0]["id"] if d.get("containers") else "")' 2>/dev/null)"
+    local crictl_ep="unix:///run/containerd/containerd.sock"
+    local ps_out cid
+    ps_out="$(sudo crictl --runtime-endpoint "$crictl_ep" ps --name app -o json 2>&1)"
+    cid="$(echo "$ps_out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["containers"][0]["id"] if d.get("containers") else "")' 2>/dev/null)"
     if [[ -n "$cid" ]]; then
-        warn "[diag] crictl inspect log_path for container $cid: $(sudo crictl inspect "$cid" 2>&1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status",{}).get("logPath"))' 2>&1)"
+        warn "[diag] crictl inspect log_path for container $cid: $(sudo crictl --runtime-endpoint "$crictl_ep" inspect "$cid" 2>&1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status",{}).get("logPath"))' 2>&1)"
     else
-        warn "[diag] couldn't resolve the app container's own ID via crictl ps"
+        warn "[diag] couldn't resolve the app container's own ID via crictl ps — raw output: $ps_out"
     fi
 
     if ! try_wait_until 60 bash -c "sudo ls '$log_dir'/app_*.log.1 >/dev/null 2>&1"; then
