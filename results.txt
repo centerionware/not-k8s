@@ -1,42 +1,35 @@
-commit: 7a5df8385690d434d1444ae1d8a20854dc567018
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31231055031
-timestamp (UTC): 2026-08-08T00:54:37Z
+commit: b308b9baaa8cbc3db355f0c9e720523a928aaf35
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31231666235
+timestamp (UTC): 2026-08-08T01:06:14Z
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786150312
+==> Test namespace: not-k8s-e2e-1786151167
 ==> 151 test(s) registered total; running now...
-▶ test_proc_mount_unmasked_leaves_proc_kcore_readable
-==> WARNING: expected /proc/kcore to be readable (non-zero bytes) under procMount: Unmasked, got 0 -- check proc_mount_paths()'s Unmasked branch in runtime/cri/resources.rs; not failing outright since this depends on the CRI runtime actually honoring an explicitly-empty masked_paths the same way it honors a populated one
-  ✔ PASS (3s)
 ▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
-==> FATAL: timed out after 30s waiting for check file merge.txt (volume shared) from pod sgp-merge
-==> FATAL: timed out after 20s waiting for check file strict.txt (volume shared) from pod sgp-strict
-==> FATAL: assertion failed: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership — '' does not contain '4000'
-  ✘ FAIL (85s, exit 1)
+==> FATAL: assertion failed: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership — '3000 5000' does not contain '4000'
+  ✘ FAIL (5s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 08 00:52:53 runnervmvrwv9 run-nodelet.sh[10936]:     1: Connection refused (os error 111)
-    Aug 08 00:52:53 runnervmvrwv9 run-nodelet.sh[10936]:     2: Connection refused (os error 111)
-    Aug 08 00:52:53 runnervmvrwv9 run-nodelet.sh[10936]: 2026-08-08T00:52:53.488351Z  INFO node status pushed
-    Aug 08 00:53:03 runnervmvrwv9 run-nodelet.sh[10936]: 2026-08-08T00:53:03.345250Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-6ff93353-4bf5-4a5c-a110-e2e20a7368e1-reg.sock error=connecting to plugin registration socket
-    Aug 08 00:53:03 runnervmvrwv9 run-nodelet.sh[10936]: Caused by:
-    Aug 08 00:53:03 runnervmvrwv9 run-nodelet.sh[10936]:     0: transport error
-    Aug 08 00:53:03 runnervmvrwv9 run-nodelet.sh[10936]:     1: Connection refused (os error 111)
-    Aug 08 00:53:03 runnervmvrwv9 run-nodelet.sh[10936]:     2: Connection refused (os error 111)
-    Aug 08 00:53:13 runnervmvrwv9 run-nodelet.sh[10936]: 2026-08-08T00:53:13.345776Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-6ff93353-4bf5-4a5c-a110-e2e20a7368e1-reg.sock error=connecting to plugin registration socket
-    Aug 08 00:53:13 runnervmvrwv9 run-nodelet.sh[10936]: Caused by:
-    Aug 08 00:53:13 runnervmvrwv9 run-nodelet.sh[10936]:     0: transport error
-    Aug 08 00:53:13 runnervmvrwv9 run-nodelet.sh[10936]:     1: Connection refused (os error 111)
-    Aug 08 00:53:13 runnervmvrwv9 run-nodelet.sh[10936]:     2: Connection refused (os error 111)
-    Aug 08 00:53:20 runnervmvrwv9 run-nodelet.sh[10936]: 2026-08-08T00:53:20.924605Z  WARN failed to fetch ConfigMap for volume volume=etc-override configmap=sgp-etc error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"sgp-etc\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "sgp-etc", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 08 00:53:21 runnervmvrwv9 run-nodelet.sh[10936]: 2026-08-08T00:53:21.858773Z  WARN failed to fetch ConfigMap for volume volume=etc-override configmap=sgp-etc error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"sgp-etc\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "sgp-etc", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-▶ test_cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container
-  ✔ PASS (74s)
+    Aug 08 01:05:18 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:05:18.442980Z  WARN service watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 415 (426)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 08 01:05:18 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:05:18.446189Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 414 (426)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 08 01:05:18 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:05:18.447515Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 422 (426)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 08 01:05:18 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:05:18.448145Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 415 (426)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 08 01:05:18 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:05:18.460698Z  WARN endpointslice watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 418 (426)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 08 01:05:18 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:05:18.903083Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 01:05:18 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:05:18.975076Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-2v6g6 namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 08 01:05:19 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:05:19.004342Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-2v6g6 namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 01:05:42 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:05:42.563773Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 08 01:06:02 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:06:02.580462Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-c88e77ab-2512-43bf-b9d5-93c95d4258f8.sock plugin_type=DRAPlugin
+    Aug 08 01:06:02 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:06:02.718704Z  INFO node status pushed
+    Aug 08 01:06:03 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:06:03.898852Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-fb2df
+    Aug 08 01:06:05 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:06:05.054845Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-fb2df
+    Aug 08 01:06:12 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:06:12.581095Z  INFO plugin registry: socket disappeared; deregistering name="gpu.example.com" path=/var/lib/nodelet/plugins_registry/gpu.example.com-c88e77ab-2512-43bf-b9d5-93c95d4258f8-reg.sock
+    Aug 08 01:06:12 runnervmvrwv9 run-nodelet.sh[10876]: 2026-08-08T01:06:12.583312Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-c5e09cbf-e842-4034-b8c8-b804008b804c.sock plugin_type=DRAPlugin
 
 ════════════════════════════════════════
-Results: 2 passed, 1 failed, 0 skipped
+Results: 0 passed, 1 failed, 0 skipped
 Failed:
   - test_supplemental_groups_policy_strict_ignores_image_group_membership
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786150312...
+==> Cleaning up test namespace not-k8s-e2e-1786151167...
