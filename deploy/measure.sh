@@ -239,24 +239,38 @@ NODELET_CYCLES="$(parse_perf_value "$NODELET_PERF_RAW" 'cycles')"
 NODELET_INSTRUCTIONS="$(parse_perf_value "$NODELET_PERF_RAW" 'instructions')"
 
 # task-clock is a software event (always available, even when hardware
-# cycles/instructions aren't -- see the perf section above) reported in
-# milliseconds with real decimal precision, unlike parse_perf_value's
-# integer-only cycles/instructions parsing. Sub-millisecond CPU time, vs.
-# the ~10ms resolution the /proc-tick-based CPU_SECONDS below is limited
-# to by CLK_TCK -- preferred whenever perf actually captured it.
-parse_perf_task_clock_ms() {
+# cycles/instructions aren't -- see the perf section above), with real
+# decimal precision unlike parse_perf_value's integer-only cycles/
+# instructions parsing. Round 124 (found live in a published report: a
+# nodelet reading of 88709 "CPU-seconds" inside a 120-second window --
+# physically impossible): perf's own unit label for this event isn't a
+# fixed "msec" the way this function first assumed -- it varies (msec/
+# usec/nsec) by perf version/config, and blindly dividing by a hardcoded
+# 1000 silently produced a 1000x-off result the one time it wasn't
+# actually msec. Parses the real unit word from perf's own output instead
+# of assuming one, and returns real SECONDS directly (not milliseconds)
+# so there's no second conversion step downstream to get wrong too.
+parse_perf_task_clock_seconds() {
     local file="$1"
     [[ -s "$file" ]] || { echo ""; return; }
     awk '
         /task-clock/ {
             val = $1
+            unit = $2
             gsub(",", "", val)
-            if (val ~ /^[0-9]+(\.[0-9]+)?$/) { print val; exit }
+            if (val !~ /^[0-9]+(\.[0-9]+)?$/) next
+            if (unit == "msec") { printf "%.9f", val / 1000; exit }
+            if (unit == "usec") { printf "%.9f", val / 1000000; exit }
+            if (unit == "nsec") { printf "%.9f", val / 1000000000; exit }
+            if (unit == "sec")  { printf "%.9f", val; exit }
+            # Unrecognized unit label -- do not guess at a conversion
+            # factor; leave this run without a perf-precision reading
+            # rather than risk another silent unit-scale bug.
         }
     ' "$file"
 }
-K3S_TASK_CLOCK_MS="$(parse_perf_task_clock_ms "$K3S_PERF_RAW")"
-NODELET_TASK_CLOCK_MS="$(parse_perf_task_clock_ms "$NODELET_PERF_RAW")"
+K3S_TASK_CLOCK_SECONDS="$(parse_perf_task_clock_seconds "$K3S_PERF_RAW")"
+NODELET_TASK_CLOCK_SECONDS="$(parse_perf_task_clock_seconds "$NODELET_PERF_RAW")"
 rm -f "$K3S_PERF_RAW" "$NODELET_PERF_RAW"
 
 # ── Summary stats derived from the time series ───────────────────────────────
@@ -272,22 +286,32 @@ NODELET_CPU_AVG="$(summarize_cpu_avg "$NODELET_TS")"
 K3S_RSS_MB="$(awk -v kb="$k3s_rss_peak_kb" 'BEGIN { printf "%.1f", kb / 1024 }')"
 NODELET_RSS_MB="$(awk -v kb="$nodelet_rss_peak_kb" 'BEGIN { printf "%.1f", kb / 1024 }')"
 
-# CPU-seconds: prefer perf's task-clock (sub-millisecond precision) when
-# it actually reported one; fall back to the /proc-tick delta (~10ms
-# resolution, CLK_TCK-limited) otherwise. Track which source won so the
-# report can say so honestly rather than implying uniform precision.
+# CPU-seconds: prefer perf's task-clock (sub-millisecond precision,
+# already normalized to real seconds above) when it actually reported
+# one; fall back to the /proc-tick delta (~10ms resolution, CLK_TCK-
+# limited) otherwise. Track which source won so the report can say so
+# honestly rather than implying uniform precision. Sanity-clamped against
+# the sample window itself (per core) -- a value that large is proof of a
+# unit-conversion bug, not a real reading, and reporting it as "N/A"
+# beats silently republishing something physically impossible again.
 cpu_seconds_from_ticks_or_task_clock() {
-    local ticks_total="$1" task_clock_ms="$2"
-    if [[ -n "$task_clock_ms" ]]; then
-        awk -v ms="$task_clock_ms" 'BEGIN { printf "%.6f", ms / 1000 }'
+    local ticks_total="$1" task_clock_seconds="$2"
+    local candidate
+    if [[ -n "$task_clock_seconds" ]]; then
+        candidate="$task_clock_seconds"
     else
-        awk -v t="$ticks_total" -v c="$CLK_TCK" 'BEGIN { printf "%.3f", t / c }'
+        candidate="$(awk -v t="$ticks_total" -v c="$CLK_TCK" 'BEGIN { printf "%.3f", t / c }')"
     fi
+    awk -v v="$candidate" -v s="$SAMPLE_SECS" -v cores="$CPU_CORES" 'BEGIN {
+        max = s * ((cores + 0 > 0) ? cores : 1) * 1.05
+        if (v + 0 > max) { print ""; exit }
+        printf "%.6f", v
+    }'
 }
-K3S_CPU_SECONDS="$(cpu_seconds_from_ticks_or_task_clock "$k3s_ticks_total" "$K3S_TASK_CLOCK_MS")"
-NODELET_CPU_SECONDS="$(cpu_seconds_from_ticks_or_task_clock "$nodelet_ticks_total" "$NODELET_TASK_CLOCK_MS")"
-K3S_CPU_SECONDS_SOURCE="$([[ -n "$K3S_TASK_CLOCK_MS" ]] && echo "perf-task-clock" || echo "proc-ticks")"
-NODELET_CPU_SECONDS_SOURCE="$([[ -n "$NODELET_TASK_CLOCK_MS" ]] && echo "perf-task-clock" || echo "proc-ticks")"
+K3S_CPU_SECONDS="$(cpu_seconds_from_ticks_or_task_clock "$k3s_ticks_total" "$K3S_TASK_CLOCK_SECONDS")"
+NODELET_CPU_SECONDS="$(cpu_seconds_from_ticks_or_task_clock "$nodelet_ticks_total" "$NODELET_TASK_CLOCK_SECONDS")"
+K3S_CPU_SECONDS_SOURCE="$([[ -n "$K3S_TASK_CLOCK_SECONDS" ]] && echo "perf-task-clock" || echo "proc-ticks")"
+NODELET_CPU_SECONDS_SOURCE="$([[ -n "$NODELET_TASK_CLOCK_SECONDS" ]] && echo "perf-task-clock" || echo "proc-ticks")"
 
 calc_ipc() {
     [[ -n "$1" && -n "$2" && "$2" != "0" ]] || { echo ""; return; }
