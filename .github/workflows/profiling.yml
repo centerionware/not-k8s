@@ -50,17 +50,26 @@ name: Profiling — nodelet vs a real upstream kubelet (same control plane)
 #      host, whatever); the report now shows a real mean±range across
 #      replicates instead of one point estimate per agent.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      sample_seconds:
+        description: "Sample window in seconds, 1 sample/sec (e.g. 120 for 2m, 300 for 5m, 600 for 10m)"
+        required: false
+        default: "120"
+        type: string
 
 permissions:
   contents: write
 
 env:
-  # 1 sample/sec; keep this bounded (job timeout below, plus each matrix
-  # leg still has to bootstrap the whole stack) while comfortably covering
-  # nodelet's own node-status-push interval and at least a couple of
-  # GC/informer-resync cycles.
-  SAMPLE_SECS: 120
+  # 1 sample/sec. Default 120s comfortably covers nodelet's own
+  # node-status-push interval and at least a couple of GC/informer-resync
+  # cycles; longer windows (5m/10m via the sample_seconds input above)
+  # trade CI time for confidence against rarer periodic activity. The
+  # `profile` job's own timeout-minutes has margin for a 600s (10m)
+  # window plus bootstrap+settle overhead -- widen that too if pushing
+  # sample_seconds past 10m.
+  SAMPLE_SECS: ${{ inputs.sample_seconds }}
 
 jobs:
   profile:
@@ -85,6 +94,9 @@ jobs:
             # runs.
             install_args: --with-cri --skip-nodelet
     runs-on: ubuntu-latest
+    # 30s settle + up to a 600s (10m) sample_seconds window + bootstrap
+    # overhead (~2-3m) comfortably fits inside 30m; widen this if
+    # sample_seconds is ever pushed past 10m.
     timeout-minutes: 30
     steps:
       - name: Check out repository
