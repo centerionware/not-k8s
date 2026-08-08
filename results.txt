@@ -1,12 +1,16 @@
-commit: f549f33c68a9adbeddc541e1a2e69c6758a78962
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31240026946
-timestamp (UTC): 2026-08-08T04:55:02Z
+commit: 7b5baa2df513c3306f54eba89cb3afebdd2c8cb2
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31240816144
+timestamp (UTC): 2026-08-08T05:17:02Z
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786164332
+==> Test namespace: not-k8s-e2e-1786165621
 ==> 151 test(s) registered total; running now...
+▶ test_credential_provider_config_unset_by_default
+  ✔ PASS (0s)
+▶ test_basic_pod_runs
+  ✔ PASS (3s)
 ▶ test_crash_loop_backoff_throttles_immediate_restarts
-  ✔ PASS (25s)
+  ✔ PASS (54s)
 ▶ test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull
 ==> generating htpasswd auth for the local test registry...
 Unable to find image 'httpd:2.4-alpine' locally
@@ -22,14 +26,16 @@ ec6419fed67b: Pulling fs layer
 5e8b95221646: Waiting
 ec6419fed67b: Waiting
 e5ad846ecbb8: Verifying Checksum
-e5ad846ecbb8: Download complete
-4f4fb700ef54: Download complete
 f0c9ed0cf49e: Verifying Checksum
 f0c9ed0cf49e: Download complete
+e5ad846ecbb8: Download complete
+4f4fb700ef54: Verifying Checksum
+4f4fb700ef54: Download complete
 f0c9ed0cf49e: Pull complete
 e5ad846ecbb8: Pull complete
 4f4fb700ef54: Pull complete
 ec6419fed67b: Verifying Checksum
+ec6419fed67b: Download complete
 5e8b95221646: Verifying Checksum
 5e8b95221646: Download complete
 71af8d887193: Verifying Checksum
@@ -55,9 +61,9 @@ bbbdd6c6894b: Download complete
 44cf07d57ee4: Download complete
 8e82f80af0de: Verifying Checksum
 8e82f80af0de: Download complete
-44cf07d57ee4: Pull complete
 3493bf46cdec: Verifying Checksum
 3493bf46cdec: Download complete
+44cf07d57ee4: Pull complete
 6d464ea18732: Verifying Checksum
 6d464ea18732: Download complete
 bbbdd6c6894b: Pull complete
@@ -74,75 +80,76 @@ WARNING! Your credentials are stored unencrypted in '/home/runner/.docker/config
 Configure a credential helper to remove this warning. See
 https://docs.docker.com/go/credential-store/
 
-==> FATAL: expected pod without any credential provider to fail pulling from the auth-required registry, but it didn't — the registry isn't actually enforcing auth, so the positive check below wouldn't prove anything
-  ✘ FAIL (160s, exit 1)
+==> writing the fake credential-provider binary and config...
+==> FATAL: timed out after 150s waiting for: cred-provider-check Running
+  ✘ FAIL (162s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: ========================================
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:37.030065Z  INFO starting nodelet node=runnervmvrwv9 runtime=Cri cpu=4 memory_bytes=16765386752 max_pods=110
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:37.031495Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:37.034468Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:37.036765Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-eada1147-a4d7-40dc-b692-9d983823a498.sock plugin_type=DRAPlugin
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:37.039543Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:37.059106Z  INFO node registered and Ready node=runnervmvrwv9
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:37.059397Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:37.060065Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:37.060202Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:37.062649Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:37.888033Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 04:48:37 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:37.913586Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 04:48:38 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:38.125977Z  WARN failed to open CRI event stream error=Status { code: Unknown, message: "transport error", source: Some(tonic::transport::Error(Transport, hyper::Error(Io, Custom { kind: BrokenPipe, error: "stream closed because of a broken pipe" }))) }
-    Aug 08 04:48:38 runnervmvrwv9 run-nodelet.sh[19356]: 2026-08-08T04:48:38.905111Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:10:41 runnervmvrwv9 run-nodelet.sh[20249]:     2: Connection refused (os error 111)
+    Aug 08 05:10:41 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:41.094100Z  INFO node registered and Ready node=runnervmvrwv9
+    Aug 08 05:10:41 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:41.094547Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
+    Aug 08 05:10:41 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:41.095040Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
+    Aug 08 05:10:41 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:41.097184Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
+    Aug 08 05:10:41 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:41.098848Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
+    Aug 08 05:10:41 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:41.216147Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:10:41 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:41.238897Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:10:41 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:41.272992Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:10:41 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:41.299767Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-7z462 namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:10:41 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:41.349265Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-wwfmg namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 08 05:10:41 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:41.472478Z  WARN failed to open CRI event stream error=Status { code: Unknown, message: "transport error", source: Some(tonic::transport::Error(Transport, hyper::Error(Io, Custom { kind: BrokenPipe, error: "stream closed because of a broken pipe" }))) }
+    Aug 08 05:10:42 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:42.219590Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-wwfmg namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:10:42 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:42.284198Z  INFO re-materializing volumes after referenced object changed pod=not-k8s-e2e-1786165621/cred-provider-check namespace="not-k8s-e2e-1786165621" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:10:42 runnervmvrwv9 run-nodelet.sh[20249]: 2026-08-08T05:10:42.363659Z  INFO torn down pod=not-k8s-e2e-1786165621/cred-provider-check
 ▶ test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down
 ==> FATAL: timed out after 180s waiting for: orphaned-sandbox-gc-check gone from apiserver
-  ✘ FAIL (186s, exit 1)
+  ✘ FAIL (185s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
+  [diag] node taints: [{"effect":"NoExecute","key":"node.kubernetes.io/unreachable","timeAdded":"2026-08-08T05:11:36Z"}]
   [diag] nodelet tail:
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]:   LB method:     random
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: ========================================
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:45.259994Z  INFO starting nodelet node=runnervmvrwv9 runtime=Cri cpu=4 memory_bytes=16765386752 max_pods=110
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:45.262153Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:45.266050Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:45.268916Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:45.297668Z  INFO node registered and Ready node=runnervmvrwv9
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:45.297999Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:45.298772Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:45.298950Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:45.301674Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:45.339841Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-eada1147-a4d7-40dc-b692-9d983823a498.sock plugin_type=DRAPlugin
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:45.895729Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 04:51:45 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:45.918549Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 04:51:46 runnervmvrwv9 run-nodelet.sh[21460]: 2026-08-08T04:51:46.907650Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:13:46 runnervmvrwv9 run-nodelet.sh[22415]: 2026-08-08T05:13:46.422583Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-598af92a-91fe-4dc8-9d7d-8ca9d94696cc.sock plugin_type=DRAPlugin
+    Aug 08 05:13:46 runnervmvrwv9 run-nodelet.sh[22415]: 2026-08-08T05:13:46.425072Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 08 05:13:46 runnervmvrwv9 run-nodelet.sh[22415]: 2026-08-08T05:13:46.445239Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-859e17f9-bc7c-412f-ba7a-46f46a8ed57a-reg.sock error=connecting to plugin registration socket
+    Aug 08 05:13:46 runnervmvrwv9 run-nodelet.sh[22415]: Caused by:
+    Aug 08 05:13:46 runnervmvrwv9 run-nodelet.sh[22415]:     0: transport error
+    Aug 08 05:13:46 runnervmvrwv9 run-nodelet.sh[22415]:     1: Connection refused (os error 111)
+    Aug 08 05:13:46 runnervmvrwv9 run-nodelet.sh[22415]:     2: Connection refused (os error 111)
+    Aug 08 05:13:46 runnervmvrwv9 run-nodelet.sh[22415]: 2026-08-08T05:13:46.453324Z  INFO node registered and Ready node=runnervmvrwv9
+    Aug 08 05:13:46 runnervmvrwv9 run-nodelet.sh[22415]: 2026-08-08T05:13:46.453748Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
+    Aug 08 05:13:46 runnervmvrwv9 run-nodelet.sh[22415]: 2026-08-08T05:13:46.454566Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
+    Aug 08 05:13:46 runnervmvrwv9 run-nodelet.sh[22415]: 2026-08-08T05:13:46.454731Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
+    Aug 08 05:13:46 runnervmvrwv9 run-nodelet.sh[22415]: 2026-08-08T05:13:46.458209Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
+    Aug 08 05:13:47 runnervmvrwv9 run-nodelet.sh[22415]: 2026-08-08T05:13:47.225421Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:13:47 runnervmvrwv9 run-nodelet.sh[22415]: 2026-08-08T05:13:47.251880Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:13:48 runnervmvrwv9 run-nodelet.sh[22415]: 2026-08-08T05:13:48.237599Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
 ▶ test_image_gc_removes_unreferenced_images_above_the_watermark
-==> FATAL: unreferenced image busybox:1.33.1 was never GC'd despite the watermark being set at/below this node's real disk usage (42%) and past NODELET_IMAGE_GC_MIN_AGE_SECS — check should_start_image_gc()'s gating
-  ✘ FAIL (191s, exit 1)
+==> FATAL: unreferenced image busybox:1.33.1 was never GC'd despite the watermark being set at/below this node's real disk usage (41%) and past NODELET_IMAGE_GC_MIN_AGE_SECS — check should_start_image_gc()'s gating
+  ✘ FAIL (189s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.122812Z  INFO starting nodelet node=runnervmvrwv9 runtime=Cri cpu=4 memory_bytes=16765386752 max_pods=110
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.124533Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.127517Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.129924Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-eada1147-a4d7-40dc-b692-9d983823a498.sock plugin_type=DRAPlugin
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.132569Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.155232Z  INFO node registered and Ready node=runnervmvrwv9
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.155903Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.156567Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.156880Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.157810Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.895617Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.918744Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.949686Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 04:54:58 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:58.969967Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-8gqck namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 04:54:59 runnervmvrwv9 run-nodelet.sh[23818]: 2026-08-08T04:54:59.000283Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-zwhsf namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 08 05:16:57 runnervmvrwv9 run-nodelet.sh[24757]: 2026-08-08T05:16:57.906579Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
+    Aug 08 05:16:57 runnervmvrwv9 run-nodelet.sh[24757]: 2026-08-08T05:16:57.906995Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
+    Aug 08 05:16:57 runnervmvrwv9 run-nodelet.sh[24757]: 2026-08-08T05:16:57.910303Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
+    Aug 08 05:16:57 runnervmvrwv9 run-nodelet.sh[24757]: 2026-08-08T05:16:57.931675Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-859e17f9-bc7c-412f-ba7a-46f46a8ed57a-reg.sock error=connecting to plugin registration socket
+    Aug 08 05:16:57 runnervmvrwv9 run-nodelet.sh[24757]: Caused by:
+    Aug 08 05:16:57 runnervmvrwv9 run-nodelet.sh[24757]:     0: transport error
+    Aug 08 05:16:57 runnervmvrwv9 run-nodelet.sh[24757]:     1: Connection refused (os error 111)
+    Aug 08 05:16:57 runnervmvrwv9 run-nodelet.sh[24757]:     2: Connection refused (os error 111)
+    Aug 08 05:16:57 runnervmvrwv9 run-nodelet.sh[24757]: 2026-08-08T05:16:57.935248Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-598af92a-91fe-4dc8-9d7d-8ca9d94696cc.sock plugin_type=DRAPlugin
+    Aug 08 05:16:58 runnervmvrwv9 run-nodelet.sh[24757]: 2026-08-08T05:16:58.223149Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpath-socat-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:16:58 runnervmvrwv9 run-nodelet.sh[24757]: 2026-08-08T05:16:58.249551Z  INFO re-materializing volumes after referenced object changed pod=default/csi-hostpathplugin-0 namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:16:58 runnervmvrwv9 run-nodelet.sh[24757]: 2026-08-08T05:16:58.284263Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:16:58 runnervmvrwv9 run-nodelet.sh[24757]: 2026-08-08T05:16:58.311747Z  INFO re-materializing volumes after referenced object changed pod=dra-example-driver/dra-example-driver-kubeletplugin-7z462 namespace="dra-example-driver" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 05:16:58 runnervmvrwv9 run-nodelet.sh[24757]: 2026-08-08T05:16:58.347676Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-wwfmg namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 08 05:16:59 runnervmvrwv9 run-nodelet.sh[24757]: 2026-08-08T05:16:59.218578Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-wwfmg namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
 ==> WARNING: stopping early: 3 failures reached NOTK8S_E2E_MAX_FAILURES=3 (151 tests registered total, not all of them ran) — see the failures above/print_summary below for what's already known, rather than burning time re-discovering the same root cause across the rest of the suite.
 
 ════════════════════════════════════════
-Results: 1 passed, 3 failed, 0 skipped
+Results: 3 passed, 3 failed, 0 skipped
 Failed:
   - test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull
   - test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down
   - test_image_gc_removes_unreferenced_images_above_the_watermark
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786164332...
+==> Cleaning up test namespace not-k8s-e2e-1786165621...
