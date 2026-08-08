@@ -30,10 +30,18 @@ name: Profiling — nodelet vs a real upstream kubelet (same control plane)
 #      exists to rule out (disk cache state, memory fragmentation, thermal
 #      throttling, or anything else accumulated by the first phase
 #      quietly advantaging or disadvantaging whichever ran second). Every
-#      matrix leg provisions itself identically (the same
-#      `bootstrap-source.sh --with-cri` call on all of them — the kubelet
-#      legs just stop nodelet and swap in kubelet afterward, never
-#      measuring nodelet at all).
+#      matrix leg provisions itself identically — the exact same real
+#      standalone installer (`install-scripts` branch's `install.sh`,
+#      what a real user actually runs — fetches the latest published
+#      release's prebuilt nodelet binary, not a from-source build, so
+#      this profiles the actual shipped artifact) on all of them; the
+#      kubelet legs just stop nodelet and swap in kubelet afterward,
+#      never measuring nodelet at all. Only the profiling/measurement
+#      tooling itself (measure.sh, upstream-kubelet.sh,
+#      render-profiling-charts.py, profiling-report.sh) runs from this
+#      workflow's own checked-out repo rather than whatever copy the
+#      installed release happened to bundle — those aren't part of what's
+#      being measured.
 #   3. From one runner per agent to 3 replicate runners per agent (6 legs
 #      total) — a single sample can be noisy (one GC cycle landing inside
 #      vs. just outside the window, a slow syscall, a noisy-neighbor VM
@@ -70,10 +78,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Bootstrap the shared stack (stripped k3s control plane + containerd + nodelet)
+      - name: Bootstrap the shared stack via the real standalone installer (stripped k3s control plane + containerd + nodelet)
         run: |
           set -e
-          sudo ./deploy/bootstrap-source.sh --with-cri
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/install-scripts/install.sh | sudo bash -s -- --with-cri
 
       - name: Swap nodelet for a real upstream kubelet (same control plane, same containerd)
         if: matrix.agent == 'kubelet'
