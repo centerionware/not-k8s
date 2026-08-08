@@ -1,9 +1,9 @@
-commit: 30f3604884f3ae9a6abe864b68bd08f56d62640a
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31234671852
-timestamp (UTC): 2026-08-08T02:28:11Z
+commit: 35979d3cdfe3c146db44dd7599c78046922c7804
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31235134982
+timestamp (UTC): 2026-08-08T02:40:54Z
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786155744
+==> Test namespace: not-k8s-e2e-1786156509
 ==> 151 test(s) registered total; running now...
 ▶ test_device_plugin_advertises_capacity_and_allocates_into_a_container
 ==> installing grpcio/grpcio-tools for the fake device plugin...
@@ -11,7 +11,7 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (153s)
+  ✔ PASS (149s)
 ▶ test_device_plugin_health_transition_updates_allocated_resources_status
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
@@ -20,34 +20,34 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
  "conditions": [
   {
    "lastProbeTime": null,
-   "lastTransitionTime": "2026-08-08T02:25:00Z",
+   "lastTransitionTime": "2026-08-08T02:37:42Z",
    "observedGeneration": 1,
    "status": "True",
    "type": "Initialized"
   },
   {
    "lastProbeTime": null,
-   "lastTransitionTime": "2026-08-08T02:25:00Z",
+   "lastTransitionTime": "2026-08-08T02:37:41Z",
    "status": "True",
    "type": "PodScheduled"
   },
   {
    "lastProbeTime": null,
-   "lastTransitionTime": "2026-08-08T02:25:00Z",
+   "lastTransitionTime": "2026-08-08T02:37:42Z",
    "observedGeneration": 1,
    "status": "True",
    "type": "ContainersReady"
   },
   {
    "lastProbeTime": null,
-   "lastTransitionTime": "2026-08-08T02:25:00Z",
+   "lastTransitionTime": "2026-08-08T02:37:42Z",
    "observedGeneration": 1,
    "status": "True",
    "type": "Ready"
   },
   {
    "lastProbeTime": null,
-   "lastTransitionTime": "2026-08-08T02:25:00Z",
+   "lastTransitionTime": "2026-08-08T02:37:42Z",
    "observedGeneration": 1,
    "status": "False",
    "type": "PodResizeInProgress"
@@ -58,7 +58,7 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
    "allocatedResources": {
     "fake.example.com/testdevice": "1"
    },
-   "containerID": "containerd://7d3e88492aee6ce852d7f7ac46000d68951aa01d9bb07c1bb0f132306030c1da",
+   "containerID": "containerd://3edd864b26cd25e32ebae699fb69d2246b8c431b6fa4e6be45fa69b4973f219d",
    "image": "alpine:3.20",
    "imageID": "sha256:bf8527eb54c3680e728d5b4b383a8ba730d72dae7236fbc8dff97ed6b224a731",
    "lastState": {},
@@ -76,7 +76,7 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
    "started": true,
    "state": {
     "running": {
-     "startedAt": "2026-08-08T02:25:00Z"
+     "startedAt": "2026-08-08T02:37:42Z"
     }
    },
    "user": {
@@ -101,17 +101,17 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
    "volumeMounts": [
     {
      "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
-     "name": "kube-api-access-8w8hq",
+     "name": "kube-api-access-2pxmg",
      "readOnly": true,
      "recursiveReadOnly": "Disabled"
     }
    ]
   }
  ],
- "hostIP": "10.1.0.9",
+ "hostIP": "10.1.0.25",
  "hostIPs": [
   {
-   "ip": "10.1.0.9"
+   "ip": "10.1.0.25"
   }
  ],
  "phase": "Running",
@@ -122,17 +122,17 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
   }
  ],
  "qosClass": "BestEffort",
- "startTime": "2026-08-08T02:25:00Z"
+ "startTime": "2026-08-08T02:37:42Z"
 }
 ==> WARNING: [diag] kctl exec raw stderr: 
 ==> WARNING: [diag] kctl exec raw stdout: PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 HOSTNAME=device-plugin-health-check
-HOSTPATH_SERVICE_PORT=tcp://10.43.2.206:10000
-HOSTPATH_SERVICE_PORT_10000_TCP=tcp://10.43.2.206:10000
-HOSTPATH_SERVICE_PORT_10000_TCP_ADDR=10.43.2.206
+HOSTPATH_SERVICE_PORT=tcp://10.43.203.33:10000
+HOSTPATH_SERVICE_PORT_10000_TCP=tcp://10.43.203.33:10000
+HOSTPATH_SERVICE_PORT_10000_TCP_ADDR=10.43.203.33
 HOSTPATH_SERVICE_PORT_10000_TCP_PORT=10000
 HOSTPATH_SERVICE_PORT_10000_TCP_PROTO=tcp
-HOSTPATH_SERVICE_SERVICE_HOST=10.43.2.206
+HOSTPATH_SERVICE_SERVICE_HOST=10.43.203.33
 HOSTPATH_SERVICE_SERVICE_PORT=10000
 KUBERNETES_PORT=tcp://10.43.0.1:443
 KUBERNETES_PORT_443_TCP=tcp://10.43.0.1:443
@@ -144,34 +144,49 @@ KUBERNETES_SERVICE_PORT=443
 KUBERNETES_SERVICE_PORT_HTTPS=443
 HOME=/root
 ==> WARNING: [diag] nodelet log mentioning device-plugin-health-check, Allocate, or the fake resource:
-==> WARNING: [diag]   Aug 08 02:22:32 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:22:32.140572Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
-==> WARNING: [diag]   Aug 08 02:22:32 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:22:32.141646Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
-==> WARNING: [diag]   Aug 08 02:23:25 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:23:25.362021Z  INFO device plugin Allocate() succeeded container=app resource=fake.example.com/testdevice devices=["fake-3"] env_count=1
-==> WARNING: [diag]   Aug 08 02:23:26 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:23:26.021904Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=reading ListAndWatch stream
-==> WARNING: [diag]   Aug 08 02:23:31 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:23:31.023944Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=connecting to device plugin unix socket
-==> WARNING: [diag]   Aug 08 02:23:32 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:23:32.151844Z  INFO plugin registry: socket disappeared; deregistering name="fake.example.com/testdevice" path=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock
-==> WARNING: [diag]   Aug 08 02:25:02 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:25:02.166603Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
-==> WARNING: [diag]   Aug 08 02:25:02 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:25:02.171268Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
+==> WARNING: [diag]   Aug 08 02:34:05 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:34:05.158035Z  INFO CreateContainer succeeded container=coredns container_id=8863021b799802bc2f11bf97b44fbf784d3e8aca8ce27cc7a6e227bc18ec9a55
+==> WARNING: [diag]   Aug 08 02:34:10 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:34:10.993761Z  INFO CreateContainer succeeded container=busybox container_id=2f5bccb6e75df44be3798b5c35440541f2f526c4eb1f3e15616ec5f1043953d7
+==> WARNING: [diag]   Aug 08 02:34:35 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:34:35.952621Z  INFO CreateContainer succeeded container=hostpath container_id=59f2061acacb4886be95034672e9d9cfbf60117ff20a3642bedeae014af978a0
+==> WARNING: [diag]   Aug 08 02:34:38 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:34:38.162352Z  INFO CreateContainer succeeded container=csi-external-health-monitor-controller container_id=b080a7864e3519542aa1fd9f562e65a2400d464e6d946a6f771061f995603b88
+==> WARNING: [diag]   Aug 08 02:34:38 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:34:38.702407Z  INFO CreateContainer succeeded container=node-driver-registrar container_id=64ab14d6d24947c71168111975d537af8bfb74396e140164f4e717a61a262f7d
+==> WARNING: [diag]   Aug 08 02:34:39 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:34:39.283862Z  INFO CreateContainer succeeded container=liveness-probe container_id=9159bac1b57b2fc3a11451b94d93b652256284fd3af6b07354312d9362ba5b92
+==> WARNING: [diag]   Aug 08 02:34:40 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:34:40.622536Z  INFO CreateContainer succeeded container=csi-attacher container_id=80d7cd9fa82f433ea2db2e4df616f830ea96c40056fd56bccc3deb8ef54773d5
+==> WARNING: [diag]   Aug 08 02:34:41 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:34:41.983591Z  INFO CreateContainer succeeded container=csi-provisioner container_id=df2debdbf57cfefeca24a5cfab0eac4ff3bdb72297aa89d3da74b1f0c9d5e98d
+==> WARNING: [diag]   Aug 08 02:34:43 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:34:43.369122Z  INFO CreateContainer succeeded container=csi-resizer container_id=e7d05cee01482681fc3ce7f93a79504ad36acdb4710d042afd9319eba232083c
+==> WARNING: [diag]   Aug 08 02:34:45 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:34:45.444637Z  INFO CreateContainer succeeded container=csi-snapshotter container_id=d16db1e76db5469d0af35024397baa793814336d3a1ee4740f3f20d5c8dacda1
+==> WARNING: [diag]   Aug 08 02:34:46 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:34:46.193538Z  INFO CreateContainer succeeded container=socat container_id=b77fecf5839843d35e8fe86908707543bc7ad6ac11b10af77352e305e09c76e4
+==> WARNING: [diag]   Aug 08 02:35:03 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:35:03.209980Z  INFO CreateContainer succeeded container=plugin container_id=e18dde13e4ef50ece13b36057630ab6b9cb76adad4f0dc8ab95132183767852e
+==> WARNING: [diag]   Aug 08 02:35:06 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:35:06.195616Z  INFO CreateContainer succeeded container=plugin container_id=98f48c9aad6a9bda60a54d6bd1893c953b01c9619f48844eb5573b9927e2d296
+==> WARNING: [diag]   Aug 08 02:35:22 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:35:22.978532Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
+==> WARNING: [diag]   Aug 08 02:35:22 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:35:22.979745Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
+==> WARNING: [diag]   Aug 08 02:36:05 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:36:05.633962Z  INFO device plugin Allocate() succeeded container=app resource=fake.example.com/testdevice devices=["fake-3"] env_count=1
+==> WARNING: [diag]   Aug 08 02:36:05 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:36:05.642412Z  INFO CreateContainer succeeded container=app container_id=1aa805ff3d3b46f519987fc4a58fb03c1c37961cf4f986b5e194b5676bbac966
+==> WARNING: [diag]   Aug 08 02:36:07 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:36:07.838531Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=reading ListAndWatch stream
+==> WARNING: [diag]   Aug 08 02:36:12 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:36:12.840547Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=connecting to device plugin unix socket
+==> WARNING: [diag]   Aug 08 02:36:12 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:36:12.984008Z  INFO plugin registry: socket disappeared; deregistering name="fake.example.com/testdevice" path=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock
+==> WARNING: [diag]   Aug 08 02:37:42 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:37:42.189835Z  INFO CreateContainer succeeded container=app container_id=3edd864b26cd25e32ebae699fb69d2246b8c431b6fa4e6be45fa69b4973f219d
+==> WARNING: [diag]   Aug 08 02:37:42 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:37:42.997416Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
+==> WARNING: [diag]   Aug 08 02:37:43 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:37:43.001374Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
 ==> FATAL: couldn't read the allocated device ID back out of the container
   ✘ FAIL (37s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 08 02:23:26 runnervmvrwv9 run-nodelet.sh[10668]:     0: code: 'Unknown error', message: "h2 protocol error: error reading a body from connection", source: hyper::Error(Body, Error { kind: Io(Custom { kind: BrokenPipe, error: "stream closed because of a broken pipe" }) })
-    Aug 08 02:23:26 runnervmvrwv9 run-nodelet.sh[10668]:     1: error reading a body from connection
-    Aug 08 02:23:26 runnervmvrwv9 run-nodelet.sh[10668]:     2: stream closed because of a broken pipe
-    Aug 08 02:23:31 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:23:31.023944Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=connecting to device plugin unix socket
-    Aug 08 02:23:31 runnervmvrwv9 run-nodelet.sh[10668]: Caused by:
-    Aug 08 02:23:31 runnervmvrwv9 run-nodelet.sh[10668]:     0: transport error
-    Aug 08 02:23:31 runnervmvrwv9 run-nodelet.sh[10668]:     1: No such file or directory (os error 2)
-    Aug 08 02:23:31 runnervmvrwv9 run-nodelet.sh[10668]:     2: No such file or directory (os error 2)
-    Aug 08 02:23:32 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:23:32.151844Z  INFO plugin registry: socket disappeared; deregistering name="fake.example.com/testdevice" path=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock
-    Aug 08 02:23:56 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:23:56.437541Z  INFO torn down pod=not-k8s-e2e-1786155744/device-plugin-alloc-check
-    Aug 08 02:23:56 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:23:56.446580Z  INFO torn down pod=not-k8s-e2e-1786155744/device-plugin-alloc-check
-    Aug 08 02:24:22 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:24:22.277212Z  INFO node status pushed
-    Aug 08 02:25:02 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:25:02.166603Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
-    Aug 08 02:25:02 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:25:02.171268Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
-    Aug 08 02:25:22 runnervmvrwv9 run-nodelet.sh[10668]: 2026-08-08T02:25:22.316308Z  INFO node status pushed
+    Aug 08 02:36:07 runnervmvrwv9 run-nodelet.sh[10800]:     1: error reading a body from connection
+    Aug 08 02:36:07 runnervmvrwv9 run-nodelet.sh[10800]:     2: stream closed because of a broken pipe
+    Aug 08 02:36:12 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:36:12.840547Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=connecting to device plugin unix socket
+    Aug 08 02:36:12 runnervmvrwv9 run-nodelet.sh[10800]: Caused by:
+    Aug 08 02:36:12 runnervmvrwv9 run-nodelet.sh[10800]:     0: transport error
+    Aug 08 02:36:12 runnervmvrwv9 run-nodelet.sh[10800]:     1: No such file or directory (os error 2)
+    Aug 08 02:36:12 runnervmvrwv9 run-nodelet.sh[10800]:     2: No such file or directory (os error 2)
+    Aug 08 02:36:12 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:36:12.984008Z  INFO plugin registry: socket disappeared; deregistering name="fake.example.com/testdevice" path=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock
+    Aug 08 02:36:37 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:36:37.921180Z  INFO torn down pod=not-k8s-e2e-1786156509/device-plugin-alloc-check
+    Aug 08 02:36:37 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:36:37.932575Z  INFO torn down pod=not-k8s-e2e-1786156509/device-plugin-alloc-check
+    Aug 08 02:37:03 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:37:03.145770Z  INFO node status pushed
+    Aug 08 02:37:42 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:37:42.189835Z  INFO CreateContainer succeeded container=app container_id=3edd864b26cd25e32ebae699fb69d2246b8c431b6fa4e6be45fa69b4973f219d
+    Aug 08 02:37:42 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:37:42.997416Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
+    Aug 08 02:37:43 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:37:43.001374Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
+    Aug 08 02:38:03 runnervmvrwv9 run-nodelet.sh[10800]: 2026-08-08T02:38:03.183905Z  INFO node status pushed
 ▶ test_device_plugin_preferred_allocation_and_prestart
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
@@ -183,4 +198,4 @@ Results: 2 passed, 1 failed, 0 skipped
 Failed:
   - test_device_plugin_health_transition_updates_allocated_resources_status
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786155744...
+==> Cleaning up test namespace not-k8s-e2e-1786156509...
