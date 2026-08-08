@@ -1,23 +1,32 @@
-Kubelet, the agent that runs on every Kubernetes node, is heavier than it needs to be. It polls constantly, runs its own container-stats housekeeping, keeps a pile of watch caches alive — all before your cluster has done a single useful thing. On a Raspberry Pi or an edge box, that idle cost can rival the actual workload you're trying to run. On a big server it's the same cost, just easier to lose in the noise.
+Kubelet, the agent running on every Kubernetes node, idles at about 81MB of RAM and burns real CPU before your cluster does anything useful.
 
-So I built not-k8s. Real Kubernetes control plane underneath — real apiserver, real scheduler, full kubectl and CRD compatibility — with the node agent swapped out for a leaner Rust binary called nodelet. Event-driven instead of polling-driven.
+I built a leaner replacement and benchmarked it properly to see if the gap was real.
 
-Saying it's more efficient isn't worth much without proof, so I built a real benchmark. Install nodelet, let it sit idle, measure real memory and CPU time. Then run the identical test with a genuine, unmodified, standalone upstream kubelet binary — same control plane, same runtime, nothing else changed. Six separate runs across separate machines so I couldn't accidentally bias the numbers by testing back to back on a warmed-up box.
+Kubelet's job is necessary: watch for pods, talk to the container runtime, report status to the control plane. But it also polls constantly, runs its own container-stats housekeeping, and keeps a pile of watch caches alive the whole time it's idle.
 
-Completely idle, no workload running at all:
+So I built not-k8s. Real Kubernetes control plane underneath — real apiserver, real scheduler, full kubectl and CRD compatibility. The node agent is swapped out for a leaner, event-driven Rust binary called nodelet.
 
-Memory — about 15MB for nodelet, about 81MB for kubelet.
-CPU time over a 2-minute idle window — about 0.08s vs about 0.85s.
+I didn't trust my own claim until I tested it:
 
-That's just the cost of having the node agent installed, before it's done anything.
+- Installed nodelet, let it sit idle, measured real memory and CPU time
+- Ran the identical test with a genuine, unmodified, standalone kubelet binary
+- Same control plane, same container runtime, only the node agent changed
+- Six separate runs on six separate machines, so I couldn't bias the numbers by testing back to back on a warmed-up box
 
-It matters most on something small — a Pi, an edge box, a fleet of them. It doesn't stop mattering on a big server, it's just easier to ignore there. Every idle cycle kubelet burns is a cycle your actual workload doesn't get, on every node you run.
+Completely idle, zero workload running:
 
-It's open source, still early, and every benchmark run publishes its raw data and charts alongside the summary:
+- Memory — about 15MB for nodelet, about 81MB for kubelet
+- CPU time over a 2-minute idle window — about 0.08s vs about 0.85s
+
+That's the cost of having the node agent installed, before it's done anything.
+
+It matters most on something small — a Pi, an edge box, a fleet of them. It doesn't stop mattering on a big server, it's just easier to lose in the noise there. Every idle cycle kubelet burns is a cycle your workload doesn't get, on every node you run.
+
+Open source, still early, raw data and charts included with every run:
 
 Report: https://github.com/centerionware/not-k8s/blob/profiling-results/latest/README.md
 Repo: https://github.com/centerionware/not-k8s
 
-If you're running Kubernetes anywhere — a Pi cluster or a fleet of servers — I'd like to know if this would actually help you.
+Genuinely curious — if you're running Kubernetes on a Pi cluster, edge fleet, or anything resource-constrained, would 66MB and 0.8 CPU-seconds per node actually matter to you, or is that noise at your scale?
 
-#Kubernetes #Rust #EdgeComputing #OpenSource
+#Kubernetes #Rust #EdgeComputing
