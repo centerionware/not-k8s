@@ -1,123 +1,205 @@
-name: Profiling — nodelet vs stock k3s (real kubelet)
+name: Profiling — nodelet vs a real upstream kubelet (same control plane)
 
 # Manual trigger only, same conservative posture as e2e.yml — this job is
-# slow (bootstraps two full clusters sequentially on the same runner) and
-# its numbers are only meaningful once things have settled, not something
-# to fire on every push.
+# slow and its numbers are only meaningful once things have settled, not
+# something to fire on every push.
 #
-# What this measures and why: idle/steady-state RSS + CPU% for the node
-# agent (deploy/measure.sh's existing local tool, reused as-is here) —
-# nodelet's core pitch is "does the same job as kubelet using dramatically
-# less idle overhead," so that's the number that matters, not synthetic
-# throughput. Baseline is real k3s's own bundled kubelet (a default,
-# single-node `k3s server` — no --disable-agent, so its embedded agent's
-# real kubelet is actually running), not a separately-built vanilla
-# kubeadm cluster: this project already targets k3s as its control plane,
-# so that's the actual apples-to-apples comparison, not a hypothetical one.
+# What this measures and why: idle/steady-state RSS + CPU (%, absolute
+# CPU-seconds, and — where the runner's perf_event access allows it, real
+# hardware cycles/instructions) for the node agent, sampled every second
+# over the whole window so the report can chart what happened over time,
+# not just report one final average. nodelet's core pitch is "does the
+# same job as kubelet using dramatically less idle overhead," so that's
+# the number that matters, not synthetic throughput.
+#
+# Round 124: rebuilt three times —
+#   1. From a nodelet-vs-stock-k3s comparison to a genuine apples-to-apples
+#      one. A default k3s install can't isolate "kubelet's own number" at
+#      all — k3s runs kubelet as an embedded goroutine inside the same OS
+#      process as the apiserver/etcd/controller-manager/scheduler, so
+#      there's no separate process to measure. This job instead runs a
+#      REAL, standalone upstream kubelet binary
+#      (deploy/lib/upstream-kubelet.sh), version-matched to this cluster's
+#      own k3s-embedded Kubernetes release, against the exact same
+#      stripped `k3s server --disable-agent` control plane and the exact
+#      same containerd nodelet already uses — swapping only the node
+#      agent itself, with everything else held constant.
+#   2. From one runner measuring both agents *sequentially* to a matrix of
+#      independent runners measuring one agent each *in parallel* —
+#      sequential measurement risks exactly the kind of bias this report
+#      exists to rule out (disk cache state, memory fragmentation, thermal
+#      throttling, or anything else accumulated by the first phase
+#      quietly advantaging or disadvantaging whichever ran second). Every
+#      matrix leg provisions itself identically (the same
+#      `bootstrap-source.sh --with-cri` call on all of them — the kubelet
+#      legs just stop nodelet and swap in kubelet afterward, never
+#      measuring nodelet at all).
+#   3. From one runner per agent to 3 replicate runners per agent (6 legs
+#      total) — a single sample can be noisy (one GC cycle landing inside
+#      vs. just outside the window, a slow syscall, a noisy-neighbor VM
+#      host, whatever); the report now shows a real mean±range across
+#      replicates instead of one point estimate per agent.
 on:
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
+env:
+  # 1 sample/sec; keep this bounded (job timeout below, plus each matrix
+  # leg still has to bootstrap the whole stack) while comfortably covering
+  # nodelet's own node-status-push interval and at least a couple of
+  # GC/informer-resync cycles.
+  SAMPLE_SECS: 120
+
 jobs:
-  profiling:
+  profile:
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [nodelet, kubelet]
+        replicate: [1, 2, 3]
+        include:
+          - agent: nodelet
+            agent_pattern: nodelet
+          - agent: kubelet
+            agent_pattern: /usr/local/bin/kubelet
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Measure not-k8s (nodelet + stripped k3s server)
-        id: notk8s
+      - name: Bootstrap the shared stack (stripped k3s control plane + containerd + nodelet)
         run: |
           set -e
           sudo ./deploy/bootstrap-source.sh --with-cri
-          echo "==> letting it settle for 30s before measuring idle steady-state..."
-          sleep 30
-          sudo ./deploy/measure.sh 30 | tee /tmp/notk8s-measure.txt
-          COMBINED="$(awk '/^ *COMBINED/{gsub("%","",$2); print $2, $3}' /tmp/notk8s-measure.txt)"
-          echo "cpu=$(echo "$COMBINED" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "rss=$(echo "$COMBINED" | awk '{print $2}')" >> "$GITHUB_OUTPUT"
 
-      - name: Tear down not-k8s
+      - name: Swap nodelet for a real upstream kubelet (same control plane, same containerd)
+        if: matrix.agent == 'kubelet'
+        run: |
+          set -e
+          sudo systemctl stop nodelet.service
+          sudo bash deploy/lib/upstream-kubelet.sh start
+
+      - name: Settle before measuring idle steady-state
+        run: sleep 30
+
+      - name: Measure ${{ matrix.agent }} replicate ${{ matrix.replicate }} (idle, ${{ env.SAMPLE_SECS }}s, 1 sample/sec)
+        run: |
+          set -e
+          sudo ./deploy/measure.sh "$SAMPLE_SECS" /tmp/measure-out "${{ matrix.agent_pattern }}" | tee /tmp/measure-out-console.txt
+
+      - name: Tear down
         if: always()
         run: |
+          sudo bash deploy/lib/upstream-kubelet.sh stop 2>/dev/null || true
           sudo systemctl stop nodelet.service 2>/dev/null || true
           sudo systemctl stop k3s.service 2>/dev/null || true
           sudo /usr/local/bin/k3s-uninstall.sh 2>/dev/null || true
 
-      - name: Install stock k3s (real bundled kubelet, default single-node, no disables)
-        run: |
-          set -e
-          curl -sfL https://get.k3s.io | sudo sh -
-          echo "==> waiting for stock k3s to report Ready..."
-          for i in $(seq 1 30); do
-            sudo k3s kubectl get nodes 2>/dev/null | grep -q " Ready" && break
-            sleep 2
-          done
-
-      - name: Measure stock k3s (real kubelet, idle)
-        id: stockk3s
-        run: |
-          set -e
-          echo "==> letting it settle for 30s before measuring idle steady-state..."
-          sleep 30
-          sudo ./deploy/measure.sh 30 | tee /tmp/stockk3s-measure.txt
-          COMBINED="$(awk '/^ *COMBINED/{gsub("%","",$2); print $2, $3}' /tmp/stockk3s-measure.txt)"
-          echo "cpu=$(echo "$COMBINED" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "rss=$(echo "$COMBINED" | awk '{print $2}')" >> "$GITHUB_OUTPUT"
-
-      - name: Tear down stock k3s
+      - name: Upload measurement
         if: always()
-        run: sudo /usr/local/bin/k3s-uninstall.sh 2>/dev/null || true
+        uses: actions/upload-artifact@v4
+        with:
+          name: profile-${{ matrix.agent }}-${{ matrix.replicate }}
+          path: /tmp/measure-out
+          retention-days: 1
+
+  report:
+    needs: profile
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download all measurements
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/artifacts
+
+      - name: Install matplotlib/numpy
+        run: python3 -m pip install --quiet --break-system-packages matplotlib numpy
+
+      - name: Render charts + aggregated stats
+        run: |
+          set -e
+          mkdir -p /tmp/profiling-report
+          nodelet_csvs="/tmp/artifacts/profile-nodelet-1/nodelet-timeseries.csv,/tmp/artifacts/profile-nodelet-2/nodelet-timeseries.csv,/tmp/artifacts/profile-nodelet-3/nodelet-timeseries.csv"
+          kubelet_csvs="/tmp/artifacts/profile-kubelet-1/nodelet-timeseries.csv,/tmp/artifacts/profile-kubelet-2/nodelet-timeseries.csv,/tmp/artifacts/profile-kubelet-3/nodelet-timeseries.csv"
+          nodelet_summaries="/tmp/artifacts/profile-nodelet-1/summary.txt,/tmp/artifacts/profile-nodelet-2/summary.txt,/tmp/artifacts/profile-nodelet-3/summary.txt"
+          kubelet_summaries="/tmp/artifacts/profile-kubelet-1/summary.txt,/tmp/artifacts/profile-kubelet-2/summary.txt,/tmp/artifacts/profile-kubelet-3/summary.txt"
+          python3 deploy/lib/render-profiling-charts.py /tmp/profiling-report \
+            --series "nodelet=$nodelet_csvs" \
+            --series "upstream kubelet=$kubelet_csvs" \
+            --summary "nodelet=$nodelet_summaries" \
+            --summary "upstream kubelet=$kubelet_summaries"
 
       - name: Build comparison report
-        if: always()
         env:
-          NOTK8S_CPU: ${{ steps.notk8s.outputs.cpu }}
-          NOTK8S_RSS: ${{ steps.notk8s.outputs.rss }}
-          STOCK_CPU: ${{ steps.stockk3s.outputs.cpu }}
-          STOCK_RSS: ${{ steps.stockk3s.outputs.rss }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           set -e
-          bash deploy/lib/profiling-report.sh "$NOTK8S_CPU" "$NOTK8S_RSS" "$STOCK_CPU" "$STOCK_RSS" \
-            > /tmp/report.md
-          cat /tmp/report.md >> "$GITHUB_STEP_SUMMARY"
+          bash deploy/lib/profiling-report.sh \
+            /tmp/profiling-report/stats.md \
+            "$COMMIT_SHA" "$RUN_URL" \
+            > /tmp/profiling-report/README.md
+          cat /tmp/profiling-report/README.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish results to the profiling-results branch
-        if: always()
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -e
-          {
-            echo "commit: $GITHUB_SHA"
-            echo "workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            echo "timestamp (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "----------------------------------------"
-            cat /tmp/report.md 2>/dev/null || echo "(no report — a step above failed before it could be generated)"
-          } > /tmp/profiling-entry.txt
+          git config user.name "not-k8s-profiling-bot"
+          git config user.email "actions@users.noreply.github.com"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          BRANCH=profiling-results
-          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-            git fetch origin "$BRANCH"
-            git checkout -B "$BRANCH" "origin/$BRANCH"
+          WORKDIR="$(mktemp -d)"
+          if git ls-remote --exit-code --heads origin profiling-results >/dev/null 2>&1; then
+            git clone --branch profiling-results --single-branch "https://github.com/${{ github.repository }}.git" "$WORKDIR"
           else
-            git checkout --orphan "$BRANCH"
-            git rm -rf . >/dev/null 2>&1 || true
+            git clone "https://github.com/${{ github.repository }}.git" "$WORKDIR"
+            (cd "$WORKDIR" && git checkout --orphan profiling-results && git rm -rf . >/dev/null 2>&1 || true)
           fi
 
-          mkdir -p history
-          cp /tmp/profiling-entry.txt "history/${GITHUB_SHA:0:12}-$(date -u +%Y%m%dT%H%M%SZ).txt"
-          {
-            echo "# Profiling history"
-            echo ""
-            echo "Latest run: see history/ for every run's raw comparison. Most recent first:"
-            echo ""
-            ls -1 history | sort -r | while read -r f; do echo "- [$f](history/$f)"; done
-          } > results.md
-          git add history results.md
-          git commit -m "profiling results for ${GITHUB_SHA:0:12}" --allow-empty
-          git push origin "$BRANCH" --force
+          STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          SHORT_SHA="${COMMIT_SHA:0:12}"
+          RUN_DIR="$WORKDIR/history/${SHORT_SHA}-${STAMP}"
+          # raw-data/ keeps every CSV/summary.txt this run produced, separate
+          # from the main README.md + charts — anyone who wants to build
+          # their own charts/analysis from the real numbers can just take
+          # this whole subdirectory without touching the rendered report.
+          mkdir -p "$RUN_DIR/raw-data"
+
+          cp /tmp/profiling-report/README.md "$RUN_DIR/README.md" 2>/dev/null || true
+          cp /tmp/profiling-report/rss-over-time.png "$RUN_DIR/" 2>/dev/null || true
+          cp /tmp/profiling-report/cpu-over-time.png "$RUN_DIR/" 2>/dev/null || true
+          for agent in nodelet kubelet; do
+            for r in 1 2 3; do
+              cp "/tmp/artifacts/profile-${agent}-${r}/nodelet-timeseries.csv" "$RUN_DIR/raw-data/${agent}-${r}-timeseries.csv" 2>/dev/null || true
+              cp "/tmp/artifacts/profile-${agent}-${r}/k3s-timeseries.csv" "$RUN_DIR/raw-data/${agent}-${r}-k3s-server-timeseries.csv" 2>/dev/null || true
+              cp "/tmp/artifacts/profile-${agent}-${r}/summary.txt" "$RUN_DIR/raw-data/${agent}-${r}-summary.txt" 2>/dev/null || true
+            done
+          done
+
+          # "latest" always mirrors this run's files at a stable path — the
+          # branch's own top-level README.md links here.
+          rm -rf "$WORKDIR/latest"
+          cp -r "$RUN_DIR" "$WORKDIR/latest"
+
+          bash deploy/lib/profiling-report.sh --readme \
+            "$COMMIT_SHA" "$RUN_URL" "$SHORT_SHA-$STAMP" \
+            > "$WORKDIR/README.md"
+
+          cd "$WORKDIR"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no changes to publish"
+          else
+            git commit -m "profiling results for ${COMMIT_SHA}"
+            git push origin profiling-results
+          fi

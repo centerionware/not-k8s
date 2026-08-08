@@ -22,3 +22,5 @@
 *.zip
 /deploy/*.bin
 flannellog
+__pycache__/
+*.pyc

@@ -1,68 +1,80 @@
 #!/usr/bin/env bash
-# measure.sh — Measure idle CPU% and RSS for the k3s control plane + nodelet.
+# measure.sh — Measure idle CPU%/CPU-seconds/RSS *over time* (1-second
+# samples, not just a single before/after delta), and — where the runner's
+# perf_event access allows it — real hardware cycles/instructions, for the
+# k3s control-plane process and nodelet.
 #
-# Samples process stats over a configurable window (default 30s) and prints
-# average CPU% and peak RSS for each component, plus combined totals.
+# Round 124: rewritten twice in the same round after a published CI report
+# came back showing 0.00% CPU for *both* processes, traced to real gaps:
+#   1. It silently fell back from pidstat to a single before/after
+#      /proc/<pid>/stat delta whenever `pidstat` (the `sysstat` package)
+#      wasn't installed — true by default on GitHub's ubuntu-latest
+#      runners. That single-delta approach needs at least one full CLK_TCK
+#      (usually 10ms) of combined CPU time across the *whole* window to
+#      register as anything but exactly zero.
+#   2. The old 30s window was short enough to plausibly miss every
+#      periodic cycle (status push, GC interval, informer resync) on an
+#      otherwise-empty idle cluster, and only ever reported one final
+#      average — no way to see *when* activity happened.
+# Second pass: dropped the pidstat/sysstat dependency entirely in favor of
+# a self-contained per-second /proc sampling loop (finer-grained than
+# pidstat's own 2s default, and needs nothing installed on any Linux
+# runner), and now emits a real per-second time series (CSV) per process
+# instead of only a final summary, so a report can chart what actually
+# happened over the whole window instead of one number.
 #
-# This is the key measurement script: not-k8s aims for dramatically lower
-# idle overhead than stock k3s.  Baseline comparison targets:
+# IMPORTANT caveat this script's own output makes explicit rather than
+# implying false precision: k3s runs kubelet (when the agent isn't
+# disabled) as an embedded goroutine inside the *same* OS process as the
+# apiserver/etcd/controller-manager/scheduler — there is no separate
+# "kubelet" binary/process to isolate the way a vanilla kubeadm cluster
+# has. So on stock k3s, the "k3s server" row/series below is the *entire*
+# stack combined (control plane + kubelet + kube-proxy + flannel), not
+# kubelet alone. nodelet, by contrast, genuinely is its own separate
+# process on both sides. Don't read the stock-side number as "kubelet's
+# own number."
 #
-#   Stock k3s (single-node, idle):
-#     - k3s server + agent:  ~150-400 MB RSS combined
-#     - Idle CPU:            ~30-50% of a single core (PLEG, cAdvisor, informer resyncs)
-#
-#   not-k8s target (stripped control plane + nodelet, idle):
-#     - k3s server (no agent): ~80-150 MB RSS
-#     - nodelet (mock):        ~5-15 MB RSS
-#     - Idle CPU:              well under 5% of a core combined
+# Per-process outputs (written under --out-dir, default a fresh mktemp -d):
+#   <name>-timeseries.csv   second,rss_kb,cpu_pct — the real per-second data
+#   summary.txt             human-readable table + MEASURE_* machine block
+#     (cycles/instructions/IPC in the summary are a single whole-window
+#     aggregate from perf, not a per-second series — see the perf section
+#     below for why)
 #
 # Usage:
-#   ./deploy/measure.sh            # 30s sample window
-#   ./deploy/measure.sh 60         # 60s sample window
+#   ./deploy/measure.sh                          # 30s sample window
+#   ./deploy/measure.sh 120                       # 120s sample window
+#   ./deploy/measure.sh 120 /tmp/measure-out       # explicit output directory
 #
-set -euo pipefail
+set -uo pipefail
 
 SAMPLE_SECS="${1:-30}"
-
-# ── Helper: find PID by process pattern ──────────────────────────────────────
+OUT_DIR="${2:-}"
+# Round 124: the node-agent side of the comparison is nodelet by default,
+# but the same script also drives the upstream-kubelet.sh profiling phase
+# (deploy/lib/upstream-kubelet.sh) -- pass a different process-match
+# pattern (e.g. "kubelet") as $3 to measure that agent instead. Internal
+# variable names stay NODELET_* either way (this file's job is "the
+# non-control-plane node agent slot," not literally nodelet specifically).
+AGENT_PATTERN="${3:-nodelet}"
+[[ -n "$OUT_DIR" ]] || OUT_DIR="$(mktemp -d /tmp/not-k8s-measure.XXXXXX)"
+mkdir -p "$OUT_DIR"
 
 find_pid() {
-    local pattern="$1"
-    # Use pgrep with full command-line matching; take the oldest match (parent).
-    pgrep -fo "$pattern" 2>/dev/null || true
+    pgrep -fo "$1" 2>/dev/null || true
 }
-
-# ── Helper: read RSS from /proc ──────────────────────────────────────────────
-
 get_rss_kb() {
-    local pid="$1"
-    # VmRSS in /proc/<pid>/status is in kB.
-    awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status" 2>/dev/null || echo "0"
+    awk '/^VmRSS:/ { print $2 }' "/proc/$1/status" 2>/dev/null || echo "0"
 }
-
-# ── Helper: read CPU ticks from /proc/<pid>/stat ─────────────────────────────
-# Fields 14 (utime) and 15 (stime) are in clock ticks.
-
 get_cpu_ticks() {
-    local pid="$1"
-    local stat
+    local pid="$1" stat after_comm
     stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || { echo "0"; return; }
-    # stat fields are space-separated; field 1 is pid, field 2 is (comm) which
-    # may contain spaces, so we strip everything up to the last ')'.
-    local after_comm="${stat##*) }"
-    # Fields after comm: state(3) ppid(4) ... utime(14-2=12) stime(15-2=13)
-    # after_comm starts at field 3, so utime is word 12, stime is word 13
-    # (fields 14 and 15 counting from 1, minus the 2 we stripped = indices 12,13)
-    local utime stime
-    utime="$(echo "$after_comm" | awk '{print $12}')"
-    stime="$(echo "$after_comm" | awk '{print $13}')"
-    echo $(( utime + stime ))
+    after_comm="${stat##*) }"
+    echo $(( $(echo "$after_comm" | awk '{print $12}') + $(echo "$after_comm" | awk '{print $13}') ))
 }
-
-# ── Discover PIDs ────────────────────────────────────────────────────────────
 
 K3S_PID="$(find_pid 'k3s server')"
-NODELET_PID="$(find_pid 'nodelet')"
+NODELET_PID="$(find_pid "$AGENT_PATTERN")"
 
 if [[ -z "$K3S_PID" && -z "$NODELET_PID" ]]; then
     echo "ERROR: Neither k3s server nor nodelet process found." >&2
@@ -71,167 +83,200 @@ if [[ -z "$K3S_PID" && -z "$NODELET_PID" ]]; then
 fi
 
 echo "==> Process discovery:"
-[[ -n "$K3S_PID" ]]   && echo "    k3s server PID: $K3S_PID"   || echo "    k3s server: NOT RUNNING"
-[[ -n "$NODELET_PID" ]] && echo "    nodelet PID:    $NODELET_PID" || echo "    nodelet:    NOT RUNNING"
+[[ -n "$K3S_PID" ]]     && echo "    k3s server PID: $K3S_PID"     || echo "    k3s server: NOT RUNNING"
+[[ -n "$NODELET_PID" ]] && echo "    $AGENT_PATTERN PID:    $NODELET_PID" || echo "    $AGENT_PATTERN:    NOT RUNNING"
+echo "    output directory: $OUT_DIR"
 echo ""
 
 CLK_TCK="$(getconf CLK_TCK)"
 
-# ── Try pidstat first (more accurate) ───────────────────────────────────────
+# ── perf availability (best-effort hardware cycles/instructions) ────────────
 
-use_pidstat=false
-if command -v pidstat &>/dev/null; then
-    use_pidstat=true
+PERF_OK=false
+if command -v perf >/dev/null 2>&1 && perf stat -e task-clock -- true >/dev/null 2>&1; then
+    PERF_OK=true
 fi
 
-if $use_pidstat; then
-    echo "==> Using pidstat for CPU measurement (${SAMPLE_SECS}s sample)..."
-    echo ""
+# perf's per-second interval mode (-I) exists, but folding its output back
+# onto a per-second RSS/CPU% row by timestamp turned out to be exactly the
+# kind of fragile text-join that's easy to get subtly wrong (found live
+# testing this script locally: it silently truncated both timeseries CSVs
+# to empty). A single whole-window aggregate read is simpler, robust, and
+# still gives real cycles/instructions/IPC numbers -- just as a summary
+# total rather than its own time series.
+K3S_PERF_RAW="$OUT_DIR/.k3s-perf-raw.txt"
+NODELET_PERF_RAW="$OUT_DIR/.nodelet-perf-raw.txt"
+K3S_PERF_BGPID=""
+NODELET_PERF_BGPID=""
 
-    # Build the PID list for pidstat.
-    pid_args=()
-    [[ -n "$K3S_PID" ]]     && pid_args+=("-p" "$K3S_PID")
-    [[ -n "$NODELET_PID" ]] && pid_args+=("-p" "$NODELET_PID")
-
-    # pidstat -u: CPU utilization.  Sample every 2s for the window.
-    # -h: horizontal/parseable output.
-    INTERVALS=$(( SAMPLE_SECS / 2 ))
-    (( INTERVALS < 1 )) && INTERVALS=1
-
-    # Capture pidstat output.  We'll parse the "Average:" lines.
-    PIDSTAT_OUT="$(pidstat -u -h "${pid_args[@]}" 2 "$INTERVALS" 2>/dev/null)" || true
-
-    echo "── CPU (pidstat average over ${SAMPLE_SECS}s) ──"
-    echo ""
-
-    parse_pidstat_cpu() {
-        local pid="$1"
-        local label="$2"
-        # Average lines look like:  ... <PID> ... %usr %system %guest %wait %CPU ...
-        local cpu
-        cpu="$(echo "$PIDSTAT_OUT" | awk -v pid="$pid" '/Average:/ && $0 ~ pid { for(i=1;i<=NF;i++) if($i==pid) print $(i+6) }' | tail -1)"
-        if [[ -z "$cpu" ]]; then
-            cpu="$(echo "$PIDSTAT_OUT" | grep "Average:" | awk -v pid="$pid" '$0 ~ pid {print $8}' | tail -1)"
-        fi
-        echo "${cpu:-N/A}"
-    }
-
-    K3S_CPU="N/A"
-    NODELET_CPU_PCT="N/A"
-    [[ -n "$K3S_PID" ]]     && K3S_CPU="$(parse_pidstat_cpu "$K3S_PID" "k3s")"
-    [[ -n "$NODELET_PID" ]] && NODELET_CPU_PCT="$(parse_pidstat_cpu "$NODELET_PID" "nodelet")"
-
+if $PERF_OK; then
+    echo "==> perf available; sampling hardware cycles/instructions (whole-window aggregate), concurrently with the per-second RSS/CPU loop below"
+    if [[ -n "$K3S_PID" ]]; then
+        perf stat -e cycles,instructions -p "$K3S_PID" -o "$K3S_PERF_RAW" -- sleep "$SAMPLE_SECS" 2>/dev/null &
+        K3S_PERF_BGPID=$!
+    fi
+    if [[ -n "$NODELET_PID" ]]; then
+        perf stat -e cycles,instructions -p "$NODELET_PID" -o "$NODELET_PERF_RAW" -- sleep "$SAMPLE_SECS" 2>/dev/null &
+        NODELET_PERF_BGPID=$!
+    fi
 else
-    # ── Fallback: manual /proc sampling ──────────────────────────────────────
-    echo "==> pidstat not found; falling back to /proc/stat sampling (${SAMPLE_SECS}s)..."
-    echo ""
-
-    # Snapshot CPU ticks at start.
-    K3S_TICKS_START=0
-    NODELET_TICKS_START=0
-    [[ -n "$K3S_PID" ]]     && K3S_TICKS_START="$(get_cpu_ticks "$K3S_PID")"
-    [[ -n "$NODELET_PID" ]] && NODELET_TICKS_START="$(get_cpu_ticks "$NODELET_PID")"
-
-    sleep "$SAMPLE_SECS"
-
-    # Snapshot CPU ticks at end.
-    K3S_TICKS_END=0
-    NODELET_TICKS_END=0
-    [[ -n "$K3S_PID" ]]     && K3S_TICKS_END="$(get_cpu_ticks "$K3S_PID")"
-    [[ -n "$NODELET_PID" ]] && NODELET_TICKS_END="$(get_cpu_ticks "$NODELET_PID")"
-
-    # CPU% = (delta_ticks / (sample_secs * CLK_TCK)) * 100
-    calc_cpu_pct() {
-        local start="$1" end="$2"
-        local delta=$(( end - start ))
-        # Use awk for floating-point.
-        awk -v d="$delta" -v s="$SAMPLE_SECS" -v c="$CLK_TCK" \
-            'BEGIN { printf "%.2f", (d / (s * c)) * 100 }'
-    }
-
-    K3S_CPU="0.00"
-    NODELET_CPU_PCT="0.00"
-    [[ -n "$K3S_PID" ]]     && K3S_CPU="$(calc_cpu_pct "$K3S_TICKS_START" "$K3S_TICKS_END")"
-    [[ -n "$NODELET_PID" ]] && NODELET_CPU_PCT="$(calc_cpu_pct "$NODELET_TICKS_START" "$NODELET_TICKS_END")"
-
-    echo "── CPU (/proc/stat delta over ${SAMPLE_SECS}s) ──"
-    echo ""
+    echo "==> perf unavailable or blocked (not installed, or perf_event access restricted -- common on"
+    echo "    virtualized cloud runners where the hypervisor doesn't expose the PMU to the guest);"
+    echo "    cycles/instructions will be omitted, CPU%/RSS remain the primary metrics."
 fi
+echo ""
+echo "==> sampling RSS + CPU% every 1s for ${SAMPLE_SECS}s..."
 
-# ── RSS measurement (always from /proc) ──────────────────────────────────────
-# Sample RSS multiple times over the window and report peak.
+K3S_TS="$OUT_DIR/k3s-timeseries.csv"
+NODELET_TS="$OUT_DIR/nodelet-timeseries.csv"
+echo "second,rss_kb,cpu_pct" > "$K3S_TS"
+echo "second,rss_kb,cpu_pct" > "$NODELET_TS"
 
-sample_peak_rss() {
-    local pid="$1"
-    local peak=0
-    local samples=$(( SAMPLE_SECS / 2 ))
-    (( samples < 1 )) && samples=1
+k3s_prev_ticks=0
+nodelet_prev_ticks=0
+[[ -n "$K3S_PID" ]]     && k3s_prev_ticks="$(get_cpu_ticks "$K3S_PID")"
+[[ -n "$NODELET_PID" ]] && nodelet_prev_ticks="$(get_cpu_ticks "$NODELET_PID")"
 
-    for (( i=0; i<samples; i++ )); do
-        local rss
-        rss="$(get_rss_kb "$pid")"
-        (( rss > peak )) && peak=$rss
-        # Only sleep if we're not using pidstat (pidstat already waited).
-        if ! $use_pidstat; then
-            break  # /proc fallback already slept; just take one reading.
-        fi
-        # If using pidstat, pidstat already slept.  Take one reading post-wait.
-        break
-    done
+k3s_rss_peak_kb=0
+nodelet_rss_peak_kb=0
+k3s_ticks_total=0
+nodelet_ticks_total=0
 
-    # Also take a current reading.
-    local current
-    current="$(get_rss_kb "$pid")"
-    (( current > peak )) && peak=$current
-    echo "$peak"
+for (( sec=1; sec<=SAMPLE_SECS; sec++ )); do
+    sleep 1
+
+    if [[ -n "$K3S_PID" ]] && [[ -d "/proc/$K3S_PID" ]]; then
+        rss="$(get_rss_kb "$K3S_PID")"
+        ticks="$(get_cpu_ticks "$K3S_PID")"
+        delta=$(( ticks - k3s_prev_ticks ))
+        (( delta < 0 )) && delta=0
+        k3s_prev_ticks="$ticks"
+        k3s_ticks_total=$(( k3s_ticks_total + delta ))
+        (( rss > k3s_rss_peak_kb )) && k3s_rss_peak_kb="$rss"
+        pct="$(awk -v d="$delta" -v c="$CLK_TCK" 'BEGIN { printf "%.2f", (d / c) * 100 }')"
+        echo "$sec,$rss,$pct" >> "$K3S_TS"
+    fi
+
+    if [[ -n "$NODELET_PID" ]] && [[ -d "/proc/$NODELET_PID" ]]; then
+        rss="$(get_rss_kb "$NODELET_PID")"
+        ticks="$(get_cpu_ticks "$NODELET_PID")"
+        delta=$(( ticks - nodelet_prev_ticks ))
+        (( delta < 0 )) && delta=0
+        nodelet_prev_ticks="$ticks"
+        nodelet_ticks_total=$(( nodelet_ticks_total + delta ))
+        (( rss > nodelet_rss_peak_kb )) && nodelet_rss_peak_kb="$rss"
+        pct="$(awk -v d="$delta" -v c="$CLK_TCK" 'BEGIN { printf "%.2f", (d / c) * 100 }')"
+        echo "$sec,$rss,$pct" >> "$NODELET_TS"
+    fi
+done
+
+[[ -n "$K3S_PERF_BGPID" ]]     && wait "$K3S_PERF_BGPID" 2>/dev/null
+[[ -n "$NODELET_PERF_BGPID" ]] && wait "$NODELET_PERF_BGPID" 2>/dev/null
+
+# perf stat's default text report has lines like (exact spacing/thousands
+# separators vary by version):
+#   9,876,543,210      cycles:u
+#  12,345,678,901      instructions:u    #    1.25  insn per cycle
+# "<not supported>"/"<not counted>" means this counter isn't available on
+# this hardware/virtualization -- treated as unavailable (blank), never
+# fabricated as 0.
+parse_perf_value() {
+    local file="$1" event_pattern="$2"
+    [[ -s "$file" ]] || { echo ""; return; }
+    awk -v ev="$event_pattern" '
+        $0 ~ ev {
+            val = $1
+            gsub(",", "", val)
+            if (val ~ /^[0-9]+$/) { print val; exit }
+        }
+    ' "$file"
 }
+K3S_CYCLES="$(parse_perf_value "$K3S_PERF_RAW" 'cycles')"
+K3S_INSTRUCTIONS="$(parse_perf_value "$K3S_PERF_RAW" 'instructions')"
+NODELET_CYCLES="$(parse_perf_value "$NODELET_PERF_RAW" 'cycles')"
+NODELET_INSTRUCTIONS="$(parse_perf_value "$NODELET_PERF_RAW" 'instructions')"
+rm -f "$K3S_PERF_RAW" "$NODELET_PERF_RAW"
 
-K3S_RSS_KB=0
-NODELET_RSS_KB=0
-[[ -n "$K3S_PID" ]]     && K3S_RSS_KB="$(sample_peak_rss "$K3S_PID")"
-[[ -n "$NODELET_PID" ]] && NODELET_RSS_KB="$(sample_peak_rss "$NODELET_PID")"
+# ── Summary stats derived from the time series ───────────────────────────────
 
-# Convert to MB.
-K3S_RSS_MB="$(awk -v kb="$K3S_RSS_KB" 'BEGIN { printf "%.1f", kb / 1024 }')"
-NODELET_RSS_MB="$(awk -v kb="$NODELET_RSS_KB" 'BEGIN { printf "%.1f", kb / 1024 }')"
+summarize_cpu_avg() {
+    local csv="$1"
+    [[ -s "$csv" ]] || { echo "0.00"; return; }
+    awk -F, 'NR>1 { n++; cpu_sum += $3 } END { printf "%.2f", (n>0 ? cpu_sum/n : 0) }' "$csv"
+}
+K3S_CPU_AVG="$(summarize_cpu_avg "$K3S_TS")"
+NODELET_CPU_AVG="$(summarize_cpu_avg "$NODELET_TS")"
 
-# ── Combined totals ──────────────────────────────────────────────────────────
+K3S_RSS_MB="$(awk -v kb="$k3s_rss_peak_kb" 'BEGIN { printf "%.1f", kb / 1024 }')"
+NODELET_RSS_MB="$(awk -v kb="$nodelet_rss_peak_kb" 'BEGIN { printf "%.1f", kb / 1024 }')"
+K3S_CPU_SECONDS="$(awk -v t="$k3s_ticks_total" -v c="$CLK_TCK" 'BEGIN { printf "%.3f", t / c }')"
+NODELET_CPU_SECONDS="$(awk -v t="$nodelet_ticks_total" -v c="$CLK_TCK" 'BEGIN { printf "%.3f", t / c }')"
 
-COMBINED_CPU="$(awk -v a="${K3S_CPU//N\/A/0}" -v b="${NODELET_CPU_PCT//N\/A/0}" \
-    'BEGIN { printf "%.2f", a + b }')"
-COMBINED_RSS_MB="$(awk -v a="$K3S_RSS_MB" -v b="$NODELET_RSS_MB" \
-    'BEGIN { printf "%.1f", a + b }')"
+calc_ipc() {
+    [[ -n "$1" && -n "$2" && "$2" != "0" ]] || { echo ""; return; }
+    awk -v i="$1" -v c="$2" 'BEGIN { printf "%.3f", i / c }'
+}
+K3S_IPC="$(calc_ipc "$K3S_INSTRUCTIONS" "$K3S_CYCLES")"
+NODELET_IPC="$(calc_ipc "$NODELET_INSTRUCTIONS" "$NODELET_CYCLES")"
 
-# ── Report ───────────────────────────────────────────────────────────────────
+COMBINED_RSS_MB="$(awk -v a="$K3S_RSS_MB" -v b="$NODELET_RSS_MB" 'BEGIN { printf "%.1f", a + b }')"
+COMBINED_CPU_SECONDS="$(awk -v a="$K3S_CPU_SECONDS" -v b="$NODELET_CPU_SECONDS" 'BEGIN { printf "%.3f", a + b }')"
+COMBINED_CPU_AVG="$(awk -v a="$K3S_CPU_AVG" -v b="$NODELET_CPU_AVG" 'BEGIN { printf "%.2f", a + b }')"
+sum_or_blank() {
+    [[ -z "$1" && -z "$2" ]] && { echo ""; return; }
+    awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN { printf "%.0f", a + b }'
+}
+COMBINED_CYCLES="$(sum_or_blank "$K3S_CYCLES" "$NODELET_CYCLES")"
+COMBINED_INSTRUCTIONS="$(sum_or_blank "$K3S_INSTRUCTIONS" "$NODELET_INSTRUCTIONS")"
 
-printf "  %-20s %10s %12s\n" "PROCESS" "CPU %" "RSS (MB)"
-printf "  %-20s %10s %12s\n" "────────────────────" "──────────" "────────────"
+# ── Human-readable + machine-readable summary ───────────────────────────────
 
-if [[ -n "$K3S_PID" ]]; then
-    printf "  %-20s %10s %12s\n" "k3s server" "${K3S_CPU}%" "$K3S_RSS_MB"
-fi
-if [[ -n "$NODELET_PID" ]]; then
-    printf "  %-20s %10s %12s\n" "nodelet" "${NODELET_CPU_PCT}%" "$NODELET_RSS_MB"
-fi
+fmt_or_na() { [[ -n "$1" ]] && echo "$1" || echo "N/A"; }
 
-printf "  %-20s %10s %12s\n" "────────────────────" "──────────" "────────────"
-printf "  %-20s %10s %12s\n" "COMBINED" "${COMBINED_CPU}%" "$COMBINED_RSS_MB"
+{
+    printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "PROCESS" "avg CPU%" "CPU-sec" "RSS (MB)" "cycles" "instructions" "IPC"
+    printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "────────────────" "──────────" "──────────" "──────────" "──────────────" "──────────────" "────────"
+    [[ -n "$K3S_PID" ]] && printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "k3s server" "${K3S_CPU_AVG}%" "$K3S_CPU_SECONDS" "$K3S_RSS_MB" "$(fmt_or_na "$K3S_CYCLES")" "$(fmt_or_na "$K3S_INSTRUCTIONS")" "$(fmt_or_na "$K3S_IPC")"
+    [[ -n "$NODELET_PID" ]] && printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "$AGENT_PATTERN" "${NODELET_CPU_AVG}%" "$NODELET_CPU_SECONDS" "$NODELET_RSS_MB" "$(fmt_or_na "$NODELET_CYCLES")" "$(fmt_or_na "$NODELET_INSTRUCTIONS")" "$(fmt_or_na "$NODELET_IPC")"
+    printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "────────────────" "──────────" "──────────" "──────────" "──────────────" "──────────────" "────────"
+    printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "COMBINED" "${COMBINED_CPU_AVG}%" "$COMBINED_CPU_SECONDS" "$COMBINED_RSS_MB" "$(fmt_or_na "$COMBINED_CYCLES")" "$(fmt_or_na "$COMBINED_INSTRUCTIONS")" "N/A"
+    echo ""
+    echo "  sample window: ${SAMPLE_SECS}s, 1 sample/sec"
+    echo "  perf (hardware cycles/instructions): $($PERF_OK && echo "available" || echo "unavailable")"
+    echo ""
+    echo "  NOTE: on stock k3s, \"k3s server\" is the entire stack (apiserver + etcd +"
+    echo "  controller-manager + scheduler + the embedded kubelet, when the agent isn't"
+    echo "  disabled, all in one OS process) -- k3s does not run kubelet as a separate"
+    echo "  process the way a vanilla kubeadm cluster does, so there is no way to"
+    echo "  isolate \"kubelet's own number\" from this row at the process level."
+} | tee "$OUT_DIR/summary.txt"
 
-echo ""
-echo "── Reference: stock k3s idle baseline ──"
-echo ""
-echo "  Stock k3s (single node, idle, no workloads):"
-echo "    CPU:  ~30-50% of one core  (PLEG polling, cAdvisor housekeeping, informer resyncs)"
-echo "    RSS:  ~150-400 MB combined (server + agent + containerd)"
-echo ""
-echo "  not-k8s target:"
-echo "    CPU:  <5% of one core combined"
-echo "    RSS:  <100 MB combined (stripped server + nodelet)"
-echo ""
-
-if awk -v c="$COMBINED_CPU" 'BEGIN { exit (c < 5.0) ? 0 : 1 }'; then
-    echo "  ==> PASS: Combined idle CPU is under 5%.  Looking good."
-else
-    echo "  ==> NOTE: Combined idle CPU is above 5%.  Investigate what's hot."
-    echo "           Try: RUST_LOG=nodelet=debug to check reconcile frequency."
-fi
+machine_block() {
+    echo "=== MEASURE ==="
+    echo "MEASURE_SAMPLE_SECS=$SAMPLE_SECS"
+    echo "MEASURE_PERF_AVAILABLE=$PERF_OK"
+    echo "MEASURE_OUT_DIR=$OUT_DIR"
+    echo "MEASURE_K3S_PRESENT=$([[ -n "$K3S_PID" ]] && echo true || echo false)"
+    echo "MEASURE_K3S_RSS_MB=$K3S_RSS_MB"
+    echo "MEASURE_K3S_CPU_AVG_PCT=$K3S_CPU_AVG"
+    echo "MEASURE_K3S_CPU_SECONDS=$K3S_CPU_SECONDS"
+    echo "MEASURE_K3S_CYCLES=$K3S_CYCLES"
+    echo "MEASURE_K3S_INSTRUCTIONS=$K3S_INSTRUCTIONS"
+    echo "MEASURE_K3S_IPC=$K3S_IPC"
+    echo "MEASURE_NODELET_PRESENT=$([[ -n "$NODELET_PID" ]] && echo true || echo false)"
+    echo "MEASURE_NODELET_RSS_MB=$NODELET_RSS_MB"
+    echo "MEASURE_NODELET_CPU_AVG_PCT=$NODELET_CPU_AVG"
+    echo "MEASURE_NODELET_CPU_SECONDS=$NODELET_CPU_SECONDS"
+    echo "MEASURE_NODELET_CYCLES=$NODELET_CYCLES"
+    echo "MEASURE_NODELET_INSTRUCTIONS=$NODELET_INSTRUCTIONS"
+    echo "MEASURE_NODELET_IPC=$NODELET_IPC"
+    echo "MEASURE_COMBINED_RSS_MB=$COMBINED_RSS_MB"
+    echo "MEASURE_COMBINED_CPU_AVG_PCT=$COMBINED_CPU_AVG"
+    echo "MEASURE_COMBINED_CPU_SECONDS=$COMBINED_CPU_SECONDS"
+    echo "MEASURE_COMBINED_CYCLES=$COMBINED_CYCLES"
+    echo "MEASURE_COMBINED_INSTRUCTIONS=$COMBINED_INSTRUCTIONS"
+    echo "MEASURE_K3S_TIMESERIES_CSV=$K3S_TS"
+    echo "MEASURE_NODELET_TIMESERIES_CSV=$NODELET_TS"
+    echo "=== END MEASURE ==="
+}
+machine_block | tee -a "$OUT_DIR/summary.txt"
