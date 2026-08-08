@@ -21,6 +21,10 @@
 #   ./deploy/test-e2e.sh                    # run everything
 #   ./deploy/test-e2e.sh --only=probes      # only tests whose function name contains "probes"
 #   ./deploy/test-e2e.sh --only=probes,dns  # comma-separated: contains "probes" OR "dns" (round 123)
+#   ./deploy/test-e2e.sh --shard=2/5        # only this shard's 1-in-5 slice of the registered tests
+#                                            # (round 124) — for splitting one long run across several
+#                                            # independent CI runners/clusters; combine with --only to
+#                                            # shard within an already-filtered subset.
 #   ./deploy/test-e2e.sh --keep             # don't delete the test namespace at the end (debugging)
 #   ./deploy/test-e2e.sh --namespace=foo    # use a specific namespace instead of a generated one
 #
@@ -37,10 +41,19 @@ TEST_LIB_DIR="$LIB_DIR/test"
 ONLY_PATTERN=""
 KEEP_NAMESPACE=0
 TEST_NAMESPACE="not-k8s-e2e-$(date +%s)"
+SHARD_INDEX=""
+SHARD_TOTAL=""
 
 for arg in "$@"; do
     case "$arg" in
         --only=*) ONLY_PATTERN="${arg#--only=}" ;;
+        --shard=*)
+            shard_arg="${arg#--shard=}"
+            SHARD_INDEX="${shard_arg%%/*}"
+            SHARD_TOTAL="${shard_arg##*/}"
+            [[ "$SHARD_INDEX" =~ ^[0-9]+$ && "$SHARD_TOTAL" =~ ^[0-9]+$ && "$SHARD_INDEX" -ge 1 && "$SHARD_INDEX" -le "$SHARD_TOTAL" ]] \
+                || { echo "Invalid --shard value '$shard_arg' — expected N/M with 1 <= N <= M (e.g. --shard=2/5)" >&2; exit 1; }
+            ;;
         --keep) KEEP_NAMESPACE=1 ;;
         --namespace=*) TEST_NAMESPACE="${arg#--namespace=}" ;;
         -h|--help)
@@ -96,7 +109,7 @@ for case_file in "$TEST_LIB_DIR"/cases/*.sh; do
     source "$case_file"
 done
 
-log "Running ${#TESTS_REGISTERED[@]} registered test(s)..."
+log "${#TESTS_REGISTERED[@]} test(s) registered total${SHARD_TOTAL:+ (before sharding)}; running now..."
 run_all_registered_tests
 print_summary
 

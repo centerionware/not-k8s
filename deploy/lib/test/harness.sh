@@ -90,7 +90,36 @@ _reorder_env_reconfiguring_tests_last() {
     TESTS_REGISTERED=("${normal[@]}" "${deferred[@]}")
 }
 
+# _filter_shard <index> <total> — keep only every <total>th registered test,
+# starting at <index> (1-based), round-robin over TESTS_REGISTERED's
+# existing (deterministic — same case files, same source order every run)
+# order. Round 124: splits one long serial e2e run across up to 5 parallel
+# CI runners (test-e2e.sh's own --shard=N/M flag, wired from e2e.yml's
+# matrix), each bringing up its own independent cluster — this only
+# selects WHICH of the already-registered tests this process runs, nothing
+# about how each one runs. Round-robin (not a contiguous chunk per shard)
+# on purpose: consecutive tests in one case file tend to be related/similar
+# in cost and infra needs (all the CSI tests, all the eviction tests, ...),
+# so a contiguous split would risk one shard getting disproportionately
+# slow/flaky tests while another gets all the fast ones; interleaving
+# spreads that variance evenly instead.
+_filter_shard() {
+    local index="$1" total="$2"
+    local -a kept=()
+    local i
+    for i in "${!TESTS_REGISTERED[@]}"; do
+        if (( i % total == index - 1 )); then
+            kept+=("${TESTS_REGISTERED[$i]}")
+        fi
+    done
+    TESTS_REGISTERED=("${kept[@]}")
+}
+
 run_all_registered_tests() {
+    if [[ -n "${SHARD_TOTAL:-}" ]]; then
+        _filter_shard "$SHARD_INDEX" "$SHARD_TOTAL"
+        log "Shard $SHARD_INDEX/$SHARD_TOTAL: ${#TESTS_REGISTERED[@]} test(s) selected"
+    fi
     _reorder_env_reconfiguring_tests_last
     # NOTK8S_E2E_MAX_FAILURES stops the whole run once this many tests
     # have failed, instead of always running every remaining test —

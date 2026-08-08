@@ -30,6 +30,23 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
       - name: cargo build (debug)
         run: cargo build --features cri -p nodelet
+      # Round 124: the e2e stage's own "Build and deploy" step used to
+      # redo this exact build itself, on every one of its (now 5, see
+      # below) parallel shards — the same debug binary compiled 6 times
+      # total (once here, 5 more downstream) for zero difference in the
+      # result. Uploading it once here and downloading it in each e2e
+      # shard (nodelet-build.sh's existing NOTK8S_NODELET_PREBUILT seam
+      # — this was already built for exactly this, just not wired into CI
+      # until now) turns that into 1 build + 5 downloads. 1-day retention:
+      # only ever needed for the few minutes until every e2e shard has
+      # consumed it — see the cleanup-artifact job below, which deletes it
+      # outright the moment they all finish rather than waiting even that
+      # long.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodelet-debug-binary
+          path: target/debug/nodelet
+          retention-days: 1
       - name: cargo test (both feature sets)
         # Under sudo: some tests (svc.rs's nft_check() ones) open real
         # netlink/nftables sockets to validate generated ruleset syntax,
@@ -47,22 +64,42 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
 
   # ── Stage 2: full e2e suite, real CSI + DRA reference drivers ─────────
+  # Round 124: sharded 5 ways (test-e2e.sh's --shard=N/M, harness.sh's
+  # _filter_shard()) — each shard is a fully independent runner/cluster
+  # running its own ~1/5 slice of the registered tests concurrently,
+  # turning one long serial run into 5 parallel ones. fail-fast: false so
+  # one shard's real failure doesn't cancel the other 4's still-useful
+  # results (matches build-release's existing per-arch matrix reasoning
+  # just below). 5, not more: GitHub-hosted runner concurrency is a real,
+  # shared account-wide limit, and CSI/DRA reference-driver setup is
+  # per-shard fixed overhead — more shards keeps shrinking each one's own
+  # test slice while that fixed cost stays constant, so returns taper off
+  # well before "one shard per test" would.
   e2e:
     needs: build-and-test
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: nodelet-debug-binary
+          path: dist-bin
+
       - name: Build and deploy not-k8s (real containerd/CRI runtime)
-        # Debug profile: this stage only needs a correct binary, not an
-        # optimized one — Cargo.toml's release profile (lto=true,
-        # codegen-units=1) is what makes cargo build --release take ~5x
-        # longer than a debug build, worthwhile for an actually-deployed
-        # binary (stage 3 builds those), pure waste here.
+        # NOTK8S_NODELET_PREBUILT (nodelet-build.sh) skips rebuilding
+        # entirely — build-and-test already built and uploaded this exact
+        # binary once above; every shard just installs it.
         env:
-          NOTK8S_BUILD_PROFILE: debug
-        run: sudo -E ./deploy/bootstrap-source.sh --with-cri
+          NOTK8S_NODELET_PREBUILT: ${{ github.workspace }}/dist-bin/nodelet
+        run: |
+          chmod +x "$NOTK8S_NODELET_PREBUILT"
+          sudo -E ./deploy/bootstrap-source.sh --with-cri
 
       - name: Install reference CSI + DRA drivers
         env:
@@ -73,11 +110,11 @@ jobs:
           # reference drivers up in well under a minute (round 121's own
           # live verification took well under that) — 3 minutes is a
           # generous ceiling, not a target, so a real regression fails
-          # fast instead of silently eating the job's whole 90-minute
+          # fast instead of silently eating the job's whole 40-minute
           # budget the way the unbounded first run did.
           sudo -E timeout 180 bash deploy/lib/e2e-full-setup.sh
 
-      - name: Run the full e2e suite
+      - name: Run this shard's e2e tests (${{ matrix.shard }}/5)
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
           TEST_CSI_STORAGE_CLASS: csi-hostpath-sc
@@ -91,7 +128,7 @@ jobs:
           # the earlier sudo -E build step leaves ~/.kube root-owned,
           # which corrupted some tests' captured kubectl output.
           sudo chown -R "$(id -u):$(id -g)" ~/.kube 2>/dev/null || sudo rm -rf ~/.kube
-          ./deploy/test-e2e.sh
+          ./deploy/test-e2e.sh --shard=${{ matrix.shard }}/5
 
       # Runs if any earlier step in this job failed (driver setup timing
       # out, a test failing, anything) — node/taint status, disk space,
@@ -102,6 +139,32 @@ jobs:
       - name: Dump debug info (node/taints/disk/nodelet logs) on failure
         if: failure()
         run: bash deploy/lib/e2e-debug-dump.sh
+
+  # Round 124: the debug binary all 5 e2e shards downloaded above is done
+  # being useful the moment every shard has finished with it, pass or
+  # fail — `needs: e2e` alone would already skip this if e2e never ran,
+  # but a matrix job's default `needs` gate also skips downstream jobs
+  # the instant ANY shard fails, before the artifact would otherwise be
+  # cleaned up; `if: always()` overrides that specifically for this
+  # cleanup so it still runs. Not load-bearing (retention-days: 1 on the
+  # upload already bounds the worst case) — just no reason to let it sit
+  # around for its full day when this job can delete it in a few seconds.
+  cleanup-nodelet-artifact:
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          artifact_id="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+              --jq '.artifacts[] | select(.name=="nodelet-debug-binary") | .id')"
+          if [[ -z "$artifact_id" ]]; then
+            echo "no nodelet-debug-binary artifact found for this run — nothing to clean up"
+            exit 0
+          fi
+          gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$artifact_id"
 
   # ── Stage 3: debug + release builds, all 3 platforms, concurrently ────
   build-release:

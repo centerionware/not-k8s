@@ -243,8 +243,18 @@ on_failure() {
 trap on_failure EXIT
 
 log "not-k8s bootstrap-source: isolated single-command source deployment"
-ensure_c_toolchain
-ensure_rust
+# Round 124: build_nodelet() already no-ops entirely on a prebuilt binary
+# (NOTK8S_NODELET_PREBUILT — see nodelet-build.sh's own header for the
+# seam this completes) — nothing downstream of it needs a C/Rust
+# toolchain either in that case, so skip installing one at all rather
+# than paying for it and never using it. Matters for real: this is
+# exactly the case CI's own e2e stage hits on every shard now that it
+# downloads a prebuilt debug binary from build-and-test instead of
+# rebuilding from source.
+if [[ -z "${NOTK8S_NODELET_PREBUILT:-}" ]]; then
+    ensure_c_toolchain
+    ensure_rust
+fi
 setup_control_plane
 build_nodelet
 ensure_container_runtime
