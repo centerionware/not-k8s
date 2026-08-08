@@ -302,6 +302,17 @@ EOF
     device_id="$(cat "$device_id_file" 2>/dev/null)"
     rm -f "$device_id_file"
     if [[ -z "$device_id" ]]; then
+        # Round 124: this has now failed 3 separate ways in CI (instant
+        # false-negative retry check, then a real 30s exhaustion) without
+        # ever explaining WHY the env var is missing, while the identical
+        # exec pattern reliably works in the test immediately before and
+        # after this one in registration order — dump real evidence
+        # instead of guessing again.
+        warn "[diag] pod status: $(kctl get pod "$name" -o json 2>&1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps(d.get("status",{}), indent=1))' 2>&1)"
+        warn "[diag] kctl exec raw stderr: $(kctl exec "$name" -- sh -c 'echo $FAKE_DEVICE_IDS' 2>&1 1>/dev/null)"
+        warn "[diag] kctl exec raw stdout: $(kctl exec "$name" -- env 2>&1)"
+        warn "[diag] nodelet log mentioning $name, Allocate, or the fake resource:"
+        sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -E "$name|Allocate|fake\.example\.com" | tail -40 | while IFS= read -r line; do warn "[diag]   $line"; done
         delete_pod_if_exists "$name"
         die "couldn't read the allocated device ID back out of the container"
     fi
