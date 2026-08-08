@@ -286,9 +286,17 @@ EOF
     # exec still came back empty) — retry instead of one point-in-time
     # attempt, same fix this suite's own kctl-exec reads elsewhere
     # already use for exactly this shape of flake.
+    #
+    # `-s` (found live, round 2 of this same fix) is the wrong check here:
+    # `echo $UNSET_VAR` still writes a lone newline, which already
+    # satisfies "file has size > 0" on the very first attempt regardless
+    # of whether FAKE_DEVICE_IDS was actually populated yet — silently
+    # defeating the whole retry. Requiring a real non-whitespace
+    # character is what the final `-z "$device_id"` check below actually
+    # cares about, so check for that instead.
     local device_id_file
     device_id_file="$(mktemp)"
-    try_wait_until 30 bash -c "kctl exec '$name' -- sh -c 'echo \$FAKE_DEVICE_IDS' 2>/dev/null > '$device_id_file' && [[ -s '$device_id_file' ]]" \
+    try_wait_until 30 bash -c "kctl exec '$name' -- sh -c 'echo \$FAKE_DEVICE_IDS' 2>/dev/null > '$device_id_file'; grep -q '[^[:space:]]' '$device_id_file'" \
         || warn "never got a non-empty FAKE_DEVICE_IDS read from $name within 30s; using whatever the last attempt captured"
     local device_id
     device_id="$(cat "$device_id_file" 2>/dev/null)"
