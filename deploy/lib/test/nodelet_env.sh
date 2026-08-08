@@ -28,7 +28,17 @@ nodelet_restart_supported() {
 
 _nodelet_wait_ready() { # internal — polls Node Ready after a restart
     local desc="$1"
-    wait_until 60 "$desc" bash -c '[[ "$(node_condition_status Ready)" == "True" ]]'
+    # Round 124 (found live in CI, full-suite runs only): 60s wasn't
+    # always enough for a full restart + re-registration + CSI/DRA
+    # replugin cycle under real full-suite contention — confirmed live:
+    # nodelet only finished "watching pods bound to this node" at the
+    # exact same second a caller's own subsequent pod-Running wait (a
+    # separately, already-generous budget) gave up, meaning this
+    # function's own 60s was consuming nearly all of it. This gates
+    # EVERY env-reconfiguring test in the suite, so it gets the same
+    # generous headroom bump the rest of round 124 already applied
+    # everywhere else.
+    wait_until 120 "$desc" bash -c '[[ "$(node_condition_status Ready)" == "True" ]]'
 }
 
 # nodelet_restart_with_env VAR1=value1 [VAR2=value2 ...] — overlays these

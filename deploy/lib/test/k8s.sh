@@ -51,7 +51,25 @@ kctl() { # kctl <kubectl args...> — namespace-scoped kubectl
 }
 
 apply_manifest() { # apply_manifest <<< "$yaml"
-    kctl apply -f - >/dev/null
+    # Round 124 (found live in CI): this used to discard kubectl apply's
+    # output and exit code entirely, so a real apiserver rejection (a
+    # manifest failing API validation — confirmed live: procMount:
+    # Unmasked without hostUsers: false gets a hard 422) was completely
+    # invisible. The pod was never even created, and every caller's own
+    # subsequent try_wait_until/wait_until for it reaching Running just
+    # burned its whole budget on something that could never appear,
+    # surfacing as a generic, misleading "pod never reached Running"
+    # instead of the real, immediate, and much more useful rejection
+    # reason. Still doesn't hard-fail the test itself here — some
+    # callers legitimately want to decide for themselves how to react —
+    # but the real error is now always visible in the log right where it
+    # happened, not buried under an unrelated timeout message minutes
+    # later.
+    local output
+    if ! output="$(kctl apply -f - 2>&1)"; then
+        warn "apply_manifest: kubectl apply failed — likely to surface downstream as a misleading 'pod never reached Running' instead of this real error: $output"
+        return 1
+    fi
 }
 
 delete_pod_if_exists() { # delete_pod_if_exists <name>

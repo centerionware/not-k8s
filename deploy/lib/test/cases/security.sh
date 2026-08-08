@@ -626,22 +626,39 @@ test_supplemental_groups_policy_strict_ignores_image_group_membership() {
     # via a ConfigMap mounted with subPath — fully portable proof: a
     # "testuser" (uid 2000, primary gid 3000) that the image's own
     # /etc/group lists as an extra member of "imagegroup" (gid 4000), on
-    # top of an explicit securityContext.supplementalGroups: [5000].
-    # With Merge (the default), `id -G` must include both 4000 (from the
-    # image's own group file) and 5000 (explicit). With Strict, only the
-    # explicit groups (3000, 5000) — 4000 must NOT appear.
+    # top of an explicit supplementalGroups: [5000]. With Merge (the
+    # default), `id -G` must include both 4000 (from the image's own
+    # group file) and 5000 (explicit). With Strict, only the explicit
+    # groups (3000, 5000) — 4000 must NOT appear.
+    #
+    # Round 124 (found live in CI): supplementalGroups/
+    # supplementalGroupsPolicy are POD-level fields only
+    # (spec.securityContext, PodSecurityContext) — there's no per-
+    # container override, and the original version of this test put
+    # them under each container's own securityContext instead, which
+    # the apiserver's strict decoding rejects outright ("unknown field
+    # spec.containers[0].securityContext.supplementalGroups"). One pod
+    # can only ever have ONE policy, so proving both Merge and Strict
+    # now needs two separate pods, not two containers in one.
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="sgp"
     kctl create configmap "$name-etc" \
         --from-literal=passwd="testuser:x:2000:3000::/home/testuser:/bin/sh" \
         --from-literal=group="$(printf 'testgroup:x:3000:\nimagegroup:x:4000:testuser\n')" \
         >/dev/null
-    apply_manifest <<EOF
+
+    sgp_pod_spec() { # sgp_pod_spec <name> <policy> <check-file>
+        cat <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
-  name: $name
+  name: $1
 spec:
+  securityContext:
+    runAsUser: 2000
+    runAsGroup: 3000
+    supplementalGroups: [5000]
+    supplementalGroupsPolicy: $2
   volumes:
     - name: shared
       emptyDir: {}
@@ -649,42 +666,39 @@ spec:
       configMap:
         name: $name-etc
   containers:
-    - name: merge
+    - name: app
       image: $TEST_IMAGE
-      securityContext:
-        runAsUser: 2000
-        runAsGroup: 3000
-        supplementalGroups: [5000]
-        supplementalGroupsPolicy: Merge
-      command: ["sh", "-c", "id -G > /shared/merge.txt; sleep 3600"]
-      volumeMounts:
-        - {name: shared, mountPath: /shared}
-        - {name: etc-override, mountPath: /etc/passwd, subPath: passwd}
-        - {name: etc-override, mountPath: /etc/group, subPath: group}
-    - name: strict
-      image: $TEST_IMAGE
-      securityContext:
-        runAsUser: 2000
-        runAsGroup: 3000
-        supplementalGroups: [5000]
-        supplementalGroupsPolicy: Strict
-      command: ["sh", "-c", "id -G > /shared/strict.txt; sleep 3600"]
+      command: ["sh", "-c", "id -G > /shared/$3; sleep 3600"]
       volumeMounts:
         - {name: shared, mountPath: /shared}
         - {name: etc-override, mountPath: /etc/passwd, subPath: passwd}
         - {name: etc-override, mountPath: /etc/group, subPath: group}
 EOF
-    if ! try_wait_until 90 pod_is_phase "$name" Running; then
-        delete_pod_if_exists "$name"
+    }
+
+    local merge_name="$name-merge" strict_name="$name-strict"
+    apply_manifest <<< "$(sgp_pod_spec "$merge_name" Merge merge.txt)"
+    apply_manifest <<< "$(sgp_pod_spec "$strict_name" Strict strict.txt)"
+
+    sgp_cleanup() {
+        delete_pod_if_exists "$merge_name"
+        delete_pod_if_exists "$strict_name"
         kctl delete configmap "$name-etc" --ignore-not-found >/dev/null
-        die "pod never reached Running with supplementalGroupsPolicy set — check nodelet's logs for a RunPodSandbox/CreateContainer error (runtime may not support CRI's SupplementalGroupsPolicy field at all, e.g. too old containerd)"
+    }
+
+    if ! try_wait_until 90 pod_is_phase "$merge_name" Running; then
+        sgp_cleanup
+        die "the Merge pod never reached Running with supplementalGroupsPolicy set — check nodelet's logs for a RunPodSandbox/CreateContainer error (runtime may not support CRI's SupplementalGroupsPolicy field at all, e.g. too old containerd)"
+    fi
+    if ! try_wait_until 90 pod_is_phase "$strict_name" Running; then
+        sgp_cleanup
+        die "the Strict pod never reached Running with supplementalGroupsPolicy set — check nodelet's logs for a RunPodSandbox/CreateContainer error (runtime may not support CRI's SupplementalGroupsPolicy field at all, e.g. too old containerd)"
     fi
 
     local merge_groups strict_groups
-    merge_groups="$(wait_for_check_file "$name" shared merge.txt 30)"
-    strict_groups="$(wait_for_check_file "$name" shared strict.txt 20)"
-    delete_pod_if_exists "$name"
-    kctl delete configmap "$name-etc" --ignore-not-found >/dev/null
+    merge_groups="$(wait_for_check_file "$merge_name" shared merge.txt 30)"
+    strict_groups="$(wait_for_check_file "$strict_name" shared strict.txt 20)"
+    sgp_cleanup
 
     assert_contains "$merge_groups" "4000" "supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership"
     assert_contains "$merge_groups" "5000" "supplementalGroupsPolicy: Merge should still include the explicit supplementalGroups entry (5000)"
@@ -746,6 +760,15 @@ kind: Pod
 metadata:
   name: $name
 spec:
+  # Round 124 (found live in CI): the apiserver itself rejects
+  # procMount: Unmasked outright without this — "hostUsers must be
+  # false to use Unmasked" — real API validation this manifest was
+  # missing, not a runtime/nodelet limitation at all. apply_manifest
+  # discards kctl apply's own output/exit code, so the actual 422
+  # rejection was invisible; the pod was never even created, and this
+  # test just burned its full try_wait_until budget waiting for
+  # something that could never appear.
+  hostUsers: false
   volumes:
     - name: shared
       emptyDir: {}
