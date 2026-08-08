@@ -1,1 +1,1 @@
-kubelet idles at ~81MB RAM / ~0.85s CPU (2min idle) on a Kubernetes node. I replaced it with nodelet, a 15MB Rust agent that idles at ~15MB / ~0.08s — same real k3s control plane, same kubectl. Open source, real benchmarks included: https://github.com/centerionware/not-k8s
+kubelet idles at ~81MB RAM / ~0.85s CPU (2min idle) per Kubernetes node. I replaced it with nodelet, a 15MB Rust agent that idles at ~15MB / ~0.08s — ~5x less RAM, ~10x less CPU. At 1,000 nodes that's 15GB vs 81GB just to idle. Open source, real benchmarks included: https://github.com/centerionware/not-k8s

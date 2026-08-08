@@ -1,13 +1,22 @@
 [HEADING=1]not-k8s: replaced kubelet with a 15MB Rust agent[/HEADING]
 
-A k3s control plane (apiserver, scheduler, full kubectl/CRD support) with kubelet swapped out for [B]nodelet[/B], a leaner event-driven agent written in Rust.
+[B]nodelet[/B] is a drop-in replacement for kubelet — the Kubernetes node agent — written in Rust, event-driven instead of polling.
 
-Benchmarked against upstream kubelet, both completely idle, same control plane, six separate runs so the numbers couldn't be biased by testing back to back on an already-warmed-up box:
+Benchmarked against upstream kubelet, both completely idle, six separate runs so the numbers couldn't be biased by testing back to back on an already-warmed-up box:
 
 [LIST]
-[*][B]Memory[/B] — ~15MB nodelet vs ~81MB kubelet
-[*][B]CPU (2min idle)[/B] — ~0.08s nodelet vs ~0.85s kubelet
+[*][B]Memory[/B] — ~15MB nodelet vs ~81MB kubelet (~5x lower)
+[*][B]CPU (2min idle)[/B] — ~0.08s nodelet vs ~0.85s kubelet (~10x lower)
 [/LIST]
+
+Those numbers look small per node, but idle cost scales with fleet size, not workload:
+
+[LIST]
+[*][B]100 nodes[/B] — ~1.5GB vs ~8.1GB RAM burned just sitting idle
+[*][B]1,000 nodes[/B] — ~15GB vs ~81GB RAM burned just sitting idle
+[/LIST]
+
+Same cluster, same workload, nothing running yet — that gap is pure idle overhead, and it only gets bigger as the fleet does.
 
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/rss-over-time.png[/IMG]
 
