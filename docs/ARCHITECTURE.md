@@ -182,19 +182,22 @@ trait PodRuntime {
 
 - No container engine needed — tracks pod state in memory and immediately
   reports containers as `Running`.
-- Purpose: isolate and measure nodelet's own control-loop overhead without
-  any container-engine noise. This is what the idle-CPU/RSS numbers above
-  measure against a real kubelet binary — same comparison, mock runtime on
-  the nodelet side, so the delta is architecture, not container-engine
-  differences.
+- Purpose: fast builds and pure-logic testing without needing a real
+  container runtime available. It is **not** what the published idle-CPU/RSS
+  numbers measure — every released binary (what the standalone installer
+  fetches, and what the profiling workflow installs on both sides of the
+  comparison) is built with `--features cri`. The nodelet-vs-kubelet delta
+  in those numbers includes containerd's own real footprint on the nodelet
+  side, same as it does on the kubelet side; it isn't a mock-vs-real
+  comparison.
 - Build: `cargo build -p nodelet` (no feature flags). Use:
   `NODELET_RUNTIME=mock` (default).
 
 ### cri runtime
 
 - Connects to containerd over the CRI gRPC socket: pulls images, creates
-  sandboxes, starts real containers, subscribes to containerd's event
-  stream for lifecycle updates.
+  sandboxes, starts containers, subscribes to containerd's event stream
+  for lifecycle updates.
 - Build: `cargo build --release --features cri -p nodelet`. Use:
   `NODELET_RUNTIME=cri` with
   `NODELET_CRI_ENDPOINT=unix:///run/containerd/containerd.sock`.
