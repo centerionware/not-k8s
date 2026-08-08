@@ -1,9 +1,9 @@
-commit: 4d5b447e95ba3b11787a4ff4fb9bf469ad06863f
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31232227892
-timestamp (UTC): 2026-08-08T01:25:07Z
+commit: d1aae90e6a33c4dd363f76ab7c0e4489950651ce
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31232639472
+timestamp (UTC): 2026-08-08T01:35:47Z
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786151994
+==> Test namespace: not-k8s-e2e-1786152635
 ==> 151 test(s) registered total; running now...
 ▶ test_device_plugin_advertises_capacity_and_allocates_into_a_container
 ==> installing grpcio/grpcio-tools for the fake device plugin...
@@ -11,7 +11,7 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (150s)
+  ✔ PASS (149s)
 ▶ test_device_plugin_health_transition_updates_allocated_resources_status
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
@@ -20,30 +20,30 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 08 01:20:55 runnervmvrwv9 run-nodelet.sh[10780]: Caused by:
-    Aug 08 01:20:55 runnervmvrwv9 run-nodelet.sh[10780]:     0: code: 'Unknown error', message: "h2 protocol error: error reading a body from connection", source: hyper::Error(Body, Error { kind: Io(Custom { kind: BrokenPipe, error: "stream closed because of a broken pipe" }) })
-    Aug 08 01:20:55 runnervmvrwv9 run-nodelet.sh[10780]:     1: error reading a body from connection
-    Aug 08 01:20:55 runnervmvrwv9 run-nodelet.sh[10780]:     2: stream closed because of a broken pipe
-    Aug 08 01:21:00 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:21:00.316331Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=connecting to device plugin unix socket
-    Aug 08 01:21:00 runnervmvrwv9 run-nodelet.sh[10780]: Caused by:
-    Aug 08 01:21:00 runnervmvrwv9 run-nodelet.sh[10780]:     0: transport error
-    Aug 08 01:21:00 runnervmvrwv9 run-nodelet.sh[10780]:     1: No such file or directory (os error 2)
-    Aug 08 01:21:00 runnervmvrwv9 run-nodelet.sh[10780]:     2: No such file or directory (os error 2)
-    Aug 08 01:21:00 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:21:00.548969Z  INFO plugin registry: socket disappeared; deregistering name="fake.example.com/testdevice" path=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock
-    Aug 08 01:21:25 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:21:25.397642Z  INFO torn down pod=not-k8s-e2e-1786151994/device-plugin-alloc-check
-    Aug 08 01:21:25 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:21:25.409286Z  INFO torn down pod=not-k8s-e2e-1786151994/device-plugin-alloc-check
-    Aug 08 01:21:51 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:21:51.467423Z  INFO node status pushed
-    Aug 08 01:22:30 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:22:30.566500Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
-    Aug 08 01:22:30 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:22:30.569675Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
+    Aug 08 01:30:38 runnervmvrwv9 run-nodelet.sh[10877]: 2026-08-08T01:30:38.878132Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-e63a811d-da4d-4198-b83e-5a5a64035cb7.sock plugin_type=DRAPlugin
+    Aug 08 01:30:48 runnervmvrwv9 run-nodelet.sh[10877]: 2026-08-08T01:30:48.883045Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
+    Aug 08 01:30:48 runnervmvrwv9 run-nodelet.sh[10877]: 2026-08-08T01:30:48.884343Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
+    Aug 08 01:31:28 runnervmvrwv9 run-nodelet.sh[10877]: 2026-08-08T01:31:28.965187Z  INFO node status pushed
+    Aug 08 01:31:34 runnervmvrwv9 run-nodelet.sh[10877]: 2026-08-08T01:31:34.615460Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=reading ListAndWatch stream
+    Aug 08 01:31:34 runnervmvrwv9 run-nodelet.sh[10877]: Caused by:
+    Aug 08 01:31:34 runnervmvrwv9 run-nodelet.sh[10877]:     0: code: 'Unknown error', message: "h2 protocol error: error reading a body from connection", source: hyper::Error(Body, Error { kind: Io(Custom { kind: BrokenPipe, error: "stream closed because of a broken pipe" }) })
+    Aug 08 01:31:34 runnervmvrwv9 run-nodelet.sh[10877]:     1: error reading a body from connection
+    Aug 08 01:31:34 runnervmvrwv9 run-nodelet.sh[10877]:     2: stream closed because of a broken pipe
+    Aug 08 01:31:38 runnervmvrwv9 run-nodelet.sh[10877]: 2026-08-08T01:31:38.890736Z  INFO plugin registry: socket disappeared; deregistering name="fake.example.com/testdevice" path=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock
+    Aug 08 01:32:04 runnervmvrwv9 run-nodelet.sh[10877]: 2026-08-08T01:32:04.705336Z  INFO torn down pod=not-k8s-e2e-1786152635/device-plugin-alloc-check
+    Aug 08 01:32:04 runnervmvrwv9 run-nodelet.sh[10877]: 2026-08-08T01:32:04.716641Z  INFO torn down pod=not-k8s-e2e-1786152635/device-plugin-alloc-check
+    Aug 08 01:32:29 runnervmvrwv9 run-nodelet.sh[10877]: 2026-08-08T01:32:29.001663Z  INFO node status pushed
+    Aug 08 01:33:08 runnervmvrwv9 run-nodelet.sh[10877]: 2026-08-08T01:33:08.904872Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
+    Aug 08 01:33:08 runnervmvrwv9 run-nodelet.sh[10877]: 2026-08-08T01:33:08.906110Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
 ▶ test_device_plugin_preferred_allocation_and_prestart
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (156s)
+  ✔ PASS (155s)
 
 ════════════════════════════════════════
 Results: 2 passed, 1 failed, 0 skipped
 Failed:
   - test_device_plugin_health_transition_updates_allocated_resources_status
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786151994...
+==> Cleaning up test namespace not-k8s-e2e-1786152635...
