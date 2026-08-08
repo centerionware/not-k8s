@@ -1,15 +1,49 @@
 commit: 4d5b447e95ba3b11787a4ff4fb9bf469ad06863f
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31232223865
-timestamp (UTC): 2026-08-08T01:20:02Z
-exit code: 0
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31232227892
+timestamp (UTC): 2026-08-08T01:25:07Z
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786151996
+==> Test namespace: not-k8s-e2e-1786151994
 ==> 151 test(s) registered total; running now...
-▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
-==> WARNING: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership, got '3000 5000' — this runtime may not implement Merge's image-group-membership resolution (a newer-than-usual runc feature); not failing outright since nodelet itself only passes the policy through to CRI unchanged
-  ✔ PASS (4s)
+▶ test_device_plugin_advertises_capacity_and_allocates_into_a_container
+==> installing grpcio/grpcio-tools for the fake device plugin...
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
+  ✔ PASS (150s)
+▶ test_device_plugin_health_transition_updates_allocated_resources_status
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> FATAL: couldn't read the allocated device ID back out of the container
+  ✘ FAIL (5s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 08 01:20:55 runnervmvrwv9 run-nodelet.sh[10780]: Caused by:
+    Aug 08 01:20:55 runnervmvrwv9 run-nodelet.sh[10780]:     0: code: 'Unknown error', message: "h2 protocol error: error reading a body from connection", source: hyper::Error(Body, Error { kind: Io(Custom { kind: BrokenPipe, error: "stream closed because of a broken pipe" }) })
+    Aug 08 01:20:55 runnervmvrwv9 run-nodelet.sh[10780]:     1: error reading a body from connection
+    Aug 08 01:20:55 runnervmvrwv9 run-nodelet.sh[10780]:     2: stream closed because of a broken pipe
+    Aug 08 01:21:00 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:21:00.316331Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=connecting to device plugin unix socket
+    Aug 08 01:21:00 runnervmvrwv9 run-nodelet.sh[10780]: Caused by:
+    Aug 08 01:21:00 runnervmvrwv9 run-nodelet.sh[10780]:     0: transport error
+    Aug 08 01:21:00 runnervmvrwv9 run-nodelet.sh[10780]:     1: No such file or directory (os error 2)
+    Aug 08 01:21:00 runnervmvrwv9 run-nodelet.sh[10780]:     2: No such file or directory (os error 2)
+    Aug 08 01:21:00 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:21:00.548969Z  INFO plugin registry: socket disappeared; deregistering name="fake.example.com/testdevice" path=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock
+    Aug 08 01:21:25 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:21:25.397642Z  INFO torn down pod=not-k8s-e2e-1786151994/device-plugin-alloc-check
+    Aug 08 01:21:25 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:21:25.409286Z  INFO torn down pod=not-k8s-e2e-1786151994/device-plugin-alloc-check
+    Aug 08 01:21:51 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:21:51.467423Z  INFO node status pushed
+    Aug 08 01:22:30 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:22:30.566500Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
+    Aug 08 01:22:30 runnervmvrwv9 run-nodelet.sh[10780]: 2026-08-08T01:22:30.569675Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
+▶ test_device_plugin_preferred_allocation_and_prestart
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
+  ✔ PASS (156s)
 
 ════════════════════════════════════════
-Results: 1 passed, 0 failed, 0 skipped
+Results: 2 passed, 1 failed, 0 skipped
+Failed:
+  - test_device_plugin_health_transition_updates_allocated_resources_status
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786151996...
+==> Cleaning up test namespace not-k8s-e2e-1786151994...
