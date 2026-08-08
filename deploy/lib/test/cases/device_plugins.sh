@@ -165,7 +165,15 @@ PYEOF
         _fake_device_plugin_teardown
         skip_test "fake device plugin never reported ready — see plugin.log content above for the real python/grpc error"
     fi
-    if ! try_wait_until 40 bash -c "kctl get node -o jsonpath='{.items[0].status.capacity.fake\.example\.com/testdevice}' 2>/dev/null | grep -q 4"; then
+    # Round 124 (found live in CI): 40s wasn't always enough — Node.status
+    # only reflects a device plugin's already-correct internal inventory
+    # once the next periodic status push actually goes out (nodelet's own
+    # log confirmed "device plugin: inventory updated ... devices=4
+    # healthy=4" a full 34s before this wait gave up), and
+    # NODELET_STATUS_SECS defaults to 60s — same story csi_pvc.sh's own
+    # volumesInUse wait already documents. Needs to comfortably exceed one
+    # full push cycle, not just approach it.
+    if ! try_wait_until 90 bash -c "kctl get node -o jsonpath='{.items[0].status.capacity.fake\.example\.com/testdevice}' 2>/dev/null | grep -q 4"; then
         cat "$FDP_LOG" 2>/dev/null || true
         _fake_device_plugin_teardown
         die "Node.status.capacity['$FDP_RESOURCE'] never showed 4 after the fake plugin registered — check nodelet's logs for 'device plugin: inventory updated' / 'plugin registry: plugin registered'"
@@ -175,7 +183,31 @@ PYEOF
 _fake_device_plugin_teardown() {
     [[ -n "${FDP_PID:-}" ]] && sudo kill "$FDP_PID" 2>/dev/null
     sudo rm -f "$FDP_SOCK" "$FDP_SOCK.status" 2>/dev/null
-    rm -rf "${FDP_WORK:-}"
+    # Round 124 (found live in CI): every test using this helper registers
+    # its plugin under the SAME fixed socket path (fake-device-plugin.sock,
+    # set in _fake_device_plugin_setup above) — deliberate, since each test
+    # spawns its own fresh process, but that means nodelet's own
+    # deregistration (noticing the old socket disappeared, above) is
+    # asynchronous and NOT waited for before this function used to return.
+    # The very next test in registration order calls
+    # _fake_device_plugin_setup again immediately, starting a brand new
+    # plugin process on that exact same path — confirmed live this raced:
+    # nodelet's device inventory briefly reflected a mix of the outgoing
+    # and incoming plugin's state (a preferred-allocation test got back
+    # devices from neither the plugin's real preference nor nodelet's own
+    # documented first-N fallback, only explainable by state left over
+    # from the immediately-preceding test's still-registering/
+    # deregistering plugin). Waiting here for Node.status.capacity to
+    # actually drop the resource closes that window — the next test starts
+    # from a genuinely clean slate instead of racing this one's teardown.
+    try_wait_until 90 bash -c "! kctl get node -o jsonpath='{.items[0].status.capacity}' 2>/dev/null | grep -q 'fake\.example\.com/testdevice'" \
+        || warn "Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover"
+    # Round 124: plain `rm -rf` here left a stream of "Permission denied"
+    # noise on every run — the fake plugin itself and `grpc_tools.protoc`
+    # both run under sudo (line ~161/56), so $FDP_WORK's __pycache__/*.pyc
+    # files end up root-owned; this whole directory is a throwaway
+    # mktemp -d anyway, so sudo rm is safe here.
+    sudo rm -rf "${FDP_WORK:-}"
 }
 
 test_plugin_registry_watches_for_device_plugins_too() {
@@ -259,7 +291,10 @@ EOF
     # — no container restart should be needed, this is a live status field.
     echo "$device_id" | sudo tee "$FDP_CONTROL_DIR/unhealthy_ids" >/dev/null
     local ars
-    if ! try_wait_until 40 bash -c "kctl get pod $name -o jsonpath='{.status.containerStatuses[0].allocatedResourcesStatus}' 2>/dev/null | grep -q Unhealthy"; then
+    # Round 124 (found live in CI): same story as the capacity wait in
+    # _fake_device_plugin_setup above — 40s wasn't reliably enough for
+    # this to be reflected through a full status-push cycle.
+    if ! try_wait_until 90 bash -c "kctl get pod $name -o jsonpath='{.status.containerStatuses[0].allocatedResourcesStatus}' 2>/dev/null | grep -q Unhealthy"; then
         delete_pod_if_exists "$name"
         die "containerStatuses[0].allocatedResourcesStatus never updated to Unhealthy after the plugin's ListAndWatch reported device '$device_id' unhealthy"
     fi
