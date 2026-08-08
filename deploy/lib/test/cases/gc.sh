@@ -270,17 +270,24 @@ test_image_gc_removes_unreferenced_images_above_the_watermark() {
     if [[ -z "$current_usage" || "$current_usage" -ge 99 ]]; then
         skip_test "couldn't read a usable disk usage percentage from df to pick a watermark below it"
     fi
-    # Round 124 (found live in CI): should_start_image_gc() gates on
-    # `usage_percent >= high_threshold_percent` -- setting the threshold
-    # to the *exact* usage this test's own `df` call happened to snapshot
-    # left zero margin. nodelet samples disk usage independently (its own
-    # syscall, its own moment in time, its own GC_INTERVAL_SECS cadence),
-    # so any tiny natural drift downward between this snapshot and
-    # nodelet's own check permanently gates GC off -- no timeout is ever
-    # long enough once that happens. A few points of real headroom below
-    # the snapshot is enough to absorb that drift without requiring usage
-    # anywhere near the real high-watermark default (85%).
-    watermark=$((current_usage > 3 ? current_usage - 3 : 0))
+    # Round 124 (found live in CI, twice): should_start_image_gc() gates
+    # on `usage_percent >= high_threshold_percent`. A first attempt at
+    # this fix set the threshold to (this df snapshot - 3) and it *still*
+    # never triggered -- because nodelet's own NODELET_DISK_PATH default
+    # is /var/lib/nodelet (config.rs), not the `/` this test's own `df`
+    # fallback measures; nodelet computes its own usage_percent from a
+    # raw statvfs call, not `df`'s own display logic (which factors in
+    # the filesystem's root-reserved blocks and rounds differently) --
+    # two genuinely independent measurements of not-quite-the-same-thing,
+    # never guaranteed to land within any small fixed margin of each
+    # other. Don't try to approximate nodelet's own number at all: just
+    # pick a threshold comfortably low enough (10%) that it's true
+    # regardless of which measurement methodology or mount is used --
+    # any real CI runner's actual disk usage is nowhere near that low.
+    watermark=10
+    if [[ "$current_usage" -lt "$watermark" ]]; then
+        skip_test "this node's disk usage ($current_usage%) is below even a deliberately low 10% watermark -- can't validate GC triggers above a threshold nothing on this node exceeds"
+    fi
 
     image_gc_test_cleanup() { nodelet_restore_env; }
     trap image_gc_test_cleanup EXIT
