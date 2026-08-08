@@ -212,6 +212,53 @@ pub(crate) fn clear_restart_counts_in(counts: &mut HashMap<String, u32>, sandbox
 }
 
 
+/// On-disk checkpoint dir for restart counts (round 124, restart-survival
+/// audit) — same memory-first-disk-fallback shape as the CSI/device-plugin/
+/// userns sidecars. Without this, `restart_counts` (purely in-memory)
+/// resets to 0 for every already-running container the instant nodelet
+/// restarts, which `write_status()` writes straight into
+/// `containerStatuses[].restartCount` unconditionally — a real, visible
+/// regression (`kubectl get pods`'s RESTARTS column dropping after a
+/// nodelet restart, not just an internal bookkeeping nicety).
+const RESTART_COUNT_CHECKPOINT_DIR: &str = "/var/lib/nodelet/restart-counts";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RestartCountMeta {
+    sandbox_id: String,
+    container_name: String,
+    count: u32,
+}
+
+fn restart_count_checkpoint_path(sandbox_id: &str, container_name: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(RESTART_COUNT_CHECKPOINT_DIR)
+        .join(format!("{sandbox_id}_{}.json", container_name.replace('/', "_")))
+}
+
+fn read_restart_count_checkpoint(sandbox_id: &str, container_name: &str) -> Option<u32> {
+    let content = std::fs::read_to_string(restart_count_checkpoint_path(sandbox_id, container_name)).ok()?;
+    serde_json::from_str::<RestartCountMeta>(&content).ok().map(|m| m.count)
+}
+
+fn write_restart_count_checkpoint(sandbox_id: &str, container_name: &str, count: u32) {
+    let meta = RestartCountMeta { sandbox_id: sandbox_id.to_string(), container_name: container_name.to_string(), count };
+    if let Err(e) = std::fs::create_dir_all(RESTART_COUNT_CHECKPOINT_DIR)
+        .and_then(|_| std::fs::write(restart_count_checkpoint_path(sandbox_id, container_name), serde_json::to_vec(&meta).unwrap()))
+    {
+        tracing::warn!(sandbox_id, container_name, error = %e, "failed to checkpoint restart count to disk — a nodelet restart before this container exits again could under-report its restartCount");
+    }
+}
+
+fn clear_restart_count_checkpoints(sandbox_id: &str) {
+    let Ok(entries) = std::fs::read_dir(RESTART_COUNT_CHECKPOINT_DIR) else { return };
+    let prefix = format!("{sandbox_id}_");
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+
 /// Crash-loop backoff (round 73; found in round 72's re-audit). Base
 /// delay and cap match real kubelet's own `flowcontrol.Backoff` defaults
 /// exactly (10s base, doubling, capped at 5 minutes); the reset-to-base
@@ -283,17 +330,39 @@ impl CriRuntime {
     /// pod recreations.
     pub(crate) fn clear_restart_counts(&self, sandbox_id: &str) {
         clear_restart_counts_in(&mut self.restart_counts.lock().unwrap(), sandbox_id);
+        clear_restart_count_checkpoints(sandbox_id);
     }
 
+    /// Reads the in-memory count, falling back to (and backfilling from)
+    /// the on-disk checkpoint the first time this key is seen since a
+    /// nodelet restart (round 124) — see `RESTART_COUNT_CHECKPOINT_DIR`'s
+    /// doc comment for why this can't just default to 0.
     pub(crate) fn restart_count(&self, sandbox_id: &str, container_name: &str) -> u32 {
-        restart_count_from(&self.restart_counts.lock().unwrap(), sandbox_id, container_name)
+        let key = restart_count_key(sandbox_id, container_name);
+        let mut counts = self.restart_counts.lock().unwrap();
+        if let Some(&c) = counts.get(&key) {
+            return c;
+        }
+        let disk_count = read_restart_count_checkpoint(sandbox_id, container_name).unwrap_or(0);
+        counts.insert(key, disk_count);
+        disk_count
     }
 
     /// Bump and return the new restart count for a container that's about
     /// to be recreated after actually having existed before (not the very
     /// first creation — see the `NeedsRestart` branches' `existing_ctr` check).
     pub(crate) fn bump_restart_count(&self, sandbox_id: &str, container_name: &str) -> u32 {
-        bump_restart_count_in(&mut self.restart_counts.lock().unwrap(), sandbox_id, container_name)
+        let key = restart_count_key(sandbox_id, container_name);
+        let new_count = {
+            let mut counts = self.restart_counts.lock().unwrap();
+            if !counts.contains_key(&key) {
+                let disk_count = read_restart_count_checkpoint(sandbox_id, container_name).unwrap_or(0);
+                counts.insert(key.clone(), disk_count);
+            }
+            bump_restart_count_in(&mut counts, sandbox_id, container_name)
+        };
+        write_restart_count_checkpoint(sandbox_id, container_name, new_count);
+        new_count
     }
 
     /// Drop crash-loop backoff state for a sandbox that's gone, same
