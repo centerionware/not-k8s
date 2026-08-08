@@ -368,8 +368,8 @@ impl PodController {
     }
 
     /// A delayed retry for a pod whose first ensure_pod failed, OR (round
-    /// 124) is waiting on a still-pending CSI volume attach
-    /// (`is_waiting_for_csi_volume()`). Runs detached from the reconcile
+    /// 124) is waiting on a still-pending CSI volume attach or device
+    /// plugin resource (`is_waiting_for_external_resource()`). Runs detached from the reconcile
     /// loop (needs to outlive this call), so it re-fetches the Pod rather
     /// than reusing the possibly-stale one — if it's gone or being deleted
     /// by the time a retry fires, there's nothing to do.
@@ -406,7 +406,7 @@ impl PodController {
                         if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev, &gates, &health, qos, pod.metadata.generation).await {
                             warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status (retry)");
                         }
-                        if !is_waiting_for_csi_volume(&status) {
+                        if !is_waiting_for_external_resource(&status) {
                             return; // resolved, or failed for some other reason — either way, done retrying
                         }
                         if attempt == MAX_VOLUME_ATTEMPTS {
