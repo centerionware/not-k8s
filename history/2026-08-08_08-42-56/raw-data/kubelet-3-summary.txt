@@ -1,0 +1,48 @@
+  PROCESS            avg CPU%    CPU-sec   RSS (MB)         cycles   instructions      IPC
+  ──────────────── ────────── ────────── ────────── ────────────── ────────────── ────────
+  k3s server            3.51%   4.210000      422.6            N/A            N/A      N/A
+  /usr/local/bin/kubelet      0.85%   1.020000       81.5            N/A            N/A      N/A
+  ──────────────── ────────── ────────── ────────── ────────────── ────────────── ────────
+  COMBINED              4.36%      5.230      504.1            N/A            N/A      N/A
+
+  test hardware: arch=x86_64 cores=4 model="AMD EPYC 7763 64-Core Processor"
+  sample window: 120s, 1 sample/sec
+  perf hardware counters (cycles/instructions): available
+  CPU-seconds precision: k3s=proc-ticks /usr/local/bin/kubelet=proc-ticks (perf-task-clock = sub-ms via perf; proc-ticks = ~10ms via /proc, whenever perf's task-clock wasn't available)
+
+  NOTE: on stock k3s, "k3s server" is the entire stack (apiserver + kine/SQLite +
+  controller-manager + scheduler + the embedded kubelet, when the agent isn't
+  disabled, all in one OS process) -- k3s does not run kubelet as a separate
+  process the way a vanilla kubeadm cluster does, so there is no way to
+  isolate "kubelet's own number" from this row at the process level.
+=== MEASURE ===
+MEASURE_SAMPLE_SECS=120
+MEASURE_PERF_AVAILABLE=true
+MEASURE_OUT_DIR=/tmp/measure-out
+MEASURE_CPU_ARCH=x86_64
+MEASURE_CPU_CORES=4
+MEASURE_CPU_MODEL=AMD EPYC 7763 64-Core Processor
+MEASURE_K3S_PRESENT=true
+MEASURE_K3S_RSS_MB=422.6
+MEASURE_K3S_CPU_AVG_PCT=3.51
+MEASURE_K3S_CPU_SECONDS=4.210000
+MEASURE_K3S_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_K3S_CYCLES=
+MEASURE_K3S_INSTRUCTIONS=
+MEASURE_K3S_IPC=
+MEASURE_NODELET_PRESENT=true
+MEASURE_NODELET_RSS_MB=81.5
+MEASURE_NODELET_CPU_AVG_PCT=0.85
+MEASURE_NODELET_CPU_SECONDS=1.020000
+MEASURE_NODELET_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_NODELET_CYCLES=
+MEASURE_NODELET_INSTRUCTIONS=
+MEASURE_NODELET_IPC=
+MEASURE_COMBINED_RSS_MB=504.1
+MEASURE_COMBINED_CPU_AVG_PCT=4.36
+MEASURE_COMBINED_CPU_SECONDS=5.230
+MEASURE_COMBINED_CYCLES=
+MEASURE_COMBINED_INSTRUCTIONS=
+MEASURE_K3S_TIMESERIES_CSV=/tmp/measure-out/k3s-timeseries.csv
+MEASURE_NODELET_TIMESERIES_CSV=/tmp/measure-out/nodelet-timeseries.csv
+=== END MEASURE ===
