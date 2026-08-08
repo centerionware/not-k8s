@@ -280,8 +280,19 @@ EOF
         delete_pod_if_exists "$name"
         die "pod requesting 1x $FDP_RESOURCE never reached Running"
     fi
+    # Round 124 (found live in CI): a single-shot kctl exec right after
+    # "Running" can race the container's streaming/exec subsystem not
+    # being fully up yet (confirmed here: the pod really was Running, but
+    # exec still came back empty) — retry instead of one point-in-time
+    # attempt, same fix this suite's own kctl-exec reads elsewhere
+    # already use for exactly this shape of flake.
+    local device_id_file
+    device_id_file="$(mktemp)"
+    try_wait_until 30 bash -c "kctl exec '$name' -- sh -c 'echo \$FAKE_DEVICE_IDS' 2>/dev/null > '$device_id_file' && [[ -s '$device_id_file' ]]" \
+        || warn "never got a non-empty FAKE_DEVICE_IDS read from $name within 30s; using whatever the last attempt captured"
     local device_id
-    device_id="$(kctl exec "$name" -- sh -c 'echo $FAKE_DEVICE_IDS' 2>/dev/null)"
+    device_id="$(cat "$device_id_file" 2>/dev/null)"
+    rm -f "$device_id_file"
     if [[ -z "$device_id" ]]; then
         delete_pod_if_exists "$name"
         die "couldn't read the allocated device ID back out of the container"
