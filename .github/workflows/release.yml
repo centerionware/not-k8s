@@ -194,7 +194,13 @@ jobs:
     # single run with a 403 ("Resource not accessible by integration") --
     # harmless (the artifact still expired on its own 1-day
     # retention-days), but it made this job a permanent, confusing red X
-    # on an otherwise fully green pipeline.
+    # on an otherwise fully green pipeline. Granting it here is the real
+    # fix, but org/repo-level token policies can still override a
+    # workflow's own `permissions:` block and deny it anyway -- the
+    # script itself also treats a permission failure as a clean skip
+    # (not a job failure) so this can never turn an otherwise fully
+    # green release red again, with or without the grant actually taking
+    # effect.
     permissions:
       actions: write
     steps:
@@ -207,7 +213,9 @@ jobs:
             echo "no nodelet-debug-binary artifact found for this run — nothing to clean up"
             exit 0
           fi
-          gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$artifact_id"
+          if ! gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$artifact_id"; then
+            echo "couldn't delete artifact $artifact_id (likely a token-permission restriction beyond this workflow's own control) -- not fatal, it still expires on its own 1-day retention-days"
+          fi
 
   # ── Stage 3: debug + release builds, all 3 platforms, concurrently ────
   build-release:
