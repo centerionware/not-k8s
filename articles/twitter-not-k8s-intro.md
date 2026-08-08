@@ -9,7 +9,7 @@ kept the real k3s control plane (apiserver, scheduler, full CRD support). swappe
 same containerd, same everything else. just the node agent changed.
 
 3/
-ran a real benchmark, not vibes: nodelet vs a genuine unmodified upstream kubelet binary, both completely idle, 6 separate runs on separate machines so I couldn't accidentally bias it.
+ran a real benchmark, not vibes: nodelet vs a genuine unmodified upstream kubelet, both completely idle, 6 runs on separate machines so I couldn't accidentally bias it.
 
 results, idle, zero workload:
 RAM: ~15MB vs ~81MB
