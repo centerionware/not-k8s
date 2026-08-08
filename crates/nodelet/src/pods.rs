@@ -187,11 +187,28 @@ impl PodController {
                 }
                 item = cm_stream.next() => {
                     match item {
-                        Some(Ok(Event::Apply(cm))) | Some(Ok(Event::InitApply(cm))) => {
+                        Some(Ok(Event::Apply(cm))) => {
                             if let (Some(ns), Some(name)) = (cm.metadata.namespace.clone(), cm.metadata.name.clone()) {
                                 self.on_referenced_object_changed(&ns, &name, ReferencedKind::ConfigMap).await;
                             }
                         }
+                        // Round 124 (found live in CI): `InitApply` is kube-rs's
+                        // own marker for the watch's *initial* relist on
+                        // (re)connect — every ConfigMap that already existed
+                        // fires one, whether or not its content actually
+                        // changed. Treating it the same as a real `Apply` meant
+                        // every nodelet restart triggered a full
+                        // re-materialize-and-reconcile sweep across every pod
+                        // on the node referencing *any* ConfigMap, all at once
+                        // — real, measured cost right when nodelet is busiest
+                        // (right after restart), confirmed live as the actual
+                        // driver behind several env-reconfiguring e2e tests
+                        // timing out waiting for their own, unrelated pod to
+                        // reach Running. Pods already get their own correct
+                        // initial state from the Pod watch's own InitApply —
+                        // this watch's whole purpose is catching *live*
+                        // updates after that, not re-doing pod bootstrap.
+                        Some(Ok(Event::InitApply(_))) => {}
                         Some(Ok(_)) => {}
                         Some(Err(e)) => warn!(error = ?e, "configmap watch error; watcher will retry"),
                         None => {
@@ -203,11 +220,15 @@ impl PodController {
                 }
                 item = sec_stream.next() => {
                     match item {
-                        Some(Ok(Event::Apply(sec))) | Some(Ok(Event::InitApply(sec))) => {
+                        Some(Ok(Event::Apply(sec))) => {
                             if let (Some(ns), Some(name)) = (sec.metadata.namespace.clone(), sec.metadata.name.clone()) {
                                 self.on_referenced_object_changed(&ns, &name, ReferencedKind::Secret).await;
                             }
                         }
+                        // See the ConfigMap arm's own comment above — same
+                        // "InitApply isn't a real change" reasoning applies
+                        // identically here.
+                        Some(Ok(Event::InitApply(_))) => {}
                         Some(Ok(_)) => {}
                         Some(Err(e)) => warn!(error = ?e, "secret watch error; watcher will retry"),
                         None => {
