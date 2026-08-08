@@ -674,7 +674,17 @@ spec:
   containers:
     - name: app
       image: $TEST_IMAGE
-      command: ["sleep", "3600"]
+      # id -G on stdout, read back via kctl logs below — NOT kctl exec.
+      # Round 124 (found live in CI): a live run showed the entrypoint's
+      # OWN group set (id -G here) correctly included imagegroup's gid
+      # under Merge, but a SEPARATE kctl exec -- id -G right after did
+      # not — exec spawns its own new process, which isn't guaranteed to
+      # go through the same SupplementalGroupsPolicy resolution the CRI
+      # runtime applies when actually launching the container's real
+      # entrypoint. Reading the entrypoint's own output is the only way
+      # to observe what the policy setting this test is actually about
+      # affected.
+      command: ["sh", "-c", "id -G; sleep 3600"]
       volumeMounts:
         - {name: etc-override, mountPath: /etc/passwd, subPath: passwd}
         - {name: etc-override, mountPath: /etc/group, subPath: group}
@@ -701,8 +711,12 @@ EOF
     fi
 
     local merge_groups strict_groups
-    merge_groups="$(kctl exec "$merge_name" -- id -G)"
-    strict_groups="$(kctl exec "$strict_name" -- id -G)"
+    try_wait_until 30 bash -c "[[ -n \"\$(kctl logs '$merge_name' 2>/dev/null)\" ]]" \
+        || warn "kctl logs for $merge_name never returned output within 30s — using whatever the next read captures"
+    merge_groups="$(kctl logs "$merge_name" 2>/dev/null)"
+    try_wait_until 30 bash -c "[[ -n \"\$(kctl logs '$strict_name' 2>/dev/null)\" ]]" \
+        || warn "kctl logs for $strict_name never returned output within 30s — using whatever the next read captures"
+    strict_groups="$(kctl logs "$strict_name" 2>/dev/null)"
     sgp_cleanup
 
     assert_contains "$merge_groups" "4000" "supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership"
