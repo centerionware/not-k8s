@@ -270,6 +270,15 @@ impl DevicePlugins {
     /// as unhealthy/gone just won't show up as allocated once
     /// `update_devices()` overwrites `state.devices` — not this
     /// function's problem to solve.
+    // Unit tests run under `cargo test` (CI runs it as root, via `sudo`,
+    // for the CRI-gated half) — a real leftover checkpoint file (from
+    // this same job's earlier e2e run, or another test's own
+    // container_support.rs writes) could otherwise leak into a test's
+    // register() call. No-op under test so tests stay hermetic.
+    #[cfg(test)]
+    fn restore_allocations_from_disk(&self, _resource_name: &str) {}
+
+    #[cfg(not(test))]
     fn restore_allocations_from_disk(&self, resource_name: &str) {
         let Ok(entries) = std::fs::read_dir(DEVICE_ALLOC_CHECKPOINT_DIR) else { return };
         for entry in entries.flatten() {

@@ -59,6 +59,16 @@ fn checkpoint_path(key: &str) -> std::path::PathBuf {
 
 impl UsernsAllocator {
     pub fn new(base_uid: u32, length: u32, max_slots: u32) -> Self {
+        Self { base_uid, length, max_slots, claims: Mutex::new(Self::restore_claims(max_slots)) }
+    }
+
+    // Unit tests run under `cargo test` (CI runs it as root, via `sudo`,
+    // for the CRI-gated half) — real disk I/O against a single hardcoded
+    // path here would let one test's checkpoint leak into every other
+    // test's "fresh" allocator, since nothing scopes CHECKPOINT_DIR
+    // per-test. Production is the only build where this path is real.
+    #[cfg(not(test))]
+    fn restore_claims(max_slots: u32) -> HashMap<String, u32> {
         let mut claims = HashMap::new();
         if let Ok(entries) = std::fs::read_dir(CHECKPOINT_DIR) {
             for entry in entries.flatten() {
@@ -69,7 +79,12 @@ impl UsernsAllocator {
                 }
             }
         }
-        Self { base_uid, length, max_slots, claims: Mutex::new(claims) }
+        claims
+    }
+
+    #[cfg(test)]
+    fn restore_claims(_max_slots: u32) -> HashMap<String, u32> {
+        HashMap::new()
     }
 
     /// Allocate (or return the already-allocated) exclusive
@@ -89,6 +104,7 @@ impl UsernsAllocator {
         let used: BTreeSet<u32> = claims.values().copied().collect();
         let slot = (0..self.max_slots).find(|s| !used.contains(s))?;
         claims.insert(key.to_string(), slot);
+        #[cfg(not(test))]
         if let Err(e) = std::fs::create_dir_all(CHECKPOINT_DIR).and_then(|_| {
             std::fs::write(checkpoint_path(key), serde_json::to_vec(&ClaimMeta { pod_uid: key.to_string(), slot }).unwrap())
         }) {
@@ -101,6 +117,7 @@ impl UsernsAllocator {
     /// the slot can be reused by a later pod.
     pub fn release(&self, key: &str) {
         self.claims.lock().unwrap().remove(key);
+        #[cfg(not(test))]
         let _ = std::fs::remove_file(checkpoint_path(key));
     }
 

@@ -234,11 +234,23 @@ fn restart_count_checkpoint_path(sandbox_id: &str, container_name: &str) -> std:
         .join(format!("{sandbox_id}_{}.json", container_name.replace('/', "_")))
 }
 
+// Unit tests run under `cargo test` (CI runs it as root, via `sudo`, for
+// the CRI-gated half) — real disk I/O against a single hardcoded path
+// here would let one test's checkpoint leak into every other test's
+// nominally-fresh in-memory state, since nothing scopes the checkpoint
+// dir per-test. Production is the only build where these touch real disk.
+
+#[cfg(not(test))]
 fn read_restart_count_checkpoint(sandbox_id: &str, container_name: &str) -> Option<u32> {
     let content = std::fs::read_to_string(restart_count_checkpoint_path(sandbox_id, container_name)).ok()?;
     serde_json::from_str::<RestartCountMeta>(&content).ok().map(|m| m.count)
 }
+#[cfg(test)]
+fn read_restart_count_checkpoint(_sandbox_id: &str, _container_name: &str) -> Option<u32> {
+    None
+}
 
+#[cfg(not(test))]
 fn write_restart_count_checkpoint(sandbox_id: &str, container_name: &str, count: u32) {
     let meta = RestartCountMeta { sandbox_id: sandbox_id.to_string(), container_name: container_name.to_string(), count };
     if let Err(e) = std::fs::create_dir_all(RESTART_COUNT_CHECKPOINT_DIR)
@@ -247,7 +259,10 @@ fn write_restart_count_checkpoint(sandbox_id: &str, container_name: &str, count:
         tracing::warn!(sandbox_id, container_name, error = %e, "failed to checkpoint restart count to disk — a nodelet restart before this container exits again could under-report its restartCount");
     }
 }
+#[cfg(test)]
+fn write_restart_count_checkpoint(_sandbox_id: &str, _container_name: &str, _count: u32) {}
 
+#[cfg(not(test))]
 fn clear_restart_count_checkpoints(sandbox_id: &str) {
     let Ok(entries) = std::fs::read_dir(RESTART_COUNT_CHECKPOINT_DIR) else { return };
     let prefix = format!("{sandbox_id}_");
@@ -257,6 +272,8 @@ fn clear_restart_count_checkpoints(sandbox_id: &str) {
         }
     }
 }
+#[cfg(test)]
+fn clear_restart_count_checkpoints(_sandbox_id: &str) {}
 
 
 /// Crash-loop backoff (round 73; found in round 72's re-audit). Base
