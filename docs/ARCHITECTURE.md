@@ -284,8 +284,8 @@ out of scope:
 
 `not-k8s` is alpha software — it hasn't been proven under heavy real-world
 production workloads yet. What it does have: 1,100+ unit tests and ~140
-end-to-end tests exercising real containerd plus real CSI/DRA reference
-drivers, run as a required gate before any release ships (see the
+end-to-end tests exercising containerd plus CSI/DRA reference drivers,
+run as a required gate before any release ships (see the
 [Actions history](https://github.com/centerionware/not-k8s/actions), not
 this document, for actual pass/fail results). Feature-by-feature parity
 against upstream kubelet is tracked as an ongoing, actively-updated effort
