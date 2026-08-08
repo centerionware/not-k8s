@@ -19,6 +19,22 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 
+/// On-disk checkpoint dir for allocated ranges (round 124) — same
+/// memory-first-disk-fallback shape as `csi.rs`'s `MountMeta` and
+/// `device_plugins.rs`'s `DEVICE_ALLOC_CHECKPOINT_DIR`. Without this,
+/// `claims` starts empty on every nodelet restart, but `run_sandbox()`
+/// (the only `allocate()` call site) is skipped for a pod whose sandbox
+/// already exists and is just being reused — so a survived pod's
+/// mapping was never re-derived. `assigned()` (read by both
+/// `container_create.rs`, for any container the reused sandbox still
+/// needs to *create* post-restart — a crash-loop restart, say — and
+/// `volumes_resolve.rs`, for chowning re-materialized volumes to the
+/// userns base) would then silently return `None`: a new container in
+/// an already-namespaced pod would come up in the *host* ID space
+/// instead of its isolated range (a real isolation regression, not just
+/// a bookkeeping one), and volume ownership would get chowned wrong.
+const CHECKPOINT_DIR: &str = "/var/lib/nodelet/userns/allocations";
+
 pub struct UsernsAllocator {
     base_uid: u32,
     length: u32,
@@ -26,9 +42,34 @@ pub struct UsernsAllocator {
     claims: Mutex<HashMap<String, u32>>,
 }
 
+/// Duck-typed on-disk form of one claim — self-contained per the
+/// established sidecar-checkpoint convention, no cross-module type
+/// sharing.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ClaimMeta {
+    pod_uid: String,
+    slot: u32,
+}
+
+fn checkpoint_path(key: &str) -> std::path::PathBuf {
+    // Pod UIDs are UUIDs and never contain '/', but sanitize defensively
+    // anyway since this becomes a filename.
+    std::path::PathBuf::from(CHECKPOINT_DIR).join(format!("{}.json", key.replace('/', "_")))
+}
+
 impl UsernsAllocator {
     pub fn new(base_uid: u32, length: u32, max_slots: u32) -> Self {
-        Self { base_uid, length, max_slots, claims: Mutex::new(HashMap::new()) }
+        let mut claims = HashMap::new();
+        if let Ok(entries) = std::fs::read_dir(CHECKPOINT_DIR) {
+            for entry in entries.flatten() {
+                let Ok(content) = std::fs::read_to_string(entry.path()) else { continue };
+                let Ok(meta) = serde_json::from_str::<ClaimMeta>(&content) else { continue };
+                if meta.slot < max_slots {
+                    claims.insert(meta.pod_uid, meta.slot);
+                }
+            }
+        }
+        Self { base_uid, length, max_slots, claims: Mutex::new(claims) }
     }
 
     /// Allocate (or return the already-allocated) exclusive
@@ -48,6 +89,11 @@ impl UsernsAllocator {
         let used: BTreeSet<u32> = claims.values().copied().collect();
         let slot = (0..self.max_slots).find(|s| !used.contains(s))?;
         claims.insert(key.to_string(), slot);
+        if let Err(e) = std::fs::create_dir_all(CHECKPOINT_DIR).and_then(|_| {
+            std::fs::write(checkpoint_path(key), serde_json::to_vec(&ClaimMeta { pod_uid: key.to_string(), slot }).unwrap())
+        }) {
+            tracing::warn!(pod_uid = key, error = %e, "userns: failed to checkpoint allocation to disk — a nodelet restart before this pod's sandbox is torn down could lose its UID/GID range");
+        }
         Some((self.base_uid + slot * self.length, self.length))
     }
 
@@ -55,6 +101,7 @@ impl UsernsAllocator {
     /// the slot can be reused by a later pod.
     pub fn release(&self, key: &str) {
         self.claims.lock().unwrap().remove(key);
+        let _ = std::fs::remove_file(checkpoint_path(key));
     }
 
     /// `key`'s currently-allocated `(host_id_base, length)` range, if
