@@ -1,6 +1,21 @@
-commit: 9645a6e7c643dcca07a7db0d784ccb730e42c0fa
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31236883879
-timestamp (UTC): 2026-08-08T03:18:26Z
-exit code: unknown
+commit: 08adf6679647782cb4141452cc823889f612026d
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31238568407
+timestamp (UTC): 2026-08-08T04:09:50Z
+exit code: 0
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+==> Test namespace: not-k8s-e2e-1786162075
+==> 151 test(s) registered total; running now...
+▶ test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
+  ✔ PASS (37s)
+▶ test_crash_loop_backoff_throttles_immediate_restarts
+  ✔ PASS (22s)
+▶ test_hugepages_limit_is_enforced_via_cgroup
+    (skip: no /sys/fs/cgroup/hugetlb.2MB.limit_in_bytes in the container — this node's cgroup v2 hierarchy may not have the hugetlb controller enabled)
+  ○ SKIP (22s)
+▶ test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs
+  ✔ PASS (33s)
+
+════════════════════════════════════════
+Results: 3 passed, 0 failed, 1 skipped
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786162075...
