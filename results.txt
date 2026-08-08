@@ -1,45 +1,42 @@
-commit: 14a62b6a5740912d6ab08c4f77bcaa21644071df
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31224280001
-timestamp (UTC): 2026-08-07T22:48:11Z
-exit code: 0
+commit: 7a5df8385690d434d1444ae1d8a20854dc567018
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31231055031
+timestamp (UTC): 2026-08-08T00:54:37Z
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786142322
-==> Running 151 registered test(s)...
-▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
-  ✔ PASS (35s)
-▶ test_pod_mounts_a_persistent_volume_claim
-==> WARNING: Node.status.volumesInUse has no kubernetes.io/csi/ entry while a CSI volume is mounted — check mounted_csi_volumes()/csi_unique_volume_name() wiring in runtime/cri.rs and node.rs (round 34; not failing the test outright since the exact naming scheme is unvalidated against a real attach/detach controller)
-  ✔ PASS (37s)
-▶ test_csi_ephemeral_inline_volume_is_mounted
-  ✔ PASS (4s)
-▶ test_pod_uses_a_raw_block_volume
-  ✔ PASS (64s)
-▶ test_node_reports_volumes_in_use_for_a_csi_volume
-  ✔ PASS (90s)
-▶ test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
-==> WARNING: old VolumeAttachment for pvc-ffc14340-e1c7-4f2b-a39f-081017abafb6 didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
-==> WARNING: [diag] pod2 right after Running: NAME                     READY   STATUS    RESTARTS   AGE   IP           NODE            NOMINATED NODE   READINESS GATES
-fsgroup-policy-check-2   1/1     Running   0          3s    10.42.0.14   runnervmvrwv9   <none>           <none>
-==> WARNING: [diag] default-ns pods (CSI driver state): NAME                   READY   STATUS    RESTARTS   AGE     IP          NODE            NOMINATED NODE   READINESS GATES
-csi-hostpath-socat-0   1/1     Running   0          5m35s   10.42.0.5   runnervmvrwv9   <none>           <none>
-csi-hostpathplugin-0   8/8     Running   0          5m36s   10.42.0.4   runnervmvrwv9   <none>           <none>
-smoke-test             1/1     Running   0          6m3s    10.42.0.3   runnervmvrwv9   <none>           <none>
-  ✔ PASS (100s)
-▶ test_pod_mounts_a_generic_ephemeral_volume
-  ✔ PASS (35s)
-▶ test_pod_teardown_actually_removes_the_sandbox
-  ✔ PASS (36s)
-▶ test_unreferenced_image_is_not_removed_below_the_watermark
-==>     waiting through at least one NODELET_GC_INTERVAL_SECS cycle (default 300s) to confirm busybox:1.36.1 survives it...
-  ✔ PASS (95s)
-▶ test_basic_pod_runs
-  ✔ PASS (2s)
-▶ test_init_containers_run_before_app_container
-  ✔ PASS (37s)
-▶ test_native_sidecar_container_starts_before_app_container_and_keeps_running
-  ✔ PASS (33s)
+==> Test namespace: not-k8s-e2e-1786150312
+==> 151 test(s) registered total; running now...
+▶ test_proc_mount_unmasked_leaves_proc_kcore_readable
+==> WARNING: expected /proc/kcore to be readable (non-zero bytes) under procMount: Unmasked, got 0 -- check proc_mount_paths()'s Unmasked branch in runtime/cri/resources.rs; not failing outright since this depends on the CRI runtime actually honoring an explicitly-empty masked_paths the same way it honors a populated one
+  ✔ PASS (3s)
+▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
+==> FATAL: timed out after 30s waiting for check file merge.txt (volume shared) from pod sgp-merge
+==> FATAL: timed out after 20s waiting for check file strict.txt (volume shared) from pod sgp-strict
+==> FATAL: assertion failed: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership — '' does not contain '4000'
+  ✘ FAIL (85s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 08 00:52:53 runnervmvrwv9 run-nodelet.sh[10936]:     1: Connection refused (os error 111)
+    Aug 08 00:52:53 runnervmvrwv9 run-nodelet.sh[10936]:     2: Connection refused (os error 111)
+    Aug 08 00:52:53 runnervmvrwv9 run-nodelet.sh[10936]: 2026-08-08T00:52:53.488351Z  INFO node status pushed
+    Aug 08 00:53:03 runnervmvrwv9 run-nodelet.sh[10936]: 2026-08-08T00:53:03.345250Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-6ff93353-4bf5-4a5c-a110-e2e20a7368e1-reg.sock error=connecting to plugin registration socket
+    Aug 08 00:53:03 runnervmvrwv9 run-nodelet.sh[10936]: Caused by:
+    Aug 08 00:53:03 runnervmvrwv9 run-nodelet.sh[10936]:     0: transport error
+    Aug 08 00:53:03 runnervmvrwv9 run-nodelet.sh[10936]:     1: Connection refused (os error 111)
+    Aug 08 00:53:03 runnervmvrwv9 run-nodelet.sh[10936]:     2: Connection refused (os error 111)
+    Aug 08 00:53:13 runnervmvrwv9 run-nodelet.sh[10936]: 2026-08-08T00:53:13.345776Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-6ff93353-4bf5-4a5c-a110-e2e20a7368e1-reg.sock error=connecting to plugin registration socket
+    Aug 08 00:53:13 runnervmvrwv9 run-nodelet.sh[10936]: Caused by:
+    Aug 08 00:53:13 runnervmvrwv9 run-nodelet.sh[10936]:     0: transport error
+    Aug 08 00:53:13 runnervmvrwv9 run-nodelet.sh[10936]:     1: Connection refused (os error 111)
+    Aug 08 00:53:13 runnervmvrwv9 run-nodelet.sh[10936]:     2: Connection refused (os error 111)
+    Aug 08 00:53:20 runnervmvrwv9 run-nodelet.sh[10936]: 2026-08-08T00:53:20.924605Z  WARN failed to fetch ConfigMap for volume volume=etc-override configmap=sgp-etc error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"sgp-etc\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "sgp-etc", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 08 00:53:21 runnervmvrwv9 run-nodelet.sh[10936]: 2026-08-08T00:53:21.858773Z  WARN failed to fetch ConfigMap for volume volume=etc-override configmap=sgp-etc error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"sgp-etc\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "sgp-etc", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+▶ test_cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container
+  ✔ PASS (74s)
 
 ════════════════════════════════════════
-Results: 12 passed, 0 failed, 0 skipped
+Results: 2 passed, 1 failed, 0 skipped
+Failed:
+  - test_supplemental_groups_policy_strict_ignores_image_group_membership
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786142322...
+==> Cleaning up test namespace not-k8s-e2e-1786150312...
