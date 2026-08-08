@@ -186,11 +186,15 @@ EOF
 
     sudo systemctl stop nodelet.service
     kctl delete pod "$name" --wait=false >/dev/null
-    wait_until 90 "$name gone from apiserver" pod_gone "$name"
+    # Round 124 (found live in CI, full-suite tail-end contention only):
+    # this is pure apiserver-side grace-period expiry (nodelet is down,
+    # so it can't be nodelet's doing) -- 90s wasn't always enough once
+    # this test lands at the tail of a long, otherwise-unfiltered shard.
+    wait_until 180 "$name gone from apiserver" pod_gone "$name"
     sudo systemctl start nodelet.service
     _nodelet_wait_ready "node Ready after restarting nodelet post-stop"
 
-    try_wait_until 60 bash -c "! sudo ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
+    try_wait_until 120 bash -c "! sudo ctr -n k8s.io containers ls -q 2>/dev/null | grep -qx '$container_id'" \
         || die "orphaned sandbox for $container_id was never GC'd within a couple of NODELET_GC_INTERVAL_SECS=10 cycles after restarting nodelet"
 }
 
@@ -277,7 +281,11 @@ EOF
     kctl delete pod "$name" --wait=false >/dev/null
     wait_until 90 "$name gone" pod_gone "$name"
 
-    try_wait_until 60 bash -c "! sudo ctr -n k8s.io images ls -q 2>/dev/null | grep -q '$image'" \
+    # Round 124 (found live in CI, full-suite tail-end contention only):
+    # 60s wasn't always enough for a real GC cycle to actually sweep the
+    # image once this test lands at the tail of a long, otherwise-
+    # unfiltered shard.
+    try_wait_until 120 bash -c "! sudo ctr -n k8s.io images ls -q 2>/dev/null | grep -q '$image'" \
         || die "unreferenced image $image was never GC'd despite the watermark being set at/below this node's real disk usage ($current_usage%) and past NODELET_IMAGE_GC_MIN_AGE_SECS — check should_start_image_gc()'s gating"
 }
 

@@ -147,7 +147,14 @@ pod_container_ready() { # pod_container_ready <pod> <container>
 }
 
 pod_container_restart_count() { # pod_container_restart_count <pod> <container>
-    kctl get pod "$1" -o jsonpath="{.status.containerStatuses[?(@.name==\"$2\")].restartCount}" 2>/dev/null || echo 0
+    # Round 124: the `|| echo 0` fallback only fires if kubectl itself
+    # fails -- a successful call with no matching containerStatuses entry
+    # yet (container not created, or status not written yet) returns exit
+    # 0 with EMPTY output, not an error, silently defeating the fallback
+    # and handing callers an empty string instead of "0". Explicit check.
+    local out
+    out="$(kctl get pod "$1" -o jsonpath="{.status.containerStatuses[?(@.name==\"$2\")].restartCount}" 2>/dev/null)"
+    [[ -n "$out" ]] && echo "$out" || echo 0
 }
 
 pod_exists() { # pod_exists <name>

@@ -108,7 +108,14 @@ spec:
       image: $pushed_image
       command: ["sleep", "3600"]
 EOF
-    if ! try_wait_until 90 bash -c "kctl get pod $negname -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null | grep -qE 'ImagePullBackOff|ErrImagePull'"; then
+    # Round 124 (found live in CI, full-suite tail-end contention only):
+    # 90s wasn't always enough for the pull-failure status to actually
+    # land in containerStatuses once this test lands at the tail of a
+    # long, otherwise-unfiltered shard -- confirmed via containerd's own
+    # logs still genuinely denying auth ("no basic auth credentials")
+    # well within the old window, so this was status-propagation lag,
+    # not the registry silently allowing the pull through.
+    if ! try_wait_until 150 bash -c "kctl get pod $negname -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null | grep -qE 'ImagePullBackOff|ErrImagePull'"; then
         delete_pod_if_exists "$negname"
         die "expected pod without any credential provider to fail pulling from the auth-required registry, but it didn't — the registry isn't actually enforcing auth, so the positive check below wouldn't prove anything"
     fi
@@ -161,7 +168,7 @@ spec:
       image: $pushed_image
       command: ["sleep", "3600"]
 EOF
-    if ! wait_until 90 "$name Running" pod_is_phase "$name" Running; then
+    if ! wait_until 150 "$name Running" pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod using the auth-required registry never reached Running with a credential provider configured — check nodelet's logs for 'credential provider' entries (exec failure, bad JSON, or the config/bin-dir wiring itself)"
     fi

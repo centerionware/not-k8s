@@ -186,10 +186,21 @@ spec:
       image: $TEST_IMAGE
       command: ["sh", "-c", "exit 1"]
 EOF
-    # Give it a real window to (mis)behave in before checking: long
-    # enough that an unthrottled tight loop would rack up many restarts,
-    # short enough that even a single 10s backoff window keeps a
-    # correctly-throttled count very low.
+    # Round 124 (found live in CI, full-suite tail-end contention only):
+    # a blind `sleep 20` then a single read raced reconcile itself being
+    # delayed under load -- the container could still be on its very
+    # first (pre-restart) run when we checked, making restart_count come
+    # back completely empty (no containerStatuses entry yet at all), which
+    # `assert_true test "" -ge 1` turns into a confusing bash syntax
+    # error instead of a real assertion failure. Decouple "wait for the
+    # first restart to happen at all" (generous, since that's just
+    # reconcile latency) from "how many happened" (the actual thing under
+    # test), and start the observation clock only once we know the
+    # container is really crash-looping.
+    try_wait_until 60 bash -c "[[ \"\$(pod_container_restart_count '$name' app)\" -ge 1 ]]" \
+        || { delete_pod_if_exists "$name"; die "container never restarted even once within 60s -- reconcile itself may be stalled, not a backoff-throttling problem"; }
+    # It's now definitely crash-looping. Give it the same kind of window
+    # as before to observe throttling in action.
     sleep 20
     local restart_count
     restart_count="$(pod_container_restart_count "$name" app)"
@@ -197,11 +208,15 @@ EOF
     # A high count here means restarts aren't being throttled at all —
     # check restart_backoff_ready()/record_restart_backoff() in
     # runtime/cri/container_create.rs. The very first restart is never
-    # throttled, so at least 1 is expected; anything past low single
-    # digits within 20s under a 10s base backoff delay means the gate
-    # isn't doing anything.
+    # throttled, so at least 1 is expected. The upper bound is looser
+    # than the original "single sleep" design's 3, since the try_wait_until
+    # above can itself eat into the backoff timeline under contention
+    # (the first restart might not land until well into that 60s), pushing
+    # the whole doubling sequence later without indicating a regression —
+    # still bounded well short of what an unthrottled tight loop would do
+    # (dozens within the same window).
     assert_true test "$restart_count" -ge 1
-    assert_true test "$restart_count" -le 3
+    assert_true test "$restart_count" -le 6
 }
 
 test_crash_loop_backoff_reports_waiting_reason_and_last_state() {

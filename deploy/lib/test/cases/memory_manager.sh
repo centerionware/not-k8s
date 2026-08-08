@@ -31,7 +31,11 @@ spec:
         requests: { cpu: "100m", memory: "64Mi" }
         limits: { cpu: "100m", memory: "64Mi" }
 EOF
-    wait_until 90 "$name Running" pod_is_phase "$name" Running
+    # Round 124 (found live in CI, full-suite tail-end contention only):
+    # this test restarts nodelet first, and lands at the tail of a long,
+    # otherwise-unfiltered shard -- 90s wasn't always enough for the pod
+    # to reach Running under that load.
+    wait_until 150 "$name Running" pod_is_phase "$name" Running
 
     local cid path cpuset_mems
     cid="$(kctl get pod "$name" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"
