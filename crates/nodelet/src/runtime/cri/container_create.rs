@@ -640,7 +640,7 @@ impl CriRuntime {
         {
             Ok(resp) => resp.into_inner(),
             Err(e) => {
-                self.release_devices(&allocated_devices);
+                self.release_devices(sandbox_id, &container.name, &allocated_devices);
                 if let (Some(cpu_manager), Some(key)) = (&self.cpu_manager, &cpu_manager_key) {
                     cpu_manager.release(key);
                 }
@@ -657,7 +657,7 @@ impl CriRuntime {
         // definitive proof a different, stale container is what's
         // actually running (a duplicate/orphaned creation), not this one.
         info!(container = %container.name, container_id = %created.container_id, "CreateContainer succeeded");
-        self.record_device_allocations(sandbox_id, &container.name, allocated_devices);
+        self.record_device_allocations(sandbox_id, &container.name, &crate::runtime::pod_key(&id.namespace, &id.name), allocated_devices);
 
         if let Err(e) = rt.start_container(StartContainerRequest { container_id: created.container_id.clone() }).await {
             self.release_container_devices(sandbox_id, &container.name).await;

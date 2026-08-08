@@ -53,6 +53,42 @@ pub(crate) fn extended_resource_requests(limits: Option<&BTreeMap<String, Quanti
         .collect()
 }
 
+/// Every extended-resource name, across every container this pod declares
+/// (`spec.containers` + `spec.init_containers` — not ephemeral containers,
+/// which are added post-hoc and already best-effort per
+/// `ensure_ephemeral_container()`'s own callers), that isn't currently
+/// backed by a registered device plugin. Round 124 (found live in CI,
+/// confirmed by matching a running container's actual container_id
+/// against nodelet's own logs): `container_create.rs` used to just
+/// FILTER OUT any resource `DevicePlugins::resource_configured()` didn't
+/// recognize at that instant and start the container anyway, permanently
+/// missing that device — a container that's already Running never gets
+/// recreated to retry, so a real but narrow registration-propagation race
+/// (the plugin had *just* registered — `Node.status.capacity` already
+/// reflected it — but hadn't yet reached this specific reconcile's own
+/// check) stranded the container without its device forever. Same
+/// treatment `pending_csi_volume_names()` (volumes_pure.rs) already gets
+/// for the identical shape of problem on the CSI side: block container
+/// creation entirely and let `pods.rs`'s retry chain catch up once the
+/// plugin actually becomes visible.
+pub(crate) fn pending_device_plugin_resources(pod: &Pod, device_plugins: &crate::device_plugins::DevicePlugins) -> Vec<String> {
+    let Some(spec) = pod.spec.as_ref() else { return Vec::new() };
+    let mut containers: Vec<&Container> = spec.containers.iter().collect();
+    if let Some(init) = &spec.init_containers {
+        containers.extend(init.iter());
+    }
+    let mut missing = std::collections::BTreeSet::new();
+    for c in containers {
+        let limits = c.resources.as_ref().and_then(|r| r.limits.as_ref());
+        for (name, _) in extended_resource_requests(limits) {
+            if !device_plugins.resource_configured(&name) {
+                missing.insert(name);
+            }
+        }
+    }
+    missing.into_iter().collect()
+}
+
 
 /// A cpu Quantity as millicores: `"500m"` -> 500, `"2"` -> 2000, `"0.5"` -> 500.
 pub(crate) fn parse_cpu_millicores(q: &Quantity) -> Option<i64> {

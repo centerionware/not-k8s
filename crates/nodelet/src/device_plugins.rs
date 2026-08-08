@@ -152,6 +152,25 @@ fn is_valid_preferred_allocation(ids: &[String], devices: &[DeviceInfo], allocat
     ids.iter().all(|id| devices.iter().any(|d| &d.id == id && d.healthy) && !allocated.contains(id))
 }
 
+/// Same directory `runtime/cri/container_support.rs`'s
+/// `device_alloc_checkpoint_path()` writes into — kept as a separate
+/// literal here rather than importing that module's own constant, same
+/// "self-contained module, shared filesystem contract, no cross-module
+/// type coupling" precedent `csi.rs`'s own `MountMeta` sidecar already
+/// set for CSI volumes.
+const DEVICE_ALLOC_CHECKPOINT_DIR: &str = "/var/lib/nodelet/device-plugins/allocations";
+
+/// The subset of `container_support.rs`'s `DeviceAllocMeta` fields this
+/// module actually needs — deserializing the exact same on-disk JSON,
+/// just ignoring `container_name`, which restoring `DevicePlugins`' own
+/// `allocated`/`owners` state has no use for.
+#[derive(serde::Deserialize)]
+struct RestoredAllocation {
+    resource_name: String,
+    device_ids: Vec<String>,
+    pod_key: String,
+}
+
 struct PluginState {
     endpoint: String,
     devices: Vec<DeviceInfo>,
@@ -226,8 +245,49 @@ impl DevicePlugins {
                 },
             );
         }
+        // Round 124: restore this resource's own already-allocated
+        // devices from disk BEFORE this plugin can possibly serve any new
+        // Allocate() call — see restore_allocations_from_disk()'s own doc
+        // comment for why a nodelet restart otherwise makes an
+        // already-in-use device look free again, letting it get
+        // double-booked onto a second, unrelated container.
+        self.restore_allocations_from_disk(&resource_name);
         let this = self.clone();
         tokio::spawn(async move { watch_loop(this, resource_name, endpoint).await });
+    }
+
+    /// Scan the on-disk allocation checkpoints container_support.rs'
+    /// `record_device_allocations()` writes (same directory/JSON shape,
+    /// duck-typed — this struct only reads the fields it needs, no
+    /// cross-module type coupling, matching how `csi.rs`'s `MountMeta` is
+    /// self-contained too) for anything belonging to `resource_name`, and
+    /// mark those specific device IDs allocated + owned again. Purely
+    /// local bookkeeping — no RPC to the plugin, since these devices were
+    /// already really allocated by a container that's (presumably) still
+    /// running; this just makes nodelet's own view of the world catch up
+    /// after losing it to a restart. Best-effort: a device whose
+    /// checkpoint claims it but that this fresh inventory later reports
+    /// as unhealthy/gone just won't show up as allocated once
+    /// `update_devices()` overwrites `state.devices` — not this
+    /// function's problem to solve.
+    fn restore_allocations_from_disk(&self, resource_name: &str) {
+        let Ok(entries) = std::fs::read_dir(DEVICE_ALLOC_CHECKPOINT_DIR) else { return };
+        for entry in entries.flatten() {
+            let Ok(content) = std::fs::read_to_string(entry.path()) else { continue };
+            let Ok(meta) = serde_json::from_str::<RestoredAllocation>(&content) else { continue };
+            if meta.resource_name != resource_name {
+                continue;
+            }
+            if let Some(state) = self.plugins.lock().unwrap().get_mut(resource_name) {
+                for id in &meta.device_ids {
+                    state.allocated.insert(id.clone());
+                }
+            }
+            let mut owners = self.owners.lock().unwrap();
+            for id in meta.device_ids {
+                owners.insert((resource_name.to_string(), id), meta.pod_key.clone());
+            }
+        }
     }
 
     /// Deregister — its registration socket disappeared. The in-flight

@@ -1,5 +1,65 @@
 use super::*;
 
+/// A device-plugin allocation as checkpointed to disk, keyed by
+/// (sandbox_id, container_name, resource_name) via
+/// `device_alloc_checkpoint_path()`. Round 124 (found live in CI): before
+/// this existed, a nodelet restart lost track of every already-allocated
+/// device entirely — `DevicePlugins`' own `allocated`/`owners` maps and
+/// `CriRuntime::device_allocations` are all purely in-memory. That's a
+/// double bug: (1) a still-running container's already-in-use devices
+/// would look free again the moment their plugin re-registers, so a
+/// completely different new pod's allocation could double-book one of
+/// them onto two containers at once, and (2) once that original
+/// container was eventually torn down for real, `release_container_
+/// devices()` would find nothing in `device_allocations` for it and
+/// silently skip releasing anything at all — permanently stranding those
+/// devices as "allocated" forever, the exact same shape of bug the CSI
+/// mount-metadata sidecar (`csi.rs`'s `MountMeta`) already closed for
+/// volumes. `pod_key` lets `DevicePlugins::restore_allocations_from_disk()` (called
+/// from `register()` when a plugin reconnects) repopulate `owners` too,
+/// not just `allocated`.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DeviceAllocMeta {
+    container_name: String,
+    resource_name: String,
+    device_ids: Vec<String>,
+    pod_key: String,
+}
+
+/// Where one (sandbox_id, container_name, resource_name) allocation is
+/// checkpointed — see `DeviceAllocMeta`'s own doc comment for why this
+/// exists at all. `container_name`/`resource_name` are also duplicated
+/// *inside* the file itself (not just encoded in the filename) so reading
+/// a matching file back never depends on reversing a lossy filename
+/// encoding — every real device-plugin resource name is namespaced (e.g.
+/// `nvidia.com/gpu`), so naively splitting the filename back apart on
+/// `_` would be ambiguous the moment any name involved contains one.
+fn device_alloc_checkpoint_path(sandbox_id: &str, container_name: &str, resource_name: &str) -> std::path::PathBuf {
+    let safe_resource = resource_name.replace('/', "_");
+    std::path::PathBuf::from(DEVICE_ALLOC_CHECKPOINT_DIR).join(format!("{sandbox_id}_{container_name}_{safe_resource}.json"))
+}
+
+/// Every allocation checkpointed under `sandbox_id` — used when the
+/// in-memory `device_allocations` table doesn't have what's needed
+/// (nodelet restarted since it was last populated). Filters by content,
+/// not filename parsing (see `device_alloc_checkpoint_path()`'s own doc
+/// comment for why), just a plain "does this sandbox_id's own directory
+/// prefix match" filename check to avoid reading every unrelated pod's
+/// checkpoints too.
+fn read_device_alloc_checkpoints_for_sandbox(sandbox_id: &str) -> Vec<(std::path::PathBuf, DeviceAllocMeta)> {
+    let prefix = format!("{sandbox_id}_");
+    let Ok(entries) = std::fs::read_dir(DEVICE_ALLOC_CHECKPOINT_DIR) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".json")))
+        .filter_map(|e| {
+            let content = std::fs::read_to_string(e.path()).ok()?;
+            let meta: DeviceAllocMeta = serde_json::from_str(&content).ok()?;
+            Some((e.path(), meta))
+        })
+        .collect()
+}
+
 /// `DevicePlugins::health_of()`'s `Option<bool>` -> the
 /// `ResourceHealth.health` API string (round 79) — matches upstream's
 /// own 3 documented values exactly: a device plugin that deregistered
@@ -345,10 +405,31 @@ impl CriRuntime {
 
     /// Record which devices ended up backing a container, keyed the same
     /// way `restart_counts` is — so a later restart/removal can find and
-    /// release them without re-deriving anything.
-    pub(crate) fn record_device_allocations(&self, sandbox_id: &str, container_name: &str, allocations: Vec<(String, Vec<String>)>) {
+    /// release them without re-deriving anything. `pod_key` ("namespace/
+    /// name") is also checkpointed to disk per resource (see
+    /// `device_alloc_checkpoint_path()`'s own doc comment) — round 124,
+    /// same "must survive a nodelet restart" reasoning as
+    /// `CsiDrivers::mounted`'s on-disk `MountMeta` sidecar.
+    pub(crate) fn record_device_allocations(&self, sandbox_id: &str, container_name: &str, pod_key: &str, allocations: Vec<(String, Vec<String>)>) {
         if allocations.is_empty() {
             return;
+        }
+        for (resource_name, device_ids) in &allocations {
+            let meta = DeviceAllocMeta {
+                container_name: container_name.to_string(),
+                resource_name: resource_name.clone(),
+                device_ids: device_ids.clone(),
+                pod_key: pod_key.to_string(),
+            };
+            if let Ok(json) = serde_json::to_string(&meta) {
+                let path = device_alloc_checkpoint_path(sandbox_id, container_name, resource_name);
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(&path, json) {
+                    warn!(sandbox_id, container = container_name, resource = %resource_name, error = ?e, "failed to checkpoint device allocation to disk — a nodelet restart before this container is torn down may leak these devices as permanently allocated");
+                }
+            }
         }
         self.device_allocations.lock().unwrap().insert(restart_count_key(sandbox_id, container_name), allocations);
     }
@@ -394,10 +475,15 @@ impl CriRuntime {
     /// when a just-attempted allocation needs to be unwound (container
     /// creation/start failed after devices were already picked) and as the
     /// shared tail end of `release_container_devices()`/
-    /// `release_sandbox_devices()` below.
-    pub(crate) fn release_devices(&self, allocations: &[(String, Vec<String>)]) {
+    /// `release_sandbox_devices()` below. Also removes each allocation's
+    /// on-disk checkpoint (see `DeviceAllocMeta`'s own doc comment) —
+    /// best-effort (`remove_file` on a checkpoint that was never written,
+    /// e.g. the just-attempted-allocation-unwind caller above, is a
+    /// harmless no-op).
+    pub(crate) fn release_devices(&self, sandbox_id: &str, container_name: &str, allocations: &[(String, Vec<String>)]) {
         for (resource_name, device_ids) in allocations {
             self.device_plugins.release(resource_name, device_ids);
+            let _ = std::fs::remove_file(device_alloc_checkpoint_path(sandbox_id, container_name, resource_name));
         }
     }
 
@@ -412,8 +498,22 @@ impl CriRuntime {
     /// theoretically free.
     pub(crate) async fn release_container_devices(&self, sandbox_id: &str, container_name: &str) {
         let key = restart_count_key(sandbox_id, container_name);
-        if let Some(allocations) = self.device_allocations.lock().unwrap().remove(&key) {
-            self.release_devices(&allocations);
+        let allocations = self.device_allocations.lock().unwrap().remove(&key);
+        // Round 124: the in-memory table is empty right after a nodelet
+        // restart — fall back to whatever's checkpointed on disk for this
+        // exact container, same "memory first, disk fallback" shape
+        // `CsiDrivers::mounted_source_for()` already uses, so a pod
+        // deleted after a restart still gets its devices released
+        // instead of leaking them as permanently allocated forever.
+        let allocations = allocations.unwrap_or_else(|| {
+            read_device_alloc_checkpoints_for_sandbox(sandbox_id)
+                .into_iter()
+                .filter(|(_, meta)| meta.container_name == container_name)
+                .map(|(_, meta)| (meta.resource_name, meta.device_ids))
+                .collect()
+        });
+        if !allocations.is_empty() {
+            self.release_devices(sandbox_id, container_name, &allocations);
         }
         self.container_resources.lock().unwrap().remove(&key);
         self.applied_resources.lock().unwrap().remove(&key);
@@ -436,13 +536,26 @@ impl CriRuntime {
     /// mirrors `clear_restart_counts()`'s prefix-based sweep.
     pub(crate) async fn release_sandbox_devices(&self, sandbox_id: &str) {
         let prefix = format!("{sandbox_id}/");
-        let removed: Vec<Vec<(String, Vec<String>)>> = {
+        let mut by_container: HashMap<String, Vec<(String, Vec<String>)>> = {
             let mut table = self.device_allocations.lock().unwrap();
             let keys: Vec<String> = table.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
-            keys.into_iter().filter_map(|k| table.remove(&k)).collect()
+            keys.into_iter()
+                .filter_map(|k| {
+                    let container_name = k.strip_prefix(&prefix)?.to_string();
+                    Some((container_name, table.remove(&k)?))
+                })
+                .collect()
         };
-        for allocations in removed {
-            self.release_devices(&allocations);
+        // Round 124: same disk fallback as release_container_devices()
+        // above, for the sandbox-wide teardown path — a nodelet restart
+        // between a sandbox's containers being created and it later
+        // being torn down would otherwise leak every one of their
+        // devices as permanently allocated.
+        for (_, meta) in read_device_alloc_checkpoints_for_sandbox(sandbox_id) {
+            by_container.entry(meta.container_name.clone()).or_default().push((meta.resource_name, meta.device_ids));
+        }
+        for (container_name, allocations) in by_container {
+            self.release_devices(sandbox_id, &container_name, &allocations);
         }
         self.container_resources.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));
         self.applied_resources.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));

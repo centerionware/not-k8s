@@ -122,6 +122,12 @@ pub(crate) use volumes_resolve::*;
 
 const VOLUME_ROOT: &str = "/var/lib/nodelet/pods";
 
+/// Where device-plugin allocations are checkpointed to disk (round 124) —
+/// see `device_alloc_checkpoint_path()`'s own doc comment (container_
+/// support.rs) for why this needs to survive a nodelet restart the same
+/// way a CSI volume's `MountMeta` sidecar does.
+const DEVICE_ALLOC_CHECKPOINT_DIR: &str = "/var/lib/nodelet/device-plugins/allocations";
+
 /// `terminationMessagePath`'s effective cap (round 24) — real kubelet's own
 /// `kubecontainer.MaxContainerTerminationMessageLength`. A container that
 /// writes more than this to its termination-log file only has the last

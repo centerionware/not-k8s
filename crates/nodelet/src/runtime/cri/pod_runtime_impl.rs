@@ -132,6 +132,26 @@ impl PodRuntime for CriRuntime {
                 initialized: false,
             });
         }
+        // Round 124 (found live in CI): same treatment as the CSI-volume
+        // check just above, for the identical shape of problem on the
+        // device-plugin side — see pending_device_plugin_resources()'s own
+        // doc comment (resources.rs) for the real bug this closes (a
+        // container permanently missing its device because it started
+        // without one during a narrow plugin-registration race, and a
+        // container that's already Running never gets recreated to retry).
+        let pending_devices = pending_device_plugin_resources(pod, &self.device_plugins);
+        if !pending_devices.is_empty() {
+            return Ok(RuntimeStatus {
+                phase: Phase::Pending,
+                message: Some(format!("waiting for device plugin resource(s) to be available: {}", pending_devices.join(", "))),
+                started_at: None,
+                pod_ip: None,
+                containers: Vec::new(),
+                init_containers: Vec::new(),
+                ephemeral_containers: Vec::new(),
+                initialized: false,
+            });
+        }
         let service_env = if pod.spec.as_ref().and_then(|s| s.enable_service_links) == Some(false) {
             BTreeMap::new()
         } else {

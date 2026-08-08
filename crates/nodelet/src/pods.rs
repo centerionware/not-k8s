@@ -335,19 +335,20 @@ impl PodController {
                 if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev, &gates, &self.health, qos, pod.metadata.generation).await {
                     warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status");
                 }
-                // Round 124: a still-pending CSI volume attach
-                // (pending_csi_volume_names(), volumes_pure.rs) touches
-                // nothing on the Pod object itself, so — unlike almost
-                // every other state change this controller reacts to —
-                // there's no future watch event to wait for. Without an
-                // explicit retry here, the pod would simply stay Pending
-                // forever once the external-attacher's own timing lost
-                // the race with this reconcile. schedule_retry() already
+                // Round 124: a still-pending CSI volume attach or device-
+                // plugin resource (pending_csi_volume_names()/pending_
+                // device_plugin_resources()) touches nothing on the Pod
+                // object itself, so — unlike almost every other state
+                // change this controller reacts to — there's no future
+                // watch event to wait for. Without an explicit retry
+                // here, the pod would simply stay Pending forever once
+                // the external attacher/plugin's own timing lost the
+                // race with this reconcile. schedule_retry() already
                 // exists for exactly this "nothing else will retry this"
                 // shape (originally for a failed ensure_pod); it now also
-                // recognizes and chains on this specific condition — see
+                // recognizes and chains on both these conditions — see
                 // its own doc comment.
-                if is_waiting_for_csi_volume(&status) {
+                if is_waiting_for_external_resource(&status) {
                     self.schedule_retry(ns, name);
                 }
             }
@@ -936,15 +937,23 @@ async fn next_event(events: &mut Option<UnboundedReceiver<String>>) -> String {
     }
 }
 
-/// Whether `status` is `ensure_pod()`'s "waiting for CSI volume(s) to be
-/// mounted" Pending case (`pending_csi_volume_names()`,
-/// runtime/cri/volumes_pure.rs) — matched by message prefix since
-/// `RuntimeStatus` has no dedicated reason enum for this yet, same
-/// shortcut real kubelet's own event-message matching in similar spots
-/// takes. Used by both `reconcile()` (decide whether to schedule a retry
-/// at all) and `schedule_retry()` (decide whether to keep chaining one).
-fn is_waiting_for_csi_volume(status: &RuntimeStatus) -> bool {
-    status.phase == Phase::Pending && status.message.as_deref().is_some_and(|m| m.starts_with("waiting for CSI volume(s) to be mounted"))
+/// Whether `status` is one of `ensure_pod()`'s "waiting on something
+/// external that nothing else will retry" Pending cases — originally just
+/// CSI volume attach (`pending_csi_volume_names()`, volumes_pure.rs),
+/// round 124 also covers a missing device-plugin resource
+/// (`pending_device_plugin_resources()`, resources.rs). Both are matched
+/// by message prefix since `RuntimeStatus` has no dedicated reason enum
+/// for this yet, same shortcut real kubelet's own event-message matching
+/// in similar spots takes. Used by both `reconcile()` (decide whether to
+/// schedule a retry at all) and `schedule_retry()` (decide whether to
+/// keep chaining one) — deliberately named for the general shape ("some
+/// external resource this pod needs isn't ready yet"), not just the CSI
+/// case that motivated it first.
+fn is_waiting_for_external_resource(status: &RuntimeStatus) -> bool {
+    status.phase == Phase::Pending
+        && status.message.as_deref().is_some_and(|m| {
+            m.starts_with("waiting for CSI volume(s) to be mounted") || m.starts_with("waiting for device plugin resource(s) to be available")
+        })
 }
 
 fn key_parts(pod: &Pod) -> Option<(String, String)> {
