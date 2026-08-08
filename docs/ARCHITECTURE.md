@@ -253,28 +253,15 @@ trait PodRuntime {
 
 ## Scope Boundary
 
-`nodelet` replaces kubelet — nothing upstream of the apiserver. Concretely,
-out of scope:
-
-- **Everything the scheduler, controller-manager, and apiserver itself do**
-  — binding pods to nodes, admission, RBAC, server-side apply field
-  ownership, CRD storage/conversion, discovery. `nodelet` doesn't
-  reimplement any of it; it consumes the same API a real kubelet would.
-- **Control-plane high availability.** Whatever HA story the control plane
-  uses is orthogonal to nodelet. **This is a separate axis from multi-node
-  support**: `nodelet` has no architectural assumption limiting it to one
-  node. Each device runs its own independent `nodelet` instance and
-  registers its own `Node` object, exactly like a real kubelet would;
-  nothing stops many `nodelet`-managed nodes pointing at one shared control
-  plane, with the stock scheduler binding pods across all of them normally.
-  A single edge device is the case this project optimizes and tests
-  hardest against — but the goal is a drop-in kubelet replacement usable in
-  ordinary multi-node clusters too, not a single-node-only tool.
-- **Mesh federation sync agent.** Devices federating to an upstream cluster
-  over Tailscale/Netbird, syncing selected resources bidirectionally, is a
-  separate future component, not part of nodelet's current architecture.
-- **Windows / non-Linux.** cgroup v2, `/proc`, and the CRI socket are
-  Linux-specific.
+`nodelet` replaces kubelet: it consumes the same API a real kubelet would,
+nothing more. `nodelet` has no architectural assumption limiting it to one
+node — each device runs its own independent `nodelet` instance and
+registers its own `Node` object, exactly like a real kubelet would, so
+many `nodelet`-managed nodes can point at one shared control plane with
+the stock scheduler binding pods across all of them normally. A single
+edge device is the case this project optimizes and tests hardest against,
+but the goal is a drop-in kubelet replacement usable in ordinary
+multi-node clusters too, not a single-node-only tool.
 
 ## Current Status
 
