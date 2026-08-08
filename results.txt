@@ -1,39 +1,50 @@
-commit: 944714b234608db4bc4f24bd00ec4a0995e75b1e
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31233090462
-timestamp (UTC): 2026-08-08T01:44:12Z
+commit: e93151eaf501d2397db863d998d360c63ce9a39f
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31233670954
+timestamp (UTC): 2026-08-08T02:02:34Z
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786153316
+==> Test namespace: not-k8s-e2e-1786154215
 ==> 151 test(s) registered total; running now...
-▶ test_device_plugin_health_transition_updates_allocated_resources_status
+▶ test_device_plugin_advertises_capacity_and_allocates_into_a_container
 ==> installing grpcio/grpcio-tools for the fake device plugin...
 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
-==> FATAL: containerStatuses[0].allocatedResourcesStatus never updated to Unhealthy after the plugin's ListAndWatch reported device 'fake-3' unhealthy
-  ✘ FAIL (131s, exit 1)
+==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
+  ✔ PASS (146s)
+▶ test_device_plugin_health_transition_updates_allocated_resources_status
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> WARNING: never got a non-empty FAKE_DEVICE_IDS read from device-plugin-health-check within 30s; using whatever the last attempt captured
+==> FATAL: couldn't read the allocated device ID back out of the container
+  ✘ FAIL (35s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 08 01:41:00 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:41:00.087808Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 421 (436)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 08 01:41:00 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:41:00.087999Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 421 (436)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 08 01:41:01 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:41:01.166908Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 01:41:01 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:41:01.192989Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-7ddrl namespace="kube-system" name="coredns" kind=ConfigMap
-    Aug 08 01:41:01 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:41:01.223181Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-7ddrl namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 01:41:25 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:41:25.394548Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 08 01:41:35 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:41:35.460794Z  INFO node status pushed
-    Aug 08 01:41:53 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:41:53.139249Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-z897m
-    Aug 08 01:41:54 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:41:54.236781Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-z897m
-    Aug 08 01:41:55 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:41:55.411245Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-a0d55cd4-3810-4b99-a9e3-5c2a3ac0bb26.sock plugin_type=DRAPlugin
-    Aug 08 01:42:05 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:42:05.415140Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
-    Aug 08 01:42:05 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:42:05.419078Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
-    Aug 08 01:42:35 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:42:35.503946Z  INFO node status pushed
-    Aug 08 01:42:39 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:42:39.423632Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=3
-    Aug 08 01:43:35 runnervmvrwv9 run-nodelet.sh[10947]: 2026-08-08T01:43:35.543096Z  INFO node status pushed
+    Aug 08 01:57:51 runnervmvrwv9 run-nodelet.sh[10875]:     0: code: 'Unknown error', message: "h2 protocol error: error reading a body from connection", source: hyper::Error(Body, Error { kind: Io(Custom { kind: BrokenPipe, error: "stream closed because of a broken pipe" }) })
+    Aug 08 01:57:51 runnervmvrwv9 run-nodelet.sh[10875]:     1: error reading a body from connection
+    Aug 08 01:57:51 runnervmvrwv9 run-nodelet.sh[10875]:     2: stream closed because of a broken pipe
+    Aug 08 01:57:56 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-08T01:57:56.601150Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=connecting to device plugin unix socket
+    Aug 08 01:57:56 runnervmvrwv9 run-nodelet.sh[10875]: Caused by:
+    Aug 08 01:57:56 runnervmvrwv9 run-nodelet.sh[10875]:     0: transport error
+    Aug 08 01:57:56 runnervmvrwv9 run-nodelet.sh[10875]:     1: No such file or directory (os error 2)
+    Aug 08 01:57:56 runnervmvrwv9 run-nodelet.sh[10875]:     2: No such file or directory (os error 2)
+    Aug 08 01:57:57 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-08T01:57:57.331372Z  INFO plugin registry: socket disappeared; deregistering name="fake.example.com/testdevice" path=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock
+    Aug 08 01:58:21 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-08T01:58:21.685198Z  INFO torn down pod=not-k8s-e2e-1786154215/device-plugin-alloc-check
+    Aug 08 01:58:21 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-08T01:58:21.696545Z  INFO torn down pod=not-k8s-e2e-1786154215/device-plugin-alloc-check
+    Aug 08 01:58:47 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-08T01:58:47.522623Z  INFO node status pushed
+    Aug 08 01:59:27 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-08T01:59:27.347060Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
+    Aug 08 01:59:27 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-08T01:59:27.350967Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
+    Aug 08 01:59:47 runnervmvrwv9 run-nodelet.sh[10875]: 2026-08-08T01:59:47.601141Z  INFO node status pushed
+▶ test_device_plugin_preferred_allocation_and_prestart
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
+  ✔ PASS (155s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
+Results: 2 passed, 1 failed, 0 skipped
 Failed:
   - test_device_plugin_health_transition_updates_allocated_resources_status
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786153316...
+==> Cleaning up test namespace not-k8s-e2e-1786154215...
