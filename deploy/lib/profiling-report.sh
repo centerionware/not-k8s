@@ -112,7 +112,7 @@ charts above are rendered from), 3 replicates per agent:
    \`deploy/lib/profiling-report.sh\` wraps that into the markdown report
    published here.
 
-Every run's full output is kept under \`history/<short-sha>-<timestamp>/\`;
+Every run's full output is kept under \`history/<YYYY-MM-DD_HH-MM-SS>/\` (the commit it ran against is in that run's own README.md, not the directory name);
 \`latest/\` always mirrors the most recent run's files at a stable path.
 
 ## Run this yourself

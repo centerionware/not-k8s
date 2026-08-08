@@ -193,9 +193,13 @@ jobs:
             (cd "$WORKDIR" && git checkout --orphan profiling-results && git rm -rf . >/dev/null 2>&1 || true)
           fi
 
-          STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          # Round 124: plain date-first timestamp, not <sha>-<timestamp> --
+          # the commit is already in the README's own "Commit `...`" line
+          # and in each git log entry; cluttering the directory name with
+          # it too just made every entry harder to scan at a glance.
+          STAMP="$(date -u +%Y-%m-%d_%H-%M-%S)"
           SHORT_SHA="${COMMIT_SHA:0:12}"
-          RUN_DIR="$WORKDIR/history/${SHORT_SHA}-${STAMP}"
+          RUN_DIR="$WORKDIR/history/${STAMP}"
           # raw-data/ keeps every CSV/summary.txt this run produced, separate
           # from the main README.md + charts — anyone who wants to build
           # their own charts/analysis from the real numbers can just take
@@ -219,7 +223,7 @@ jobs:
           cp -r "$RUN_DIR" "$WORKDIR/latest"
 
           bash deploy/lib/profiling-report.sh --readme \
-            "$COMMIT_SHA" "$RUN_URL" "$SHORT_SHA-$STAMP" \
+            "$COMMIT_SHA" "$RUN_URL" "$STAMP" \
             > "$WORKDIR/README.md"
 
           cd "$WORKDIR"
