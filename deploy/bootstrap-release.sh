@@ -47,6 +47,22 @@ source "$LIB_DIR/common.sh"
 detect_platform   # sets ARCH
 ensure_fetch_tool
 
+# Round 124: --skip-nodelet means no nodelet binary is wanted on this host
+# at all (profiling.yml's upstream-kubelet.sh comparison leg — a real
+# kubelet, not nodelet, is going in) -- skip the whole release-lookup/
+# download dance (including the arch-support gate below, which only
+# exists because a release asset needs to actually match) and hand off
+# to bootstrap-source.sh directly. It sees --skip-nodelet itself and
+# skips build_nodelet()/run_and_verify() the same way, so this is the one
+# code path that needs zero changes downstream — this script is just not
+# in the way at all when nodelet isn't wanted.
+for arg in "${PASSTHROUGH_ARGS[@]}"; do
+    if [[ "$arg" == "--skip-nodelet" ]]; then
+        log "Skipping the release binary fetch (--skip-nodelet) — handing off straight to bootstrap-source.sh."
+        exec "$SCRIPT_DIR/bootstrap-source.sh" "${PASSTHROUGH_ARGS[@]}"
+    fi
+done
+
 case "$ARCH" in
     x86_64|aarch64|armv7l) ;;
     *) die "No prebuilt release for arch '$ARCH' — .github/workflows/release.yml only builds x86_64/aarch64/armv7l. Use ./deploy/bootstrap-source.sh to build from source on this device instead." ;;

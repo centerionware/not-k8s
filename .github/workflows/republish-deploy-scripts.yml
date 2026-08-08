@@ -1,0 +1,86 @@
+name: Republish deploy.tar.gz + install scripts (no rebuild, same version)
+
+# Manual trigger only. deploy.tar.gz (the standalone installer's own fetch
+# target -- see deploy/lib/compile-install-script.sh's header comment) and
+# the compiled install.sh/install-vX.Y.Z.sh scripts bundle the whole
+# deploy/ directory as of whatever release last ran the full pipeline.
+# When only deploy/*.sh itself changes (bootstrap logic, this workflow's
+# own kind of change) -- not nodelet's Rust source, not anything that
+# needs a new binary or a version bump -- running the *entire* 4-stage
+# release.yml pipeline just to pick up a shell-script fix is real waste:
+# a full build+test+e2e+build-release+publish-release cycle, plus an
+# unwanted version bump, for zero actual binary changes.
+#
+# This just repackages deploy/ from the current commit into a fresh
+# deploy.tar.gz, re-uploads it to the *existing* latest GitHub Release
+# (overwriting the old asset in place, same tag, same nodelet binaries,
+# no new release created), and recompiles+republishes the standalone
+# install scripts against that same already-published version number --
+# never touches the `version` branch (deliberately doesn't call
+# version-bump.sh, which increments; this always targets whatever's
+# actually live right now) and never rebuilds/retests nodelet at all.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  republish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine the latest already-published release version
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="$(gh release view --json tagName -q .tagName)"
+          VERSION="${TAG#v}"
+          [[ -n "$VERSION" ]] || { echo "couldn't determine the latest release's version" >&2; exit 1; }
+          echo "==> republishing deploy scripts for the existing release $TAG (version $VERSION) -- no rebuild, no version bump"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild deploy.tar.gz from the current deploy/ directory
+        run: tar czf deploy.tar.gz deploy
+
+      - name: Re-upload deploy.tar.gz to the existing release (overwrites the old asset in place)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ steps.version.outputs.tag }}" deploy.tar.gz --clobber
+
+      - name: Recompile the standalone install scripts
+        run: |
+          set -e
+          mkdir -p install-scripts-out
+          bash deploy/lib/compile-install-script.sh "${{ steps.version.outputs.version }}" install-scripts-out/install.sh
+          bash deploy/lib/compile-install-script.sh "${{ steps.version.outputs.version }}" "install-scripts-out/install-v${{ steps.version.outputs.version }}.sh" --pin
+
+      - name: Publish install scripts to the install-scripts branch
+        # Same shape as release.yml's own equivalent step: install.sh
+        # always gets overwritten (it's "latest" by design); the
+        # per-version pinned copy is content-identical to what's already
+        # there (same version, same deploy.tar.gz URL shape) but
+        # regenerated anyway for consistency -- cheap, and avoids a
+        # subtly-stale copy sitting next to the just-updated install.sh.
+        run: |
+          set -e
+          git config user.name "not-k8s-deploy-republish-bot"
+          git config user.email "actions@users.noreply.github.com"
+          BRANCH=install-scripts
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+          else
+            git checkout --orphan "$BRANCH"
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          cp install-scripts-out/install.sh install.sh
+          cp "install-scripts-out/install-v${{ steps.version.outputs.version }}.sh" "install-v${{ steps.version.outputs.version }}.sh"
+          git add install.sh "install-v${{ steps.version.outputs.version }}.sh"
+          git commit -m "re-publish deploy scripts for v${{ steps.version.outputs.version }} (no rebuild, same version) -- source commit ${{ github.sha }}" --allow-empty
+          git push origin "$BRANCH"

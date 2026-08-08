@@ -41,6 +41,7 @@
 #   ./deploy/bootstrap-source.sh --with-cri --ip-family=ipv4     # force v4-only
 #   ./deploy/bootstrap-source.sh --with-cri --lb-method=round-robin
 #   ./deploy/bootstrap-source.sh --skip-control-plane
+#   ./deploy/bootstrap-source.sh --with-cri --skip-nodelet   # control plane + containerd/CNI only, nodelet never built/installed/started (round 124: profiling.yml's upstream-kubelet.sh comparison leg wants this exact stack with a different node agent, not nodelet sitting there unused)
 #   ./deploy/bootstrap-source.sh --keep-build-tools   # skip the end-of-run toolchain cleanup (faster re-runs)
 #   ./deploy/bootstrap-source.sh --cleanup        # stop the deployment + build-tool cleanup (keeps runtime pkgs/k3s for next time)
 #   ./deploy/bootstrap-source.sh --uninstall      # full teardown: also k3s, containerd/runc, CNI/flannel, nftables
@@ -131,11 +132,13 @@ CNI_PLUGIN=flannel
 IP_FAMILY=auto
 LB_METHOD=random
 KEEP_BUILD_TOOLS=0
+SKIP_NODELET=0
 
 for arg in "$@"; do
     case "$arg" in
         --with-cri) WITH_CRI=1 ;;
         --skip-control-plane) SKIP_CONTROL_PLANE=1 ;;
+        --skip-nodelet) SKIP_NODELET=1 ;;
         --cleanup) DO_CLEANUP=1 ;;
         --uninstall) DO_UNINSTALL=1 ;;
         --force) FORCE_UNINSTALL=1 ;;
@@ -251,16 +254,22 @@ log "not-k8s bootstrap-source: isolated single-command source deployment"
 # exactly the case CI's own e2e stage hits on every shard now that it
 # downloads a prebuilt debug binary from build-and-test instead of
 # rebuilding from source.
-if [[ -z "${NOTK8S_NODELET_PREBUILT:-}" ]]; then
+if [[ -z "${NOTK8S_NODELET_PREBUILT:-}" && "$SKIP_NODELET" -eq 0 ]]; then
     ensure_c_toolchain
     ensure_rust
 fi
 setup_control_plane
-build_nodelet
+if [[ "$SKIP_NODELET" -eq 0 ]]; then
+    build_nodelet
+fi
 ensure_container_runtime
 ensure_cni
 ensure_nft
 enable_bridge_netfilter
-run_and_verify
-enable_kubelet_certificate_authority_trust
+if [[ "$SKIP_NODELET" -eq 0 ]]; then
+    run_and_verify
+    enable_kubelet_certificate_authority_trust
+else
+    log "Skipping nodelet build/install/start (--skip-nodelet) — control plane + containerd + CNI are up, nothing else touches this node."
+fi
 cleanup_build_footprint

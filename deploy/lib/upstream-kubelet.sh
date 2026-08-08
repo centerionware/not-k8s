@@ -16,10 +16,15 @@
 # nodelet itself already authenticates by default in this project's own
 # dev/measurement setups -- see crates/nodelet/src/main.rs's own comment:
 # TLS bootstrap is opt-in via NODELET_BOOTSTRAP_KUBECONFIG, off unless
-# set), and it does not run kube-proxy or a CNI (not needed to reach
-# kubelet's own genuine idle steady-state -- no pods are scheduled here,
-# only the same "join the cluster and sit idle" state nodelet is measured
-# in on the other side of the comparison).
+# set). Flannel CNI is already installed and running by the time this
+# script runs -- profiling.yml's own bootstrap step (the real installer,
+# --with-cri, with --skip-nodelet added on this leg) sets it up before
+# ever calling this script, so both sides of the comparison genuinely
+# share it rather than just coincidentally ending up similar. This script
+# does not run kube-proxy on either side (no pods are scheduled in either
+# measurement, so there's nothing for it to load-balance) -- that's the
+# one piece of a normal node's networking stack neither agent gets here,
+# symmetrically.
 set -uo pipefail
 
 KUBELET_BIN=/usr/local/bin/kubelet

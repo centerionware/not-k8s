@@ -30,13 +30,15 @@ name: Profiling — nodelet vs a real upstream kubelet (same control plane)
 #      exists to rule out (disk cache state, memory fragmentation, thermal
 #      throttling, or anything else accumulated by the first phase
 #      quietly advantaging or disadvantaging whichever ran second). Every
-#      matrix leg provisions itself identically — the exact same real
-#      standalone installer (`install-scripts` branch's `install.sh`,
-#      what a real user actually runs — fetches the latest published
-#      release's prebuilt nodelet binary, not a from-source build, so
-#      this profiles the actual shipped artifact) on all of them; the
-#      kubelet legs just stop nodelet and swap in kubelet afterward,
-#      never measuring nodelet at all. Only the profiling/measurement
+#      matrix leg provisions itself via the exact same real standalone
+#      installer (`install-scripts` branch's `install.sh`, what a real
+#      user actually runs — fetches the latest published release's
+#      prebuilt nodelet binary, not a from-source build, so this profiles
+#      the actual shipped artifact) — the kubelet legs pass
+#      `--skip-nodelet` through to it (bootstrap-source.sh) so nodelet is
+#      never built, installed, or started on those runners at all, not
+#      just stopped after the fact; `deploy/lib/upstream-kubelet.sh` is
+#      the only node agent that ever runs there. Only the profiling/measurement
 #      tooling itself (measure.sh, upstream-kubelet.sh,
 #      render-profiling-charts.py, profiling-report.sh) runs from this
 #      workflow's own checked-out repo rather than whatever copy the
@@ -70,24 +72,33 @@ jobs:
         include:
           - agent: nodelet
             agent_pattern: nodelet
+            # Normal install: control plane + containerd/CNI + nodelet itself.
+            install_args: --with-cri
           - agent: kubelet
             agent_pattern: /usr/local/bin/kubelet
+            # Round 124 (found live from a user's own review of the run):
+            # nodelet should never touch this runner at all, not just get
+            # installed-then-stopped -- --skip-nodelet (bootstrap-source.sh)
+            # gives the same control plane + containerd + CNI stack with
+            # nodelet never built, installed, or started, so
+            # upstream-kubelet.sh is the only node agent this runner ever
+            # runs.
+            install_args: --with-cri --skip-nodelet
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Bootstrap the shared stack via the real standalone installer (stripped k3s control plane + containerd + nodelet)
+      - name: Bootstrap the shared stack via the real standalone installer (stripped k3s control plane + containerd${{ matrix.agent == 'nodelet' && ' + nodelet' || '' }})
         run: |
           set -e
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/install-scripts/install.sh | sudo bash -s -- --with-cri
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/install-scripts/install.sh | sudo bash -s -- ${{ matrix.install_args }}
 
-      - name: Swap nodelet for a real upstream kubelet (same control plane, same containerd)
+      - name: Start a real upstream kubelet (same control plane, same containerd — nodelet was never installed on this runner)
         if: matrix.agent == 'kubelet'
         run: |
           set -e
-          sudo systemctl stop nodelet.service
           sudo bash deploy/lib/upstream-kubelet.sh start
 
       - name: Settle before measuring idle steady-state
@@ -161,16 +172,24 @@ jobs:
         env:
           COMMIT_SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Round 124 (found live in CI): a *separate* `git clone` into a
+          # fresh WORKDIR doesn't inherit whatever credential setup
+          # actions/checkout@v4 did for the already-checked-out repo --
+          # that clone had no way to authenticate the later `git push` at
+          # all ("could not read Username for 'https://github.com'").
+          # Embedding the real token in the clone/push URL itself is what
+          # actually carries auth into that separate clone.
+          AUTH_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
         run: |
           set -e
           git config --global user.name "not-k8s-profiling-bot"
           git config --global user.email "actions@users.noreply.github.com"
 
           WORKDIR="$(mktemp -d)"
-          if git ls-remote --exit-code --heads origin profiling-results >/dev/null 2>&1; then
-            git clone --branch profiling-results --single-branch "https://github.com/${{ github.repository }}.git" "$WORKDIR"
+          if git ls-remote --exit-code --heads "$AUTH_URL" profiling-results >/dev/null 2>&1; then
+            git clone --branch profiling-results --single-branch "$AUTH_URL" "$WORKDIR"
           else
-            git clone "https://github.com/${{ github.repository }}.git" "$WORKDIR"
+            git clone "$AUTH_URL" "$WORKDIR"
             (cd "$WORKDIR" && git checkout --orphan profiling-results && git rm -rf . >/dev/null 2>&1 || true)
           fi
 
