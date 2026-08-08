@@ -1,20 +1,6 @@
-commit: d0c5fdc672a8cd557ae6415606f9a63b4c3d7ae4
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31236647126
-timestamp (UTC): 2026-08-08T03:17:18Z
-exit code: 0
+commit: 9645a6e7c643dcca07a7db0d784ccb730e42c0fa
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31236883879
+timestamp (UTC): 2026-08-08T03:18:26Z
+exit code: unknown
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786158937
-==> 151 test(s) registered total; running now...
-▶ test_host_users_false_gets_a_real_user_namespace
-  ✔ PASS (3s)
-▶ test_host_users_false_volume_still_reads_and_writes_normally
-  ✔ PASS (32s)
-▶ test_host_users_volume_ownership_translation_is_correct
-  ✔ PASS (33s)
-▶ test_host_aliases_still_work_under_host_users_false
-  ✔ PASS (32s)
-
-════════════════════════════════════════
-Results: 4 passed, 0 failed, 0 skipped
-════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786158937...
+(no results captured — the run failed before test-e2e.sh could produce output)
