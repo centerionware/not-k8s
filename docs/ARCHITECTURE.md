@@ -1,8 +1,7 @@
 # nodelet: Architecture
 
-> Replace kubelet — and only kubelet — with a lean, event-driven Rust node
-> agent that speaks the same narrow contract to whatever control plane it's
-> pointed at.
+> Replace kubelet with a lean, event-driven Rust node agent that speaks the
+> same narrow contract to whatever control plane it's pointed at.
 
 ---
 
@@ -55,7 +54,7 @@ not idle efficiency:
 On a Raspberry Pi 4 (4 GB RAM, 4-core ARM), stock kubelet alone idles around
 **81 MB RSS** and **~0.85s of CPU time per 2-minute idle window** — see the
 [`profiling-results`](https://github.com/centerionware/not-k8s/tree/profiling-results)
-branch for live, CI-published numbers against a real upstream kubelet binary.
+branch for live numbers against an upstream kubelet binary.
 
 ## Design: Event-Driven, Not Polled
 

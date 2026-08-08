@@ -34,9 +34,9 @@ All three are self-contained: they detect your distro and CPU architecture and i
 
 ## Scope
 
-The design prioritizes single-node edge deployments — that's where low idle CPU shines — but `not-k8s` is built to be a drop-in kubelet replacement usable in multi-node Kubernetes clusters too. For now, the quickest and easiest way to try it is on top of k3s. If you want to run it against a full upstream Kubernetes control plane, there's nothing stopping you — it's the same kubelet replacement protocol either way.
+The design prioritizes single-node edge deployments — that's where low idle CPU shines — but nothing about it is single-node-specific. For now, the quickest and easiest way to try it is on top of k3s; running it against a full upstream Kubernetes control plane works the same way.
 
-To be clear about what this is *not*: `not-k8s` doesn't touch the apiserver, scheduler, controller-manager, or etcd/kine — it only replaces the node agent. Feature-parity claims against kubelet aren't taken on faith from the design doc; they're verified by an e2e suite that exercises containerd, CSI/DRA drivers, and full clusters end to end — not just unit tests against mocks. That suite runs as a required gate in the [release pipeline](https://github.com/centerionware/not-k8s/actions) before any release is cut, and it has to pass everything it can; check the Actions history for actual run results rather than taking that on faith either.
+Feature-parity claims against kubelet aren't taken on faith from the design doc; they're verified by an e2e suite that exercises containerd, CSI/DRA drivers, and full clusters end to end — not just unit tests against mocks. That suite runs as a required gate in the [release pipeline](https://github.com/centerionware/not-k8s/actions) before any release is cut, and it has to pass everything it can; check the Actions history for actual run results rather than taking that on faith either.
 
 ## Profiling
 
