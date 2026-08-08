@@ -21,6 +21,17 @@ fn cpu_and_memory_are_excluded() {
 }
 
 #[test]
+fn ephemeral_storage_and_hugepages_are_excluded() {
+    // Round 124 regression: these are built-in resources nodelet handles
+    // itself (eviction accounting / hugepage reservation), never a
+    // device plugin -- treating them as "extended" blocked any pod
+    // declaring one from ever starting (resource_configured() for
+    // "hugepages-2Mi"/"ephemeral-storage" can never become true).
+    let m = limits(&[("cpu", "100m"), ("memory", "64Mi"), ("ephemeral-storage", "1Gi"), ("hugepages-2Mi", "4Mi"), ("hugepages-1Gi", "1Gi")]);
+    assert!(extended_resource_requests(Some(&m)).is_empty());
+}
+
+#[test]
 fn an_extended_resource_is_extracted_with_its_count() {
     let m = limits(&[("nvidia.com/gpu", "1")]);
     let got = extended_resource_requests(Some(&m));

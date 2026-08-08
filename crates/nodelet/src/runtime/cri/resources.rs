@@ -37,18 +37,34 @@ pub(crate) fn stop_signal_k8s(cri_signal: i32) -> Option<String> {
     signal.as_str_name().strip_prefix("SIGNAL_").map(|s| s.replace("PLUS", "+").replace("MINUS", "-"))
 }
 
-/// Every non-cpu/memory resource in `limits`, as `(name, count)` — a pure
+/// Every resource in `limits` that isn't one of k8s's own built-in
+/// (non-device-plugin) resource names, as `(name, count)` — a pure
 /// extraction so "does this container ask for an extended resource" is
 /// unit-testable without a live `DevicePlugins` registry. Whether nodelet
 /// actually has a driver for a given name (and so whether it's really a
 /// device-plugin resource, as opposed to something with no kubelet-side
 /// meaning at all) is decided by the caller via
 /// `DevicePlugins::resource_configured()`.
+///
+/// Excludes `cpu`/`memory` (handled by CPU/Memory Manager) and
+/// `ephemeral-storage`/`hugepages-*` (handled directly by nodelet itself —
+/// hugepage reservation + `emptyDir` backing, ephemeral-storage eviction
+/// accounting — never by a device plugin). Round 124 (found live in CI,
+/// full-suite run): missing the last two here meant
+/// `pending_device_plugin_resources()` (this file) treated *every* pod
+/// declaring an `ephemeral-storage` or `hugepages-<size>` limit as
+/// permanently waiting on a device plugin that will never exist —
+/// blocking container creation forever, not just delaying it, since
+/// `resource_configured()` can never become true for a name no plugin
+/// will ever register.
 pub(crate) fn extended_resource_requests(limits: Option<&BTreeMap<String, Quantity>>) -> Vec<(String, u64)> {
     let Some(limits) = limits else { return Vec::new() };
     limits
         .iter()
-        .filter(|(name, _)| name.as_str() != "cpu" && name.as_str() != "memory")
+        .filter(|(name, _)| {
+            let name = name.as_str();
+            name != "cpu" && name != "memory" && name != "ephemeral-storage" && !name.starts_with("hugepages-")
+        })
         .filter_map(|(name, q)| parse_quantity(&q.0).map(|v| (name.clone(), v.round().max(0.0) as u64)))
         .collect()
 }
