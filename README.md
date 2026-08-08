@@ -40,7 +40,7 @@ To be clear about what this is *not*: `not-k8s` doesn't touch the apiserver, sch
 
 ## Profiling
 
-See live idle-CPU and RSS comparison numbers (nodelet vs. stock k3s kubelet) in the [`profiling-results`](https://github.com/centerionware/not-k8s/tree/profiling-results) branch — published automatically by CI on every release.
+See live idle-CPU and RSS comparison numbers (nodelet vs. stock k3s kubelet) in the [`profiling-results`](https://github.com/centerionware/not-k8s/tree/profiling-results) branch.
 
 ## Learn more
 
