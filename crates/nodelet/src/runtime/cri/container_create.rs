@@ -523,6 +523,13 @@ impl CriRuntime {
             let preferred = device_preferred_nodes.get(&resource_name).copied();
             match self.device_plugins.allocate_preferring(&resource_name, count, preferred).await {
                 Ok((device_ids, resp)) => {
+                    // Round 124 (temporary diagnostic — no success-path
+                    // log existed here at all before this, only a
+                    // failure one, which made a real live bug
+                    // impossible to pin down: allocation/accounting
+                    // succeeded but a container's actual env somehow
+                    // ended up missing the plugin's Allocate() envs).
+                    info!(container = %container.name, resource = %resource_name, devices = ?device_ids, env_count = resp.envs.len(), "device plugin Allocate() succeeded");
                     envs.extend(resp.envs.into_iter().map(|(key, value)| KeyValue { key, value: value.into_bytes() }));
                     mounts.extend(resp.mounts.into_iter().map(|m| Mount {
                         container_path: m.container_path,
