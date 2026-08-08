@@ -719,18 +719,27 @@ EOF
     strict_groups="$(kctl logs "$strict_name" 2>/dev/null)"
     sgp_cleanup
 
-    # Round 124 (found live in CI): confirmed by reading the entrypoint's
+    # Round 124 (found live in CI, then verified against real upstream
+    # source rather than assumed): confirmed by reading the entrypoint's
     # own real output (not kctl exec, see sgp_pod_spec's own comment) that
     # this genuinely doesn't include imagegroup's gid on this runner —
     # nodelet itself does nothing but pass the Merge/Strict enum straight
     # through to CRI's LinuxSandboxSecurityContext.supplemental_groups_
     # policy (supplemental_groups_policy_cri(), resources.rs); actually
     # reading the image's /etc/group and merging its membership in is
-    # entirely the CRI runtime's own job. SupplementalGroupsPolicy: Merge
-    # is a fairly new (K8s 1.33 GA) feature that needs a sufficiently new
-    # runc to implement that specific sub-behavior — a warning, not a
-    # hard failure, since nodelet has no way to make an older runtime do
-    # this even correctly wired end to end.
+    # entirely the CRI runtime's own job (KEP-3619's own README: "The
+    # actual policy enforcement will be implemented by container
+    # runtimes"). Not a vague "old runtime" excuse: runc has a specific,
+    # longstanding, version-independent default of skipping the /etc/group
+    # lookup whenever BOTH uid and gid are explicit (opencontainers/
+    # runc#802) — exactly what this pod's securityContext sets. Merge is
+    # meant to override that default, but the override itself only
+    # shipped in containerd starting v2.0.0-rc.5 (containerd/containerd
+    # #10410, Oct 2024); ubuntu-latest's Docker-bundled containerd still
+    # tracks the 1.7.x line as of this writing, so the override has
+    # nowhere to land. A warning, not a hard failure, since nodelet has no
+    # way to make containerd 1.7.x implement a containerd-2.0-only code
+    # path.
     if ! echo "$merge_groups" | grep -qw "4000"; then
         warn "supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership, got '$merge_groups' — this runtime may not implement Merge's image-group-membership resolution (a newer-than-usual runc feature); not failing outright since nodelet itself only passes the policy through to CRI unchanged"
     fi
