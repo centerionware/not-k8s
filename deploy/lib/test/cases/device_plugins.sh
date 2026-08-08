@@ -47,7 +47,19 @@ _fake_device_plugin_setup() {
         # install` fails outright (not a network issue) unless told this is
         # a throwaway CI runner, not a shared system Python. Safe here:
         # this whole box is ephemeral per-run.
-        sudo python3 -m pip install --quiet --break-system-packages grpcio grpcio-tools \
+        #
+        # --break-system-packages alone still wasn't enough — confirmed
+        # live: it got past PEP 668 only to hit a second, unrelated
+        # failure — "Cannot uninstall typing_extensions 4.10.0, RECORD
+        # file not found. Hint: The package was installed by debian."
+        # grpcio-tools pulls in typing_extensions as a dependency, and
+        # ubuntu-latest's image already has an apt/dpkg-installed copy
+        # with no pip-readable RECORD metadata, so pip refuses to
+        # uninstall it to upgrade. --ignore-installed is the standard fix
+        # for exactly this shape of error: it tells pip to shadow the
+        # existing install with its own instead of trying to remove it
+        # first.
+        sudo python3 -m pip install --quiet --break-system-packages --ignore-installed grpcio grpcio-tools \
             || skip_test "couldn't install grpcio (no network access to PyPI?) — genuinely can't stand up a fake gRPC device plugin without it"
     fi
 
