@@ -434,6 +434,67 @@ impl CriRuntime {
         let new_backoff = crash_loop_backoff_secs(prev.map(|(_, b)| b), elapsed);
         table.insert(key, (now, new_backoff));
     }
+
+    /// Round 124 (found live in CI): an image-pull failure used to
+    /// propagate as a hard `Err` all the way out of `ensure_pod()`,
+    /// which skips `write_status()` entirely (only the `Ok` branch
+    /// writes) — so the pod's status just froze at whatever it was
+    /// before, forever, with no `ErrImagePull`/`ImagePullBackOff`
+    /// anywhere (those two strings didn't exist in this codebase at
+    /// all). Real kubelet always keeps reporting *something* useful
+    /// here. Same backoff-window shape and same pure
+    /// `crash_loop_backoff_secs`/`_ready` functions as `restart_backoff`
+    /// — a separate table, not reused, so an image-pull backoff and a
+    /// post-start crash-loop backoff never collide on the same key.
+    pub(crate) fn pull_backoff_ready(&self, sandbox_id: &str, container_name: &str) -> bool {
+        let key = restart_count_key(sandbox_id, container_name);
+        let now = now_unix_secs();
+        let table = self.pull_backoff.lock().unwrap();
+        match table.get(&key) {
+            Some((last_attempt_unix, required_backoff_secs, _)) => crash_loop_backoff_ready(Some(*last_attempt_unix), *required_backoff_secs, now),
+            None => true,
+        }
+    }
+
+    /// Record that a pull attempt just failed, computing the backoff
+    /// delay required before the next attempt.
+    pub(crate) fn record_pull_backoff(&self, sandbox_id: &str, container_name: &str) {
+        let key = restart_count_key(sandbox_id, container_name);
+        let now = now_unix_secs();
+        let mut table = self.pull_backoff.lock().unwrap();
+        let prev = table.get(&key).copied();
+        let elapsed = prev.map(|(last, _, _)| now.saturating_sub(last));
+        let new_backoff = crash_loop_backoff_secs(prev.map(|(_, b, _)| b), elapsed);
+        let attempts = prev.map(|(_, _, a)| a).unwrap_or(0) + 1;
+        table.insert(key, (now, new_backoff, attempts));
+    }
+
+    /// The waiting reason to report for a spec container that has no
+    /// real CRI object at all because its image pull is currently
+    /// failing/backing off — `None` if no pull failure is on record.
+    /// Matches real kubelet's own two-phase display: the very first
+    /// failure reports `ErrImagePull`, every one after (once it's
+    /// actually backing off) reports `ImagePullBackOff`. Read by
+    /// `pods.rs`'s status-building to synthesize a placeholder
+    /// `containerStatus` entry a never-created container has no other
+    /// way to get.
+    pub(crate) fn pull_backoff_reason(&self, sandbox_id: &str, container_name: &str) -> Option<&'static str> {
+        let key = restart_count_key(sandbox_id, container_name);
+        let table = self.pull_backoff.lock().unwrap();
+        table.get(&key).map(|(_, _, attempts)| if *attempts <= 1 { "ErrImagePull" } else { "ImagePullBackOff" })
+    }
+
+    /// Clear pull-backoff state — call once a pull actually succeeds (or
+    /// the sandbox is gone for good), same lifecycle as
+    /// `clear_restart_backoff()`.
+    pub(crate) fn clear_pull_backoff_for(&self, sandbox_id: &str, container_name: &str) {
+        self.pull_backoff.lock().unwrap().remove(&restart_count_key(sandbox_id, container_name));
+    }
+
+    pub(crate) fn clear_pull_backoff(&self, sandbox_id: &str) {
+        let prefix = format!("{sandbox_id}/");
+        self.pull_backoff.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));
+    }
 }
 
 

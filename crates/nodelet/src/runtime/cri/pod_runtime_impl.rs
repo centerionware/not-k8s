@@ -68,6 +68,7 @@ impl PodRuntime for CriRuntime {
                 self.sidecar_names.lock().unwrap().remove(&stale_id);
                 self.clear_restart_counts(&stale_id);
                 self.clear_restart_backoff(&stale_id);
+                self.clear_pull_backoff(&stale_id);
                 self.clear_last_terminated(&stale_id);
                 self.release_sandbox_devices(&stale_id).await;
                 self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone(), privileged).await.context("RunPodSandbox")?
@@ -239,7 +240,32 @@ impl PodRuntime for CriRuntime {
             }
         }
 
-        self.build_status(&sandbox_id, &id.uid, &restart_policy).await
+        let mut status = self.build_status(&sandbox_id, &id.uid, &restart_policy).await?;
+        // Round 124 (found live in CI): a container whose image pull is
+        // failing has no real CRI object at all (CreateContainer never
+        // ran), so build_status() above — which only ever looks at what
+        // CRI actually knows about — has no way to include it. Add a
+        // placeholder here, where the pod spec is available, for any
+        // spec container missing from what CRI returned but with a pull
+        // failure on record; everything else about it (never running,
+        // no restarts, no resources) is exactly what a container that's
+        // never been created should report.
+        if let Some(spec) = pod.spec.as_ref() {
+            for c in &spec.containers {
+                if status.containers.iter().any(|rc| rc.name == c.name) {
+                    continue;
+                }
+                if let Some(reason) = self.pull_backoff_reason(&sandbox_id, &c.name) {
+                    status.containers.push(crate::runtime::ContainerRuntimeStatus {
+                        name: c.name.clone(),
+                        image: c.image.clone().unwrap_or_default(),
+                        waiting_reason_override: Some(reason.to_string()),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        Ok(status)
     }
 
     async fn remove_pod(&self, pod: &Pod) -> Result<()> {
@@ -263,6 +289,7 @@ impl PodRuntime for CriRuntime {
             self.sidecar_names.lock().unwrap().remove(&sandbox_id);
             self.clear_restart_counts(&sandbox_id);
             self.clear_restart_backoff(&sandbox_id);
+            self.clear_pull_backoff(&sandbox_id);
             self.clear_last_terminated(&sandbox_id);
             self.release_sandbox_devices(&sandbox_id).await;
         }

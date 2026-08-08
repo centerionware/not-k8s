@@ -271,13 +271,42 @@ impl CriRuntime {
             _ => !already_present, // IfNotPresent
         };
         if need_pull {
-            img.pull_image(PullImageRequest {
-                image: Some(image_spec.clone()),
-                auth,
-                sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new(), None, false)),
-            })
-            .await
-            .context("pulling image")?;
+            // Round 124 (found live in CI): a pull failure used to bail
+            // out of ensure_container() with a hard Err via `?`, which
+            // propagates all the way out of ensure_pod() — skipping
+            // write_status() entirely (only its Ok branch writes), so the
+            // pod's status just froze forever with no
+            // ErrImagePull/ImagePullBackOff anywhere, no matter how long
+            // a caller waited for one. Scoped to App containers only
+            // (Init/Ephemeral keep the old hard-fail behavior — Init has
+            // its own, more precise InitProgress::Failed path upstream of
+            // this call; a failed Ephemeral debug container is already
+            // best-effort at its own call site) — catch it here instead,
+            // record backoff, and let ensure_pod() (pod_runtime_impl.rs)
+            // read pull_backoff_reason() to synthesize the placeholder
+            // containerStatus entry a container that's never actually
+            // been created has no other way to get.
+            if kind == ContainerKind::App && !self.pull_backoff_ready(sandbox_id, &container.name) {
+                return Ok(());
+            }
+            if let Err(e) = img
+                .pull_image(PullImageRequest {
+                    image: Some(image_spec.clone()),
+                    auth,
+                    sandbox_config: Some(sandbox_config(id, None, &id.name, &HashMap::new(), None, false)),
+                })
+                .await
+            {
+                if kind == ContainerKind::App {
+                    self.record_pull_backoff(sandbox_id, &container.name);
+                    warn!(container = %container.name, error = ?e, "pulling image failed; container will report ErrImagePull/ImagePullBackOff until a future retry succeeds");
+                    return Ok(());
+                }
+                return Err(e).context("pulling image");
+            }
+        }
+        if kind == ContainerKind::App {
+            self.clear_pull_backoff_for(sandbox_id, &container.name);
         }
 
         // Round 88: this pod's own userns range, if it has one — the same

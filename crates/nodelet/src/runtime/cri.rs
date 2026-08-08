@@ -318,6 +318,18 @@ pub struct CriRuntime {
     /// `container_state.rs`'s `crash_loop_backoff_secs()`/
     /// `crash_loop_backoff_ready()`.
     restart_backoff: Mutex<HashMap<String, (u64, u64)>>,
+    /// `"sandbox_id/container_name" -> (unix seconds of the last failed
+    /// pull attempt, the backoff delay in seconds required before the
+    /// next one, cumulative failed-attempt count)` — round 124 (found
+    /// live in CI): a separate table from `restart_backoff` above so an
+    /// image-pull backoff (before the container has ever existed at all)
+    /// and a post-start crash-loop backoff never collide on the same
+    /// key. The attempt count (not just presence/absence) is what lets
+    /// `pull_backoff_reason()` distinguish the first failure
+    /// (`ErrImagePull`, matching real kubelet) from every one after
+    /// (`ImagePullBackOff`). See `container_state.rs`'s
+    /// `pull_backoff_ready()`/`record_pull_backoff()`.
+    pull_backoff: Mutex<HashMap<String, (u64, u64, u32)>>,
     /// `"sandbox_id/container_name" -> the previous container instance's
     /// terminated details`, captured right before that instance is
     /// removed to make way for a fresh one (round 75; found in round
@@ -576,6 +588,7 @@ impl CriRuntime {
             recursive_read_only_handlers,
             restart_counts: Mutex::new(HashMap::new()),
             restart_backoff: Mutex::new(HashMap::new()),
+            pull_backoff: Mutex::new(HashMap::new()),
             last_terminated: Mutex::new(HashMap::new()),
             csi,
             device_plugins,

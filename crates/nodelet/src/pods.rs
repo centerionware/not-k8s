@@ -950,10 +950,23 @@ async fn next_event(events: &mut Option<UnboundedReceiver<String>>) -> String {
 /// external resource this pod needs isn't ready yet"), not just the CSI
 /// case that motivated it first.
 fn is_waiting_for_external_resource(status: &RuntimeStatus) -> bool {
-    status.phase == Phase::Pending
-        && status.message.as_deref().is_some_and(|m| {
-            m.starts_with("waiting for CSI volume(s) to be mounted") || m.starts_with("waiting for device plugin resource(s) to be available")
-        })
+    if status.phase != Phase::Pending {
+        return false;
+    }
+    if status.message.as_deref().is_some_and(|m| {
+        m.starts_with("waiting for CSI volume(s) to be mounted") || m.starts_with("waiting for device plugin resource(s) to be available")
+    }) {
+        return true;
+    }
+    // Round 124 (found live in CI): an ErrImagePull/ImagePullBackOff
+    // container (see ensure_pod()'s post-build_status() synthesis in
+    // pod_runtime_impl.rs) has no real CRI object and touches nothing on
+    // the Pod object itself —
+    // same "nothing else will ever retry this" shape as the CSI/device-
+    // plugin cases above, so it needs the same explicit chain onto
+    // schedule_retry() or a pull that starts succeeding again (once its
+    // backoff window elapses) would never actually get retried.
+    status.containers.iter().any(|c| matches!(c.waiting_reason_override.as_deref(), Some("ErrImagePull") | Some("ImagePullBackOff")))
 }
 
 fn key_parts(pod: &Pod) -> Option<(String, String)> {
