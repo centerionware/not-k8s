@@ -38,5 +38,5 @@ test_dynamic_csi_registration_actually_registered_the_driver() {
     assert_contains "$drivers" "$TEST_CSI_INLINE_DRIVER" "CSINode.spec.drivers should list $TEST_CSI_INLINE_DRIVER — proof plugin_registry.rs's GetInfo/NotifyRegistrationStatus handshake actually completed for a real driver, not just that the registry directory exists"
 }
 
-register_test test_plugin_registry_directory_exists
-register_test test_dynamic_csi_registration_actually_registered_the_driver
+register_test test_plugin_registry_directory_exists csi_dra
+register_test test_dynamic_csi_registration_actually_registered_the_driver csi_dra

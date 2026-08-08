@@ -66,4 +66,4 @@ EOF
     delete_pod_and_pvc "$name" "$claim"
 }
 
-register_test test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
+register_test test_pod_with_an_attach_required_pvc_waits_for_volumeattachment csi_dra

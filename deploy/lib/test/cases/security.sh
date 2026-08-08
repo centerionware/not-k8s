@@ -640,6 +640,14 @@ test_supplemental_groups_policy_strict_ignores_image_group_membership() {
     # spec.containers[0].securityContext.supplementalGroups"). One pod
     # can only ever have ONE policy, so proving both Merge and Strict
     # now needs two separate pods, not two containers in one.
+    #
+    # Also round 124: the original version wrote `id -G` into a shared
+    # emptyDir and read it back off the host, same trick this whole file
+    # otherwise uses — but (as test_run_as_user_is_applied's own doc
+    # comment already explains) a plain runAsUser with no fsGroup set
+    # genuinely can't write to a root-owned emptyDir on real kubelet
+    # either. Switched to kctl exec instead, the same fix
+    # test_run_as_user_is_applied already uses for exactly this reason.
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="sgp"
     kctl create configmap "$name-etc" \
@@ -647,7 +655,7 @@ test_supplemental_groups_policy_strict_ignores_image_group_membership() {
         --from-literal=group="$(printf 'testgroup:x:3000:\nimagegroup:x:4000:testuser\n')" \
         >/dev/null
 
-    sgp_pod_spec() { # sgp_pod_spec <name> <policy> <check-file>
+    sgp_pod_spec() { # sgp_pod_spec <name> <policy>
         cat <<EOF
 apiVersion: v1
 kind: Pod
@@ -660,25 +668,22 @@ spec:
     supplementalGroups: [5000]
     supplementalGroupsPolicy: $2
   volumes:
-    - name: shared
-      emptyDir: {}
     - name: etc-override
       configMap:
         name: $name-etc
   containers:
     - name: app
       image: $TEST_IMAGE
-      command: ["sh", "-c", "id -G > /shared/$3; sleep 3600"]
+      command: ["sleep", "3600"]
       volumeMounts:
-        - {name: shared, mountPath: /shared}
         - {name: etc-override, mountPath: /etc/passwd, subPath: passwd}
         - {name: etc-override, mountPath: /etc/group, subPath: group}
 EOF
     }
 
     local merge_name="$name-merge" strict_name="$name-strict"
-    apply_manifest <<< "$(sgp_pod_spec "$merge_name" Merge merge.txt)"
-    apply_manifest <<< "$(sgp_pod_spec "$strict_name" Strict strict.txt)"
+    apply_manifest <<< "$(sgp_pod_spec "$merge_name" Merge)"
+    apply_manifest <<< "$(sgp_pod_spec "$strict_name" Strict)"
 
     sgp_cleanup() {
         delete_pod_if_exists "$merge_name"
@@ -696,8 +701,8 @@ EOF
     fi
 
     local merge_groups strict_groups
-    merge_groups="$(wait_for_check_file "$merge_name" shared merge.txt 30)"
-    strict_groups="$(wait_for_check_file "$strict_name" shared strict.txt 20)"
+    merge_groups="$(kctl exec "$merge_name" -- id -G)"
+    strict_groups="$(kctl exec "$strict_name" -- id -G)"
     sgp_cleanup
 
     assert_contains "$merge_groups" "4000" "supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership"

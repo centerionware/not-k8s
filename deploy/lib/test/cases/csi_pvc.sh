@@ -439,8 +439,8 @@ EOF
     assert_eq "$gid" "4322" "the second pod reusing the same PVC should still see fsGroup 4322 on /data, whether OnRootMismatch skipped the chown or not"
 }
 
-register_test test_pod_mounts_a_persistent_volume_claim
-register_test test_csi_ephemeral_inline_volume_is_mounted
-register_test test_pod_uses_a_raw_block_volume
-register_test test_node_reports_volumes_in_use_for_a_csi_volume
-register_test test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
+register_test test_pod_mounts_a_persistent_volume_claim csi_dra
+register_test test_csi_ephemeral_inline_volume_is_mounted csi_dra
+register_test test_pod_uses_a_raw_block_volume csi_dra
+register_test test_node_reports_volumes_in_use_for_a_csi_volume csi_dra
+register_test test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown csi_dra

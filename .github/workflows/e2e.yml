@@ -39,6 +39,11 @@ jobs:
           NOTK8S_BUILD_PROFILE: debug
         run: sudo -E ./deploy/bootstrap-source.sh --with-cri
 
+      - name: Install misc e2e prerequisites (hugepages, grpcurl)
+        # Round 124: split out of e2e-full-setup.sh — these aren't
+        # CSI/DRA-gated at all (see e2e-misc-prereqs.sh's own header).
+        run: sudo -E bash deploy/lib/e2e-misc-prereqs.sh
+
       - name: Install reference CSI + DRA drivers
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml

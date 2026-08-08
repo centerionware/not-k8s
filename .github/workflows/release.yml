@@ -75,12 +75,33 @@ jobs:
   # per-shard fixed overhead — more shards keeps shrinking each one's own
   # test slice while that fixed cost stays constant, so returns taper off
   # well before "one shard per test" would.
+  #
+  # needs_drivers: true only for shards 1-2 — MUST match harness.sh's own
+  # NUM_DRIVER_SHARDS constant exactly (not wired together automatically).
+  # register_test's csi_dra tag (harness.sh) is round-robined only across
+  # those first NUM_DRIVER_SHARDS shard indices instead of all 5, so
+  # shards 3-5 never draw a CSI/DRA-dependent test at all and can skip
+  # installing the reference drivers entirely — confirmed live this
+  # matters: plain round-robin of all ~151 tests across all 5 shards
+  # scattered even the small csi_dra set (12 tests) so thinly that every
+  # single shard drew at least one, making a naive "skip if this shard
+  # doesn't need it" check save nothing.
   e2e:
     needs: build-and-test
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        include:
+          - shard: 1
+            needs_drivers: true
+          - shard: 2
+            needs_drivers: true
+          - shard: 3
+            needs_drivers: false
+          - shard: 4
+            needs_drivers: false
+          - shard: 5
+            needs_drivers: false
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -101,11 +122,25 @@ jobs:
           chmod +x "$NOTK8S_NODELET_PREBUILT"
           sudo -E ./deploy/bootstrap-source.sh --with-cri
 
+      - name: Make the kubeconfig readable
+        # Split out from "Install reference CSI + DRA drivers" (round
+        # 124) — that step is now conditional on matrix.needs_drivers,
+        # but EVERY shard's own test-run step still needs this
+        # regardless of whether it installs the reference drivers.
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+        run: sudo chmod 644 "$KUBECONFIG"
+
+      - name: Install misc e2e prerequisites (hugepages, grpcurl)
+        # Every shard, regardless of matrix.needs_drivers — these aren't
+        # CSI/DRA-gated at all (see e2e-misc-prereqs.sh's own header).
+        run: sudo -E bash deploy/lib/e2e-misc-prereqs.sh
+
       - name: Install reference CSI + DRA drivers
+        if: matrix.needs_drivers
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
-          sudo chmod 644 "$KUBECONFIG"
           # A real containerd/nodelet on a healthy runner brings the
           # reference drivers up in well under a minute (round 121's own
           # live verification took well under that) — 3 minutes is a

@@ -4,13 +4,14 @@
 # tests: kubernetes-csi/csi-driver-host-path (the reference CSI driver
 # real Kubernetes e2e/conformance tests use — round 117-120's own
 # verification used this) and kubernetes-sigs/dra-example-driver (DRA's
-# equivalent reference driver — round 121's verification used this). Also
-# reserves a small real hugepage pool (round 123) — node_status.sh's,
-# resources.sh's, and volumes.sh's own hugepages tests all skip cleanly
-# without one, since /proc/sys/vm/nr_hugepages == 0 is genuinely outside
-# nodelet's control and can't be assumed present anywhere this suite runs
-# — but a GitHub Actions runner specifically always can reserve one, so
-# CI doesn't need to skip.
+# equivalent reference driver — round 121's verification used this).
+#
+# Round 124: hugepages reservation + grpcurl install moved OUT to their
+# own e2e-misc-prereqs.sh — those aren't CSI/DRA-gated at all, and this
+# script only runs on the (now not all) e2e shards that draw a
+# csi_dra-tagged test (harness.sh's NUM_DRIVER_SHARDS); bundling
+# unrelated prerequisites in here would have silently skipped the
+# hugepages/PodResources tests on every shard that doesn't.
 #
 # Deliberately fetches each driver's real upstream deploy tooling instead
 # of hand-reconstructing manifests: round 121 found a hand-reconstructed
@@ -31,32 +32,6 @@ WORK_DIR="${E2E_SETUP_WORK_DIR:-$(mktemp -d)}"
 NODELET_DATA_DIR="${NODELET_DATA_DIR:-/var/lib/nodelet}"
 
 log() { echo "==> $*"; }
-
-# ── hugepages: reserve a small real pool ────────────────────────────────
-# 64 * 2Mi = 128Mi, small and safe on any GitHub-hosted runner's real RAM
-# (several GB) — just enough for a test pod to request a couple of pages.
-# Idempotent: re-running with the same count is a no-op if already
-# reserved; harmless (just re-asserts the same value) if run again.
-if [[ "$(cat /proc/sys/vm/nr_hugepages 2>/dev/null || echo 0)" -eq 0 ]]; then
-    log "reserving a small hugepage pool (64 * 2Mi) for hugepages-dependent e2e tests..."
-    echo 64 | sudo tee /proc/sys/vm/nr_hugepages >/dev/null || log "couldn't reserve hugepages (not fatal — hugepages-dependent tests will just skip)"
-fi
-
-# ── grpcurl: the gRPC client pod_resources.sh's real query test needs ──────
-if ! command -v grpcurl &>/dev/null; then
-    log "installing grpcurl..."
-    GRPCURL_VERSION="1.9.1"
-    ARCH_RAW="$(uname -m)"
-    case "$ARCH_RAW" in
-        x86_64) GRPCURL_ARCH=x86_64 ;;
-        aarch64) GRPCURL_ARCH=arm64 ;;
-        armv7l) GRPCURL_ARCH=armv7 ;;
-        *) echo "unsupported arch for grpcurl install: $ARCH_RAW" >&2; exit 1 ;;
-    esac
-    curl -fsSL "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_${GRPCURL_ARCH}.tar.gz" -o "$WORK_DIR/grpcurl.tar.gz"
-    tar -xzf "$WORK_DIR/grpcurl.tar.gz" -C "$WORK_DIR" grpcurl
-    sudo install -m 0755 "$WORK_DIR/grpcurl" /usr/local/bin/grpcurl
-fi
 
 # ── helm ─────────────────────────────────────────────────────────────────
 if ! command -v helm &>/dev/null; then

@@ -12,14 +12,40 @@ TESTS_PASSED=0
 TESTS_FAILED=0
 TESTS_SKIPPED=0
 FAILED_TEST_NAMES=()
+# Round 124: explicit, at-registration-time infrastructure requirements —
+# deliberately NOT the same mechanism as _reorder_env_reconfiguring_tests_
+# last()'s auto-detection below. That one stays auto-detected on purpose
+# (see its own doc comment: a hand-maintained list/tag there would silently
+# stop protecting a new restart-heavy test the moment someone forgot to tag
+# it). csi_dra is different in kind, not just degree — it answers "does
+# the shard running this test need extra infrastructure installed before
+# any test in it can run", a real per-shard setup-cost question with no
+# auto-detectable signal in the test's own body the way a restart call has
+# (a test needing TEST_CSI_STORAGE_CLASS to be set is often gated by a
+# plain `if [[ -z "$TEST_CSI_..." ]]; then skip_test` that no regex could
+# reliably distinguish from a hundred other env-var-gated skips in this
+# suite that need nothing special).
+declare -A TEST_NEEDS_CSI_DRA=()
 
-# register_test <function-name> — call once per test_* function, in the
-# order you want them to run. Order matters a little (cheap/foundational
-# tests first is a better failure signal than an expensive one failing
-# first and hiding a simpler break), but nothing here depends on a specific
-# order being correct.
+# register_test <function-name> [csi_dra] — call once per test_* function,
+# in the order you want them to run. Order matters a little (cheap/
+# foundational tests first is a better failure signal than an expensive
+# one failing first and hiding a simpler break), but nothing here depends
+# on a specific order being correct. The optional csi_dra tag marks a test
+# as needing the real CSI/DRA reference drivers (e2e-full-setup.sh)
+# installed — see _cluster_csi_dra_tests_onto_driver_shards()'s own doc
+# comment for what this drives.
 register_test() {
-    TESTS_REGISTERED+=("$1")
+    local name="$1"
+    shift
+    TESTS_REGISTERED+=("$name")
+    local tag
+    for tag in "$@"; do
+        case "$tag" in
+            csi_dra) TEST_NEEDS_CSI_DRA["$name"]=1 ;;
+            *) echo "register_test: unknown tag '$tag' for $name" >&2; exit 1 ;;
+        esac
+    done
 }
 
 # skip_test <reason> — call from inside a test_* function to bail out
@@ -90,26 +116,60 @@ _reorder_env_reconfiguring_tests_last() {
     TESTS_REGISTERED=("${normal[@]}" "${deferred[@]}")
 }
 
-# _filter_shard <index> <total> — keep only every <total>th registered test,
-# starting at <index> (1-based), round-robin over TESTS_REGISTERED's
-# existing (deterministic — same case files, same source order every run)
-# order. Round 124: splits one long serial e2e run across up to 5 parallel
-# CI runners (test-e2e.sh's own --shard=N/M flag, wired from e2e.yml's
-# matrix), each bringing up its own independent cluster — this only
-# selects WHICH of the already-registered tests this process runs, nothing
-# about how each one runs. Round-robin (not a contiguous chunk per shard)
-# on purpose: consecutive tests in one case file tend to be related/similar
-# in cost and infra needs (all the CSI tests, all the eviction tests, ...),
-# so a contiguous split would risk one shard getting disproportionately
-# slow/flaky tests while another gets all the fast ones; interleaving
-# spreads that variance evenly instead.
+# Round 124: how many of the shards actually install the real CSI/DRA
+# reference drivers (e2e-full-setup.sh). Fixed and small on purpose, NOT
+# "however many shards happen to draw a csi_dra test" — plain round-robin
+# across all shards was tried first and confirmed live to scatter even a
+# small csi_dra set (12 of 151 tests) across literally every shard, since
+# they're spread too thin to avoid it. Keeping this fixed is what makes
+# skipping driver setup on the other shards possible at all. e2e.yml's own
+# matrix must match this exactly (needs_drivers: true only for shard
+# indices <= this) — the two aren't wired together automatically, so a
+# change here needs the matrix updated too.
+NUM_DRIVER_SHARDS=2
+
+# _filter_shard <index> <total> — keep only this shard's slice of
+# TESTS_REGISTERED. Round 124: splits one long serial e2e run across up to
+# 5 parallel CI runners (test-e2e.sh's own --shard=N/M flag, wired from
+# e2e.yml's matrix), each bringing up its own independent cluster — this
+# only selects WHICH of the already-registered tests this process runs,
+# nothing about how each one runs.
+#
+# csi_dra-tagged tests (register_test's own tag, TEST_NEEDS_CSI_DRA) are
+# round-robined ONLY across the first NUM_DRIVER_SHARDS shard indices,
+# separately from everything else — see that constant's own comment for
+# why. Every other registered test round-robins across all <total> shards,
+# same as before this split existed. Round-robin (not a contiguous chunk
+# per shard) within each group on purpose: consecutive tests in one case
+# file tend to be related/similar in cost (all the eviction tests, all the
+# hostUsers tests, ...), so a contiguous split would risk one shard
+# getting disproportionately slow/flaky tests while another gets all the
+# fast ones; interleaving spreads that variance evenly instead.
 _filter_shard() {
     local index="$1" total="$2"
+    local -a driver_tests=() other_tests=()
+    local name
+    for name in "${TESTS_REGISTERED[@]}"; do
+        if [[ -n "${TEST_NEEDS_CSI_DRA[$name]:-}" ]]; then
+            driver_tests+=("$name")
+        else
+            other_tests+=("$name")
+        fi
+    done
+
     local -a kept=()
     local i
-    for i in "${!TESTS_REGISTERED[@]}"; do
+    if (( index <= NUM_DRIVER_SHARDS )); then
+        local driver_total=$(( total < NUM_DRIVER_SHARDS ? total : NUM_DRIVER_SHARDS ))
+        for i in "${!driver_tests[@]}"; do
+            if (( i % driver_total == index - 1 )); then
+                kept+=("${driver_tests[$i]}")
+            fi
+        done
+    fi
+    for i in "${!other_tests[@]}"; do
         if (( i % total == index - 1 )); then
-            kept+=("${TESTS_REGISTERED[$i]}")
+            kept+=("${other_tests[$i]}")
         fi
     done
     TESTS_REGISTERED=("${kept[@]}")

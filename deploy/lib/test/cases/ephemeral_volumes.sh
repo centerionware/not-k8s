@@ -79,4 +79,4 @@ EOF
     delete_pod_and_pvc "$name" "$expected_claim"
 }
 
-register_test test_pod_mounts_a_generic_ephemeral_volume
+register_test test_pod_mounts_a_generic_ephemeral_volume csi_dra

@@ -116,6 +116,6 @@ EOF
     kctl delete resourceclaimtemplate "$template" --ignore-not-found >/dev/null 2>&1
 }
 
-register_test test_plugin_registry_watches_for_dra_drivers_too
-register_test test_resource_api_group_is_enabled
-register_test test_dra_claim_is_allocated_and_reserved_for_the_pod
+register_test test_plugin_registry_watches_for_dra_drivers_too csi_dra
+register_test test_resource_api_group_is_enabled csi_dra
+register_test test_dra_claim_is_allocated_and_reserved_for_the_pod csi_dra
