@@ -90,39 +90,81 @@ echo ""
 
 CLK_TCK="$(getconf CLK_TCK)"
 
-# ── perf availability (best-effort hardware cycles/instructions) ────────────
+# ── Test hardware, for context on every report this feeds ───────────────────
+# Round 124: results are only meaningful relative to the specific hardware
+# they ran on (GitHub-hosted runners aren't a fixed spec -- Azure picks
+# whatever's available in a pool at dispatch time), so record it rather
+# than leaving a reader to assume/guess. x86 cpuinfo has "model name";
+# ARM's doesn't, usually just "Model" (the board) or numeric "CPU part" --
+# tried in that order, falling back to "unknown" rather than a guess.
+CPU_ARCH="$(uname -m)"
+CPU_CORES="$(nproc 2>/dev/null || echo "?")"
+CPU_MODEL="$(awk -F': *' '/^model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null)"
+[[ -n "$CPU_MODEL" ]] || CPU_MODEL="$(awk -F': *' '/^Model/ {print $2; exit}' /proc/cpuinfo 2>/dev/null)"
+[[ -n "$CPU_MODEL" ]] || CPU_MODEL="unknown"
+echo "==> Test hardware: arch=$CPU_ARCH cores=$CPU_CORES model=\"$CPU_MODEL\""
+echo ""
 
+# ── perf availability (best-effort hardware cycles/instructions, plus a
+# software task-clock reading that works even when hardware counters
+# don't) ─────────────────────────────────────────────────────────────────
+#
+# Round 124 (found live on a real GitHub Actions runner, not just
+# theorized): the original check here tested `task-clock` -- a *software*
+# event the kernel always tracks itself, so it succeeds regardless of
+# whether real hardware performance counters are actually reachable. That
+# made PERF_OK misleadingly report "available" even on runners where
+# `cycles`/`instructions` (real hardware PMU events) then silently came
+# back empty every time -- confirmed for real: GitHub's hosted
+# ubuntu-latest runners are virtualized (Azure), and the hypervisor
+# doesn't expose real hardware PMU registers to the guest for
+# attach-to-PID profiling at all, root or not. That's a genuine
+# infrastructure ceiling, not something fixable by better scripting here.
+# Response: request task-clock *alongside* cycles/instructions in the
+# same perf stat call -- task-clock gives sub-millisecond-precision CPU
+# time even when the hardware events don't report anything, so it's
+# always worth asking for regardless of what PERF_OK below (now testing
+# the actual hardware event, not the software one) says about hardware
+# counters specifically.
 PERF_OK=false
-if command -v perf >/dev/null 2>&1 && perf stat -e task-clock -- true >/dev/null 2>&1; then
+if command -v perf >/dev/null 2>&1 && perf stat -e cycles -- true >/dev/null 2>&1; then
     PERF_OK=true
 fi
+PERF_INSTALLED=false
+command -v perf >/dev/null 2>&1 && PERF_INSTALLED=true
 
 # perf's per-second interval mode (-I) exists, but folding its output back
 # onto a per-second RSS/CPU% row by timestamp turned out to be exactly the
 # kind of fragile text-join that's easy to get subtly wrong (found live
 # testing this script locally: it silently truncated both timeseries CSVs
 # to empty). A single whole-window aggregate read is simpler, robust, and
-# still gives real cycles/instructions/IPC numbers -- just as a summary
-# total rather than its own time series.
+# still gives real cycles/instructions/task-clock numbers -- just as a
+# summary total rather than its own time series.
 K3S_PERF_RAW="$OUT_DIR/.k3s-perf-raw.txt"
 NODELET_PERF_RAW="$OUT_DIR/.nodelet-perf-raw.txt"
 K3S_PERF_BGPID=""
 NODELET_PERF_BGPID=""
 
-if $PERF_OK; then
-    echo "==> perf available; sampling hardware cycles/instructions (whole-window aggregate), concurrently with the per-second RSS/CPU loop below"
+if $PERF_INSTALLED; then
+    if $PERF_OK; then
+        echo "==> perf available with real hardware counters; sampling cycles/instructions/task-clock (whole-window aggregate), concurrently with the per-second RSS/CPU loop below"
+    else
+        echo "==> perf is installed but hardware performance counters aren't reachable on this runner"
+        echo "    (confirmed common on virtualized cloud runners -- the hypervisor doesn't expose the"
+        echo "    PMU to the guest at all, root or not); still sampling task-clock, a software event"
+        echo "    that gives sub-millisecond-precision CPU time regardless."
+    fi
     if [[ -n "$K3S_PID" ]]; then
-        perf stat -e cycles,instructions -p "$K3S_PID" -o "$K3S_PERF_RAW" -- sleep "$SAMPLE_SECS" 2>/dev/null &
+        perf stat -e cycles,instructions,task-clock -p "$K3S_PID" -o "$K3S_PERF_RAW" -- sleep "$SAMPLE_SECS" 2>/dev/null &
         K3S_PERF_BGPID=$!
     fi
     if [[ -n "$NODELET_PID" ]]; then
-        perf stat -e cycles,instructions -p "$NODELET_PID" -o "$NODELET_PERF_RAW" -- sleep "$SAMPLE_SECS" 2>/dev/null &
+        perf stat -e cycles,instructions,task-clock -p "$NODELET_PID" -o "$NODELET_PERF_RAW" -- sleep "$SAMPLE_SECS" 2>/dev/null &
         NODELET_PERF_BGPID=$!
     fi
 else
-    echo "==> perf unavailable or blocked (not installed, or perf_event access restricted -- common on"
-    echo "    virtualized cloud runners where the hypervisor doesn't expose the PMU to the guest);"
-    echo "    cycles/instructions will be omitted, CPU%/RSS remain the primary metrics."
+    echo "==> perf not installed; cycles/instructions/task-clock will be omitted, CPU-seconds (from /proc, ~10ms"
+    echo "    resolution) and RSS remain the primary metrics."
 fi
 echo ""
 echo "==> sampling RSS + CPU% every 1s for ${SAMPLE_SECS}s..."
@@ -195,6 +237,26 @@ K3S_CYCLES="$(parse_perf_value "$K3S_PERF_RAW" 'cycles')"
 K3S_INSTRUCTIONS="$(parse_perf_value "$K3S_PERF_RAW" 'instructions')"
 NODELET_CYCLES="$(parse_perf_value "$NODELET_PERF_RAW" 'cycles')"
 NODELET_INSTRUCTIONS="$(parse_perf_value "$NODELET_PERF_RAW" 'instructions')"
+
+# task-clock is a software event (always available, even when hardware
+# cycles/instructions aren't -- see the perf section above) reported in
+# milliseconds with real decimal precision, unlike parse_perf_value's
+# integer-only cycles/instructions parsing. Sub-millisecond CPU time, vs.
+# the ~10ms resolution the /proc-tick-based CPU_SECONDS below is limited
+# to by CLK_TCK -- preferred whenever perf actually captured it.
+parse_perf_task_clock_ms() {
+    local file="$1"
+    [[ -s "$file" ]] || { echo ""; return; }
+    awk '
+        /task-clock/ {
+            val = $1
+            gsub(",", "", val)
+            if (val ~ /^[0-9]+(\.[0-9]+)?$/) { print val; exit }
+        }
+    ' "$file"
+}
+K3S_TASK_CLOCK_MS="$(parse_perf_task_clock_ms "$K3S_PERF_RAW")"
+NODELET_TASK_CLOCK_MS="$(parse_perf_task_clock_ms "$NODELET_PERF_RAW")"
 rm -f "$K3S_PERF_RAW" "$NODELET_PERF_RAW"
 
 # ── Summary stats derived from the time series ───────────────────────────────
@@ -209,8 +271,23 @@ NODELET_CPU_AVG="$(summarize_cpu_avg "$NODELET_TS")"
 
 K3S_RSS_MB="$(awk -v kb="$k3s_rss_peak_kb" 'BEGIN { printf "%.1f", kb / 1024 }')"
 NODELET_RSS_MB="$(awk -v kb="$nodelet_rss_peak_kb" 'BEGIN { printf "%.1f", kb / 1024 }')"
-K3S_CPU_SECONDS="$(awk -v t="$k3s_ticks_total" -v c="$CLK_TCK" 'BEGIN { printf "%.3f", t / c }')"
-NODELET_CPU_SECONDS="$(awk -v t="$nodelet_ticks_total" -v c="$CLK_TCK" 'BEGIN { printf "%.3f", t / c }')"
+
+# CPU-seconds: prefer perf's task-clock (sub-millisecond precision) when
+# it actually reported one; fall back to the /proc-tick delta (~10ms
+# resolution, CLK_TCK-limited) otherwise. Track which source won so the
+# report can say so honestly rather than implying uniform precision.
+cpu_seconds_from_ticks_or_task_clock() {
+    local ticks_total="$1" task_clock_ms="$2"
+    if [[ -n "$task_clock_ms" ]]; then
+        awk -v ms="$task_clock_ms" 'BEGIN { printf "%.6f", ms / 1000 }'
+    else
+        awk -v t="$ticks_total" -v c="$CLK_TCK" 'BEGIN { printf "%.3f", t / c }'
+    fi
+}
+K3S_CPU_SECONDS="$(cpu_seconds_from_ticks_or_task_clock "$k3s_ticks_total" "$K3S_TASK_CLOCK_MS")"
+NODELET_CPU_SECONDS="$(cpu_seconds_from_ticks_or_task_clock "$nodelet_ticks_total" "$NODELET_TASK_CLOCK_MS")"
+K3S_CPU_SECONDS_SOURCE="$([[ -n "$K3S_TASK_CLOCK_MS" ]] && echo "perf-task-clock" || echo "proc-ticks")"
+NODELET_CPU_SECONDS_SOURCE="$([[ -n "$NODELET_TASK_CLOCK_MS" ]] && echo "perf-task-clock" || echo "proc-ticks")"
 
 calc_ipc() {
     [[ -n "$1" && -n "$2" && "$2" != "0" ]] || { echo ""; return; }
@@ -241,8 +318,10 @@ fmt_or_na() { [[ -n "$1" ]] && echo "$1" || echo "N/A"; }
     printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "────────────────" "──────────" "──────────" "──────────" "──────────────" "──────────────" "────────"
     printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "COMBINED" "${COMBINED_CPU_AVG}%" "$COMBINED_CPU_SECONDS" "$COMBINED_RSS_MB" "$(fmt_or_na "$COMBINED_CYCLES")" "$(fmt_or_na "$COMBINED_INSTRUCTIONS")" "N/A"
     echo ""
+    echo "  test hardware: arch=$CPU_ARCH cores=$CPU_CORES model=\"$CPU_MODEL\""
     echo "  sample window: ${SAMPLE_SECS}s, 1 sample/sec"
-    echo "  perf (hardware cycles/instructions): $($PERF_OK && echo "available" || echo "unavailable")"
+    echo "  perf hardware counters (cycles/instructions): $($PERF_OK && echo "available" || echo "unavailable on this runner")"
+    echo "  CPU-seconds precision: k3s=$K3S_CPU_SECONDS_SOURCE $AGENT_PATTERN=$NODELET_CPU_SECONDS_SOURCE (perf-task-clock = sub-ms via perf; proc-ticks = ~10ms via /proc, whenever perf's task-clock wasn't available)"
     echo ""
     echo "  NOTE: on stock k3s, \"k3s server\" is the entire stack (apiserver + etcd +"
     echo "  controller-manager + scheduler + the embedded kubelet, when the agent isn't"
@@ -256,10 +335,14 @@ machine_block() {
     echo "MEASURE_SAMPLE_SECS=$SAMPLE_SECS"
     echo "MEASURE_PERF_AVAILABLE=$PERF_OK"
     echo "MEASURE_OUT_DIR=$OUT_DIR"
+    echo "MEASURE_CPU_ARCH=$CPU_ARCH"
+    echo "MEASURE_CPU_CORES=$CPU_CORES"
+    echo "MEASURE_CPU_MODEL=$CPU_MODEL"
     echo "MEASURE_K3S_PRESENT=$([[ -n "$K3S_PID" ]] && echo true || echo false)"
     echo "MEASURE_K3S_RSS_MB=$K3S_RSS_MB"
     echo "MEASURE_K3S_CPU_AVG_PCT=$K3S_CPU_AVG"
     echo "MEASURE_K3S_CPU_SECONDS=$K3S_CPU_SECONDS"
+    echo "MEASURE_K3S_CPU_SECONDS_SOURCE=$K3S_CPU_SECONDS_SOURCE"
     echo "MEASURE_K3S_CYCLES=$K3S_CYCLES"
     echo "MEASURE_K3S_INSTRUCTIONS=$K3S_INSTRUCTIONS"
     echo "MEASURE_K3S_IPC=$K3S_IPC"
@@ -267,6 +350,7 @@ machine_block() {
     echo "MEASURE_NODELET_RSS_MB=$NODELET_RSS_MB"
     echo "MEASURE_NODELET_CPU_AVG_PCT=$NODELET_CPU_AVG"
     echo "MEASURE_NODELET_CPU_SECONDS=$NODELET_CPU_SECONDS"
+    echo "MEASURE_NODELET_CPU_SECONDS_SOURCE=$NODELET_CPU_SECONDS_SOURCE"
     echo "MEASURE_NODELET_CYCLES=$NODELET_CYCLES"
     echo "MEASURE_NODELET_INSTRUCTIONS=$NODELET_INSTRUCTIONS"
     echo "MEASURE_NODELET_IPC=$NODELET_IPC"

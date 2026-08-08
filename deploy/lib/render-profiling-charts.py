@@ -162,16 +162,45 @@ def render_stats_table(agents_summaries, out_path):
     Writes a markdown fragment: one aggregated (mean + range) row per
     agent, plus a full per-replicate raw table underneath for anyone who
     wants to see the individual runs behind the aggregate."""
+    # CPU-seconds (real processor time actually consumed) leads as the
+    # primary CPU metric, not avg CPU% -- a percentage over a fixed
+    # window is noisy and easy to round away at near-idle utilization
+    # (this round's whole reason for existing was a published report
+    # that showed 0.00% for *both* agents from exactly that effect).
+    # cycles/instructions would be the truest "real hardware work done"
+    # figure, but are confirmed unavailable on GitHub's own hosted
+    # runners (virtualized, no PMU passthrough to the guest) -- reported
+    # here whenever a runner's perf access actually allows it, N/A
+    # otherwise, never fabricated.
     metrics = [
         ("RSS (MB)", "NODELET_RSS_MB", 1),
-        ("avg CPU %", "NODELET_CPU_AVG_PCT", 2),
         ("CPU-seconds used", "NODELET_CPU_SECONDS", 3),
+        ("avg CPU %", "NODELET_CPU_AVG_PCT", 2),
         ("cycles", "NODELET_CYCLES", 0),
         ("instructions", "NODELET_INSTRUCTIONS", 0),
         ("IPC", "NODELET_IPC", 3),
     ]
 
     lines = []
+
+    # Test hardware, per agent -- GitHub-hosted runners aren't a fixed
+    # spec (Azure picks whatever's available in a pool at dispatch time),
+    # so results are only meaningful relative to what they actually ran
+    # on. Reports every distinct (arch, model, cores) combination seen
+    # across an agent's replicates -- usually identical, but shown
+    # honestly as a set rather than just the first replicate's reading in
+    # case the pool handed out genuinely different hardware.
+    lines.append("**Test hardware:**")
+    lines.append("")
+    for label, summaries in agents_summaries:
+        combos = sorted({
+            (s.get("CPU_ARCH", "?"), s.get("CPU_MODEL", "?"), s.get("CPU_CORES", "?"))
+            for s in summaries
+        })
+        for arch, model, cores in combos:
+            lines.append(f"- **{label}**: {arch}, {cores} cores, `{model}`")
+    lines.append("")
+
     lines.append("| agent | " + " | ".join(m[0] for m in metrics) + " |")
     lines.append("|---|" + "---|" * len(metrics))
     for label, summaries in agents_summaries:
