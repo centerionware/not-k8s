@@ -14,7 +14,7 @@ fn plugins_with(entries: Vec<(&str, Vec<DeviceInfo>)>) -> DevicePlugins {
             },
         );
     }
-    DevicePlugins { plugins: Mutex::new(plugins) }
+    DevicePlugins { plugins: Mutex::new(plugins), owners: Mutex::new(std::collections::HashMap::new()), notify: tokio::sync::mpsc::unbounded_channel().0 }
 }
 
 fn dev(id: &str, healthy: bool) -> DeviceInfo {
