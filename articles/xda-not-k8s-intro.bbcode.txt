@@ -1,47 +1,18 @@
-[HEADING=1]not-k8s: a Kubernetes node agent rewritten in Rust to replace kubelet[/HEADING]
+[HEADING=1]not-k8s: replaced kubelet with a 15MB Rust agent[/HEADING]
 
-Kubelet polls constantly, runs its own cAdvisor loop for container stats, and keeps a pile of watch caches alive the whole time it's idle. On a rack server that overhead disappears into the noise. On a Raspberry Pi or any small edge box, it's a real chunk of the machine's resources gone before a single workload runs.
+Been building this for a while — a real Kubernetes control plane (real apiserver, real scheduler, full kubectl/CRD support) with kubelet swapped out for [B]nodelet[/B], a leaner event-driven agent written in Rust.
 
-[B]not-k8s[/B] keeps a real Kubernetes control plane — real apiserver, real scheduler, full kubectl and CRD support — and replaces just the node agent with [B]nodelet[/B], written in Rust. Kubelet polls for state. Nodelet reacts to events as they happen. Same job, different approach.
-
-[HEADING=2]the benchmark[/HEADING]
-
-Claiming a leaner node agent is easy. Proving it needs an actual test, so here's how it was measured:
+Benchmarked it against a genuine unmodified upstream kubelet, both completely idle, same control plane, six separate runs so I couldn't bias the numbers:
 
 [LIST]
-[*]Install the released nodelet binary, pair it with a stripped-down k3s control plane, let it sit completely idle for two minutes, read real memory and CPU numbers straight out of /proc
-[*]Run the identical test with a genuine, unmodified upstream kubelet binary, pulled from Kubernetes' own release server and version-matched to the k3s build underneath
-[*]Same control plane both times. Same containerd. The node agent is the only variable that changes
-[*]Three runs per agent, six machines running in parallel, so no run could bias the others by reusing already-warmed-up hardware
-[/LIST]
-
-Completely idle, zero workload running, here's what came back:
-
-[LIST]
-[*][B]Memory[/B] — about 15MB for nodelet, about 81MB for kubelet
-[*][B]CPU time over a 2-minute idle window[/B] — about 0.08s for nodelet, about 0.85s for kubelet
+[*][B]Memory[/B] — ~15MB nodelet vs ~81MB kubelet
+[*][B]CPU (2min idle)[/B] — ~0.08s nodelet vs ~0.85s kubelet
 [/LIST]
 
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/rss-over-time.png[/IMG]
 
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/cpu-over-time.png[/IMG]
 
-That's the cost of having the node agent installed, before it's done anything. No pods, no containers doing real work, on either side.
+Full raw data + methodology: [URL]https://github.com/centerionware/not-k8s/blob/profiling-results/latest/README.md[/URL]
 
-[HEADING=2]why this comparison is fair[/HEADING]
-
-A normal k3s install doesn't run kubelet as its own process — it's baked into the same binary as the apiserver, so there's no clean way to isolate "just kubelet" out of a default install. Getting an honest comparison meant standing up a real, standalone kubelet as its own systemd service against the same control plane.
-
-Real hardware CPU cycle counts via perf turned out to be unavailable on GitHub's own CI runners — they're virtualized, with no PMU passthrough to the guest. That column in the report reads N/A rather than a fabricated number.
-
-Every benchmark run publishes its raw per-second CSVs alongside the summary, so the numbers can be checked directly:
-
-[URL]https://github.com/centerionware/not-k8s/blob/profiling-results/latest/README.md[/URL]
-
-[HEADING=2]who this is for[/HEADING]
-
-Small hardware, mainly — anywhere the node agent's own idle cost competes with the workload you actually want to run. The gap doesn't close on bigger machines, it just gets easier to ignore.
-
-The project is still early. There's a running checklist in the repo tracking what's implemented against real kubelet and what isn't, kept honest rather than declared finished.
-
-[B]Repo:[/B] [URL]https://github.com/centerionware/not-k8s[/URL]
+Repo: [URL]https://github.com/centerionware/not-k8s[/URL]
