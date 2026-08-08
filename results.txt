@@ -1,38 +1,17 @@
-commit: fbf642b7da8b786304cb624bc6ac1fd9400227ab
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31242653122
-timestamp (UTC): 2026-08-08T06:01:09Z
-exit code: 1
+commit: c9d872bedce858e38bbafd89dd0f0fca9ccaa90c
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31243071957
+timestamp (UTC): 2026-08-08T06:10:05Z
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786168609
+==> Test namespace: not-k8s-e2e-1786169267
 ==> 151 test(s) registered total; running now...
 ▶ test_unreferenced_image_is_not_removed_below_the_watermark
 ==>     waiting through at least one NODELET_GC_INTERVAL_SECS cycle (default 300s) to confirm busybox:1.36.1 survives it...
-  ✔ PASS (98s)
+  ✔ PASS (97s)
 ▶ test_image_gc_removes_unreferenced_images_above_the_watermark
-==> FATAL: unreferenced image busybox:1.33.1 was never GC'd despite the watermark being set at/below this node's real disk usage (42%) and past NODELET_IMAGE_GC_MIN_AGE_SECS — check should_start_image_gc()'s gating
-  ✘ FAIL (158s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]:   RUST_LOG:    info
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]:   CRI endpoint:  unix:///run/containerd/containerd.sock
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]:   IP family:     ipv4
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]:   LB method:     random
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]: ========================================
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]: 2026-08-08T06:01:05.484618Z  INFO starting nodelet node=runnervmvrwv9 runtime=Cri cpu=4 memory_bytes=16766423040 max_pods=110
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]: 2026-08-08T06:01:05.486535Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]: 2026-08-08T06:01:05.490361Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]: 2026-08-08T06:01:05.494690Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]: 2026-08-08T06:01:05.519689Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-1204150c-f93f-43b9-ad7b-866e9f188e3b.sock plugin_type=DRAPlugin
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]: 2026-08-08T06:01:05.522852Z  INFO node registered and Ready node=runnervmvrwv9
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]: 2026-08-08T06:01:05.523185Z  INFO pod controller watching pods bound to this node node=runnervmvrwv9
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]: 2026-08-08T06:01:05.523845Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]: 2026-08-08T06:01:05.524172Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 08 06:01:05 runnervmvrwv9 run-nodelet.sh[19737]: 2026-08-08T06:01:05.527294Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=Random
+  ✔ PASS (40s)
 
 ════════════════════════════════════════
-Results: 1 passed, 1 failed, 0 skipped
-Failed:
-  - test_image_gc_removes_unreferenced_images_above_the_watermark
+Results: 2 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786168609...
+==> Cleaning up test namespace not-k8s-e2e-1786169267...
