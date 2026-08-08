@@ -289,10 +289,21 @@ test_image_gc_removes_unreferenced_images_above_the_watermark() {
         skip_test "this node's disk usage ($current_usage%) is below even a deliberately low 10% watermark -- can't validate GC triggers above a threshold nothing on this node exceeds"
     fi
 
+    # Round 124 (found live in CI, third bug in this same test):
+    # triggering the sweep (HIGH_THRESHOLD) isn't enough on its own --
+    # images_to_reclaim_space() *also* stops (before removing anything
+    # at all) once simulated usage is already <= LOW_THRESHOLD, and its
+    # default is 80%. Real usage here (~40%) is already under that
+    # default, so the sweep triggered but immediately decided there was
+    # nothing to do, every time, regardless of the high watermark fix.
+    # Needs to be pushed down below real usage too, for the same "any
+    # real CI runner's usage is nowhere near this low" reasoning as the
+    # high threshold above.
     image_gc_test_cleanup() { nodelet_restore_env; }
     trap image_gc_test_cleanup EXIT
     nodelet_restart_with_env \
         "NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT=$watermark" \
+        "NODELET_IMAGE_GC_LOW_THRESHOLD_PERCENT=5" \
         "NODELET_IMAGE_GC_MIN_AGE_SECS=1" \
         "NODELET_GC_INTERVAL_SECS=10"
 
