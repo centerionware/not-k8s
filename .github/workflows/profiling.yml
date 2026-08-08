@@ -163,8 +163,8 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -e
-          git config user.name "not-k8s-profiling-bot"
-          git config user.email "actions@users.noreply.github.com"
+          git config --global user.name "not-k8s-profiling-bot"
+          git config --global user.email "actions@users.noreply.github.com"
 
           WORKDIR="$(mktemp -d)"
           if git ls-remote --exit-code --heads origin profiling-results >/dev/null 2>&1; then
