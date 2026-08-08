@@ -6,20 +6,20 @@ use super::*;
 
 #[tokio::test]
 async fn an_unregistered_resource_is_unconfigured() {
-    let dp = DevicePlugins::new();
+    let dp = DevicePlugins::new(tokio::sync::mpsc::unbounded_channel().0);
     assert!(!dp.resource_configured("nvidia.com/gpu"));
 }
 
 #[tokio::test]
 async fn registering_makes_a_resource_configured() {
-    let dp = Arc::new(DevicePlugins::new());
+    let dp = Arc::new(DevicePlugins::new(tokio::sync::mpsc::unbounded_channel().0));
     dp.register("nvidia.com/gpu".to_string(), "unix:///does-not-exist.sock".to_string());
     assert!(dp.resource_configured("nvidia.com/gpu"));
 }
 
 #[tokio::test]
 async fn deregistering_makes_it_unconfigured_again() {
-    let dp = Arc::new(DevicePlugins::new());
+    let dp = Arc::new(DevicePlugins::new(tokio::sync::mpsc::unbounded_channel().0));
     dp.register("nvidia.com/gpu".to_string(), "unix:///does-not-exist.sock".to_string());
     dp.deregister("nvidia.com/gpu");
     assert!(!dp.resource_configured("nvidia.com/gpu"));
@@ -27,7 +27,7 @@ async fn deregistering_makes_it_unconfigured_again() {
 
 #[tokio::test]
 async fn is_current_matches_the_live_endpoint() {
-    let dp = Arc::new(DevicePlugins::new());
+    let dp = Arc::new(DevicePlugins::new(tokio::sync::mpsc::unbounded_channel().0));
     dp.register("nvidia.com/gpu".to_string(), "unix:///a.sock".to_string());
     assert!(dp.is_current("nvidia.com/gpu", "unix:///a.sock"));
     assert!(!dp.is_current("nvidia.com/gpu", "unix:///b.sock"));
@@ -35,7 +35,7 @@ async fn is_current_matches_the_live_endpoint() {
 
 #[tokio::test]
 async fn deregistering_makes_every_endpoint_stale() {
-    let dp = Arc::new(DevicePlugins::new());
+    let dp = Arc::new(DevicePlugins::new(tokio::sync::mpsc::unbounded_channel().0));
     dp.register("nvidia.com/gpu".to_string(), "unix:///a.sock".to_string());
     dp.deregister("nvidia.com/gpu");
     assert!(!dp.is_current("nvidia.com/gpu", "unix:///a.sock"));
@@ -43,7 +43,7 @@ async fn deregistering_makes_every_endpoint_stale() {
 
 #[tokio::test]
 async fn update_devices_is_rejected_for_a_stale_endpoint() {
-    let dp = Arc::new(DevicePlugins::new());
+    let dp = Arc::new(DevicePlugins::new(tokio::sync::mpsc::unbounded_channel().0));
     dp.register("nvidia.com/gpu".to_string(), "unix:///a.sock".to_string());
     // A different (fresher) registration replaced this one.
     dp.register("nvidia.com/gpu".to_string(), "unix:///b.sock".to_string());
@@ -56,7 +56,7 @@ async fn update_devices_is_rejected_for_a_stale_endpoint() {
 
 #[tokio::test]
 async fn update_devices_is_accepted_for_the_current_endpoint() {
-    let dp = Arc::new(DevicePlugins::new());
+    let dp = Arc::new(DevicePlugins::new(tokio::sync::mpsc::unbounded_channel().0));
     dp.register("nvidia.com/gpu".to_string(), "unix:///a.sock".to_string());
     let accepted = dp.update_devices("nvidia.com/gpu", "unix:///a.sock", vec![DeviceInfo { id: "gpu-0".to_string(), healthy: true, numa_node: None }]);
     assert!(accepted);
@@ -65,7 +65,7 @@ async fn update_devices_is_accepted_for_the_current_endpoint() {
 
 #[tokio::test]
 async fn release_frees_a_device_for_reallocation() {
-    let dp = Arc::new(DevicePlugins::new());
+    let dp = Arc::new(DevicePlugins::new(tokio::sync::mpsc::unbounded_channel().0));
     dp.register("nvidia.com/gpu".to_string(), "unix:///a.sock".to_string());
     dp.update_devices("nvidia.com/gpu", "unix:///a.sock", vec![DeviceInfo { id: "gpu-0".to_string(), healthy: true, numa_node: None }]);
     {
@@ -79,6 +79,6 @@ async fn release_frees_a_device_for_reallocation() {
 
 #[tokio::test]
 async fn releasing_for_a_deregistered_resource_is_a_harmless_no_op() {
-    let dp = Arc::new(DevicePlugins::new());
+    let dp = Arc::new(DevicePlugins::new(tokio::sync::mpsc::unbounded_channel().0));
     dp.release("never-registered", &["gpu-0".to_string()]);
 }

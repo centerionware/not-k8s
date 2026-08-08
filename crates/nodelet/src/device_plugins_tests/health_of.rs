@@ -32,7 +32,7 @@ fn returns_the_live_health_of_a_known_device() {
 
 #[test]
 fn none_for_an_unregistered_resource() {
-    let dp = DevicePlugins::new();
+    let dp = DevicePlugins::new(tokio::sync::mpsc::unbounded_channel().0);
     assert_eq!(dp.health_of("nvidia.com/gpu", "gpu-0"), None);
 }
 

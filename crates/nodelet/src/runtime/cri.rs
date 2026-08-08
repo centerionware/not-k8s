@@ -503,7 +503,7 @@ impl CriRuntime {
 
         // Spawn the event subscriber (event-driven status, no polling).
         let (tx, rx) = unbounded_channel();
-        tokio::spawn(event_loop(channel, tx));
+        tokio::spawn(event_loop(channel, tx.clone()));
 
         // Best-effort: a malformed/unreadable CredentialProviderConfig
         // shouldn't block startup any more than a missing one does —
@@ -521,7 +521,13 @@ impl CriRuntime {
         };
 
         let csi = Arc::new(crate::runtime::csi::CsiDrivers::new(csi_drivers));
-        let device_plugins = Arc::new(crate::device_plugins::DevicePlugins::new());
+        // Round 124: shares the same event channel event_loop above feeds
+        // — a device health transition is exactly the same shape of
+        // "real state change that never touches the Pod object" as a
+        // container exit event, so it re-triggers pods.rs's
+        // on_runtime_event() the same way. See DevicePlugins::owners'
+        // own doc comment for the full story.
+        let device_plugins = Arc::new(crate::device_plugins::DevicePlugins::new(tx.clone()));
         let dra = Arc::new(crate::dra::DraDrivers::new());
         // Dynamic CSI driver / device plugin / DRA driver discovery: watches
         // plugin_registry_path for a plugin's registrar socket, same

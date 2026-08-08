@@ -46,6 +46,7 @@ use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::mpsc::UnboundedSender;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tracing::{info, warn};
 
@@ -169,11 +170,41 @@ struct PluginState {
 pub struct DevicePlugins {
     /// resource name (e.g. `nvidia.com/gpu`) -> plugin state.
     plugins: Mutex<HashMap<String, PluginState>>,
+    /// `(resource_name, device_id)` -> the `"namespace/name"` pod key
+    /// currently using it — round 124 (found live in CI): a device
+    /// plugin's `ListAndWatch` reporting a device unhealthy is, like a
+    /// probe transition, a real state change that never touches the Pod
+    /// object itself. Without this, nothing would ever re-trigger a
+    /// status write for the pod using that device — confirmed live:
+    /// nodelet's own internal inventory correctly updated within
+    /// seconds, but `containerStatuses[].allocatedResourcesStatus` on the
+    /// pod itself never updated no matter how long a test waited, because
+    /// nothing here had any way to know *which* pod to tell. Populated by
+    /// `record_owner()` right after a successful `allocate_preferring()`
+    /// (container_create.rs), cleared by `release()`.
+    owners: Mutex<HashMap<(String, String), String>>,
+    /// Poked with a pod key whenever an owned device's health changes —
+    /// the exact same general-purpose "something changed outside a watch
+    /// event, please re-sync this pod's status" channel `events_gc.rs`'s
+    /// CRI event loop already feeds into `pods.rs`'s `on_runtime_event()`
+    /// (see `CriRuntime::new()`, which clones its own `tx` into here).
+    notify: UnboundedSender<String>,
 }
 
 impl DevicePlugins {
-    pub fn new() -> Self {
-        Self { plugins: Mutex::new(HashMap::new()) }
+    pub fn new(notify: UnboundedSender<String>) -> Self {
+        Self { plugins: Mutex::new(HashMap::new()), owners: Mutex::new(HashMap::new()), notify }
+    }
+
+    /// Record that `pod_key` ("namespace/name") is now using these
+    /// `device_ids` of `resource_name` — see `owners`' own doc comment
+    /// for why this exists. Called right after a successful
+    /// `allocate_preferring()`.
+    pub fn record_owner(&self, resource_name: &str, device_ids: &[String], pod_key: &str) {
+        let mut owners = self.owners.lock().unwrap();
+        for id in device_ids {
+            owners.insert((resource_name.to_string(), id.clone()), pod_key.to_string());
+        }
     }
 
     /// Register a device plugin and start tracking its device inventory.
@@ -267,14 +298,34 @@ impl DevicePlugins {
     }
 
     fn update_devices(&self, resource_name: &str, endpoint: &str, new_devices: Vec<DeviceInfo>) -> bool {
-        let mut plugins = self.plugins.lock().unwrap();
-        match plugins.get_mut(resource_name) {
-            Some(state) if state.endpoint == endpoint => {
-                state.devices = new_devices;
-                true
+        // Round 124: notify whichever pod(s) own a device whose health
+        // just flipped — see `owners`' own doc comment for why. Diffed
+        // against the OLD device list before it's overwritten below. This
+        // is the only place that holds both `plugins` and `owners` at
+        // once (nested, plugins outer); every other method here only
+        // ever holds one at a time (never nested), so there's no cycle
+        // for these two locks to deadlock on.
+        let changed_owners: Vec<String> = {
+            let mut plugins = self.plugins.lock().unwrap();
+            match plugins.get_mut(resource_name) {
+                Some(state) if state.endpoint == endpoint => {
+                    let old_health: HashMap<&str, bool> = state.devices.iter().map(|d| (d.id.as_str(), d.healthy)).collect();
+                    let owners = self.owners.lock().unwrap();
+                    let changed = new_devices
+                        .iter()
+                        .filter(|d| old_health.get(d.id.as_str()).is_some_and(|&was_healthy| was_healthy != d.healthy))
+                        .filter_map(|d| owners.get(&(resource_name.to_string(), d.id.clone())).cloned())
+                        .collect();
+                    state.devices = new_devices;
+                    changed
+                }
+                _ => return false, // deregistered, or re-registered under a new endpoint — this watcher is stale
             }
-            _ => false, // deregistered, or re-registered under a new endpoint — this watcher is stale
+        };
+        for pod_key in changed_owners {
+            let _ = self.notify.send(pod_key);
         }
+        true
     }
 
     fn is_current(&self, resource_name: &str, endpoint: &str) -> bool {
@@ -428,6 +479,10 @@ impl DevicePlugins {
             for id in device_ids {
                 state.allocated.remove(id);
             }
+        }
+        let mut owners = self.owners.lock().unwrap();
+        for id in device_ids {
+            owners.remove(&(resource_name.to_string(), id.clone()));
         }
     }
 }

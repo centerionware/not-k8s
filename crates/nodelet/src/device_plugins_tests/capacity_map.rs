@@ -23,7 +23,7 @@ fn dev(id: &str, healthy: bool) -> DeviceInfo {
 
 #[test]
 fn no_plugins_registered_gives_an_empty_map() {
-    let dp = DevicePlugins::new();
+    let dp = DevicePlugins::new(tokio::sync::mpsc::unbounded_channel().0);
     assert!(dp.capacity_map().is_empty());
 }
 

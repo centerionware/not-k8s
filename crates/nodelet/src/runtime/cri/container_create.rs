@@ -536,6 +536,10 @@ impl CriRuntime {
                         permissions: d.permissions,
                     }));
                     annotations.extend(resp.annotations);
+                    // Round 124: so a later ListAndWatch health flip on
+                    // one of these device_ids knows which pod to notify
+                    // — see DevicePlugins::owners' own doc comment.
+                    self.device_plugins.record_owner(&resource_name, &device_ids, &crate::runtime::pod_key(&id.namespace, &id.name));
                     allocated_devices.push((resource_name, device_ids));
                 }
                 Err(e) => {
