@@ -27,6 +27,463 @@ nodelet gap):
 
 Everything else below **is** kubelet's job and is now in scope.
 
+## Catch-up note (2026-08-08)
+
+Rounds 103–124 below were never appended to this doc as they happened —
+found stale (still stopping at round 102) while doing unrelated work in this
+session, despite ~120 real commits of live-e2e-driven bug-fixing having
+landed since. Reconstructed from the actual commit history (`git log`), not
+re-derived from source — each entry's content is a condensed version of that
+round's own real, already-detailed commit message, not a fresh audit. Rounds
+123/124 in particular were large batch-hardening rounds (75 and 45 commits)
+built around getting the *full*, previously-never-run-end-to-end e2e suite
+green under real CI, plus the CI/CD release pipeline and profiling system
+themselves — summarized thematically below rather than commit-by-commit;
+`git log --oneline | grep '^Round 123:'` / `'^Round 124:'` has the full list
+if a specific fix needs tracing.
+
+## Round 124: full-suite e2e hardening, real profiling system, release pipeline fixes (2026-08-06 to 2026-08-08)
+
+Continuation of Round 123's push to get the entire e2e suite green under
+real CI contention (parallelized 5-way sharding, not just sequential), plus
+building out a real nodelet-vs-upstream-kubelet profiling system and fixing
+release-pipeline bugs found running it for real. Real bugs found and fixed,
+grouped by theme:
+
+**CSI/volume lifecycle**:
+- Container creation now blocks until a pod's PVC/CSI volume has actually
+  mounted, with retry for pending attaches, instead of racing ahead.
+- CSI `NodeUnpublish`/`NodeUnstage` returning `NotFound` is now treated as
+  already-done, not a hard failure (a normal outcome when teardown races the
+  driver's own cleanup).
+- CSI mount metadata is now cached across nodelet restarts instead of
+  re-fetching a PVC that's routinely already gone by the time a restart
+  happens — closed the real teardown gap this exposed.
+- `hugepages-1Gi=0` staleness on a Node's status: a merge patch that drops a
+  key doesn't null it out server-side by default — fixed to explicitly null
+  dropped keys.
+
+**State survives a nodelet restart** (a recurring theme this round — several
+kinds of in-memory-only state were found not to survive the process
+restarting, unlike real kubelet which persists this to disk):
+- `restartCount`
+- userns UID/GID range allocations
+- device-plugin allocations
+- (CSI mount metadata, above)
+
+**Device plugins**:
+- Device health transitions never re-triggered a pod status write — closed;
+  added the missing success-path/correlation logging needed to debug it live
+  in the first place.
+- Fixed test cross-contamination, timing, and a `-s`-vs-`-n` bash test bug
+  (file-has-any-bytes isn't file-has-real-content) in the retry path for a
+  flaky single-shot read.
+
+**Other real bugs closed**:
+- `extended_resource_requests()` now excludes `ephemeral-storage` and
+  `hugepages-*`, matching Round 124's earlier (already-shipped)
+  cri/resources.rs fix — a pod declaring either got stuck Pending forever.
+- ErrImagePull/ImagePullBackOff are now actually reported (a genuine
+  reporting gap, not just a test gap).
+- ConfigMap/Secret watch events no longer trigger a full reconcile sweep of
+  every referencing pod on every nodelet restart — only real `Apply`
+  changes do, `InitApply` (the initial resync-on-connect event) is now a
+  correctly-handled no-op.
+- Stale `is_waiting_for_csi_volume` call sites left over from the
+  `is_waiting_for_external_resource` rename, caught by the compiler.
+- Image-GC watermark test fixed for real (took 3 attempts): first a
+  measurement mismatch, then the actual blocker — the "stop once usage
+  drops to `low_threshold_percent`" gate in `gc.rs`'s
+  `images_to_reclaim_space()` fires *before* removing anything if current
+  usage is already at/below that threshold, so both HIGH and LOW thresholds
+  need to sit below real disk usage for a forced-GC test to reclaim
+  anything at all.
+
+**Release pipeline / CI infrastructure**:
+- `cleanup-nodelet-artifact` job's 403 — missing `actions: write`
+  permission; also made it skip gracefully on a permission failure instead
+  of hard-failing the whole run over artifact housekeeping.
+- e2e stage parallelized 5 ways, reusing one shared debug-binary build
+  artifact instead of rebuilding per shard.
+- Systemically scaled up test wait/timeout budgets suite-wide after
+  confirming (via `docs/E2E_FINDINGS.md`-style live evidence) that full-suite
+  parallel contention pushes real CSI attach/detach and pod-Running latency
+  well past the tighter budgets that were fine for the tests run alone or in
+  small batches — same pattern as Round 123's own timeout work, just a
+  second, larger pass once shards revealed contention the single-stream run
+  hadn't.
+
+**Profiling system** (new): a real nodelet-vs-genuine-upstream-kubelet idle
+resource comparison, built from scratch this round — 6-runner matrix
+(nodelet/kubelet × 3 replicates, run in parallel on identical fresh
+environments), real per-second RSS/CPU sampling, CPU-seconds (not CPU%) as
+the primary metric with `perf`'s task-clock event for sub-millisecond
+precision (real hardware cycle counts confirmed unavailable on GitHub-hosted
+runners — no PMU passthrough to the guest, even as root), real test hardware
+captured per run, results published as a Markdown report with charts to a
+dedicated `profiling-results` branch. Several real bugs fixed getting this
+working: a 1000x CPU-seconds unit bug (perf's own unit label isn't a fixed
+"msec", has to be parsed per-run), a git-identity/git-auth bug in the
+publish step (config set in the wrong clone; no push credentials in a fresh
+clone), and a factual error repeated across the report copy — this project's
+k3s runs `kine`+SQLite, not etcd. See the `profiling-results` branch's own
+`README.md` for the latest numbers; `docs/E2E_FINDINGS.md` isn't the venue
+for this one since it's a benchmarking system, not an e2e bug hunt.
+
+## Round 123: full CI/CD release pipeline, standalone installer, and getting the entire e2e suite passing for real (2026-08-04 to 2026-08-06)
+
+The big one: this round is where the project got a real, working GitHub
+Actions release pipeline (build → unit tests → e2e → multi-platform release
+build → GitHub Releases publish) and a standalone `curl | bash` installer
+for the first time, and where the e2e suite — previously only ever run in
+hand-picked batches — was actually pushed end to end and made to pass in
+full. ~75 commits; themes below, full list via
+`git log --oneline | grep '^Round 123:'`.
+
+**CI/CD build-out**:
+- `.github/workflows/release.yml`: the real 4-stage pipeline described in
+  `CLAUDE.md` — build-and-test, e2e, build-release (debug+release ×
+  x86_64/aarch64/armv7l), publish-release.
+- Standalone installer scripts, compiled and published to a dedicated
+  `install-scripts` branch per release.
+- `--only=<substring1>,<substring2>` comma-separated multi-pattern support
+  added to `test-e2e.sh`, and `NOTK8S_E2E_MAX_FAILURES` fail-fast (stop
+  after N failures instead of always burning the full ~142-test run) — both
+  needed once CI made iterating on real failures expensive.
+- `nodelet_restart_with_env` harness capability added, and
+  `run_all_registered_tests()` taught to auto-defer any test using it (or
+  restarting containerd/swap) to the end of the run — mixing these with
+  ordinary pod-creation tests caused flaky "pod never reached Running"
+  failures on unrelated tests.
+
+**Real bugs found live running the full suite for the first time** (the
+core value of this round — many of these were invisible in hand-picked
+batches and only surfaced under full-suite/real-CI conditions):
+- Probe-triggered container restart never actually recreated the container.
+- `dnsPolicy: Default` trusted containerd's own default `resolv.conf`,
+  looping CoreDNS on systemd-resolved hosts.
+- `evict_pod()` deleted evicted pods outright — a real deviation from
+  kubelet semantics (eviction should not race normal deletion the same way).
+- CRI's `ListContainers` order isn't spec order — code that assumed it was
+  broke under real containerd.
+- Readiness/startup probe state transitions never triggered a pod status
+  re-write.
+- `hostUsers: false` volumes never got chowned to the userns base UID, so
+  container writes into them silently failed with `EACCES` — took several
+  rounds of live diagnostics (OCI spec dumps, `ctr` label inspection) to
+  root-cause down to containers never actually joining the sandbox's own
+  user namespace, plus a second bug where `CreateContainer`'s redundant
+  `sandbox_config` resend hardcoded `userns_mapping` to `None`.
+- Per-mount UID/GID idmapping (Round 88) double-translated against the
+  sandbox's own ambient userns, producing the overflow UID.
+- Concurrent `ensure_pod()` calls raced on `CreateContainer`'s
+  attempt-numbered container name.
+- Static pod mirror deletion never force-deleted.
+- A real regression: `kctl exec` was silently using the wrong namespace.
+- `log_rotation`'s actual root cause after several rounds of diagnostics:
+  client-side glob expansion happening before `sudo`, not a rotation bug at
+  all — rotation itself was never broken.
+- kuberc stderr pollution contaminating captured cgroup values in the
+  `limited_swap` test, fixed at its actual source.
+
+**Manual-only tests converted to real automated coverage** (per `CLAUDE.md`'s
+own stated preference — "Manual-only test cases stay manual only when
+genuinely nothing in this harness could stand up the prerequisite"): DRA
+allocation, hostUsers ownership translation, TLS client cert auth, TLS
+bootstrap CSR flow, static-pod/CSI manual procedures, orphaned-sandbox GC,
+image-GC watermark removal, mount propagation (HostToContainer + Private),
+dynamic CSI registration, `--config` file/dir, log rotation, LimitedSwap,
+CPU/memory/topology-manager static policies (via the new
+`nodelet_restart_with_env`), gRPC probes, PodResources gRPC query, `kubectl
+attach`/`port-forward`, recursive-read-only, image-pull-policy
+`IfNotPresent` skip-the-pull, the credential-provider exec plugin, and
+device-plugin tests (via a fake gRPC plugin). This is most of what closed
+the gap between "code exists" and "e2e-verified" across the whole doc.
+
+**Timeout/contention hardening**: the first pass of what Round 124 later
+did a second, larger pass of — `wait_until 30 → 60` for every plain "pod
+reaches Running" wait suite-wide, plus targeted bumps for tests confirmed
+only failing under batch contention (not alone).
+
+## Round 122: add GitHub Actions CI and a first profiling workflow (2026-08-03, same day)
+
+`.github/workflows/ci.yml` — two manual-trigger jobs (unit tests with/without
+`--features cri`, release build uploading the binary as an artifact).
+`.github/workflows/profiling.yml` — an early, single-run version of what
+Round 124 later rebuilt into the full nodelet-vs-real-upstream-kubelet
+matrix system: idle CPU%/RSS for not-k8s vs default stock k3s on the same
+runner, using `deploy/measure.sh`. Not run for real yet at the time (no
+GitHub Actions execution available from that environment) — reviewed for
+correctness only; superseded by Round 124's real, verified system.
+
+## Round 121: fix 3 real DRA/CDI bugs found standing up a real reference driver (2026-08-03, same day)
+
+Deployed `kubernetes-sigs/dra-example-driver` (the same reference driver
+real Kubernetes e2e/conformance uses) and found the whole DRA feature was
+non-functional end to end despite Rounds 63/64 looking complete:
+
+1. `resolve_service_account_token()` hardcoded `bound_object_ref: None` for
+   every projected `serviceAccountToken` volume — real kubelet always binds
+   these to the requesting Pod (both a real security property and required
+   for the apiserver's `ServiceAccountTokenPodNodeInfo` enrichment the
+   reference driver's own admission policy depends on).
+2. `ResourceClaim` was fetched via `k8s_openapi`'s `v1beta1`, which doesn't
+   exist on Kubernetes ≥1.34 (DRA graduated to GA as `resource.k8s.io/v1`)
+   — every fetch 404'd silently. Fixed via a raw request into a small
+   hand-written `RawResourceClaim` rather than bumping the workspace's
+   pinned `k8s-openapi` schema version (see `CLAUDE.md`'s own note on why
+   that's the established workaround here).
+3. `proto/draplugin.proto`'s reconstructed wire format was genuinely wrong
+   (wrong service package, wrong `Device` message field layout) —
+   retranscribed directly from upstream.
+
+Also: containerd's `enable_cdi` defaults to `false` (now flipped on in
+`container-runtime.sh`) — without it CDI device IDs are silently accepted
+and never actually injected. Verified live end to end: a Pod claiming a
+device via `ResourceClaimTemplate` reaches Running with real CDI-injected
+env vars from the driver's own response. See `docs/E2E_FINDINGS.md` finding
+#18.
+
+## Round 120: reconcile CSINode and sync CSI topology labels onto the Node (2026-08-03, same day)
+
+Real kubelet's Node Info Manager does both of these automatically the moment
+a CSI driver registers; nodelet did neither, so a topology-aware
+`csi-provisioner` (the common default for real CSI drivers, including this
+project's own bundled manifest) permanently failed every `CreateVolume` with
+"no available topology found". New `csi_node.rs` (CSINode upsert/remove) +
+`node.rs`'s `apply_topology_labels()` (merges `NodeGetInfo`'s topology
+segments onto the Node's own labels), wired into `plugin_registry.rs`'s
+registration/deregistration path. Verified live: PVC-mounting tests that
+previously skipped (PVC never bound) now pass against a real CSI driver.
+
+## Round 119: expand `$(VAR)` references in command/args against container env (2026-08-03, same day)
+
+Found live re-verifying Round 118's fixes: the real CSI driver's hostpath
+container kept crash-looping — not the probe-storm bug, a real crash.
+Its spec sets `--endpoint=$(CSI_ENDPOINT)` (Kubernetes' standard "dependent
+environment variables" substitution), which nodelet never performed at all
+— the driver was binding its gRPC socket at the literal path
+`/$(CSI_ENDPOINT)`. Fixed with `expand_command_arg()` (same `$(VAR)`/`$$`
+grammar as Round 69's `subPathExpr` expansion, but with real kubelet's more
+lenient semantics — an unresolved `$(VAR)` stays literal rather than failing
+the container). Verified live: the driver's socket binds, zero restarts
+across all 5 containers over 5 minutes (previously 12+ restarts on hostpath
+alone within 2 minutes).
+
+## Round 118: fix probe-supervisor task leak, stale-sandbox reuse across pod UIDs, and CreateContainer's own privileged flag (2026-08-03, same day)
+
+Three bugs found live re-verifying Round 117's CSI driver install, all
+blocking the same pod from stabilizing:
+
+1. `probes::spawn()` wrapped every per-container probe loop in one outer
+   `tokio::spawn()` and returned only that task's handle — `abort()` on the
+   outer handle never touched the inner spawned loops, so every container
+   restart leaked the previous generation's probe loops (810 restart
+   attempts in 90s for one pod, confirmed live). Now returns
+   `Vec<JoinHandle<()>>`, one per probed container.
+2. `find_sandbox()` matched by namespace+name only, never pod UID — a
+   StatefulSet pod recreated with a new UID kept reusing its previous
+   incarnation's stale sandbox forever (GC can't catch this either, since a
+   live pod with that namespace+name still exists). Fixed with
+   `find_sandbox_with_uid()`; a namespace+name match with a mismatched UID
+   is now always `RecreateStale`.
+3. `CreateContainerRequest`'s redundant `sandbox_config` field was
+   hardcoded to `privileged: false` regardless of the pod's actual
+   requirement (a leftover from Round 117's signature change) — containerd
+   reads this copy back to gate privileged `CreateContainer`, silently
+   overriding an otherwise-correctly-privileged sandbox.
+
+## Round 117: sandbox never declared it would host a privileged container (2026-08-03, same day)
+
+Found installing `kubernetes-csi/csi-driver-host-path` for real: every
+privileged container in the driver's pod failed `CreateContainer` with "no
+privileged container allowed in sandbox" — `sandbox_config()` never set
+`LinuxSandboxSecurityContext.privileged` at all (CRI requires declaring this
+up front at `RunPodSandbox` time, not per-container). New
+`pod_requests_privileged()` helper threaded through `ensure_pod()` →
+`run_sandbox()` → `sandbox_config()`. Also documented (not fixed this round,
+closed in Round 118): probe-restart storms with no rate limit at all — 810
+restart attempts in 90s for one pod, physically impossible if
+`periodSeconds` were honored.
+
+## Round 116: add a real e2e test for finalizer behavior (2026-08-02, same day)
+
+Automated what Round 115 verified by hand:
+`test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed`
+proves container teardown happens immediately regardless of a finalizer,
+the Pod object survives Terminating with the finalizer intact, and removing
+the finalizer lets the object go away. Two harness bugs fixed getting the
+test itself right: `trap ... RETURN` doesn't fire on `exit` (what every
+`die()` call in this suite uses) — needs `trap ... EXIT`; and the
+container-teardown check needed a longer budget than the finalizer-free
+version (a finalizer-blocked delete never produces an `Event::Delete` for
+`reconcile()` to react to, only the `Modified`/`Apply` event from
+`deletionTimestamp` being set).
+
+## Round 115: verify finalizers interact correctly with Round 103's delete fix (2026-08-02, same day)
+
+A real coverage gap for Round 103's `teardown()` change (added a real
+`Api::<Pod>::delete()` call) — neither nodelet's code nor the e2e suite
+mentioned finalizers at all. Verified live by hand: CRI sandbox teardown
+happens immediately regardless of a finalizer (correct — finalizers block
+object removal, not container teardown), the Pod object stays present and
+Terminating with no error/loop from the `delete()` call while the finalizer
+remains, and removing the finalizer purges the object immediately. Clean
+pass, no code change — automated as a real regression test in Round 116.
+
+## Round 114: loosen recursive-read-only test's overly strict readOnly check (2026-08-02, same day)
+
+`test_container_status_reports_recursive_read_only` asserted
+`containerStatuses[].volumeMounts[].readOnly` comes back as the literal
+string `"false"` for a non-read-only mount; it comes back absent instead.
+Traced nodelet's own code as far as possible and found it correct
+(`volume_mount_status_tuples()`, `k8s-openapi`'s generated serializer both
+checked directly) — recorded as an open, low-severity question in
+`docs/E2E_FINDINGS.md` rather than chased further without wire-level
+debugging access. "Absent" and "false" are semantically identical for this
+field, and the test's own next line already accepts that for the sibling
+`recursiveReadOnly` field — loosened the assertion to match.
+
+## Round 113: skip resolved-user test cleanly on a runtime without it (2026-08-02, same day)
+
+`test_container_status_reports_resolved_user` hard-failed on
+`containerStatuses[0].user.linux.uid` never appearing. Confirmed via
+`crictl inspect` directly against containerd (bypassing nodelet) that this
+containerd build's own `ContainerStatus` response has no `user` field at
+all for the container in question — not a nodelet bug. Now skips cleanly,
+same as `lifecycle.sh`'s existing runtime-limitation skip pattern.
+
+## Round 112: fix run_as_user test's invalid emptyDir-write assumption (2026-08-02, same day)
+
+`test_run_as_user_is_applied` wrote `id -u`/`id -g` into a shared emptyDir
+and read it back off host disk — invalid since Round 111 made `kubectl exec`
+available, and wrong regardless: a plain `runAsUser: 1000` with no
+`fsGroup` set can't write to a root-owned, non-world-writable emptyDir
+(confirmed live, `Permission denied`) — real kubelet behavior, not a
+nodelet bug. Fixed to use `kctl exec` directly instead.
+
+## Round 111: kubectl exec/logs/attach/port-forward work end to end now (2026-08-02, same day)
+
+Two more legs of Round 110's TLS-trust gap:
+
+1. The apiserver didn't trust nodelet's self-signed leaf at all
+   ("certificate signed by unknown authority"). Fixed via
+   `--kube-apiserver-arg=kubelet-certificate-authority=` pointing at
+   nodelet's own cert, wired in as a second, later call into
+   `setup-control-plane.sh` run after nodelet's actually started (k3s
+   starts before nodelet has generated that cert file). `server::tls`'s
+   `load_or_generate()` now also writes a PEM copy (kube-apiserver only
+   reads PEM), regenerated every load so an already-running node self-heals
+   the missing file on restart.
+2. nodelet's server had no client CA configured, so it fell back to
+   bearer-token-only auth — but the apiserver authenticates via mTLS client
+   cert here. Fixed by setting `NODELET_CLIENT_CA_FILE` to k3s's own client
+   CA in the service's env, CRI-runtime-only.
+
+Verified live end to end against a clean rebuild+reinstall (not hand-patched
+units): `kubectl exec`/`logs`/`logs -f` all work; `attach`/`port-forward`
+share exec's proxy path so this covers all four originally-blocked
+endpoints.
+
+## Round 110: kubelet-style server's TLS cert gains an IP SAN (2026-08-02, same day)
+
+`server::tls::load_or_generate()`'s self-signed cert had zero IP SANs — the
+apiserver proxies exec/logs/attach/port-forward by dialing the node's
+`InternalIP`, not its hostname, so this could never have worked regardless
+of anything else being configured right (confirmed live: "x509: cannot
+validate certificate for 10.226.246.213 because it doesn't contain any IP
+SANs"). Fixed to include the node's real IP (plus `127.0.0.1`) via
+`node::detect_internal_ip()`. What's still separately broken past this fix
+(closed in Round 111): the apiserver itself doesn't yet trust the leaf.
+
+## Round 109: fix probes.sh's same busybox httpd bug as networking.sh (2026-08-02, same day)
+
+`test_http_get_readiness_probe_against_a_real_server` had the identical bug
+Round 107 fixed in `networking.sh` — `busybox httpd` isn't compiled into
+`alpine:3.20`'s busybox build, so the container crash-looped and the test
+misreported it as "pod never reached Running" rather than a real
+readinessProbe issue. Same fix (an `nc -lp` loop). Grepped the whole suite
+afterward for other survivors — none found.
+
+## Round 108: bump restartCount on probe-triggered container restarts too (2026-08-02, same day)
+
+`restart_container()` (the path a failed liveness/startup probe takes to
+kill and recreate a still-live container) stopped and removed the container
+correctly but never called `bump_restart_count()` — confirmed live,
+repeated probe-restart cycles happened (new containerID/startedAt each
+time) while `restartCount` stayed at 0. `container_create.rs`'s own
+reconcile path does bump the counter, but only from the branch that finds
+an existing CRI-reported-exited container to replace; `restart_container()`
+removes the container itself first, so there's no existing container left
+for that branch to catch. Fixed inline.
+
+## Round 107: fix networking tests' broken busybox httpd responder (2026-08-02, same day)
+
+Two hostPort/hostNetwork tests used `busybox httpd -f -p <port> -h /www` as
+their in-container HTTP responder — `alpine:3.20`'s busybox build doesn't
+compile the httpd applet in (confirmed live: `applet not found`, exit 127),
+so the container crash-looped immediately and both tests misreported it as
+"pod never reached Running", pointing a debugger at CRI port-mapping wiring
+that was never actually exercised. Fixed with a `busybox nc -lp <port>`
+loop instead (nc is present).
+
+## Round 106: export -f the test helpers bash -c call sites actually need (2026-08-02, same day)
+
+23 call sites across 8 case files built their `wait_until`/`try_wait_until`
+poll check as `bash -c "... kctl ..."` — a real, separate bash process that
+doesn't inherit shell functions unless `export -f`'d. None were, so every
+site silently resolved to "command not found" (swallowed by
+`2>/dev/null`), the polled condition could never become true, and the test
+burned its full timeout regardless of what the cluster was actually doing.
+Found the full extent by scanning every case file for a helper name inside
+a `bash -c` string, rather than whack-a-moling the first hit. Fixed
+centrally: `export -f` every relevant helper plus `TEST_NAMESPACE`, instead
+of rewriting 23 call sites.
+
+## Round 105: fix grace-period test's broken trap+wait idiom (2026-08-02, same day)
+
+`test_termination_grace_period_is_honored_not_instant` used `trap 'echo
+trapped' TERM; sleep 3600 & wait` to build a container that should only die
+to SIGKILL at the end of its grace period. It doesn't: `ash`/`dash`'s
+`wait` returns as soon as a trapped signal's handler runs, regardless of
+whether the backgrounded child actually exited — confirmed via a direct
+repro and a live `crictl stop --timeout 8`. Was invisible until Round 103's
+pod-delete fix (before that, no deleted pod's object ever left the
+apiserver, so this test's wait-for-gone couldn't distinguish "gone fast"
+from "gone slow"). Fixed with a foreground loop that has no wait-interrupt
+escape hatch, so only a real SIGKILL ends it.
+
+## Round 104: bootstrap-source.sh no longer silently fails to install/restart (2026-08-01, same day)
+
+Three install-time gaps, all variations on one theme: a re-run of
+`bootstrap-source.sh` could look like it succeeded while actually leaving
+the OLD binary running, with nothing in the output saying so. `install
+-m 0755` silently no-ops on a permission error against an existing
+destination owned by a different user (fixed: `rm -f` first, check the
+result, die with a clear message on failure); the LTO profile picker now
+checks `/proc/meminfo` and goes straight to the lighter settings on
+memory-constrained devices instead of trying the full profile first and
+hoping a crash doesn't preempt the existing retry path; and all three
+service tiers now actually restart nodelet on install instead of `enable
+--now`/`start`, which are no-ops against an already-running service.
+
+## Round 103: pod deletion actually reaches the apiserver (2026-08-01, same day)
+
+The highest-severity bug this project had hit in a while, found via live
+e2e testing against a real CRI-mode cluster (the first entry in the new
+`docs/E2E_FINDINGS.md`): `PodController::teardown()` tore down a pod's
+containers/local runtime state on delete but never issued the
+apiserver-side delete that real kubelet does after finishing termination —
+a graceful `kubectl delete` only *sets* `deletionTimestamp`; the object
+stays in the datastore until whoever is terminating it deletes it again.
+Nothing did that here, so every normally-deleted pod sat in Terminating
+forever, and so did every namespace containing one. Fixed:
+`teardown()` now follows `remove_pod()` with a real `Api::<Pod>::delete()`
+(grace-period-0, tolerating 404 as success), matching the pattern
+`evict_pod()`/`static_pods.rs`/`shutdown.rs` already used for nodelet's own
+self-initiated terminations.
+
+
 ## Round 100: `/metrics/cadvisor` gains `container_last_seen` (2026-08-01, same day)
 
 Last of the 4 closeable 🟡 items ("do them all, let's get it
