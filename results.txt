@@ -1,93 +1,35 @@
-commit: 0dc89857c7b6476408053d5565f6e3519a387e5b
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31231734275
-timestamp (UTC): 2026-08-08T01:10:02Z
+commit: 944f43c967f10d63cdb28605ba980e23ab10f0ee
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31231941846
+timestamp (UTC): 2026-08-08T01:13:08Z
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786151264
+==> Test namespace: not-k8s-e2e-1786151580
 ==> 151 test(s) registered total; running now...
-▶ test_device_plugin_advertises_capacity_and_allocates_into_a_container
-==> installing grpcio/grpcio-tools for the fake device plugin...
-WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
-==> generating gRPC stubs from the vendored proto files...
-==> starting the fake device plugin (resource=fake.example.com/testdevice)...
-ready
-rm: cannot remove '/tmp/tmp.Ea2HvTHuEs/__pycache__/deviceplugin_pb2_grpc.cpython-312.pyc': Permission denied
-rm: cannot remove '/tmp/tmp.Ea2HvTHuEs/__pycache__/pluginregistration_pb2_grpc.cpython-312.pyc': Permission denied
-rm: cannot remove '/tmp/tmp.Ea2HvTHuEs/__pycache__/deviceplugin_pb2.cpython-312.pyc': Permission denied
-rm: cannot remove '/tmp/tmp.Ea2HvTHuEs/__pycache__/pluginregistration_pb2.cpython-312.pyc': Permission denied
-==> FATAL: Node.status.capacity['fake.example.com/testdevice'] never showed 4 after the fake plugin registered — check nodelet's logs for 'device plugin: inventory updated' / 'plugin registry: plugin registered'
-  ✘ FAIL (49s, exit 1)
+▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
+==> FATAL: assertion failed: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership — '3000 5000' does not contain '4000'
+  ✘ FAIL (4s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 08 01:06:54 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:06:54.603326Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-87bjc namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 01:07:20 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:20.473356Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 08 01:07:40 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:40.489369Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-2165e880-e02b-491f-9d3e-858736c463a1.sock plugin_type=DRAPlugin
-    Aug 08 01:07:40 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:40.575834Z  INFO node status pushed
-    Aug 08 01:07:42 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:42.528765Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-rrrgx
-    Aug 08 01:07:43 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:43.736444Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-rrrgx
-    Aug 08 01:07:50 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:50.491025Z  INFO plugin registry: socket disappeared; deregistering name="gpu.example.com" path=/var/lib/nodelet/plugins_registry/gpu.example.com-2165e880-e02b-491f-9d3e-858736c463a1-reg.sock
-    Aug 08 01:07:50 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:50.493572Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-13b0cbc4-aad1-4362-b927-0b449ea1b74e.sock plugin_type=DRAPlugin
-    Aug 08 01:08:00 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:00.500807Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
-    Aug 08 01:08:00 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:00.501996Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:34.207354Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=reading ListAndWatch stream
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]: Caused by:
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]:     0: code: 'Unknown error', message: "h2 protocol error: error reading a body from connection", source: hyper::Error(Body, Error { kind: Io(Custom { kind: BrokenPipe, error: "stream closed because of a broken pipe" }) })
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]:     1: error reading a body from connection
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]:     2: stream closed because of a broken pipe
-▶ test_device_plugin_health_transition_updates_allocated_resources_status
-==> generating gRPC stubs from the vendored proto files...
-==> starting the fake device plugin (resource=fake.example.com/testdevice)...
-==> FATAL: containerStatuses[0].allocatedResourcesStatus never updated to Unhealthy after the plugin's ListAndWatch reported device 'fake-3' unhealthy
-  ✘ FAIL (52s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 08 01:07:40 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:40.575834Z  INFO node status pushed
-    Aug 08 01:07:42 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:42.528765Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-rrrgx
-    Aug 08 01:07:43 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:43.736444Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-rrrgx
-    Aug 08 01:07:50 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:50.491025Z  INFO plugin registry: socket disappeared; deregistering name="gpu.example.com" path=/var/lib/nodelet/plugins_registry/gpu.example.com-2165e880-e02b-491f-9d3e-858736c463a1-reg.sock
-    Aug 08 01:07:50 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:50.493572Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-13b0cbc4-aad1-4362-b927-0b449ea1b74e.sock plugin_type=DRAPlugin
-    Aug 08 01:08:00 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:00.500807Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
-    Aug 08 01:08:00 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:00.501996Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:34.207354Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=reading ListAndWatch stream
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]: Caused by:
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]:     0: code: 'Unknown error', message: "h2 protocol error: error reading a body from connection", source: hyper::Error(Body, Error { kind: Io(Custom { kind: BrokenPipe, error: "stream closed because of a broken pipe" }) })
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]:     1: error reading a body from connection
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]:     2: stream closed because of a broken pipe
-    Aug 08 01:08:39 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:39.211170Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
-    Aug 08 01:08:40 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:40.619040Z  INFO node status pushed
-    Aug 08 01:08:47 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:47.212605Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=3
-▶ test_device_plugin_preferred_allocation_and_prestart
-==> generating gRPC stubs from the vendored proto files...
-==> starting the fake device plugin (resource=fake.example.com/testdevice)...
-==> FATAL: assertion failed: allocated devices should match the plugin's own GetPreferredAllocation response (highest IDs first), proving nodelet used it rather than its own default first-N selection — got 'fake-1,fake-2', want 'fake-2,fake-3'
-  ✘ FAIL (33s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 08 01:07:50 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:50.491025Z  INFO plugin registry: socket disappeared; deregistering name="gpu.example.com" path=/var/lib/nodelet/plugins_registry/gpu.example.com-2165e880-e02b-491f-9d3e-858736c463a1-reg.sock
-    Aug 08 01:07:50 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:07:50.493572Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-13b0cbc4-aad1-4362-b927-0b449ea1b74e.sock plugin_type=DRAPlugin
-    Aug 08 01:08:00 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:00.500807Z  INFO plugin registry: plugin registered name=fake.example.com/testdevice endpoint=/var/lib/nodelet/plugins_registry/fake-device-plugin.sock plugin_type=DevicePlugin
-    Aug 08 01:08:00 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:00.501996Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:34.207354Z  WARN device plugin: ListAndWatch stream ended; will retry resource=fake.example.com/testdevice error=reading ListAndWatch stream
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]: Caused by:
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]:     0: code: 'Unknown error', message: "h2 protocol error: error reading a body from connection", source: hyper::Error(Body, Error { kind: Io(Custom { kind: BrokenPipe, error: "stream closed because of a broken pipe" }) })
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]:     1: error reading a body from connection
-    Aug 08 01:08:34 runnervmvrwv9 run-nodelet.sh[11540]:     2: stream closed because of a broken pipe
-    Aug 08 01:08:39 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:39.211170Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=4
-    Aug 08 01:08:40 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:40.619040Z  INFO node status pushed
-    Aug 08 01:08:47 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:08:47.212605Z  INFO device plugin: inventory updated resource=fake.example.com/testdevice devices=4 healthy=3
-    Aug 08 01:09:40 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:09:40.659449Z  INFO node status pushed
-    Aug 08 01:09:56 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:09:56.526780Z  INFO torn down pod=not-k8s-e2e-1786151264/device-plugin-health-check
-    Aug 08 01:09:57 runnervmvrwv9 run-nodelet.sh[11540]: 2026-08-08T01:09:57.633390Z  INFO torn down pod=not-k8s-e2e-1786151264/device-plugin-health-check
-==> WARNING: stopping early: 3 failures reached NOTK8S_E2E_MAX_FAILURES=3 (151 tests registered total, not all of them ran) — see the failures above/print_summary below for what's already known, rather than burning time re-discovering the same root cause across the rest of the suite.
+    Aug 08 01:12:07 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:07.114441Z ERROR failed with status 503 Service Unavailable
+    Aug 08 01:12:07 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:07.114663Z ERROR failed with status 503 Service Unavailable
+    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.100701Z  WARN endpointslice watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 424 (434)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.101050Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 421 (434)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.103280Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 431 (434)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.104534Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 418 (434)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.119632Z  WARN service watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 421 (434)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.341925Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.463908Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-4m64w namespace="kube-system" name="coredns" kind=ConfigMap
+    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.500726Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-4m64w namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
+    Aug 08 01:12:30 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:30.810932Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 08 01:12:50 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:50.919491Z  INFO node status pushed
+    Aug 08 01:12:57 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:57.450660Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-rwlnv
+    Aug 08 01:12:58 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:58.533098Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-rwlnv
+    Aug 08 01:13:00 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:13:00.831121Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-dc0748dd-7341-441e-9b1a-948c43b2bd8d.sock plugin_type=DRAPlugin
 
 ════════════════════════════════════════
-Results: 0 passed, 3 failed, 0 skipped
+Results: 0 passed, 1 failed, 0 skipped
 Failed:
-  - test_device_plugin_advertises_capacity_and_allocates_into_a_container
-  - test_device_plugin_health_transition_updates_allocated_resources_status
-  - test_device_plugin_preferred_allocation_and_prestart
+  - test_supplemental_groups_policy_strict_ignores_image_group_membership
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786151264...
+==> Cleaning up test namespace not-k8s-e2e-1786151580...
