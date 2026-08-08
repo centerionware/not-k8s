@@ -4,7 +4,7 @@
 # so profiling.yml can measure kubelet's own idle RSS/CPU as a genuinely
 # separate OS process. A default k3s install can't be used for this
 # comparison at all: it runs kubelet as an embedded goroutine inside the
-# same OS process as the apiserver/etcd/controller-manager/scheduler (see
+# same OS process as the apiserver/kine-SQLite/controller-manager/scheduler (see
 # measure.sh's own doc comment), so there is no way to isolate "kubelet's
 # own number" from a stock k3s process at the OS-process level. This
 # script gives kubelet the exact same footing nodelet already has: its own

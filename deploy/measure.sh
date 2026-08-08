@@ -26,7 +26,7 @@
 # IMPORTANT caveat this script's own output makes explicit rather than
 # implying false precision: k3s runs kubelet (when the agent isn't
 # disabled) as an embedded goroutine inside the *same* OS process as the
-# apiserver/etcd/controller-manager/scheduler — there is no separate
+# apiserver/kine-SQLite/controller-manager/scheduler — there is no separate
 # "kubelet" binary/process to isolate the way a vanilla kubeadm cluster
 # has. So on stock k3s, the "k3s server" row/series below is the *entire*
 # stack combined (control plane + kubelet + kube-proxy + flannel), not
@@ -347,7 +347,7 @@ fmt_or_na() { [[ -n "$1" ]] && echo "$1" || echo "N/A"; }
     echo "  perf hardware counters (cycles/instructions): $($PERF_OK && echo "available" || echo "unavailable on this runner")"
     echo "  CPU-seconds precision: k3s=$K3S_CPU_SECONDS_SOURCE $AGENT_PATTERN=$NODELET_CPU_SECONDS_SOURCE (perf-task-clock = sub-ms via perf; proc-ticks = ~10ms via /proc, whenever perf's task-clock wasn't available)"
     echo ""
-    echo "  NOTE: on stock k3s, \"k3s server\" is the entire stack (apiserver + etcd +"
+    echo "  NOTE: on stock k3s, \"k3s server\" is the entire stack (apiserver + kine/SQLite +"
     echo "  controller-manager + scheduler + the embedded kubelet, when the agent isn't"
     echo "  disabled, all in one OS process) -- k3s does not run kubelet as a separate"
     echo "  process the way a vanilla kubeadm cluster does, so there is no way to"

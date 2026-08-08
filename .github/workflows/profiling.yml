@@ -16,7 +16,7 @@ name: Profiling — nodelet vs a real upstream kubelet (same control plane)
 #   1. From a nodelet-vs-stock-k3s comparison to a genuine apples-to-apples
 #      one. A default k3s install can't isolate "kubelet's own number" at
 #      all — k3s runs kubelet as an embedded goroutine inside the same OS
-#      process as the apiserver/etcd/controller-manager/scheduler, so
+#      process as the apiserver/kine-SQLite/controller-manager/scheduler, so
 #      there's no separate process to measure. This job instead runs a
 #      REAL, standalone upstream kubelet binary
 #      (deploy/lib/upstream-kubelet.sh), version-matched to this cluster's
