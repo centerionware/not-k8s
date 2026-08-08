@@ -1,8 +1,8 @@
 [HEADING=1]not-k8s: replaced kubelet with a 15MB Rust agent[/HEADING]
 
-Been building this for a while — a real Kubernetes control plane (real apiserver, real scheduler, full kubectl/CRD support) with kubelet swapped out for [B]nodelet[/B], a leaner event-driven agent written in Rust.
+A k3s control plane (apiserver, scheduler, full kubectl/CRD support) with kubelet swapped out for [B]nodelet[/B], a leaner event-driven agent written in Rust.
 
-Benchmarked it against a genuine unmodified upstream kubelet, both completely idle, same control plane, six separate runs so I couldn't bias the numbers:
+Benchmarked against upstream kubelet, both completely idle, same control plane, six separate runs so the numbers couldn't be biased by testing back to back on an already-warmed-up box:
 
 [LIST]
 [*][B]Memory[/B] — ~15MB nodelet vs ~81MB kubelet

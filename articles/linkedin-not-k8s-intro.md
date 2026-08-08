@@ -1,17 +1,15 @@
 Kubelet, the agent running on every Kubernetes node, idles at about 81MB of RAM and burns real CPU before your cluster does anything useful.
 
-I built a leaner replacement and benchmarked it properly to see if the gap was real.
-
 Kubelet's job is necessary: watch for pods, talk to the container runtime, report status to the control plane. But it also polls constantly, runs its own container-stats housekeeping, and keeps a pile of watch caches alive the whole time it's idle.
 
-So I built not-k8s. Real Kubernetes control plane underneath — real apiserver, real scheduler, full kubectl and CRD compatibility. The node agent is swapped out for a leaner, event-driven Rust binary called nodelet.
+not-k8s replaces just that node agent. A k3s control plane underneath — apiserver, scheduler, full kubectl and CRD compatibility — stays as-is; the node agent is swapped for a leaner, event-driven Rust binary called nodelet.
 
-I didn't trust my own claim until I tested it:
+Benchmarked, not just claimed:
 
 - Installed nodelet, let it sit idle, measured real memory and CPU time
-- Ran the identical test with a genuine, unmodified, standalone kubelet binary
+- Ran the identical test with a standalone upstream kubelet binary
 - Same control plane, same container runtime, only the node agent changed
-- Six separate runs on six separate machines, so I couldn't bias the numbers by testing back to back on a warmed-up box
+- Six separate runs on six separate machines, so the numbers couldn't be biased by testing back to back on a warmed-up box
 
 Completely idle, zero workload running:
 
@@ -27,6 +25,6 @@ Open source, still early, raw data and charts included with every run:
 Report: https://github.com/centerionware/not-k8s/blob/profiling-results/latest/README.md
 Repo: https://github.com/centerionware/not-k8s
 
-Genuinely curious — if you're running Kubernetes on a Pi cluster, edge fleet, or anything resource-constrained, would 66MB and 0.8 CPU-seconds per node actually matter to you, or is that noise at your scale?
+If you're running Kubernetes on a Pi cluster, edge fleet, or anything resource-constrained — does 66MB and 0.8 CPU-seconds per node actually matter at your scale, or is that noise?
 
 #Kubernetes #Rust #EdgeComputing
