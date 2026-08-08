@@ -182,14 +182,8 @@ trait PodRuntime {
 
 - No container engine needed — tracks pod state in memory and immediately
   reports containers as `Running`.
-- Purpose: fast builds and pure-logic testing without needing a real
-  container runtime available. It is **not** what the published idle-CPU/RSS
-  numbers measure — every released binary (what the standalone installer
-  fetches, and what the profiling workflow installs on both sides of the
-  comparison) is built with `--features cri`. The nodelet-vs-kubelet delta
-  in those numbers includes containerd's own real footprint on the nodelet
-  side, same as it does on the kubelet side; it isn't a mock-vs-real
-  comparison.
+- Purpose: fast builds and pure-logic testing without needing a container
+  runtime available.
 - Build: `cargo build -p nodelet` (no feature flags). Use:
   `NODELET_RUNTIME=mock` (default).
 
