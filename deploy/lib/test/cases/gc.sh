@@ -185,12 +185,26 @@ EOF
     assert_not_empty "$container_id" "container ID before nodelet goes down"
 
     sudo systemctl stop nodelet.service
-    kctl delete pod "$name" --wait=false >/dev/null
-    # Round 124 (found live in CI, full-suite tail-end contention only):
-    # this is pure apiserver-side grace-period expiry (nodelet is down,
-    # so it can't be nodelet's doing) -- 90s wasn't always enough once
-    # this test lands at the tail of a long, otherwise-unfiltered shard.
-    wait_until 180 "$name gone from apiserver" pod_gone "$name"
+    # Round 124 (found live in CI): a plain graceful delete (no
+    # --grace-period=0 --force) can NEVER actually finish while nodelet
+    # is down -- that's real, correct Kubernetes behavior, not a nodelet
+    # bug: the API server sets deletionTimestamp and waits for the
+    # owning kubelet's own final acknowledgment DELETE to actually
+    # remove the object from etcd (the whole reason `--force
+    # --grace-period=0` exists as an escape hatch for exactly "the node
+    # is unreachable/down"). The previous version of this test waited up
+    # to 180s for the plain-delete case to somehow resolve on its own
+    # with nodelet stopped -- it never could, no matter how generous the
+    # timeout, because nothing else was ever going to finish it. Forcing
+    # the delete is also the *more correct* simulation of this test's
+    # own scenario (a pod that disappears from the apiserver while its
+    # node is unreachable, leaving a genuinely orphaned sandbox behind)
+    # -- a plain graceful delete instead just leaves a normal
+    # deletionTimestamp'd pod nodelet's ordinary reconcile handles once
+    # it's back, never actually exercising the orphan-GC path this test
+    # means to check at all.
+    kctl delete pod "$name" --wait=false --grace-period=0 --force >/dev/null
+    wait_until 30 "$name gone from apiserver" pod_gone "$name"
     sudo systemctl start nodelet.service
     _nodelet_wait_ready "node Ready after restarting nodelet post-stop"
 
@@ -251,16 +265,27 @@ test_image_gc_removes_unreferenced_images_above_the_watermark() {
     fi
     if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with a low image-GC watermark/interval"; fi
 
-    local current_usage
+    local current_usage watermark
     current_usage="$(df --output=pcent "${NODELET_DISK_PATH:-/}" 2>/dev/null | tail -1 | tr -dc '0-9')"
     if [[ -z "$current_usage" || "$current_usage" -ge 99 ]]; then
         skip_test "couldn't read a usable disk usage percentage from df to pick a watermark below it"
     fi
+    # Round 124 (found live in CI): should_start_image_gc() gates on
+    # `usage_percent >= high_threshold_percent` -- setting the threshold
+    # to the *exact* usage this test's own `df` call happened to snapshot
+    # left zero margin. nodelet samples disk usage independently (its own
+    # syscall, its own moment in time, its own GC_INTERVAL_SECS cadence),
+    # so any tiny natural drift downward between this snapshot and
+    # nodelet's own check permanently gates GC off -- no timeout is ever
+    # long enough once that happens. A few points of real headroom below
+    # the snapshot is enough to absorb that drift without requiring usage
+    # anywhere near the real high-watermark default (85%).
+    watermark=$((current_usage > 3 ? current_usage - 3 : 0))
 
     image_gc_test_cleanup() { nodelet_restore_env; }
     trap image_gc_test_cleanup EXIT
     nodelet_restart_with_env \
-        "NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT=$current_usage" \
+        "NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT=$watermark" \
         "NODELET_IMAGE_GC_MIN_AGE_SECS=1" \
         "NODELET_GC_INTERVAL_SECS=10"
 

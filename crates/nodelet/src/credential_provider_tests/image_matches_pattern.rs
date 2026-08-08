@@ -63,3 +63,19 @@ fn bare_pattern_with_no_path_matches_any_path() {
 fn multi_segment_glob_pattern_matches_two_wildcard_segments() {
     assert!(image_matches_pattern("a.b.registry.io/image", "*.*.registry.io"));
 }
+
+#[test]
+fn trailing_star_path_matches_any_path_under_the_host() {
+    // Round 124 (found live in CI): this is the single most common real
+    // matchImages shape ("host/*", meaning "any image on this host") --
+    // previously broken because the path prefix check compared against
+    // the literal "*" character instead of stripping it first.
+    assert!(image_matches_pattern("localhost:5001/cred-provider-check:1", "localhost:5001/*"));
+    assert!(image_matches_pattern("registry.io/deeply/nested/path/image:tag", "registry.io/*"));
+}
+
+#[test]
+fn trailing_star_path_still_requires_the_prefix_before_the_star() {
+    assert!(image_matches_pattern("registry.io/team/app:tag", "registry.io/team/*"));
+    assert!(!image_matches_pattern("registry.io/other/app:tag", "registry.io/team/*"));
+}

@@ -100,7 +100,22 @@ pub fn image_matches_pattern(image: &str, pattern: &str) -> bool {
         return false;
     }
 
-    image_path.starts_with(pattern_path)
+    // Round 124 (found live in CI): a pattern path ending in `*` (the
+    // extremely common `registry.io/*` shape, matching "any path under
+    // this host") was being prefix-matched *literally* against the "*"
+    // character itself -- `image_path.starts_with("*")` is false for
+    // every real image path, so `matchImages: ["host/*"]` silently
+    // matched nothing at all, ever. None of this function's existing
+    // unit tests happened to cover a path pattern containing a wildcard
+    // (only a bare host with no path, or a plain non-wildcard path
+    // prefix, which is still meant to prefix-match exactly like before),
+    // so this was invisible until a real exec-plugin credential provider
+    // actually got exercised end-to-end. Stripping a trailing `*` (if
+    // any) before the same prefix check preserves every existing case
+    // (no `*` present -> unchanged) while making the pattern-path-is-
+    // exactly-`*` case correctly match anything (empty prefix).
+    let prefix = pattern_path.strip_suffix('*').unwrap_or(pattern_path);
+    image_path.starts_with(prefix)
 }
 
 /// Split `ref` (an image reference, or a `matchImages` pattern — both
