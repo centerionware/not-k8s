@@ -15,4 +15,6 @@ Benchmarked it against a genuine unmodified upstream kubelet, both completely id
 
 Full raw data + methodology: [URL]https://github.com/centerionware/not-k8s/blob/profiling-results/latest/README.md[/URL]
 
+Still alpha — hasn't been proven under heavy real-world workloads yet — but it's past 1,100 unit tests and 140 e2e tests, so it's in a good spot to start toying with.
+
 Repo: [URL]https://github.com/centerionware/not-k8s[/URL]
