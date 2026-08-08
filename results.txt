@@ -1,6 +1,31 @@
-commit: b5d041fd837331c7fecb3bdc8243c77f5cea4a02
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31235954343
-timestamp (UTC): 2026-08-08T02:55:37Z
-exit code: unknown
+commit: 56d24820ee028c4acf0b67a429de8d71ac201e33
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31236218723
+timestamp (UTC): 2026-08-08T03:10:30Z
+exit code: 0
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+==> Test namespace: not-k8s-e2e-1786158245
+==> 151 test(s) registered total; running now...
+▶ test_device_plugin_advertises_capacity_and_allocates_into_a_container
+==> installing grpcio/grpcio-tools for the fake device plugin...
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
+  ✔ PASS (152s)
+▶ test_device_plugin_health_transition_updates_allocated_resources_status
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
+  ✔ PASS (101s)
+▶ test_device_plugin_preferred_allocation_and_prestart
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
+  ✔ PASS (129s)
+▶ test_allocated_resources_status_absent_without_device_resources
+  ✔ PASS (2s)
+
+════════════════════════════════════════
+Results: 4 passed, 0 failed, 0 skipped
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786158245...
