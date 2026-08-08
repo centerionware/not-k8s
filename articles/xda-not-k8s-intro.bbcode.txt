@@ -1,54 +1,47 @@
-[HEADING=1]I ripped kubelet out of Kubernetes and replaced it with 15MB of Rust[/HEADING]
+[HEADING=1]not-k8s: a Kubernetes node agent rewritten in Rust to replace kubelet[/HEADING]
 
-Here's my setup: a Raspberry Pi, and a Pixel phone that happens to run KVM well enough to spin up VMs on it. That's the homelab. I'd like to run a real Kubernetes cluster, but I don't have a stack of old servers sitting around to do it on — and even on what I've got, a stock cluster's node agent alone eats a real chunk of RAM before I've deployed anything.
+Kubelet is the agent that runs on every Kubernetes node. It talks to the container runtime, watches for pods, and reports status back to the control plane. Necessary work — but it also polls constantly, runs its own cAdvisor loop for container stats, and keeps a pile of watch caches alive the whole time it's idle. On a rack server that overhead disappears into the noise. On a Raspberry Pi or any small edge box, it's a real chunk of the machine's resources gone before a single workload runs.
 
-That agent is kubelet. It runs on every node — talks to the container runtime, watches for pods, reports status back up to the control plane. Necessary work. But it also polls constantly, runs its own cAdvisor loop for container stats, keeps a pile of watch caches alive the whole time it's just sitting there. On a rack server you'd never notice. On a Pi, or a phone doing double duty as a node, you notice.
+[B]not-k8s[/B] keeps a real Kubernetes control plane — real apiserver, real scheduler, full kubectl and CRD support — and replaces just the node agent with [B]nodelet[/B], written in Rust. Kubelet polls for state. Nodelet reacts to events as they happen. Same job, different approach.
 
-So I started wondering if you could just not run kubelet. Keep everything else — real apiserver, real scheduler, full kubectl and CRD support — and swap out only the node agent for something that doesn't do all that idle busywork.
+[HEADING=2]the benchmark[/HEADING]
 
-That became a project I'm calling [B]not-k8s[/B]. The node agent is [B]nodelet[/B], written in Rust. Instead of polling for changes, it reacts to events as they happen. Same job as kubelet. Different approach to doing it.
+Claiming a leaner node agent is easy. Proving it needs an actual test, so here's how it was measured:
 
-[HEADING=2]does it actually help, though[/HEADING]
+[LIST]
+[*]Install the released nodelet binary, pair it with a stripped-down k3s control plane, let it sit completely idle for two minutes, read real memory and CPU numbers straight out of /proc
+[*]Run the identical test with a genuine, unmodified upstream kubelet binary, pulled from Kubernetes' own release server and version-matched to the k3s build underneath
+[*]Same control plane both times. Same containerd. The node agent is the only variable that changes
+[*]Three runs per agent, six machines running in parallel, so no run could bias the others by reusing already-warmed-up hardware
+[/LIST]
 
-A leaner-node-agent claim is cheap to make and easy to fake, so I built a real benchmark instead of just asserting it. Install the released nodelet binary, pair it with a stripped-down k3s control plane, let it sit completely idle for two minutes, read real memory and CPU numbers straight out of /proc. Then run the same test again with a genuine, unmodified upstream kubelet binary — pulled from Kubernetes' own release server, version-matched to whatever k3s was running. Same control plane both times. Same containerd. The node agent is the only thing that changes.
-
-Three runs per agent, six machines running in parallel, so I couldn't accidentally flatter the numbers by testing one right after the other on hardware that was already warm.
-
-Completely idle, here's what came back:
+Completely idle, zero workload running, here's what came back:
 
 [LIST]
 [*][B]Memory[/B] — about 15MB for nodelet, about 81MB for kubelet
 [*][B]CPU time over a 2-minute idle window[/B] — about 0.08s for nodelet, about 0.85s for kubelet
 [/LIST]
 
-Same rough gap either way, memory or CPU.
-
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/rss-over-time.png[/IMG]
 
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/cpu-over-time.png[/IMG]
 
-Nothing was actually running on either node during this. No pods, no containers doing real work. This is just the price of having the agent installed and sitting there.
+That's the cost of having the node agent installed, before it's done anything. No pods, no containers doing real work, on either side.
 
-On a rack server with 64GB of RAM, none of this decides whether your cluster works. But that CPU time doesn't evaporate on a big server either — it's cycles your workload isn't getting. Give them back and every node in the fleet has a bit more room, Pi or rack.
+[HEADING=2]why this comparison is fair[/HEADING]
 
-[HEADING=2]why you shouldn't just take my word for it[/HEADING]
+A normal k3s install doesn't run kubelet as its own process — it's baked into the same binary as the apiserver, so there's no clean way to isolate "just kubelet" out of a default install. Getting an honest comparison meant standing up a real, standalone kubelet as its own systemd service against the same control plane.
 
-"Our thing is faster" posts are usually unfalsifiable, because the comparison quietly stops being fair somewhere in the middle. I tried hard not to let that happen here.
+Real hardware CPU cycle counts via perf turned out to be unavailable on GitHub's own CI runners — they're virtualized, with no PMU passthrough to the guest. That column in the report reads N/A rather than a fabricated number.
 
-Start with the setup itself: a normal k3s install doesn't even run kubelet as its own process. It's baked into the same binary as the apiserver and everything else, so there's no clean way to isolate "just kubelet" from a default install. I had to pull a real standalone kubelet and run it as its own systemd service against the same control plane, just to have something honest to measure against.
-
-I also went after real hardware CPU cycle counts with perf, and hit a wall: GitHub's own CI runners don't expose real performance counters to the guest at all. Virtualized, no PMU passthrough. That column in the report reads N/A. I'd rather leave it blank than fake it.
-
-Every benchmark run publishes its raw per-second CSVs next to the summary. Don't trust my numbers — go pull the data and check the math:
+Every benchmark run publishes its raw per-second CSVs alongside the summary, so the numbers can be checked directly:
 
 [URL]https://github.com/centerionware/not-k8s/blob/profiling-results/latest/README.md[/URL]
 
-[HEADING=2]who this is actually for[/HEADING]
+[HEADING=2]who this is for[/HEADING]
 
-Small hardware, mostly — a Pi, a phone, an edge box, anywhere the node agent's own idle cost competes with the thing you're actually trying to run. The gap doesn't close on bigger machines. It just gets easier to ignore.
+Small hardware, mainly — anywhere the node agent's own idle cost competes with the workload you actually want to run. The gap doesn't close on bigger machines, it just gets easier to ignore.
 
-It's early. There's a running checklist in the repo of what's implemented and what isn't, and I'd rather show you the gaps than pretend they don't exist. The core swap works, and the numbers above came from a real cluster, not a slide deck.
-
-If you're running Kubernetes on anything small, I'd genuinely like to know whether this would help you.
+The project is still early. There's a running checklist in the repo tracking what's implemented against real kubelet and what isn't, kept honest rather than declared finished.
 
 [B]Repo:[/B] [URL]https://github.com/centerionware/not-k8s[/URL]
