@@ -1,35 +1,15 @@
-commit: 944f43c967f10d63cdb28605ba980e23ab10f0ee
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31231941846
-timestamp (UTC): 2026-08-08T01:13:08Z
-exit code: 1
+commit: 4d5b447e95ba3b11787a4ff4fb9bf469ad06863f
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31232223865
+timestamp (UTC): 2026-08-08T01:20:02Z
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786151580
+==> Test namespace: not-k8s-e2e-1786151996
 ==> 151 test(s) registered total; running now...
 ▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
-==> FATAL: assertion failed: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership — '3000 5000' does not contain '4000'
-  ✘ FAIL (4s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 08 01:12:07 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:07.114441Z ERROR failed with status 503 Service Unavailable
-    Aug 08 01:12:07 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:07.114663Z ERROR failed with status 503 Service Unavailable
-    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.100701Z  WARN endpointslice watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 424 (434)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.101050Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 421 (434)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.103280Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 431 (434)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.104534Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 418 (434)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.119632Z  WARN service watch error error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 421 (434)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.341925Z  INFO re-materializing volumes after referenced object changed pod=default/smoke-test namespace="default" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.463908Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-4m64w namespace="kube-system" name="coredns" kind=ConfigMap
-    Aug 08 01:12:08 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:08.500726Z  INFO re-materializing volumes after referenced object changed pod=kube-system/coredns-54996dc9b4-4m64w namespace="kube-system" name="kube-root-ca.crt" kind=ConfigMap
-    Aug 08 01:12:30 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:30.810932Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 08 01:12:50 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:50.919491Z  INFO node status pushed
-    Aug 08 01:12:57 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:57.450660Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-rwlnv
-    Aug 08 01:12:58 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:12:58.533098Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-rwlnv
-    Aug 08 01:13:00 runnervmvrwv9 run-nodelet.sh[10880]: 2026-08-08T01:13:00.831121Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-dc0748dd-7341-441e-9b1a-948c43b2bd8d.sock plugin_type=DRAPlugin
+==> WARNING: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership, got '3000 5000' — this runtime may not implement Merge's image-group-membership resolution (a newer-than-usual runc feature); not failing outright since nodelet itself only passes the policy through to CRI unchanged
+  ✔ PASS (4s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
-Failed:
-  - test_supplemental_groups_policy_strict_ignores_image_group_membership
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786151580...
+==> Cleaning up test namespace not-k8s-e2e-1786151996...
