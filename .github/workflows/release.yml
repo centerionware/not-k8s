@@ -189,6 +189,14 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Round 124 (found live in CI): the default GITHUB_TOKEN permissions
+    # don't include actions:write, so the DELETE call below failed every
+    # single run with a 403 ("Resource not accessible by integration") --
+    # harmless (the artifact still expired on its own 1-day
+    # retention-days), but it made this job a permanent, confusing red X
+    # on an otherwise fully green pipeline.
+    permissions:
+      actions: write
     steps:
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
