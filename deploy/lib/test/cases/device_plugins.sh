@@ -312,7 +312,7 @@ EOF
         warn "[diag] kctl exec raw stderr: $(kctl exec "$name" -- sh -c 'echo $FAKE_DEVICE_IDS' 2>&1 1>/dev/null)"
         warn "[diag] kctl exec raw stdout: $(kctl exec "$name" -- env 2>&1)"
         warn "[diag] nodelet log mentioning $name, Allocate, or the fake resource:"
-        sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -E "$name|Allocate|fake\.example\.com" | tail -40 | while IFS= read -r line; do warn "[diag]   $line"; done
+        sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -E "$name|Allocate|fake\.example\.com|CreateContainer" | tail -60 | while IFS= read -r line; do warn "[diag]   $line"; done
         delete_pod_if_exists "$name"
         die "couldn't read the allocated device ID back out of the container"
     fi

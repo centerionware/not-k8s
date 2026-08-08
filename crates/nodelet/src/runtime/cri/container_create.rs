@@ -650,6 +650,13 @@ impl CriRuntime {
                 return Err(e).context("creating container");
             }
         };
+        // Round 124 (temporary diagnostic): correlates with the
+        // "Allocate() succeeded" log above by container name — if the
+        // container_id here ever DOESN'T match what the pod's own status
+        // later reports as containerStatuses[].containerID, that's
+        // definitive proof a different, stale container is what's
+        // actually running (a duplicate/orphaned creation), not this one.
+        info!(container = %container.name, container_id = %created.container_id, "CreateContainer succeeded");
         self.record_device_allocations(sandbox_id, &container.name, allocated_devices);
 
         if let Err(e) = rt.start_container(StartContainerRequest { container_id: created.container_id.clone() }).await {
