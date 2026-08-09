@@ -58,21 +58,43 @@ roughly **81 MB RSS** and **~0.85s of CPU time per 2-minute window**, against
 `nodelet`'s **~15 MB** and **~0.08s**. Those numbers come from
 `.github/workflows/profiling.yml`, which runs both agents on GitHub-hosted
 `ubuntu-latest` x86_64 runners — three replicates each, in parallel, one
-agent per runner — not on any edge device. See the
+agent per runner. See the
 [`profiling-results`](https://github.com/centerionware/not-k8s/tree/profiling-results)
-branch for the raw per-second data and methodology. Equivalent numbers on
-ARM/edge hardware haven't been published; releases build for
-x86_64/aarch64/armv7l, but only x86_64 has been profiled.
+branch for the raw per-second data and methodology.
+
+**Read the CPU number as absolute work, not as a percentage.** On the
+server-class x86_64 core those runs use, 0.85s per 120s window is well
+under 1% of a core — easy to dismiss. But that's a fixed amount of work
+being divided by a fast core. The same polling loops on a slow,
+thermally-throttled ARM core consume a far larger share of it: running a
+full stock k3s stack (apiserver, controller-manager, scheduler,
+kine/SQLite *and* the embedded kubelet together) on phone-class hardware
+has been observed sitting at roughly 30-50% of a core at idle. That's a
+different measurement of a different thing on different hardware — not
+comparable to the standalone-kubelet figures above, and not something
+this project has formally profiled — but it's the reason the absolute
+number matters more than the percentage. Releases build for
+x86_64/aarch64/armv7l; only x86_64 has published profiling numbers.
 
 ## Why the Node Agent's Floor Matters
 
-On a machine with 64 GB of RAM, saving 66 MB per node is a rounding error.
-Across a large fleet it adds up to something real but still modest — some
-reclaimed scheduling capacity, some CPU cycles handed back to workloads.
-That's a fine reason to prefer it, not a reason to build it.
+On a machine with 64 GB of RAM and fast cores, saving 66 MB and a fraction
+of a percent of a core per node is a rounding error. Across a large fleet
+it adds up to something real but still modest — some reclaimed scheduling
+capacity, some CPU cycles handed back to workloads. That's a fine reason to
+prefer it, not a reason to build it.
 
 The bigger reason is what the node agent's resource floor decides: **which
 hardware can be a Kubernetes node at all.**
+
+Both halves of that floor get worse as the hardware gets smaller, and
+neither scales the way a datacenter operator's intuition expects. A fixed
+~81 MB is 0.1% of a 64 GB server and over 15% of a 512 MB device. A fixed
+amount of polling work is noise on a fast server core and a visible share
+of a slow, thermally-throttled one — the polling doesn't get cheaper just
+because the core is weaker; it gets proportionally more expensive, and on
+battery-powered or passively-cooled hardware it also competes for thermal
+headroom the workload needs.
 
 Kubernetes' API is genuinely good at what a lot of small-hardware fleets
 need — declarative rollouts, health checking, restart policy, secret and

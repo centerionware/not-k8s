@@ -6,6 +6,8 @@
 
 The core idea: kubelet's idle cost isn't from doing actual work, it's from constant polling (PLEG re-lists every container every second, cAdvisor walks cgroups forever, informers periodically re-list the world). Measured idle with no pods scheduled, that costs ~81MB RSS and ~0.85s of CPU per 2-minute window; `nodelet` rebuilds the node side to be event-driven — no PLEG, no cAdvisor housekeeping, one process, one watch — and comes in at ~15MB and ~0.08s.
 
+Those measurements are from x86_64 CI runners, where the CPU share is a fraction of a percent of a fast core and easy to wave off. That's the wrong way to read it: it's a *fixed* amount of polling work, so the slower the core, the bigger the bite. A full stock k3s stack on phone-class hardware idles closer to 30-50% of a core — different measurement, different hardware, but the same underlying reason.
+
 Per node that saving is modest, and on a 64GB server it's a rounding error. The point isn't the megabytes — it's that the node agent's floor decides which hardware can be a Kubernetes node at all. Kubernetes' API solves a lot of what small-hardware fleets actually need (declarative rollouts, health checks, restart policy, config/secret distribution, real RBAC), but the orchestrator that already solved it assumes every node can spare hundreds of megabytes before running a container. The control plane can live on a server somewhere; only the node agent has to run on the constrained device. `not-k8s` aims to stay as close to upstream kubelet's behavior as possible, not to reinvent the node agent's contract.
 
 ## Get started
