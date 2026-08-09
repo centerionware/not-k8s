@@ -74,6 +74,36 @@
 //! local IP, so they only catch traffic actually addressed to this node —
 //! not bridged pod-to-pod traffic that happens to reuse the same port
 //! number.
+//!
+//! ## Kernels that can't run all of this
+//!
+//! `fib`, `numgen` and `jhash` are each a separate kernel module, and a
+//! build can simply omit them — confirmed on an Android-derived 6.12
+//! aarch64 kernel missing all three. They fail identically and unhelpfully:
+//! `nft` accepts the syntax, then the kernel rejects the rule with "Could
+//! not process rule: No such file or directory" at the offending token.
+//!
+//! That is not a per-Service problem. The ruleset is applied atomically, so
+//! one unusable rule makes `nft -f -` reject the whole file and every
+//! Service on the node loses its rules. `probe_caps()` therefore probes each
+//! feature up front — by really committing a rule, since syntax checks pass
+//! on kernels that then refuse it — and only rules this kernel can run are
+//! ever emitted:
+//!
+//!   - No `fib`: NodePort matches this node's own addresses explicitly.
+//!     The address list is only as current as the last rebuild, which is
+//!     the trade-off `fib` was chosen to avoid, but a rebuild happens on
+//!     every Service/EndpointSlice event.
+//!   - No `numgen`: multi-backend Services are load balanced through
+//!     `iptables`' `statistic` match instead (`build_statistic_ruleset()`)
+//!     — the same mechanism real kube-proxy's iptables backend uses, and
+//!     available on that kernel when every native nftables selector is not.
+//!     Those Services are then owned entirely by that chain and omitted
+//!     here, so the two never race for the same connection.
+//!   - Neither: several backends collapse to one. Routing survives; load
+//!     balancing does not.
+//!   - No `jhash`: `sessionAffinity: ClientIP` pins to a single backend,
+//!     which still satisfies "same client, same backend".
 
 use crate::config::{IpFamily, LbMethod};
 use anyhow::{Context, Result};
@@ -212,7 +242,24 @@ unaffected either way",
                 apply_nft(&ruleset)
                     .map_err(|e| anyhow::anyhow!(e))
                     .context("applying the nftables ruleset")?;
-                debug!("nft ruleset applied");
+                // The xtables fallback, only ever non-empty on a kernel
+                // that cannot select among backends natively. Applied after
+                // the nft table so a failure here still leaves single-backend
+                // routing in place.
+                if !caps.numgen && caps.statistic {
+                    for family in [Family::V4, Family::V6] {
+                        match build_statistic_ruleset(&state, self.ip_family, caps, family) {
+                            Some(rs) => {
+                                ensure_statistic_chain(family);
+                                apply_statistic(family, &rs).with_context(|| {
+                                    format!("applying the {} statistic ruleset", ipt(family))
+                                })?;
+                            }
+                            None => flush_statistic_chain(family),
+                        }
+                    }
+                }
+                debug!("ruleset applied");
             }
         }
     }
@@ -405,6 +452,12 @@ fn build_ruleset(
 
             for port in spec.ports.as_deref().unwrap_or(&[]) {
                 let backends = backends_for(namespace, name, port, family, &state.endpoint_slices);
+                // Owned by the xtables statistic chain instead — emitting
+                // here too would mean two DNAT rules racing for the same
+                // connection.
+                if caps.delegates_to_statistic(backends.len()) {
+                    continue;
+                }
                 let lb = lb_expr(svc, lb_method, family, caps);
                 let Some(target) = dnat_target(lb.as_deref(), &backends) else { continue };
                 let proto = port.protocol.as_deref().unwrap_or("TCP").to_ascii_lowercase();
@@ -507,13 +560,28 @@ pub struct Caps {
     pub numgen: bool,
     /// `jhash <family> saddr` — source-hash / sessionAffinity selection.
     pub jhash: bool,
+    /// xtables' `-m statistic --mode random --probability`, reachable
+    /// through `iptables` even on a kernel with no `nft_numgen`. This is
+    /// the mechanism real kube-proxy's *iptables* backend uses to spread
+    /// connections across endpoints, and on the kernel that motivated all
+    /// of this it is available when every native nftables selector is not.
+    /// See `build_statistic_ruleset()`.
+    pub statistic: bool,
 }
 
 impl Caps {
     /// All-supported, for tests and for reasoning about a normal kernel.
     #[cfg(test)]
     fn all() -> Self {
-        Self { fib: true, numgen: true, jhash: true }
+        Self { fib: true, numgen: true, jhash: true, statistic: true }
+    }
+
+    /// Whether a Service with this many ready backends has to be programmed
+    /// through the xtables statistic fallback rather than the nft table.
+    /// Never true on a kernel with `numgen` — normal hosts never touch
+    /// iptables at all.
+    fn delegates_to_statistic(self, backends: usize) -> bool {
+        backends > 1 && !self.numgen && self.statistic
     }
 }
 
@@ -532,8 +600,51 @@ fn probe_rule(rule: &str) -> bool {
     ok
 }
 
+/// The xtables chain the statistic fallback owns, in the `nat` table.
+/// Everything in it is rewritten wholesale on every rebuild; nothing else
+/// in `nat` is touched (see `apply_statistic()`).
+const IPT_CHAIN: &str = "NOTK8S-SVC";
+
+fn ipt(family: Family) -> &'static str {
+    match family {
+        Family::V4 => "iptables",
+        Family::V6 => "ip6tables",
+    }
+}
+
+fn ipt_restore(family: Family) -> &'static str {
+    match family {
+        Family::V4 => "iptables-restore",
+        Family::V6 => "ip6tables-restore",
+    }
+}
+
+fn run_ok(cmd: &str, args: &[&str]) -> bool {
+    Command::new(cmd).args(args).output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Can this host actually append a statistic-matched DNAT? Probed the same
+/// way as the nft expressions — by really committing a rule to a scratch
+/// chain, because `iptables` will happily accept the syntax of a match
+/// whose kernel module is missing and only fail on append.
+fn probe_statistic() -> bool {
+    let chain = "NOTK8S-PROBE";
+    let _ = run_ok("iptables", &["-t", "nat", "-N", chain]);
+    let ok = run_ok(
+        "iptables",
+        &[
+            "-t", "nat", "-A", chain, "-p", "tcp", "-m", "statistic", "--mode", "random",
+            "--probability", "0.5", "-j", "DNAT", "--to-destination", "10.255.255.254:1",
+        ],
+    );
+    let _ = run_ok("iptables", &["-t", "nat", "-F", chain]);
+    let _ = run_ok("iptables", &["-t", "nat", "-X", chain]);
+    ok
+}
+
 fn probe_caps() -> Caps {
     let caps = Caps {
+        statistic: probe_statistic(),
         fib: probe_rule("fib daddr type local tcp dport 65000 dnat ip to 10.255.255.254:1"),
         numgen: probe_rule(
             "ip daddr 10.255.255.254 tcp dport 65000 dnat to numgen random mod 2 \
@@ -551,13 +662,25 @@ explicitly instead of `fib daddr type local`. Equivalent for traffic addressed t
 address, but it only covers addresses present when each ruleset is built."
         );
     }
-    if !caps.numgen || !caps.jhash {
+    if !caps.numgen && caps.statistic {
+        info!(
+            "this kernel has no nft_numgen, so multi-backend Services are load balanced through \
+iptables' statistic match instead — the same mechanism kube-proxy's iptables backend uses. \
+Single-backend Services and all other rules stay in nftables."
+        );
+    }
+    if !caps.numgen && !caps.statistic {
         warn!(
-            numgen = caps.numgen,
-            jhash = caps.jhash,
-            "this kernel cannot select among backends (nft_numgen/nft_hash absent) — Services \
-with more than one ready backend will be sent entirely to one of them, and sessionAffinity is \
-trivially satisfied. Routing works; load balancing does not."
+            "this kernel can neither select among backends in nftables (no nft_numgen) nor fall \
+back to iptables' statistic match — Services with more than one ready backend will be sent \
+entirely to one of them. Routing works; load balancing does not."
+        );
+    }
+    if !caps.jhash {
+        warn!(
+            "this kernel has no nft_hash, so sessionAffinity: ClientIP cannot be implemented by \
+source hashing. Affected Services are pinned to a single backend, which satisfies \
+'same client, same backend' but removes their load balancing."
         );
     }
     caps
@@ -590,6 +713,137 @@ fn local_addrs() -> Vec<String> {
             Some(addr.to_string())
         })
         .collect()
+}
+
+/// Renders the `nat`-table chain that load balances multi-backend Services
+/// on kernels without `nft_numgen`, in `iptables-restore` syntax.
+///
+/// The probability scheme is real kube-proxy's, because it is the correct
+/// one: rule *i* of *N* matches with probability `1/(N-i)` and the last
+/// rule matches unconditionally, so sequential evaluation yields an even
+/// split. A naive `1/N` on every rule would send `(1-1/N)^N` of traffic —
+/// about 37% at large N — past the end of the chain entirely.
+///
+/// Returns `None` when nothing needs the fallback, which is the normal case
+/// on any kernel with `numgen`.
+fn build_statistic_ruleset(
+    state: &State,
+    ip_family: IpFamily,
+    caps: Caps,
+    family: Family,
+) -> Option<String> {
+    let families: &[Family] = match ip_family {
+        IpFamily::V4 => &[Family::V4],
+        IpFamily::V6 => &[Family::V6],
+        IpFamily::Dual => &[Family::V4, Family::V6],
+    };
+    if !families.contains(&family) {
+        return None;
+    }
+
+    let mut rules = Vec::new();
+    for (key, svc) in &state.services {
+        let Some(spec) = svc.spec.as_ref() else { continue };
+        let Some((namespace, name)) = key.split_once('/') else { continue };
+
+        let cluster_ips: Vec<&str> = spec
+            .cluster_ips
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .map(|v| v.iter().map(String::as_str).collect())
+            .unwrap_or_else(|| spec.cluster_ip.as_deref().into_iter().collect());
+
+        for cluster_ip in cluster_ips {
+            if cluster_ip.is_empty() || cluster_ip == "None" || Family::of(cluster_ip) != family {
+                continue;
+            }
+            for port in spec.ports.as_deref().unwrap_or(&[]) {
+                let backends = backends_for(namespace, name, port, family, &state.endpoint_slices);
+                if !caps.delegates_to_statistic(backends.len()) {
+                    continue;
+                }
+                let proto = port.protocol.as_deref().unwrap_or("TCP").to_ascii_lowercase();
+                let n = backends.len();
+
+                for (i, (ip, bport)) in backends.iter().enumerate() {
+                    let dest =
+                        if ip.contains(':') { format!("[{ip}]:{bport}") } else { format!("{ip}:{bport}") };
+                    let sel = if i + 1 == n {
+                        // Last one takes whatever reached it.
+                        String::new()
+                    } else {
+                        let p = 1.0_f64 / ((n - i) as f64);
+                        format!(" -m statistic --mode random --probability {p:.11}")
+                    };
+                    rules.push(format!(
+                        "-A {IPT_CHAIN} -d {cluster_ip} -p {proto} --dport {}{sel} -j DNAT --to-destination {dest}",
+                        port.port
+                    ));
+                    if let Some(node_port) = port.node_port.filter(|p| *p != 0) {
+                        // NodePort: xtables has its own "is this addressed
+                        // to me" match, so unlike the nft fallback this
+                        // needs no address enumeration at all.
+                        rules.push(format!(
+                            "-A {IPT_CHAIN} -m addrtype --dst-type LOCAL -p {proto} --dport {node_port}{sel} -j DNAT --to-destination {dest}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if rules.is_empty() {
+        return None;
+    }
+    // `:CHAIN - [0:0]` replaces this chain's contents; --noflush leaves
+    // every other chain in `nat` (flannel's, anyone else's) untouched.
+    // Verified directly: two consecutive applies leave two rules, not four.
+    Some(format!("*nat\n:{IPT_CHAIN} - [0:0]\n{}\nCOMMIT\n", rules.join("\n")))
+}
+
+/// Installs the chain and the jumps into it. Idempotent: the jump is only
+/// inserted when absent, so this never accumulates duplicates across the
+/// rebuilds that happen on every Service event.
+fn ensure_statistic_chain(family: Family) {
+    let t = ipt(family);
+    let _ = run_ok(t, &["-t", "nat", "-N", IPT_CHAIN]);
+    for hook in ["PREROUTING", "OUTPUT"] {
+        if !run_ok(t, &["-t", "nat", "-C", hook, "-j", IPT_CHAIN]) {
+            let _ = run_ok(t, &["-t", "nat", "-I", hook, "1", "-j", IPT_CHAIN]);
+        }
+    }
+}
+
+/// Empties the chain without removing it, for when no Service needs the
+/// fallback any more. Leaving stale DNAT rules behind would silently route
+/// to pods that no longer exist.
+fn flush_statistic_chain(family: Family) {
+    let _ = run_ok(ipt(family), &["-t", "nat", "-F", IPT_CHAIN]);
+}
+
+fn apply_statistic(family: Family, ruleset: &str) -> Result<()> {
+    let mut child = Command::new(ipt_restore(family))
+        .arg("--noflush")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("spawning {}", ipt_restore(family)))?;
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(ruleset.as_bytes())
+        .context("writing iptables-restore input")?;
+    let out = child.wait_with_output().context("waiting on iptables-restore")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "{} failed: {}\n--- ruleset ---\n{ruleset}",
+            ipt_restore(family),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
 }
 
 fn check_nft() -> Result<()> {
@@ -749,7 +1003,7 @@ mod tests {
     /// rule takes the entire atomically-applied ruleset with it.
     #[test]
     fn a_kernel_without_numgen_or_jhash_gets_no_selector_at_all() {
-        let none = Caps { fib: true, numgen: false, jhash: false };
+        let none = Caps { fib: true, numgen: false, jhash: false, statistic: false };
         let plain = fake_service(vec!["10.43.0.1"], None);
         let sticky = fake_service(vec!["10.43.0.1"], Some("ClientIP"));
         for method in [LbMethod::Random, LbMethod::RoundRobin, LbMethod::SourceHash] {
@@ -801,7 +1055,7 @@ mod tests {
     fn nodeport_still_works_without_fib_by_matching_local_addresses() {
         let state = state_with_one_nodeport_service();
         let local = vec!["192.168.1.50".to_string(), "10.0.0.1".to_string()];
-        let no_fib = Caps { fib: false, numgen: true, jhash: true };
+        let no_fib = Caps { fib: false, numgen: true, jhash: true, statistic: false };
 
         let rs = build_ruleset(&state, IpFamily::V4, LbMethod::Random, no_fib, &local);
 
@@ -835,10 +1089,73 @@ mod tests {
     #[test]
     fn losing_nodeport_never_costs_clusterip() {
         let state = state_with_one_nodeport_service();
-        let no_fib = Caps { fib: false, numgen: true, jhash: true };
+        let no_fib = Caps { fib: false, numgen: true, jhash: true, statistic: false };
         let rs = build_ruleset(&state, IpFamily::V4, LbMethod::Random, no_fib, &[]);
         assert!(rs.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"), "{rs}");
         assert!(!rs.contains("30080"), "no local addresses means no NodePort rules:\n{rs}");
+    }
+
+    /// A three-backend Service on a kernel with no nft_numgen must be
+    /// programmed through the xtables chain — evenly, using kube-proxy's
+    /// own 1/(N-i) scheme, with the last rule unconditional.
+    #[test]
+    fn statistic_fallback_spreads_evenly_and_terminates() {
+        let caps = Caps { fib: false, numgen: false, jhash: false, statistic: true };
+        let mut state = state_with_one_nodeport_service();
+        // Widen the single slice to three ready backends.
+        let slice = state.endpoint_slices.get_mut("n/s-abc").unwrap();
+        slice.endpoints[0].addresses = vec!["10.42.0.5".into()];
+        for ip in ["10.42.0.6", "10.42.0.7"] {
+            let mut ep = slice.endpoints[0].clone();
+            ep.addresses = vec![ip.to_string()];
+            slice.endpoints.push(ep);
+        }
+
+        let rs = build_statistic_ruleset(&state, IpFamily::V4, caps, Family::V4)
+            .expect("three backends must produce a fallback ruleset");
+
+        assert!(rs.starts_with("*nat\n:NOTK8S-SVC - [0:0]\n"), "{rs}");
+        assert!(rs.trim_end().ends_with("COMMIT"), "{rs}");
+        // 1/3 then 1/2 then unconditional — the scheme that actually splits
+        // evenly. A flat 1/N on every rule would drop ~30% off the end.
+        assert!(rs.contains("--probability 0.33333333333"), "{rs}");
+        assert!(rs.contains("--probability 0.50000000000"), "{rs}");
+        let last = rs.lines().filter(|l| l.contains("10.42.0.7:8080")).collect::<Vec<_>>();
+        assert!(!last.is_empty(), "{rs}");
+        assert!(
+            last.iter().all(|l| !l.contains("statistic")),
+            "the final backend must match unconditionally, or traffic falls off the end:\n{rs}"
+        );
+        // NodePort comes along for free here — xtables has its own local
+        // match, so no address enumeration and no dependence on nft_fib.
+        assert!(rs.contains("-m addrtype --dst-type LOCAL"), "{rs}");
+    }
+
+    /// And the nft table must NOT also program those Services, or two DNAT
+    /// rules race for the same connection.
+    #[test]
+    fn delegated_services_are_absent_from_the_nft_ruleset() {
+        let caps = Caps { fib: false, numgen: false, jhash: false, statistic: true };
+        let mut state = state_with_one_nodeport_service();
+        let slice = state.endpoint_slices.get_mut("n/s-abc").unwrap();
+        let mut ep = slice.endpoints[0].clone();
+        ep.addresses = vec!["10.42.0.6".into()];
+        slice.endpoints.push(ep);
+
+        let nft = build_ruleset(&state, IpFamily::V4, LbMethod::Random, caps, &["10.0.0.1".into()]);
+        assert!(!nft.contains("10.43.0.1"), "delegated Service must not appear in nft:\n{nft}");
+        assert!(build_statistic_ruleset(&state, IpFamily::V4, caps, Family::V4).is_some());
+    }
+
+    /// A single backend needs no selection at all, so it stays in nftables
+    /// even on a kernel that has the fallback available.
+    #[test]
+    fn one_backend_never_uses_the_fallback() {
+        let caps = Caps { fib: false, numgen: false, jhash: false, statistic: true };
+        let state = state_with_one_nodeport_service();
+        assert!(build_statistic_ruleset(&state, IpFamily::V4, caps, Family::V4).is_none());
+        let nft = build_ruleset(&state, IpFamily::V4, LbMethod::Random, caps, &["10.0.0.1".into()]);
+        assert!(nft.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"), "{nft}");
     }
 
     #[test]

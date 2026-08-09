@@ -43,6 +43,20 @@ stop_service_proxy_nft() {
     if command -v nft &>/dev/null; then
         nft delete table inet not_k8s_svc 2>/dev/null || true
     fi
+    # nodeproxy also owns an iptables chain on kernels that can't select
+    # among backends natively (no nft_numgen) — see build_statistic_ruleset()
+    # in crates/nodeproxy/src/svc.rs. Absent everywhere else, so all of this
+    # is a no-op on a normal host.
+    local ipt
+    for ipt in iptables ip6tables; do
+        command -v "$ipt" &>/dev/null || continue
+        local hook
+        for hook in PREROUTING OUTPUT; do
+            "$ipt" -t nat -D "$hook" -j NOTK8S-SVC 2>/dev/null || true
+        done
+        "$ipt" -t nat -F NOTK8S-SVC 2>/dev/null || true
+        "$ipt" -t nat -X NOTK8S-SVC 2>/dev/null || true
+    done
 }
 
 # Stops+removes everything a run started: nodelet, nodeproxy and its nft
