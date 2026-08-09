@@ -16,18 +16,19 @@ Completely idle, zero workload running:
 - Memory — about 15MB for nodelet, about 81MB for kubelet (~5x lower)
 - CPU time over a 2-minute idle window — about 0.08s vs about 0.85s (~10x lower)
 
-That's the cost of having the node agent installed, before it's done anything. Per node, it's already small — but idle cost scales with fleet size, not workload:
+That's the cost of having the node agent installed, before it's done anything — and both numbers trace back to the same root cause:
 
-- 100 nodes — ~1.5GB vs ~8.1GB of RAM burned just sitting idle
-- 1,000 nodes — ~15GB vs ~81GB of RAM burned just sitting idle
+- CPU-seconds are a direct energy cost. Every polling loop (PLEG relisting every 1s, cAdvisor scraping every 10-15s, watch caches getting rewritten) burns real joules whether or not anything's running.
+- The RAM difference is also a real energy cost, just not the way "more bytes resident" implies. DRAM refresh itself doesn't care about content or usage — idle capacity gets refreshed either way. What actually costs energy is active memory traffic: reads, writes, row activations. Active DRAM draws roughly 1-3W/GB versus single-digit milliwatts/GB in self-refresh — a 100-1000x gap. Kubelet's polling loops don't just burn CPU to run — they constantly scan and rewrite real memory to do it, which is exactly what keeps DRAM in that expensive active state instead of dropping into self-refresh.
+- On top of that, RAM is also a capacity cost: memory kubelet ties up is memory you can't schedule other pods into, so you provision more of it to fit the same workload.
 
-Same cluster, same workload, nothing running yet. Every idle cycle kubelet burns is a cycle your workload doesn't get, multiplied by every node you run.
+Priced at AWS Fargate's own published per-resource rate (the cleanest real $/GB-hr and $/vCPU-hr number available, since standard EC2 bundles memory into instance pricing — $0.00444/GB-hr, $0.04048/vCPU-hr, us-east-1), reclaiming just the idle overhead is worth about $0.40/node/month. Nothing on one node. At 1,000 nodes that's roughly $400/month (~$4,800/year) — on top of ~66GB of RAM freed up to actually run pods instead of sitting reserved for a node agent's own idle housekeeping.
+
+For context: average Kubernetes clusters run at only ~20% memory utilization and ~8-10% CPU utilization industry-wide, and cloud spend on idle resources is projected at $27.1B in 2026. nodelet doesn't touch workload-level overprovisioning — that's a separate, much bigger problem — but it closes the one slice of that waste that's kubelet's own fault.
 
 Open source, still early, raw data and charts included with every run:
 
 Report: https://github.com/centerionware/not-k8s/blob/profiling-results/latest/README.md
 Repo: https://github.com/centerionware/not-k8s
-
-If you're running Kubernetes on a Pi cluster, edge fleet, or anything at scale — does that gap actually matter to you, or is it noise?
 
 #Kubernetes #Rust #EdgeComputing
