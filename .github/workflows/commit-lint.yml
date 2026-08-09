@@ -98,8 +98,16 @@ jobs:
           set -uo pipefail
           chmod +x .github/scripts/check-commit-message.sh
           # Passed via env, never interpolated into the script body: a PR
-          # title is attacker-controlled text and ${{ }} interpolation
-          # inside a run block is a shell-injection sink.
+          # title is attacker-controlled text, and template-expression
+          # interpolation inside a run block is a shell-injection sink.
+          #
+          # Note the phrasing: this comment cannot NAME that syntax with a
+          # literal empty expression, because Actions parses expressions
+          # everywhere in a workflow file including inside run blocks and
+          # their shell comments. An empty one is a syntax error that
+          # invalidates the entire file — which is exactly how the first
+          # version of this workflow failed, on every push, with zero jobs
+          # and no log to read.
           if .github/scripts/check-commit-message.sh --title "$PR_TITLE"; then
             echo "PR title OK: $PR_TITLE"
           else
