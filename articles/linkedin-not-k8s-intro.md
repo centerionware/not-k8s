@@ -1,34 +1,31 @@
 Kubelet, the agent running on every Kubernetes node, idles at about 81MB of RAM and burns real CPU before your cluster does anything useful.
 
-Kubelet's job is necessary: watch for pods, talk to the container runtime, report status back. But it also polls constantly, runs its own container-stats housekeeping, and keeps a pile of watch caches alive the whole time it's idle.
+Its job is necessary: watch for pods, talk to the container runtime, report status back. But it also polls constantly, runs its own container-stats housekeeping, and keeps a pile of watch caches alive the whole time it's idle.
 
-not-k8s replaces just that node agent with nodelet — a leaner, event-driven Rust binary. Everything else about the cluster stays the same; only the per-node agent changes.
+not-k8s replaces just that node agent with nodelet — a leaner, event-driven Rust binary. Everything else about the cluster stays the same.
 
-Benchmarked, not just claimed:
+I profiled both on two very different machines: x86_64 CI runners, and a Google Pixel 7 running Debian in a VM. Idle, no pods scheduled, 120s window, 3 replicates per agent.
 
-- Installed nodelet, let it sit idle, measured real memory and CPU time
-- Ran the identical test with a standalone upstream kubelet binary
-- Same container runtime, only the node agent changed
-- Six separate runs on six separate machines, so the numbers couldn't be biased by testing back to back on a warmed-up box
+x86_64:
+- nodelet ~15MB / ~0.08s CPU
+- kubelet ~81MB / ~0.85s CPU
 
-Completely idle, zero workload running:
+ARM phone:
+- nodelet 12.0MB / 0.436s CPU
+- kubelet 67.9MB / 8.031s CPU
 
-- Memory — about 15MB for nodelet, about 81MB for kubelet (~5x lower)
-- CPU time over a 2-minute idle window — about 0.08s vs about 0.85s (~10x lower)
+The result I didn't expect: the CPU gap widens from ~10.6x on the server core to ~18.4x on the phone core, while the memory ratio stays essentially flat. Normalized against their own x86 baselines, nodelet runs ~5.5x slower on the phone and kubelet ~9.5x slower — something superlinear penalizes kubelet specifically as hardware gets weaker.
 
-That's the cost of having the node agent installed, before it's done anything — and both numbers trace back to the same root cause:
+That matters because it inverts the usual intuition. Idle overhead is easy to dismiss at datacenter scale, where it's a fraction of a percent of a fast core. On constrained hardware it doesn't stay proportional — it gets worse. The node agent's resource floor is what decides which hardware can be a Kubernetes node at all, and that floor is the part nobody optimizes because most people measure it on servers.
 
-- CPU-seconds are a direct energy cost. Every polling loop (PLEG relisting every 1s, cAdvisor scraping every 10-15s, watch caches getting rewritten) burns real joules whether or not anything's running.
-- The RAM difference is also a real energy cost, just not the way "more bytes resident" implies. DRAM refresh itself doesn't care about content or usage — idle capacity gets refreshed either way. What actually costs energy is active memory traffic: reads, writes, row activations. Active DRAM draws roughly 1-3W/GB versus single-digit milliwatts/GB in self-refresh — a 100-1000x gap. Kubelet's polling loops don't just burn CPU to run — they constantly scan and rewrite real memory to do it, which is exactly what keeps DRAM in that expensive active state instead of dropping into self-refresh.
-- On top of that, RAM is also a capacity cost: memory kubelet ties up is memory you can't schedule other pods into, so you provision more of it to fit the same workload.
+The caveat I'd rather state myself than have someone else state for me: on that same phone, the k3s control plane idles at ~34% of a core and ~350MB — more than either node agent. Replacing the agent is a real saving that doesn't touch the biggest line item. That's the next problem, not one this solves.
 
-Priced at AWS Fargate's own published per-resource rate (the cleanest real $/GB-hr and $/vCPU-hr number available, since standard EC2 bundles memory into instance pricing — $0.00444/GB-hr, $0.04048/vCPU-hr, us-east-1), reclaiming just the idle overhead is worth about $0.40/node/month. Nothing on one node. At 1,000 nodes that's roughly $400/month (~$4,800/year) — on top of ~66GB of RAM freed up to actually run pods instead of sitting reserved for a node agent's own idle housekeeping.
+Raw per-second CSVs and full methodology for both platforms are published, and the ARM report leads with its own limitations (sequential rather than parallel legs, thermal throttling, virtualization) rather than burying them:
 
-For context: average Kubernetes clusters run at only ~20% memory utilization and ~8-10% CPU utilization industry-wide, and cloud spend on idle resources is projected at $27.1B in 2026. nodelet doesn't touch workload-level overprovisioning — that's a separate, much bigger problem — but it closes the one slice of that waste that's kubelet's own fault.
-
-Open source, still early, raw data and charts included with every run:
-
-Report: https://github.com/centerionware/not-k8s/blob/profiling-results/latest/README.md
+x86_64: https://github.com/centerionware/not-k8s/tree/profiling-results/latest
+ARM phone: https://github.com/centerionware/not-k8s/tree/profiling-results/history/2026-08-09_00-59-17-arm64-phone
 Repo: https://github.com/centerionware/not-k8s
+
+Still alpha, and honest about it: 1,100 unit tests and 140 e2e tests against real containerd and real CSI/DRA drivers, gated before any release ships.
 
 #Kubernetes #Rust #EdgeComputing

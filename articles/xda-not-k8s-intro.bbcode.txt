@@ -1,32 +1,31 @@
-[HEADING=1]not-k8s: replaced kubelet with a 15MB Rust agent[/HEADING]
+[HEADING=1]I replaced kubelet with a 15MB Rust agent and profiled it on a Pixel 7[/HEADING]
 
-[B]nodelet[/B] is a drop-in replacement for kubelet — the Kubernetes node agent — written in Rust, event-driven instead of polling.
+[B]nodelet[/B] is a drop-in replacement for kubelet — the Kubernetes node agent — written in Rust, event-driven instead of polling. Same control plane, same kubectl, same CRDs; only the per-node agent changes.
 
-Benchmarked against upstream kubelet, both completely idle, six separate runs so the numbers couldn't be biased by testing back to back on an already-warmed-up box:
-
-[LIST]
-[*][B]Memory[/B] — ~15MB nodelet vs ~81MB kubelet (~5x lower)
-[*][B]CPU (2min idle)[/B] — ~0.08s nodelet vs ~0.85s kubelet (~10x lower)
-[/LIST]
-
-Both numbers trace back to the same root cause, and both are real costs:
+Measured idle, no pods scheduled, 120s window, 3 replicates per agent, on two platforms:
 
 [LIST]
-[*][B]The CPU-seconds are a direct energy cost[/B] — every polling loop (PLEG relisting every 1s, cAdvisor scraping every 10-15s, watch caches getting rewritten) burns real joules whether or not anything's running.
-[*][B]The RAM difference is also a real energy cost[/B], just not the way "more bytes resident" implies. DRAM refresh itself doesn't care about content or usage — a 0 and a 1 cost the same, and idle capacity gets refreshed regardless. What actually costs energy is [I]active[/I] memory traffic: reads, writes, row activations. Active DRAM draws roughly 1-3W/GB; the same memory sitting in self-refresh draws single-digit milliwatts/GB — a 100-1000x gap. Kubelet's polling loops don't just burn CPU to run — they constantly scan and rewrite real memory to do it, which is exactly what keeps DRAM in that expensive active state instead of dropping into self-refresh. nodelet touches memory far less often for the same reason it burns less CPU: it's not polling.
-[*]On top of the energy cost, [B]RAM is also a capacity cost[/B] — memory kubelet ties up is memory you can't schedule other pods into, so you provision more of it to fit the same workload.
+[*][B]x86_64 (CI runners)[/B] — nodelet ~15MB / ~0.08s CPU vs kubelet ~81MB / ~0.85s CPU
+[*][B]ARM phone (Pixel 7, Debian VM under KVM)[/B] — nodelet 12.0MB / 0.436s CPU vs kubelet 67.9MB / 8.031s CPU
 [/LIST]
 
-Priced at AWS Fargate's own published per-resource on-demand rate (the cleanest real $/GB-hr and $/vCPU-hr number that exists, since normal EC2 bundles memory into instance pricing — $0.00444/GB-hr, $0.04048/vCPU-hr, us-east-1), reclaiming just the idle CPU+RAM overhead works out to about [B]$0.40/node/month[/B]. Nothing on one node. At [B]1,000 nodes that's ~$400/month (~$4,800/year)[/B] — on top of ~66GB of RAM freed up to actually run pods instead of sitting reserved for a node agent's own idle housekeeping.
+The interesting part isn't either row, it's the difference between them. [B]The CPU gap widens from ~10.6x on a server core to ~18.4x on a phone core, while the memory ratio stays basically flat (~5.4x to ~5.7x).[/B] Normalized against their own x86 baselines, nodelet is ~5.5x slower on the phone core and kubelet is ~9.5x slower — so something superlinear penalizes kubelet specifically as the hardware gets weaker. The polling work is fixed; a slower core spends proportionally more of itself on it.
 
-For scale: average Kubernetes clusters run at only ~20% memory utilization and ~8-10% CPU utilization industry-wide, and cloud spend on idle resources is projected at $27.1B in 2026. nodelet doesn't touch workload-level overprovisioning — that's a separate, much bigger problem — but it does close the one slice of that waste that's kubelet's own fault, not anything you're running.
+Three things could explain that — cache pressure (kubelet's working set is ~6x bigger), the Cortex-A55 being in-order so it can't hide memory stalls, or Go's GC walking the heap against low phone memory bandwidth. I can't tell which: the PMU isn't exposed to the KVM guest, so perf reports every hardware counter as "not supported" even as root. Bare-metal ARM with working perf counters would settle it.
+
+[B]The caveat I'd rather state myself:[/B] on that same phone, the k3s control plane idles at ~34% of a core and ~350MB — considerably more than either node agent. Swapping the agent is a real saving that doesn't touch the biggest line item. That's the next thing worth attacking.
 
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/rss-over-time.png[/IMG]
 
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/cpu-over-time.png[/IMG]
 
-Full raw data + methodology: [URL]https://github.com/centerionware/not-k8s/blob/profiling-results/latest/README.md[/URL]
+Raw per-second CSVs and methodology for both platforms (the ARM report leads with its own limitations — sequential legs instead of parallel, thermal throttling, virtualization):
 
-Still alpha — hasn't been proven under heavy real-world workloads yet — but it's passed 1,100 unit tests and 140 e2e tests, so it's in a good spot to start toying with.
+[LIST]
+[*]x86_64: [URL]https://github.com/centerionware/not-k8s/tree/profiling-results/latest[/URL]
+[*]ARM phone: [URL]https://github.com/centerionware/not-k8s/tree/profiling-results/history/2026-08-09_00-59-17-arm64-phone[/URL]
+[/LIST]
+
+Still alpha — hasn't been proven under heavy real-world workloads yet — but it's passed 1,100 unit tests and 140 e2e tests against real containerd and real CSI/DRA reference drivers, gated before any release ships, so it's in a good spot to start toying with.
 
 Repo: [URL]https://github.com/centerionware/not-k8s[/URL]
