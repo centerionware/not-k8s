@@ -212,6 +212,21 @@ export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
   gate anything on it.
 - **`pkill -f test-e2e.sh` kills your own shell**, because the pattern
   matches the command line running it. Use `pkill -f 'test-e2e[.]sh'`.
+- **Unbounded `git` repack will OOM-kill this box.** Confirmed three
+  times from `dmesg`: the victim was `git` at ~1.1GB RSS, not the build.
+  `.git` had accumulated 14,959 loose objects / 347MB against a 14MB
+  pack, and it was self-perpetuating — auto-gc triggers, gets OOM-killed,
+  the objects stay loose, the next operation needs more. Fixed by
+  `git gc --prune=now` (347MB → 0 loose, `.git` 362MB → 13MB) with
+  repo-local caps now committed to `.git/config`:
+  `pack.windowMemory=32m`, `pack.deltaCacheSize=16m`, `pack.threads=1`.
+  If git starts getting killed again, check `git count-objects -vH`
+  first.
+- **Don't let `gh run download` buffer an artifact here.** It holds the
+  whole zip in memory, and the debug pair is ~490MB. Stream it instead:
+  `curl -sL -H "Authorization: token $(gh auth token)" -o a.zip
+  .../actions/artifacts/<id>/zip`, then extract the one binary you need
+  with a chunked reader (`unzip` isn't installed).
 - **Long runs need `setsid nohup … &` with `disown`** and a log file on
   disk; poll the log rather than holding a foreground command open.
 - **This kernel is missing nftables modules** (`nft_fib`, `nft_numgen`,
