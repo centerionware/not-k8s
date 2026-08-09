@@ -9,12 +9,13 @@
 
 1. [What nodelet Is](#what-nodelet-is)
 2. [Why kubelet Is Expensive at Idle](#why-kubelet-is-expensive-at-idle)
-3. [Design: Event-Driven, Not Polled](#design-event-driven-not-polled)
-4. [Internal Architecture](#internal-architecture)
-5. [Pluggable Runtime: mock vs cri](#pluggable-runtime-mock-vs-cri)
-6. [Configuration Reference](#configuration-reference)
-7. [Scope Boundary](#scope-boundary)
-8. [Current Status](#current-status)
+3. [Why This Is a Real Cost, Not Just a Benchmark Number](#why-this-is-a-real-cost-not-just-a-benchmark-number)
+4. [Design: Event-Driven, Not Polled](#design-event-driven-not-polled)
+5. [Internal Architecture](#internal-architecture)
+6. [Pluggable Runtime: mock vs cri](#pluggable-runtime-mock-vs-cri)
+7. [Configuration Reference](#configuration-reference)
+8. [Scope Boundary](#scope-boundary)
+9. [Current Status](#current-status)
 
 ---
 
@@ -55,6 +56,56 @@ On a Raspberry Pi 4 (4 GB RAM, 4-core ARM), stock kubelet alone idles around
 **81 MB RSS** and **~0.85s of CPU time per 2-minute idle window** — see the
 [`profiling-results`](https://github.com/centerionware/not-k8s/tree/profiling-results)
 branch for live numbers against an upstream kubelet binary.
+
+## Why This Is a Real Cost, Not Just a Benchmark Number
+
+The CPU and RAM deltas above both trace back to the same root cause, and
+both represent real energy/dollar cost, not just numbers that happen to be
+smaller:
+
+- **CPU-seconds are a direct energy cost.** Every polling loop (PLEG
+  relisting every 1s, cAdvisor scraping every 10-15s, watch caches getting
+  rewritten) burns real joules whether or not anything's running. This part
+  isn't controversial — CPU time has always mapped to energy draw.
+- **The RAM delta is *also* a real energy cost, just not for the reason
+  "more bytes resident" implies.** DRAM refresh itself doesn't care about
+  content or usage — a 0 and a 1 cost the same to refresh, and idle
+  capacity gets refreshed regardless of whether the OS has allocated it
+  ([GreenDIMM, ACM MEMSYS 2021](https://dl.acm.org/doi/fullHtml/10.1145/3466752.3480089):
+  background/refresh power is ~70% of total DRAM power at idle, rising to
+  ~78% as installed capacity scales toward 1TB). What actually costs energy
+  is *active* memory traffic — reads, writes, row activations. Published
+  figures put active DRAM power around 1-3W/GB, versus single-digit
+  milliwatts/GB in self-refresh/power-down states
+  ([LPDDR5X power consumption guide](https://lexarenterprise.com/lpddr5x-power-consumption-guide/))
+  — a 100-1000x gap. Kubelet's polling loops don't just burn CPU to run —
+  they constantly scan and rewrite real memory to do it, which is exactly
+  what keeps DRAM in that expensive active state instead of dropping into
+  self-refresh. `nodelet` touches memory far less often for the same reason
+  it burns less CPU: it isn't polling.
+- **On top of the energy cost, RAM is also a capacity cost.** Memory
+  kubelet ties up is memory that can't be scheduled to other pods, so more
+  of it has to be provisioned to fit the same workload — true whether
+  that's hardware already owned outright or hardware being rented.
+
+Priced against AWS Fargate's own published per-resource on-demand rate
+(the cleanest real $/GB-hr and $/vCPU-hr number available, since standard
+EC2 bundles memory into instance pricing rather than pricing it
+separately — [$0.00444/GB-hr, $0.04048/vCPU-hr, us-east-1](https://aws.amazon.com/fargate/pricing/)),
+reclaiming kubelet's idle CPU+RAM overhead is worth roughly **$0.40/node/
+month**. Negligible on one node; at **1,000 nodes that's ~$400/month
+(~$4,800/year)** — on top of ~66GB of RAM freed up to actually run pods
+instead of sitting reserved for a node agent's own idle housekeeping.
+
+This isn't a niche concern either: industry-wide, average Kubernetes
+clusters run at only ~20% memory utilization and ~8-10% CPU utilization
+([Sedai, Kubernetes capacity planning guide](https://sedai.io/blog/a-guide-to-kubernetes-capacity-planning-and-optimization);
+[Plus8soft, Kubernetes cost optimization 2026](https://plus8soft.com/blog/kubernetes-cost-optimization/)),
+and cloud spend on idle resources is projected at **$27.1B in 2026**
+([Cast AI, The Cloud Waste Problem](https://cast.ai/blog/the-cloud-waste-problem-how-to-stop-overprovisioning-resources/)).
+`nodelet` doesn't touch workload-level overprovisioning — that's a
+separate, much bigger problem — it closes only the one slice of that
+waste that's kubelet's own fault, not anything a workload is doing.
 
 ## Design: Event-Driven, Not Polled
 
