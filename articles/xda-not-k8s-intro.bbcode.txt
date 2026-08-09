@@ -9,10 +9,6 @@ Idle, no pods, 120s, 3 replicates each:
 [*][B]Pixel 7[/B] — nodelet 12MB / 0.44s CPU, kubelet 68MB / 8.03s CPU
 [/LIST]
 
-CPU gap widens from 10.6x to 18.4x on the slower core, memory doesn't. Cache, the in-order A55, or Go's GC — can't tell, no hardware counters in the VM.
-
-The k3s control plane on that phone idles at ~34% of a core and ~350MB, more than either agent.
-
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/rss-over-time.png[/IMG]
 
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/cpu-over-time.png[/IMG]

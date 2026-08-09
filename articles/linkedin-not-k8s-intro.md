@@ -7,9 +7,7 @@ Profiled both on x86_64 CI runners and a Pixel 7 running Debian in a VM. Idle, n
 x86_64 — nodelet 15MB / 0.08s CPU, kubelet 81MB / 0.85s CPU
 Pixel 7 — nodelet 12MB / 0.44s CPU, kubelet 68MB / 8.03s CPU
 
-The CPU gap widens from ~10.6x to ~18.4x on the slower core. Memory doesn't move. Idle overhead gets worse as hardware gets weaker, not proportionally smaller.
-
-On that phone the k3s control plane idles at ~34% of a core and ~350MB — more than either agent. Replacing the agent doesn't touch that.
+CPU gap widens from ~10.6x to ~18.4x on the slower core. Memory doesn't move.
 
 CSVs and methodology:
 x86_64: https://github.com/centerionware/not-k8s/tree/profiling-results/latest
