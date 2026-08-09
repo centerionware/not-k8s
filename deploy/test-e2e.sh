@@ -85,6 +85,8 @@ source "$TEST_LIB_DIR/k8s.sh"
 source "$TEST_LIB_DIR/manifests.sh"
 # shellcheck source=lib/test/nodelet_env.sh
 source "$TEST_LIB_DIR/nodelet_env.sh"
+# shellcheck source=lib/test/nodeproxy_env.sh
+source "$TEST_LIB_DIR/nodeproxy_env.sh"
 
 if ! node_uses_cri_runtime; then
     warn "Node is running the mock runtime (or its status hasn't been checked yet) — most of these tests need real containers and will SKIP. Run nodelet with NODELET_RUNTIME=cri."

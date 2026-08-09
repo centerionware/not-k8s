@@ -16,25 +16,6 @@ pub enum RuntimeKind {
     Cri,
 }
 
-/// Which address family(ies) the Service proxy (`svc.rs`) programs rules
-/// for. Defaults to whatever the node actually has: both stacks if both
-/// work, otherwise whichever one does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IpFamily {
-    V4,
-    V6,
-    Dual,
-}
-
-/// Load-balancing algorithm for Services without `sessionAffinity: ClientIP`
-/// set (that field always forces source-hash — see `svc.rs::lb_expr`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LbMethod {
-    Random,
-    RoundRobin,
-    SourceHash,
-}
-
 #[derive(Clone, Debug)]
 pub struct Config {
     pub node_name: String,
@@ -58,12 +39,6 @@ pub struct Config {
     pub memory_swap_limited: bool,
     pub max_pods: u64,
     pub labels: BTreeMap<String, String>,
-    /// Program ClusterIP/NodePort nftables rules (see `svc.rs`). Defaults to
-    /// on for the `cri` runtime (where pods have real IPs worth routing to)
-    /// and off for `mock` (nothing real to route to).
-    pub service_proxy: bool,
-    pub ip_family: IpFamily,
-    pub lb_method: LbMethod,
     /// MemoryPressure condition fires when `/proc/meminfo`'s MemAvailable
     /// drops below this (default 100Mi, matching kubelet's default eviction
     /// threshold `memory.available<100Mi`).
@@ -341,29 +316,21 @@ impl Config {
             }
         }
 
-        let service_proxy = match std::env::var("NODELET_SERVICE_PROXY").as_deref() {
-            Ok("true") => true,
-            Ok("false") => false,
-            Ok(other) => anyhow::bail!("unknown NODELET_SERVICE_PROXY '{other}' (want 'true' or 'false')"),
-            Err(_) => matches!(runtime, RuntimeKind::Cri),
-        };
-
-        let ip_family = match std::env::var("NODELET_IP_FAMILY").as_deref() {
-            Ok("ipv4") => IpFamily::V4,
-            Ok("ipv6") => IpFamily::V6,
-            Ok("dual") => IpFamily::Dual,
-            Ok("auto") | Err(_) => detect_ip_family(),
-            Ok(other) => anyhow::bail!("unknown NODELET_IP_FAMILY '{other}' (want 'auto', 'ipv4', 'ipv6', or 'dual')"),
-        };
-
-        let lb_method = match std::env::var("NODELET_LB_METHOD").as_deref() {
-            Ok("random") | Err(_) => LbMethod::Random,
-            Ok("round-robin") => LbMethod::RoundRobin,
-            Ok("source-hash") => LbMethod::SourceHash,
-            Ok(other) => anyhow::bail!(
-                "unknown NODELET_LB_METHOD '{other}' (want 'random', 'round-robin', or 'source-hash')"
-            ),
-        };
+        // Service (ClusterIP/NodePort) routing moved out of nodelet into the
+        // separate `nodeproxy` binary. An in-place upgrade can still have
+        // these set in an old systemd unit, where silently ignoring them
+        // would leave someone believing nodelet is still doing the routing.
+        // Warn rather than error: erroring would refuse to start a node whose
+        // only sin is a stale env var.
+        for stale in ["NODELET_SERVICE_PROXY", "NODELET_IP_FAMILY", "NODELET_LB_METHOD"] {
+            if std::env::var_os(stale).is_some() {
+                tracing::warn!(
+                    "{stale} is set but nodelet no longer does Service routing — that's the \
+separate `nodeproxy` binary now (it reads NODEPROXY_IP_FAMILY / NODEPROXY_LB_METHOD, and still \
+accepts the NODELET_* spellings). This setting is being ignored here."
+                );
+            }
+        }
 
         let memory_pressure_threshold_bytes =
             env_u64("NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES", 100 * 1024 * 1024)?;
@@ -491,9 +458,6 @@ impl Config {
             memory_swap_limited,
             max_pods,
             labels,
-            service_proxy,
-            ip_family,
-            lb_method,
             memory_pressure_threshold_bytes,
             disk_path,
             disk_pressure_percent,
@@ -666,37 +630,6 @@ fn detect_hostname() -> String {
         .unwrap_or_else(|| "nodelet".to_string())
 }
 
-/// Binding a socket in each family is a direct, distro-agnostic test of
-/// "can this process actually use this stack" — more reliable than parsing
-/// `/proc/sys/net/ipv6/...`, which varies by how IPv6 was disabled (kernel
-/// cmdline, sysctl, or just never configured).
-/// Whether this host has an actual route for the given family — not just a
-/// working socket API for it. A bare `bind()` only proves the kernel has
-/// that address family compiled in and enabled, which is true on nearly
-/// every modern Linux kernel regardless of whether there's any real
-/// connectivity; that produced a real false positive (a machine with IPv6
-/// support but no default v6 route was detected as dual-stack, and the
-/// flannel CNI daemon this feeds into crash-looped forever trying to find a
-/// v6 interface that didn't exist). `connect()` on a UDP socket sends no
-/// packets — it's a local routing-table lookup for the given destination —
-/// so this works fully offline and doesn't need the probe address itself to
-/// be reachable, only *routable*.
-fn has_route(probe_addr: &str, bind_addr: &str) -> bool {
-    let Ok(sock) = std::net::UdpSocket::bind(bind_addr) else { return false };
-    sock.connect(probe_addr).is_ok()
-}
-
-fn detect_ip_family() -> IpFamily {
-    let v4 = has_route("8.8.8.8:53", "0.0.0.0:0");
-    let v6 = has_route("[2001:4860:4860::8888]:53", "[::]:0");
-    match (v4, v6) {
-        (true, true) => IpFamily::Dual,
-        (true, false) => IpFamily::V4,
-        (false, true) => IpFamily::V6,
-        (false, false) => IpFamily::V4, // shouldn't happen; fall back to the common case
-    }
-}
-
 fn detect_cpu_cores() -> u64 {
     std::thread::available_parallelism().map(|n| n.get() as u64).unwrap_or(1)
 }
@@ -743,10 +676,10 @@ mod tests_config_file {
 
     #[test]
     fn parse_config_yaml_reads_scalar_values() {
-        let parsed = parse_config_yaml("NODELET_NODE_NAME: edge-1\nNODELET_MAX_PODS: 42\nNODELET_SERVICE_PROXY: true\n").unwrap();
+        let parsed = parse_config_yaml("NODELET_NODE_NAME: edge-1\nNODELET_MAX_PODS: 42\nNODELET_HEARTBEAT_SECS: 15\n").unwrap();
         assert_eq!(parsed.get("NODELET_NODE_NAME"), Some(&"edge-1".to_string()));
         assert_eq!(parsed.get("NODELET_MAX_PODS"), Some(&"42".to_string()));
-        assert_eq!(parsed.get("NODELET_SERVICE_PROXY"), Some(&"true".to_string()));
+        assert_eq!(parsed.get("NODELET_HEARTBEAT_SECS"), Some(&"15".to_string()));
     }
 
     #[test]

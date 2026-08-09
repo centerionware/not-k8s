@@ -205,22 +205,44 @@ every 10s:
   update with capacity, conditions, allocatable resources. Infrequent
   because that data rarely changes on a running node.
 
-### Its own Service networking, not a separate kube-proxy
+### Service networking: nftables and event-driven, in a separate binary
 
-`nodelet` watches Services/Endpoints and programs ClusterIP/NodePort
-routing itself via nftables (`crates/nodelet/src/svc.rs`) — no separate
-kube-proxy process, no separate periodic iptables sync pass. (With the
-`mock` runtime there's no real networking to route to, so this only
-applies under `cri`.)
+Service routing is `nodeproxy` (`crates/nodeproxy/`), not `nodelet`. It
+watches Services + EndpointSlices and rebuilds one `inet not_k8s_svc`
+nftables table atomically on every change — **no periodic resync pass at
+all**, which is the substantive difference from stock kube-proxy, whose
+iptables sync loop reconciles on a timer whether or not anything changed.
+That claim is about the reconciliation model, not about process count.
 
-### Single process, single watch cache
+It's a separate binary for the same reason kube-proxy is separate from the
+kubelet upstream: service handling is a replaceable concern. A node can run
+Cilium's eBPF datapath, a real kube-proxy, or nothing at all
+(`--proxy=none`) and the node agent is unaffected — and conversely, a
+wedged service proxy doesn't take the node agent down with it. This was
+in-process inside `nodelet` until the split; the honest accounting of what
+that cost is in the next section.
+
+(With the `mock` runtime there's no real networking to route to, so the
+deploy scripts don't install `nodeproxy` at all there.)
+
+### One watch cache per concern, not per component
 
 Stock kubelet's node footprint is kubelet + kube-proxy + containerd +
 containerd-shim(s), each maintaining its own informer/watch cache —
-duplicated in-memory copies of the same API objects. `nodelet` is **one
-process** with **one kube client** and **one watch cache**. Memory scales
-with the number of pods on this node, not the number of node-side
-components.
+duplicated in-memory copies of the same API objects. `nodelet` collapses
+the node-agent side of that into **one process** with **one kube client**
+and **one watch cache** over Pods and their referenced objects.
+
+Splitting `nodeproxy` out does add a second process with its own client and
+its own watch over Services/EndpointSlices — so this is no longer "one
+process, one cache" full stop, and pretending otherwise would be dishonest.
+What it isn't is a duplicate: the two processes watch **disjoint** resource
+sets, so nothing is cached twice. The cost is one more small process's
+baseline; the return is that either component can be swapped or fail
+independently. Whether that trade is worth it on a given device is
+measurable — `nodeproxy` is deliberately built from a minimal dependency
+tree (no CRI/gRPC stack at all; see `crates/nodeproxy/Cargo.toml`) to keep
+that baseline small.
 
 ## Internal Architecture
 
@@ -247,18 +269,36 @@ components.
 │  │               │  │  pressure)  │  │  socket protocol)   │   │
 │  └──────────────┘  └─────────────┘  └────────────────────┘   │
 │                                                                 │
-│  ┌──────────────┐  ┌─────────────┐  ┌────────────────────┐   │
-│  │ svc.rs        │  │ Static pod  │  │ kubelet-style HTTPS  │   │
-│  │ (Service      │  │ manifest    │  │ server (exec/attach/ │   │
-│  │  routing via  │  │ watcher     │  │  portForward/logs)   │   │
-│  │  nftables)    │  │             │  │                       │   │
-│  └──────────────┘  └─────────────┘  └────────────────────┘   │
+│                                                                 │
+│                      ┌─────────────┐  ┌────────────────────┐   │
+│                      │ Static pod  │  │ kubelet-style HTTPS  │   │
+│                      │ manifest    │  │ server (exec/attach/ │   │
+│                      │ watcher     │  │  portForward/logs)   │   │
+│                      └─────────────┘  └────────────────────┘   │
 └───────────────────────────┬─────────────────────────────────┘
                             │ HTTPS (kubeconfig)
                             │ - Node registration + Lease heartbeat
                             │ - Watch Pods (fieldSelector: spec.nodeName)
                             │ - Patch Pod status
-                            ▼
+                            │
+┌─────────────────────────┐ │
+│        nodeproxy         │ │  Separate binary, separate service,
+│  (separate Rust binary)  │ │  no ordering between the two. Replace
+│                          │ │  it with Cilium / a real kube-proxy,
+│  ┌────────────────────┐ │ │  or run none at all (--proxy=none).
+│  │ svc.rs             │ │ │
+│  │ Service +          │ │ │
+│  │ EndpointSlice      │ │ │
+│  │ watch -> one       │ │ │
+│  │ nftables table,    │ │ │
+│  │ rebuilt atomically │ │ │
+│  │ per event          │ │ │
+│  └────────────────────┘ │ │
+└────────────┬────────────┘ │
+             │ HTTPS (kubeconfig)
+             │ - Watch Services + EndpointSlices (cluster-wide)
+             │   (disjoint from nodelet's watches — nothing cached twice)
+             ▼             ▼
               [ Kubernetes control plane — any conformant one ]
 ```
 

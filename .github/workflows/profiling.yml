@@ -81,8 +81,30 @@ jobs:
         include:
           - agent: nodelet
             agent_pattern: nodelet
-            # Normal install: control plane + containerd/CNI + nodelet itself.
-            install_args: --with-cri
+            # Control plane + containerd/CNI + nodelet itself, and
+            # deliberately NO service proxy (--proxy=none).
+            #
+            # This became a real methodology question when Service routing
+            # was split out of nodelet into the separate `nodeproxy`
+            # binary. Before the split that work lived inside the nodelet
+            # process, so its cost was inside nodelet's measured number.
+            # After it, measure.sh (which follows exactly one node-agent
+            # PID) would silently stop counting it — nodelet's published
+            # figure would drop for a packaging change, not an efficiency
+            # one, which is exactly the kind of flattering-but-false
+            # number this repo's docs go out of their way not to print.
+            #
+            # --proxy=none makes both legs symmetric instead: one node
+            # agent process per leg, no service proxy on either. The
+            # kubelet leg has never run a kube-proxy either (it's a bare
+            # upstream-kubelet.sh install), so this is the apples-to-
+            # apples comparison, not a dodge. A full node-side comparison
+            # — nodelet+nodeproxy vs kubelet+kube-proxy — is a different,
+            # also-worth-doing measurement that would need a real
+            # kube-proxy on the other side and a measure.sh that sums
+            # multiple PIDs. Neither exists today; don't read these
+            # numbers as covering service routing on either side.
+            install_args: --with-cri --proxy=none
           - agent: kubelet
             agent_pattern: /usr/local/bin/kubelet
             # Round 124 (found live from a user's own review of the run):

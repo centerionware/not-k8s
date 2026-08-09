@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/nodelet"]
+members = ["crates/nodelet", "crates/nodeproxy"]
 
 [workspace.package]
 version = "0.1.0"

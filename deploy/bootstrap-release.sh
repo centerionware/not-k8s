@@ -19,7 +19,9 @@
 #   --tag=vX.Y.Z   Install a specific release instead of the latest one.
 #
 # Release assets are expected to be named
-# nodelet-<version>-linux-<arch>-<profile>, where <arch> is one of
+# <binary>-<version>-linux-<arch>-<profile>, where <binary> is nodelet or
+# nodeproxy (the Service proxy — kube-proxy's job, its own binary since the
+# split), <arch> is one of
 # x86_64/aarch64/armv7l and <profile> is release or debug (matching
 # .github/workflows/release.yml's own publish-release job) — release
 # (optimized) is what this script fetches; there's no flag to ask for the
@@ -81,18 +83,37 @@ fi
 log "Using release $TAG"
 
 VERSION="${TAG#v}"
-ASSET_NAME="nodelet-${VERSION}-linux-${ARCH}-release"
-DOWNLOAD_URL="$(grep -o "\"browser_download_url\": *\"[^\"]*${ASSET_NAME}\"" "$RELEASE_JSON" | sed -e 's/.*"\(https[^"]*\)"/\1/')"
+
+# download_release_binary <binary-name> — fetches
+# <name>-<version>-linux-<arch>-release from this release into .bootstrap/
+# and echoes the local path.
+download_release_binary() {
+    local name="$1" asset url path
+    asset="${name}-${VERSION}-linux-${ARCH}-release"
+    url="$(grep -o "\"browser_download_url\": *\"[^\"]*${asset}\"" "$RELEASE_JSON" | sed -e 's/.*"\(https[^"]*\)"/\1/')"
+    [[ -n "$url" ]] || die "Release $TAG has no asset named '$asset' — check https://github.com/$REPO/releases/tag/$TAG for what's actually attached."
+    log "Downloading $asset..."
+    path="$REPO_ROOT/.bootstrap/$asset"
+    mkdir -p "$REPO_ROOT/.bootstrap"
+    fetch "$url" "$path"
+    chmod +x "$path"
+    echo "$path"
+}
+
+export NOTK8S_NODELET_PREBUILT="$(download_release_binary nodelet)"
+
+# --proxy=none means this node's ClusterIP/NodePort routing belongs to
+# something else (a real kube-proxy, Cilium) — don't fetch a binary that
+# will never run. Anything else gets nodeproxy, matching the default.
+WANT_PROXY=1
+for arg in "${PASSTHROUGH_ARGS[@]}"; do
+    [[ "$arg" == "--proxy=none" ]] && WANT_PROXY=0
+done
+if [[ "$WANT_PROXY" -eq 1 ]]; then
+    export NOTK8S_NODEPROXY_PREBUILT="$(download_release_binary nodeproxy)"
+fi
+
 rm -f "$RELEASE_JSON"
 
-[[ -n "$DOWNLOAD_URL" ]] || die "Release $TAG has no asset named '$ASSET_NAME' — check https://github.com/$REPO/releases/tag/$TAG for what's actually attached."
-
-log "Downloading $ASSET_NAME..."
-PREBUILT_PATH="$REPO_ROOT/.bootstrap/$ASSET_NAME"
-mkdir -p "$REPO_ROOT/.bootstrap"
-fetch "$DOWNLOAD_URL" "$PREBUILT_PATH"
-chmod +x "$PREBUILT_PATH"
-
-log "Handing off to bootstrap-source.sh with NOTK8S_NODELET_PREBUILT=$PREBUILT_PATH"
-export NOTK8S_NODELET_PREBUILT="$PREBUILT_PATH"
+log "Handing off to bootstrap-source.sh with NOTK8S_NODELET_PREBUILT=$NOTK8S_NODELET_PREBUILT"
 exec "$SCRIPT_DIR/bootstrap-source.sh" "${PASSTHROUGH_ARGS[@]}"

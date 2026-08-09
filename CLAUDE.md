@@ -4,9 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-`not-k8s` replaces kubelet (the node agent) with `nodelet`, a lean event-driven
-Rust binary, while keeping a real (stripped) k3s control plane for 1:1
-`kubectl`/CRD compatibility. The pitch: kubelet's idle cost (PLEG polling,
+`not-k8s` replaces the node side of Kubernetes with two lean event-driven Rust
+binaries — `nodelet` (kubelet, the node agent) and `nodeproxy` (kube-proxy:
+Service/ClusterIP/NodePort routing via nftables) — while keeping a real
+(stripped) k3s control plane for 1:1 `kubectl`/CRD compatibility. The two are
+separate binaries and separate services with no ordering between them, for the
+same reason kubelet and kube-proxy are separate upstream: a node can swap in
+Cilium or a real kube-proxy, or run none at all
+(`bootstrap-source.sh --proxy=none`), without touching the node agent. The pitch: kubelet's idle cost (PLEG polling,
 cAdvisor housekeeping, per-component watch caches, iptables sync) lives almost
 entirely on the node side, not the apiserver — replace only that, keep
 everything else real. Goal is genuine kubelet feature parity (not a
@@ -33,7 +38,25 @@ cargo build -p nodelet                    # mock runtime, debug
 cargo build --release --features cri -p nodelet   # real binary, optimized
 cargo test -p nodelet                     # mock-runtime unit tests
 cargo test -p nodelet --features cri      # cri-gated unit tests too
+
+cargo build -p nodeproxy                  # the Service proxy — no features, ever
+cargo test -p nodeproxy                   # its nft ruleset tests (need CAP_NET_ADMIN, else self-skip)
 ```
+
+`crates/nodeproxy` deliberately shares **none** of nodelet's dependency tree —
+no `cri` feature, no tonic/prost/zbus. If a change wants one of those there,
+that's the signal the split is being eroded; the boundary is enforced by
+`crates/nodeproxy/Cargo.toml` and nothing else.
+
+**Don't build locally on a constrained host** — use GitHub Actions.
+`.github/workflows/build.yml` (manual `workflow_dispatch`) compiles both
+crates, runs the unit tests, and uploads the binaries as run artifacts, with
+`profile` (debug/release/both) and `arch` (x86_64/aarch64/armv7l/all) inputs
+and no e2e stage. Download them with `gh run download <run-id> -n
+notk8s-<arch>-<profile>` and point a local deploy at them via
+`NOTK8S_NODELET_PREBUILT` / `NOTK8S_NODEPROXY_PREBUILT` — the same prebuilt
+seam `release.yml`'s e2e shards use, so no toolchain is installed on the
+device.
 
 **Release profile is expensive on purpose**: `Cargo.toml`'s `[profile.release]`
 uses `lto=true, codegen-units=1` for the smallest edge binary — a real build
@@ -63,7 +86,10 @@ Run a single test: `cargo test -p nodelet --features cri <test_name_substring>`
 ```
 
 Both install k3s (`--disable-agent`, stripped control plane only),
-containerd/runc, CNI, and nodelet as a systemd/OpenRC service. `deploy/lib/*.sh`
+containerd/runc, CNI, and `nodelet` + `nodeproxy` as two independent
+systemd/OpenRC services (`deploy/lib/nodelet-service.sh`,
+`deploy/lib/nodeproxy-service.sh`). `--proxy=none` skips `nodeproxy`
+entirely, including its nftables/br_netfilter host setup. `deploy/lib/*.sh`
 are the individual concern modules these two entry points source (toolchain
 setup, control-plane install, container runtime, CNI, nodelet build/service
 lifecycle) — read the specific `lib/` file for a concern rather than the whole
@@ -119,7 +145,134 @@ min). Fix, dispatch, read the result, repeat — only dispatch the full
 end-to-end (including that the fix didn't regress unit tests or anything
 the `--only` filter excluded) and actually attempt a release.
 
+## Verifying a PR end to end before merging it
+
+The loop below builds a branch in CI and runs targeted e2e against the
+real binaries on a local box, so a change is proven end to end *while it
+is still a PR*. Use it for anything with a runtime surface — a new
+component (`nodeapiserver`, `nodescheduler`, …) especially, where "it
+compiles" says almost nothing.
+
+**1. Push the branch and build it.** `build.yml` is `workflow_dispatch`,
+so it must exist on the default branch to be dispatchable — but it runs
+the copy from whatever `--ref` you give it, against that ref's code.
+Match `arch` to the machine you'll test on; an x86_64 artifact is useless
+on an aarch64 phone VM.
+
+`gh workflow run` prints the created run's URL, so take the id from that
+rather than looking up "the most recent run" — an unscoped `gh run list
+--limit 1` will happily hand you someone else's dispatch, or your own
+previous one if this one hasn't registered yet.
+
+```bash
+RUN=$(gh workflow run build.yml --ref <branch> -f profile=debug -f arch=aarch64 \
+        | grep -oE '[0-9]+$')
+# Older gh, or no URL printed: fall back to a branch-scoped lookup.
+[ -n "$RUN" ] || RUN=$(gh run list --workflow=build.yml --branch <branch> --limit 1 \
+        --json databaseId --jq '.[0].databaseId')
+gh run watch "$RUN" --exit-status    # non-zero if the run failed
+```
+
+**2. Download the artifact — not to `/tmp`.** `/tmp` here is a ~1GB
+RAM-backed tmpfs and a debug `nodelet` alone is ~350MB. A truncated
+download can still be a valid-looking ELF that runs (the cut lands in
+trailing debug sections), so this fails silently rather than loudly.
+
+Not `gh run download` either — it buffers the whole zip in memory and the
+debug pair is ~490MB, which is what OOM-killed this box. Stream it and
+extract only what changed:
+
+```bash
+D=/home/droid/nk8s-artifacts && mkdir -p "$D"
+AID=$(gh api "repos/centerionware/not-k8s/actions/runs/$RUN/artifacts" \
+        --jq '.artifacts[] | select(.name=="notk8s-aarch64-debug") | .id')
+curl -sL -H "Authorization: token $(gh auth token)" -o "$D/a.zip" \
+  "https://api.github.com/repos/centerionware/not-k8s/actions/artifacts/$AID/zip"
+python3 -c "
+import zipfile,sys
+with zipfile.ZipFile(sys.argv[1]) as z:
+    for name in ('nodelet','nodeproxy'):
+        with z.open(name) as s, open(sys.argv[2]+'/'+name,'wb') as d:
+            while (b := s.read(1<<20)): d.write(b)
+" "$D/a.zip" "$D"
+chmod +x "$D"/nodelet "$D"/nodeproxy
+```
+
+**3. Deploy with the prebuilt seam.** No toolchain is installed and
+nothing is compiled on-device — the whole point on a host that OOMs on a
+release build.
+
+```bash
+sudo -E NOTK8S_NODELET_PREBUILT="$D/nodelet" NOTK8S_NODEPROXY_PREBUILT="$D/nodeproxy" \
+  ./deploy/bootstrap-source.sh --with-cri
+```
+
+To swap binaries into an already-running deployment, `install` them over
+`bin/` and restart the units — much faster than re-bootstrapping:
+
+```bash
+sudo install -m0755 "$D/nodelet"   bin/nodelet
+sudo install -m0755 "$D/nodeproxy" bin/nodeproxy
+sudo systemctl restart nodelet nodeproxy
+```
+
+Only one changed? Install and restart just that one — they are
+independent units and restarting the node agent needlessly costs a
+re-registration cycle.
+
+**4. Run only the relevant tests.** `--only` matches test *function*
+names, comma-separated.
+
+```bash
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+./deploy/test-e2e.sh --only=clusterip,nodeport,hairpin
+```
+
+**5. Merge once it's green**, then let `release.yml` run the full gate.
+
+### Things that will bite you here
+
+- **A stale `flanneld` survives a re-bootstrap.** The installer leaves an
+  already-active service alone, so a flanneld still watching a previous
+  cluster keeps running and never writes `/run/flannel/subnet.env`. Every
+  pod then sits `Pending` with `loadFlannelSubnetEnv failed`. Fix:
+  `sudo systemctl restart flanneld`.
+- **`nft` lives in `/usr/sbin`**, which is not on an unprivileged PATH.
+  `command -v nft` fails on a host where `sudo nft` works fine — do not
+  gate anything on it.
+- **`pkill -f test-e2e.sh` kills your own shell**, because the pattern
+  matches the command line running it. Use `pkill -f 'test-e2e[.]sh'`.
+- **Unbounded `git` repack will OOM-kill this box.** Confirmed three
+  times from `dmesg`: the victim was `git` at ~1.1GB RSS, not the build.
+  `.git` had accumulated 14,959 loose objects / 347MB against a 14MB
+  pack, and it was self-perpetuating — auto-gc triggers, gets OOM-killed,
+  the objects stay loose, the next operation needs more. Fixed by
+  `git gc --prune=now` (347MB → 0 loose, `.git` 362MB → 13MB) with
+  repo-local caps now committed to `.git/config`:
+  `pack.windowMemory=32m`, `pack.deltaCacheSize=16m`, `pack.threads=1`.
+  If git starts getting killed again, check `git count-objects -vH`
+  first.
+- **Don't let `gh run download` buffer an artifact here.** It holds the
+  whole zip in memory, and the debug pair is ~490MB. Stream it instead:
+  `curl -sL -H "Authorization: token $(gh auth token)" -o a.zip
+  .../actions/artifacts/<id>/zip`, then extract the one binary you need
+  with a chunked reader (`unzip` isn't installed).
+- **Long runs need `setsid nohup … &` with `disown`** and a log file on
+  disk; poll the log rather than holding a foreground command open.
+- **This kernel is missing nftables modules** (`nft_fib`, `nft_numgen`,
+  `nft_hash`) — see `crates/nodeproxy/src/svc.rs`'s `probe_caps()`. That
+  is a feature of the test host, not a bug: it is the only place these
+  degradation paths get exercised, so a green run here means more than a
+  green run on a GitHub runner.
+
 ## CI/CD (`.github/workflows/`)
+
+`build.yml` is the one to reach for during development: manual
+(`workflow_dispatch`), builds both crates and runs the full unit tests, no
+e2e, no release, and uploads the binaries as run artifacts (`profile`:
+debug/release/both; `arch`: x86_64/aarch64/armv7l/all). This exists because
+this repo is developed partly on hosts that can't build it — see the Build
+section above for the download-and-deploy flow.
 
 `release.yml` is the real pipeline — manual (`workflow_dispatch`) only; see
 its own top comment for why it isn't push-triggered (a real, unexplained
@@ -162,6 +315,14 @@ unconditionally now — if CRI calls start failing with `"unknown service
 runtime.v1.RuntimeService"` again, that's where to look first.
 
 ## Architecture
+
+**Two binaries, two crates.** `crates/nodelet` is the node agent;
+`crates/nodeproxy` is the Service proxy (`svc.rs`: Service + EndpointSlice
+watch, one `inet not_k8s_svc` nftables table rebuilt atomically per event,
+no periodic resync). They share no code and no config — `nodeproxy` reads
+`NODEPROXY_IP_FAMILY`/`NODEPROXY_LB_METHOD` (still accepting the pre-split
+`NODELET_*` spellings), and `nodelet` warns and ignores if it sees those
+set. e2e coverage is `deploy/lib/test/cases/service_proxy.sh`.
 
 **Split between `mock` and `cri` runtimes** (`crates/nodelet/src/runtime/`):
 almost everything in `src/*.rs` (pod reconciliation, probes, eviction, cpu/

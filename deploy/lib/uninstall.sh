@@ -43,13 +43,48 @@ stop_service_proxy_nft() {
     if command -v nft &>/dev/null; then
         nft delete table inet not_k8s_svc 2>/dev/null || true
     fi
+    # nodeproxy also owns an iptables chain on kernels that can't select
+    # among backends natively (no nft_numgen) — see build_statistic_ruleset()
+    # in crates/nodeproxy/src/svc.rs. Absent everywhere else, so all of this
+    # is a no-op on a normal host.
+    # -w bounds the xtables lock wait: without it these block indefinitely
+    # if anything else (a CNI, a container runtime) holds the lock, and an
+    # uninstall that hangs forever is worse than one that reports failure.
+    local ipt
+    for ipt in iptables ip6tables; do
+        command -v "$ipt" &>/dev/null || continue
+        # Delete jumps in a loop, not once. -D removes a single matching
+        # rule, so a chain that somehow accumulated duplicates would keep
+        # one alive and the -X below would then fail with "chain is not
+        # empty" — leaving the chain, and its DNAT rules, in place after an
+        # uninstall claimed success. Bounded so a -D that always succeeds
+        # can't spin.
+        local hook i
+        for hook in PREROUTING OUTPUT; do
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+                "$ipt" -w 5 -t nat -C "$hook" -j NOTK8S-SVC &>/dev/null || break
+                "$ipt" -w 5 -t nat -D "$hook" -j NOTK8S-SVC &>/dev/null || break
+            done
+        done
+        "$ipt" -w 5 -t nat -F NOTK8S-SVC &>/dev/null || true
+        "$ipt" -w 5 -t nat -X NOTK8S-SVC &>/dev/null || true
+        # Say so if it survived. A leftover chain still DNATs to pods that
+        # no longer exist, which is a much more confusing state to debug
+        # later than a warning here.
+        if "$ipt" -w 5 -t nat -L NOTK8S-SVC -n &>/dev/null; then
+            warn "The $ipt chain NOTK8S-SVC could not be removed and is still present. \
+Remove it by hand ($ipt -t nat -F NOTK8S-SVC && $ipt -t nat -X NOTK8S-SVC) — while it exists \
+it keeps DNAT'ing to pods that are gone."
+        fi
+    done
 }
 
-# Stops+removes everything a run started: nodelet, the Service-proxy nft
+# Stops+removes everything a run started: nodelet, nodeproxy and its nft
 # table, flanneld, and containerd (only the last if this script started it
 # itself rather than using an existing distro-packaged containerd.service).
 stop_running_components() {
     remove_nodelet_service
+    remove_nodeproxy_service
     stop_service_proxy_nft
     log "Stopping flanneld..."
     remove_supervised_service flanneld

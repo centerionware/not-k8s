@@ -40,6 +40,7 @@
 #   ./deploy/bootstrap-source.sh --with-cri --cni=none   # real containers, hostNetwork-only (old behavior)
 #   ./deploy/bootstrap-source.sh --with-cri --ip-family=ipv4     # force v4-only
 #   ./deploy/bootstrap-source.sh --with-cri --lb-method=round-robin
+#   ./deploy/bootstrap-source.sh --with-cri --proxy=none   # no Service proxy: something else (a real kube-proxy, Cilium, ...) owns ClusterIP/NodePort routing on this node
 #   ./deploy/bootstrap-source.sh --skip-control-plane
 #   ./deploy/bootstrap-source.sh --with-cri --skip-nodelet   # control plane + containerd/CNI only, nodelet never built/installed/started (round 124: profiling.yml's upstream-kubelet.sh comparison leg wants this exact stack with a different node agent, not nodelet sitting there unused)
 #   ./deploy/bootstrap-source.sh --keep-build-tools   # skip the end-of-run toolchain cleanup (faster re-runs)
@@ -84,11 +85,18 @@
 #
 # --ip-family: auto (default) | ipv4 | ipv6 | dual. auto detects what the
 # node actually has (both stacks -> dual, one stack -> that one) and uses the
-# same result for k3s's --cluster-cidr/--service-cidr, flannel, and nodelet's
-# Service proxy, so all three agree. --lb-method: random (default; matches
+# same result for k3s's --cluster-cidr/--service-cidr, flannel, and the
+# nodeproxy Service proxy, so all three agree. --lb-method: random (default; matches
 # how kube-proxy iptables mode behaves) | round-robin | source-hash (sticky
 # per client IP — also used automatically for any Service that sets
-# `sessionAffinity: ClientIP`, regardless of this default).
+# `sessionAffinity: ClientIP`, regardless of this default). Both apply to
+# nodeproxy, the separate Service-routing binary — kube-proxy's job, which
+# nodelet used to do in-process and no longer does.
+#
+# --proxy: nodeproxy (default) | none. `none` installs no Service proxy and
+# touches no nftables rules, leaving ClusterIP/NodePort routing to whatever
+# else this node runs (a real kube-proxy, Cilium, kube-router). This is the
+# point of nodeproxy being its own binary; nodelet is unaffected either way.
 #
 # CNI: real (non-hostNetwork) pods need a CNI plugin to get their own IP —
 # without one, RunPodSandbox works but nothing can reach a pod except by
@@ -102,10 +110,12 @@
 #
 # Services (ClusterIP/NodePort) need more than a pod IP — kube-proxy's job of
 # turning a virtual ClusterIP into a real backend has to happen somewhere.
-# nodelet does it itself with nftables (crates/nodelet/src/svc.rs, watches
-# Services+Endpoints, no separate process). This script just makes sure `nft`
-# is installed and that bridged pod traffic reaches the host's netfilter
-# tables (br_netfilter) so the DNAT rules actually see it.
+# The `nodeproxy` binary does it with nftables (crates/nodeproxy/src/svc.rs,
+# watches Services+EndpointSlices, rebuilds one table atomically per event —
+# no periodic resync). This script installs it as its own service, and makes
+# sure `nft` is present and that bridged pod traffic reaches the host's
+# netfilter tables (br_netfilter) so the DNAT rules actually see it. All of
+# that is skipped by --proxy=none.
 #
 set -euo pipefail
 
@@ -133,6 +143,7 @@ IP_FAMILY=auto
 LB_METHOD=random
 KEEP_BUILD_TOOLS=0
 SKIP_NODELET=0
+PROXY=nodeproxy
 
 for arg in "$@"; do
     case "$arg" in
@@ -146,6 +157,7 @@ for arg in "$@"; do
         --cni=*) CNI_PLUGIN="${arg#--cni=}" ;;
         --ip-family=*) IP_FAMILY="${arg#--ip-family=}" ;;
         --lb-method=*) LB_METHOD="${arg#--lb-method=}" ;;
+        --proxy=*) PROXY="${arg#--proxy=}" ;;
         --keep-build-tools) KEEP_BUILD_TOOLS=1 ;;
         -h|--help)
             grep '^#' "$0" | sed -e 's/^# \{0,1\}//' -e '1,3d'
@@ -192,6 +204,11 @@ case "$LB_METHOD" in
     *) die "Unknown --lb-method='$LB_METHOD' (want 'random', 'round-robin', or 'source-hash')." ;;
 esac
 
+case "$PROXY" in
+    nodeproxy|none) ;;
+    *) die "Unknown --proxy='$PROXY' (want 'nodeproxy' or 'none')." ;;
+esac
+
 ensure_fetch_tool
 export PATH="$TOOLCHAIN_DIR/bin:$PATH"
 
@@ -212,6 +229,7 @@ source "$LIB_DIR/cni.sh"
 source "$LIB_DIR/nft.sh"
 source "$LIB_DIR/nodelet-build.sh"
 source "$LIB_DIR/nodelet-service.sh"
+source "$LIB_DIR/nodeproxy-service.sh"
 source "$LIB_DIR/run.sh"
 source "$LIB_DIR/cleanup.sh"
 source "$LIB_DIR/uninstall.sh"

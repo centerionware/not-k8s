@@ -48,8 +48,10 @@ K3S_CLIENT_CA_FILE=/var/lib/rancher/k3s/server/tls/client-ca.crt
 
 nodelet_env_lines() { # $1 = "export VAR=value" (shell) or "Environment=VAR=value" (systemd)
     local style="$1" out=""
-    for kv in "KUBECONFIG=$KUBECONFIG" "NODELET_RUNTIME=$NODELET_RUNTIME" \
-              "NODELET_IP_FAMILY=$IP_FAMILY" "NODELET_LB_METHOD=$LB_METHOD"; do
+    # No NODELET_IP_FAMILY/NODELET_LB_METHOD here — Service routing moved to
+    # nodeproxy (lib/nodeproxy-service.sh), which carries those under their
+    # NODEPROXY_* names. nodelet warns if it sees the old ones still set.
+    for kv in "KUBECONFIG=$KUBECONFIG" "NODELET_RUNTIME=$NODELET_RUNTIME"; do
         [[ "$style" == "systemd" ]] && out+="Environment=$kv"$'\n' || out+="export $kv"$'\n'
     done
     if [[ -n "${NODELET_CRI_ENDPOINT:-}" ]]; then
