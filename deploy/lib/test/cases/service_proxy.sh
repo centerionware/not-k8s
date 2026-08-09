@@ -56,6 +56,56 @@ _wait_for_ready_endpoint() { # _wait_for_ready_endpoint <service-name> <timeout>
          -o jsonpath='{.items[*].endpoints[*].addresses[0]}' 2>/dev/null | grep -q ."
 }
 
+# _svc_backend_pod <name> <label> <marker> — a pod running the responder,
+# waited to Running. Split out because most tests below need one and the
+# manifest is otherwise repeated verbatim.
+_svc_backend_pod() {
+    local name="$1" label="$2" marker="$3"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+  labels:
+    app: $label
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: $(_svc_responder_command "$marker" 8080)
+      ports:
+        - containerPort: 8080
+EOF
+    try_wait_until 90 pod_is_phase "$name" Running
+}
+
+# _svc_clusterip_service <name> <label> [extra-spec-lines] — a plain
+# ClusterIP Service selecting <label> on 80 -> 8080.
+_svc_clusterip_service() {
+    local name="$1" label="$2" extra="${3:-}"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: $name
+spec:
+  selector:
+    app: $label
+${extra}  ports:
+    - port: 80
+      targetPort: 8080
+EOF
+}
+
+# The rules nodeproxy has programmed for one ClusterIP, as text. Used by
+# the tests that assert on the ruleset rather than on traffic — a rule
+# being present is not proof it works, but a rule being ABSENT (or being
+# the wrong form) is proof of a specific bug, and it's the only way to see
+# things like which load-balancing expression was chosen.
+_svc_rules_for() { # _svc_rules_for <cluster-ip>
+    _nft list table inet not_k8s_svc 2>/dev/null | grep -F "$1" || true
+}
+
 test_clusterip_service_routes_to_its_backend_pod() {
     _require_service_proxy
     local name="svc-clusterip-check"
@@ -290,7 +340,310 @@ test_nodeproxy_runs_as_its_own_service_separate_from_nodelet() {
     assert_contains "$unit" "run-nodeproxy.sh" "nodeproxy.service ExecStart"
 }
 
+# ── Traffic originated inside a pod ───────────────────────────────────
+# Everything above curls from the host, which only ever exercises the nat
+# `output` chain. Pod-originated traffic arrives on `prerouting` instead —
+# a different chain, and one that additionally depends on br_netfilter
+# actually being loaded so bridged traffic reaches netfilter at all
+# (deploy/lib/nft.sh's enable_bridge_netfilter). None of that was covered.
+
+test_clusterip_is_reachable_from_inside_a_pod() {
+    _require_service_proxy
+    local backend="svc-prerouting-backend" client="svc-prerouting-client"
+    local svc="svc-prerouting"
+    _cleanup() {
+        delete_pod_if_exists "$backend"; delete_pod_if_exists "$client"
+        _delete_svc_if_exists "$svc"
+    }
+    trap _cleanup EXIT
+
+    _svc_backend_pod "$backend" "$svc" prerouting-marker \
+        || die "backend pod never reached Running"
+    _svc_clusterip_service "$svc" "$svc"
+    _wait_for_ready_endpoint "$svc" 60 || die "EndpointSlice never got a ready address"
+
+    # A separate pod, so this is pod -> ClusterIP -> a DIFFERENT pod: the
+    # ordinary east-west path, not the hairpin case below.
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $client
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "sleep 3600"]
+EOF
+    try_wait_until 90 pod_is_phase "$client" Running || die "client pod never reached Running"
+
+    local cluster_ip out
+    cluster_ip="$(kctl get service "$svc" -o jsonpath='{.spec.clusterIP}')"
+    if ! try_wait_until 60 bash -c \
+        "kubectl exec -n '$TEST_NAMESPACE' '$client' -- wget -qO- --timeout=5 http://$cluster_ip:80/ 2>/dev/null | grep -q prerouting-marker"; then
+        echo "--- nft ruleset at failure ---"; _nft list table inet not_k8s_svc 2>&1 || true
+        echo "--- br_netfilter ---"
+        cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || echo "(bridge-nf-call-iptables absent)"
+        die "a pod could not reach a ClusterIP — this is the nat prerouting path, not the output path the host-originated tests cover. Check the prerouting rules above and that br_netfilter is loaded (enable_bridge_netfilter in deploy/lib/nft.sh)"
+    fi
+    out="$(kubectl exec -n "$TEST_NAMESPACE" "$client" -- wget -qO- --timeout=5 "http://$cluster_ip:80/" 2>/dev/null)"
+    assert_contains "$out" "prerouting-marker" "response body from a pod curling a ClusterIP"
+}
+
+test_a_pod_reaching_its_own_service_gets_hairpin_masquerade() {
+    _require_service_proxy
+    # The postrouting rule (`ct status dnat masquerade`) exists solely for
+    # this case: a pod calls a Service whose only backend is itself, so
+    # without SNAT the reply is sourced from the same address the request
+    # was sent to and the connection hangs. It is the one rule in
+    # build_ruleset() no other test in this file touches at all.
+    local name="svc-hairpin" svc="svc-hairpin"
+    _cleanup() { delete_pod_if_exists "$name"; _delete_svc_if_exists "$svc"; }
+    trap _cleanup EXIT
+
+    _svc_backend_pod "$name" "$svc" hairpin-marker || die "pod never reached Running"
+    _svc_clusterip_service "$svc" "$svc"
+    _wait_for_ready_endpoint "$svc" 60 || die "EndpointSlice never got a ready address"
+
+    local cluster_ip
+    cluster_ip="$(kctl get service "$svc" -o jsonpath='{.spec.clusterIP}')"
+
+    assert_contains "$(_nft list table inet not_k8s_svc 2>/dev/null)" "masquerade" \
+        "postrouting chain must carry the hairpin masquerade rule"
+
+    # The responder serves one connection at a time, so it has to be free
+    # to answer its own request — nc's loop reopens the listener after each
+    # connection, which is enough here.
+    if ! try_wait_until 60 bash -c \
+        "kubectl exec -n '$TEST_NAMESPACE' '$name' -- wget -qO- --timeout=5 http://$cluster_ip:80/ 2>/dev/null | grep -q hairpin-marker"; then
+        echo "--- nft ruleset at failure ---"; _nft list table inet not_k8s_svc 2>&1 || true
+        die "a pod could not reach a Service that routes back to itself — the classic hairpin failure. Check the 'ct status dnat masquerade' rule in the postrouting chain"
+    fi
+}
+
+# ── Backend-set changes ───────────────────────────────────────────────
+
+test_multiple_backends_use_the_load_balancing_map_form() {
+    _require_service_proxy
+    # dnat_target() deliberately emits a bare <ip>:<port> for exactly one
+    # backend and a `numgen ... mod N map { ... }` for more than one. That
+    # split is not cosmetic: the single-backend fast path exists because a
+    # real Android-derived kernel rejected `numgen` outright (missing
+    # nft_numgen module), and the map form is the only way to express
+    # "pick one of N". A regression collapsing the two would be invisible
+    # to every other test here, since both forms route fine for N=1.
+    local svc="svc-multibackend"
+    _cleanup() {
+        delete_pod_if_exists "$svc-a"; delete_pod_if_exists "$svc-b"
+        _delete_svc_if_exists "$svc"
+    }
+    trap _cleanup EXIT
+
+    _svc_backend_pod "$svc-a" "$svc" multibackend-marker || die "backend a never reached Running"
+    _svc_clusterip_service "$svc" "$svc"
+    _wait_for_ready_endpoint "$svc" 60 || die "EndpointSlice never got a ready address"
+
+    local cluster_ip
+    cluster_ip="$(kctl get service "$svc" -o jsonpath='{.spec.clusterIP}')"
+
+    # One backend: the fast path, no numgen anywhere near this ClusterIP.
+    assert_not_contains "$(_svc_rules_for "$cluster_ip")" "numgen" \
+        "a single-backend Service must use a bare dnat target, not a numgen map (that path exists for kernels without nft_numgen)"
+
+    _svc_backend_pod "$svc-b" "$svc" multibackend-marker || die "backend b never reached Running"
+    if ! try_wait_until 60 bash -c \
+        "kubectl get endpointslices -n '$TEST_NAMESPACE' -l kubernetes.io/service-name='$svc' -o jsonpath='{.items[*].endpoints[*].addresses[0]}' 2>/dev/null | wc -w | grep -qx 2"; then
+        die "the Service never reported two ready backends"
+    fi
+
+    # Two backends: the map form, and traffic still lands.
+    if ! try_wait_until 60 bash -c \
+        "(nft list table inet not_k8s_svc 2>/dev/null || sudo nft list table inet not_k8s_svc 2>/dev/null) | grep -F '$cluster_ip' | grep -q 'map {'"; then
+        echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
+        die "a two-backend Service never got the 'numgen ... mod N map { ... }' form — check dnat_target()'s N>1 branch"
+    fi
+
+    local body
+    body="$(try_wait_until 60 bash -c "curl -sS --max-time 5 http://$cluster_ip:80/ | grep -q multibackend-marker" \
+        && curl -sS --max-time 5 "http://$cluster_ip:80/")" \
+        || die "a two-backend Service stopped routing entirely once it had the map form"
+    assert_contains "$body" "multibackend-marker" "response from a load-balanced two-backend Service"
+}
+
+test_losing_every_backend_removes_the_dnat_rule() {
+    _require_service_proxy
+    # dnat_target() returns None for zero backends, so the Service's rules
+    # must disappear rather than linger pointing at a dead pod IP — which
+    # would blackhole traffic instead of failing it fast.
+    local svc="svc-drain"
+    _cleanup() { delete_pod_if_exists "$svc-a"; _delete_svc_if_exists "$svc"; }
+    trap _cleanup EXIT
+
+    _svc_backend_pod "$svc-a" "$svc" drain-marker || die "backend never reached Running"
+    _svc_clusterip_service "$svc" "$svc"
+    _wait_for_ready_endpoint "$svc" 60 || die "EndpointSlice never got a ready address"
+
+    local cluster_ip
+    cluster_ip="$(kctl get service "$svc" -o jsonpath='{.spec.clusterIP}')"
+    assert_not_empty "$(_svc_rules_for "$cluster_ip")" "rules for a Service that has a ready backend"
+
+    kctl delete pod "$svc-a" --wait=true >/dev/null 2>&1 || true
+    if ! try_wait_until 90 bash -c \
+        "! ((nft list table inet not_k8s_svc 2>/dev/null || sudo nft list table inet not_k8s_svc 2>/dev/null) | grep -qF '$cluster_ip')"; then
+        echo "--- rules still present for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
+        die "a Service whose last backend went away kept its DNAT rule, which blackholes traffic at a dead pod IP instead of failing it fast"
+    fi
+}
+
+test_deleting_a_service_removes_its_rules() {
+    _require_service_proxy
+    local svc="svc-deleted"
+    _cleanup() { delete_pod_if_exists "$svc-a"; _delete_svc_if_exists "$svc"; }
+    trap _cleanup EXIT
+
+    _svc_backend_pod "$svc-a" "$svc" deleted-marker || die "backend never reached Running"
+    _svc_clusterip_service "$svc" "$svc"
+    _wait_for_ready_endpoint "$svc" 60 || die "EndpointSlice never got a ready address"
+
+    local cluster_ip
+    cluster_ip="$(kctl get service "$svc" -o jsonpath='{.spec.clusterIP}')"
+    assert_not_empty "$(_svc_rules_for "$cluster_ip")" "rules for a live Service"
+
+    # Exercises apply_event()'s Delete arm. A ClusterIP is recycled by the
+    # apiserver, so a stale rule here doesn't just waste space — it can
+    # silently hijack a DIFFERENT Service allocated the same address later.
+    _delete_svc_if_exists "$svc"
+    if ! try_wait_until 90 bash -c \
+        "! ((nft list table inet not_k8s_svc 2>/dev/null || sudo nft list table inet not_k8s_svc 2>/dev/null) | grep -qF '$cluster_ip')"; then
+        echo "--- rules still present for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
+        die "a deleted Service left its rules behind — check apply_event()'s Delete arm. ClusterIPs get recycled, so a stale rule can hijack whichever Service is allocated that address next"
+    fi
+}
+
+# ── Per-Service policy and special cases ──────────────────────────────
+
+test_session_affinity_client_ip_forces_source_hash() {
+    _require_service_proxy
+    # sessionAffinity: ClientIP must override the proxy-wide default,
+    # because it's a per-Service opt-in. With two backends the choice is
+    # visible in the rule itself: jhash rather than numgen. This is a
+    # ruleset assertion on purpose — proving stickiness by traffic would
+    # need many connections from distinct source IPs, which this harness
+    # has no way to produce.
+    local svc="svc-affinity"
+    _cleanup() {
+        delete_pod_if_exists "$svc-a"; delete_pod_if_exists "$svc-b"
+        _delete_svc_if_exists "$svc"
+    }
+    trap _cleanup EXIT
+
+    _svc_backend_pod "$svc-a" "$svc" affinity-marker || die "backend a never reached Running"
+    _svc_backend_pod "$svc-b" "$svc" affinity-marker || die "backend b never reached Running"
+    _svc_clusterip_service "$svc" "$svc" "  sessionAffinity: ClientIP
+"
+    if ! try_wait_until 60 bash -c \
+        "kubectl get endpointslices -n '$TEST_NAMESPACE' -l kubernetes.io/service-name='$svc' -o jsonpath='{.items[*].endpoints[*].addresses[0]}' 2>/dev/null | wc -w | grep -qx 2"; then
+        die "the Service never reported two ready backends"
+    fi
+
+    local cluster_ip
+    cluster_ip="$(kctl get service "$svc" -o jsonpath='{.spec.clusterIP}')"
+    if ! try_wait_until 60 bash -c \
+        "(nft list table inet not_k8s_svc 2>/dev/null || sudo nft list table inet not_k8s_svc 2>/dev/null) | grep -F '$cluster_ip' | grep -q 'jhash'"; then
+        echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
+        die "sessionAffinity: ClientIP did not produce a jhash selector — check lb_expr()'s sticky branch, which must win over the configured default"
+    fi
+    assert_not_contains "$(_svc_rules_for "$cluster_ip")" "numgen" \
+        "a ClientIP-affinity Service must not use a random/round-robin selector"
+}
+
+test_headless_service_programs_no_rules_and_does_not_break_others() {
+    _require_service_proxy
+    # A headless Service has clusterIP: None — there is nothing to DNAT,
+    # and build_ruleset() skips it explicitly. The risk isn't a missing
+    # rule, it's the literal string "None" reaching the ruleset and taking
+    # the whole atomically-applied table down with it, which would break
+    # every other Service on the node.
+    local headless="svc-headless" probe="svc-headless-probe"
+    _cleanup() {
+        delete_pod_if_exists "$headless-a"
+        _delete_svc_if_exists "$headless"; _delete_svc_if_exists "$probe"
+    }
+    trap _cleanup EXIT
+
+    _svc_backend_pod "$headless-a" "$headless" headless-marker || die "backend never reached Running"
+    _svc_clusterip_service "$headless" "$headless" "  clusterIP: None
+"
+    _wait_for_ready_endpoint "$headless" 60 || die "headless Service's EndpointSlice never got a ready address"
+
+    assert_not_contains "$(_nft list table inet not_k8s_svc 2>/dev/null)" "None" \
+        "the literal 'None' must never reach the ruleset"
+
+    # A Service created after the headless one can only get rules if the
+    # rebuild that saw the headless Service was accepted by the kernel.
+    _svc_clusterip_service "$probe" "$headless"
+    _wait_for_ready_endpoint "$probe" 60 || die "probe Service's EndpointSlice never got a ready address"
+
+    local cluster_ip body
+    cluster_ip="$(kctl get service "$probe" -o jsonpath='{.spec.clusterIP}')"
+    body="$(try_wait_until 60 bash -c "curl -sS --max-time 5 http://$cluster_ip:80/ | grep -q headless-marker" \
+        && curl -sS --max-time 5 "http://$cluster_ip:80/")" \
+        || { echo "--- nft ruleset at failure ---"; _nft list table inet not_k8s_svc 2>&1 || true
+             die "a headless Service broke routing for everything else — check build_ruleset()'s clusterIP == \"None\" skip"; }
+    assert_contains "$body" "headless-marker" "a Service created alongside a headless one still routes"
+}
+
+# ── Restart ───────────────────────────────────────────────────────────
+# Deferred to the end of the run automatically: harness.sh's
+# _reorder_env_reconfiguring_tests_last greps each test's own source for
+# nodeproxy_restart_*, same as it already does for nodelet restarts.
+
+test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart() {
+    _require_service_proxy
+    nodeproxy_restart_supported || skip_test "needs systemd with a nodeproxy.service unit"
+    # nodeproxy holds all Service/EndpointSlice state in memory and rebuilds
+    # the entire table on every event; a restart drops that state and
+    # relists (apply_event()'s Init arm clears the mirror). If the rebuild
+    # after a relist were incomplete, a restart would silently drop routing
+    # for Services that existed before it — and nothing else in this suite
+    # would notice, since every other test creates its Service after
+    # nodeproxy is already running.
+    local svc="svc-restart"
+    _cleanup() {
+        delete_pod_if_exists "$svc-a"; _delete_svc_if_exists "$svc"
+        nodeproxy_restore_env || true
+    }
+    trap _cleanup EXIT
+
+    _svc_backend_pod "$svc-a" "$svc" restart-marker || die "backend never reached Running"
+    _svc_clusterip_service "$svc" "$svc"
+    _wait_for_ready_endpoint "$svc" 60 || die "EndpointSlice never got a ready address"
+
+    local cluster_ip body
+    cluster_ip="$(kctl get service "$svc" -o jsonpath='{.spec.clusterIP}')"
+    body="$(try_wait_until 60 bash -c "curl -sS --max-time 5 http://$cluster_ip:80/ | grep -q restart-marker" \
+        && curl -sS --max-time 5 "http://$cluster_ip:80/")" \
+        || die "Service never routed before the restart"
+    assert_contains "$body" "restart-marker" "response before restarting nodeproxy"
+
+    nodeproxy_restart_plain
+
+    if ! try_wait_until 90 bash -c "curl -sS --max-time 5 http://$cluster_ip:80/ | grep -q restart-marker"; then
+        echo "--- nft ruleset after restart ---"; _nft list table inet not_k8s_svc 2>&1 || true
+        echo "--- nodeproxy log ---"; sudo journalctl -u nodeproxy -n 30 --no-pager 2>&1 || true
+        die "a Service that existed before nodeproxy restarted never got its rules back — the post-relist rebuild is incomplete (apply_event()'s Init arm clears the mirror; every Service must be re-added from the relist)"
+    fi
+}
+
 register_test test_clusterip_service_routes_to_its_backend_pod
 register_test test_nodeport_service_is_reachable_on_the_node_ip
 register_test test_service_with_no_endpoints_does_not_wedge_the_ruleset
 register_test test_nodeproxy_runs_as_its_own_service_separate_from_nodelet
+register_test test_clusterip_is_reachable_from_inside_a_pod
+register_test test_a_pod_reaching_its_own_service_gets_hairpin_masquerade
+register_test test_multiple_backends_use_the_load_balancing_map_form
+register_test test_losing_every_backend_removes_the_dnat_rule
+register_test test_deleting_a_service_removes_its_rules
+register_test test_session_affinity_client_ip_forces_source_hash
+register_test test_headless_service_programs_no_rules_and_does_not_break_others
+register_test test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart
