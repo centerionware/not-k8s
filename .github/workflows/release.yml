@@ -29,7 +29,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-toolchain
       - name: cargo build (debug)
-        run: cargo build --features cri -p nodelet
+        run: |
+          set -e
+          cargo build --features cri -p nodelet
+          cargo build -p nodeproxy
       # Round 124: the e2e stage's own "Build and deploy" step used to
       # redo this exact build itself, on every one of its (now 5, see
       # below) parallel shards — the same debug binary compiled 6 times
@@ -45,12 +48,14 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: nodelet-debug-binary
-          path: target/debug/nodelet
+          path: |
+            target/debug/nodelet
+            target/debug/nodeproxy
           retention-days: 1
       - name: cargo test (both feature sets)
-        # Under sudo: some tests (svc.rs's nft_check() ones) open real
-        # netlink/nftables sockets to validate generated ruleset syntax,
-        # which needs CAP_NET_ADMIN — consistent with this project's whole
+        # Under sudo: some tests (nodeproxy's svc.rs nft_check() ones) open
+        # real netlink/nftables sockets to validate generated ruleset
+        # syntax, which needs CAP_NET_ADMIN — consistent with this project's whole
         # premise (a kubelet replacement that manages real nftables/
         # cgroups/mounts needs root for its actual job, so its test suite
         # needing it too isn't a workaround). sudo -E preserves PATH/
@@ -62,6 +67,7 @@ jobs:
           set -e
           sudo -E env "PATH=$PATH" cargo test -p nodelet
           sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
+          sudo -E env "PATH=$PATH" cargo test -p nodeproxy
 
   # ── Stage 2: full e2e suite, real CSI + DRA reference drivers ─────────
   # Round 124: sharded 5 ways (test-e2e.sh's --shard=N/M, harness.sh's
@@ -118,8 +124,9 @@ jobs:
         # binary once above; every shard just installs it.
         env:
           NOTK8S_NODELET_PREBUILT: ${{ github.workspace }}/dist-bin/nodelet
+          NOTK8S_NODEPROXY_PREBUILT: ${{ github.workspace }}/dist-bin/nodeproxy
         run: |
-          chmod +x "$NOTK8S_NODELET_PREBUILT"
+          chmod +x "$NOTK8S_NODELET_PREBUILT" "$NOTK8S_NODEPROXY_PREBUILT"
           sudo -E ./deploy/bootstrap-source.sh --with-cri
 
       - name: Make the kubeconfig readable
@@ -282,6 +289,13 @@ jobs:
           cargo build --features cri -p nodelet $TARGET_FLAG
           # shellcheck disable=SC2086
           cargo build --release --features cri -p nodelet $TARGET_FLAG
+          # nodeproxy: no features at all (see crates/nodeproxy/Cargo.toml
+          # — the split exists precisely so it shares none of nodelet's
+          # cri dependency tree).
+          # shellcheck disable=SC2086
+          cargo build -p nodeproxy $TARGET_FLAG
+          # shellcheck disable=SC2086
+          cargo build --release -p nodeproxy $TARGET_FLAG
 
       - name: Stage binaries for upload
         run: |
@@ -292,8 +306,10 @@ jobs:
           else
             SRC_DIR="target"
           fi
-          cp "$SRC_DIR/debug/nodelet" "dist/nodelet-linux-${{ matrix.arch }}-debug"
-          cp "$SRC_DIR/release/nodelet" "dist/nodelet-linux-${{ matrix.arch }}-release"
+          for bin in nodelet nodeproxy; do
+            cp "$SRC_DIR/debug/$bin" "dist/$bin-linux-${{ matrix.arch }}-debug"
+            cp "$SRC_DIR/release/$bin" "dist/$bin-linux-${{ matrix.arch }}-release"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -332,10 +348,12 @@ jobs:
         run: |
           set -e
           cd dist
-          for f in nodelet-linux-*-debug nodelet-linux-*-release; do
-            [[ -f "$f" ]] || continue
-            arch_profile="${f#nodelet-linux-}"
-            mv "$f" "nodelet-${{ steps.version.outputs.version }}-linux-${arch_profile}"
+          for bin in nodelet nodeproxy; do
+            for f in "$bin"-linux-*-debug "$bin"-linux-*-release; do
+              [[ -f "$f" ]] || continue
+              arch_profile="${f#$bin-linux-}"
+              mv "$f" "$bin-${{ steps.version.outputs.version }}-linux-${arch_profile}"
+            done
           done
           ls -la
 
@@ -356,7 +374,7 @@ jobs:
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file changelog.md \
-            dist/nodelet-* dist/deploy.tar.gz
+            dist/nodelet-* dist/nodeproxy-* dist/deploy.tar.gz
 
       - name: Compile the standalone install scripts
         run: |

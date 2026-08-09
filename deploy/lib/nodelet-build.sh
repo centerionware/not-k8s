@@ -1,4 +1,8 @@
-# lib/nodelet-build.sh — produce $REPO_ROOT/bin/nodelet.
+# lib/nodelet-build.sh — produce $REPO_ROOT/bin/nodelet and, unless
+# PROXY=none, $REPO_ROOT/bin/nodeproxy (the Service-routing binary, split out
+# of nodelet the way kube-proxy is split from the kubelet upstream). Two
+# cargo packages, one shared target dir — the second build reuses nearly all
+# of the first's dependency compilation.
 #
 # Today this always builds from source on-device (rustc + optionally protoc,
 # via toolchain-rust.sh / toolchain-protoc.sh). The eventual plan is a
@@ -10,8 +14,8 @@
 # before sourcing this file, and build_nodelet() becomes a no-op. Nothing
 # about that split needs designing later — it's just not wired up to CI yet.
 
-# install_nodelet_binary <source-path> — copies a built/prebuilt binary to
-# $REPO_ROOT/bin/nodelet, overwriting whatever's already there (a stale
+# install_built_binary <source-path> <name> — copies a built/prebuilt binary to
+# $REPO_ROOT/bin/<name>, overwriting whatever's already there (a stale
 # binary from a previous run, possibly owned by a different user if that
 # run's privileges differed from this one's). Split out from build_nodelet()
 # because a plain `install -m 0755 src dst` silently no-ops on a permission
@@ -23,13 +27,13 @@
 # first so the second install has nothing to fail to overwrite; if THAT
 # still fails (e.g. bin/ itself isn't writable by this user), die instead of
 # silently leaving a stale binary in place.
-install_nodelet_binary() {
-    local src="$1"
+install_built_binary() {
+    local src="$1" name="$2"
     mkdir -p "$REPO_ROOT/bin"
-    rm -f "$REPO_ROOT/bin/nodelet" 2>/dev/null
-    install -m 0755 "$src" "$REPO_ROOT/bin/nodelet" \
-        || die "Couldn't install $src to $REPO_ROOT/bin/nodelet (permission denied? check ownership of $REPO_ROOT/bin — a previous run under different privileges, e.g. sudo vs. not, can leave it owned by another user). The build itself succeeded; only this final copy step failed, so re-running with correct permissions on $REPO_ROOT/bin should be all that's needed."
-    [[ -x "$REPO_ROOT/bin/nodelet" ]] || die "install reported success but $REPO_ROOT/bin/nodelet still isn't there/executable — filesystem full? check df -h."
+    rm -f "$REPO_ROOT/bin/$name" 2>/dev/null
+    install -m 0755 "$src" "$REPO_ROOT/bin/$name" \
+        || die "Couldn't install $src to $REPO_ROOT/bin/$name (permission denied? check ownership of $REPO_ROOT/bin — a previous run under different privileges, e.g. sudo vs. not, can leave it owned by another user). The build itself succeeded; only this final copy step failed, so re-running with correct permissions on $REPO_ROOT/bin should be all that's needed."
+    [[ -x "$REPO_ROOT/bin/$name" ]] || die "install reported success but $REPO_ROOT/bin/$name still isn't there/executable — filesystem full? check df -h."
 }
 
 # release_lto_settings_for_this_device — echoes env-var assignments
@@ -50,7 +54,7 @@ install_nodelet_binary() {
 # settings" fallback below never gets a chance to run at all, and whoever's
 # running this script sees the box reboot mid-build with no diagnostic,
 # left with whatever stale bin/nodelet happened to already be there
-# (install_nodelet_binary above at least makes that visible on the *next*
+# (install_built_binary above at least makes that visible on the *next*
 # successful run, but the crashed run itself gives no signal). Cheaper to
 # just not attempt the risky profile at all below a conservative memory
 # floor than to rely on a retry that a hard crash preempts.
@@ -65,11 +69,24 @@ release_lto_settings_for_this_device() {
     fi
 }
 
+# Whether this run wants the Service proxy at all. PROXY is set by the
+# bootstrap entry points (--proxy=nodeproxy|none); default to building it,
+# since that matches the behaviour of every release before the split, when
+# nodelet did this job in-process.
+want_nodeproxy() { [[ "${PROXY:-nodeproxy}" != "none" ]]; }
+
 build_nodelet() {
     if [[ -n "${NOTK8S_NODELET_PREBUILT:-}" ]]; then
         log "Using prebuilt nodelet binary: $NOTK8S_NODELET_PREBUILT"
         [[ -x "$NOTK8S_NODELET_PREBUILT" ]] || die "NOTK8S_NODELET_PREBUILT is set but not an executable file: $NOTK8S_NODELET_PREBUILT"
-        install_nodelet_binary "$NOTK8S_NODELET_PREBUILT"
+        install_built_binary "$NOTK8S_NODELET_PREBUILT" nodelet
+        if want_nodeproxy; then
+            [[ -n "${NOTK8S_NODEPROXY_PREBUILT:-}" ]] \
+                || die "NOTK8S_NODELET_PREBUILT is set but NOTK8S_NODEPROXY_PREBUILT isn't, and this run wants the Service proxy. Set both, or pass --proxy=none if this node's service routing is handled by something else (a real kube-proxy, Cilium, ...)."
+            log "Using prebuilt nodeproxy binary: $NOTK8S_NODEPROXY_PREBUILT"
+            [[ -x "$NOTK8S_NODEPROXY_PREBUILT" ]] || die "NOTK8S_NODEPROXY_PREBUILT is set but not an executable file: $NOTK8S_NODEPROXY_PREBUILT"
+            install_built_binary "$NOTK8S_NODEPROXY_PREBUILT" nodeproxy
+        fi
         return 0
     fi
 
@@ -87,11 +104,21 @@ build_nodelet() {
     # needs correctness, not runtime performance). Not the default: a real
     # device install should still get the real, optimized binary.
     if [[ "${NOTK8S_BUILD_PROFILE:-release}" == "debug" ]]; then
-        log "Building nodelet (cargo build ${features[*]:-} — debug profile, NOTK8S_BUILD_PROFILE=debug)..."
-        cargo build "${features[@]}" || die "cargo build (debug) failed — check $LOG_DIR."
+        log "Building nodelet (cargo build -p nodelet ${features[*]:-} — debug profile, NOTK8S_BUILD_PROFILE=debug)..."
+        cargo build -p nodelet "${features[@]}" || die "cargo build (debug) failed — check $LOG_DIR."
         [[ -x "$REPO_ROOT/target/debug/nodelet" ]] || die "Build finished but binary not found."
-        install_nodelet_binary "$REPO_ROOT/target/debug/nodelet"
+        install_built_binary "$REPO_ROOT/target/debug/nodelet" nodelet
         log "nodelet built (debug): $REPO_ROOT/bin/nodelet"
+        if want_nodeproxy; then
+            # No --features: nodeproxy has none. It deliberately doesn't
+            # share nodelet's cri feature (or any of its deps) — see
+            # crates/nodeproxy/Cargo.toml.
+            log "Building nodeproxy (cargo build -p nodeproxy — debug profile)..."
+            cargo build -p nodeproxy || die "cargo build -p nodeproxy (debug) failed — check $LOG_DIR."
+            [[ -x "$REPO_ROOT/target/debug/nodeproxy" ]] || die "Build finished but binary not found."
+            install_built_binary "$REPO_ROOT/target/debug/nodeproxy" nodeproxy
+            log "nodeproxy built (debug): $REPO_ROOT/bin/nodeproxy"
+        fi
         return 0
     fi
 
@@ -100,8 +127,8 @@ build_nodelet() {
     if [[ -n "$lto_override" ]]; then
         log "This device has under 4GB RAM — building with lighter LTO settings ($lto_override) from the start instead of risking the full lto=true/codegen-units=1 profile's memory spike."
     fi
-    log "Building nodelet (cargo build --release ${features[*]:-})..."
-    if ! env $lto_override cargo build --release "${features[@]}"; then
+    log "Building nodelet (cargo build --release -p nodelet ${features[*]:-})..."
+    if ! env $lto_override cargo build --release -p nodelet "${features[@]}"; then
         if [[ -n "$lto_override" ]]; then
             die "Build failed even with lighter LTO settings — check $LOG_DIR or run 'free -h' during a manual 'cargo build --release' to confirm this is memory exhaustion (dmesg/journalctl will show an oom-kill of rustc/cc1plus/ld if so). Adding swap, or building on a box with more RAM, are the remaining options for this profile."
         fi
@@ -110,14 +137,27 @@ build_nodelet() {
         # why a big-enough device still tries the expensive profile first.
         warn "cargo build --release failed — if this device is memory-constrained, the likely cause is the final whole-program LTO step (Cargo.toml's [profile.release] uses lto=true, codegen-units=1 for the smallest edge binary, which needs the most memory right at the end). Retrying once with lighter LTO settings (thin LTO, 16 codegen units) that trade a slightly larger binary for much lower peak memory..."
         CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-            cargo build --release "${features[@]}" \
+            cargo build --release -p nodelet "${features[@]}" \
             || die "Build failed even with lighter LTO settings — check $LOG_DIR or run 'free -h' during a manual 'cargo build --release' to confirm this is memory exhaustion (dmesg/journalctl will show an oom-kill of rustc/cc1plus/ld if so). Adding swap, or building on a box with more RAM, are the remaining options for this profile."
+        # Whatever made the full profile fail applies to the second package
+        # too, so stay on the lighter settings for the rest of this run
+        # rather than re-discovering it.
+        lto_override="CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
     fi
     [[ -x "$REPO_ROOT/target/release/nodelet" ]] || die "Build finished but binary not found."
 
     # Copy out to a stable path before the end-of-run cleanup wipes target/
     # (the whole cargo build cache — deps, incremental, fingerprints — none
     # of which is needed once the binary exists).
-    install_nodelet_binary "$REPO_ROOT/target/release/nodelet"
+    install_built_binary "$REPO_ROOT/target/release/nodelet" nodelet
     log "nodelet built: $REPO_ROOT/bin/nodelet"
+
+    if want_nodeproxy; then
+        log "Building nodeproxy (cargo build --release -p nodeproxy)..."
+        env $lto_override cargo build --release -p nodeproxy \
+            || die "cargo build --release -p nodeproxy failed — check $LOG_DIR. nodelet itself built fine; only the Service-proxy binary failed. Pass --proxy=none to skip it if this node's service routing is handled by something else."
+        [[ -x "$REPO_ROOT/target/release/nodeproxy" ]] || die "Build finished but binary not found."
+        install_built_binary "$REPO_ROOT/target/release/nodeproxy" nodeproxy
+        log "nodeproxy built: $REPO_ROOT/bin/nodeproxy"
+    fi
 }

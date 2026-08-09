@@ -10,11 +10,23 @@ run_and_verify() {
 
     export NODELET_RUNTIME="mock"
     [[ "$WITH_CRI" -eq 1 ]] && NODELET_RUNTIME="cri"
-    export NODELET_IP_FAMILY="$IP_FAMILY"
-    export NODELET_LB_METHOD="$LB_METHOD"
 
     log "Starting nodelet (runtime=$NODELET_RUNTIME)..."
     install_nodelet_service
+
+    # nodeproxy is a separate service with no ordering relationship to
+    # nodelet — it only needs the apiserver. --proxy=none skips it entirely
+    # (something else owns ClusterIP/NodePort routing on this node), and
+    # under the mock runtime there are no real pod IPs to route to at all,
+    # which is what nodelet's old service_proxy default already encoded.
+    if want_nodeproxy && [[ "$WITH_CRI" -eq 1 ]]; then
+        log "Starting nodeproxy (Service routing: ip_family=$IP_FAMILY lb_method=$LB_METHOD)..."
+        install_nodeproxy_service
+    elif want_nodeproxy; then
+        log "Skipping nodeproxy — the mock runtime has no real pod IPs to route Services to."
+    else
+        log "Skipping nodeproxy (--proxy=none) — ClusterIP/NodePort routing is this node's own business."
+    fi
 
     log "Waiting for the node to register..."
     for i in $(seq 1 20); do

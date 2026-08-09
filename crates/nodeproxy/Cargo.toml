@@ -1,0 +1,26 @@
+[package]
+name = "nodeproxy"
+description = "Service (ClusterIP/NodePort) proxy for not-k8s — kube-proxy's job, via nftables"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "nodeproxy"
+path = "src/main.rs"
+
+# Deliberately minimal. This crate exists as a separate workspace member,
+# rather than a second [[bin]] inside `nodelet`, precisely so the dependency
+# boundary is enforced by this file: no `cri` feature, no tonic/prost/zbus/
+# rcgen, nothing from the container-runtime side. If a future change wants
+# one of those here, that's the signal the split is being eroded.
+[dependencies]
+tokio = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+rustls = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

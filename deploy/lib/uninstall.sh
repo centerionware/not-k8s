@@ -45,11 +45,12 @@ stop_service_proxy_nft() {
     fi
 }
 
-# Stops+removes everything a run started: nodelet, the Service-proxy nft
+# Stops+removes everything a run started: nodelet, nodeproxy and its nft
 # table, flanneld, and containerd (only the last if this script started it
 # itself rather than using an existing distro-packaged containerd.service).
 stop_running_components() {
     remove_nodelet_service
+    remove_nodeproxy_service
     stop_service_proxy_nft
     log "Stopping flanneld..."
     remove_supervised_service flanneld

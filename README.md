@@ -2,7 +2,7 @@
 
 **A drop-in kubelet replacement small enough to run where kubelet won't fit.**
 
-`not-k8s` is **not** a from-scratch Kubernetes — it's a lightweight replacement for one component: kubelet, the node agent, backed by 1,100+ unit tests and ~140 e2e tests. Everything else stays a k3s control plane (apiserver, scheduler, full kubectl/CRD support). Only the node side gets rebuilt, as a lean event-driven Rust binary, because that's where the heaviest polling loops live.
+`not-k8s` is **not** a from-scratch Kubernetes — it's a lightweight replacement for the node side: `nodelet` (kubelet, the node agent) and `nodeproxy` (kube-proxy), backed by 1,100+ unit tests and ~140 e2e tests. Everything else stays a k3s control plane (apiserver, scheduler, full kubectl/CRD support). Only the node side gets rebuilt, in lean event-driven Rust, because that's where the heaviest polling loops live.
 
 The core idea: kubelet's idle cost isn't from doing actual work, it's from constant polling (PLEG re-lists every container every second, cAdvisor walks cgroups forever, informers periodically re-list the world). `nodelet` rebuilds the node side to be event-driven — no PLEG, no cAdvisor housekeeping, one process, one watch. Measured idle, no pods scheduled, 120s window, 3 replicates per agent:
 
@@ -40,6 +40,8 @@ git clone https://github.com/centerionware/not-k8s && cd not-k8s && \
 ```
 
 All three are self-contained: they detect your distro and CPU architecture and install everything else needed (containerd, k3s, CNI); the two prebuilt-binary paths need no Rust toolchain at all, the from-source path builds and then cleans up its build tools afterward. Pin the one-liner to a specific release instead of always-latest with `install-v<version>.sh` in place of `install.sh`.
+
+Two binaries get installed, as two independent services: `nodelet` (the node agent — the kubelet replacement) and `nodeproxy` (Service/ClusterIP/NodePort routing via nftables — kube-proxy's job). They're separate for the same reason kubelet and kube-proxy are separate upstream: a node can use Cilium, a real kube-proxy, or nothing for service routing without changing the node agent. Pass `--proxy=none` if something else already owns that datapath on your node.
 
 ## Scope
 

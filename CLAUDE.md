@@ -4,9 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-`not-k8s` replaces kubelet (the node agent) with `nodelet`, a lean event-driven
-Rust binary, while keeping a real (stripped) k3s control plane for 1:1
-`kubectl`/CRD compatibility. The pitch: kubelet's idle cost (PLEG polling,
+`not-k8s` replaces the node side of Kubernetes with two lean event-driven Rust
+binaries — `nodelet` (kubelet, the node agent) and `nodeproxy` (kube-proxy:
+Service/ClusterIP/NodePort routing via nftables) — while keeping a real
+(stripped) k3s control plane for 1:1 `kubectl`/CRD compatibility. The two are
+separate binaries and separate services with no ordering between them, for the
+same reason kubelet and kube-proxy are separate upstream: a node can swap in
+Cilium or a real kube-proxy, or run none at all
+(`bootstrap-source.sh --proxy=none`), without touching the node agent. The pitch: kubelet's idle cost (PLEG polling,
 cAdvisor housekeeping, per-component watch caches, iptables sync) lives almost
 entirely on the node side, not the apiserver — replace only that, keep
 everything else real. Goal is genuine kubelet feature parity (not a
@@ -33,7 +38,25 @@ cargo build -p nodelet                    # mock runtime, debug
 cargo build --release --features cri -p nodelet   # real binary, optimized
 cargo test -p nodelet                     # mock-runtime unit tests
 cargo test -p nodelet --features cri      # cri-gated unit tests too
+
+cargo build -p nodeproxy                  # the Service proxy — no features, ever
+cargo test -p nodeproxy                   # its nft ruleset tests (need CAP_NET_ADMIN, else self-skip)
 ```
+
+`crates/nodeproxy` deliberately shares **none** of nodelet's dependency tree —
+no `cri` feature, no tonic/prost/zbus. If a change wants one of those there,
+that's the signal the split is being eroded; the boundary is enforced by
+`crates/nodeproxy/Cargo.toml` and nothing else.
+
+**Don't build locally on a constrained host** — use GitHub Actions.
+`.github/workflows/build.yml` (manual `workflow_dispatch`) compiles both
+crates, runs the unit tests, and uploads the binaries as run artifacts, with
+`profile` (debug/release/both) and `arch` (x86_64/aarch64/armv7l/all) inputs
+and no e2e stage. Download them with `gh run download <run-id> -n
+notk8s-<arch>-<profile>` and point a local deploy at them via
+`NOTK8S_NODELET_PREBUILT` / `NOTK8S_NODEPROXY_PREBUILT` — the same prebuilt
+seam `release.yml`'s e2e shards use, so no toolchain is installed on the
+device.
 
 **Release profile is expensive on purpose**: `Cargo.toml`'s `[profile.release]`
 uses `lto=true, codegen-units=1` for the smallest edge binary — a real build
@@ -63,7 +86,10 @@ Run a single test: `cargo test -p nodelet --features cri <test_name_substring>`
 ```
 
 Both install k3s (`--disable-agent`, stripped control plane only),
-containerd/runc, CNI, and nodelet as a systemd/OpenRC service. `deploy/lib/*.sh`
+containerd/runc, CNI, and `nodelet` + `nodeproxy` as two independent
+systemd/OpenRC services (`deploy/lib/nodelet-service.sh`,
+`deploy/lib/nodeproxy-service.sh`). `--proxy=none` skips `nodeproxy`
+entirely, including its nftables/br_netfilter host setup. `deploy/lib/*.sh`
 are the individual concern modules these two entry points source (toolchain
 setup, control-plane install, container runtime, CNI, nodelet build/service
 lifecycle) — read the specific `lib/` file for a concern rather than the whole
@@ -121,6 +147,13 @@ the `--only` filter excluded) and actually attempt a release.
 
 ## CI/CD (`.github/workflows/`)
 
+`build.yml` is the one to reach for during development: manual
+(`workflow_dispatch`), builds both crates and runs the full unit tests, no
+e2e, no release, and uploads the binaries as run artifacts (`profile`:
+debug/release/both; `arch`: x86_64/aarch64/armv7l/all). This exists because
+this repo is developed partly on hosts that can't build it — see the Build
+section above for the download-and-deploy flow.
+
 `release.yml` is the real pipeline — manual (`workflow_dispatch`) only; see
 its own top comment for why it isn't push-triggered (a real, unexplained
 GitHub-side issue, not a deliberate design choice like `e2e.yml`/`profiling.yml`
@@ -162,6 +195,14 @@ unconditionally now — if CRI calls start failing with `"unknown service
 runtime.v1.RuntimeService"` again, that's where to look first.
 
 ## Architecture
+
+**Two binaries, two crates.** `crates/nodelet` is the node agent;
+`crates/nodeproxy` is the Service proxy (`svc.rs`: Service + EndpointSlice
+watch, one `inet not_k8s_svc` nftables table rebuilt atomically per event,
+no periodic resync). They share no code and no config — `nodeproxy` reads
+`NODEPROXY_IP_FAMILY`/`NODEPROXY_LB_METHOD` (still accepting the pre-split
+`NODELET_*` spellings), and `nodelet` warns and ignores if it sees those
+set. e2e coverage is `deploy/lib/test/cases/service_proxy.sh`.
 
 **Split between `mock` and `cri` runtimes** (`crates/nodelet/src/runtime/`):
 almost everything in `src/*.rs` (pod reconciliation, probes, eviction, cpu/

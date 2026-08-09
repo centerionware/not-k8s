@@ -1,4 +1,4 @@
-//! Service (ClusterIP + NodePort) proxy — nftables, no kube-proxy.
+//! Service (ClusterIP + NodePort) proxy — nftables, not iptables.
 //!
 //! Real kube-proxy watches Services + EndpointSlices and programs iptables/
 //! ipvs rules to make ClusterIPs (which no interface ever owns) resolve to a
@@ -7,16 +7,23 @@
 //! no polling), the whole ruleset rebuilt atomically from current state every
 //! time a Service or EndpointSlice changes.
 //!
+//! This used to run as a task inside `nodelet` itself. It's a separate
+//! process now for the same reason kube-proxy is separate from the kubelet
+//! upstream: service handling is a replaceable concern. A node that wants
+//! Cilium's eBPF datapath, or a real kube-proxy, or no service proxy at all,
+//! swaps this binary out and leaves the node agent alone.
+//!
 //! Requires `nft` (nftables) and CAP_NET_ADMIN/root — same requirement real
-//! kube-proxy has. If `nft` isn't usable, this logs once and does nothing
-//! further (pods and direct pod-IP traffic are unaffected either way).
+//! kube-proxy has. If `nft` isn't usable, `run()` reports that rather than
+//! programming anything (pods and direct pod-IP traffic are unaffected
+//! either way).
 //!
 //! ## Dual-stack (IPv4/IPv6)
 //!
 //! One `inet`-family table (`not_k8s_svc`) covers both address families —
 //! `inet` is nftables' family that lets a single table mix `ip`/`ip6`
 //! matches, unlike the `ip`/`ip6` families which are single-stack only.
-//! `Config::ip_family` (auto-detected by default: dual if the node has both
+//! `config::IpFamily` (auto-detected by default: dual if the node has both
 //! stacks, single if it only has one) gates which families get rules at all.
 //! Backends come from `EndpointSlice` (not the legacy `Endpoints` API)
 //! specifically because dual-stack Services get *separate* slices per
@@ -69,6 +76,7 @@
 //! number.
 
 use crate::config::{IpFamily, LbMethod};
+use anyhow::{Context, Result};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Service, ServicePort};
 use k8s_openapi::api::discovery::v1::EndpointSlice;
@@ -131,13 +139,18 @@ impl ServiceProxy {
         Self { client, ip_family, lb_method }
     }
 
-    /// Runs forever. Returns only if `nft` is unusable (nothing to do).
-    pub async fn run(&self) {
-        if let Err(e) = check_nft() {
-            warn!(error = ?e, "nft unavailable; Service (ClusterIP/NodePort) routing disabled. \
-Direct pod-IP traffic still works.");
-            return;
-        }
+    /// Runs forever. Returns only if `nft` is unusable — an error, not a
+    /// quiet no-op: as its own process there's nothing else for this binary
+    /// to be doing, so the caller exits non-zero and the supervisor's
+    /// restarts make the misconfiguration visible. (When this ran as a task
+    /// inside nodelet it logged once and let the task die silently, which
+    /// left a node with no service routing and no ongoing signal about it.)
+    pub async fn run(&self) -> Result<()> {
+        check_nft().context(
+            "Service (ClusterIP/NodePort) routing needs a working `nft` (nftables) and \
+CAP_NET_ADMIN/root — the same requirement real kube-proxy has. Direct pod-IP traffic is \
+unaffected either way",
+        )?;
         info!(ip_family = ?self.ip_family, lb_method = ?self.lb_method, "service proxy watching Services + EndpointSlices (nftables backend)");
 
         let mut state = State::default();
@@ -386,13 +399,10 @@ fn build_ruleset(state: &State, ip_family: IpFamily, lb_method: LbMethod) -> Str
     script
 }
 
-fn check_nft() -> Result<(), String> {
-    let out = Command::new("nft")
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("nft not found on PATH: {e}"))?;
+fn check_nft() -> Result<()> {
+    let out = Command::new("nft").arg("--version").output().context("nft not found on PATH")?;
     if !out.status.success() {
-        return Err("`nft --version` exited non-zero".to_string());
+        anyhow::bail!("`nft --version` exited non-zero");
     }
     Ok(())
 }

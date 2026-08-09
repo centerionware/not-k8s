@@ -119,15 +119,9 @@ async fn main() -> Result<()> {
     #[cfg(feature = "cri")]
     tokio::spawn(nodelet::pod_resources::run(runtime.clone(), cfg.clone()));
 
-    // ClusterIP/NodePort routing (nftables). No-op if disabled or if `nft`
-    // isn't usable — pods and direct pod-IP traffic work either way.
-    if cfg.service_proxy {
-        let svc_client = client.clone();
-        let (ip_family, lb_method) = (cfg.ip_family, cfg.lb_method);
-        tokio::spawn(async move {
-            nodelet::svc::ServiceProxy::new(svc_client, ip_family, lb_method).run().await
-        });
-    }
+    // ClusterIP/NodePort routing is NOT here — it's the `nodeproxy` binary
+    // (crates/nodeproxy), the same way kube-proxy is a separate component
+    // from the kubelet upstream. nodelet neither starts nor depends on it.
 
     // The pod control loop. watcher() self-heals on watch errors; we only loop if
     // the stream fully terminates.

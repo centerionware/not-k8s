@@ -71,9 +71,8 @@ echo "  RUST_LOG:    $RUST_LOG"
 [[ -n "${NODELET_MEMORY_BYTES:-}" ]]   && echo "  Memory cap:    $NODELET_MEMORY_BYTES bytes"
 [[ -n "${NODELET_MAX_PODS:-}" ]]       && echo "  Max pods:      $NODELET_MAX_PODS"
 [[ -n "${NODELET_LABELS:-}" ]]         && echo "  Extra labels:  $NODELET_LABELS"
-[[ -n "${NODELET_IP_FAMILY:-}" ]]      && echo "  IP family:     $NODELET_IP_FAMILY"
-[[ -n "${NODELET_LB_METHOD:-}" ]]      && echo "  LB method:     $NODELET_LB_METHOD"
-[[ -n "${NODELET_SERVICE_PROXY:-}" ]]  && echo "  Service proxy: $NODELET_SERVICE_PROXY"
+# Service-routing settings (IP family, LB method) belong to run-nodeproxy.sh
+# now — nodelet ignores them, and says so at startup if they're still set.
 
 echo "========================================"
 echo ""
