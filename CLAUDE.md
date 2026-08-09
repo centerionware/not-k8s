@@ -159,9 +159,18 @@ the copy from whatever `--ref` you give it, against that ref's code.
 Match `arch` to the machine you'll test on; an x86_64 artifact is useless
 on an aarch64 phone VM.
 
+`gh workflow run` prints the created run's URL, so take the id from that
+rather than looking up "the most recent run" — an unscoped `gh run list
+--limit 1` will happily hand you someone else's dispatch, or your own
+previous one if this one hasn't registered yet.
+
 ```bash
-gh workflow run build.yml --ref <branch> -f profile=debug -f arch=aarch64
-gh run watch "$(gh run list --workflow=build.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+RUN=$(gh workflow run build.yml --ref <branch> -f profile=debug -f arch=aarch64 \
+        | grep -oE '[0-9]+$')
+# Older gh, or no URL printed: fall back to a branch-scoped lookup.
+[ -n "$RUN" ] || RUN=$(gh run list --workflow=build.yml --branch <branch> --limit 1 \
+        --json databaseId --jq '.[0].databaseId')
+gh run watch "$RUN" --exit-status    # non-zero if the run failed
 ```
 
 **2. Download the artifact — not to `/tmp`.** `/tmp` here is a ~1GB
@@ -169,9 +178,24 @@ RAM-backed tmpfs and a debug `nodelet` alone is ~350MB. A truncated
 download can still be a valid-looking ELF that runs (the cut lands in
 trailing debug sections), so this fails silently rather than loudly.
 
+Not `gh run download` either — it buffers the whole zip in memory and the
+debug pair is ~490MB, which is what OOM-killed this box. Stream it and
+extract only what changed:
+
 ```bash
-D=/home/droid/nk8s-artifacts && rm -rf "$D" && mkdir -p "$D"
-gh run download <run-id> -n notk8s-aarch64-debug -D "$D" && chmod +x "$D"/*
+D=/home/droid/nk8s-artifacts && mkdir -p "$D"
+AID=$(gh api "repos/centerionware/not-k8s/actions/runs/$RUN/artifacts" \
+        --jq '.artifacts[] | select(.name=="notk8s-aarch64-debug") | .id')
+curl -sL -H "Authorization: token $(gh auth token)" -o "$D/a.zip" \
+  "https://api.github.com/repos/centerionware/not-k8s/actions/artifacts/$AID/zip"
+python3 -c "
+import zipfile,sys
+with zipfile.ZipFile(sys.argv[1]) as z:
+    for name in ('nodelet','nodeproxy'):
+        with z.open(name) as s, open(sys.argv[2]+'/'+name,'wb') as d:
+            while (b := s.read(1<<20)): d.write(b)
+" "$D/a.zip" "$D"
+chmod +x "$D"/nodelet "$D"/nodeproxy
 ```
 
 **3. Deploy with the prebuilt seam.** No toolchain is installed and
@@ -187,8 +211,14 @@ To swap binaries into an already-running deployment, `install` them over
 `bin/` and restart the units — much faster than re-bootstrapping:
 
 ```bash
-sudo install -m0755 "$D/nodeproxy" bin/nodeproxy && sudo systemctl restart nodeproxy
+sudo install -m0755 "$D/nodelet"   bin/nodelet
+sudo install -m0755 "$D/nodeproxy" bin/nodeproxy
+sudo systemctl restart nodelet nodeproxy
 ```
+
+Only one changed? Install and restart just that one — they are
+independent units and restarting the node agent needlessly costs a
+re-registration cycle.
 
 **4. Run only the relevant tests.** `--only` matches test *function*
 names, comma-separated.

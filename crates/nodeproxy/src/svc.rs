@@ -251,16 +251,23 @@ unaffected either way",
                 // that cannot select among backends natively. Applied after
                 // the nft table so a failure here still leaves single-backend
                 // routing in place.
-                if !caps.numgen && caps.statistic {
+                if !caps.numgen {
                     for family in [Family::V4, Family::V6] {
+                        // Gated per family: a host with iptables but no
+                        // ip6tables must keep serving IPv4 rather than
+                        // failing the whole apply over a tool it never
+                        // needed.
+                        if !caps.statistic(family) {
+                            continue;
+                        }
                         match build_statistic_ruleset(&state, self.ip_family, caps, family) {
                             Some(rs) => {
-                                ensure_statistic_chain(family);
+                                ensure_statistic_chain(family)?;
                                 apply_statistic(family, &rs).with_context(|| {
                                     format!("applying the {} statistic ruleset", ipt(family))
                                 })?;
                             }
-                            None => flush_statistic_chain(family),
+                            None => flush_statistic_chain(family)?,
                         }
                     }
                 }
@@ -465,7 +472,7 @@ fn build_ruleset(
                 // Owned by the xtables statistic chain instead — emitting
                 // here too would mean two DNAT rules racing for the same
                 // connection.
-                if caps.delegates_to_statistic(backends.len(), wants_client_ip_affinity(svc)) {
+                if caps.delegates_to_statistic(family, backends.len(), wants_client_ip_affinity(svc)) {
                     continue;
                 }
                 let lb = lb_expr(svc, lb_method, family, caps);
@@ -576,21 +583,36 @@ pub struct Caps {
     /// connections across endpoints, and on the kernel that motivated all
     /// of this it is available when every native nftables selector is not.
     /// See `build_statistic_ruleset()`.
-    pub statistic: bool,
+    ///
+    /// Probed per address family, because `iptables` and `ip6tables` are
+    /// separate binaries over separate kernel tables: a host can perfectly
+    /// well have one without the other. Probing v4 and then applying to v6
+    /// would turn a missing `ip6tables` into a failed apply, and since
+    /// apply failures are fatal that means a restart loop on a node whose
+    /// IPv4 Services were working fine.
+    pub statistic_v4: bool,
+    pub statistic_v6: bool,
 }
 
 impl Caps {
     /// All-supported, for tests and for reasoning about a normal kernel.
     #[cfg(test)]
     fn all() -> Self {
-        Self { fib: true, numgen: true, jhash: true, statistic: true }
+        Self { fib: true, numgen: true, jhash: true, statistic_v4: true, statistic_v6: true }
+    }
+
+    fn statistic(self, family: Family) -> bool {
+        match family {
+            Family::V4 => self.statistic_v4,
+            Family::V6 => self.statistic_v6,
+        }
     }
 
     /// Whether a Service with this many ready backends has to be programmed
     /// through the xtables statistic fallback rather than the nft table.
     /// Never true on a kernel with `numgen` — normal hosts never touch
     /// iptables at all.
-    fn delegates_to_statistic(self, backends: usize, sticky: bool) -> bool {
+    fn delegates_to_statistic(self, family: Family, backends: usize, sticky: bool) -> bool {
         // `sticky` (sessionAffinity: ClientIP) must never reach the
         // statistic chain. That match re-randomises on every connection,
         // which is precisely what the field forbids, and xtables' own
@@ -598,7 +620,7 @@ impl Caps {
         // that lacks nft_numgen — verified, not assumed. Pinning such a
         // Service to one backend keeps its contract intact and is the only
         // correct degradation available.
-        backends > 1 && !self.numgen && self.statistic && !sticky
+        backends > 1 && !self.numgen && self.statistic(family) && !sticky
     }
 }
 
@@ -644,24 +666,30 @@ fn run_ok(cmd: &str, args: &[&str]) -> bool {
 /// way as the nft expressions — by really committing a rule to a scratch
 /// chain, because `iptables` will happily accept the syntax of a match
 /// whose kernel module is missing and only fail on append.
-fn probe_statistic() -> bool {
+fn probe_statistic(family: Family) -> bool {
+    let t = ipt(family);
     let chain = "NOTK8S-PROBE";
-    let _ = run_ok("iptables", &["-t", "nat", "-N", chain]);
+    let dest = match family {
+        Family::V4 => "10.255.255.254:1",
+        Family::V6 => "[fd00::1]:1",
+    };
+    let _ = run_ok(t, &["-w", "5", "-t", "nat", "-N", chain]);
     let ok = run_ok(
-        "iptables",
+        t,
         &[
-            "-t", "nat", "-A", chain, "-p", "tcp", "-m", "statistic", "--mode", "random",
-            "--probability", "0.5", "-j", "DNAT", "--to-destination", "10.255.255.254:1",
+            "-w", "5", "-t", "nat", "-A", chain, "-p", "tcp", "-m", "statistic", "--mode",
+            "random", "--probability", "0.5", "-j", "DNAT", "--to-destination", dest,
         ],
     );
-    let _ = run_ok("iptables", &["-t", "nat", "-F", chain]);
-    let _ = run_ok("iptables", &["-t", "nat", "-X", chain]);
+    let _ = run_ok(t, &["-w", "5", "-t", "nat", "-F", chain]);
+    let _ = run_ok(t, &["-w", "5", "-t", "nat", "-X", chain]);
     ok
 }
 
 fn probe_caps() -> Caps {
     let caps = Caps {
-        statistic: probe_statistic(),
+        statistic_v4: probe_statistic(Family::V4),
+        statistic_v6: probe_statistic(Family::V6),
         fib: probe_rule("fib daddr type local tcp dport 65000 dnat ip to 10.255.255.254:1"),
         numgen: probe_rule(
             "ip daddr 10.255.255.254 tcp dport 65000 dnat to numgen random mod 2 \
@@ -679,14 +707,14 @@ explicitly instead of `fib daddr type local`. Equivalent for traffic addressed t
 address, but it only covers addresses present when each ruleset is built."
         );
     }
-    if !caps.numgen && caps.statistic {
+    if !caps.numgen && (caps.statistic_v4 || caps.statistic_v6) {
         info!(
             "this kernel has no nft_numgen, so multi-backend Services are load balanced through \
 iptables' statistic match instead — the same mechanism kube-proxy's iptables backend uses. \
 Single-backend Services and all other rules stay in nftables."
         );
     }
-    if !caps.numgen && !caps.statistic {
+    if !caps.numgen && !caps.statistic_v4 && !caps.statistic_v6 {
         warn!(
             "this kernel can neither select among backends in nftables (no nft_numgen) nor fall \
 back to iptables' statistic match — Services with more than one ready backend will be sent \
@@ -776,7 +804,7 @@ fn build_statistic_ruleset(
             }
             for port in spec.ports.as_deref().unwrap_or(&[]) {
                 let backends = backends_for(namespace, name, port, family, &state.endpoint_slices);
-                if !caps.delegates_to_statistic(backends.len(), wants_client_ip_affinity(svc)) {
+                if !caps.delegates_to_statistic(family, backends.len(), wants_client_ip_affinity(svc)) {
                     continue;
                 }
                 let proto = port.protocol.as_deref().unwrap_or("TCP").to_ascii_lowercase();
@@ -821,26 +849,48 @@ fn build_statistic_ruleset(
 /// Installs the chain and the jumps into it. Idempotent: the jump is only
 /// inserted when absent, so this never accumulates duplicates across the
 /// rebuilds that happen on every Service event.
-fn ensure_statistic_chain(family: Family) {
+fn statistic_chain_exists(family: Family) -> bool {
+    run_ok(ipt(family), &["-w", "5", "-t", "nat", "-L", IPT_CHAIN, "-n"])
+}
+
+fn ensure_statistic_chain(family: Family) -> Result<()> {
     let t = ipt(family);
-    let _ = run_ok(t, &["-t", "nat", "-N", IPT_CHAIN]);
+    // `-N` fails when the chain already exists, which is the ordinary case
+    // on every rebuild after the first — so its exit status says nothing.
+    // What must hold afterwards is that the chain is *there*, which is
+    // what gets checked and propagated.
+    let _ = run_ok(t, &["-w", "5", "-t", "nat", "-N", IPT_CHAIN]);
+    if !statistic_chain_exists(family) {
+        anyhow::bail!("could not create the {IPT_CHAIN} chain with {t}");
+    }
     for hook in ["PREROUTING", "OUTPUT"] {
-        if !run_ok(t, &["-t", "nat", "-C", hook, "-j", IPT_CHAIN]) {
-            let _ = run_ok(t, &["-t", "nat", "-I", hook, "1", "-j", IPT_CHAIN]);
+        if !run_ok(t, &["-w", "5", "-t", "nat", "-C", hook, "-j", IPT_CHAIN])
+            && !run_ok(t, &["-w", "5", "-t", "nat", "-I", hook, "1", "-j", IPT_CHAIN])
+        {
+            anyhow::bail!("could not jump from nat {hook} to {IPT_CHAIN} with {t}");
         }
     }
+    Ok(())
 }
 
 /// Empties the chain without removing it, for when no Service needs the
 /// fallback any more. Leaving stale DNAT rules behind would silently route
 /// to pods that no longer exist.
-fn flush_statistic_chain(family: Family) {
-    let _ = run_ok(ipt(family), &["-t", "nat", "-F", IPT_CHAIN]);
+fn flush_statistic_chain(family: Family) -> Result<()> {
+    // A chain that was never created is already empty — the common case on
+    // any host that has never needed the fallback, and not a failure.
+    if !statistic_chain_exists(family) {
+        return Ok(());
+    }
+    if !run_ok(ipt(family), &["-w", "5", "-t", "nat", "-F", IPT_CHAIN]) {
+        anyhow::bail!("could not flush the {IPT_CHAIN} chain with {}", ipt(family));
+    }
+    Ok(())
 }
 
 fn apply_statistic(family: Family, ruleset: &str) -> Result<()> {
     let mut child = Command::new(ipt_restore(family))
-        .arg("--noflush")
+        .args(["--noflush", "--wait", "5"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1020,7 +1070,7 @@ mod tests {
     /// rule takes the entire atomically-applied ruleset with it.
     #[test]
     fn a_kernel_without_numgen_or_jhash_gets_no_selector_at_all() {
-        let none = Caps { fib: true, numgen: false, jhash: false, statistic: false };
+        let none = Caps { fib: true, numgen: false, jhash: false, statistic_v4: false, statistic_v6: false };
         let plain = fake_service(vec!["10.43.0.1"], None);
         let sticky = fake_service(vec!["10.43.0.1"], Some("ClientIP"));
         for method in [LbMethod::Random, LbMethod::RoundRobin, LbMethod::SourceHash] {
@@ -1072,7 +1122,7 @@ mod tests {
     fn nodeport_still_works_without_fib_by_matching_local_addresses() {
         let state = state_with_one_nodeport_service();
         let local = vec!["192.168.1.50".to_string(), "10.0.0.1".to_string()];
-        let no_fib = Caps { fib: false, numgen: true, jhash: true, statistic: false };
+        let no_fib = Caps { fib: false, numgen: true, jhash: true, statistic_v4: false, statistic_v6: false };
 
         let rs = build_ruleset(&state, IpFamily::V4, LbMethod::Random, no_fib, &local);
 
@@ -1106,7 +1156,7 @@ mod tests {
     #[test]
     fn losing_nodeport_never_costs_clusterip() {
         let state = state_with_one_nodeport_service();
-        let no_fib = Caps { fib: false, numgen: true, jhash: true, statistic: false };
+        let no_fib = Caps { fib: false, numgen: true, jhash: true, statistic_v4: false, statistic_v6: false };
         let rs = build_ruleset(&state, IpFamily::V4, LbMethod::Random, no_fib, &[]);
         assert!(rs.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"), "{rs}");
         assert!(!rs.contains("30080"), "no local addresses means no NodePort rules:\n{rs}");
@@ -1117,7 +1167,7 @@ mod tests {
     /// own 1/(N-i) scheme, with the last rule unconditional.
     #[test]
     fn statistic_fallback_spreads_evenly_and_terminates() {
-        let caps = Caps { fib: false, numgen: false, jhash: false, statistic: true };
+        let caps = Caps { fib: false, numgen: false, jhash: false, statistic_v4: true, statistic_v6: true };
         let mut state = state_with_one_nodeport_service();
         // Widen the single slice to three ready backends.
         let slice = state.endpoint_slices.get_mut("n/s-abc").unwrap();
@@ -1152,7 +1202,7 @@ mod tests {
     /// rules race for the same connection.
     #[test]
     fn delegated_services_are_absent_from_the_nft_ruleset() {
-        let caps = Caps { fib: false, numgen: false, jhash: false, statistic: true };
+        let caps = Caps { fib: false, numgen: false, jhash: false, statistic_v4: true, statistic_v6: true };
         let mut state = state_with_one_nodeport_service();
         let slice = state.endpoint_slices.get_mut("n/s-abc").unwrap();
         let mut ep = slice.endpoints[0].clone();
@@ -1168,7 +1218,7 @@ mod tests {
     /// even on a kernel that has the fallback available.
     #[test]
     fn one_backend_never_uses_the_fallback() {
-        let caps = Caps { fib: false, numgen: false, jhash: false, statistic: true };
+        let caps = Caps { fib: false, numgen: false, jhash: false, statistic_v4: true, statistic_v6: true };
         let state = state_with_one_nodeport_service();
         assert!(build_statistic_ruleset(&state, IpFamily::V4, caps, Family::V4).is_none());
         let nft = build_ruleset(&state, IpFamily::V4, LbMethod::Random, caps, &["10.0.0.1".into()]);
@@ -1181,7 +1231,7 @@ mod tests {
     /// connection — that would trade one broken guarantee for another.
     #[test]
     fn sticky_services_are_never_handed_to_the_statistic_chain() {
-        let caps = Caps { fib: false, numgen: false, jhash: false, statistic: true };
+        let caps = Caps { fib: false, numgen: false, jhash: false, statistic_v4: true, statistic_v6: true };
         let mut state = state_with_one_nodeport_service();
         state.services.insert("n/s".to_string(), fake_service(vec!["10.43.0.1"], Some("ClientIP")));
         let slice = state.endpoint_slices.get_mut("n/s-abc").unwrap();
@@ -1198,6 +1248,67 @@ mod tests {
         assert!(nft.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"), "{nft}");
         assert!(!nft.contains("statistic"), "{nft}");
         assert!(!nft.contains("map {"), "{nft}");
+    }
+
+    /// The fallback must respect the configured address family. Asking for
+    /// v6 rules on a v4-only proxy has to produce nothing at all, not a
+    /// chain full of rules for a family this node doesn't serve.
+    #[test]
+    fn statistic_fallback_ignores_a_family_the_proxy_does_not_serve() {
+        let caps = Caps { fib: false, numgen: false, jhash: false, statistic_v4: true, statistic_v6: true };
+        let mut state = state_with_one_nodeport_service();
+        let slice = state.endpoint_slices.get_mut("n/s-abc").unwrap();
+        let mut ep = slice.endpoints[0].clone();
+        ep.addresses = vec!["10.42.0.6".into()];
+        slice.endpoints.push(ep);
+
+        assert!(build_statistic_ruleset(&state, IpFamily::V4, caps, Family::V4).is_some());
+        assert!(
+            build_statistic_ruleset(&state, IpFamily::V4, caps, Family::V6).is_none(),
+            "a v4-only proxy must emit no v6 rules"
+        );
+    }
+
+    /// IPv6 destinations have to be bracketed, or iptables-restore rejects
+    /// the whole file and — apply failures being fatal — restart-loops the
+    /// proxy. The v4 path can't catch this because it has no brackets.
+    #[test]
+    fn statistic_fallback_brackets_ipv6_destinations() {
+        use k8s_openapi::api::discovery::v1::{Endpoint, EndpointConditions, EndpointPort};
+        let caps = Caps { fib: false, numgen: false, jhash: false, statistic_v4: true, statistic_v6: true };
+        let mut state = State::default();
+        state.services.insert("n/s6".to_string(), fake_service(vec!["fd00::1"], None));
+        state.endpoint_slices.insert(
+            "n/s6-abc".to_string(),
+            EndpointSlice {
+                metadata: kube::core::ObjectMeta {
+                    namespace: Some("n".into()),
+                    name: Some("s6-abc".into()),
+                    labels: Some([(SVC_NAME_LABEL.to_string(), "s6".to_string())].into()),
+                    ..Default::default()
+                },
+                address_type: "IPv6".to_string(),
+                endpoints: ["fd00::5", "fd00::6"]
+                    .iter()
+                    .map(|ip| Endpoint {
+                        addresses: vec![ip.to_string()],
+                        conditions: Some(EndpointConditions {
+                            ready: Some(true),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ports: Some(vec![EndpointPort { port: Some(8080), ..Default::default() }]),
+            },
+        );
+
+        let rs = build_statistic_ruleset(&state, IpFamily::Dual, caps, Family::V6)
+            .expect("a dual-stack proxy must emit v6 fallback rules");
+        assert!(rs.contains("--to-destination [fd00::5]:8080"), "{rs}");
+        assert!(rs.contains("--to-destination [fd00::6]:8080"), "{rs}");
+        assert!(!rs.contains("--to-destination fd00::"), "unbracketed v6 destination:\n{rs}");
+        assert!(rs.contains("-d fd00::1"), "{rs}");
     }
 
     #[test]
