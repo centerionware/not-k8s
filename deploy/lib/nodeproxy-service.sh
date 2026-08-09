@@ -156,5 +156,9 @@ remove_nodeproxy_service() {
     fi
     pkill -f "$SCRIPT_DIR/run-nodeproxy.sh" 2>/dev/null || true
     [[ -f "$WORK_DIR/nodeproxy.pid" ]] && kill "$(cat "$WORK_DIR/nodeproxy.pid")" 2>/dev/null || true
-    rm -f "$NODEPROXY_SUPERVISOR_SCRIPT"
+    # Drop the pid file itself, not just the process it named. Leaving it
+    # behind means the next fallback-tier install reads a PID that's already
+    # dead — or, worse, one the kernel has since recycled onto an unrelated
+    # process — and kills that instead.
+    rm -f "$WORK_DIR/nodeproxy.pid" "$NODEPROXY_SUPERVISOR_SCRIPT"
 }

@@ -224,19 +224,49 @@ spec:
       targetPort: 8080
 EOF
 
+    # Curling $live here would prove nothing: its rules already exist from
+    # before $dead was created, so a nodeproxy that crashed or emitted an
+    # nft-rejected ruleset on $dead's event would still be serving the
+    # PREVIOUS, still-installed table and this test would pass green.
+    #
+    # So probe with a Service created strictly after $dead instead. Its rules
+    # can only exist if a rebuild that included the backend-less Service was
+    # generated AND accepted by the kernel. Same pod behind it — this is one
+    # more Service object, not more workload.
+    local probe="svc-endpointless-probe"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: $probe
+spec:
+  selector:
+    app: $live
+  ports:
+    - port: 80
+      targetPort: 8080
+EOF
+    if ! _wait_for_ready_endpoint "$probe" 60; then
+        delete_pod_if_exists "$live"
+        _delete_svc_if_exists "$live"; _delete_svc_if_exists "$dead"; _delete_svc_if_exists "$probe"
+        die "the probe Service's EndpointSlice never got a ready address — control-plane side, upstream of nodeproxy"
+    fi
+
     local cluster_ip body
-    cluster_ip="$(kctl get service "$live" -o jsonpath='{.spec.clusterIP}')"
+    cluster_ip="$(kctl get service "$probe" -o jsonpath='{.spec.clusterIP}')"
     if ! body="$(try_wait_until 60 bash -c "curl -sS --max-time 5 http://$cluster_ip:80/ | grep -q endpointless-marker" \
         && curl -sS --max-time 5 "http://$cluster_ip:80/")"; then
         echo "--- nft ruleset at failure ---"; _nft list table inet not_k8s_svc 2>&1 || true
-        delete_pod_if_exists "$live"; _delete_svc_if_exists "$live"; _delete_svc_if_exists "$dead"
-        die "a backend-less Service broke routing for an unrelated, healthy Service — the whole ruleset is applied atomically, so a rule nft rejects takes everything down together. Check build_ruleset() against the dump above"
+        delete_pod_if_exists "$live"
+        _delete_svc_if_exists "$live"; _delete_svc_if_exists "$dead"; _delete_svc_if_exists "$probe"
+        die "a Service created after a backend-less one never got working rules — the whole ruleset is applied atomically, so one rule nft rejects takes every Service down together. Check build_ruleset()/dnat_target()'s zero-backend path against the dump above, and journalctl -u nodeproxy for an 'failed to apply nft ruleset' warning"
     fi
-    assert_contains "$body" "endpointless-marker" "healthy Service still routes with a backend-less Service present"
+    assert_contains "$body" "endpointless-marker" "a Service created after a backend-less Service still routes"
     # And the table itself is still parseable, not left in some half state.
     assert_true _nft list table inet not_k8s_svc
 
-    delete_pod_if_exists "$live"; _delete_svc_if_exists "$live"; _delete_svc_if_exists "$dead"
+    delete_pod_if_exists "$live"
+    _delete_svc_if_exists "$live"; _delete_svc_if_exists "$dead"; _delete_svc_if_exists "$probe"
 }
 
 test_nodeproxy_runs_as_its_own_service_separate_from_nodelet() {

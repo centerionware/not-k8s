@@ -399,10 +399,35 @@ fn build_ruleset(state: &State, ip_family: IpFamily, lb_method: LbMethod) -> Str
     script
 }
 
+/// Confirms `nft` is on PATH *and* that this process can actually reach the
+/// nftables netlink API — two separate things, and only the second one
+/// matters. `nft --version` (what this used to run) proves neither: it
+/// prints a string and exits 0 for any unprivileged user, so a nodeproxy
+/// running without CAP_NET_ADMIN sailed straight past the check and then
+/// failed inside `apply_nft()` on every single Service event forever,
+/// warning each time and routing nothing — precisely the silently-useless
+/// state `run()` returning an error is supposed to prevent.
+///
+/// `nft list tables` is the cheapest non-mutating query that actually opens
+/// the netlink socket, so a permission problem surfaces here, once, with the
+/// kernel's own message attached.
 fn check_nft() -> Result<()> {
-    let out = Command::new("nft").arg("--version").output().context("nft not found on PATH")?;
+    let out =
+        Command::new("nft").args(["list", "tables"]).output().context("nft not found on PATH")?;
     if !out.status.success() {
-        anyhow::bail!("`nft --version` exited non-zero");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let detail = stderr.trim();
+        // An empty stderr on failure is itself diagnostic: that's what nft
+        // does when it can't reach netlink at all (no CAP_NET_ADMIN), as
+        // opposed to a real nftables error, which always says something.
+        anyhow::bail!(
+            "`nft list tables` failed: {}",
+            if detail.is_empty() {
+                "no error output, which usually means nft couldn't reach netlink at all (no CAP_NET_ADMIN — run as root)"
+            } else {
+                detail
+            }
+        );
     }
     Ok(())
 }

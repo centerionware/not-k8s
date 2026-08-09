@@ -41,7 +41,7 @@ git clone https://github.com/centerionware/not-k8s && cd not-k8s && \
 
 All three are self-contained: they detect your distro and CPU architecture and install everything else needed (containerd, k3s, CNI); the two prebuilt-binary paths need no Rust toolchain at all, the from-source path builds and then cleans up its build tools afterward. Pin the one-liner to a specific release instead of always-latest with `install-v<version>.sh` in place of `install.sh`.
 
-Two binaries get installed, as two independent services: `nodelet` (the node agent — the kubelet replacement) and `nodeproxy` (Service/ClusterIP/NodePort routing via nftables — kube-proxy's job). They're separate for the same reason kubelet and kube-proxy are separate upstream: a node can use Cilium, a real kube-proxy, or nothing for service routing without changing the node agent. Pass `--proxy=none` if something else already owns that datapath on your node.
+By default, two binaries get installed, as two independent services: `nodelet` (the node agent — the kubelet replacement) and `nodeproxy` (Service/ClusterIP/NodePort routing via nftables — kube-proxy's job). They're separate for the same reason kubelet and kube-proxy are separate upstream: a node can use Cilium, a real kube-proxy, or nothing for service routing without changing the node agent. Pass `--proxy=none` if something else already owns that datapath on your node.
 
 ## Scope
 
