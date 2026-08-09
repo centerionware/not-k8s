@@ -59,6 +59,12 @@ See live idle-CPU and RSS comparison numbers (nodelet vs. stock k3s kubelet) in 
 
 If this project has been useful to you, consider supporting it: https://buymeacoffee.com/centerionww
 
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Commit messages follow
+[Conventional Commits](https://www.conventionalcommits.org/) and are checked in
+CI on every PR.
+
 ## License
 
 MIT OR Apache-2.0, at your option. See [`LICENSE-MIT`](LICENSE-MIT) and
