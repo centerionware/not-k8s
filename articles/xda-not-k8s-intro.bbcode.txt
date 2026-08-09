@@ -1,29 +1,24 @@
 [HEADING=1]not-k8s: replaced kubelet with a 15MB Rust agent, profiled on a Pixel 7[/HEADING]
 
-[B]nodelet[/B] is a drop-in replacement for kubelet, written in Rust, event-driven instead of polling. Same control plane, same kubectl, same CRDs.
+[B]nodelet[/B] — drop-in kubelet replacement, Rust, event-driven instead of polling. Same control plane, same kubectl, same CRDs.
 
-Idle, no pods scheduled, 120s window, 3 replicates per agent:
+Idle, no pods, 120s, 3 replicates each:
 
 [LIST]
-[*][B]x86_64[/B] — nodelet ~15MB / ~0.08s CPU, kubelet ~81MB / ~0.85s CPU
-[*][B]Pixel 7 (Debian VM)[/B] — nodelet 12.0MB / 0.436s CPU, kubelet 67.9MB / 8.031s CPU
+[*][B]x86_64[/B] — nodelet 15MB / 0.08s CPU, kubelet 81MB / 0.85s CPU
+[*][B]Pixel 7[/B] — nodelet 12MB / 0.44s CPU, kubelet 68MB / 8.03s CPU
 [/LIST]
 
-The CPU gap widens from 10.6x to 18.4x on the slower core; memory stays flat at ~5.5x. Could be cache, could be the in-order A55, could be Go's GC — can't tell, the PMU isn't exposed to the VM so perf gives no hardware counters.
+CPU gap widens from 10.6x to 18.4x on the slower core, memory doesn't. Cache, the in-order A55, or Go's GC — can't tell, no hardware counters in the VM.
 
-On that phone the k3s control plane idles at ~34% of a core and ~350MB, more than either agent.
+The k3s control plane on that phone idles at ~34% of a core and ~350MB, more than either agent.
 
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/rss-over-time.png[/IMG]
 
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/cpu-over-time.png[/IMG]
 
-Raw CSVs + methodology:
+CSVs: [URL=https://github.com/centerionware/not-k8s/tree/profiling-results/latest]x86_64[/URL] · [URL=https://github.com/centerionware/not-k8s/tree/profiling-results/history/2026-08-09_00-59-17-arm64-phone]Pixel 7[/URL]
 
-[LIST]
-[*]x86_64: [URL]https://github.com/centerionware/not-k8s/tree/profiling-results/latest[/URL]
-[*]Pixel 7: [URL]https://github.com/centerionware/not-k8s/tree/profiling-results/history/2026-08-09_00-59-17-arm64-phone[/URL]
-[/LIST]
-
-Still alpha — hasn't been proven under heavy real-world workloads yet — but it's passed 1,100 unit tests and 140 e2e tests, so it's in a good spot to start toying with.
+Alpha. 1,100 unit tests, 140 e2e.
 
 Repo: [URL]https://github.com/centerionware/not-k8s[/URL]

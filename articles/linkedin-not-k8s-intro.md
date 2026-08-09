@@ -1,27 +1,21 @@
-Kubelet, the agent running on every Kubernetes node, idles at about 81MB of RAM and burns real CPU before your cluster does anything useful. It polls constantly, runs its own container-stats housekeeping, and keeps a pile of watch caches alive the whole time it's idle.
+Kubelet idles at ~81MB and burns real CPU before your cluster does anything. It polls constantly and keeps a pile of watch caches alive the whole time.
 
-not-k8s replaces just that node agent with nodelet, an event-driven Rust binary. Everything else stays the same.
+not-k8s swaps just that node agent for nodelet, an event-driven Rust binary. Everything else stays the same.
 
-I profiled both on x86_64 CI runners and on a Google Pixel 7 running Debian in a VM. Idle, no pods scheduled, 120s window, 3 replicates per agent.
+Profiled both on x86_64 CI runners and a Pixel 7 running Debian in a VM. Idle, no pods, 120s, 3 replicates each:
 
-x86_64:
-- nodelet ~15MB / ~0.08s CPU
-- kubelet ~81MB / ~0.85s CPU
+x86_64 — nodelet 15MB / 0.08s CPU, kubelet 81MB / 0.85s CPU
+Pixel 7 — nodelet 12MB / 0.44s CPU, kubelet 68MB / 8.03s CPU
 
-Pixel 7:
-- nodelet 12.0MB / 0.436s CPU
-- kubelet 67.9MB / 8.031s CPU
+The CPU gap widens from ~10.6x to ~18.4x on the slower core. Memory doesn't move. Idle overhead gets worse as hardware gets weaker, not proportionally smaller.
 
-The CPU gap widens from ~10.6x to ~18.4x on the slower core. Memory stays flat at ~5.5x. Idle overhead doesn't stay proportional as hardware gets weaker — it gets worse, which is the opposite of how it's usually dismissed.
+On that phone the k3s control plane idles at ~34% of a core and ~350MB — more than either agent. Replacing the agent doesn't touch that.
 
-On that same phone the k3s control plane idles at ~34% of a core and ~350MB, more than either node agent. Replacing the agent doesn't touch that.
-
-Raw per-second CSVs and methodology for both platforms:
-
+CSVs and methodology:
 x86_64: https://github.com/centerionware/not-k8s/tree/profiling-results/latest
 Pixel 7: https://github.com/centerionware/not-k8s/tree/profiling-results/history/2026-08-09_00-59-17-arm64-phone
 Repo: https://github.com/centerionware/not-k8s
 
-Still alpha: 1,100 unit tests and 140 e2e tests against real containerd and real CSI/DRA drivers, gated before any release ships.
+Alpha. 1,100 unit tests, 140 e2e against real containerd and CSI/DRA drivers.
 
 #Kubernetes #Rust #EdgeComputing
