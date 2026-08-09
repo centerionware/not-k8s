@@ -108,26 +108,6 @@ _svc_kernel_supports_selector() { # <selector-expression>
         "ip daddr 10.99.0.1 tcp dport 80 dnat to $1 mod 2 map { 0 : 10.42.0.5 . 8080, 1 : 10.42.0.6 . 8080 }"
 }
 
-# NodePort rules are all `fib daddr type local` (nft_fib), a separate kernel
-# module absent on some builds — confirmed on an Android-derived 6.12
-# kernel, alongside missing nft_numgen and nft_hash.
-#
-# Be precise about what a skip here means. It does NOT mean NodePort is
-# unimplementable on such a kernel: `ip daddr <node-ip>` and a named
-# `ip daddr @localips` set both apply fine there (verified directly), and
-# svc.rs's own comment names the explicit-local-IP approach as the
-# alternative it chose fib over — fib avoids having to track every local
-# address. So this skip means "the current implementation cannot run here",
-# which is a gap in nodeproxy, not a fact about the kernel.
-#
-# It matters more than an ordinary skip because the ruleset is applied
-# atomically: on such a kernel a single NodePort Service takes every other
-# Service's rules down with it, and (since apply failures are fatal) puts
-# nodeproxy in a restart loop until that Service is deleted.
-_svc_kernel_supports_nodeport() {
-    _svc_kernel_supports_rule "fib daddr type local tcp dport 31999 dnat ip to 10.42.0.5:8080"
-}
-
 # _svc_backend_pod <name> <label> <marker> — a pod running the responder,
 # waited to Running. Split out because most tests below need one and the
 # manifest is otherwise repeated verbatim.
@@ -198,9 +178,12 @@ _svc_rules_match() { # _svc_rules_match <cluster-ip> <pattern>
 # True once this ClusterIP has rules but none of them use a selector the
 # kernel can't run. "Has rules" matters: an empty result would otherwise
 # satisfy this trivially while the Service was in fact unrouted.
-_svc_rules_gone_of_selector() { # <cluster-ip>
-    local rules; rules="$(_svc_rules_for "$1")"
-    [[ -n "$rules" ]] && ! grep -qE "numgen|jhash" <<<"$rules"
+# The iptables statistic chain nodeproxy owns on kernels without
+# nft_numgen. Empty (and harmless) everywhere else.
+_svc_statistic_rules_for() { # <cluster-ip>
+    local ipt_out
+    ipt_out="$( { iptables -t nat -S NOTK8S-SVC 2>/dev/null || sudo iptables -t nat -S NOTK8S-SVC 2>/dev/null; } || true)"
+    grep -F "$1" <<<"$ipt_out" || true
 }
 
 test_clusterip_service_routes_to_its_backend_pod() {
@@ -529,63 +512,58 @@ test_a_pod_reaching_its_own_service_gets_hairpin_masquerade() {
 
 # ── Backend-set changes ───────────────────────────────────────────────
 
-test_multiple_backends_use_the_load_balancing_map_form() {
+test_multiple_backends_actually_share_traffic() {
     _require_service_proxy
-    # dnat_target() deliberately emits a bare <ip>:<port> for exactly one
-    # backend and a `numgen ... mod N map { ... }` for more than one. That
-    # split is not cosmetic: the single-backend fast path exists because a
-    # real Android-derived kernel rejected `numgen` outright (missing
-    # nft_numgen module), and the map form is the only way to express
-    # "pick one of N". A regression collapsing the two would be invisible
-    # to every other test here, since both forms route fine for N=1.
+    # The behaviour that matters, asserted independently of how the kernel
+    # achieves it. nodeproxy has three possible mechanisms depending on what
+    # the kernel offers — an nft `numgen ... map`, an iptables `-m statistic`
+    # chain, or (if neither exists) pinning to one backend — and a test tied
+    # to any one of them says nothing about the other two. Two backends with
+    # distinct markers, many requests, both must be seen.
     local svc="svc-multibackend"
     trap _svc_cleanup EXIT
     _svc_track_pod "$svc-a" "$svc-b"; _svc_track_svc "$svc"
-    # Not gated: a two-backend Service must ROUTE on every kernel. Only the
-    # map-form assertion below is conditional, because a kernel without
-    # nft_numgen genuinely cannot select among backends and nodeproxy
-    # degrades to sending everything to one of them.
-    local can_lb=0
-    _svc_kernel_supports_selector "numgen random" && can_lb=1
 
-    _svc_backend_pod "$svc-a" "$svc" multibackend-marker || die "backend a never reached Running"
+    _svc_backend_pod "$svc-a" "$svc" multibackend-a || die "backend a never reached Running"
+    _svc_backend_pod "$svc-b" "$svc" multibackend-b || die "backend b never reached Running"
     _svc_clusterip_service "$svc" "$svc"
-    _wait_for_ready_endpoint "$svc" 60 || die "EndpointSlice never got a ready address"
-
-    local cluster_ip
-    cluster_ip="$(kctl get service "$svc" -o jsonpath='{.spec.clusterIP}')"
-
-    # One backend: the fast path, no numgen anywhere near this ClusterIP.
-    assert_not_contains "$(_svc_rules_for "$cluster_ip")" "numgen" \
-        "a single-backend Service must use a bare dnat target, not a numgen map (that path exists for kernels without nft_numgen)"
-
-    _svc_backend_pod "$svc-b" "$svc" multibackend-marker || die "backend b never reached Running"
-    if ! try_wait_until 60 bash -c \
+    if ! try_wait_until 90 bash -c \
         "kubectl get endpointslices -n '$TEST_NAMESPACE' -l kubernetes.io/service-name='$svc' -o jsonpath='{.items[*].endpoints[*].addresses[0]}' 2>/dev/null | wc -w | grep -qx 2"; then
         die "the Service never reported two ready backends"
     fi
 
-    if [[ "$can_lb" -eq 1 ]]; then
-        # Two backends on a capable kernel: the map form.
-        if ! try_wait_until 60 _svc_rules_match "$cluster_ip" 'map {'; then
-            echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
-            die "a two-backend Service never got the 'numgen ... mod N map { ... }' form — check dnat_target()'s N>1 branch"
-        fi
+    local cluster_ip
+    cluster_ip="$(kctl get service "$svc" -o jsonpath='{.spec.clusterIP}')"
+    try_wait_until 60 bash -c "curl -sS --max-time 5 http://$cluster_ip:80/ | grep -q multibackend-" \
+        || die "a two-backend Service did not route at all"
+
+    # 40 requests: with an even split, seeing only one backend has
+    # probability 2 * 0.5^40, which is not a flake anyone will ever hit.
+    local seen_a=0 seen_b=0 i body
+    for i in $(seq 1 40); do
+        body="$(curl -sS --max-time 5 "http://$cluster_ip:80/" 2>/dev/null || true)"
+        case "$body" in
+            *multibackend-a*) seen_a=$((seen_a + 1)) ;;
+            *multibackend-b*) seen_b=$((seen_b + 1)) ;;
+        esac
+    done
+    echo "  (distribution: a=$seen_a b=$seen_b of 40)"
+
+    if _svc_kernel_supports_selector "numgen random"; then
+        echo "  (kernel has nft_numgen — expecting the native map form)"
+        _svc_rules_match "$cluster_ip" 'map {' \
+            || { _svc_rules_for "$cluster_ip"; die "no numgen map form on a kernel that supports it"; }
     else
-        # No nft_numgen: the ruleset must contain no selector at all, since
-        # one rejected rule takes the whole atomically-applied file with it.
-        echo "  (kernel has no nft_numgen — asserting the degraded path instead)"
-        if ! try_wait_until 60 _svc_rules_gone_of_selector "$cluster_ip"; then
-            echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
-            die "a kernel without nft_numgen still got a numgen/jhash selector emitted for it — that rule is rejected and takes every other Service's rules down with it. Check probe_caps()/lb_expr()"
-        fi
+        echo "  (no nft_numgen — expecting the iptables statistic fallback)"
+        _svc_statistic_rules_for "$cluster_ip" | grep -q "statistic" \
+            || { _svc_statistic_rules_for "$cluster_ip"
+                 die "no iptables statistic rules for this Service — the fallback in build_statistic_ruleset() did not run"; }
+        assert_eq "$(_svc_rules_for "$cluster_ip")" "" \
+            "a Service owned by the statistic chain must not also be in the nft table, or two DNAT rules race"
     fi
 
-    local body
-    body="$(try_wait_until 60 bash -c "curl -sS --max-time 5 http://$cluster_ip:80/ | grep -q multibackend-marker" \
-        && curl -sS --max-time 5 "http://$cluster_ip:80/")" \
-        || die "a two-backend Service stopped routing entirely once it had the map form"
-    assert_contains "$body" "multibackend-marker" "response from a load-balanced two-backend Service"
+    [[ "$seen_a" -gt 0 && "$seen_b" -gt 0 ]] \
+        || die "only one backend ever served a request (a=$seen_a b=$seen_b of 40) — the Service is not load balancing, which is what both real kube-proxy backends do"
 }
 
 test_losing_every_backend_removes_the_dnat_rule() {
@@ -638,55 +616,44 @@ test_deleting_a_service_removes_its_rules() {
 
 # ── Per-Service policy and special cases ──────────────────────────────
 
-test_session_affinity_client_ip_forces_source_hash() {
+test_session_affinity_pins_a_client_to_one_backend() {
     _require_service_proxy
-    # sessionAffinity: ClientIP must override the proxy-wide default,
-    # because it's a per-Service opt-in. With two backends the choice is
-    # visible in the rule itself: jhash rather than numgen. This is a
-    # ruleset assertion on purpose — proving stickiness by traffic would
-    # need many connections from distinct source IPs, which this harness
-    # has no way to produce.
+    # Again the contract rather than the mechanism: "same client, same
+    # backend". Satisfied by jhash where the kernel has it, and by pinning
+    # to a single backend where it doesn't — and specifically NOT satisfied
+    # by the statistic fallback, which is why sticky Services are excluded
+    # from it. This test is what would catch that exclusion regressing.
     local svc="svc-affinity"
     trap _svc_cleanup EXIT
     _svc_track_pod "$svc-a" "$svc-b"; _svc_track_svc "$svc"
-    # Not gated: a ClientIP-affinity Service must route on every kernel.
-    # Only the jhash assertion is conditional — without nft_hash, nodeproxy
-    # pins everything to one backend, which satisfies "same client, same
-    # backend" trivially and is the correct degradation.
-    local can_hash=0
-    _svc_kernel_supports_selector "jhash ip saddr" && can_hash=1
 
-    _svc_backend_pod "$svc-a" "$svc" affinity-marker || die "backend a never reached Running"
-    _svc_backend_pod "$svc-b" "$svc" affinity-marker || die "backend b never reached Running"
+    _svc_backend_pod "$svc-a" "$svc" affinity-a || die "backend a never reached Running"
+    _svc_backend_pod "$svc-b" "$svc" affinity-b || die "backend b never reached Running"
     _svc_clusterip_service "$svc" "$svc" "  sessionAffinity: ClientIP
 "
-    if ! try_wait_until 60 bash -c \
+    if ! try_wait_until 90 bash -c \
         "kubectl get endpointslices -n '$TEST_NAMESPACE' -l kubernetes.io/service-name='$svc' -o jsonpath='{.items[*].endpoints[*].addresses[0]}' 2>/dev/null | wc -w | grep -qx 2"; then
         die "the Service never reported two ready backends"
     fi
 
     local cluster_ip
     cluster_ip="$(kctl get service "$svc" -o jsonpath='{.spec.clusterIP}')"
-    if [[ "$can_hash" -eq 1 ]]; then
-        if ! try_wait_until 60 _svc_rules_match "$cluster_ip" 'jhash'; then
-            echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
-            die "sessionAffinity: ClientIP did not produce a jhash selector — check lb_expr()'s sticky branch, which must win over the configured default"
-        fi
-    else
-        echo "  (kernel has no nft_hash — asserting the degraded path instead)"
-        if ! try_wait_until 60 _svc_rules_gone_of_selector "$cluster_ip"; then
-            echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
-            die "a kernel without nft_hash still got a jhash selector emitted for it — that rule is rejected and takes every other Service down with it"
-        fi
+    try_wait_until 60 bash -c "curl -sS --max-time 5 http://$cluster_ip:80/ | grep -q affinity-" \
+        || die "a sessionAffinity Service did not route at all"
+
+    local first="" body i mismatches=0
+    for i in $(seq 1 20); do
+        body="$(curl -sS --max-time 5 "http://$cluster_ip:80/" 2>/dev/null | tr -d '\r\n' || true)"
+        [[ -z "$body" ]] && continue
+        [[ -z "$first" ]] && first="$body"
+        [[ "$body" == "$first" ]] || mismatches=$((mismatches + 1))
+    done
+    assert_not_empty "$first" "a sessionAffinity Service must answer at least once"
+    if [[ "$mismatches" -gt 0 ]]; then
+        echo "--- nft rules ---"; _svc_rules_for "$cluster_ip"
+        echo "--- iptables rules ---"; _svc_statistic_rules_for "$cluster_ip"
+        die "sessionAffinity: ClientIP sent one client to more than one backend ($mismatches of 20 differed). If this kernel has no nft_hash, the Service must be pinned to a single backend and must NOT be handed to the iptables statistic chain, which re-randomises per connection"
     fi
-    assert_not_contains "$(_svc_rules_for "$cluster_ip")" "numgen" \
-        "a ClientIP-affinity Service must not use a random/round-robin selector"
-    # Either way it has to actually serve traffic.
-    local body2
-    body2="$(try_wait_until 60 bash -c "curl -sS --max-time 5 http://$cluster_ip:80/ | grep -q affinity-marker" \
-        && curl -sS --max-time 5 "http://$cluster_ip:80/")" \
-        || die "a sessionAffinity: ClientIP Service did not route at all"
-    assert_contains "$body2" "affinity-marker" "response from a ClientIP-affinity Service"
 }
 
 test_headless_service_programs_no_rules_and_does_not_break_others() {
@@ -768,9 +735,9 @@ register_test test_service_with_no_endpoints_does_not_wedge_the_ruleset
 register_test test_nodeproxy_runs_as_its_own_service_separate_from_nodelet
 register_test test_clusterip_is_reachable_from_inside_a_pod
 register_test test_a_pod_reaching_its_own_service_gets_hairpin_masquerade
-register_test test_multiple_backends_use_the_load_balancing_map_form
+register_test test_multiple_backends_actually_share_traffic
 register_test test_losing_every_backend_removes_the_dnat_rule
 register_test test_deleting_a_service_removes_its_rules
-register_test test_session_affinity_client_ip_forces_source_hash
+register_test test_session_affinity_pins_a_client_to_one_backend
 register_test test_headless_service_programs_no_rules_and_does_not_break_others
 register_test test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart

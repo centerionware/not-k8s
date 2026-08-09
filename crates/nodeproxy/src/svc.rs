@@ -70,10 +70,11 @@
 //!     (a pod calling a Service that routes back to itself) return
 //!     correctly, without blanket-masquerading unrelated traffic.
 //!
-//! NodePort rules match `fib daddr type local` instead of listing every
-//! local IP, so they only catch traffic actually addressed to this node —
-//! not bridged pod-to-pod traffic that happens to reuse the same port
-//! number.
+//! NodePort rules match `fib daddr type local`, where the kernel has it,
+//! instead of listing every local IP — so they only catch traffic actually
+//! addressed to this node, not bridged pod-to-pod traffic that happens to
+//! reuse the same port number. The fallback for kernels without it is
+//! below.
 //!
 //! ## Kernels that can't run all of this
 //!
@@ -103,7 +104,11 @@
 //!   - Neither: several backends collapse to one. Routing survives; load
 //!     balancing does not.
 //!   - No `jhash`: `sessionAffinity: ClientIP` pins to a single backend,
-//!     which still satisfies "same client, same backend".
+//!     which still satisfies "same client, same backend". Such Services are
+//!     also never handed to the statistic chain — that match re-randomises
+//!     per connection, which is exactly what the field forbids, and
+//!     xtables' own affinity match (`-m recent`) is missing on the same
+//!     kernel.
 
 use crate::config::{IpFamily, LbMethod};
 use anyhow::{Context, Result};
@@ -353,14 +358,19 @@ fn backends_for(
 /// `None` means this kernel has no usable selector — the caller then sends
 /// every connection to a single backend rather than emitting a rule that
 /// would be rejected and take the whole ruleset with it.
+/// The per-Service opt-in that overrides proxy-wide load-balancing policy.
+fn wants_client_ip_affinity(svc: &Service) -> bool {
+    svc.spec.as_ref().and_then(|s| s.session_affinity.as_deref()) == Some("ClientIP")
+}
+
 fn lb_expr(
     svc: &Service,
     default_method: LbMethod,
     family: Family,
     caps: Caps,
 ) -> Option<String> {
-    let sticky = svc.spec.as_ref().and_then(|s| s.session_affinity.as_deref()) == Some("ClientIP");
-    let method = if sticky { LbMethod::SourceHash } else { default_method };
+    let method =
+        if wants_client_ip_affinity(svc) { LbMethod::SourceHash } else { default_method };
     match method {
         LbMethod::Random if caps.numgen => Some("numgen random".to_string()),
         LbMethod::RoundRobin if caps.numgen => Some("numgen inc".to_string()),
@@ -455,7 +465,7 @@ fn build_ruleset(
                 // Owned by the xtables statistic chain instead — emitting
                 // here too would mean two DNAT rules racing for the same
                 // connection.
-                if caps.delegates_to_statistic(backends.len()) {
+                if caps.delegates_to_statistic(backends.len(), wants_client_ip_affinity(svc)) {
                     continue;
                 }
                 let lb = lb_expr(svc, lb_method, family, caps);
@@ -580,8 +590,15 @@ impl Caps {
     /// through the xtables statistic fallback rather than the nft table.
     /// Never true on a kernel with `numgen` — normal hosts never touch
     /// iptables at all.
-    fn delegates_to_statistic(self, backends: usize) -> bool {
-        backends > 1 && !self.numgen && self.statistic
+    fn delegates_to_statistic(self, backends: usize, sticky: bool) -> bool {
+        // `sticky` (sessionAffinity: ClientIP) must never reach the
+        // statistic chain. That match re-randomises on every connection,
+        // which is precisely what the field forbids, and xtables' own
+        // affinity mechanism (`-m recent`) is missing on the same kernel
+        // that lacks nft_numgen — verified, not assumed. Pinning such a
+        // Service to one backend keeps its contract intact and is the only
+        // correct degradation available.
+        backends > 1 && !self.numgen && self.statistic && !sticky
     }
 }
 
@@ -759,7 +776,7 @@ fn build_statistic_ruleset(
             }
             for port in spec.ports.as_deref().unwrap_or(&[]) {
                 let backends = backends_for(namespace, name, port, family, &state.endpoint_slices);
-                if !caps.delegates_to_statistic(backends.len()) {
+                if !caps.delegates_to_statistic(backends.len(), wants_client_ip_affinity(svc)) {
                     continue;
                 }
                 let proto = port.protocol.as_deref().unwrap_or("TCP").to_ascii_lowercase();
@@ -1156,6 +1173,31 @@ mod tests {
         assert!(build_statistic_ruleset(&state, IpFamily::V4, caps, Family::V4).is_none());
         let nft = build_ruleset(&state, IpFamily::V4, LbMethod::Random, caps, &["10.0.0.1".into()]);
         assert!(nft.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"), "{nft}");
+    }
+
+    /// sessionAffinity must survive the statistic fallback existing. A
+    /// sticky Service with several backends has to stay pinned in nftables
+    /// rather than being handed to a chain that re-randomises per
+    /// connection — that would trade one broken guarantee for another.
+    #[test]
+    fn sticky_services_are_never_handed_to_the_statistic_chain() {
+        let caps = Caps { fib: false, numgen: false, jhash: false, statistic: true };
+        let mut state = state_with_one_nodeport_service();
+        state.services.insert("n/s".to_string(), fake_service(vec!["10.43.0.1"], Some("ClientIP")));
+        let slice = state.endpoint_slices.get_mut("n/s-abc").unwrap();
+        let mut ep = slice.endpoints[0].clone();
+        ep.addresses = vec!["10.42.0.6".into()];
+        slice.endpoints.push(ep);
+
+        assert!(
+            build_statistic_ruleset(&state, IpFamily::V4, caps, Family::V4).is_none(),
+            "a ClientIP-affinity Service must not reach the statistic chain"
+        );
+        // It stays in nftables, pinned to exactly one backend.
+        let nft = build_ruleset(&state, IpFamily::V4, LbMethod::Random, caps, &[]);
+        assert!(nft.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"), "{nft}");
+        assert!(!nft.contains("statistic"), "{nft}");
+        assert!(!nft.contains("map {"), "{nft}");
     }
 
     #[test]
