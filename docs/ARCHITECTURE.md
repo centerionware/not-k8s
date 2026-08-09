@@ -53,28 +53,46 @@ not idle efficiency:
 | **kube-proxy / iptables sync** | Periodic iptables rule reconciliation, even with no Service changes | CPU spikes every 30s |
 | **Per-process watch caches** | kubelet and kube-proxy each maintain their own in-memory representation of the objects they care about | Multiplied RSS |
 
-Measured idle, with no pods scheduled, a standalone upstream kubelet sits at
-roughly **81 MB RSS** and **~0.85s of CPU time per 2-minute window**, against
-`nodelet`'s **~15 MB** and **~0.08s**. Those numbers come from
-`.github/workflows/profiling.yml`, which runs both agents on GitHub-hosted
-`ubuntu-latest` x86_64 runners — three replicates each, in parallel, one
-agent per runner. See the
-[`profiling-results`](https://github.com/centerionware/not-k8s/tree/profiling-results)
-branch for the raw per-second data and methodology.
+Measured idle, no pods scheduled, sampling every second over a 120s window,
+3 replicates per agent on each platform:
 
-**Read the CPU number as absolute work, not as a percentage.** On the
-server-class x86_64 core those runs use, 0.85s per 120s window is well
-under 1% of a core — easy to dismiss. But that's a fixed amount of work
-being divided by a fast core. The same polling loops on a slow,
-thermally-throttled ARM core consume a far larger share of it: running a
-full stock k3s stack (apiserver, controller-manager, scheduler,
-kine/SQLite *and* the embedded kubelet together) on phone-class hardware
-has been observed sitting at roughly 30-50% of a core at idle. That's a
-different measurement of a different thing on different hardware — not
-comparable to the standalone-kubelet figures above, and not something
-this project has formally profiled — but it's the reason the absolute
-number matters more than the percentage. Releases build for
-x86_64/aarch64/armv7l; only x86_64 has published profiling numbers.
+| | x86_64 (CI) | ARM phone |
+|---|---|---|
+| **nodelet** RSS | ~15 MB | **12.0 MB** (11.8–12.1) |
+| **kubelet** RSS | ~81 MB | **67.9 MB** (65.5–72.3) |
+| RSS ratio | ~5.4x | **~5.7x** |
+| **nodelet** CPU-sec | ~0.08s | **0.436s** (0.393–0.461) |
+| **kubelet** CPU-sec | ~0.85s | **8.031s** (7.778–8.170) |
+| CPU ratio | ~10.6x | **~18.4x** |
+
+x86_64 figures come from `.github/workflows/profiling.yml` on GitHub-hosted
+`ubuntu-latest` runners, 6 legs in parallel. ARM figures come from a manual
+run of the same tooling on a Google Pixel 7 (Tensor G2, Cortex-X1 +
+Cortex-A55, aarch64, 1.9 GB guest under KVM) — sequential legs rather than
+parallel, since there is only one device. Both publish full per-second CSVs:
+[x86_64](https://github.com/centerionware/not-k8s/tree/profiling-results/latest),
+[ARM phone](https://github.com/centerionware/not-k8s/tree/profiling-results/history/2026-08-09_00-59-17-arm64-phone)
+(that report states its own methodological limits — sequential measurement,
+thermal throttling, virtualization — up front).
+
+**Read the CPU number as absolute work, not as a percentage.** 0.85s per
+120s window is well under 1% of a fast x86_64 core, and easy to dismiss on
+that basis. But it's a fixed quantity of work divided by whatever core is
+available, and the division gets worse as the core gets weaker. The ARM
+measurements bear that out and then some: **the CPU gap widens from ~10.6x
+to ~18.4x**, meaning kubelet degrades harder than `nodelet` does on a slow
+core rather than both scaling by the same factor. The RSS ratio stays
+nearly flat (~5.4x to ~5.7x), which is what you'd expect — resident memory
+isn't a function of clock speed.
+
+**On that phone, the control plane costs more than either node agent.** The
+stripped `k3s server --disable-agent` control plane measured **33.2–36.2%
+of a core** (~41.5 CPU-seconds per 120s window) and ~350–370 MB RSS in
+every leg, regardless of which agent ran beside it — roughly 5x kubelet's
+own CPU cost and ~95x `nodelet`'s. Replacing the node agent is a real
+saving that does not touch the larger item on the bill. That's out of
+scope for this project today, and worth stating plainly rather than
+letting the node-agent numbers imply otherwise.
 
 ## Why the Node Agent's Floor Matters
 
@@ -89,12 +107,13 @@ hardware can be a Kubernetes node at all.**
 
 Both halves of that floor get worse as the hardware gets smaller, and
 neither scales the way a datacenter operator's intuition expects. A fixed
-~81 MB is 0.1% of a 64 GB server and over 15% of a 512 MB device. A fixed
-amount of polling work is noise on a fast server core and a visible share
-of a slow, thermally-throttled one — the polling doesn't get cheaper just
-because the core is weaker; it gets proportionally more expensive, and on
-battery-powered or passively-cooled hardware it also competes for thermal
-headroom the workload needs.
+~81 MB is 0.1% of a 64 GB server and over 15% of a 512 MB device. And the
+polling doesn't get cheaper because the core is weaker — it gets
+proportionally more expensive. That isn't a hypothesis: measured on the
+phone above, kubelet's idle CPU cost rises from under 1% of a core to
+**~6.6%**, while `nodelet` stays at **~0.36%**, widening the gap from
+~10.6x to ~18.4x. On battery-powered or passively cooled hardware that
+also competes for thermal headroom the workload needs.
 
 Kubernetes' API is genuinely good at what a lot of small-hardware fleets
 need — declarative rollouts, health checking, restart policy, secret and

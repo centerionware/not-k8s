@@ -4,9 +4,16 @@
 
 `not-k8s` is **not** a from-scratch Kubernetes — it's a lightweight replacement for one component: kubelet, the node agent, backed by 1,100+ unit tests and ~140 e2e tests. Everything else stays a k3s control plane (apiserver, scheduler, full kubectl/CRD support). Only the node side gets rebuilt, as a lean event-driven Rust binary, because that's where the heaviest polling loops live.
 
-The core idea: kubelet's idle cost isn't from doing actual work, it's from constant polling (PLEG re-lists every container every second, cAdvisor walks cgroups forever, informers periodically re-list the world). Measured idle with no pods scheduled, that costs ~81MB RSS and ~0.85s of CPU per 2-minute window; `nodelet` rebuilds the node side to be event-driven — no PLEG, no cAdvisor housekeeping, one process, one watch — and comes in at ~15MB and ~0.08s.
+The core idea: kubelet's idle cost isn't from doing actual work, it's from constant polling (PLEG re-lists every container every second, cAdvisor walks cgroups forever, informers periodically re-list the world). `nodelet` rebuilds the node side to be event-driven — no PLEG, no cAdvisor housekeeping, one process, one watch. Measured idle, no pods scheduled, 120s window, 3 replicates per agent:
 
-Those measurements are from x86_64 CI runners, where the CPU share is a fraction of a percent of a fast core and easy to wave off. That's the wrong way to read it: it's a *fixed* amount of polling work, so the slower the core, the bigger the bite. A full stock k3s stack on phone-class hardware idles closer to 30-50% of a core — different measurement, different hardware, but the same underlying reason.
+| | nodelet | upstream kubelet | gap |
+|---|---|---|---|
+| **x86_64** (CI) | ~15MB / ~0.08s CPU | ~81MB / ~0.85s CPU | 5.4x / 10.6x |
+| **ARM phone** (Pixel 7, KVM) | 12.0MB / 0.436s CPU | 67.9MB / 8.031s CPU | 5.7x / **18.4x** |
+
+The x86_64 CPU share is a fraction of a percent of a fast core, and easy to wave off. That's the wrong way to read it: the polling is a *fixed* amount of work, so the slower the core, the bigger the bite — and the gap widens from ~10.6x to ~18.4x going from a server core to a phone core, while the memory ratio stays flat. Raw per-second CSVs for both: [x86_64](https://github.com/centerionware/not-k8s/tree/profiling-results/latest), [ARM phone](https://github.com/centerionware/not-k8s/tree/profiling-results/history/2026-08-09_00-59-17-arm64-phone).
+
+Worth knowing before you read too much into it: on that same phone the k3s control plane itself idles at ~34% of a core and ~350MB — more than either node agent. Swapping the agent is a real saving that doesn't touch the biggest line item.
 
 Per node that saving is modest, and on a 64GB server it's a rounding error. The point isn't the megabytes — it's that the node agent's floor decides which hardware can be a Kubernetes node at all. Kubernetes' API solves a lot of what small-hardware fleets actually need (declarative rollouts, health checks, restart policy, config/secret distribution, real RBAC), but the orchestrator that already solved it assumes every node can spare hundreds of megabytes before running a container. The control plane can live on a server somewhere; only the node agent has to run on the constrained device. `not-k8s` aims to stay as close to upstream kubelet's behavior as possible, not to reinvent the node agent's contract.
 
