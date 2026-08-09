@@ -151,7 +151,13 @@ impl ServiceProxy {
 CAP_NET_ADMIN/root — the same requirement real kube-proxy has. Direct pod-IP traffic is \
 unaffected either way",
         )?;
-        info!(ip_family = ?self.ip_family, lb_method = ?self.lb_method, "service proxy watching Services + EndpointSlices (nftables backend)");
+        let caps = probe_caps();
+        info!(
+            ip_family = ?self.ip_family,
+            lb_method = ?self.lb_method,
+            fib = caps.fib, numgen = caps.numgen, jhash = caps.jhash,
+            "service proxy watching Services + EndpointSlices (nftables backend)"
+        );
 
         let mut state = State::default();
         let mut svc_stream = watch_services(&self.client);
@@ -186,7 +192,12 @@ unaffected either way",
             };
 
             if changed {
-                let ruleset = build_ruleset(&state, self.ip_family, self.lb_method);
+                // Re-read on every rebuild rather than caching: an address
+                // added or removed later must be picked up. Only costs a
+                // subprocess on kernels that actually need the fallback.
+                let local = if caps.fib { Vec::new() } else { local_addrs() };
+                let ruleset =
+                    build_ruleset(&state, self.ip_family, self.lb_method, caps, &local);
                 // Propagated, not just logged. Reconciliation here is purely
                 // event-driven — the whole point of the design, but it means
                 // there is no periodic resync to quietly retry a failed
@@ -292,13 +303,25 @@ fn backends_for(
 /// e.g. `numgen random` (the caller appends ` mod N map { ... }`).
 /// `sessionAffinity: ClientIP` always wins, regardless of the configured
 /// default, since it's a per-Service opt-in.
-fn lb_expr(svc: &Service, default_method: LbMethod, family: Family) -> String {
+/// `None` means this kernel has no usable selector — the caller then sends
+/// every connection to a single backend rather than emitting a rule that
+/// would be rejected and take the whole ruleset with it.
+fn lb_expr(
+    svc: &Service,
+    default_method: LbMethod,
+    family: Family,
+    caps: Caps,
+) -> Option<String> {
     let sticky = svc.spec.as_ref().and_then(|s| s.session_affinity.as_deref()) == Some("ClientIP");
     let method = if sticky { LbMethod::SourceHash } else { default_method };
     match method {
-        LbMethod::Random => "numgen random".to_string(),
-        LbMethod::RoundRobin => "numgen inc".to_string(),
-        LbMethod::SourceHash => format!("jhash {} saddr", family.nft_word()),
+        LbMethod::Random if caps.numgen => Some("numgen random".to_string()),
+        LbMethod::RoundRobin if caps.numgen => Some("numgen inc".to_string()),
+        LbMethod::SourceHash if caps.jhash => Some(format!("jhash {} saddr", family.nft_word())),
+        // Note sessionAffinity degrades *correctly* rather than merely
+        // acceptably: pinning every client to one backend still satisfies
+        // "the same client reaches the same backend."
+        _ => None,
     }
 }
 
@@ -315,14 +338,20 @@ fn lb_expr(svc: &Service, default_method: LbMethod, family: Family) -> String {
 /// case sidesteps kernels without that module rather than requiring it
 /// unconditionally. Multiple backends still need the map form — there's no
 /// way to express "pick one of N" without some selection statement.
-fn dnat_target(lb: &str, backends: &[(String, i32)]) -> Option<String> {
+fn dnat_target(lb: Option<&str>, backends: &[(String, i32)]) -> Option<String> {
+    fn bare(b: &(String, i32)) -> String {
+        let (ip, port) = b;
+        if ip.contains(':') { format!("[{ip}]:{port}") } else { format!("{ip}:{port}") }
+    }
     match backends.len() {
         0 => None,
-        1 => {
-            let (ip, port) = &backends[0];
-            Some(if ip.contains(':') { format!("[{ip}]:{port}") } else { format!("{ip}:{port}") })
-        }
+        1 => Some(bare(&backends[0])),
+        // No selector this kernel can run: pick one backend and route all of
+        // it there. Degraded, but a working Service beats a rejected ruleset
+        // that also takes every other Service down with it.
+        _ if lb.is_none() => Some(bare(&backends[0])),
         n => {
+            let lb = lb.expect("checked above");
             let entries: Vec<String> = backends
                 .iter()
                 .enumerate()
@@ -333,7 +362,17 @@ fn dnat_target(lb: &str, backends: &[(String, i32)]) -> Option<String> {
     }
 }
 
-fn build_ruleset(state: &State, ip_family: IpFamily, lb_method: LbMethod) -> String {
+/// `local` is this node's own addresses, used only for the NodePort
+/// fallback when the kernel has no `fib`. Passed in rather than looked up
+/// here so this stays a pure function of its inputs and the fallback is
+/// unit-testable without depending on the test machine's interfaces.
+fn build_ruleset(
+    state: &State,
+    ip_family: IpFamily,
+    lb_method: LbMethod,
+    caps: Caps,
+    local: &[String],
+) -> String {
     let families: &[Family] = match ip_family {
         IpFamily::V4 => &[Family::V4],
         IpFamily::V6 => &[Family::V6],
@@ -366,8 +405,8 @@ fn build_ruleset(state: &State, ip_family: IpFamily, lb_method: LbMethod) -> Str
 
             for port in spec.ports.as_deref().unwrap_or(&[]) {
                 let backends = backends_for(namespace, name, port, family, &state.endpoint_slices);
-                let lb = lb_expr(svc, lb_method, family);
-                let Some(target) = dnat_target(&lb, &backends) else { continue };
+                let lb = lb_expr(svc, lb_method, family, caps);
+                let Some(target) = dnat_target(lb.as_deref(), &backends) else { continue };
                 let proto = port.protocol.as_deref().unwrap_or("TCP").to_ascii_lowercase();
 
                 // ClusterIP: family is already established by `<f> daddr`, no
@@ -376,13 +415,36 @@ fn build_ruleset(state: &State, ip_family: IpFamily, lb_method: LbMethod) -> Str
                 prerouting.push(rule.clone());
                 output.push(rule);
 
-                // NodePort: `fib daddr type local` is family-neutral, so the
-                // qualifier is required here (`dnat ip to` / `dnat ip6 to`).
+                // NodePort. With fib: `fib daddr type local` is family-neutral,
+                // so the DNAT needs an explicit qualifier (`dnat ip to` /
+                // `dnat ip6 to`) — see this module's header for the silent
+                // failure that omitting it causes.
+                //
+                // Without fib: match this node's own addresses one by one
+                // instead. `<f> daddr <addr>` establishes the family itself,
+                // so the qualifier goes away, exactly as in the ClusterIP
+                // case above. The trade-off is the one svc.rs originally
+                // chose fib to avoid — the address list is only as current
+                // as the last rebuild — but a rebuild happens on every
+                // Service/EndpointSlice event, and it is the difference
+                // between NodePort working on such a kernel and the entire
+                // ruleset being rejected.
                 if let Some(node_port) = port.node_port.filter(|p| *p != 0) {
-                    let np_rule =
-                        format!("fib daddr type local {proto} dport {node_port} dnat {f} to {target}");
-                    prerouting.push(np_rule.clone());
-                    output.push(np_rule);
+                    if caps.fib {
+                        let np_rule = format!(
+                            "fib daddr type local {proto} dport {node_port} dnat {f} to {target}"
+                        );
+                        prerouting.push(np_rule.clone());
+                        output.push(np_rule);
+                    } else {
+                        for addr in local.iter().filter(|a| Family::of(a) == family) {
+                            let np_rule = format!(
+                                "{f} daddr {addr} {proto} dport {node_port} dnat to {target}"
+                            );
+                            prerouting.push(np_rule.clone());
+                            output.push(np_rule);
+                        }
+                    }
                 }
             }
         }
@@ -422,6 +484,114 @@ fn build_ruleset(state: &State, ip_family: IpFamily, lb_method: LbMethod) -> Str
 /// `nft list tables` is the cheapest non-mutating query that actually opens
 /// the netlink socket, so a permission problem surfaces here, once, with the
 /// kernel's own message attached.
+/// What this kernel's nftables can actually do.
+///
+/// Every one of these is a separate kernel module that a build can simply
+/// not include, and the failure mode is identical and unhelpful in all
+/// three cases: `nft` accepts the syntax, then the kernel rejects the rule
+/// with "Could not process rule: No such file or directory" pointing at the
+/// offending token. Confirmed on an Android-derived 6.12 aarch64 kernel
+/// where all three are absent.
+///
+/// This matters far more than "one Service loses a feature", because the
+/// ruleset is applied atomically: a single rule the kernel won't take means
+/// `nft -f -` rejects the whole file, so one NodePort Service (or one
+/// Service with two backends) removes routing for *every* Service on the
+/// node. Probing up front and emitting only rules this kernel can run keeps
+/// the node working, degraded and loudly logged, instead of not at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caps {
+    /// `fib daddr type local` — how NodePort matches "addressed to me".
+    pub fib: bool,
+    /// `numgen random|inc` — random and round-robin backend selection.
+    pub numgen: bool,
+    /// `jhash <family> saddr` — source-hash / sessionAffinity selection.
+    pub jhash: bool,
+}
+
+impl Caps {
+    /// All-supported, for tests and for reasoning about a normal kernel.
+    #[cfg(test)]
+    fn all() -> Self {
+        Self { fib: true, numgen: true, jhash: true }
+    }
+}
+
+/// Applies a one-rule probe table and deletes it again. Syntax alone proves
+/// nothing here — `nft -c` parses these fine on a kernel that then refuses
+/// them — so the probe has to really commit the rule.
+fn probe_rule(rule: &str) -> bool {
+    let table = "not_k8s_probe";
+    let script = format!(
+        "add table inet {table}\n\
+         add chain inet {table} p {{ type nat hook prerouting priority dstnat ; policy accept ; }}\n\
+         add rule inet {table} p {rule}\n"
+    );
+    let ok = apply_nft(&script).is_ok();
+    let _ = apply_nft(&format!("delete table inet {table}\n"));
+    ok
+}
+
+fn probe_caps() -> Caps {
+    let caps = Caps {
+        fib: probe_rule("fib daddr type local tcp dport 65000 dnat ip to 10.255.255.254:1"),
+        numgen: probe_rule(
+            "ip daddr 10.255.255.254 tcp dport 65000 dnat to numgen random mod 2 \
+map { 0 : 10.255.255.254 . 1, 1 : 10.255.255.253 . 1 }",
+        ),
+        jhash: probe_rule(
+            "ip daddr 10.255.255.254 tcp dport 65000 dnat to jhash ip saddr mod 2 \
+map { 0 : 10.255.255.254 . 1, 1 : 10.255.255.253 . 1 }",
+        ),
+    };
+    if !caps.fib {
+        warn!(
+            "this kernel has no nft_fib — NodePort will match this node's own addresses \
+explicitly instead of `fib daddr type local`. Equivalent for traffic addressed to a local \
+address, but it only covers addresses present when each ruleset is built."
+        );
+    }
+    if !caps.numgen || !caps.jhash {
+        warn!(
+            numgen = caps.numgen,
+            jhash = caps.jhash,
+            "this kernel cannot select among backends (nft_numgen/nft_hash absent) — Services \
+with more than one ready backend will be sent entirely to one of them, and sessionAffinity is \
+trivially satisfied. Routing works; load balancing does not."
+        );
+    }
+    caps
+}
+
+/// This node's own IP addresses, for the NodePort fallback when `fib` is
+/// unavailable. Shells out to `ip`, the same "use the host's own tools"
+/// approach this module already takes with `nft` — and re-read on every
+/// rebuild rather than cached, so an address added or removed later is
+/// picked up by the next Service event.
+fn local_addrs() -> Vec<String> {
+    let Ok(out) = Command::new("ip").args(["-o", "addr", "show"]).output() else {
+        warn!("`ip` not on PATH — cannot enumerate local addresses for the NodePort fallback");
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut it = line.split_whitespace().skip_while(|t| *t != "inet" && *t != "inet6");
+            let _family = it.next()?;
+            let cidr = it.next()?;
+            let addr = cidr.split('/').next()?;
+            // Link-local v6 is per-interface and never a service address.
+            if addr.starts_with("fe80:") {
+                return None;
+            }
+            Some(addr.to_string())
+        })
+        .collect()
+}
+
 fn check_nft() -> Result<()> {
     let out =
         Command::new("nft").args(["list", "tables"]).output().context("nft not found on PATH")?;
@@ -535,8 +705,17 @@ mod tests {
         for method in [LbMethod::Random, LbMethod::RoundRobin, LbMethod::SourceHash] {
             for n in [1usize, 2, 3] {
                 let svc = fake_service(vec!["10.43.0.1", "fd00::1"], None);
-                let v4 = dnat_target(&lb_expr(&svc, method, Family::V4), &backends(n, false)).unwrap();
-                let v6 = dnat_target(&lb_expr(&svc, method, Family::V6), &backends(n, true)).unwrap();
+                let caps = Caps::all();
+                let v4 = dnat_target(
+                    lb_expr(&svc, method, Family::V4, caps).as_deref(),
+                    &backends(n, false),
+                )
+                .unwrap();
+                let v6 = dnat_target(
+                    lb_expr(&svc, method, Family::V6, caps).as_deref(),
+                    &backends(n, true),
+                )
+                .unwrap();
 
                 let script = format!(
                     "add table inet {TABLE}\n\
@@ -557,8 +736,109 @@ mod tests {
     #[test]
     fn session_affinity_forces_source_hash_regardless_of_default() {
         let svc = fake_service(vec!["10.43.0.1"], Some("ClientIP"));
-        assert_eq!(lb_expr(&svc, LbMethod::Random, Family::V4), "jhash ip saddr");
-        assert_eq!(lb_expr(&svc, LbMethod::RoundRobin, Family::V4), "jhash ip saddr");
+        let caps = Caps::all();
+        assert_eq!(lb_expr(&svc, LbMethod::Random, Family::V4, caps).as_deref(), Some("jhash ip saddr"));
+        assert_eq!(
+            lb_expr(&svc, LbMethod::RoundRobin, Family::V4, caps).as_deref(),
+            Some("jhash ip saddr")
+        );
+    }
+
+    /// The whole point of Caps: on a kernel missing these modules the
+    /// generated rules must not mention them at all, because one rejected
+    /// rule takes the entire atomically-applied ruleset with it.
+    #[test]
+    fn a_kernel_without_numgen_or_jhash_gets_no_selector_at_all() {
+        let none = Caps { fib: true, numgen: false, jhash: false };
+        let plain = fake_service(vec!["10.43.0.1"], None);
+        let sticky = fake_service(vec!["10.43.0.1"], Some("ClientIP"));
+        for method in [LbMethod::Random, LbMethod::RoundRobin, LbMethod::SourceHash] {
+            assert_eq!(lb_expr(&plain, method, Family::V4, none), None);
+            assert_eq!(lb_expr(&sticky, method, Family::V4, none), None);
+        }
+    }
+
+    #[test]
+    fn without_a_selector_multiple_backends_collapse_to_one_working_target() {
+        // Not "no rule": a Service with backends must still route.
+        let target = dnat_target(None, &backends(3, false)).expect("must still produce a target");
+        assert_eq!(target, "10.42.0.5:8080");
+        assert!(!target.contains("numgen"), "must not emit a selector this kernel lacks");
+        assert!(!target.contains("map"), "must not emit a verdict map this kernel lacks");
+        // Zero backends is still nothing to route to, selector or not.
+        assert_eq!(dnat_target(None, &[]), None);
+    }
+
+    /// A Service with one ready backend, for ruleset-level tests.
+    fn state_with_one_nodeport_service() -> State {
+        use k8s_openapi::api::discovery::v1::{Endpoint, EndpointConditions, EndpointPort};
+        let mut state = State::default();
+        state.services.insert("n/s".to_string(), fake_service(vec!["10.43.0.1"], None));
+        state.endpoint_slices.insert(
+            "n/s-abc".to_string(),
+            EndpointSlice {
+                metadata: kube::core::ObjectMeta {
+                    namespace: Some("n".into()),
+                    name: Some("s-abc".into()),
+                    labels: Some([(SVC_NAME_LABEL.to_string(), "s".to_string())].into()),
+                    ..Default::default()
+                },
+                address_type: "IPv4".to_string(),
+                endpoints: vec![Endpoint {
+                    addresses: vec!["10.42.0.5".to_string()],
+                    conditions: Some(EndpointConditions { ready: Some(true), ..Default::default() }),
+                    ..Default::default()
+                }],
+                ports: Some(vec![EndpointPort { port: Some(8080), ..Default::default() }]),
+            },
+        );
+        state
+    }
+
+    /// The point of the whole fallback: NodePort must keep working on a
+    /// kernel with no nft_fib, which is where this was actually found.
+    #[test]
+    fn nodeport_still_works_without_fib_by_matching_local_addresses() {
+        let state = state_with_one_nodeport_service();
+        let local = vec!["192.168.1.50".to_string(), "10.0.0.1".to_string()];
+        let no_fib = Caps { fib: false, numgen: true, jhash: true };
+
+        let rs = build_ruleset(&state, IpFamily::V4, LbMethod::Random, no_fib, &local);
+
+        assert!(!rs.contains("fib "), "must not emit fib on a kernel without it:\n{rs}");
+        // One NodePort rule per local address, in both hooks.
+        for addr in &local {
+            assert!(
+                rs.contains(&format!("ip daddr {addr} tcp dport 30080 dnat to 10.42.0.5:8080")),
+                "missing NodePort rule for {addr}:\n{rs}"
+            );
+        }
+        // `<f> daddr` establishes the family, so the qualifier fib needed
+        // must not appear on these rules.
+        assert!(!rs.contains("dport 30080 dnat ip to"), "qualifier is only for the fib form:\n{rs}");
+        // ClusterIP routing is unaffected by the fallback.
+        assert!(rs.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"), "{rs}");
+    }
+
+    #[test]
+    fn nodeport_uses_fib_when_the_kernel_has_it() {
+        let state = state_with_one_nodeport_service();
+        let rs = build_ruleset(&state, IpFamily::V4, LbMethod::Random, Caps::all(), &[]);
+        assert!(
+            rs.contains("fib daddr type local tcp dport 30080 dnat ip to 10.42.0.5:8080"),
+            "{rs}"
+        );
+    }
+
+    /// With no fib AND no local addresses discoverable, NodePort is the only
+    /// thing that degrades — ClusterIP must still be programmed.
+    #[test]
+    fn losing_nodeport_never_costs_clusterip() {
+        let state = state_with_one_nodeport_service();
+        let no_fib = Caps { fib: false, numgen: true, jhash: true };
+        let rs = build_ruleset(&state, IpFamily::V4, LbMethod::Random, no_fib, &[]);
+        assert!(rs.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"), "{rs}");
+        assert!(!rs.contains("30080"), "no local addresses means no NodePort rules:\n{rs}");
     }
 
     #[test]

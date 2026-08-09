@@ -41,7 +41,13 @@ _delete_svc_if_exists() {
 # datapath) and must skip, not fail.
 _require_service_proxy() {
     node_uses_cri_runtime || skip_test "needs cri runtime (mock pods have no real IPs to route to)"
-    command -v nft >/dev/null 2>&1 || skip_test "needs nft (nftables) on the host"
+    # Probe through _nft, not `command -v nft`. nft lives in /usr/sbin,
+    # which is not on an unprivileged PATH on Debian — so `command -v nft`
+    # fails on a host where `sudo nft` works perfectly, and every test in
+    # this file skipped with "needs nft" against a cluster that was
+    # routing traffic correctly. Found running this suite for real.
+    _nft --version >/dev/null 2>&1 \
+        || skip_test "needs nft (nftables) reachable either directly or via sudo"
     _nft list table inet not_k8s_svc >/dev/null 2>&1 \
         || skip_test "no readable 'inet not_k8s_svc' table — either nodeproxy isn't running on this node (deployed with --proxy=none?) or this suite can't reach nftables (needs root or passwordless sudo)"
 }
@@ -54,6 +60,72 @@ _wait_for_ready_endpoint() { # _wait_for_ready_endpoint <service-name> <timeout>
     try_wait_until "$2" bash -c \
         "kubectl get endpointslices -n '$TEST_NAMESPACE' -l kubernetes.io/service-name='$1' \
          -o jsonpath='{.items[*].endpoints[*].addresses[0]}' 2>/dev/null | grep -q ."
+}
+
+# Cleanup state for the EXIT trap, deliberately global. A `trap _cleanup
+# EXIT` closing over the test function's `local` variables fires AFTER that
+# function has returned, when those locals no longer exist — and under the
+# harness's `set -u` that aborts with "unbound variable". Found running this
+# suite for real: four tests failed that way with every assertion already
+# passed, reporting a cleanup crash as a product failure.
+_SVC_CLEANUP_PODS=()
+_SVC_CLEANUP_SVCS=()
+_SVC_CLEANUP_RESTORE_NODEPROXY=0
+
+_svc_track_pod() { _SVC_CLEANUP_PODS+=("$@"); }
+_svc_track_svc() { _SVC_CLEANUP_SVCS+=("$@"); }
+
+_svc_cleanup() {
+    local x
+    for x in ${_SVC_CLEANUP_PODS[@]+"${_SVC_CLEANUP_PODS[@]}"}; do delete_pod_if_exists "$x"; done
+    for x in ${_SVC_CLEANUP_SVCS[@]+"${_SVC_CLEANUP_SVCS[@]}"}; do _delete_svc_if_exists "$x"; done
+    [[ "$_SVC_CLEANUP_RESTORE_NODEPROXY" -eq 1 ]] && { nodeproxy_restore_env || true; }
+    _SVC_CLEANUP_PODS=(); _SVC_CLEANUP_SVCS=(); _SVC_CLEANUP_RESTORE_NODEPROXY=0
+    return 0
+}
+
+# Whether this kernel can actually apply a given load-balancing selector.
+# nft_numgen and nft_hash are separate kernel modules, absent on some
+# builds — confirmed on an Android-derived 6.12 kernel, where BOTH are
+# missing and any rule using them fails with "Could not process rule: No
+# such file or directory" at the selector token. dnat_target()'s
+# single-backend fast path exists because of exactly this. A test that
+# needs a selector this kernel can't run must skip, not fail.
+_svc_kernel_supports_rule() { # <rule-body>
+    local probe="probe_svc_cap_$$"
+    local ok=0
+    _nft -f - >/dev/null 2>&1 <<EOF && ok=1
+add table inet $probe
+add chain inet $probe pre { type nat hook prerouting priority dstnat ; policy accept ; }
+add rule inet $probe pre $1
+EOF
+    _nft delete table inet "$probe" >/dev/null 2>&1
+    [[ "$ok" -eq 1 ]]
+}
+
+_svc_kernel_supports_selector() { # <selector-expression>
+    _svc_kernel_supports_rule \
+        "ip daddr 10.99.0.1 tcp dport 80 dnat to $1 mod 2 map { 0 : 10.42.0.5 . 8080, 1 : 10.42.0.6 . 8080 }"
+}
+
+# NodePort rules are all `fib daddr type local` (nft_fib), a separate kernel
+# module absent on some builds — confirmed on an Android-derived 6.12
+# kernel, alongside missing nft_numgen and nft_hash.
+#
+# Be precise about what a skip here means. It does NOT mean NodePort is
+# unimplementable on such a kernel: `ip daddr <node-ip>` and a named
+# `ip daddr @localips` set both apply fine there (verified directly), and
+# svc.rs's own comment names the explicit-local-IP approach as the
+# alternative it chose fib over — fib avoids having to track every local
+# address. So this skip means "the current implementation cannot run here",
+# which is a gap in nodeproxy, not a fact about the kernel.
+#
+# It matters more than an ordinary skip because the ruleset is applied
+# atomically: on such a kernel a single NodePort Service takes every other
+# Service's rules down with it, and (since apply failures are fatal) puts
+# nodeproxy in a restart loop until that Service is deleted.
+_svc_kernel_supports_nodeport() {
+    _svc_kernel_supports_rule "fib daddr type local tcp dport 31999 dnat ip to 10.42.0.5:8080"
 }
 
 # _svc_backend_pod <name> <label> <marker> — a pod running the responder,
@@ -123,6 +195,14 @@ _svc_rules_match() { # _svc_rules_match <cluster-ip> <pattern>
     _svc_rules_for "$1" | grep -q "$2"
 }
 
+# True once this ClusterIP has rules but none of them use a selector the
+# kernel can't run. "Has rules" matters: an empty result would otherwise
+# satisfy this trivially while the Service was in fact unrouted.
+_svc_rules_gone_of_selector() { # <cluster-ip>
+    local rules; rules="$(_svc_rules_for "$1")"
+    [[ -n "$rules" ]] && ! grep -qE "numgen|jhash" <<<"$rules"
+}
+
 test_clusterip_service_routes_to_its_backend_pod() {
     _require_service_proxy
     local name="svc-clusterip-check"
@@ -177,6 +257,10 @@ EOF
 
 test_nodeport_service_is_reachable_on_the_node_ip() {
     _require_service_proxy
+    # Deliberately NOT gated on nft_fib. NodePort has to work on kernels
+    # without it too — nodeproxy falls back to matching this node's own
+    # addresses explicitly. That fallback exists because of this exact
+    # hardware, so skipping here would retire the only test that covers it.
     local name="svc-nodeport-check"
     local node_port=31890
     apply_manifest <<EOF
@@ -351,9 +435,17 @@ test_nodeproxy_runs_as_its_own_service_separate_from_nodelet() {
     assert_true systemctl is-active --quiet nodeproxy.service
     # Independent of nodelet, deliberately: neither unit orders against the
     # other (see deploy/lib/nodeproxy-service.sh's header).
-    local unit
+    #
+    # Assert on the ordering directives, not the whole unit text. The unit
+    # carries a comment that mentions nodelet.service by name (explaining
+    # where its StartLimitIntervalSec reasoning came from), so a substring
+    # search over `systemctl cat` output failed against a unit whose
+    # ordering was in fact correct. Found running this suite for real.
+    local unit ordering
     unit="$(systemctl cat nodeproxy.service)"
-    assert_not_contains "$unit" "nodelet.service" "nodeproxy.service must not order against nodelet.service — they're independent components"
+    ordering="$(printf '%s\n' "$unit" | grep -E '^(After|Before|Wants|Requires|Requisite|BindsTo|PartOf)=' || true)"
+    assert_not_empty "$ordering" "nodeproxy.service must declare some ordering (it needs k3s)"
+    assert_not_contains "$ordering" "nodelet" "nodeproxy.service must not order against nodelet.service — they're independent components"
     assert_contains "$unit" "run-nodeproxy.sh" "nodeproxy.service ExecStart"
 }
 
@@ -368,11 +460,8 @@ test_clusterip_is_reachable_from_inside_a_pod() {
     _require_service_proxy
     local backend="svc-prerouting-backend" client="svc-prerouting-client"
     local svc="svc-prerouting"
-    _cleanup() {
-        delete_pod_if_exists "$backend"; delete_pod_if_exists "$client"
-        _delete_svc_if_exists "$svc"
-    }
-    trap _cleanup EXIT
+    trap _svc_cleanup EXIT
+    _svc_track_pod "$backend" "$client"; _svc_track_svc "$svc"
 
     _svc_backend_pod "$backend" "$svc" prerouting-marker \
         || die "backend pod never reached Running"
@@ -415,8 +504,8 @@ test_a_pod_reaching_its_own_service_gets_hairpin_masquerade() {
     # was sent to and the connection hangs. It is the one rule in
     # build_ruleset() no other test in this file touches at all.
     local name="svc-hairpin" svc="svc-hairpin"
-    _cleanup() { delete_pod_if_exists "$name"; _delete_svc_if_exists "$svc"; }
-    trap _cleanup EXIT
+    trap _svc_cleanup EXIT
+    _svc_track_pod "$name"; _svc_track_svc "$svc"
 
     _svc_backend_pod "$name" "$svc" hairpin-marker || die "pod never reached Running"
     _svc_clusterip_service "$svc" "$svc"
@@ -450,11 +539,14 @@ test_multiple_backends_use_the_load_balancing_map_form() {
     # "pick one of N". A regression collapsing the two would be invisible
     # to every other test here, since both forms route fine for N=1.
     local svc="svc-multibackend"
-    _cleanup() {
-        delete_pod_if_exists "$svc-a"; delete_pod_if_exists "$svc-b"
-        _delete_svc_if_exists "$svc"
-    }
-    trap _cleanup EXIT
+    trap _svc_cleanup EXIT
+    _svc_track_pod "$svc-a" "$svc-b"; _svc_track_svc "$svc"
+    # Not gated: a two-backend Service must ROUTE on every kernel. Only the
+    # map-form assertion below is conditional, because a kernel without
+    # nft_numgen genuinely cannot select among backends and nodeproxy
+    # degrades to sending everything to one of them.
+    local can_lb=0
+    _svc_kernel_supports_selector "numgen random" && can_lb=1
 
     _svc_backend_pod "$svc-a" "$svc" multibackend-marker || die "backend a never reached Running"
     _svc_clusterip_service "$svc" "$svc"
@@ -473,10 +565,20 @@ test_multiple_backends_use_the_load_balancing_map_form() {
         die "the Service never reported two ready backends"
     fi
 
-    # Two backends: the map form, and traffic still lands.
-    if ! try_wait_until 60 _svc_rules_match "$cluster_ip" 'map {'; then
-        echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
-        die "a two-backend Service never got the 'numgen ... mod N map { ... }' form — check dnat_target()'s N>1 branch"
+    if [[ "$can_lb" -eq 1 ]]; then
+        # Two backends on a capable kernel: the map form.
+        if ! try_wait_until 60 _svc_rules_match "$cluster_ip" 'map {'; then
+            echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
+            die "a two-backend Service never got the 'numgen ... mod N map { ... }' form — check dnat_target()'s N>1 branch"
+        fi
+    else
+        # No nft_numgen: the ruleset must contain no selector at all, since
+        # one rejected rule takes the whole atomically-applied file with it.
+        echo "  (kernel has no nft_numgen — asserting the degraded path instead)"
+        if ! try_wait_until 60 _svc_rules_gone_of_selector "$cluster_ip"; then
+            echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
+            die "a kernel without nft_numgen still got a numgen/jhash selector emitted for it — that rule is rejected and takes every other Service's rules down with it. Check probe_caps()/lb_expr()"
+        fi
     fi
 
     local body
@@ -492,8 +594,8 @@ test_losing_every_backend_removes_the_dnat_rule() {
     # must disappear rather than linger pointing at a dead pod IP — which
     # would blackhole traffic instead of failing it fast.
     local svc="svc-drain"
-    _cleanup() { delete_pod_if_exists "$svc-a"; _delete_svc_if_exists "$svc"; }
-    trap _cleanup EXIT
+    trap _svc_cleanup EXIT
+    _svc_track_pod "$svc-a"; _svc_track_svc "$svc"
 
     _svc_backend_pod "$svc-a" "$svc" drain-marker || die "backend never reached Running"
     _svc_clusterip_service "$svc" "$svc"
@@ -513,8 +615,8 @@ test_losing_every_backend_removes_the_dnat_rule() {
 test_deleting_a_service_removes_its_rules() {
     _require_service_proxy
     local svc="svc-deleted"
-    _cleanup() { delete_pod_if_exists "$svc-a"; _delete_svc_if_exists "$svc"; }
-    trap _cleanup EXIT
+    trap _svc_cleanup EXIT
+    _svc_track_pod "$svc-a"; _svc_track_svc "$svc"
 
     _svc_backend_pod "$svc-a" "$svc" deleted-marker || die "backend never reached Running"
     _svc_clusterip_service "$svc" "$svc"
@@ -545,11 +647,14 @@ test_session_affinity_client_ip_forces_source_hash() {
     # need many connections from distinct source IPs, which this harness
     # has no way to produce.
     local svc="svc-affinity"
-    _cleanup() {
-        delete_pod_if_exists "$svc-a"; delete_pod_if_exists "$svc-b"
-        _delete_svc_if_exists "$svc"
-    }
-    trap _cleanup EXIT
+    trap _svc_cleanup EXIT
+    _svc_track_pod "$svc-a" "$svc-b"; _svc_track_svc "$svc"
+    # Not gated: a ClientIP-affinity Service must route on every kernel.
+    # Only the jhash assertion is conditional — without nft_hash, nodeproxy
+    # pins everything to one backend, which satisfies "same client, same
+    # backend" trivially and is the correct degradation.
+    local can_hash=0
+    _svc_kernel_supports_selector "jhash ip saddr" && can_hash=1
 
     _svc_backend_pod "$svc-a" "$svc" affinity-marker || die "backend a never reached Running"
     _svc_backend_pod "$svc-b" "$svc" affinity-marker || die "backend b never reached Running"
@@ -562,12 +667,26 @@ test_session_affinity_client_ip_forces_source_hash() {
 
     local cluster_ip
     cluster_ip="$(kctl get service "$svc" -o jsonpath='{.spec.clusterIP}')"
-    if ! try_wait_until 60 _svc_rules_match "$cluster_ip" 'jhash'; then
-        echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
-        die "sessionAffinity: ClientIP did not produce a jhash selector — check lb_expr()'s sticky branch, which must win over the configured default"
+    if [[ "$can_hash" -eq 1 ]]; then
+        if ! try_wait_until 60 _svc_rules_match "$cluster_ip" 'jhash'; then
+            echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
+            die "sessionAffinity: ClientIP did not produce a jhash selector — check lb_expr()'s sticky branch, which must win over the configured default"
+        fi
+    else
+        echo "  (kernel has no nft_hash — asserting the degraded path instead)"
+        if ! try_wait_until 60 _svc_rules_gone_of_selector "$cluster_ip"; then
+            echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
+            die "a kernel without nft_hash still got a jhash selector emitted for it — that rule is rejected and takes every other Service down with it"
+        fi
     fi
     assert_not_contains "$(_svc_rules_for "$cluster_ip")" "numgen" \
         "a ClientIP-affinity Service must not use a random/round-robin selector"
+    # Either way it has to actually serve traffic.
+    local body2
+    body2="$(try_wait_until 60 bash -c "curl -sS --max-time 5 http://$cluster_ip:80/ | grep -q affinity-marker" \
+        && curl -sS --max-time 5 "http://$cluster_ip:80/")" \
+        || die "a sessionAffinity: ClientIP Service did not route at all"
+    assert_contains "$body2" "affinity-marker" "response from a ClientIP-affinity Service"
 }
 
 test_headless_service_programs_no_rules_and_does_not_break_others() {
@@ -578,11 +697,8 @@ test_headless_service_programs_no_rules_and_does_not_break_others() {
     # the whole atomically-applied table down with it, which would break
     # every other Service on the node.
     local headless="svc-headless" probe="svc-headless-probe"
-    _cleanup() {
-        delete_pod_if_exists "$headless-a"
-        _delete_svc_if_exists "$headless"; _delete_svc_if_exists "$probe"
-    }
-    trap _cleanup EXIT
+    trap _svc_cleanup EXIT
+    _svc_track_pod "$headless-a"; _svc_track_svc "$headless" "$probe"
 
     _svc_backend_pod "$headless-a" "$headless" headless-marker || die "backend never reached Running"
     _svc_clusterip_service "$headless" "$headless" "  clusterIP: None
@@ -622,11 +738,9 @@ test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart() {
     # would notice, since every other test creates its Service after
     # nodeproxy is already running.
     local svc="svc-restart"
-    _cleanup() {
-        delete_pod_if_exists "$svc-a"; _delete_svc_if_exists "$svc"
-        nodeproxy_restore_env || true
-    }
-    trap _cleanup EXIT
+    trap _svc_cleanup EXIT
+    _svc_track_pod "$svc-a"; _svc_track_svc "$svc"
+    _SVC_CLEANUP_RESTORE_NODEPROXY=1
 
     _svc_backend_pod "$svc-a" "$svc" restart-marker || die "backend never reached Running"
     _svc_clusterip_service "$svc" "$svc"
