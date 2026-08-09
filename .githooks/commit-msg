@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# commit-msg — reject a commit message that CI would reject anyway.
+#
+# Opt-in, one time, per clone (git does not run hooks from a tracked
+# directory by default, and can't be made to without this):
+#
+#   git config core.hooksPath .githooks
+#
+# Same script CI runs, so there's exactly one definition of the rules
+# (.github/scripts/check-commit-message.sh). Bypass with --no-verify if you
+# need to; CI still won't let it merge.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+checker="$repo_root/.github/scripts/check-commit-message.sh"
+
+# An older checkout (or a rebase onto a commit predating the checker) has
+# no script to run. Don't block the commit over that.
+[[ -x "$checker" ]] || exit 0
+
+exec "$checker" --file "$1"
