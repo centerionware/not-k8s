@@ -187,10 +187,21 @@ unaffected either way",
 
             if changed {
                 let ruleset = build_ruleset(&state, self.ip_family, self.lb_method);
-                match apply_nft(&ruleset) {
-                    Ok(()) => debug!("nft ruleset applied"),
-                    Err(e) => warn!(error = ?e, "failed to apply nft ruleset"),
-                }
+                // Propagated, not just logged. Reconciliation here is purely
+                // event-driven — the whole point of the design, but it means
+                // there is no periodic resync to quietly retry a failed
+                // apply. Logging and continuing would leave the kernel
+                // holding the last good ruleset while nodeproxy reports
+                // healthy, with the divergence persisting until some
+                // unrelated Service or EndpointSlice happened to change.
+                // Returning lets main() exit non-zero so the service manager
+                // restarts, relists, and rebuilds from scratch — which also
+                // recovers on its own once whatever produced the rejected
+                // ruleset is gone.
+                apply_nft(&ruleset)
+                    .map_err(|e| anyhow::anyhow!(e))
+                    .context("applying the nftables ruleset")?;
+                debug!("nft ruleset applied");
             }
         }
     }

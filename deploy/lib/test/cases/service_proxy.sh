@@ -102,8 +102,25 @@ EOF
 # being present is not proof it works, but a rule being ABSENT (or being
 # the wrong form) is proof of a specific bug, and it's the only way to see
 # things like which load-balancing expression was chosen.
+# Matches the address only at a rule-token boundary. A plain substring
+# match makes 10.43.0.1 match a rule written for 10.43.0.10 — confirmed —
+# which cuts both ways: it can mask a genuinely missing rule, and it can
+# make the "rules are gone" waits below time out against an unrelated
+# Service that merely shares an address prefix.
 _svc_rules_for() { # _svc_rules_for <cluster-ip>
-    _nft list table inet not_k8s_svc 2>/dev/null | grep -F "$1" || true
+    local ip_re="${1//./\\.}"
+    _nft list table inet not_k8s_svc 2>/dev/null | grep -E "(^|[^0-9.])${ip_re}([^0-9.]|\$)" || true
+}
+
+# Predicates for try_wait_until, which invokes its command in the current
+# shell — so these work directly, without the `bash -c` (and the exported
+# functions it would then need) the inline versions used to require.
+_svc_rules_gone() { # _svc_rules_gone <cluster-ip>
+    [[ -z "$(_svc_rules_for "$1")" ]]
+}
+
+_svc_rules_match() { # _svc_rules_match <cluster-ip> <pattern>
+    _svc_rules_for "$1" | grep -q "$2"
 }
 
 test_clusterip_service_routes_to_its_backend_pod() {
@@ -457,8 +474,7 @@ test_multiple_backends_use_the_load_balancing_map_form() {
     fi
 
     # Two backends: the map form, and traffic still lands.
-    if ! try_wait_until 60 bash -c \
-        "(nft list table inet not_k8s_svc 2>/dev/null || sudo nft list table inet not_k8s_svc 2>/dev/null) | grep -F '$cluster_ip' | grep -q 'map {'"; then
+    if ! try_wait_until 60 _svc_rules_match "$cluster_ip" 'map {'; then
         echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
         die "a two-backend Service never got the 'numgen ... mod N map { ... }' form — check dnat_target()'s N>1 branch"
     fi
@@ -488,8 +504,7 @@ test_losing_every_backend_removes_the_dnat_rule() {
     assert_not_empty "$(_svc_rules_for "$cluster_ip")" "rules for a Service that has a ready backend"
 
     kctl delete pod "$svc-a" --wait=true >/dev/null 2>&1 || true
-    if ! try_wait_until 90 bash -c \
-        "! ((nft list table inet not_k8s_svc 2>/dev/null || sudo nft list table inet not_k8s_svc 2>/dev/null) | grep -qF '$cluster_ip')"; then
+    if ! try_wait_until 90 _svc_rules_gone "$cluster_ip"; then
         echo "--- rules still present for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
         die "a Service whose last backend went away kept its DNAT rule, which blackholes traffic at a dead pod IP instead of failing it fast"
     fi
@@ -513,8 +528,7 @@ test_deleting_a_service_removes_its_rules() {
     # apiserver, so a stale rule here doesn't just waste space — it can
     # silently hijack a DIFFERENT Service allocated the same address later.
     _delete_svc_if_exists "$svc"
-    if ! try_wait_until 90 bash -c \
-        "! ((nft list table inet not_k8s_svc 2>/dev/null || sudo nft list table inet not_k8s_svc 2>/dev/null) | grep -qF '$cluster_ip')"; then
+    if ! try_wait_until 90 _svc_rules_gone "$cluster_ip"; then
         echo "--- rules still present for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
         die "a deleted Service left its rules behind — check apply_event()'s Delete arm. ClusterIPs get recycled, so a stale rule can hijack whichever Service is allocated that address next"
     fi
@@ -548,8 +562,7 @@ test_session_affinity_client_ip_forces_source_hash() {
 
     local cluster_ip
     cluster_ip="$(kctl get service "$svc" -o jsonpath='{.spec.clusterIP}')"
-    if ! try_wait_until 60 bash -c \
-        "(nft list table inet not_k8s_svc 2>/dev/null || sudo nft list table inet not_k8s_svc 2>/dev/null) | grep -F '$cluster_ip' | grep -q 'jhash'"; then
+    if ! try_wait_until 60 _svc_rules_match "$cluster_ip" 'jhash'; then
         echo "--- rules for $cluster_ip ---"; _svc_rules_for "$cluster_ip"
         die "sessionAffinity: ClientIP did not produce a jhash selector — check lb_expr()'s sticky branch, which must win over the configured default"
     fi

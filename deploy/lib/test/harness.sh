@@ -91,6 +91,7 @@ run_test() {
 
 # _reorder_env_reconfiguring_tests_last — moves every registered test
 # whose own body touches nodelet_restart_with_env / nodeproxy_restart_*
+# / nodeproxy_restore_env
 # (a real systemd restart) or restarts/reconfigures another host-level
 # service (containerd, swap) to the END of TESTS_REGISTERED, preserving relative
 # order within each of the two groups otherwise. Round 123: found live in
@@ -107,7 +108,7 @@ _reorder_env_reconfiguring_tests_last() {
     local -a normal=() deferred=()
     local name
     for name in "${TESTS_REGISTERED[@]}"; do
-        if declare -f "$name" 2>/dev/null | grep -qE 'nodelet_restart_with_env|nodeproxy_restart_(with_env|plain)|sudo (systemctl restart containerd|swapon|mkswap)'; then
+        if declare -f "$name" 2>/dev/null | grep -qE 'nodelet_restart_with_env|nodeproxy_(restart|restore)_|sudo (systemctl restart containerd|swapon|mkswap)'; then
             deferred+=("$name")
         else
             normal+=("$name")

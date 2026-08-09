@@ -22,8 +22,17 @@
 NODEPROXY_OVERRIDE_DROPIN_DIR=/etc/systemd/system/nodeproxy.service.d
 NODEPROXY_OVERRIDE_DROPIN="$NODEPROXY_OVERRIDE_DROPIN_DIR/99-e2e-test-override.conf"
 
+# Both checks, matching the unit assertion in cases/service_proxy.sh so the
+# two can't disagree about whether nodeproxy is deployed here. On this
+# systemd, list-unit-files already exits non-zero for a missing unit — but
+# older versions exit 0 with "0 unit files listed", where the check would
+# claim support for a unit that isn't there and the test would fail with a
+# systemctl error instead of skipping cleanly. `systemctl cat` fails
+# outright in that case.
 nodeproxy_restart_supported() {
-    command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files nodeproxy.service >/dev/null 2>&1
+    command -v systemctl >/dev/null 2>&1 \
+        && systemctl list-unit-files nodeproxy.service >/dev/null 2>&1 \
+        && systemctl cat nodeproxy.service >/dev/null 2>&1
 }
 
 # Waits until nodeproxy has re-established its own nftables table after a
