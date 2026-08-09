@@ -1,31 +1,29 @@
-[HEADING=1]I replaced kubelet with a 15MB Rust agent and profiled it on a Pixel 7[/HEADING]
+[HEADING=1]not-k8s: replaced kubelet with a 15MB Rust agent, profiled on a Pixel 7[/HEADING]
 
-[B]nodelet[/B] is a drop-in replacement for kubelet — the Kubernetes node agent — written in Rust, event-driven instead of polling. Same control plane, same kubectl, same CRDs; only the per-node agent changes.
+[B]nodelet[/B] is a drop-in replacement for kubelet, written in Rust, event-driven instead of polling. Same control plane, same kubectl, same CRDs.
 
-Measured idle, no pods scheduled, 120s window, 3 replicates per agent, on two platforms:
+Idle, no pods scheduled, 120s window, 3 replicates per agent:
 
 [LIST]
-[*][B]x86_64 (CI runners)[/B] — nodelet ~15MB / ~0.08s CPU vs kubelet ~81MB / ~0.85s CPU
-[*][B]ARM phone (Pixel 7, Debian VM under KVM)[/B] — nodelet 12.0MB / 0.436s CPU vs kubelet 67.9MB / 8.031s CPU
+[*][B]x86_64[/B] — nodelet ~15MB / ~0.08s CPU, kubelet ~81MB / ~0.85s CPU
+[*][B]Pixel 7 (Debian VM)[/B] — nodelet 12.0MB / 0.436s CPU, kubelet 67.9MB / 8.031s CPU
 [/LIST]
 
-The interesting part isn't either row, it's the difference between them. [B]The CPU gap widens from ~10.6x on a server core to ~18.4x on a phone core, while the memory ratio stays basically flat (~5.4x to ~5.7x).[/B] Normalized against their own x86 baselines, nodelet is ~5.5x slower on the phone core and kubelet is ~9.5x slower — so something superlinear penalizes kubelet specifically as the hardware gets weaker. The polling work is fixed; a slower core spends proportionally more of itself on it.
+The CPU gap widens from 10.6x to 18.4x on the slower core; memory stays flat at ~5.5x. Could be cache, could be the in-order A55, could be Go's GC — can't tell, the PMU isn't exposed to the VM so perf gives no hardware counters.
 
-Three things could explain that — cache pressure (kubelet's working set is ~6x bigger), the Cortex-A55 being in-order so it can't hide memory stalls, or Go's GC walking the heap against low phone memory bandwidth. I can't tell which: the PMU isn't exposed to the KVM guest, so perf reports every hardware counter as "not supported" even as root. Bare-metal ARM with working perf counters would settle it.
-
-[B]The caveat I'd rather state myself:[/B] on that same phone, the k3s control plane idles at ~34% of a core and ~350MB — considerably more than either node agent. Swapping the agent is a real saving that doesn't touch the biggest line item. That's the next thing worth attacking.
+On that phone the k3s control plane idles at ~34% of a core and ~350MB, more than either agent.
 
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/rss-over-time.png[/IMG]
 
 [IMG]https://raw.githubusercontent.com/centerionware/not-k8s/profiling-results/latest/cpu-over-time.png[/IMG]
 
-Raw per-second CSVs and methodology for both platforms (the ARM report leads with its own limitations — sequential legs instead of parallel, thermal throttling, virtualization):
+Raw CSVs + methodology:
 
 [LIST]
 [*]x86_64: [URL]https://github.com/centerionware/not-k8s/tree/profiling-results/latest[/URL]
-[*]ARM phone: [URL]https://github.com/centerionware/not-k8s/tree/profiling-results/history/2026-08-09_00-59-17-arm64-phone[/URL]
+[*]Pixel 7: [URL]https://github.com/centerionware/not-k8s/tree/profiling-results/history/2026-08-09_00-59-17-arm64-phone[/URL]
 [/LIST]
 
-Still alpha — hasn't been proven under heavy real-world workloads yet — but it's passed 1,100 unit tests and 140 e2e tests against real containerd and real CSI/DRA reference drivers, gated before any release ships, so it's in a good spot to start toying with.
+Still alpha — hasn't been proven under heavy real-world workloads yet — but it's passed 1,100 unit tests and 140 e2e tests, so it's in a good spot to start toying with.
 
 Repo: [URL]https://github.com/centerionware/not-k8s[/URL]
