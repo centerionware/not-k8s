@@ -1,6 +1,6 @@
 [HEADING=1]not-k8s: replaced kubelet with a 15MB Rust agent, profiled on a Pixel 7[/HEADING]
 
-[B]nodelet[/B] — drop-in kubelet replacement, Rust, event-driven instead of polling. Same control plane, same kubectl, same CRDs.
+[B]nodelet[/B] — drop-in kubelet replacement, Rust, event-driven instead of polling.
 
 Idle, no pods, 120s, 3 replicates each:
 

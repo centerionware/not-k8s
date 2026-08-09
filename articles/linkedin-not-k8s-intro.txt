@@ -1,6 +1,6 @@
 Kubelet idles at ~81MB and burns real CPU before your cluster does anything. It polls constantly and keeps a pile of watch caches alive the whole time.
 
-not-k8s swaps just that node agent for nodelet, an event-driven Rust binary. Everything else stays the same.
+not-k8s swaps just that node agent for nodelet, an event-driven Rust binary.
 
 Profiled both on x86_64 CI runners and a Pixel 7 running Debian in a VM. Idle, no pods, 120s, 3 replicates each:
 

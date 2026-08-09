@@ -6,7 +6,7 @@ no tables (broken on old reddit and several mobile apps), no headings
 (the title is its own field), bare URLs (auto-link everywhere).
 ------------------------------------------------------------------------
 
-nodelet is a drop-in kubelet replacement. Rust, event-driven instead of polling. Same control plane, same kubectl, same CRDs.
+nodelet is a drop-in kubelet replacement. Rust, event-driven instead of polling.
 
 Idle, no pods, 120s window, 3 replicates each. nodelet vs kubelet:
 
