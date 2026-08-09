@@ -85,6 +85,30 @@ core rather than both scaling by the same factor. The RSS ratio stays
 nearly flat (~5.4x to ~5.7x), which is what you'd expect — resident memory
 isn't a function of clock speed.
 
+**Open question: why does the gap widen?** Normalized against their own
+x86_64 baselines, `nodelet` is ~5.5x slower on the phone core while kubelet
+is ~9.5x slower — so something superlinear penalizes kubelet specifically.
+At least three mechanisms predict that signature, and this run cannot
+distinguish them:
+
+- **Cache pressure.** kubelet's working set is several times `nodelet`'s
+  (~68 MB vs ~12 MB RSS). A phone SoC's caches are far smaller than a
+  server's, so a large working set that mostly fits on the server may not
+  fit here.
+- **In-order execution.** The Cortex-A55 is in-order and cannot hide
+  memory-stall latency the way the server's out-of-order core does. This
+  doesn't compete with the cache explanation so much as multiply it.
+- **Garbage collection.** kubelet is Go with a GC that periodically walks
+  the heap; `nodelet` is Rust with none. GC is bandwidth-hungry, and phone
+  memory bandwidth is much lower.
+
+Settling this needs hardware performance counters (IPC, cache-miss rates),
+and **the PMU is not exposed to this KVM guest** — `perf` reports every
+hardware event as `<not supported>` even as root, so only software
+counters like `task-clock` work. The same limitation applies to GitHub's
+hosted runners. Anyone able to run this on bare-metal ARM with working
+`perf` counters would be able to answer it; contributions welcome.
+
 **On that phone, the control plane costs more than either node agent.** The
 stripped `k3s server --disable-agent` control plane measured **33.2–36.2%
 of a core** (~41.5 CPU-seconds per 120s window) and ~350–370 MB RSS in
