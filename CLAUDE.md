@@ -145,6 +145,81 @@ min). Fix, dispatch, read the result, repeat — only dispatch the full
 end-to-end (including that the fix didn't regress unit tests or anything
 the `--only` filter excluded) and actually attempt a release.
 
+## Verifying a PR end to end before merging it
+
+The loop below builds a branch in CI and runs targeted e2e against the
+real binaries on a local box, so a change is proven end to end *while it
+is still a PR*. Use it for anything with a runtime surface — a new
+component (`nodeapiserver`, `nodescheduler`, …) especially, where "it
+compiles" says almost nothing.
+
+**1. Push the branch and build it.** `build.yml` is `workflow_dispatch`,
+so it must exist on the default branch to be dispatchable — but it runs
+the copy from whatever `--ref` you give it, against that ref's code.
+Match `arch` to the machine you'll test on; an x86_64 artifact is useless
+on an aarch64 phone VM.
+
+```bash
+gh workflow run build.yml --ref <branch> -f profile=debug -f arch=aarch64
+gh run watch "$(gh run list --workflow=build.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+**2. Download the artifact — not to `/tmp`.** `/tmp` here is a ~1GB
+RAM-backed tmpfs and a debug `nodelet` alone is ~350MB. A truncated
+download can still be a valid-looking ELF that runs (the cut lands in
+trailing debug sections), so this fails silently rather than loudly.
+
+```bash
+D=/home/droid/nk8s-artifacts && rm -rf "$D" && mkdir -p "$D"
+gh run download <run-id> -n notk8s-aarch64-debug -D "$D" && chmod +x "$D"/*
+```
+
+**3. Deploy with the prebuilt seam.** No toolchain is installed and
+nothing is compiled on-device — the whole point on a host that OOMs on a
+release build.
+
+```bash
+sudo -E NOTK8S_NODELET_PREBUILT="$D/nodelet" NOTK8S_NODEPROXY_PREBUILT="$D/nodeproxy" \
+  ./deploy/bootstrap-source.sh --with-cri
+```
+
+To swap binaries into an already-running deployment, `install` them over
+`bin/` and restart the units — much faster than re-bootstrapping:
+
+```bash
+sudo install -m0755 "$D/nodeproxy" bin/nodeproxy && sudo systemctl restart nodeproxy
+```
+
+**4. Run only the relevant tests.** `--only` matches test *function*
+names, comma-separated.
+
+```bash
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+./deploy/test-e2e.sh --only=clusterip,nodeport,hairpin
+```
+
+**5. Merge once it's green**, then let `release.yml` run the full gate.
+
+### Things that will bite you here
+
+- **A stale `flanneld` survives a re-bootstrap.** The installer leaves an
+  already-active service alone, so a flanneld still watching a previous
+  cluster keeps running and never writes `/run/flannel/subnet.env`. Every
+  pod then sits `Pending` with `loadFlannelSubnetEnv failed`. Fix:
+  `sudo systemctl restart flanneld`.
+- **`nft` lives in `/usr/sbin`**, which is not on an unprivileged PATH.
+  `command -v nft` fails on a host where `sudo nft` works fine — do not
+  gate anything on it.
+- **`pkill -f test-e2e.sh` kills your own shell**, because the pattern
+  matches the command line running it. Use `pkill -f 'test-e2e[.]sh'`.
+- **Long runs need `setsid nohup … &` with `disown`** and a log file on
+  disk; poll the log rather than holding a foreground command open.
+- **This kernel is missing nftables modules** (`nft_fib`, `nft_numgen`,
+  `nft_hash`) — see `crates/nodeproxy/src/svc.rs`'s `probe_caps()`. That
+  is a feature of the test host, not a bug: it is the only place these
+  degradation paths get exercised, so a green run here means more than a
+  green run on a GitHub runner.
+
 ## CI/CD (`.github/workflows/`)
 
 `build.yml` is the one to reach for during development: manual
