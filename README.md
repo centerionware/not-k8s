@@ -1,12 +1,12 @@
 # not-k8s
 
-**A drop-in kubelet replacement that doesn't melt your battery.**
+**A drop-in kubelet replacement small enough to run where kubelet won't fit.**
 
 `not-k8s` is **not** a from-scratch Kubernetes — it's a lightweight replacement for one component: kubelet, the node agent, backed by 1,100+ unit tests and ~140 e2e tests. Everything else stays a k3s control plane (apiserver, scheduler, full kubectl/CRD support). Only the node side gets rebuilt, as a lean event-driven Rust binary, because that's where the heaviest polling loops live.
 
-The core idea: kubelet idles at 30–50% of a CPU core on an edge device, not from doing actual work, but from constant polling (PLEG re-lists every container every second, cAdvisor walks cgroups forever, leases renew every 2s, informers periodically re-list the world). `not-k8s` keeps the control-plane API surface and rebuilds the node side to be event-driven: no PLEG, no cAdvisor housekeeping, one process, one watch.
+The core idea: kubelet's idle cost isn't from doing actual work, it's from constant polling (PLEG re-lists every container every second, cAdvisor walks cgroups forever, informers periodically re-list the world). Measured idle with no pods scheduled, that costs ~81MB RSS and ~0.85s of CPU per 2-minute window; `nodelet` rebuilds the node side to be event-driven — no PLEG, no cAdvisor housekeeping, one process, one watch — and comes in at ~15MB and ~0.08s.
 
-This exists for embedded/edge fleets where that idle cost is real money and real battery — think clusters of Pis, mini PCs, or (yes, really) farms of old Android phones repurposed as compute nodes. `not-k8s` aims to stay as close to upstream kubelet's behavior as possible, not to reinvent the node agent's contract.
+Per node that saving is modest, and on a 64GB server it's a rounding error. The point isn't the megabytes — it's that the node agent's floor decides which hardware can be a Kubernetes node at all. Kubernetes' API solves a lot of what small-hardware fleets actually need (declarative rollouts, health checks, restart policy, config/secret distribution, real RBAC), but the orchestrator that already solved it assumes every node can spare hundreds of megabytes before running a container. The control plane can live on a server somewhere; only the node agent has to run on the constrained device. `not-k8s` aims to stay as close to upstream kubelet's behavior as possible, not to reinvent the node agent's contract.
 
 ## Get started
 

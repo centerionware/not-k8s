@@ -1,7 +1,9 @@
 # nodelet: Architecture
 
 > Replace kubelet with a lean, event-driven Rust node agent that speaks the
-> same narrow contract to whatever control plane it's pointed at.
+> same narrow contract to whatever control plane it's pointed at — so the
+> hardware that can be a Kubernetes node isn't limited to what a datacenter
+> considers a server.
 
 ---
 
@@ -9,7 +11,7 @@
 
 1. [What nodelet Is](#what-nodelet-is)
 2. [Why kubelet Is Expensive at Idle](#why-kubelet-is-expensive-at-idle)
-3. [Why This Is a Real Cost, Not Just a Benchmark Number](#why-this-is-a-real-cost-not-just-a-benchmark-number)
+3. [Why the Node Agent's Floor Matters](#why-the-node-agents-floor-matters)
 4. [Design: Event-Driven, Not Polled](#design-event-driven-not-polled)
 5. [Internal Architecture](#internal-architecture)
 6. [Pluggable Runtime: mock vs cri](#pluggable-runtime-mock-vs-cri)
@@ -49,70 +51,53 @@ not idle efficiency:
 | **PLEG (Pod Lifecycle Event Generator)** | Relists all containers every 1s via CRI to detect state changes | Constant CPU even with zero pods |
 | **cAdvisor housekeeping** | Scrapes cgroup stats, filesystem stats, network stats every 10-15s per container | CPU + memory for stats caches |
 | **kube-proxy / iptables sync** | Periodic iptables rule reconciliation, even with no Service changes | CPU spikes every 30s |
-| **Per-process watch caches** | kubelet, kube-proxy, and each containerd shim maintain their own in-memory representation of the objects they care about | Multiplied RSS |
-| **containerd + shim processes** | Container runtime overhead even when idle | RSS baseline ~30-50 MB |
+| **Per-process watch caches** | kubelet and kube-proxy each maintain their own in-memory representation of the objects they care about | Multiplied RSS |
 
-On a Raspberry Pi 4 (4 GB RAM, 4-core ARM), stock kubelet alone idles around
-**81 MB RSS** and **~0.85s of CPU time per 2-minute idle window** — see the
+Measured idle, with no pods scheduled, a standalone upstream kubelet sits at
+roughly **81 MB RSS** and **~0.85s of CPU time per 2-minute window**, against
+`nodelet`'s **~15 MB** and **~0.08s**. Those numbers come from
+`.github/workflows/profiling.yml`, which runs both agents on GitHub-hosted
+`ubuntu-latest` x86_64 runners — three replicates each, in parallel, one
+agent per runner — not on any edge device. See the
 [`profiling-results`](https://github.com/centerionware/not-k8s/tree/profiling-results)
-branch for live numbers against an upstream kubelet binary.
+branch for the raw per-second data and methodology. Equivalent numbers on
+ARM/edge hardware haven't been published; releases build for
+x86_64/aarch64/armv7l, but only x86_64 has been profiled.
 
-## Why This Is a Real Cost, Not Just a Benchmark Number
+## Why the Node Agent's Floor Matters
 
-The CPU and RAM deltas above both trace back to the same root cause, and
-both represent real energy/dollar cost, not just numbers that happen to be
-smaller:
+On a machine with 64 GB of RAM, saving 66 MB per node is a rounding error.
+Across a large fleet it adds up to something real but still modest — some
+reclaimed scheduling capacity, some CPU cycles handed back to workloads.
+That's a fine reason to prefer it, not a reason to build it.
 
-- **CPU-seconds are a direct energy cost.** Every polling loop (PLEG
-  relisting every 1s, cAdvisor scraping every 10-15s, watch caches getting
-  rewritten) burns real joules whether or not anything's running. This part
-  isn't controversial — CPU time has always mapped to energy draw.
-- **The RAM delta is *also* a real energy cost, just not for the reason
-  "more bytes resident" implies.** DRAM refresh itself doesn't care about
-  content or usage — a 0 and a 1 cost the same to refresh, and idle
-  capacity gets refreshed regardless of whether the OS has allocated it
-  ([GreenDIMM, ACM MEMSYS 2021](https://dl.acm.org/doi/fullHtml/10.1145/3466752.3480089):
-  background/refresh power is ~70% of total DRAM power at idle, rising to
-  ~78% as installed capacity scales toward 1TB). What actually costs energy
-  is *active* memory traffic — reads, writes, row activations. Published
-  figures put active DRAM power around 1-3W/GB, versus single-digit
-  milliwatts/GB in self-refresh/power-down states
-  ([LPDDR5X power consumption guide](https://lexarenterprise.com/lpddr5x-power-consumption-guide/))
-  — a 100-1000x gap. Kubelet's polling loops don't just burn CPU to run —
-  they constantly scan and rewrite real memory to do it, which is exactly
-  what keeps DRAM in that expensive active state instead of dropping into
-  self-refresh. `nodelet` touches memory far less often for the same reason
-  it burns less CPU: it isn't polling.
-- **On top of the energy cost, RAM is also a capacity cost.** Memory
-  kubelet ties up is memory that can't be scheduled to other pods, so more
-  of it has to be provisioned to fit the same workload — true whether
-  that's hardware already owned outright or hardware being rented.
+The bigger reason is what the node agent's resource floor decides: **which
+hardware can be a Kubernetes node at all.**
 
-Priced against AWS Fargate's own published per-resource on-demand rate
-(the cleanest real $/GB-hr and $/vCPU-hr number available, since standard
-EC2 bundles memory into instance pricing rather than pricing it
-separately — [$0.00444/GB-hr, $0.04048/vCPU-hr, us-east-1](https://aws.amazon.com/fargate/pricing/)),
-reclaiming kubelet's idle CPU+RAM overhead is worth roughly **$0.40/node/
-month**. Negligible on one node; at **1,000 nodes that's ~$400/month
-(~$4,800/year)** — on top of ~66GB of RAM freed up to actually run pods
-instead of sitting reserved for a node agent's own idle housekeeping.
+Kubernetes' API is genuinely good at what a lot of small-hardware fleets
+need — declarative rollouts, health checking, restart policy, secret and
+config distribution, node labels and scheduling constraints, a real
+permission model. People running racks of SBCs, industrial gateways, kiosks,
+retired handsets, or anything else with a CPU and a network link mostly
+end up reinventing worse versions of exactly that, because the orchestrator
+that already solved it assumes every node can spare hundreds of megabytes
+before running a single container.
 
-This isn't a niche concern either: industry-wide, average Kubernetes
-clusters run at only ~20% memory utilization and ~8-10% CPU utilization
-([Sedai, Kubernetes capacity planning guide](https://sedai.io/blog/a-guide-to-kubernetes-capacity-planning-and-optimization);
-[Plus8soft, Kubernetes cost optimization 2026](https://plus8soft.com/blog/kubernetes-cost-optimization/)),
-and cloud spend on idle resources is projected at **$27.1B in 2026**
-([Cast AI, The Cloud Waste Problem](https://cast.ai/blog/the-cloud-waste-problem-how-to-stop-overprovisioning-resources/)).
-`nodelet` doesn't touch workload-level overprovisioning — that's a
-separate, much bigger problem — it closes only the one slice of that
-waste that's kubelet's own fault, not anything a workload is doing.
+That assumption is a property of the node agent, not of Kubernetes. The
+control plane can live somewhere else entirely — a server, a VM, a cloud
+instance — while the node agent is the only part that has to run on the
+constrained device. Take it from ~81 MB to ~15 MB and a class of hardware
+that couldn't participate suddenly can, without giving up `kubectl`, CRDs,
+or any of the ecosystem built on them.
+
+Kubernetes gets treated as datacenter-only infrastructure. Most of what
+makes it feel that way is the node side's cost, and that part is fixable.
 
 ## Design: Event-Driven, Not Polled
 
 The fix isn't a faster kubelet — it's removing the polling loops entirely.
-`nodelet` idles at **~15 MB RSS** and **~0.08s of CPU time** over the same
-window by replacing each polling loop with something that only wakes up
-when there's actually work to do.
+Each one below is replaced by something that only wakes up when there's
+actually work to do.
 
 ### Event-driven reconciliation, no PLEG
 
