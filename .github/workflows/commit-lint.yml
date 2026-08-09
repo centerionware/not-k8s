@@ -1,0 +1,111 @@
+name: Commit convention
+
+# Enforces CONTRIBUTING.md's Conventional Commits rules on every PR: each
+# commit message the PR adds, plus the PR title (which becomes the commit
+# subject on a squash merge — a tidy branch history is no protection if the
+# title that actually lands is sloppy).
+#
+# ── Why this is allowed to run on PRs when nothing else is ──────────────
+#
+# By deliberate design, PRs get CodeRabbit review only: the unit tests and
+# e2e suite need real sudo and a real k3s/containerd cluster, so running
+# them on arbitrary PR code would hand an untrusted contributor that
+# access (see release.yml's own header, and .coderabbit.yaml).
+#
+# This job is a different risk class. `pull_request` — NOT
+# `pull_request_target` — runs against the merge ref with a token scoped by
+# the permissions block below and no access to repository secrets, even
+# from a fork. It reads text and shells out to nothing but git. A malicious
+# PR can of course rewrite both this workflow and the script it calls (both
+# come from the PR branch), and the honest answer is that it gains a
+# sandboxed runner with a read-only token for its trouble — which is the
+# same thing it gets by opening a PR against any repo with any PR CI at
+# all. That is categorically different from sudo on a live cluster.
+#
+# Do not add `pull_request_target`, secrets, or write permissions here
+# without revisiting that reasoning — those are what would turn this into
+# the thing the no-CI-on-PRs policy exists to prevent.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  commit-messages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need both branch tips to enumerate what this PR actually adds.
+          # Shallow clones make base..head unresolvable.
+          fetch-depth: 0
+
+      - name: Check each commit added by this PR
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          chmod +x .github/scripts/check-commit-message.sh
+
+          # base..head, not the whole branch history: this repo has 323
+          # pre-convention commits, and a PR is only answerable for the
+          # ones it introduces. --no-merges because a merge commit's
+          # message is git's own boilerplate.
+          mapfile -t shas < <(git rev-list --no-merges "$BASE_SHA..$HEAD_SHA")
+
+          if [[ "${#shas[@]}" -eq 0 ]]; then
+            echo "No non-merge commits in this PR — nothing to check."
+            exit 0
+          fi
+
+          echo "Checking ${#shas[@]} commit(s)..."
+          echo ""
+          failed=0
+          for sha in "${shas[@]}"; do
+            subject="$(git log -1 --format=%s "$sha")"
+            if git log -1 --format=%B "$sha" \
+                | .github/scripts/check-commit-message.sh; then
+              printf '  ✔ %s %s\n' "${sha:0:8}" "$subject"
+            else
+              printf '  ✘ %s %s\n' "${sha:0:8}" "$subject"
+              failed=$((failed + 1))
+            fi
+          done
+
+          echo ""
+          if [[ "$failed" -gt 0 ]]; then
+            echo "$failed of ${#shas[@]} commit message(s) don't follow CONTRIBUTING.md."
+            echo ""
+            echo "Fix the most recent one with:      git commit --amend"
+            echo "Fix several with:                  git rebase -i $BASE_SHA   (reword)"
+            echo "Then:                              git push --force-with-lease"
+            exit 1
+          fi
+          echo "All ${#shas[@]} commit message(s) OK."
+
+      - name: Check the PR title
+        # Runs even if the commit check failed — one run should surface
+        # every problem to fix, not make you discover them one push at a
+        # time.
+        if: always()
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -uo pipefail
+          chmod +x .github/scripts/check-commit-message.sh
+          # Passed via env, never interpolated into the script body: a PR
+          # title is attacker-controlled text and ${{ }} interpolation
+          # inside a run block is a shell-injection sink.
+          if .github/scripts/check-commit-message.sh --title "$PR_TITLE"; then
+            echo "PR title OK: $PR_TITLE"
+          else
+            echo ""
+            echo "The PR title becomes the commit subject when this is squash-merged,"
+            echo "so it has to follow the same rules. Edit it in the GitHub UI —"
+            echo "this check re-runs automatically on edit."
+            exit 1
+          fi
