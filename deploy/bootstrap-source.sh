@@ -118,6 +118,15 @@
 # the combined one at bin/notk8s. Equivalent env var: NOTK8S_BUILD_LAYOUT.
 # See deploy/lib/components.sh.
 #
+# --datastore: none (default) | nodestore. `none` leaves the control plane's
+# storage to k3s's own bundled kine, which is what every release so far has
+# done. `nodestore` additionally BUILDS the datastore binary
+# (crates/nodestore — the etcd v3 API over sqlite, event-driven instead of
+# kine's polling); it does not yet install it as a service or repoint the
+# control plane at it, because that is an ordering constraint on the control
+# plane's own startup rather than a node-side concern. Today this flag is
+# what the datastore's e2e coverage uses to get a binary to test.
+#
 # --proxy: nodeproxy (default) | none. `none` installs no Service proxy and
 # touches no nftables rules, leaving ClusterIP/NodePort routing to whatever
 # else this node runs (a real kube-proxy, Cilium, kube-router). This is the
@@ -169,6 +178,7 @@ LB_METHOD=random
 KEEP_BUILD_TOOLS=0
 SKIP_NODELET=0
 PROXY=nodeproxy
+DATASTORE="${DATASTORE:-none}"
 BUILD_LAYOUT="${NOTK8S_BUILD_LAYOUT:-split}"
 
 for arg in "$@"; do
@@ -184,6 +194,7 @@ for arg in "$@"; do
         --ip-family=*) IP_FAMILY="${arg#--ip-family=}" ;;
         --lb-method=*) LB_METHOD="${arg#--lb-method=}" ;;
         --proxy=*) PROXY="${arg#--proxy=}" ;;
+        --datastore=*) DATASTORE="${arg#--datastore=}" ;;
         --layout=*) BUILD_LAYOUT="${arg#--layout=}" ;;
         --keep-build-tools) KEEP_BUILD_TOOLS=1 ;;
         -h|--help)
@@ -235,6 +246,13 @@ case "$PROXY" in
     nodeproxy|none) ;;
     *) die "Unknown --proxy='$PROXY' (want 'nodeproxy' or 'none')." ;;
 esac
+
+case "$DATASTORE" in
+    none|nodestore) ;;
+    *) die "Unknown --datastore='$DATASTORE' (want 'none' — k3s's own bundled kine, the default — or 'nodestore')." ;;
+esac
+# Read by lib/components.sh's want_nodestore predicate.
+export DATASTORE
 
 case "$BUILD_LAYOUT" in
     split|combined|both) ;;
