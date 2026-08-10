@@ -33,7 +33,10 @@ jobs:
           set -e
           cargo build --features cri -p nodelet
           cargo build -p nodeproxy
-          # The combined single-binary layout (crates/notk8s) links both of
+          # nodestore: no features either (deploy/lib/components.sh's row
+          # for it has an empty cargo-features field, same as nodeproxy).
+          cargo build -p nodestore
+          # The combined single-binary layout (crates/notk8s) links all of
           # the above into one executable. Built here purely so a break in
           # it fails this stage rather than the much later build-release
           # one — the e2e stage below still deploys the split binaries.
@@ -73,6 +76,7 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p nodelet
           sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
           sudo -E env "PATH=$PATH" cargo test -p nodeproxy
+          sudo -E env "PATH=$PATH" cargo test -p nodestore
           sudo -E env "PATH=$PATH" cargo test -p notk8s
 
   # ── Stage 2: full e2e suite, real CSI + DRA reference drivers ─────────
@@ -361,6 +365,12 @@ jobs:
           cargo build -p nodeproxy $TARGET_FLAG
           # shellcheck disable=SC2086
           cargo build --release -p nodeproxy $TARGET_FLAG
+          # nodestore: no features either (deploy/lib/components.sh's row
+          # for it has an empty cargo-features field, same as nodeproxy).
+          # shellcheck disable=SC2086
+          cargo build -p nodestore $TARGET_FLAG
+          # shellcheck disable=SC2086
+          cargo build --release -p nodestore $TARGET_FLAG
           # notk8s: the combined single-binary layout — every component in
           # one executable, sharing one copy of the dependency tree they
           # have in common instead of one copy each (~12MB vs ~17MB for the
@@ -382,7 +392,15 @@ jobs:
           # Unconditional: every arch builds with an explicit --target now,
           # so cargo always writes under target/<triple>/.
           SRC_DIR="target/${{ matrix.target }}"
-          for bin in nodelet nodeproxy notk8s; do
+          # Binary names, table-driven off deploy/lib/components.sh's own
+          # component table rather than hardcoded here — a future component
+          # is then one row in that table, no workflow edit. Not sourcing
+          # components.sh itself: it calls die()/log(), which don't exist
+          # in this shell. `notk8s` (the combined layout, not a component
+          # in that table) is appended literally.
+          mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
+          BINS+=(notk8s)
+          for bin in "${BINS[@]}"; do
             cp "$SRC_DIR/debug/$bin" "dist/$bin-linux-${{ matrix.arch }}-debug"
             cp "$SRC_DIR/release/$bin" "dist/$bin-linux-${{ matrix.arch }}-release"
           done
@@ -452,8 +470,14 @@ jobs:
       - name: Rename artifacts to include the version
         run: |
           set -e
+          # Computed before the `cd dist` below, while deploy/lib/
+          # components.sh is still at its normal repo-relative path. See
+          # the "Stage binaries for upload" step's own comment for why this
+          # isn't `source`d instead.
+          mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
+          BINS+=(notk8s)
           cd dist
-          for bin in nodelet nodeproxy notk8s; do
+          for bin in "${BINS[@]}"; do
             for f in "$bin"-linux-*-debug "$bin"-linux-*-release; do
               [[ -f "$f" ]] || continue
               arch_profile="${f#$bin-linux-}"
@@ -519,10 +543,19 @@ jobs:
           TAG="v${{ steps.version.outputs.version }}"
           git tag "$TAG"
           git push origin "$TAG"
+          # Asset glob list, table-driven off deploy/lib/components.sh's own
+          # component table — see the "Stage binaries for upload" step's
+          # comment for why this greps the table instead of sourcing it.
+          mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
+          BINS+=(notk8s)
+          ASSETS=()
+          for bin in "${BINS[@]}"; do
+            ASSETS+=("dist/$bin-"*)
+          done
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file changelog.md \
-            dist/nodelet-* dist/nodeproxy-* dist/notk8s-* dist/deploy.tar.gz
+            "${ASSETS[@]}" dist/deploy.tar.gz
 
       - name: Compile the standalone install scripts
         run: |

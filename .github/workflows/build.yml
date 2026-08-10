@@ -96,6 +96,11 @@ jobs:
           else
             echo "crates/nodeproxy not present on this ref — skipping its tests."
           fi
+          if [[ -d crates/nodestore ]]; then
+            sudo -E env "PATH=$PATH" cargo test -p nodestore
+          else
+            echo "crates/nodestore not present on this ref — skipping its tests."
+          fi
           # Same guard, same reason: the combined-binary crate postdates
           # both of the above.
           if [[ -d crates/notk8s ]]; then
@@ -268,6 +273,16 @@ jobs:
               else
                 echo "crates/nodeproxy not present on this ref — building nodelet only."
               fi
+              # nodestore: no features either (deploy/lib/components.sh's
+              # row for it has an empty cargo-features field). Same guard
+              # style as nodeproxy above, for the same reason: a ref that
+              # predates this crate should still build the rest.
+              if [[ -d crates/nodestore ]]; then
+                # shellcheck disable=SC2086
+                cargo build $1 -p nodestore $TARGET_FLAG
+              else
+                echo "crates/nodestore not present on this ref — skipping it."
+              fi
             fi
             # The combined layout: one binary containing every component
             # (crates/notk8s), for a device that would rather not pay for a
@@ -295,9 +310,17 @@ jobs:
           # cargo always puts the output under target/<triple>/, never
           # target/<profile>/ directly.
           SRC_DIR="target/${{ matrix.target }}"
+          # Binary names, table-driven off deploy/lib/components.sh's own
+          # component table rather than hardcoded here — a future component
+          # is then one row in that table, no workflow edit. Not sourcing
+          # components.sh itself: it calls die()/log(), which don't exist
+          # in this shell. `notk8s` (the combined layout, not a component
+          # in that table) is appended literally.
+          mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
+          BINS+=(notk8s)
           for profile in debug release; do
             [[ -d "$SRC_DIR/$profile" ]] || continue
-            for bin in nodelet nodeproxy notk8s; do
+            for bin in "${BINS[@]}"; do
               [[ -f "$SRC_DIR/$profile/$bin" ]] || continue
               mkdir -p "dist/$profile"
               cp "$SRC_DIR/$profile/$bin" "dist/$profile/$bin"

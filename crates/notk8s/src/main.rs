@@ -59,6 +59,8 @@ const APPLETS: &[Applet] = &[
     Applet { name: "nodelet", summary: "node agent (kubelet's job): pods, probes, volumes, node status" },
     #[cfg(feature = "nodeproxy")]
     Applet { name: "nodeproxy", summary: "Service proxy (kube-proxy's job): ClusterIP/NodePort via nftables" },
+    #[cfg(feature = "nodestore")]
+    Applet { name: "nodestore", summary: "datastore (etcd's job): etcd v3 gRPC API over sqlite, no polling" },
 ];
 
 struct Applet {
@@ -125,6 +127,8 @@ async fn run_applet(name: &str) -> Result<()> {
         "nodelet" => nodelet::app::run().await,
         #[cfg(feature = "nodeproxy")]
         "nodeproxy" => nodeproxy::run().await,
+        #[cfg(feature = "nodestore")]
+        "nodestore" => nodestore::run().await,
         // Unreachable via main() — is_applet() gates every path here — but
         // cheaper to answer honestly than to unwrap.
         other => bail!("component '{other}' was not built into this binary (see `notk8s components`)"),
@@ -166,6 +170,8 @@ mod tests {
         assert!(is_applet("nodelet"));
         #[cfg(feature = "nodeproxy")]
         assert!(is_applet("nodeproxy"));
+        #[cfg(feature = "nodestore")]
+        assert!(is_applet("nodestore"));
     }
 
     #[test]

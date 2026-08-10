@@ -1,0 +1,50 @@
+[package]
+name = "nodestore"
+description = "Datastore for not-k8s — the etcd v3 gRPC API over sqlite, event-driven instead of polled"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "nodestore"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nodestore"
+path = "src/main.rs"
+
+# No cargo features, deliberately — like nodeproxy, and unlike nodelet. There
+# is no "mock datastore" worth having: the only client that matters is a real
+# kube-apiserver, so the thing to test against is a real kube-apiserver.
+#
+# This crate DOES take tonic/prost, which nodeproxy deliberately refuses. That
+# is not the boundary eroding: nodeproxy's rule is about not absorbing
+# nodelet's container-runtime stack, whereas a gRPC server is this component's
+# entire external interface. The boundary that matters here is the same one as
+# everywhere else — nodestore depends on no other component crate.
+[dependencies]
+tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tonic = { workspace = true }
+prost = { workspace = true }
+tonic-prost = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+
+# bundled: compile SQLite from source rather than linking whatever the host
+# happens to have. An edge device is exactly the machine most likely to have
+# an old or absent libsqlite3, and this project's whole deployment story is
+# "one binary, no runtime dependencies to install".
+rusqlite = { version = "0.32", features = ["bundled", "blob"] }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
