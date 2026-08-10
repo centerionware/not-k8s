@@ -52,6 +52,7 @@ use std::sync::{Arc, Mutex};
 /// every member — including the one that proposed. On a single node there is
 /// no driver, so the caller applies. Anything that applied in both places
 /// would apply twice on the proposing member.
+#[derive(Debug)]
 pub enum Submitted {
     /// Already applied by the consensus layer; here is the result.
     Applied(Applied),

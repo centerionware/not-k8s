@@ -39,11 +39,9 @@ use crate::replication::logging::raft_logger;
 use crate::replication::proposals::{ProposalResult, ProposalTracker};
 use crate::replication::transport::{ClusterState, Transport};
 use crate::store::Applied;
-use raft::eraftpb::{ConfChange, ConfChangeV2, Entry, EntryType, Message, Snapshot};
-// ConfChangeI is what provides into_v2(): raft models the old single-change
-// form as a degenerate V2, and the conversion lives on the trait rather than
-// on the type.
-use raft::prelude::ConfChangeI;
+use raft::eraftpb::{
+    ConfChange, ConfChangeSingle, ConfChangeV2, Entry, EntryType, Message, Snapshot,
+};
 use raft::{Config as RaftConfig, RawNode, StateRole};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -451,8 +449,21 @@ impl Driver {
         let cc: ConfChangeV2 = if entry.entry_type == EntryType::EntryConfChange {
             let v1: ConfChange = protobuf::Message::parse_from_bytes(&entry.data)
                 .map_err(|e| Error::InvalidRequest(format!("bad conf change: {e}")))?;
-            // raft-rs models the old single-change form as a degenerate V2.
-            v1.into_v2()
+            // The old single-change form, widened to the one this code
+            // applies. Built by hand rather than through raft's own
+            // conversion trait so this does not depend on where that trait
+            // happens to be exported from.
+            //
+            // Reachable only from a log written by something that proposed
+            // the v1 form — this crate always proposes v2 — but a committed
+            // entry it refused to apply would strand the replica.
+            let mut v2 = ConfChangeV2::default();
+            let mut single = ConfChangeSingle::default();
+            single.change_type = v1.get_change_type();
+            single.node_id = v1.get_node_id();
+            v2.mut_changes().push(single);
+            v2.context = v1.context.clone();
+            v2
         } else {
             protobuf::Message::parse_from_bytes(&entry.data)
                 .map_err(|e| Error::InvalidRequest(format!("bad conf change v2: {e}")))?
