@@ -28,6 +28,9 @@ NODESTORE_APISERVER_PORT="${NODESTORE_APISERVER_PORT:-23792}"
 # on why that pin exists), so the apiserver under test is the version whose
 # storage behaviour the rest of the codebase assumes.
 KUBE_APISERVER_VERSION="${KUBE_APISERVER_VERSION:-v1.33.0}"
+# Only ever presented to a throwaway apiserver on loopback that exists for the
+# length of one test.
+APISERVER_TEST_TOKEN="${APISERVER_TEST_TOKEN:-nodestore-e2e-token}"
 
 _apiserver_arch() {
     case "$(uname -m)" in
@@ -79,6 +82,25 @@ _fetch_kube_apiserver() {
     fi
 }
 
+# Kill anything left over from a previous run of this test. Matched on the
+# exact ports and binaries this test uses, so it cannot touch the cluster's
+# own k3s or a nodestore some other test is running.
+_apiserver_kill_strays() {
+    local pids
+    pids="$(pgrep -f "kube-apiserver-v.*--secure-port=$APISERVER_TEST_PORT" 2>/dev/null || true)"
+    [[ -n "$pids" ]] && kill -9 $pids 2>/dev/null
+    # The throwaway nodestore is identified by its port, which is this test's
+    # own and not the one a deployed datastore would use.
+    pids="$(pgrep -af "nodestore" 2>/dev/null | awk '{print $1}' || true)"
+    local pid
+    for pid in $pids; do
+        if tr '\0' ' ' <"/proc/$pid/environ" 2>/dev/null | grep -q "NODESTORE_LISTEN=127.0.0.1:$NODESTORE_APISERVER_PORT"; then
+            kill -9 "$pid" 2>/dev/null
+        fi
+    done
+    return 0
+}
+
 # Both processes and the scratch dir. Not `local` — read from the EXIT trap,
 # same reasoning as bootstrap.sh's own throwaway process test.
 _apiserver_env_start() {
@@ -92,6 +114,14 @@ _apiserver_env_start() {
     api_bin="$(_fetch_kube_apiserver)"
     [[ -n "$api_bin" ]] \
         || skip_test "couldn't fetch kube-apiserver $KUBE_APISERVER_VERSION: ${_apiserver_fetch_error:-unknown reason}"
+
+    # A previous run that was killed rather than exiting cleanly leaves both
+    # processes alive — its cleanup is an EXIT trap, and a SIGKILL takes the
+    # trap with it. Without this, the next run fails with "address already in
+    # use", which says nothing about the datastore and sends you looking in
+    # the wrong place. The cluster tests already do the equivalent with
+    # netns_teardown.
+    _apiserver_kill_strays
 
     apisrv_dir="$(mktemp -d)"
     apisrv_kubeconfig="$apisrv_dir/kubeconfig"
@@ -120,20 +150,31 @@ _apiserver_env_start() {
     openssl genrsa -out "$apisrv_dir/sa.key" 2048 >/dev/null 2>&1
     openssl rsa -in "$apisrv_dir/sa.key" -pubout -out "$apisrv_dir/sa.pub" >/dev/null 2>&1
 
-    # AlwaysAllow + anonymous auth: this apiserver exists for the length of
-    # one test, on loopback, to exercise the storage layer. Authn/authz are
-    # not what is under test, and configuring them would only add ways for
-    # the test to fail for reasons unrelated to the datastore.
+    # A static bearer token, not anonymous access.
+    #
+    # `--anonymous-auth=true` alongside `--authorization-mode=AlwaysAllow` is
+    # silently overridden by kube-apiserver — it logs "AnonymousAuth is not
+    # allowed with the AlwaysAllow authorizer. Resetting AnonymousAuth to
+    # false" and carries on. A credential-less kubeconfig then cannot
+    # authenticate, and every request hangs waiting for a username, which
+    # presents as "the apiserver never became ready" and looks like a
+    # datastore problem. It is not.
+    #
+    # A token file authenticates; AlwaysAllow authorizes. Authn/authz are not
+    # what is under test here — the storage layer is — so the goal is for them
+    # to be uninteresting rather than absent.
+    echo "$APISERVER_TEST_TOKEN,e2e-admin,e2e-admin,system:masters" >"$apisrv_dir/tokens.csv"
+
     "$api_bin" \
         --etcd-servers="http://127.0.0.1:$NODESTORE_APISERVER_PORT" \
         --secure-port="$APISERVER_TEST_PORT" \
         --cert-dir="$apisrv_dir/certs" \
+        --token-auth-file="$apisrv_dir/tokens.csv" \
         --service-account-key-file="$apisrv_dir/sa.pub" \
         --service-account-signing-key-file="$apisrv_dir/sa.key" \
         --service-account-issuer=https://kubernetes.default.svc \
         --service-cluster-ip-range=10.144.0.0/16 \
         --authorization-mode=AlwaysAllow \
-        --anonymous-auth=true \
         --allow-privileged=true \
         >"$apisrv_log" 2>&1 &
     apisrv_pid=$!
@@ -147,12 +188,13 @@ clusters:
     insecure-skip-tls-verify: true
   name: nodestore-test
 contexts:
-- context: {cluster: nodestore-test, user: anonymous}
+- context: {cluster: nodestore-test, user: e2e-admin}
   name: nodestore-test
 current-context: nodestore-test
 users:
-- name: anonymous
-  user: {}
+- name: e2e-admin
+  user:
+    token: $APISERVER_TEST_TOKEN
 KUBECONFIG
 
     # Real kube-apiserver startup is slow — it creates its own bootstrap
@@ -251,23 +293,31 @@ test_apiserver_watch_delivers_through_nodestore() {
     # shows up.
     _kubectl_test create namespace nodestore-watch >/dev/null
 
-    local watch_out="$apisrv_dir/watch.txt"
+    # -o json, not -o name: `-o name` prints only `kind/name` and drops the
+    # event type entirely, so a test grepping it for a deletion can never
+    # match no matter how correct the datastore is. Found by this test failing
+    # while the deletion was in fact being delivered perfectly.
+    local watch_out="$apisrv_dir/watch.json"
     timeout 30 kubectl --kubeconfig "$apisrv_kubeconfig" -n nodestore-watch \
-        get configmaps --watch --output-watch-events -o name >"$watch_out" 2>&1 &
+        get configmaps --watch --output-watch-events -o json >"$watch_out" 2>&1 &
     local watch_pid=$!
     sleep 3
 
     _kubectl_test -n nodestore-watch create configmap watched --from-literal=k=v >/dev/null
     _kubectl_test -n nodestore-watch delete configmap watched >/dev/null
 
-    try_wait_until 25 bash -c "grep -qi 'delete' '$watch_out'" \
+    try_wait_until 25 bash -c "grep -q DELETED '$watch_out'" \
         || die "the apiserver watch never reported the deletion — got: $(cat "$watch_out")"
     kill "$watch_pid" 2>/dev/null
     wait "$watch_pid" 2>/dev/null
 
     local body
     body="$(cat "$watch_out")"
-    assert_contains "$body" "watched" "the created object should appear in the watch stream"
+    assert_contains "$body" "ADDED" "the creation should appear in the watch stream"
+    # The deleted object arrives with its identity intact, which is what
+    # apiserver builds out of nodestore's prev_kv. A DELETE carrying an empty
+    # object would still show the type but not the name.
+    assert_contains "$body" "watched" "the delete event must carry the object, not an empty shell"
 
     _kubectl_test delete namespace nodestore-watch --wait=false >/dev/null 2>&1 || true
     _apiserver_env_stop
@@ -299,11 +349,12 @@ test_apiserver_state_survives_a_datastore_restart() {
         --etcd-servers="http://127.0.0.1:$NODESTORE_APISERVER_PORT" \
         --secure-port="$APISERVER_TEST_PORT" \
         --cert-dir="$apisrv_dir/certs" \
+        --token-auth-file="$apisrv_dir/tokens.csv" \
         --service-account-key-file="$apisrv_dir/sa.pub" \
         --service-account-signing-key-file="$apisrv_dir/sa.key" \
         --service-account-issuer=https://kubernetes.default.svc \
         --service-cluster-ip-range=10.144.0.0/16 \
-        --authorization-mode=AlwaysAllow --anonymous-auth=true \
+        --authorization-mode=AlwaysAllow \
         >>"$apisrv_log" 2>&1 &
     apisrv_pid=$!
 

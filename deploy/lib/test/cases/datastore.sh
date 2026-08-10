@@ -388,10 +388,18 @@ test_datastore_survives_a_restart_with_its_data() {
     trap - EXIT
 }
 
-test_datastore_refuses_to_pretend_it_replicates() {
-    # The honesty check. Silently running as a single node while an operator
-    # believes they configured replication is the failure mode that only
-    # shows up when the node dies and the data was never anywhere else.
+test_datastore_refuses_a_cluster_it_cannot_be_part_of() {
+    # This replaces a test that asserted NODESTORE_PEERS was *refused* because
+    # replication was not implemented. It is now implemented, so that refusal
+    # is gone and asserting it would be asserting a promise the code no longer
+    # makes.
+    #
+    # What still has to hold is the other half of that honesty: a
+    # misconfiguration must fail loudly at startup rather than producing a
+    # member that runs and never joins anything. A member absent from its own
+    # initial cluster campaigns for a cluster it is not a voter in and can
+    # never win — which presents as "no leader is ever elected" rather than as
+    # the typo it is.
     local bin
     bin="$(_nodestore_binary)"
     [[ -n "$bin" ]] || skip_test "no nodestore binary"
@@ -399,11 +407,31 @@ test_datastore_refuses_to_pretend_it_replicates() {
     local dir out rc=0
     dir="$(mktemp -d)"
     out="$(NODESTORE_LISTEN=127.0.0.1:23791 NODESTORE_DATA_DIR="$dir/data" \
-        NODESTORE_PEERS=10.0.0.2:2380 timeout 20 "$bin" nodestore 2>&1)" || rc=$?
+        NODESTORE_MEMBER_ID=9 \
+        NODESTORE_INITIAL_CLUSTER="1=http://10.0.0.1:2380,2=http://10.0.0.2:2380" \
+        timeout 20 "$bin" nodestore 2>&1)" || rc=$?
     rm -rf "$dir"
 
-    assert_not_eq "$rc" "0" "configuring peers must fail while raft is unimplemented"
-    assert_contains "$out" "not implemented yet" "the refusal should say why, not just exit"
+    assert_not_eq "$rc" "0" "a member missing from its own cluster must refuse to start"
+    assert_contains "$out" "does not appear in the initial cluster" "the refusal should say what is wrong"
+}
+
+test_datastore_refuses_a_malformed_cluster_spec() {
+    local bin
+    bin="$(_nodestore_binary)"
+    [[ -n "$bin" ]] || skip_test "no nodestore binary"
+
+    local dir out rc=0
+    dir="$(mktemp -d)"
+    # A peer URL with no scheme. Accepting it would fail later, at the point
+    # a peer is dialled, by which time the member looks healthy.
+    out="$(NODESTORE_LISTEN=127.0.0.1:23791 NODESTORE_DATA_DIR="$dir/data" \
+        NODESTORE_INITIAL_CLUSTER="1=10.0.0.1:2380" \
+        timeout 20 "$bin" nodestore 2>&1)" || rc=$?
+    rm -rf "$dir"
+
+    assert_not_eq "$rc" "0" "a schemeless peer URL must be refused at startup"
+    assert_contains "$out" "must include a scheme" "the refusal should name the problem"
 }
 
 register_test test_datastore_serves_the_etcd_status_rpc
@@ -416,4 +444,5 @@ register_test test_datastore_replays_missed_events_to_a_late_watcher
 register_test test_datastore_refuses_a_read_below_the_compaction_point
 register_test test_datastore_expires_a_lease_and_its_keys
 register_test test_datastore_survives_a_restart_with_its_data
-register_test test_datastore_refuses_to_pretend_it_replicates
+register_test test_datastore_refuses_a_cluster_it_cannot_be_part_of
+register_test test_datastore_refuses_a_malformed_cluster_spec
