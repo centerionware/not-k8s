@@ -19,3 +19,14 @@ pub mod authpb {
 pub mod etcdserverpb {
     tonic::include_proto!("etcdserverpb");
 }
+
+/// The raft log entry and snapshot format (`proto/command.proto`). Ours, not
+/// etcd's — see `crate::command` for why those are different contracts.
+pub mod log {
+    tonic::include_proto!("notk8s.nodestore.v1");
+}
+
+/// Node-to-node transport (`proto/peer.proto`).
+pub mod peer {
+    tonic::include_proto!("notk8s.nodestore.peer.v1");
+}

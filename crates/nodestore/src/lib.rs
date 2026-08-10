@@ -16,6 +16,10 @@
 //!   * [`command`]   — the state machine's input language, and the future
 //!                     raft log entry. Start here to understand the
 //!                     determinism rules the rest obeys.
+//!   * [`encode`]    — the log entry format, and the one place a mistake
+//!                     becomes a data format problem rather than a bug.
+//!   * [`replication`] — raft: the log in sqlite, and the durability argument
+//!                     for why it is a separate database.
 //!   * [`watch`]     — event fan-out.
 //!
 //! # Status
@@ -29,8 +33,10 @@
 pub mod command;
 pub mod config;
 pub mod consensus;
+pub mod encode;
 pub mod error;
 pub mod pb;
+pub mod replication;
 pub mod server;
 pub mod store;
 pub mod watch;
