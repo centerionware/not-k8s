@@ -106,6 +106,11 @@ cleanup_namespace() {
 trap cleanup_namespace EXIT
 
 # Load every case file (each one calls register_test for its test_* functions).
+# Multi-node cluster helpers (network namespaces, latency injection,
+# partitioning). Sourced before the cases so datastore_cluster.sh can use
+# them; it self-skips when the host can't provide namespaces.
+source "$TEST_LIB_DIR/netns.sh"
+
 for case_file in "$TEST_LIB_DIR"/cases/*.sh; do
     # shellcheck source=/dev/null
     source "$case_file"
