@@ -28,6 +28,15 @@ if [[ -n "${NODEPROXY_BIN:-}" ]]; then
     : # explicit override, use as-is
 elif [[ -x "${REPO_ROOT}/bin/nodeproxy" ]]; then
     NODEPROXY_BIN="${REPO_ROOT}/bin/nodeproxy"
+elif [[ -x "${REPO_ROOT}/bin/notk8s" ]]; then
+    # Combined layout (--layout=combined) normally installs a bin/nodeproxy
+    # symlink to bin/notk8s, which the branch above picks up like any other
+    # binary. This is the fallback for when only the combined binary itself
+    # survived — a copy that didn't preserve symlinks, a hand-dropped
+    # single-file install — where naming the component explicitly is the
+    # same dispatch by another route.
+    NODEPROXY_BIN="${REPO_ROOT}/bin/notk8s"
+    set -- nodeproxy "$@"
 else
     NODEPROXY_BIN="${REPO_ROOT}/target/release/nodeproxy"
 fi

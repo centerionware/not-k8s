@@ -25,6 +25,15 @@ if [[ -n "${NODELET_BIN:-}" ]]; then
     : # explicit override, use as-is
 elif [[ -x "${REPO_ROOT}/bin/nodelet" ]]; then
     NODELET_BIN="${REPO_ROOT}/bin/nodelet"
+elif [[ -x "${REPO_ROOT}/bin/notk8s" ]]; then
+    # Combined layout (--layout=combined) normally installs a bin/nodelet
+    # symlink to bin/notk8s, which the branch above picks up like any other
+    # binary. This is the fallback for when only the combined binary itself
+    # survived — a copy that didn't preserve symlinks, a hand-dropped
+    # single-file install — where naming the component explicitly is the
+    # same dispatch by another route.
+    NODELET_BIN="${REPO_ROOT}/bin/notk8s"
+    set -- nodelet "$@"
 else
     NODELET_BIN="${REPO_ROOT}/target/release/nodelet"
 fi

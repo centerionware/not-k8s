@@ -69,12 +69,16 @@ cleanup_build_footprint() {
     rm -f "$TOOLCHAIN_DIR/bin"/{cc,gcc,g++,protoc,go}
 
     # cargo's build cache (deps, incremental, fingerprints) — the only
-    # thing worth keeping was already copied to bin/nodelet.
+    # thing worth keeping was already copied to bin/ (build_nodelet's
+    # install step, whichever layout it built).
     rm -rf "$REPO_ROOT/target"
 
     # Build-only *system* packages this run installed fresh (never anything
     # that pre-existed, and never containerd/runc/CNI/flannel/nftables).
     uninstall_tracked_build_packages
 
-    log "Footprint cleanup done. $(du -sh "$REPO_ROOT/bin/nodelet" 2>/dev/null | cut -f1) binary at $REPO_ROOT/bin/nodelet is what's left of the build."
+    # -L so a combined-layout bin/nodelet (a symlink to bin/notk8s) reports
+    # the binary's real size rather than the symlink's, and -c so the total
+    # is the whole installed set, not just the node agent.
+    log "Footprint cleanup done. $(du -shcL "$REPO_ROOT/bin"/* 2>/dev/null | tail -1 | cut -f1) of binaries in $REPO_ROOT/bin is what's left of the build."
 }

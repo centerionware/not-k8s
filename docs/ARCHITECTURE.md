@@ -244,6 +244,43 @@ measurable — `nodeproxy` is deliberately built from a minimal dependency
 tree (no CRI/gRPC stack at all; see `crates/nodeproxy/Cargo.toml`) to keep
 that baseline small.
 
+### Two binaries or one: the split is in the crates, not the file count
+
+Separate crates are what make a component replaceable. Separate *executables*
+are a packaging decision on top of that, and they aren't free: each binary
+re-links the whole dependency tree the components share (tokio, kube,
+k8s-openapi, rustls). Measured on aarch64, the split that gave `nodeproxy`
+its own binary turned one ~12MB `nodelet` into ~11MB + ~6MB — ~5MB of pure
+duplication, which is real money on an edge device's flash.
+
+So the build system produces both layouts (`--layout=` /
+`NOTK8S_BUILD_LAYOUT`, see `deploy/lib/components.sh`):
+
+- **split** (default) — `bin/nodelet`, `bin/nodeproxy`, one executable per
+  component. Upgrade or replace one without touching the other; ship only
+  what a node runs.
+- **combined** — `bin/notk8s`, a busybox-style multi-call binary containing
+  every component, with a `bin/<component>` symlink per component that it
+  dispatches on via `argv[0]`. One copy of the shared dependencies for all
+  components.
+
+The choice changes nothing at runtime. Both layouts still run one process
+per component, still start them as independent services with no ordering
+between them, still read the same per-component environment variables, and
+still let a node run one component without the other (`--proxy=none` builds
+a combined binary with no proxy in it at all). The service units and
+`run-*.sh` exec `bin/<component>` either way and don't know which layout is
+installed. `crates/notk8s` is a packaging target only — it links the
+component crates and dispatches; it contains no logic of its own, and the
+dependency boundary between the components is still enforced where it
+always was, in each component crate's own `Cargo.toml`.
+
+This is also the seam the planned components (`nodeapiserver`,
+`nodescheduler`, a kine/sqlite replacement) plug into: a new component is a
+crate, a row in `deploy/lib/components.sh`, an optional dependency of
+`crates/notk8s`, and one line in its `APPLETS` table. Nothing else in the
+build system learns its name.
+
 ## Internal Architecture
 
 ```

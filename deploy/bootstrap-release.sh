@@ -17,11 +17,16 @@
 #       bootstrap-source.sh flag — passed through verbatim]
 #
 #   --tag=vX.Y.Z   Install a specific release instead of the latest one.
+#   --layout=combined  Fetch the single multi-call `notk8s` binary (every
+#                  component in one file, ~5MB smaller than the separate
+#                  pair on aarch64) instead of one binary per component.
+#                  Passed through to bootstrap-source.sh as well, which
+#                  installs it with a bin/<component> symlink per component.
 #
 # Release assets are expected to be named
-# <binary>-<version>-linux-<arch>-<profile>, where <binary> is nodelet or
+# <binary>-<version>-linux-<arch>-<profile>, where <binary> is nodelet,
 # nodeproxy (the Service proxy — kube-proxy's job, its own binary since the
-# split), <arch> is one of
+# split), or notk8s (the combined multi-call build of both), <arch> is one of
 # x86_64/aarch64/armv7l and <profile> is release or debug (matching
 # .github/workflows/release.yml's own publish-release job) — release
 # (optimized) is what this script fetches; there's no flag to ask for the
@@ -37,9 +42,14 @@ REPO="${NOTK8S_RELEASE_REPO:-centerionware/not-k8s}"
 TAG=""
 PASSTHROUGH_ARGS=()
 
+LAYOUT="${NOTK8S_BUILD_LAYOUT:-split}"
+
 for arg in "$@"; do
     case "$arg" in
         --tag=*) TAG="${arg#--tag=}" ;;
+        # Passed through too — bootstrap-source.sh needs it to know which
+        # layout to install, this script only needs it to know what to fetch.
+        --layout=*) LAYOUT="${arg#--layout=}"; PASSTHROUGH_ARGS+=("$arg") ;;
         *) PASSTHROUGH_ARGS+=("$arg") ;;
     esac
 done
@@ -99,6 +109,17 @@ download_release_binary() {
     chmod +x "$path"
     echo "$path"
 }
+
+# The combined layout is one asset containing every component, so it's a
+# single download and none of the per-component logic below applies —
+# including --proxy=none, which in this layout means "don't run nodeproxy",
+# not "don't fetch it" (there's nothing separate to skip fetching).
+if [[ "$LAYOUT" == "combined" ]]; then
+    export NOTK8S_COMBINED_PREBUILT="$(download_release_binary notk8s)"
+    rm -f "$RELEASE_JSON"
+    log "Handing off to bootstrap-source.sh with NOTK8S_COMBINED_PREBUILT=$NOTK8S_COMBINED_PREBUILT"
+    exec "$SCRIPT_DIR/bootstrap-source.sh" "${PASSTHROUGH_ARGS[@]}"
+fi
 
 export NOTK8S_NODELET_PREBUILT="$(download_release_binary nodelet)"
 

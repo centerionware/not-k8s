@@ -26,6 +26,13 @@ name: Build + unit tests (artifacts)
 #        NOTK8S_NODEPROXY_PREBUILT=/tmp/bins/nodeproxy \
 #        ./deploy/bootstrap-source.sh --with-cri
 #
+# The same artifact also carries the combined single-binary layout when the
+# `layout` input includes it (`notk8s` — every component in one executable,
+# dispatching on argv[0]). Deploy that one instead with:
+#
+#   sudo NOTK8S_COMBINED_PREBUILT=/tmp/bins/notk8s \
+#        ./deploy/bootstrap-source.sh --with-cri --layout=combined
+#
 # (Those two env vars are nodelet-build.sh's existing prebuilt seam — the
 # same one release.yml's e2e shards use — so no toolchain is installed on
 # the target device at all.)
@@ -44,6 +51,12 @@ on:
         default: x86_64
         type: choice
         options: [x86_64, aarch64, armv7l, all]
+      layout:
+        description: 'Which build layout(s): split (one binary per component), combined (single multi-call notk8s binary), or both.'
+        required: false
+        default: both
+        type: choice
+        options: [split, combined, both]
       skip_tests:
         description: 'Skip the unit tests and only produce binaries.'
         required: false
@@ -82,6 +95,13 @@ jobs:
             sudo -E env "PATH=$PATH" cargo test -p nodeproxy
           else
             echo "crates/nodeproxy not present on this ref — skipping its tests."
+          fi
+          # Same guard, same reason: the combined-binary crate postdates
+          # both of the above.
+          if [[ -d crates/notk8s ]]; then
+            sudo -E env "PATH=$PATH" cargo test -p notk8s
+          else
+            echo "crates/notk8s not present on this ref — skipping its tests."
           fi
 
   build:
@@ -152,18 +172,36 @@ jobs:
           set -e
           TARGET_FLAG=""
           [[ "${{ matrix.cross }}" == "true" ]] && TARGET_FLAG="--target ${{ matrix.target }}"
+          LAYOUT="${{ inputs.layout }}"
+          # Default for a dispatch that predates this input existing.
+          [[ -n "$LAYOUT" ]] || LAYOUT=both
+          want_split()    { [[ "$LAYOUT" == split    || "$LAYOUT" == both ]]; }
+          want_combined() { [[ "$LAYOUT" == combined || "$LAYOUT" == both ]]; }
           build_both() { # $1 = extra cargo flags for the profile ("" or --release)
-            # shellcheck disable=SC2086
-            cargo build $1 --features cri -p nodelet $TARGET_FLAG
-            # nodeproxy takes no features — it deliberately shares none of
-            # nodelet's cri dependency tree (crates/nodeproxy/Cargo.toml).
-            # Guarded for the same reason as the test job above: a ref
-            # without the crate should build nodelet and say so, not fail.
-            if [[ -d crates/nodeproxy ]]; then
+            if want_split; then
               # shellcheck disable=SC2086
-              cargo build $1 -p nodeproxy $TARGET_FLAG
-            else
-              echo "crates/nodeproxy not present on this ref — building nodelet only."
+              cargo build $1 --features cri -p nodelet $TARGET_FLAG
+              # nodeproxy takes no features — it deliberately shares none of
+              # nodelet's cri dependency tree (crates/nodeproxy/Cargo.toml).
+              # Guarded for the same reason as the test job above: a ref
+              # without the crate should build nodelet and say so, not fail.
+              if [[ -d crates/nodeproxy ]]; then
+                # shellcheck disable=SC2086
+                cargo build $1 -p nodeproxy $TARGET_FLAG
+              else
+                echo "crates/nodeproxy not present on this ref — building nodelet only."
+              fi
+            fi
+            # The combined layout: one binary containing every component
+            # (crates/notk8s), for a device that would rather not pay for a
+            # second copy of the shared dependency tree.
+            if want_combined; then
+              if [[ -d crates/notk8s ]]; then
+                # shellcheck disable=SC2086
+                cargo build $1 --features cri -p notk8s $TARGET_FLAG
+              else
+                echo "crates/notk8s not present on this ref — no combined binary to build."
+              fi
             fi
           }
           case "${{ inputs.profile }}" in
@@ -183,7 +221,7 @@ jobs:
           fi
           for profile in debug release; do
             [[ -d "$SRC_DIR/$profile" ]] || continue
-            for bin in nodelet nodeproxy; do
+            for bin in nodelet nodeproxy notk8s; do
               [[ -f "$SRC_DIR/$profile/$bin" ]] || continue
               mkdir -p "dist/$profile"
               cp "$SRC_DIR/$profile/$bin" "dist/$profile/$bin"
@@ -193,7 +231,9 @@ jobs:
           # Size is the thing worth eyeballing after the nodeproxy split:
           # if nodeproxy isn't dramatically smaller than nodelet, its
           # dependency tree has crept back toward nodelet's and the split
-          # has stopped buying anything.
+          # has stopped buying anything. Same check from the other side for
+          # the combined binary: it should be close to nodelet alone, not to
+          # nodelet + nodeproxy, or it isn't buying anything either.
           du -h dist/*/* | sort -h
 
       - name: Upload debug binaries
