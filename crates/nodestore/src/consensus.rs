@@ -215,17 +215,25 @@ impl Node {
     /// in index order, not by the proposer. It takes `index` for that reason —
     /// so the signature does not have to change when it does.
     pub fn apply_committed(&self, index: u64, cmd: &Command) -> Result<Applied> {
-        let applied = {
-            let mut store = self.lock_store()?;
-            store.apply_at(index, cmd)?
-            // The lock is released here, before publishing. Holding it across
-            // the fan-out would let one slow watcher block the applier, which
-            // is the failure mode this whole design exists to avoid.
-        };
-
+        // Published while the lock is still held, so the order watchers see is
+        // the order the store applied.
+        //
+        // The earlier version released the lock first, on the theory that
+        // holding it across the fan-out would let a slow watcher block the
+        // applier. That theory was simply wrong: `broadcast::Sender::send` is
+        // synchronous and never waits on a receiver — it overwrites the oldest
+        // slot and lets the reader observe `Lagged`. So there was no hazard to
+        // avoid, and releasing early created a real one. Two concurrent
+        // proposers could apply 2 then 3 and publish 3 then 2, and a watcher
+        // that tracks the highest revision it has seen discards the older
+        // batch as already-delivered — a silent gap, with no lag signal to
+        // tell it to re-read. Exactly what watch.rs promises cannot happen.
+        let mut store = self.lock_store()?;
+        let applied = store.apply_at(index, cmd)?;
         if !applied.events.is_empty() {
             self.watch.publish(applied.revision, applied.events.clone());
         }
+        drop(store);
         Ok(applied)
     }
 
@@ -315,6 +323,47 @@ mod tests {
         assert_eq!(revisions.len(), 16, "every write got its own revision");
         assert_eq!(revisions.first().copied(), Some(2));
         assert_eq!(revisions.last().copied(), Some(17));
+    }
+
+    #[tokio::test]
+    async fn concurrent_writers_publish_batches_in_revision_order() {
+        // The regression test for publishing outside the store lock.
+        //
+        // The old code applied under the lock and published after releasing
+        // it, so two concurrent proposers could apply 2 then 3 and publish 3
+        // then 2. A watcher tracking the highest revision it has seen then
+        // discards the older batch as already-delivered — a silent gap with no
+        // lag signal telling it to re-read.
+        //
+        // Distinctness is what the existing concurrency test asserts, and it
+        // cannot see this; only the *order* can.
+        let n = node();
+        let mut rx = n.watch_hub().subscribe();
+
+        let mut tasks = Vec::new();
+        for i in 0..24 {
+            let n = n.clone();
+            tasks.push(tokio::spawn(async move {
+                n.propose(put_cmd(&format!("/k{i}"), "v")).await.unwrap();
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+
+        let mut previous = 0i64;
+        let mut seen = 0;
+        while let Ok(batch) = rx.try_recv() {
+            assert!(
+                batch.revision > previous,
+                "watch batches arrived out of order: {} after {}",
+                batch.revision,
+                previous
+            );
+            previous = batch.revision;
+            seen += 1;
+        }
+        assert_eq!(seen, 24, "every write should have produced exactly one batch");
     }
 
     #[tokio::test]

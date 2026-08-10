@@ -300,11 +300,29 @@ impl Driver {
             }
 
             if let Err(e) = self.on_ready() {
-                // A failure here is a storage failure, not a transient one.
-                // Continuing would apply entries on top of state that may not
-                // have persisted, so this is loud and the loop keeps running
-                // only so the process stays diagnosable.
-                error!(error = %e, "raft ready processing failed");
+                // Stop, do not continue. raft requires every Ready to reach
+                // `advance` before the node processes any further state
+                // change, and a failure part-way through leaves one
+                // outstanding. Looping would then call tick/step/propose with
+                // that Ready still pending, which desynchronises raft's
+                // internal state — a far worse failure than the storage error
+                // that caused it, and one that would present as a member that
+                // is up but quietly wrong.
+                //
+                // Deliberately no `advance` on the way out either: advancing
+                // would acknowledge entries that were not persisted.
+                error!(error = %e, "raft ready processing failed; stopping this member");
+                let failed = self
+                    .proposals
+                    .fail_all("the raft driver stopped after a storage failure");
+                if failed > 0 {
+                    warn!(failed, "failed in-flight proposals while stopping");
+                }
+                // Every handle now reports Unavailable, which is the truth:
+                // this member can no longer replicate. The process stays up so
+                // it remains diagnosable, and so a supervisor's restart is a
+                // decision rather than a surprise.
+                return;
             }
             self.observe_role();
             if let Err(e) = self.maintain_snapshot() {

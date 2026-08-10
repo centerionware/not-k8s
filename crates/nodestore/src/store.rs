@@ -476,11 +476,31 @@ impl Store {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO kv (revision, sub, key, value, create_revision, version, lease, deleted, prev_revision)
-                 VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, 0, 0)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0)",
             )?;
+            // `sub` is allocated per revision, not hardcoded to 0. One applied
+            // transaction writes several keys at the *same* revision with
+            // different subs, so a snapshot of such a store has repeated
+            // mod_revisions — and with the primary key being (revision, sub),
+            // a second row at sub 0 fails the UNIQUE constraint and rolls the
+            // whole restore back. A follower past the compaction point would
+            // then have no recovery path left at all, snapshots being the last
+            // one.
+            //
+            // export_snapshot reads in the default key order, so this
+            // assignment is deterministic across replicas.
+            let mut last_revision = i64::MIN;
+            let mut sub = 0i64;
             for kv in &snapshot.kvs {
+                if kv.mod_revision == last_revision {
+                    sub += 1;
+                } else {
+                    last_revision = kv.mod_revision;
+                    sub = 0;
+                }
                 stmt.execute(rusqlite::params![
                     kv.mod_revision,
+                    sub,
                     kv.key,
                     kv.value,
                     kv.create_revision,
@@ -1795,6 +1815,81 @@ mod snapshot_tests {
             1,
             "only the snapshot's keys"
         );
+    }
+
+    #[test]
+    fn a_snapshot_of_a_multi_key_transaction_restores() {
+        // The regression test for restore hardcoding sub = 0.
+        //
+        // One transaction writes several keys at the *same* revision with
+        // different subs, so the snapshot has repeated mod_revisions. With
+        // PRIMARY KEY (revision, sub), the second row at sub 0 failed the
+        // UNIQUE constraint and rolled the entire restore back — leaving a
+        // follower past the compaction point with no recovery path at all.
+        //
+        // The other snapshot tests use single-key puts at distinct revisions,
+        // which structurally cannot reach this.
+        let mut source = Store::open(Path::new(":memory:")).unwrap();
+        source
+            .apply(&Command::Txn(TxnOp {
+                compare: vec![],
+                success: vec!["/a", "/b", "/c"]
+                    .into_iter()
+                    .map(|k| {
+                        RequestOp::Put(PutOp {
+                            key: k.as_bytes().to_vec(),
+                            value: b"same-revision".to_vec(),
+                            lease: 0,
+                            prev_kv: false,
+                            ignore_value: false,
+                            ignore_lease: false,
+                        })
+                    })
+                    .collect(),
+                failure: vec![],
+            }))
+            .unwrap();
+
+        let snapshot = source.export_snapshot().unwrap();
+        let shared: Vec<i64> = snapshot.kvs.iter().map(|kv| kv.mod_revision).collect();
+        assert_eq!(shared, vec![2, 2, 2], "the three keys must share one revision");
+
+        let mut target = Store::open(Path::new(":memory:")).unwrap();
+        target.restore_snapshot(&snapshot).expect("a multi-key revision must restore");
+
+        let all = target.range(&RangeQuery::current(KeyRange::All)).unwrap();
+        assert_eq!(all.kvs.len(), 3, "every key in the shared revision must survive");
+        for kv in &all.kvs {
+            assert_eq!(kv.value, b"same-revision");
+            assert_eq!(kv.mod_revision, 2);
+        }
+    }
+
+    #[test]
+    fn a_snapshot_of_a_revoked_lease_restores() {
+        // The same shape from the other direction: revoking a lease deletes
+        // every key it held at one revision.
+        let mut source = Store::open(Path::new(":memory:")).unwrap();
+        source.apply(&Command::LeaseGrant { id: 4, ttl_secs: 60, now_unix_secs: 0 }).unwrap();
+        for k in ["/l1", "/l2"] {
+            source
+                .apply(&Command::Put(PutOp {
+                    key: k.as_bytes().to_vec(),
+                    value: b"leased".to_vec(),
+                    lease: 4,
+                    prev_kv: false,
+                    ignore_value: false,
+                    ignore_lease: false,
+                }))
+                .unwrap();
+        }
+        put(&mut source, "/keep", "kept");
+        source.apply(&Command::LeaseRevoke { id: 4 }).unwrap();
+
+        let snapshot = source.export_snapshot().unwrap();
+        let mut target = Store::open(Path::new(":memory:")).unwrap();
+        target.restore_snapshot(&snapshot).expect("restore after a lease revocation");
+        assert_eq!(target.range(&RangeQuery::current(KeyRange::All)).unwrap().kvs.len(), 1);
     }
 
     #[test]
