@@ -548,10 +548,20 @@ jobs:
           # comment for why this greps the table instead of sourcing it.
           mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
           BINS+=(notk8s)
+          # nullglob so a component with no built artifact contributes
+          # nothing instead of a literal unexpanded pattern, which
+          # `gh release create` would then try to upload as a filename and
+          # fail on. Checked afterwards so that case is still loud.
+          shopt -s nullglob
           ASSETS=()
           for bin in "${BINS[@]}"; do
             ASSETS+=("dist/$bin-"*)
           done
+          shopt -u nullglob
+          [[ "${#ASSETS[@]}" -gt 0 ]] \
+            || { echo "no release artifacts staged in dist/ — the build-release stage produced nothing" >&2; exit 1; }
+          echo "publishing ${#ASSETS[@]} binaries:"
+          printf '  %s\n' "${ASSETS[@]}"
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file changelog.md \
