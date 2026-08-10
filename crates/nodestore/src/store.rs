@@ -181,6 +181,18 @@ impl Store {
                 expires_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS lease_expires ON lease (expires_at);
+
+            -- The cluster's address book. In the state machine, not in
+            -- configuration, so a member that joins later or restarts learns
+            -- the cluster's shape from state it has to catch up on anyway
+            -- (see command.rs's SetMember).
+            CREATE TABLE IF NOT EXISTS member (
+                id         INTEGER PRIMARY KEY,
+                peer_url   TEXT NOT NULL,
+                client_url TEXT NOT NULL,
+                name       TEXT NOT NULL,
+                is_learner INTEGER NOT NULL DEFAULT 0
+            );
             "#,
         )?;
         // An empty store sits at revision 1, matching etcd: the first write
@@ -349,6 +361,33 @@ impl Store {
         Ok(keys)
     }
 
+    /// Every member in the replicated address book.
+    pub fn members(&self) -> Result<Vec<crate::command::Member>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, peer_url, client_url, name, is_learner FROM member ORDER BY id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(crate::command::Member {
+                id: r.get::<_, i64>(0)? as u64,
+                peer_url: r.get(1)?,
+                client_url: r.get(2)?,
+                name: r.get(3)?,
+                is_learner: r.get::<_, i64>(4)? != 0,
+            })
+        })?;
+        let mut out = Vec::new();
+        for m in rows {
+            out.push(m?);
+        }
+        Ok(out)
+    }
+
+    /// One member, by id — how a follower turns "the leader is id 3" into a
+    /// URL it can forward to.
+    pub fn member(&self, id: u64) -> Result<Option<crate::command::Member>> {
+        Ok(self.members()?.into_iter().find(|m| m.id == id))
+    }
+
     pub fn leases(&self) -> Result<Vec<i64>> {
         let mut stmt = self.conn.prepare("SELECT id FROM lease")?;
         let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
@@ -433,6 +472,26 @@ impl Store {
             }
             Command::LeaseRevoke { id } => {
                 revoke_lease(&tx, &mut w, *id)?;
+                CommandResponse::Empty
+            }
+            // Membership is cluster metadata, not user data: it produces no
+            // kv events and does not advance the store revision. etcd behaves
+            // the same way — adding a member must not look to a watching
+            // client like something changed under /registry.
+            Command::SetMember(m) => {
+                tx.execute(
+                    "INSERT INTO member (id, peer_url, client_url, name, is_learner)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(id) DO UPDATE SET peer_url = excluded.peer_url,
+                                                   client_url = excluded.client_url,
+                                                   name = excluded.name,
+                                                   is_learner = excluded.is_learner",
+                    rusqlite::params![m.id as i64, m.peer_url, m.client_url, m.name, m.is_learner as i64],
+                )?;
+                CommandResponse::Empty
+            }
+            Command::RemoveMember { id } => {
+                tx.execute("DELETE FROM member WHERE id = ?1", [*id as i64])?;
                 CommandResponse::Empty
             }
             Command::ExpireLeases { now_unix_secs } => {
@@ -1400,5 +1459,101 @@ mod tests {
         assert_eq!(s.revision().unwrap(), 3);
         assert_eq!(s.compact_revision().unwrap(), 2);
         assert_eq!(get(&s, "/a").unwrap().value, b"v2");
+    }
+}
+
+#[cfg(test)]
+mod member_tests {
+    use super::*;
+    use crate::command::Member;
+
+    fn member(id: u64, learner: bool) -> Member {
+        Member {
+            id,
+            peer_url: format!("http://10.0.0.{id}:2380"),
+            client_url: format!("http://10.0.0.{id}:2379"),
+            name: format!("node-{id}"),
+            is_learner: learner,
+        }
+    }
+
+    #[test]
+    fn members_round_trip_and_can_be_looked_up_by_id() {
+        // The lookup is what a follower uses to turn "the leader is id 3"
+        // into a URL it can forward a write to.
+        let mut s = Store::open(Path::new(":memory:")).unwrap();
+        s.apply(&Command::SetMember(member(1, false))).unwrap();
+        s.apply(&Command::SetMember(member(2, true))).unwrap();
+
+        assert_eq!(s.members().unwrap().len(), 2);
+        let m = s.member(2).unwrap().expect("member 2");
+        assert_eq!(m.client_url, "http://10.0.0.2:2379");
+        assert!(m.is_learner);
+        assert!(s.member(99).unwrap().is_none());
+    }
+
+    #[test]
+    fn re_setting_a_member_updates_it_rather_than_duplicating() {
+        // A member that changed address must not end up listed twice, or a
+        // follower could forward to the address it used to have.
+        let mut s = Store::open(Path::new(":memory:")).unwrap();
+        s.apply(&Command::SetMember(member(1, true))).unwrap();
+        let mut promoted = member(1, false);
+        promoted.client_url = "http://10.0.0.99:2379".to_string();
+        s.apply(&Command::SetMember(promoted)).unwrap();
+
+        let members = s.members().unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].client_url, "http://10.0.0.99:2379");
+        assert!(!members[0].is_learner, "promotion must stick");
+    }
+
+    #[test]
+    fn removing_a_member_forgets_it() {
+        let mut s = Store::open(Path::new(":memory:")).unwrap();
+        s.apply(&Command::SetMember(member(1, false))).unwrap();
+        s.apply(&Command::SetMember(member(2, false))).unwrap();
+        s.apply(&Command::RemoveMember { id: 1 }).unwrap();
+
+        let members = s.members().unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].id, 2);
+    }
+
+    #[test]
+    fn membership_changes_do_not_advance_the_store_revision() {
+        // Membership is cluster metadata, not user data. A watching client
+        // seeing the revision move for a member change would conclude it had
+        // missed an event under /registry and re-list for nothing.
+        let mut s = Store::open(Path::new(":memory:")).unwrap();
+        s.apply(&Command::Put(PutOp {
+            key: b"/a".to_vec(),
+            value: b"1".to_vec(),
+            lease: 0,
+            prev_kv: false,
+            ignore_value: false,
+            ignore_lease: false,
+        }))
+        .unwrap();
+        let before = s.revision().unwrap();
+
+        let applied = s.apply(&Command::SetMember(member(3, false))).unwrap();
+        assert_eq!(applied.revision, before);
+        assert!(applied.events.is_empty(), "a member change is not a kv event");
+
+        let applied = s.apply(&Command::RemoveMember { id: 3 }).unwrap();
+        assert_eq!(applied.revision, before);
+    }
+
+    #[test]
+    fn the_address_book_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        {
+            let mut s = Store::open(&path).unwrap();
+            s.apply(&Command::SetMember(member(1, false))).unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.members().unwrap()[0].peer_url, "http://10.0.0.1:2380");
     }
 }

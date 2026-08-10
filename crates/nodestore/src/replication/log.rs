@@ -163,10 +163,13 @@ impl RaftLog {
                  VALUES (?1, ?2, ?3, ?4, ?5)",
             )?;
             for e in entries {
+                // .value() rather than a cast: EntryType is a rust-protobuf
+                // enum, and going through the trait keeps this correct if a
+                // future raft-rs represents it differently.
                 stmt.execute(rusqlite::params![
                     e.index,
                     e.term,
-                    e.entry_type,
+                    protobuf::ProtobufEnum::value(&e.entry_type),
                     e.data.as_ref(),
                     e.context.as_ref(),
                 ])?;
