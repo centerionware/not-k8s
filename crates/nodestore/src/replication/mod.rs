@@ -17,6 +17,9 @@
 //!     because that is the interface raft is designed against.
 //!   * [`proposals`] — routing an applied result back to the caller that
 //!     proposed it, and failing the ones a lost leadership invalidated.
+//!   * [`consensus`] — the adapter that lets the gRPC layer keep proposing
+//!     commands without knowing a quorum was involved.
+//!   * [`peer_service`] — the inbound half of the transport, on its own port.
 //!   * [`driver`] — the Ready loop. One task owns the RawNode, because the
 //!     order its steps happen in is part of raft's correctness rather than a
 //!     style choice.
@@ -25,8 +28,10 @@
 //! gRPC layer proposes through it, forwarding writes from a follower to the
 //! leader, and the netns-based failover e2e.
 
+pub mod consensus;
 pub mod driver;
 pub mod log;
 pub mod logging;
+pub mod peer_service;
 pub mod proposals;
 pub mod transport;

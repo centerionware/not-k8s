@@ -29,8 +29,35 @@ pub struct Config {
     pub watch_buffer: usize,
     pub member_id: u64,
     pub cluster_id: u64,
-    /// Future raft peers. Parsed and rejected today — see [`Config::from_env`].
-    pub peers: Vec<String>,
+
+    /// Where peers reach this member for raft traffic. Empty means single
+    /// member: no peer server is started at all.
+    pub peer_listen: String,
+    /// This member's own peer URL, as other members should dial it. Defaults
+    /// to whatever `initial_cluster` says for `member_id`.
+    pub advertise_peer_url: String,
+    /// This member's own client URL, published into the replicated address
+    /// book so followers know where to forward writes.
+    pub advertise_client_url: String,
+    /// The cluster's initial membership: id → peer URL.
+    pub initial_cluster: Vec<(u64, String)>,
+
+    /// Ticks (of 100ms) without hearing from a leader before campaigning.
+    ///
+    /// etcd's defaults are 1000ms election / 100ms heartbeat, and the ratio
+    /// matters more than either number: an election timeout under a few
+    /// heartbeats turns ordinary jitter into a leadership change, and a
+    /// cluster that re-elects under load is a cluster that stops serving
+    /// writes under load.
+    pub election_ticks: usize,
+    pub heartbeat_ticks: usize,
+}
+
+impl Config {
+    /// Whether this member is part of a multi-member cluster.
+    pub fn is_clustered(&self) -> bool {
+        self.initial_cluster.len() > 1
+    }
 }
 
 impl Default for Config {
@@ -44,7 +71,12 @@ impl Default for Config {
             watch_buffer: 1024,
             member_id: 1,
             cluster_id: 1,
-            peers: Vec::new(),
+            peer_listen: String::new(),
+            advertise_peer_url: String::new(),
+            advertise_client_url: String::new(),
+            initial_cluster: Vec::new(),
+            election_ticks: 10,
+            heartbeat_ticks: 1,
         }
     }
 }
@@ -77,21 +109,69 @@ impl Config {
         cfg.member_id = parse_env("NODESTORE_MEMBER_ID", cfg.member_id)?;
         cfg.cluster_id = parse_env("NODESTORE_CLUSTER_ID", cfg.cluster_id)?;
 
-        if let Ok(v) = std::env::var("NODESTORE_PEERS") {
-            cfg.peers = v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
+        // NODESTORE_PEERS is the older spelling of the same thing, kept
+        // working because it was documented before this one existed.
+        let cluster_spec = std::env::var("NODESTORE_INITIAL_CLUSTER")
+            .or_else(|_| std::env::var("NODESTORE_PEERS"))
+            .unwrap_or_default();
+        cfg.initial_cluster = parse_initial_cluster(&cluster_spec)?;
+
+        if let Ok(v) = std::env::var("NODESTORE_PEER_LISTEN") {
+            if !v.is_empty() {
+                cfg.peer_listen = v;
+            }
         }
-        // Accepted, parsed, and then refused — rather than ignored. A
-        // datastore that silently ran as a single node while its operator
-        // believed it was replicated is the worst possible way to discover
-        // that raft isn't finished: everything works until the node dies, and
-        // then the data was never anywhere else.
-        if !cfg.peers.is_empty() {
+        if let Ok(v) = std::env::var("NODESTORE_ADVERTISE_PEER_URL") {
+            if !v.is_empty() {
+                cfg.advertise_peer_url = v;
+            }
+        }
+        if let Ok(v) = std::env::var("NODESTORE_ADVERTISE_CLIENT_URL") {
+            if !v.is_empty() {
+                cfg.advertise_client_url = v;
+            }
+        }
+        cfg.election_ticks = parse_env("NODESTORE_ELECTION_TICKS", cfg.election_ticks)?;
+        cfg.heartbeat_ticks = parse_env("NODESTORE_HEARTBEAT_TICKS", cfg.heartbeat_ticks)?;
+
+        if cfg.election_ticks <= cfg.heartbeat_ticks {
+            // Raft requires election_tick > heartbeat_tick, and a ratio near 1
+            // means every scheduling hiccup looks like a dead leader.
             return Err(Error::InvalidRequest(format!(
-                "NODESTORE_PEERS is set ({}), but multi-node raft replication is not implemented yet. \
-                 This build runs as a single member only. Unset NODESTORE_PEERS to run single-node, \
-                 or keep using etcd for a replicated control plane.",
-                cfg.peers.join(",")
+                "NODESTORE_ELECTION_TICKS ({}) must be greater than NODESTORE_HEARTBEAT_TICKS ({}) \
+                 — ideally several times greater, or ordinary jitter will keep deposing a healthy \
+                 leader",
+                cfg.election_ticks, cfg.heartbeat_ticks
             )));
+        }
+
+        if !cfg.initial_cluster.is_empty() {
+            // A member has to be in its own cluster, or it will campaign for a
+            // cluster it is not a voter in and never win.
+            let own = cfg.initial_cluster.iter().find(|(id, _)| *id == cfg.member_id);
+            let Some((_, peer_url)) = own else {
+                return Err(Error::InvalidRequest(format!(
+                    "NODESTORE_MEMBER_ID={} does not appear in the initial cluster ({}). Every \
+                     member must be listed in it, including this one.",
+                    cfg.member_id,
+                    cfg.initial_cluster
+                        .iter()
+                        .map(|(id, url)| format!("{id}={url}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )));
+            };
+            if cfg.advertise_peer_url.is_empty() {
+                cfg.advertise_peer_url = peer_url.clone();
+            }
+            if cfg.peer_listen.is_empty() {
+                // Listen on the port this member advertises, on all
+                // interfaces: peers are by definition not on loopback.
+                cfg.peer_listen = listen_from_url(&cfg.advertise_peer_url);
+            }
+            if cfg.advertise_client_url.is_empty() {
+                cfg.advertise_client_url = format!("http://{}", cfg.listen);
+            }
         }
 
         if cfg.compact_retain_revisions < 1 {
@@ -122,6 +202,48 @@ impl Config {
         );
         Ok(cfg)
     }
+}
+
+/// Parse `1=http://a:2380,2=http://b:2380`.
+fn parse_initial_cluster(spec: &str) -> Result<Vec<(u64, String)>> {
+    let mut out = Vec::new();
+    for entry in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let Some((id, url)) = entry.split_once('=') else {
+            return Err(Error::InvalidRequest(format!(
+                "cluster member {entry:?} is not in the form <id>=<peer-url>, e.g. \
+                 1=http://10.0.0.1:2380"
+            )));
+        };
+        let id: u64 = id.trim().parse().map_err(|_| {
+            Error::InvalidRequest(format!("cluster member id {id:?} is not a number"))
+        })?;
+        if id == 0 {
+            // Raft reserves 0 for "no member", so a member with that id would
+            // be indistinguishable from "no leader".
+            return Err(Error::InvalidRequest(
+                "0 is not a usable member id — raft uses it to mean \"no member\"".to_string(),
+            ));
+        }
+        let url = url.trim().to_string();
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(Error::InvalidRequest(format!(
+                "peer URL {url:?} must include a scheme, e.g. http://10.0.0.1:2380"
+            )));
+        }
+        if out.iter().any(|(existing, _): &(u64, String)| *existing == id) {
+            return Err(Error::InvalidRequest(format!("member id {id} is listed twice")));
+        }
+        out.push((id, url));
+    }
+    Ok(out)
+}
+
+/// Turn an advertised URL into a listen address, keeping only the port and
+/// binding all interfaces.
+fn listen_from_url(url: &str) -> String {
+    let hostport = url.split("://").nth(1).unwrap_or(url);
+    let port = hostport.rsplit(':').next().unwrap_or("2380");
+    format!("0.0.0.0:{port}")
 }
 
 fn parse_env<T: std::str::FromStr>(name: &str, default: T) -> Result<T> {
@@ -168,20 +290,87 @@ mod tests {
     }
 
     #[test]
-    fn peers_are_refused_rather_than_ignored() {
-        // The failure this prevents is silent: an operator who thinks they
-        // configured replication and finds out otherwise only when the node
-        // dies.
-        let err = with_env(&[("NODESTORE_PEERS", "10.0.0.2:2380,10.0.0.3:2380")], Config::from_env)
-            .expect_err("peers must be refused while raft is unimplemented");
-        let msg = err.to_string();
-        assert!(msg.contains("not implemented yet"), "got: {msg}");
+    fn an_initial_cluster_is_parsed_and_this_member_is_found_in_it() {
+        let cfg = with_env(
+            &[
+                ("NODESTORE_INITIAL_CLUSTER", "1=http://10.0.0.1:2380,2=http://10.0.0.2:2380"),
+                ("NODESTORE_MEMBER_ID", "2"),
+            ],
+            Config::from_env,
+        )
+        .unwrap();
+        assert!(cfg.is_clustered());
+        assert_eq!(cfg.initial_cluster.len(), 2);
+        assert_eq!(cfg.advertise_peer_url, "http://10.0.0.2:2380");
+        assert_eq!(cfg.peer_listen, "0.0.0.0:2380", "bind all interfaces, keep the advertised port");
     }
 
     #[test]
-    fn an_empty_peer_list_is_fine() {
-        let cfg = with_env(&[("NODESTORE_PEERS", "")], Config::from_env).unwrap();
-        assert!(cfg.peers.is_empty());
+    fn a_member_missing_from_its_own_cluster_is_refused() {
+        // It would campaign for a cluster it is not a voter in and never win,
+        // which looks like "the cluster never elects a leader" rather than
+        // like a typo.
+        let err = with_env(
+            &[("NODESTORE_INITIAL_CLUSTER", "1=http://a:2380,2=http://b:2380"), ("NODESTORE_MEMBER_ID", "9")],
+            Config::from_env,
+        )
+        .expect_err("a member not in its own cluster must be refused");
+        assert!(err.to_string().contains("does not appear in the initial cluster"));
+    }
+
+    #[test]
+    fn member_id_zero_is_refused() {
+        // Raft uses 0 for "no member", so such a member is indistinguishable
+        // from "there is no leader".
+        let err = with_env(&[("NODESTORE_INITIAL_CLUSTER", "0=http://a:2380")], Config::from_env)
+            .expect_err("id 0 must be refused");
+        assert!(err.to_string().contains("not a usable member id"));
+    }
+
+    #[test]
+    fn a_duplicate_member_id_is_refused() {
+        let err = with_env(
+            &[("NODESTORE_INITIAL_CLUSTER", "1=http://a:2380,1=http://b:2380")],
+            Config::from_env,
+        )
+        .expect_err("duplicates must be refused");
+        assert!(err.to_string().contains("listed twice"));
+    }
+
+    #[test]
+    fn a_peer_url_without_a_scheme_is_refused() {
+        let err = with_env(&[("NODESTORE_INITIAL_CLUSTER", "1=10.0.0.1:2380")], Config::from_env)
+            .expect_err("a schemeless URL must be refused");
+        assert!(err.to_string().contains("must include a scheme"));
+    }
+
+    #[test]
+    fn the_older_peers_spelling_still_works() {
+        let cfg = with_env(
+            &[("NODESTORE_PEERS", "1=http://a:2380"), ("NODESTORE_MEMBER_ID", "1")],
+            Config::from_env,
+        )
+        .unwrap();
+        assert_eq!(cfg.initial_cluster.len(), 1);
+    }
+
+    #[test]
+    fn no_cluster_configured_means_single_member() {
+        let cfg = with_env(&[], Config::from_env).unwrap();
+        assert!(!cfg.is_clustered());
+        assert!(cfg.peer_listen.is_empty(), "no peer server without peers");
+    }
+
+    #[test]
+    fn an_election_timeout_at_or_below_the_heartbeat_is_refused() {
+        // Raft requires the inequality, and a ratio near 1 makes ordinary
+        // jitter look like a dead leader.
+        let err = with_env(
+            &[("NODESTORE_ELECTION_TICKS", "1"), ("NODESTORE_HEARTBEAT_TICKS", "1")],
+            Config::from_env,
+        )
+        .expect_err("must be refused");
+        assert!(err.to_string().contains("must be greater than"));
     }
 
     #[test]

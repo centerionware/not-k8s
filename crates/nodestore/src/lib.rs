@@ -65,7 +65,7 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         "datastore opened"
     );
 
-    let consensus = Box::new(consensus::SingleNode::new(cfg.member_id, cfg.cluster_id));
+    let consensus = Arc::new(consensus::SingleNode::new(cfg.member_id, cfg.cluster_id));
     let node = consensus::Node::new(store, consensus, cfg.watch_buffer);
     let api = server::EtcdApi::new(Arc::clone(&node));
 

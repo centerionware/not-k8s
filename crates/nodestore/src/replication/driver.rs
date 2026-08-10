@@ -40,6 +40,10 @@ use crate::replication::proposals::{ProposalResult, ProposalTracker};
 use crate::replication::transport::{ClusterState, Transport};
 use crate::store::Applied;
 use raft::eraftpb::{ConfChange, ConfChangeV2, Entry, EntryType, Message, Snapshot};
+// ConfChangeI is what provides into_v2(): raft models the old single-change
+// form as a degenerate V2, and the conversion lives on the trait rather than
+// on the type.
+use raft::prelude::ConfChangeI;
 use raft::{Config as RaftConfig, RawNode, StateRole};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

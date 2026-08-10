@@ -44,14 +44,27 @@ use async_trait::async_trait;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// What submitting a command produced.
+///
+/// The two variants exist because the two implementations apply at different
+/// places, and pretending otherwise would put a second applier in the system.
+/// Under raft the *driver* applies committed entries, in index order, on
+/// every member — including the one that proposed. On a single node there is
+/// no driver, so the caller applies. Anything that applied in both places
+/// would apply twice on the proposing member.
+pub enum Submitted {
+    /// Already applied by the consensus layer; here is the result.
+    Applied(Applied),
+    /// Committed at this index; the caller must apply it.
+    ApplyLocally(u64),
+}
+
 /// Ordering of commands. The one thing a multi-node deployment changes.
 #[async_trait]
 pub trait Consensus: Send + Sync {
-    /// Return once `cmd` is committed, yielding its log index.
-    ///
-    /// For raft this is where replication and the quorum wait live. Returning
-    /// an error means the command is *not* in the log and had no effect.
-    async fn commit(&self, cmd: &Command) -> Result<u64>;
+    /// Get `cmd` committed. Returning an error means it is *not* in the log
+    /// and had no effect.
+    async fn submit(&self, cmd: &Command) -> Result<Submitted>;
 
     /// Whether this member may serve writes. Reads that must be linearizable
     /// also require it.
@@ -62,6 +75,13 @@ pub trait Consensus: Send + Sync {
 
     fn member_id(&self) -> u64;
     fn cluster_id(&self) -> u64;
+
+    /// Which member is the leader, when this one is not. `None` means either
+    /// "there is no leader right now" (a real state during an election) or
+    /// "there is only this member".
+    fn leader_id(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// The single-node implementation: everything is committed immediately,
@@ -80,12 +100,12 @@ impl SingleNode {
 
 #[async_trait]
 impl Consensus for SingleNode {
-    async fn commit(&self, _cmd: &Command) -> Result<u64> {
-        // The index still advances, and is still handed to the applier, even
-        // though nothing consumes it yet. It is the value raft will supply,
-        // and a code path that only exists once raft lands is a code path that
-        // has never run.
-        Ok(self.index.fetch_add(1, Ordering::SeqCst) as u64 + 1)
+    async fn submit(&self, _cmd: &Command) -> Result<Submitted> {
+        // The index still advances and is still handed to the applier: it is
+        // the value raft supplies, and the state machine records it either
+        // way, so a single-node store that later joins a cluster does not
+        // start from index zero.
+        Ok(Submitted::ApplyLocally(self.index.fetch_add(1, Ordering::SeqCst) as u64 + 1))
     }
 
     fn is_leader(&self) -> bool {
@@ -109,7 +129,7 @@ impl Consensus for SingleNode {
 /// fan-out, bound together.
 pub struct Node {
     store: Mutex<Store>,
-    consensus: Box<dyn Consensus>,
+    consensus: Arc<dyn Consensus>,
     watch: WatchHub,
     /// Source of lease IDs. Leader-side on purpose — see the determinism note
     /// in [`crate::command`]: the id is chosen *before* the command enters the
@@ -118,7 +138,7 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(store: Store, consensus: Box<dyn Consensus>, watch_capacity: usize) -> Arc<Node> {
+    pub fn new(store: Store, consensus: Arc<dyn Consensus>, watch_capacity: usize) -> Arc<Node> {
         // Seeded from the clock so ids don't repeat across restarts, which
         // would let a client's stale keepalive refresh a *different* lease
         // that happens to have been handed the same id.
@@ -171,14 +191,20 @@ impl Node {
     }
 
     /// Propose a mutation and return once it has been applied here.
+    ///
+    /// No leader check here on purpose: each implementation knows better. The
+    /// raft driver rejects a proposal from a non-leader at the point it would
+    /// enter the log, which is both authoritative and race-free — a check out
+    /// here could pass and then be stale by the time the entry is proposed.
     pub async fn propose(&self, cmd: Command) -> Result<Applied> {
-        if !self.consensus.is_leader() {
-            return Err(Error::Unavailable(
-                "this member is not the leader; writes must go to the leader".to_string(),
-            ));
+        match self.consensus.submit(&cmd).await? {
+            Submitted::Applied(applied) => Ok(applied),
+            Submitted::ApplyLocally(index) => self.apply_committed(index, &cmd),
         }
-        let index = self.consensus.commit(&cmd).await?;
-        self.apply_committed(index, &cmd)
+    }
+
+    pub fn leader_id(&self) -> Option<u64> {
+        self.consensus.leader_id()
     }
 
     /// Apply a committed command. Deterministic: same log, same state, on
@@ -229,7 +255,7 @@ mod tests {
 
     fn node() -> Arc<Node> {
         let store = Store::open(Path::new(":memory:")).unwrap();
-        Node::new(store, Box::new(SingleNode::new(1, 1)), 64)
+        Node::new(store, Arc::new(SingleNode::new(1, 1)), 64)
     }
 
     fn put_cmd(key: &str, value: &str) -> Command {
@@ -259,8 +285,12 @@ mod tests {
         // Not load-bearing on a single node, but raft's are, and this is the
         // counter that becomes the log index.
         let c = SingleNode::new(1, 1);
-        assert_eq!(c.commit(&put_cmd("/a", "1")).await.unwrap(), 1);
-        assert_eq!(c.commit(&put_cmd("/b", "1")).await.unwrap(), 2);
+        let index = |s: Submitted| match s {
+            Submitted::ApplyLocally(i) => i,
+            Submitted::Applied(_) => panic!("single node never applies inside submit"),
+        };
+        assert_eq!(index(c.submit(&put_cmd("/a", "1")).await.unwrap()), 1);
+        assert_eq!(index(c.submit(&put_cmd("/b", "1")).await.unwrap()), 2);
     }
 
     #[tokio::test]
