@@ -87,6 +87,33 @@ test_installed_component_binaries_are_runnable_whatever_the_layout() {
     done
 }
 
+test_a_failing_component_says_why_before_it_exits() {
+    # A component that can't start must print the reason, not just exit
+    # non-zero. Found live while verifying the combined layout: routing
+    # nodeproxy's startup through a caller that did `is_err() -> exit(1)`
+    # left an unreachable-apiserver failure completely silent — a service
+    # manager restarting a process whose logs say nothing at all is the
+    # worst possible version of this, because the restart loop looks like
+    # the symptom rather than the report.
+    #
+    # Deliberately layout-agnostic: bin/nodeproxy is the same entry point
+    # either way, which is the point.
+    local bin="$REPO_ROOT/bin/nodeproxy"
+    [[ -x "$bin" ]] || skip_test "no nodeproxy binary here (--proxy=none?)"
+
+    local scratch output rc=0
+    scratch="$(mktemp -d)"
+    # A kubeconfig path that cannot resolve, so this fails at client
+    # construction — before it touches nft or this node's real rules.
+    output="$(KUBECONFIG="$scratch/nonexistent" timeout 30 "$bin" 2>&1)" || rc=$?
+    rm -rf "$scratch"
+
+    assert_not_eq "$rc" "0" "nodeproxy should exit non-zero when it can't reach an apiserver"
+    assert_not_empty "$output" "nodeproxy should say why it exited, not fail silently"
+    assert_contains "$output" "kube client" "the failure message should name what actually failed"
+}
+
 register_test test_combined_binary_contains_every_component
 register_test test_combined_binary_rejects_an_unknown_component
 register_test test_installed_component_binaries_are_runnable_whatever_the_layout
+register_test test_a_failing_component_says_why_before_it_exits

@@ -13,7 +13,6 @@
 //! `nodelet`.
 
 use anyhow::{Context, Result};
-use tracing::error;
 
 pub mod config;
 pub mod svc;
@@ -35,9 +34,11 @@ pub fn install_crypto_provider() {
 /// Run the Service proxy until it stops.
 ///
 /// Only returns `Err` on a condition that makes the whole process pointless
-/// (no usable `nft`); otherwise it runs forever. Callers are expected to
-/// exit non-zero on `Err` so a service manager's restart loop makes that
-/// visible instead of leaving a live-looking process that routes nothing.
+/// (an unreachable apiserver at startup, no usable `nft`); otherwise it runs
+/// forever. Every caller returns that error straight out of `main`, which
+/// both prints it and exits non-zero, so a service manager's restart loop
+/// makes the failure visible instead of leaving a live-looking process that
+/// routes nothing.
 pub async fn run() -> Result<()> {
     install_crypto_provider();
 
@@ -47,9 +48,8 @@ pub async fn run() -> Result<()> {
         .await
         .context("building kube client (is KUBECONFIG set and the apiserver reachable?)")?;
 
-    if let Err(e) = svc::ServiceProxy::new(client, cfg.ip_family, cfg.lb_method).run().await {
-        error!(error = ?e, "service proxy stopped");
-        return Err(e);
-    }
-    Ok(())
+    svc::ServiceProxy::new(client, cfg.ip_family, cfg.lb_method)
+        .run()
+        .await
+        .context("service proxy stopped")
 }

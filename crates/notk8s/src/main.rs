@@ -116,15 +116,7 @@ async fn run_applet(name: &str) -> Result<()> {
         #[cfg(feature = "nodelet")]
         "nodelet" => nodelet::app::run().await,
         #[cfg(feature = "nodeproxy")]
-        "nodeproxy" => {
-            // Same contract as the standalone binary: a returned error means
-            // the process is pointless (no usable nft), so exit non-zero and
-            // let the service manager's restart loop make it visible.
-            if nodeproxy::run().await.is_err() {
-                std::process::exit(1);
-            }
-            Ok(())
-        }
+        "nodeproxy" => nodeproxy::run().await,
         // Unreachable via main() — is_applet() gates every path here — but
         // cheaper to answer honestly than to unwrap.
         other => bail!("component '{other}' was not built into this binary (see `notk8s components`)"),

@@ -28,11 +28,10 @@ async fn main() -> Result<()> {
         .init();
 
     // Runs forever; only returns on a condition that makes the whole process
-    // pointless (no usable nft). Exit non-zero so the service manager's
-    // restart loop makes that visible instead of leaving a live-looking
-    // process that routes nothing.
-    if nodeproxy::run().await.is_err() {
-        std::process::exit(1);
-    }
-    Ok(())
+    // pointless (an unreachable apiserver, no usable nft). Returning the
+    // error rather than exiting on it is what gets it *printed* — an
+    // `is_err() -> exit(1)` here swallowed the message entirely and left a
+    // service manager restarting a process whose logs said nothing about
+    // why. main's own Termination handling prints it and still exits 1.
+    nodeproxy::run().await
 }
