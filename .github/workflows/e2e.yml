@@ -180,12 +180,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # The run itself dirties the working tree — the build updates
-          # Cargo.lock — and `git checkout -B` then refuses with "your local
-          # changes would be overwritten", failing a job that had already
-          # produced its results. Publishing must not depend on a pristine
-          # tree; nothing here is worth keeping, since this step writes a text
-          # file and then the runner is destroyed.
+          # Found live: the run itself dirties the working tree — a build
+          # updates Cargo.lock — and `git checkout -B` then refuses with
+          # "your local changes would be overwritten", failing an e2e run
+          # that had already produced its results. Publishing results must
+          # not depend on the tree being pristine, so discard whatever the
+          # build touched first. Nothing here is worth keeping: this job
+          # publishes a text file and then the runner is destroyed.
           git reset --hard HEAD
 
           if git ls-remote --exit-code --heads origin "$RESULTS_BRANCH" >/dev/null 2>&1; then

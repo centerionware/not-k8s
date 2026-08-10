@@ -38,26 +38,43 @@ _apiserver_arch() {
     esac
 }
 
-# Fetch kube-apiserver once and cache it under .bootstrap/, which is already
-# this project's scratch directory and already cleaned up by --cleanup.
+# Fetch kube-apiserver once and cache it.
+#
+# NOT under $REPO_ROOT/.bootstrap, which is the obvious place and the wrong
+# one: bootstrap-source.sh runs under sudo, so that directory is root-owned,
+# and this suite runs unprivileged. Found live in CI, where the download
+# failed with a permission error that this function then reported as "no
+# network, or unsupported arch" — the misleading message cost more than the
+# bug did. The cache lives somewhere the test user can actually write, and
+# failures now say what actually happened.
 _fetch_kube_apiserver() {
-    local arch cache
+    local arch cache cache_dir err
     arch="$(_apiserver_arch)"
-    [[ -n "$arch" ]] || { echo ""; return 0; }
-    cache="$REPO_ROOT/.bootstrap/kube-apiserver-$KUBE_APISERVER_VERSION-$arch"
+    if [[ -z "$arch" ]]; then
+        _apiserver_fetch_error="unsupported architecture $(uname -m)"
+        echo ""
+        return 0
+    fi
+
+    cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/notk8s"
+    mkdir -p "$cache_dir" 2>/dev/null || cache_dir="$(mktemp -d)"
+    cache="$cache_dir/kube-apiserver-$KUBE_APISERVER_VERSION-$arch"
     if [[ -x "$cache" ]]; then
         echo "$cache"
         return 0
     fi
-    mkdir -p "$REPO_ROOT/.bootstrap"
-    if curl -fsSL --max-time 300 \
-        "https://dl.k8s.io/${KUBE_APISERVER_VERSION}/bin/linux/${arch}/kube-apiserver" \
-        -o "$cache.partial" 2>/dev/null; then
+
+    # dl.k8s.io redirects to the release bucket, so -L is required, and the
+    # canonical path includes /release/.
+    if err="$(curl -fsSL --max-time 300 \
+        "https://dl.k8s.io/release/${KUBE_APISERVER_VERSION}/bin/linux/${arch}/kube-apiserver" \
+        -o "$cache.partial" 2>&1)"; then
         chmod +x "$cache.partial"
         mv "$cache.partial" "$cache"
         echo "$cache"
     else
         rm -f "$cache.partial"
+        _apiserver_fetch_error="${err:-curl failed with no output}"
         echo ""
     fi
 }
@@ -71,9 +88,10 @@ _apiserver_env_start() {
     command -v openssl >/dev/null 2>&1 || skip_test "needs openssl to mint the service-account keypair"
     command -v kubectl >/dev/null 2>&1 || skip_test "needs kubectl"
 
+    _apiserver_fetch_error=""
     api_bin="$(_fetch_kube_apiserver)"
     [[ -n "$api_bin" ]] \
-        || skip_test "couldn't fetch kube-apiserver $KUBE_APISERVER_VERSION for this arch (no network, or unsupported arch)"
+        || skip_test "couldn't fetch kube-apiserver $KUBE_APISERVER_VERSION: ${_apiserver_fetch_error:-unknown reason}"
 
     apisrv_dir="$(mktemp -d)"
     apisrv_kubeconfig="$apisrv_dir/kubeconfig"

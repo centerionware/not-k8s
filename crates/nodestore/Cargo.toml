@@ -43,6 +43,26 @@ async-trait = { workspace = true }
 # "one binary, no runtime dependencies to install".
 rusqlite = { version = "0.32", features = ["bundled", "blob"] }
 
+# Raft consensus. The algorithm only — leader election, log replication,
+# joint-consensus membership changes, ReadIndex — with the log storage, the
+# transport and the state machine all still ours (src/raft/). This is the
+# real protocol rather than a hand-rolled approximation of it: consensus bugs
+# are silent, catastrophic, and only surface under exactly the partition and
+# crash conditions that are hardest to test.
+#
+# protobuf-codec, not prost-codec, deliberately: raft-proto's prost codec
+# pins prost 0.11 while this crate is on 0.14 via tonic, and encoding a raft
+# message would then need both majors in scope at once. raft depends on
+# rust-protobuf 2 unconditionally either way, so this costs nothing extra.
+# Raft messages cross our own transport as opaque bytes (proto/peer.proto),
+# so none of this reaches the wire format.
+raft = { version = "0.7", default-features = false, features = ["protobuf-codec"] }
+protobuf = "2"
+# raft-rs logs through slog. src/raft/logging.rs bridges it into tracing so
+# elections and leadership changes land in the same log as everything else —
+# with default-logger disabled, since it would pull in a second logging stack.
+slog = "2"
+
 [build-dependencies]
 # Declared with an explicit version rather than inherited: this one is not in
 # the workspace's [workspace.dependencies] (nodelet declares its own copy the

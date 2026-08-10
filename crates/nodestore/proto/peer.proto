@@ -1,0 +1,51 @@
+// Node-to-node transport. Not part of the etcd API and never exposed to
+// clients — a separate service on a separate port, the same way etcd splits
+// its peer port (2380) from its client port (2379).
+//
+// Raft messages cross as opaque bytes. raft-rs encodes them with
+// rust-protobuf 2, this crate speaks prost, and there is no reason for those
+// two to meet: the payload is produced and consumed only by raft-rs on either
+// end, so the transport does not need to understand it. It also means a
+// raft-rs upgrade that changes its internal message encoding is not a change
+// to this file.
+syntax = "proto3";
+
+package notk8s.nodestore.peer.v1;
+
+service Peer {
+  // One raft message, leader→follower or follower→leader.
+  //
+  // Unary rather than a stream: raft is already built to tolerate lost,
+  // duplicated and reordered messages, so a per-message RPC needs no
+  // delivery guarantees from us, and at heartbeat rates for a handful of
+  // members the overhead is irrelevant next to the failure modes a
+  // hand-managed stream would add.
+  rpc Send(RaftMessage) returns (RaftAck);
+
+  // Ask a member who it thinks the leader is, and how to reach it. Used by a
+  // follower that has to forward a write and does not yet know the leader's
+  // client URL, and by the e2e suite to assert on cluster state.
+  rpc Status(StatusRequest) returns (StatusReply);
+}
+
+message RaftMessage {
+  // A raft-rs eraftpb::Message, encoded by raft-rs itself.
+  bytes payload = 1;
+}
+
+message RaftAck {}
+
+message StatusRequest {}
+
+message StatusReply {
+  uint64 member_id = 1;
+  uint64 leader_id = 2;
+  uint64 term = 3;
+  uint64 applied_index = 4;
+  int64 revision = 5;
+  // "leader" | "follower" | "candidate" | "pre-candidate"
+  string role = 6;
+  string leader_client_url = 7;
+  repeated uint64 voters = 8;
+  repeated uint64 learners = 9;
+}

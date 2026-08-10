@@ -100,6 +100,37 @@ pub enum Command {
     /// `now_unix_secs`. Proposed by the leader's expiry loop; the timestamp is
     /// in the command precisely so replicas don't each read their own clock.
     ExpireLeases { now_unix_secs: i64 },
+
+    /// Record how to reach a member.
+    ///
+    /// raft knows member *ids* and nothing else; addresses are our problem.
+    /// Replicating them through the log — rather than keeping them in each
+    /// node's own configuration — is what lets a node that joins later, or
+    /// restarts, learn the cluster's shape from the state it already has to
+    /// catch up on, instead of from whatever its operator remembered to
+    /// configure. It is also what makes forwarding possible: a follower has
+    /// to know the leader's client URL, and the leader is identified to it by
+    /// id.
+    SetMember(Member),
+
+    /// Forget a member. Proposed alongside the raft configuration change that
+    /// removes it, so the address book cannot outlive the membership.
+    RemoveMember { id: u64 },
+}
+
+/// A cluster member, as recorded in the replicated address book.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Member {
+    pub id: u64,
+    /// Where peers reach this member for raft traffic.
+    pub peer_url: String,
+    /// Where clients — and forwarding followers — reach its etcd API.
+    pub client_url: String,
+    pub name: String,
+    /// A learner receives the log but does not vote and is not counted for
+    /// quorum. New members join this way so that catching up a fresh replica
+    /// cannot stall the cluster it is joining.
+    pub is_learner: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
