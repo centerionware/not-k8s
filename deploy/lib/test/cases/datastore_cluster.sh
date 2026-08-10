@@ -270,6 +270,11 @@ test_the_cluster_tolerates_a_slow_link() {
     _cluster_start
     trap _cluster_stop EXIT
 
+    # tc lives in iproute2's tc package, which a minimal image may not have.
+    # Skipping is the honest answer — without it, netem is a no-op and this
+    # test would "pass" having injected no latency at all.
+    command -v tc >/dev/null 2>&1 || skip_test "needs tc (iproute2) to inject latency"
+
     # 80ms each way is far beyond a datacentre and ordinary for a device on
     # the other end of a home connection — exactly the environment this
     # project targets. It must slow the cluster down, not depose its leader:
