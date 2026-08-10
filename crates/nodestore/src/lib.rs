@@ -121,7 +121,10 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         (consensus::Node::new(store, consensus, cfg.watch_buffer), None)
     };
 
-    let api = server::EtcdApi::new(Arc::clone(&node));
+    let api = match raft.clone() {
+        Some(handle) => server::EtcdApi::new(Arc::clone(&node)).with_raft(handle),
+        None => server::EtcdApi::new(Arc::clone(&node)),
+    };
 
     // The peer server carries raft traffic and nothing else, on its own port.
     // A raft message is trusted absolutely by whoever receives it, so this is
@@ -152,7 +155,6 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         cfg.compact_retain_revisions,
     ));
     tokio::spawn(server::lease_expiry_loop(api.clone(), cfg.lease_check_interval_secs));
-    let _ = &raft;
 
     let addr = cfg
         .listen

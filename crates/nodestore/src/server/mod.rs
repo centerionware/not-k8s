@@ -54,11 +54,34 @@ const ETCD_API_VERSION: &str = "3.5.16";
 #[derive(Clone)]
 pub struct EtcdApi {
     node: Arc<Node>,
+    /// Present only in a real cluster. Its absence is what makes the
+    /// membership RPCs answer "single member" rather than pretending.
+    raft: Option<crate::replication::driver::RaftHandle>,
 }
 
 impl EtcdApi {
     pub fn new(node: Arc<Node>) -> EtcdApi {
-        EtcdApi { node }
+        EtcdApi { node, raft: None }
+    }
+
+    pub fn with_raft(mut self, handle: crate::replication::driver::RaftHandle) -> EtcdApi {
+        self.raft = Some(handle);
+        self
+    }
+
+    /// The raft handle, or the honest error for a single-member store.
+    ///
+    /// Still `Unimplemented` when there is no cluster — not because the code
+    /// is missing any more, but because "add a member to a store that is not
+    /// running raft" genuinely has no meaning. Starting it with an initial
+    /// cluster is what makes these RPCs available.
+    fn raft(&self) -> std::result::Result<&crate::replication::driver::RaftHandle, Status> {
+        self.raft.as_ref().ok_or_else(|| {
+            Status::unimplemented(
+                "nodestore: this member is not running raft (no NODESTORE_INITIAL_CLUSTER), so it \
+                 has no membership to change",
+            )
+        })
     }
 
     pub fn node(&self) -> &Arc<Node> {
@@ -471,9 +494,21 @@ impl pb::maintenance_server::Maintenance for EtcdApi {
 
     async fn move_leader(
         &self,
-        _request: Request<pb::MoveLeaderRequest>,
+        request: Request<pb::MoveLeaderRequest>,
     ) -> std::result::Result<Response<pb::MoveLeaderResponse>, Status> {
-        Err(Status::unimplemented("nodestore: single member; there is nowhere to move leadership"))
+        let req = request.into_inner();
+        let raft = self.raft()?;
+        // Not forwarded: etcd requires this to be sent to the leader, because
+        // "give leadership to X" is only meaningful as an instruction from
+        // whoever currently holds it.
+        if !self.node.is_leader() {
+            return Err(Status::failed_precondition(
+                "etcdserver: not the leader; send MoveLeader to the current leader",
+            ));
+        }
+        raft.transfer_leader(req.target_id).await.map_err(Status::from)?;
+        let revision = self.current_revision()?;
+        Ok(Response::new(pb::MoveLeaderResponse { header: self.header(revision) }))
     }
 
     async fn downgrade(
@@ -491,51 +526,225 @@ impl pb::cluster_server::Cluster for EtcdApi {
         _request: Request<pb::MemberListRequest>,
     ) -> std::result::Result<Response<pb::MemberListResponse>, Status> {
         let revision = self.current_revision()?;
-        Ok(Response::new(pb::MemberListResponse {
-            header: self.header(revision),
-            members: vec![pb::Member {
+        let members = self.node.read(|s| s.members())?;
+        // A single member has an empty address book — there was never a
+        // membership change to record one — so it reports itself.
+        let members = if members.is_empty() {
+            vec![pb::Member {
                 id: self.node.member_id(),
                 name: "nodestore".to_string(),
-                peer_ur_ls: Vec::new(),
-                client_ur_ls: Vec::new(),
                 is_learner: false,
                 ..Default::default()
-            }],
-        }))
+            }]
+        } else {
+            members.iter().map(member_to_pb).collect()
+        };
+        Ok(Response::new(pb::MemberListResponse { header: self.header(revision), members }))
     }
 
     async fn member_add(
         &self,
-        _request: Request<pb::MemberAddRequest>,
+        request: Request<pb::MemberAddRequest>,
     ) -> std::result::Result<Response<pb::MemberAddResponse>, Status> {
-        // The honest error for the feature this whole design is built toward
-        // but has not reached. Accepting a member and never replicating to it
-        // would be far worse than refusing.
-        Err(Status::unimplemented(
-            "nodestore: multi-node raft replication is not implemented yet; this member cannot add peers",
-        ))
+        let req = request.into_inner();
+        forward_if_follower!(
+            self,
+            pb::cluster_client::ClusterClient<tonic::transport::Channel>,
+            member_add,
+            req
+        );
+        let raft = self.raft()?;
+
+        let peer_url = req
+            .peer_ur_ls
+            .first()
+            .cloned()
+            .ok_or_else(|| Status::invalid_argument("etcdserver: peer URLs are required"))?;
+        // Deterministic from the URL rather than random: re-adding a member
+        // after removing it must not silently create a *second* identity for
+        // the same machine, and an operator retrying a request that already
+        // succeeded should get the same member back.
+        let id = member_id_for(&peer_url);
+
+        // New members join as learners. A learner receives the log but is not
+        // counted for quorum, so catching up a fresh replica — which may mean
+        // shipping it an entire snapshot — cannot stall the cluster it is
+        // joining. Promotion to voter is a separate, explicit step.
+        let mut change = raft::eraftpb::ConfChangeSingle::default();
+        change.change_type = raft::eraftpb::ConfChangeType::AddLearnerNode;
+        change.node_id = id;
+        let mut cc = raft::eraftpb::ConfChangeV2::default();
+        cc.mut_changes().push(change);
+
+        let member = crate::command::Member {
+            id,
+            peer_url: peer_url.clone(),
+            client_url: String::new(),
+            name: format!("member-{id}"),
+            is_learner: true,
+        };
+        raft.propose_conf_change(cc, &Command::SetMember(member.clone()))
+            .await
+            .map_err(Status::from)?;
+
+        let revision = self.current_revision()?;
+        let members = self.node.read(|s| s.members())?;
+        Ok(Response::new(pb::MemberAddResponse {
+            header: self.header(revision),
+            member: Some(member_to_pb(&member)),
+            members: members.iter().map(member_to_pb).collect(),
+        }))
     }
 
     async fn member_remove(
         &self,
-        _request: Request<pb::MemberRemoveRequest>,
+        request: Request<pb::MemberRemoveRequest>,
     ) -> std::result::Result<Response<pb::MemberRemoveResponse>, Status> {
-        Err(Status::unimplemented("nodestore: single member; there is nothing to remove"))
+        let req = request.into_inner();
+        forward_if_follower!(
+            self,
+            pb::cluster_client::ClusterClient<tonic::transport::Channel>,
+            member_remove,
+            req
+        );
+        let raft = self.raft()?;
+
+        // Removing the leader would depose it mid-change. etcd refuses this
+        // too; the operator transfers leadership first.
+        if req.id == raft.member_id() {
+            return Err(Status::failed_precondition(
+                "nodestore: this member is the leader — transfer leadership before removing it",
+            ));
+        }
+
+        let mut change = raft::eraftpb::ConfChangeSingle::default();
+        change.change_type = raft::eraftpb::ConfChangeType::RemoveNode;
+        change.node_id = req.id;
+        let mut cc = raft::eraftpb::ConfChangeV2::default();
+        cc.mut_changes().push(change);
+
+        raft.propose_conf_change(cc, &Command::RemoveMember { id: req.id })
+            .await
+            .map_err(Status::from)?;
+
+        let revision = self.current_revision()?;
+        let members = self.node.read(|s| s.members())?;
+        Ok(Response::new(pb::MemberRemoveResponse {
+            header: self.header(revision),
+            members: members.iter().map(member_to_pb).collect(),
+        }))
     }
 
     async fn member_update(
         &self,
-        _request: Request<pb::MemberUpdateRequest>,
+        request: Request<pb::MemberUpdateRequest>,
     ) -> std::result::Result<Response<pb::MemberUpdateResponse>, Status> {
-        Err(Status::unimplemented("nodestore: single member; there is nothing to update"))
+        let req = request.into_inner();
+        forward_if_follower!(
+            self,
+            pb::cluster_client::ClusterClient<tonic::transport::Channel>,
+            member_update,
+            req
+        );
+        let _ = self.raft()?;
+
+        let peer_url = req
+            .peer_ur_ls
+            .first()
+            .cloned()
+            .ok_or_else(|| Status::invalid_argument("etcdserver: peer URLs are required"))?;
+        let existing = self
+            .node
+            .read(|s| s.member(req.id))?
+            .ok_or_else(|| Status::not_found("etcdserver: member not found"))?;
+
+        // An address change is state, not membership: raft's own view of who
+        // is in the cluster does not change, so this needs no conf change.
+        self.node
+            .propose(Command::SetMember(crate::command::Member {
+                peer_url,
+                ..existing
+            }))
+            .await?;
+
+        let revision = self.current_revision()?;
+        let members = self.node.read(|s| s.members())?;
+        Ok(Response::new(pb::MemberUpdateResponse {
+            header: self.header(revision),
+            members: members.iter().map(member_to_pb).collect(),
+        }))
     }
 
     async fn member_promote(
         &self,
-        _request: Request<pb::MemberPromoteRequest>,
+        request: Request<pb::MemberPromoteRequest>,
     ) -> std::result::Result<Response<pb::MemberPromoteResponse>, Status> {
-        Err(Status::unimplemented("nodestore: single member; there are no learners to promote"))
+        let req = request.into_inner();
+        forward_if_follower!(
+            self,
+            pb::cluster_client::ClusterClient<tonic::transport::Channel>,
+            member_promote,
+            req
+        );
+        let raft = self.raft()?;
+
+        let existing = self
+            .node
+            .read(|s| s.member(req.id))?
+            .ok_or_else(|| Status::not_found("etcdserver: member not found"))?;
+
+        let mut change = raft::eraftpb::ConfChangeSingle::default();
+        change.change_type = raft::eraftpb::ConfChangeType::AddNode;
+        change.node_id = req.id;
+        let mut cc = raft::eraftpb::ConfChangeV2::default();
+        cc.mut_changes().push(change);
+
+        raft.propose_conf_change(
+            cc,
+            &Command::SetMember(crate::command::Member { is_learner: false, ..existing }),
+        )
+        .await
+        .map_err(Status::from)?;
+
+        let revision = self.current_revision()?;
+        let members = self.node.read(|s| s.members())?;
+        Ok(Response::new(pb::MemberPromoteResponse {
+            header: self.header(revision),
+            members: members.iter().map(member_to_pb).collect(),
+        }))
     }
+}
+
+fn member_to_pb(m: &crate::command::Member) -> pb::Member {
+    pb::Member {
+        id: m.id,
+        name: m.name.clone(),
+        peer_ur_ls: if m.peer_url.is_empty() { Vec::new() } else { vec![m.peer_url.clone()] },
+        client_ur_ls: if m.client_url.is_empty() {
+            Vec::new()
+        } else {
+            vec![m.client_url.clone()]
+        },
+        is_learner: m.is_learner,
+        ..Default::default()
+    }
+}
+
+/// A member id derived from its peer URL.
+///
+/// Deterministic on purpose. Random ids would mean an operator who retried a
+/// MemberAdd that had in fact succeeded ended up with two members pointing at
+/// one machine — and a cluster whose quorum arithmetic counts a replica that
+/// does not exist is one that cannot make progress after a single real
+/// failure. FNV-1a, masked into the positive range, since raft treats 0 as
+/// "no member".
+fn member_id_for(peer_url: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in peer_url.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    (hash & 0x7fff_ffff_ffff_ffff).max(1)
 }
 
 /// Auto-compaction: keep the last `retain` revisions and discard the rest.
@@ -605,4 +814,36 @@ pub fn count_keys(node: &Node) -> Result<i64> {
         q.count_only = true;
         Ok(s.range(&q)?.count)
     })
+}
+
+#[cfg(test)]
+mod member_id_tests {
+    use super::member_id_for;
+
+    #[test]
+    fn the_same_peer_url_always_yields_the_same_id() {
+        // The property the whole scheme rests on: an operator retrying a
+        // MemberAdd that had in fact succeeded gets the same member back,
+        // rather than a second one pointing at the same machine.
+        let a = member_id_for("http://10.0.0.2:2380");
+        let b = member_id_for("http://10.0.0.2:2380");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn different_peers_get_different_ids() {
+        assert_ne!(member_id_for("http://10.0.0.2:2380"), member_id_for("http://10.0.0.3:2380"));
+        assert_ne!(member_id_for("http://10.0.0.2:2380"), member_id_for("http://10.0.0.2:2381"));
+    }
+
+    #[test]
+    fn ids_are_positive_and_never_zero() {
+        // Raft reads 0 as "no member", so a member with that id would be
+        // indistinguishable from "there is no leader".
+        for url in ["", "http://a", "http://[::1]:2380", &"x".repeat(500)] {
+            let id = member_id_for(url);
+            assert!(id > 0, "{url:?} produced {id}");
+            assert!(id <= 0x7fff_ffff_ffff_ffff);
+        }
+    }
 }
