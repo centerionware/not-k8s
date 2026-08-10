@@ -38,6 +38,62 @@ pub fn decode_entry(bytes: &[u8]) -> Result<(u64, Command)> {
     Ok((entry.proposal_id, command_from_pb(command)?))
 }
 
+/// Encode the whole state machine for a raft snapshot.
+pub fn encode_snapshot(state: &crate::store::SnapshotState) -> Vec<u8> {
+    pb::SnapshotState {
+        revision: state.revision,
+        compact_revision: state.compact_revision,
+        applied_index: state.applied_index,
+        kvs: state
+            .kvs
+            .iter()
+            .map(|kv| pb::SnapshotKv {
+                key: kv.key.clone(),
+                value: kv.value.clone(),
+                create_revision: kv.create_revision,
+                mod_revision: kv.mod_revision,
+                version: kv.version,
+                lease: kv.lease,
+            })
+            .collect(),
+        leases: state
+            .leases
+            .iter()
+            .map(|(id, ttl_secs, expires_at)| pb::SnapshotLease {
+                id: *id,
+                ttl_secs: *ttl_secs,
+                expires_at: *expires_at,
+            })
+            .collect(),
+        members: state.members.iter().map(member_to_pb).collect(),
+    }
+    .encode_to_vec()
+}
+
+pub fn decode_snapshot(bytes: &[u8]) -> Result<crate::store::SnapshotState> {
+    let s = pb::SnapshotState::decode(bytes)
+        .map_err(|e| Error::InvalidRequest(format!("undecodable snapshot: {e}")))?;
+    Ok(crate::store::SnapshotState {
+        revision: s.revision,
+        compact_revision: s.compact_revision,
+        applied_index: s.applied_index,
+        kvs: s
+            .kvs
+            .into_iter()
+            .map(|kv| crate::store::KeyValue {
+                key: kv.key,
+                value: kv.value,
+                create_revision: kv.create_revision,
+                mod_revision: kv.mod_revision,
+                version: kv.version,
+                lease: kv.lease,
+            })
+            .collect(),
+        leases: s.leases.into_iter().map(|l| (l.id, l.ttl_secs, l.expires_at)).collect(),
+        members: s.members.into_iter().map(member_from_pb).collect(),
+    })
+}
+
 // ── Command ──────────────────────────────────────────────────────────────
 
 pub fn command_to_pb(cmd: &Command) -> pb::Command {
@@ -435,6 +491,42 @@ mod tests {
             }),
         };
         assert!(decode_entry(&entry.encode_to_vec()).is_err());
+    }
+
+    #[test]
+    fn a_snapshot_round_trips_with_its_revisions_intact() {
+        // Revisions surviving the encoding is the whole point: a restored
+        // follower has to answer reads identically to the member that sent
+        // it, and resourceVersion is that revision.
+        let state = crate::store::SnapshotState {
+            revision: 42,
+            compact_revision: 7,
+            applied_index: 99,
+            kvs: vec![crate::store::KeyValue {
+                key: b"/a".to_vec(),
+                value: vec![0x00, 0xff],
+                create_revision: 3,
+                mod_revision: 41,
+                version: 5,
+                lease: 8,
+            }],
+            leases: vec![(8, 30, 1_700_000_000)],
+            members: vec![Member {
+                id: 3,
+                peer_url: "http://p".into(),
+                client_url: "http://c".into(),
+                name: "n3".into(),
+                is_learner: false,
+            }],
+        };
+        let decoded = decode_snapshot(&encode_snapshot(&state)).unwrap();
+        assert_eq!(decoded.revision, 42);
+        assert_eq!(decoded.compact_revision, 7);
+        assert_eq!(decoded.applied_index, 99);
+        assert_eq!(decoded.kvs[0].mod_revision, 41);
+        assert_eq!(decoded.kvs[0].value, vec![0x00, 0xff]);
+        assert_eq!(decoded.leases[0], (8, 30, 1_700_000_000));
+        assert_eq!(decoded.members[0].client_url, "http://c");
     }
 
     #[test]

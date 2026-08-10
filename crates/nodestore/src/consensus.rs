@@ -187,10 +187,10 @@ impl Node {
     /// Under raft this is called by the applier task walking committed entries
     /// in index order, not by the proposer. It takes `index` for that reason —
     /// so the signature does not have to change when it does.
-    fn apply_committed(&self, _index: u64, cmd: &Command) -> Result<Applied> {
+    pub fn apply_committed(&self, index: u64, cmd: &Command) -> Result<Applied> {
         let applied = {
             let mut store = self.lock_store()?;
-            store.apply(cmd)?
+            store.apply_at(index, cmd)?
             // The lock is released here, before publishing. Holding it across
             // the fan-out would let one slow watcher block the applier, which
             // is the failure mode this whole design exists to avoid.
@@ -200,6 +200,14 @@ impl Node {
             self.watch.publish(applied.revision, applied.events.clone());
         }
         Ok(applied)
+    }
+
+    /// Replace the state machine with a snapshot. Only the raft driver calls
+    /// this, on a follower that has been told its own state is too far behind
+    /// to be caught up from the log.
+    pub fn restore_snapshot(&self, state: &crate::store::SnapshotState) -> Result<()> {
+        let mut store = self.lock_store()?;
+        store.restore_snapshot(state)
     }
 
     fn lock_store(&self) -> Result<std::sync::MutexGuard<'_, Store>> {
