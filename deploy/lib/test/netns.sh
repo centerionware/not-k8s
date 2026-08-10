@@ -179,6 +179,29 @@ except Exception:
     echo "$leader"
 }
 
+# netns_wait_for_new_leader <count> <old-leader> <timeout-secs> — wait for the
+# survivors to agree on a leader that is NOT the given one.
+#
+# Distinct from netns_wait_for_leader for a reason that cost a real test
+# failure: immediately after a leader is killed, the survivors still name it,
+# because they have not yet reached their election timeout. A wait that
+# accepts the first agreed answer therefore returns the *dead* leader
+# instantly — and a test built on it would report a successful failover having
+# observed no failover at all.
+netns_wait_for_new_leader() {
+    local count="$1" old="$2" timeout="${3:-60}" waited=0 leader
+    while [[ "$waited" -lt "$timeout" ]]; do
+        leader="$(netns_leader "$count")"
+        if [[ -n "$leader" && "$leader" != "$old" ]]; then
+            echo "$leader"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
 # netns_wait_for_leader <count> <timeout-secs> — echo the agreed leader id.
 netns_wait_for_leader() {
     local count="$1" timeout="${2:-30}" waited=0 leader

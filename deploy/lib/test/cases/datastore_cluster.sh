@@ -157,10 +157,12 @@ test_the_cluster_survives_the_leader_being_killed() {
     # not the failure worth testing.
     netns_kill_member "$old_leader"
 
+    # Specifically a *new* leader: the survivors go on naming the dead one
+    # until their election timeout expires, so waiting for "a leader" would
+    # return the corpse immediately and call that a successful failover.
     local new_leader
-    new_leader="$(netns_wait_for_leader "$CLUSTER_SIZE" 60)" \
-        || die "no new leader was elected within 60s of killing member $old_leader"
-    assert_not_eq "$new_leader" "$old_leader" "a dead member must not still be the leader"
+    new_leader="$(netns_wait_for_new_leader "$CLUSTER_SIZE" "$old_leader" 60)" \
+        || die "no new leader was elected within 60s of killing member $old_leader — logs: $(tail -15 "$CLUSTER_ROOT"/*/nodestore.log 2>/dev/null)"
 
     # The committed write must have survived the failover — this is the
     # promise raft exists to make.
@@ -310,14 +312,8 @@ test_a_partitioned_leader_steps_down_and_the_majority_elects_another() {
     local old_leader="$cluster_leader"
     netns_partition "$old_leader"
 
-    local new_leader waited=0
-    while [[ "$waited" -lt 60 ]]; do
-        new_leader="$(netns_leader "$CLUSTER_SIZE")"
-        [[ -n "$new_leader" && "$new_leader" != "$old_leader" ]] && break
-        sleep 1
-        waited=$((waited + 1))
-    done
-    [[ -n "$new_leader" && "$new_leader" != "$old_leader" ]] \
+    local new_leader
+    new_leader="$(netns_wait_for_new_leader "$CLUSTER_SIZE" "$old_leader" 60)" \
         || die "the majority never elected a new leader after partitioning member $old_leader"
 
     # The isolated member must have stopped claiming to lead: pre-vote means
