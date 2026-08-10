@@ -15,6 +15,8 @@
 //!
 //!   * [`transport`] — raft messages over our own gRPC, deliberately lossy
 //!     because that is the interface raft is designed against.
+//!   * [`proposals`] — routing an applied result back to the caller that
+//!     proposed it, and failing the ones a lost leadership invalidated.
 //!
 //! Still to come on this branch: the driver (the Ready loop) and snapshot
 //! build/restore. The pieces already here are the ones everything else stands
@@ -22,4 +24,5 @@
 
 pub mod log;
 pub mod logging;
+pub mod proposals;
 pub mod transport;
