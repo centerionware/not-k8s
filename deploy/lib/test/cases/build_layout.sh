@@ -67,9 +67,36 @@ test_combined_binary_contains_every_component() {
 
     local components name
     components="$("$bin" components)"
+
+    # Every component installed here must be in the binary: that's the
+    # dispatch contract. bin/nodelet is a symlink to this binary, so a
+    # nodelet it doesn't contain is a service that starts and immediately
+    # dies on "component was not built into this binary".
     while read -r name; do
         assert_contains "$components" "$name" "'notk8s components' should list the '$name' component"
     done < <(every_installed_component)
+
+    # ...but not the converse. These are deliberately not compared as equal
+    # sets: the released `notk8s` asset is built with default features
+    # (release.yml: `cargo build --features cri -p notk8s`), i.e. every
+    # component, and bootstrap-release.sh --layout=combined installs that
+    # one asset whatever this node runs. `--proxy=none` there means "don't
+    # run nodeproxy", not "don't ship it" — there is nothing separate to
+    # skip fetching. A binary containing more than this node symlinks is
+    # therefore the normal release install, not a defect.
+    #
+    # What *is* a defect is the binary containing a name the component
+    # table has never heard of — a component added to crates/notk8s's
+    # APPLETS and its Cargo.toml but not to deploy/lib/components.sh. That
+    # component would build into every release and be dispatchable, while
+    # the whole shell side (which drives off the table) silently never
+    # installs, services, or tests it. This direction holds regardless of
+    # what a given node enabled, so it's the one worth asserting.
+    while read -r name; do
+        [[ -n "$name" ]] || continue
+        assert_not_empty "$(component_row "$name" || true)" \
+            "the combined binary contains '$name', which has no row in deploy/lib/components.sh — add it there, or the shell side will never build, install, or service it"
+    done <<< "$components"
 
     # A component in the dispatch table but not in the help output (or vice
     # versa) means the two have drifted, which is how a component gets
