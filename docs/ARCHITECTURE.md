@@ -263,6 +263,10 @@ So the build system produces both layouts (`--layout=` /
   every component, with a `bin/<component>` symlink per component that it
   dispatches on via `argv[0]`. One copy of the shared dependencies for all
   components.
+- **both** — build both. The split binaries are the ones installed and run
+  (least surprise against every previous release); the combined one is
+  produced alongside at `bin/notk8s`. This is what a release build wants:
+  ship both, let the operator choose.
 
 The choice changes nothing at runtime. Both layouts still run one process
 per component, still start them as independent services with no ordering

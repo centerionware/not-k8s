@@ -127,9 +127,17 @@ use_prebuilt_binaries() {
         return 0
     fi
 
-    [[ -n "${NOTK8S_NODELET_PREBUILT:-}" ]] || return 1
+    # "Did the caller supply ANY per-component prebuilt?" — asked of the
+    # component table, not of nodelet specifically. A future component
+    # supplied prebuilt on its own has to reach the mixing error below
+    # rather than silently falling through to a from-source build.
+    local name row var path any=0
+    while read -r name; do
+        var="$(component_field "$(component_row "$name")" 5)"
+        [[ -n "${!var:-}" ]] && any=1
+    done < <(enabled_components)
+    [[ "$any" -eq 1 ]] || return 1
 
-    local name row var path
     while read -r name; do
         row="$(component_row "$name")"
         var="$(component_field "$row" 5)"
@@ -219,6 +227,14 @@ install_layout_output() {
     if layout_builds_combined "$layout"; then
         install_built_binary "$out_dir/notk8s" notk8s
         log "Combined binary also built (not installed as the running one — NOTK8S_BUILD_LAYOUT=combined does that): $REPO_ROOT/bin/notk8s"
+    elif [[ -e "$REPO_ROOT/bin/notk8s" ]]; then
+        # Left by an earlier combined run. Not a dispatch hazard (the
+        # run-*.sh fallback only looks at it when bin/<component> is
+        # missing, and this run just wrote those), but leaving a stale
+        # binary of unknown vintage on the device is how the footprint
+        # report ends up counting something this run never built.
+        rm -f "$REPO_ROOT/bin/notk8s"
+        log "Removed a stale $REPO_ROOT/bin/notk8s left by an earlier combined-layout run."
     fi
 }
 
@@ -235,6 +251,12 @@ build_nodelet() {
     # the whole point of asking for one is the resulting footprint.
     if layout_installs_combined "$layout" && [[ -z "${NOTK8S_COMBINED_PREBUILT:-}" && -n "${NOTK8S_NODELET_PREBUILT:-}" ]]; then
         die "--layout=combined was requested, but the prebuilt binaries supplied are the per-component ones (NOTK8S_NODELET_PREBUILT/...). A combined binary has to be built as one — set NOTK8S_COMBINED_PREBUILT to a prebuilt 'notk8s' instead (bootstrap-release.sh --layout=combined fetches one), or drop --layout=combined to install the per-component binaries you already have."
+    fi
+
+    # ...and the mirror image: a combined binary can't be taken apart into
+    # per-component ones either.
+    if ! layout_builds_combined "$layout" && [[ -n "${NOTK8S_COMBINED_PREBUILT:-}" ]]; then
+        die "NOTK8S_COMBINED_PREBUILT is set (a single binary containing every component), but this run's layout is '$layout', which installs one binary per component. Pass --layout=combined to install it as intended, or supply the per-component prebuilts (NOTK8S_NODELET_PREBUILT/...) instead."
     fi
 
     if use_prebuilt_binaries; then

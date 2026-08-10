@@ -34,11 +34,19 @@
 //!   2. **First argument** — `notk8s nodelet` runs the same thing, for when
 //!      there's no symlink to invoke through.
 //!
-//! Remaining arguments are passed through untouched, and every component
-//! reads its configuration from the environment exactly as it does when
-//! built standalone. There is no combined-binary-only configuration and no
-//! behavioural difference between the two layouts — if one ever appears,
-//! it's a bug in this file, not a feature.
+//! Every component reads its configuration from the environment, exactly as
+//! it does when built standalone, and **no component reads `argv`** — which
+//! is what lets this file dispatch on a name and call `run()` with nothing
+//! else. There is no combined-binary-only configuration and no behavioural
+//! difference between the two layouts.
+//!
+//! That is a live constraint, not just a description. A component that
+//! started parsing `std::env::args()` would see `["…/nodelet", …]` in the
+//! split layout and `["…/notk8s", "nodelet", …]` under subcommand dispatch —
+//! a layout-dependent difference, i.e. exactly the thing this crate exists
+//! to not have. Adding a component that needs arguments means giving
+//! `run()` a parameter and normalizing the list here for both layouts, not
+//! reading the process's argv from inside the component.
 
 use anyhow::{bail, Result};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};

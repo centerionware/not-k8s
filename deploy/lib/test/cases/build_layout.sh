@@ -15,6 +15,22 @@
 # layout by construction: if `bin/nodelet` is a symlink to `notk8s` and
 # pods still run, the dispatch worked.
 
+# The component list comes from the same table the build system uses, so a
+# component added there is covered here without touching this file — the
+# whole point of that table. Sourced rather than restated: a hand-copied
+# list of component names in a test asserting that component names live in
+# one place would be its own refutation.
+# shellcheck source=../../components.sh
+source "$REPO_ROOT/deploy/lib/components.sh"
+
+# every_component — every name in the table, wanted by this run or not.
+# Deliberately not enabled_components(): a test wants to check whatever is
+# actually installed here, and PROXY isn't set in this context.
+every_component() {
+    local row
+    for row in "${NOTK8S_COMPONENTS[@]}"; do component_field "$row" 1; done
+}
+
 # The combined binary, wherever this deployment put it, or "" if this is a
 # split install.
 _combined_binary() {
@@ -30,10 +46,11 @@ test_combined_binary_contains_every_component() {
     bin="$(_combined_binary)"
     [[ -n "$bin" ]] || skip_test "no combined binary here (split layout — build with --layout=combined or --layout=both)"
 
-    local components
+    local components name
     components="$("$bin" components)"
-    assert_contains "$components" "nodelet" "'notk8s components' should list the node agent"
-    assert_contains "$components" "nodeproxy" "'notk8s components' should list the Service proxy"
+    while read -r name; do
+        assert_contains "$components" "$name" "'notk8s components' should list the '$name' component"
+    done < <(every_component)
 
     # A component in the dispatch table but not in the help output (or vice
     # versa) means the two have drifted, which is how a component gets
@@ -66,7 +83,7 @@ test_installed_component_binaries_are_runnable_whatever_the_layout() {
     # combined one. `nodeproxy --help` isn't a thing (it takes no arguments
     # — everything is env-driven), so this checks the file, not the output.
     local name
-    for name in nodelet nodeproxy; do
+    while read -r name; do
         local path="$REPO_ROOT/bin/$name"
         [[ -e "$path" ]] || continue   # --proxy=none, or a target/-only build
         assert_true test -x "$path"
@@ -84,7 +101,7 @@ test_installed_component_binaries_are_runnable_whatever_the_layout() {
             assert_contains "$("$REPO_ROOT/bin/notk8s" components)" "$name" \
                 "the combined binary bin/$name points at should actually contain '$name'"
         fi
-    done
+    done < <(every_component)
 }
 
 test_a_failing_component_says_why_before_it_exits() {

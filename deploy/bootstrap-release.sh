@@ -56,6 +56,16 @@ done
 
 mkdir -p "$REPO_ROOT/.bootstrap/logs"
 source "$LIB_DIR/common.sh"
+
+# Validated here, not just downstream in bootstrap-source.sh: this script
+# fetches release assets *before* handing off, and only branches on
+# "combined". Without this, `--layout=comined` quietly downloads the
+# per-component assets and only fails afterwards, once the network cost is
+# already paid. Placed after common.sh on purpose — die() comes from there.
+case "$LAYOUT" in
+    split|combined|both) ;;
+    *) die "Unknown --layout='$LAYOUT' (want 'split' — one binary per component, 'combined' — one multi-call binary, or 'both'). See deploy/lib/components.sh." ;;
+esac
 detect_platform   # sets ARCH
 ensure_fetch_tool
 
@@ -115,13 +125,24 @@ download_release_binary() {
 # including --proxy=none, which in this layout means "don't run nodeproxy",
 # not "don't fetch it" (there's nothing separate to skip fetching).
 if [[ "$LAYOUT" == "combined" ]]; then
-    export NOTK8S_COMBINED_PREBUILT="$(download_release_binary notk8s)"
+    # Assign, check, then export — never `export VAR="$(cmd)"`. That form
+    # returns *export's* status, so `set -e` never sees the command fail,
+    # and download_release_binary's own `die` only exits the subshell it
+    # runs in: the net effect is an empty variable and a run that carries
+    # on as if nothing were wrong.
+    combined_prebuilt="$(download_release_binary notk8s)" \
+        || die "Couldn't download the combined 'notk8s' binary for this release."
+    export NOTK8S_COMBINED_PREBUILT="$combined_prebuilt"
     rm -f "$RELEASE_JSON"
     log "Handing off to bootstrap-source.sh with NOTK8S_COMBINED_PREBUILT=$NOTK8S_COMBINED_PREBUILT"
     exec "$SCRIPT_DIR/bootstrap-source.sh" "${PASSTHROUGH_ARGS[@]}"
 fi
 
-export NOTK8S_NODELET_PREBUILT="$(download_release_binary nodelet)"
+# Same assign-check-export as the combined branch above, for the same
+# reason.
+nodelet_prebuilt="$(download_release_binary nodelet)" \
+    || die "Couldn't download the 'nodelet' binary for this release."
+export NOTK8S_NODELET_PREBUILT="$nodelet_prebuilt"
 
 # --proxy=none means this node's ClusterIP/NodePort routing belongs to
 # something else (a real kube-proxy, Cilium) — don't fetch a binary that
@@ -131,7 +152,9 @@ for arg in "${PASSTHROUGH_ARGS[@]}"; do
     [[ "$arg" == "--proxy=none" ]] && WANT_PROXY=0
 done
 if [[ "$WANT_PROXY" -eq 1 ]]; then
-    export NOTK8S_NODEPROXY_PREBUILT="$(download_release_binary nodeproxy)"
+    nodeproxy_prebuilt="$(download_release_binary nodeproxy)" \
+        || die "Couldn't download the 'nodeproxy' binary for this release. Pass --proxy=none if this node's service routing is handled by something else."
+    export NOTK8S_NODEPROXY_PREBUILT="$nodeproxy_prebuilt"
 fi
 
 rm -f "$RELEASE_JSON"

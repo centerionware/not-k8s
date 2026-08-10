@@ -247,15 +247,6 @@ async fn gc_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: Config
     }
 }
 
-/// Re-check node pressure on `cfg.eviction_check_interval` and, if
-/// MemoryPressure or DiskPressure is active, evict exactly one eligible pod
-/// (see `nodelet::eviction`) — never a mass cull; the next tick re-measures
-/// and decides again, same as real kubelet's eviction manager. A *hard*
-/// threshold acts the same tick it's crossed; a *soft* one (round 101)
-/// first needs to stay continuously crossed for `cfg.eviction_soft_grace_period`
-/// (`soft_since`, tracked across ticks) — real kubelet's own
-/// eviction-soft/-soft-grace-period pair, this codebase's prior "hard-style
-/// immediate action only" simplification.
 /// Terminate a pod for a kubelet-initiated reason (node/pod resource
 /// eviction, `activeDeadlineSeconds` exceeded): stop its containers
 /// immediately, mark it `Failed` with the given reason, and — critically —
@@ -299,6 +290,15 @@ async fn evict_pod(client: &kube::Client, runtime: &Arc<dyn PodRuntime>, pod: &k
     }
 }
 
+/// Re-check node pressure on `cfg.eviction_check_interval` and, if
+/// MemoryPressure or DiskPressure is active, evict exactly one eligible pod
+/// (see `nodelet::eviction`) — never a mass cull; the next tick re-measures
+/// and decides again, same as real kubelet's eviction manager. A *hard*
+/// threshold acts the same tick it's crossed; a *soft* one (round 101)
+/// first needs to stay continuously crossed for `cfg.eviction_soft_grace_period`
+/// (`soft_since`, tracked across ticks) — real kubelet's own
+/// eviction-soft/-soft-grace-period pair, this codebase's prior "hard-style
+/// immediate action only" simplification.
 async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: Config) {
     use k8s_openapi::api::core::v1::Pod;
     use kube::api::{Api, ListParams};

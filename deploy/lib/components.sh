@@ -69,8 +69,13 @@ component_row() {
 # split build of this component ("" or "--features cri"), resolving @cri
 # against this run's WITH_CRI. Word-split by the caller on purpose.
 component_cargo_features() {
-    local spec
-    spec="$(component_field "$(component_row "$1")" 3)"
+    local row spec
+    # An unknown name must be loud: component_row returns nothing, and an
+    # empty spec would silently mean "no features" — i.e. a nodelet built
+    # without --features cri, which fails much later and looks like a
+    # runtime bug rather than a typo in the table.
+    row="$(component_row "$1")" || die "Unknown component '$1' — every component needs a row in NOTK8S_COMPONENTS (lib/components.sh)."
+    spec="$(component_field "$row" 3)"
     case "$spec" in
         "") echo "" ;;
         @cri) [[ "${WITH_CRI:-0}" -eq 1 ]] && echo "--features cri" || echo "" ;;
