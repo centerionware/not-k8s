@@ -17,6 +17,8 @@
 //!     because that is the interface raft is designed against.
 //!   * [`proposals`] — routing an applied result back to the caller that
 //!     proposed it, and failing the ones a lost leadership invalidated.
+//!   * [`bootstrap`] — bringing a clustered member up, and who is allowed to
+//!     publish the address book (only the leader, which decides the rest).
 //!   * [`consensus`] — the adapter that lets the gRPC layer keep proposing
 //!     commands without knowing a quorum was involved.
 //!   * [`peer_service`] — the inbound half of the transport, on its own port.
@@ -28,6 +30,7 @@
 //! gRPC layer proposes through it, forwarding writes from a follower to the
 //! leader, and the netns-based failover e2e.
 
+pub mod bootstrap;
 pub mod consensus;
 pub mod driver;
 pub mod log;

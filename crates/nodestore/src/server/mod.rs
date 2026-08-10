@@ -20,6 +20,28 @@ use crate::store::{CommandResponse, OpResponse};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+/// Where a write goes when this member is not the leader.
+///
+/// Followers forward rather than refuse. etcd's clients do tolerate being
+/// told "not the leader", but kube-apiserver is configured with a list of
+/// endpoints and expects any of them to work — a follower that refused writes
+/// would make a three-member cluster serve writes only a third of the time
+/// from apiserver's point of view.
+///
+/// The request is forwarded *verbatim*, using the same generated client the
+/// API is defined by, so a forwarded write cannot drift from a local one.
+macro_rules! forward_if_follower {
+    ($self:ident, $client:ty, $method:ident, $req:expr) => {
+        if !$self.node.is_leader() {
+            let url = $self.leader_client_url()?;
+            let mut client = <$client>::connect(url.clone()).await.map_err(|e| {
+                Status::unavailable(format!("could not reach the leader at {url}: {e}"))
+            })?;
+            return client.$method($req).await;
+        }
+    };
+}
+
 /// The etcd API version reported by `Maintenance.Status`.
 ///
 /// This is the version of the *protocol* being spoken, not a claim to be etcd:
@@ -55,6 +77,30 @@ impl EtcdApi {
     fn current_revision(&self) -> Result<i64> {
         self.node.read(|s| s.revision())
     }
+
+    /// The leader's client URL, for forwarding.
+    ///
+    /// Two distinct failures, reported differently on purpose: there being no
+    /// leader right now is transient and worth retrying, whereas a leader
+    /// whose address nobody has published is a configuration problem that
+    /// retrying will not fix.
+    fn leader_client_url(&self) -> std::result::Result<String, Status> {
+        let Some(leader) = self.node.leader_id() else {
+            return Err(Status::unavailable(
+                "no leader elected right now; retry shortly",
+            ));
+        };
+        let member = self
+            .node
+            .read(|s| s.member(leader))
+            .map_err(|e| Status::internal(format!("reading the address book: {e}")))?;
+        match member.map(|m| m.client_url).filter(|u| !u.is_empty()) {
+            Some(url) => Ok(url),
+            None => Err(Status::unavailable(format!(
+                "member {leader} is the leader but has not published a client URL yet"
+            ))),
+        }
+    }
 }
 
 /// Seconds since the epoch — the leader's clock reading, taken before a
@@ -73,6 +119,18 @@ impl pb::kv_server::Kv for EtcdApi {
         request: Request<pb::RangeRequest>,
     ) -> std::result::Result<Response<pb::RangeResponse>, Status> {
         let req = request.into_inner();
+        // `serializable` is the client saying it will accept a possibly-stale
+        // local read. Anything else must be answered by the leader, or a
+        // follower could serve a value the cluster has already replaced —
+        // which for apiserver means a resourceVersion that goes backwards.
+        if !req.serializable {
+            forward_if_follower!(
+                self,
+                pb::kv_client::KvClient<tonic::transport::Channel>,
+                range,
+                req
+            );
+        }
         let query = convert::range_query(&req)?;
         let (result, revision) = self.node.read(|s| {
             let result = s.range(&query)?;
@@ -96,6 +154,7 @@ impl pb::kv_server::Kv for EtcdApi {
         request: Request<pb::PutRequest>,
     ) -> std::result::Result<Response<pb::PutResponse>, Status> {
         let req = request.into_inner();
+        forward_if_follower!(self, pb::kv_client::KvClient<tonic::transport::Channel>, put, req);
         let applied = self.node.propose(Command::Put(convert::put_op(&req))).await?;
         let prev_kv = match &applied.response {
             CommandResponse::Put { prev_kv } => prev_kv.as_ref().map(convert::key_value_to_pb),
@@ -109,6 +168,12 @@ impl pb::kv_server::Kv for EtcdApi {
         request: Request<pb::DeleteRangeRequest>,
     ) -> std::result::Result<Response<pb::DeleteRangeResponse>, Status> {
         let req = request.into_inner();
+        forward_if_follower!(
+            self,
+            pb::kv_client::KvClient<tonic::transport::Channel>,
+            delete_range,
+            req
+        );
         let applied = self.node.propose(Command::Delete(convert::delete_op(&req))).await?;
         let (deleted, prev_kvs) = match &applied.response {
             CommandResponse::Delete { deleted, prev_kvs } => {
@@ -128,6 +193,7 @@ impl pb::kv_server::Kv for EtcdApi {
         request: Request<pb::TxnRequest>,
     ) -> std::result::Result<Response<pb::TxnResponse>, Status> {
         let req = request.into_inner();
+        forward_if_follower!(self, pb::kv_client::KvClient<tonic::transport::Channel>, txn, req);
         let applied = self.node.propose(Command::Txn(convert::txn_op(&req)?)).await?;
         let (succeeded, responses) = match &applied.response {
             CommandResponse::Txn { succeeded, responses } => (*succeeded, responses.clone()),
@@ -177,6 +243,12 @@ impl pb::kv_server::Kv for EtcdApi {
         // Here the delete is part of the same transaction that moves the
         // compaction point, so the request is already satisfied by the time it
         // returns and there is nothing extra to wait for.
+        forward_if_follower!(
+            self,
+            pb::kv_client::KvClient<tonic::transport::Channel>,
+            compact,
+            req
+        );
         let applied = self.node.propose(Command::Compact { revision: req.revision }).await?;
         Ok(Response::new(pb::CompactionResponse { header: self.header(applied.revision) }))
     }
@@ -189,6 +261,12 @@ impl pb::lease_server::Lease for EtcdApi {
         request: Request<pb::LeaseGrantRequest>,
     ) -> std::result::Result<Response<pb::LeaseGrantResponse>, Status> {
         let req = request.into_inner();
+        forward_if_follower!(
+            self,
+            pb::lease_client::LeaseClient<tonic::transport::Channel>,
+            lease_grant,
+            req
+        );
         // id 0 means "pick one for me". Chosen here, on the leader, so the
         // command that reaches every replica names the same lease.
         let id = if req.id == 0 { self.node.allocate_lease_id() } else { req.id };
@@ -214,6 +292,12 @@ impl pb::lease_server::Lease for EtcdApi {
         request: Request<pb::LeaseRevokeRequest>,
     ) -> std::result::Result<Response<pb::LeaseRevokeResponse>, Status> {
         let req = request.into_inner();
+        forward_if_follower!(
+            self,
+            pb::lease_client::LeaseClient<tonic::transport::Channel>,
+            lease_revoke,
+            req
+        );
         let applied = self.node.propose(Command::LeaseRevoke { id: req.id }).await?;
         Ok(Response::new(pb::LeaseRevokeResponse { header: self.header(applied.revision) }))
     }

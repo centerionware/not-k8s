@@ -65,9 +65,86 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         "datastore opened"
     );
 
-    let consensus = Arc::new(consensus::SingleNode::new(cfg.member_id, cfg.cluster_id));
-    let node = consensus::Node::new(store, consensus, cfg.watch_buffer);
+    // Single member or a real cluster. The difference is confined to which
+    // Consensus is installed and whether a peer server runs — everything
+    // downstream proposes commands the same way either way.
+    let (node, raft) = if cfg.is_clustered() {
+        let raft_db = cfg.data_dir.join("raft.db");
+        let log = replication::log::RaftLog::open(&raft_db)
+            .with_context(|| format!("opening the raft log at {}", raft_db.display()))?;
+
+        let consensus = Arc::new(replication::consensus::RaftConsensus::new(
+            cfg.member_id,
+            cfg.cluster_id,
+        ));
+        let node = consensus::Node::new(store, Arc::clone(&consensus) as Arc<dyn consensus::Consensus>, cfg.watch_buffer);
+
+        let transport = replication::transport::Transport::new(cfg.member_id);
+        let members: Vec<command::Member> = cfg
+            .initial_cluster
+            .iter()
+            .map(|(id, peer_url)| command::Member {
+                id: *id,
+                peer_url: peer_url.clone(),
+                client_url: if *id == cfg.member_id {
+                    cfg.advertise_client_url.clone()
+                } else {
+                    String::new()
+                },
+                name: format!("member-{id}"),
+                is_learner: false,
+            })
+            .collect();
+
+        let handle = replication::driver::start(
+            cfg.member_id,
+            members,
+            log,
+            Arc::clone(&node),
+            Arc::clone(&transport),
+            cfg.election_ticks,
+            cfg.heartbeat_ticks,
+        )
+        .context("starting raft")?;
+        consensus.attach(handle.clone());
+
+        tokio::spawn(replication::bootstrap::publish_address_book(
+            handle.clone(),
+            Arc::clone(&node),
+            cfg.clone(),
+        ));
+        tokio::spawn(replication::bootstrap::campaign_if_alone(handle.clone(), cfg.clone()));
+
+        (node, Some(handle))
+    } else {
+        let consensus = Arc::new(consensus::SingleNode::new(cfg.member_id, cfg.cluster_id));
+        (consensus::Node::new(store, consensus, cfg.watch_buffer), None)
+    };
+
     let api = server::EtcdApi::new(Arc::clone(&node));
+
+    // The peer server carries raft traffic and nothing else, on its own port.
+    // A raft message is trusted absolutely by whoever receives it, so this is
+    // never merged into the client listener.
+    if let Some(handle) = raft.clone() {
+        let peer_addr: std::net::SocketAddr = cfg
+            .peer_listen
+            .parse()
+            .with_context(|| format!("NODESTORE_PEER_LISTEN={:?} is not a valid address", cfg.peer_listen))?;
+        let peer_service = replication::peer_service::PeerService::new(handle, Arc::clone(&node));
+        info!(%peer_addr, member = cfg.member_id, "serving raft peer traffic");
+        tokio::spawn(async move {
+            if let Err(e) = tonic::transport::Server::builder()
+                .add_service(pb::peer::peer_server::PeerServer::new(peer_service))
+                .serve(peer_addr)
+                .await
+            {
+                // Without a peer server this member can receive nothing, so
+                // it can never be replicated to. Loud, and fatal in effect.
+                tracing::error!(error = %e, "the raft peer server stopped");
+            }
+        });
+    }
 
     tokio::spawn(server::compaction_loop(
         api.clone(),
@@ -75,6 +152,7 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         cfg.compact_retain_revisions,
     ));
     tokio::spawn(server::lease_expiry_loop(api.clone(), cfg.lease_check_interval_secs));
+    let _ = &raft;
 
     let addr = cfg
         .listen
