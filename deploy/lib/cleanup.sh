@@ -77,8 +77,10 @@ cleanup_build_footprint() {
     # that pre-existed, and never containerd/runc/CNI/flannel/nftables).
     uninstall_tracked_build_packages
 
-    # -L so a combined-layout bin/nodelet (a symlink to bin/notk8s) reports
-    # the binary's real size rather than the symlink's, and -c so the total
-    # is the whole installed set, not just the node agent.
-    log "Footprint cleanup done. $(du -shcL "$REPO_ROOT/bin"/* 2>/dev/null | tail -1 | cut -f1) of binaries in $REPO_ROOT/bin is what's left of the build."
+    # The whole installed set, not just the node agent — and deliberately
+    # NOT `du -L`: in the combined layout bin/<component> is a symlink to
+    # bin/notk8s, and dereferencing would count that one binary once per
+    # component. What's wanted here is real bytes left on the device, which
+    # is exactly what du reports when it leaves symlinks alone.
+    log "Footprint cleanup done. $(du -shc "$REPO_ROOT/bin"/* 2>/dev/null | tail -1 | cut -f1) of binaries in $REPO_ROOT/bin is what's left of the build."
 }
