@@ -101,6 +101,18 @@ pub enum OpResponse {
     Delete { deleted: i64, prev_kvs: Vec<KeyValue> },
 }
 
+/// The whole state machine at one applied index.
+#[derive(Clone, Debug, Default)]
+pub struct SnapshotState {
+    pub revision: i64,
+    pub compact_revision: i64,
+    pub applied_index: u64,
+    pub kvs: Vec<KeyValue>,
+    /// (id, ttl_secs, expires_at)
+    pub leases: Vec<(i64, i64, i64)>,
+    pub members: Vec<crate::command::Member>,
+}
+
 /// The outcome of applying one command.
 #[derive(Clone, Debug)]
 pub struct Applied {
@@ -411,6 +423,119 @@ impl Store {
         Ok(ids)
     }
 
+    // ── Snapshots ────────────────────────────────────────────────────────
+
+    /// Everything a replica needs to reconstruct this state machine.
+    ///
+    /// Live keys only — no history. A restoring follower could not serve a
+    /// read or a watch from before the snapshot anyway (its log starts at the
+    /// snapshot's index), so carrying the history would make a snapshot
+    /// unbounded in the one situation where it has to be quick.
+    pub fn export_snapshot(&self) -> Result<SnapshotState> {
+        let all = range_in(
+            &self.conn,
+            &KeyRange::All,
+            self.revision()?,
+            &RangeQuery::current(KeyRange::All),
+        )?;
+        let mut leases = Vec::new();
+        {
+            let mut stmt = self.conn.prepare("SELECT id, ttl_secs, expires_at FROM lease")?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+            })?;
+            for row in rows {
+                leases.push(row?);
+            }
+        }
+        Ok(SnapshotState {
+            revision: self.revision()?,
+            compact_revision: self.compact_revision()?,
+            applied_index: self.applied_index()?,
+            kvs: all.kvs,
+            leases,
+            members: self.members()?,
+        })
+    }
+
+    /// Replace this state machine wholesale with a snapshot.
+    ///
+    /// Destructive by necessity: a follower being sent a snapshot is one whose
+    /// own state is *known* to be unreconstructable from the log, so merging
+    /// would preserve exactly the rows that must not survive. Everything
+    /// happens in one transaction, so a crash midway leaves the old state
+    /// rather than a hybrid of two.
+    ///
+    /// Restored keys keep their original revisions, which is what makes a
+    /// restored replica answer reads identically to the one that sent it.
+    pub fn restore_snapshot(&mut self, snapshot: &SnapshotState) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM kv", [])?;
+        tx.execute("DELETE FROM lease", [])?;
+        tx.execute("DELETE FROM member", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO kv (revision, sub, key, value, create_revision, version, lease, deleted, prev_revision)
+                 VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, 0, 0)",
+            )?;
+            for kv in &snapshot.kvs {
+                stmt.execute(rusqlite::params![
+                    kv.mod_revision,
+                    kv.key,
+                    kv.value,
+                    kv.create_revision,
+                    kv.version,
+                    kv.lease,
+                ])?;
+            }
+        }
+        {
+            let mut stmt =
+                tx.prepare("INSERT INTO lease (id, ttl_secs, expires_at) VALUES (?1, ?2, ?3)")?;
+            for (id, ttl, expires) in &snapshot.leases {
+                stmt.execute(rusqlite::params![id, ttl, expires])?;
+            }
+        }
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO member (id, peer_url, client_url, name, is_learner)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for m in &snapshot.members {
+                stmt.execute(rusqlite::params![
+                    m.id as i64,
+                    m.peer_url,
+                    m.client_url,
+                    m.name,
+                    m.is_learner as i64
+                ])?;
+            }
+        }
+        tx.execute("UPDATE meta SET value = ?1 WHERE name = 'revision'", [snapshot.revision])?;
+        tx.execute(
+            "UPDATE meta SET value = ?1 WHERE name = 'compact_revision'",
+            [snapshot.compact_revision],
+        )?;
+        // In the same transaction as the state it describes — the invariant
+        // the whole crash-recovery story rests on (see replication/log.rs).
+        tx.execute(
+            "INSERT INTO meta (name, value) VALUES ('applied_index', ?1)
+             ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+            [snapshot.applied_index as i64],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The raft index this state machine has applied up to.
+    pub fn applied_index(&self) -> Result<u64> {
+        let v: Option<i64> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE name = 'applied_index'", [], |r| r.get(0))
+            .optional()?;
+        Ok(v.unwrap_or(0) as u64)
+    }
+
     // ── Apply ────────────────────────────────────────────────────────────
 
     /// Apply one command. The only way anything is ever written.
@@ -419,6 +544,22 @@ impl Store {
     /// atomic even when it writes many keys — a transaction that half-applied
     /// would put a replica permanently out of step with the leader.
     pub fn apply(&mut self, cmd: &Command) -> Result<Applied> {
+        self.apply_at(0, cmd)
+    }
+
+    /// Apply a command as raft log index `index`.
+    ///
+    /// The index is written in the *same transaction* as the state it
+    /// produced. That is not bookkeeping tidiness: it is what makes losing
+    /// the tail of this database recoverable. Both roll back together,
+    /// leaving an older but consistent replica the log can catch up. Stored
+    /// separately, a crash between the two would leave a replica believing it
+    /// applied an entry it did not, which replay cannot fix — see
+    /// replication/log.rs.
+    ///
+    /// `index` 0 means "not driven by raft" (single-node, and the unit tests),
+    /// in which case no index is recorded.
+    pub fn apply_at(&mut self, index: u64, cmd: &Command) -> Result<Applied> {
         let current = self.revision()?;
         let tx = self.conn.transaction()?;
         let mut w = Writer { next: current + 1, sub: 0, used: false, events: Vec::new() };
@@ -517,6 +658,13 @@ impl Store {
         } else {
             current
         };
+        if index > 0 {
+            tx.execute(
+                "INSERT INTO meta (name, value) VALUES ('applied_index', ?1)
+                 ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+                [index as i64],
+            )?;
+        }
         tx.commit()?;
         Ok(Applied { revision, response, events: w.events })
     }
@@ -1555,5 +1703,167 @@ mod member_tests {
         }
         let s = Store::open(&path).unwrap();
         assert_eq!(s.members().unwrap()[0].peer_url, "http://10.0.0.1:2380");
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::command::Member;
+
+    fn put(s: &mut Store, key: &str, value: &str) {
+        s.apply(&Command::Put(PutOp {
+            key: key.as_bytes().to_vec(),
+            value: value.as_bytes().to_vec(),
+            lease: 0,
+            prev_kv: false,
+            ignore_value: false,
+            ignore_lease: false,
+        }))
+        .unwrap();
+    }
+
+    #[test]
+    fn a_snapshot_restores_into_an_identical_store() {
+        // The property that matters: a follower restored from a snapshot must
+        // answer reads the same way as the member that sent it, including
+        // revisions — a resourceVersion that changed across a restore would
+        // break every client's optimistic concurrency at once.
+        let mut source = Store::open(Path::new(":memory:")).unwrap();
+        put(&mut source, "/a", "1");
+        put(&mut source, "/b", "2");
+        put(&mut source, "/a", "3");
+        source
+            .apply(&Command::Delete(DeleteOp {
+                range: KeyRange::Single(b"/b".to_vec()),
+                prev_kv: false,
+            }))
+            .unwrap();
+        source.apply(&Command::LeaseGrant { id: 9, ttl_secs: 30, now_unix_secs: 100 }).unwrap();
+        source
+            .apply(&Command::SetMember(Member {
+                id: 2,
+                peer_url: "http://p".into(),
+                client_url: "http://c".into(),
+                name: "n2".into(),
+                is_learner: false,
+            }))
+            .unwrap();
+
+        let snapshot = source.export_snapshot().unwrap();
+
+        let mut target = Store::open(Path::new(":memory:")).unwrap();
+        put(&mut target, "/should-be-erased", "x");
+        target.restore_snapshot(&snapshot).unwrap();
+
+        assert_eq!(target.revision().unwrap(), source.revision().unwrap());
+        let a = target
+            .range(&RangeQuery::current(KeyRange::Single(b"/a".to_vec())))
+            .unwrap()
+            .kvs
+            .remove(0);
+        assert_eq!(a.value, b"3");
+        assert_eq!(a.mod_revision, 4, "revisions must survive the restore unchanged");
+        assert!(
+            target.range(&RangeQuery::current(KeyRange::Single(b"/b".to_vec()))).unwrap().kvs.is_empty(),
+            "a key deleted before the snapshot must not come back"
+        );
+        assert_eq!(target.lease_ttl(9).unwrap().map(|(ttl, _)| ttl), Some(30));
+        assert_eq!(target.members().unwrap()[0].id, 2);
+    }
+
+    #[test]
+    fn restoring_erases_whatever_was_there_before() {
+        // A follower receiving a snapshot is one whose own state is known to
+        // be unreconstructable, so merging would preserve exactly the rows
+        // that must not survive.
+        let mut source = Store::open(Path::new(":memory:")).unwrap();
+        put(&mut source, "/keep", "yes");
+        let snapshot = source.export_snapshot().unwrap();
+
+        let mut target = Store::open(Path::new(":memory:")).unwrap();
+        put(&mut target, "/stale", "must not survive");
+        target.restore_snapshot(&snapshot).unwrap();
+
+        assert!(target
+            .range(&RangeQuery::current(KeyRange::Single(b"/stale".to_vec())))
+            .unwrap()
+            .kvs
+            .is_empty());
+        assert_eq!(
+            target.range(&RangeQuery::current(KeyRange::All)).unwrap().kvs.len(),
+            1,
+            "only the snapshot's keys"
+        );
+    }
+
+    #[test]
+    fn the_applied_index_moves_with_the_state_it_describes() {
+        let mut s = Store::open(Path::new(":memory:")).unwrap();
+        assert_eq!(s.applied_index().unwrap(), 0);
+        s.apply_at(
+            17,
+            &Command::Put(PutOp {
+                key: b"/a".to_vec(),
+                value: b"1".to_vec(),
+                lease: 0,
+                prev_kv: false,
+                ignore_value: false,
+                ignore_lease: false,
+            }),
+        )
+        .unwrap();
+        assert_eq!(s.applied_index().unwrap(), 17);
+    }
+
+    #[test]
+    fn a_command_that_writes_nothing_still_advances_the_applied_index() {
+        // Otherwise a replica would re-apply it forever after a restart:
+        // the entry is committed and consumed whether or not it changed
+        // anything.
+        let mut s = Store::open(Path::new(":memory:")).unwrap();
+        s.apply_at(
+            5,
+            &Command::Delete(DeleteOp { range: KeyRange::Single(b"/nope".to_vec()), prev_kv: false }),
+        )
+        .unwrap();
+        assert_eq!(s.applied_index().unwrap(), 5);
+        assert_eq!(s.revision().unwrap(), 1, "and it still burns no revision");
+    }
+
+    #[test]
+    fn the_applied_index_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        {
+            let mut s = Store::open(&path).unwrap();
+            s.apply_at(42, &Command::Compact { revision: 1 }).unwrap();
+        }
+        assert_eq!(Store::open(&path).unwrap().applied_index().unwrap(), 42);
+    }
+
+    #[test]
+    fn a_snapshot_carries_the_applied_index_it_was_taken_at() {
+        // A restored follower must resume from the snapshot's index, not
+        // from zero, or it will re-request the entire log.
+        let mut s = Store::open(Path::new(":memory:")).unwrap();
+        s.apply_at(
+            11,
+            &Command::Put(PutOp {
+                key: b"/a".to_vec(),
+                value: b"1".to_vec(),
+                lease: 0,
+                prev_kv: false,
+                ignore_value: false,
+                ignore_lease: false,
+            }),
+        )
+        .unwrap();
+        let snapshot = s.export_snapshot().unwrap();
+        assert_eq!(snapshot.applied_index, 11);
+
+        let mut target = Store::open(Path::new(":memory:")).unwrap();
+        target.restore_snapshot(&snapshot).unwrap();
+        assert_eq!(target.applied_index().unwrap(), 11);
     }
 }
