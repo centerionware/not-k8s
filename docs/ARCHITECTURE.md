@@ -283,10 +283,47 @@ The design points worth knowing before reading the code:
   they configured replication and discovers otherwise when the node dies is
   the worst outcome available to a datastore.
 
-The intended path from here is single-node sqlite → raft replication →
-automatic promotion when a second node joins. The seam for the first step is
-`consensus.rs`'s `Consensus` trait; the state machine above it does not
-change.
+### Replication
+
+Raft, via `tikv/raft-rs` — the consensus algorithm only, with the log storage,
+the transport and the state machine all still ours (`src/replication/`). A
+hand-rolled Raft was the alternative and was rejected on the grounds that
+consensus bugs are silent, catastrophic, and surface only under exactly the
+partition and crash conditions that are hardest to reproduce.
+
+Three decisions there are load-bearing, and each had a tempting wrong answer:
+
+- **The raft log is a separate sqlite database at `synchronous = FULL`**, while
+  the state machine's stays at `NORMAL`. Raft's correctness rests on an
+  acknowledged entry being durable; the state machine is *derivable* — it is
+  the log applied in order — so losing its tail is recoverable by replay. That
+  recovery works only because the applied index commits in the **same
+  transaction** as the state it produced: both roll back together, leaving an
+  older but consistent replica. Stored separately, a crash between them leaves
+  a replica believing it applied an entry it did not, and no replay fixes that.
+- **The transport is deliberately lossy.** Raft assumes messages are lost,
+  delayed, duplicated and reordered, and recovers by resending *state*. A
+  transport that queued forever would deliver stale appends to a peer that has
+  moved on, and turn one slow follower into unbounded memory growth on the
+  leader.
+- **Followers forward writes rather than refusing them.** kube-apiserver is
+  configured with an endpoint list and expects any of them to work; a refusing
+  follower makes a three-member cluster serve writes a third of the time.
+  Reads split on the client's own `serializable` flag — anything else goes to
+  the leader, since a stale local read means a resourceVersion going backwards.
+
+New members join as **learners**: they receive the log without counting for
+quorum, so catching up a fresh replica — possibly by shipping it an entire
+snapshot — cannot stall the cluster it is joining.
+
+Failure behaviour is exercised against real processes in real network
+namespaces (`deploy/lib/test/cases/datastore_cluster.sh`), including a
+SIGKILL'd leader, a partitioned leader that still believes it leads, and a
+member left without quorum, which must **refuse** writes rather than accept
+one that will be silently discarded when the majority returns.
+
+Still ahead: automatic promotion from single-node to replicated when a second
+node joins.
 
 ### Two binaries or one: the split is in the crates, not the file count
 

@@ -413,9 +413,15 @@ replacing kine. Read `crates/nodestore/src/command.rs` first: it states the
 determinism rules (`apply()` reads no clock, no RNG, no environment; the
 leader resolves nondeterminism *before* proposing) that the rest of the crate
 obeys and that raft will depend on. Semantics live in `store.rs`, ordering in
-`consensus.rs`, and `server/` is translation only — a behavioural decision
-made in `server/` is almost always in the wrong place. Single member today:
-`NODESTORE_PEERS` is refused rather than ignored. e2e coverage is
+`consensus.rs`, replication in `replication/`, and `server/` is translation
+only — a behavioural decision made in `server/` is almost always in the wrong
+place. Replicated via raft (`tikv/raft-rs`): configure a cluster with
+`NODESTORE_INITIAL_CLUSTER=1=http://a:2380,2=http://b:2380` and
+`NODESTORE_MEMBER_ID`. **The raft log is a separate sqlite database on
+`synchronous=FULL` and the applied index commits in the same transaction as
+the state it produced** — read `replication/log.rs`'s header before touching
+either, that pairing is what makes a crash recoverable instead of silently
+divergent. e2e coverage is
 `deploy/lib/test/cases/datastore.sh`, which drives the real gRPC API with
 `grpcurl` against a throwaway store, never the running cluster's own.
 
