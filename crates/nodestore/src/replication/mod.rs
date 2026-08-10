@@ -13,9 +13,13 @@
 //!     or a leadership change lands in the same log as everything else rather
 //!     than vanishing.
 //!
-//! Still to come on this branch: the driver (the Ready loop), the peer
-//! transport, and snapshot build/restore. The pieces already here are the
-//! ones everything else stands on, and they are tested on their own.
+//!   * [`transport`] — raft messages over our own gRPC, deliberately lossy
+//!     because that is the interface raft is designed against.
+//!
+//! Still to come on this branch: the driver (the Ready loop) and snapshot
+//! build/restore. The pieces already here are the ones everything else stands
+//! on, and each is tested on its own.
 
 pub mod log;
 pub mod logging;
+pub mod transport;
