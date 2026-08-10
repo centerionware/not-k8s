@@ -1,18 +1,25 @@
-# lib/nodelet-build.sh — produce $REPO_ROOT/bin/nodelet and, unless
-# PROXY=none, $REPO_ROOT/bin/nodeproxy (the Service-routing binary, split out
-# of nodelet the way kube-proxy is split from the kubelet upstream). Two
-# cargo packages, one shared target dir — the second build reuses nearly all
-# of the first's dependency compilation.
+# lib/nodelet-build.sh — populate $REPO_ROOT/bin/ with the components this
+# run wants, in the layout it asked for.
 #
-# Today this always builds from source on-device (rustc + optionally protoc,
-# via toolchain-rust.sh / toolchain-protoc.sh). The eventual plan is a
-# `bootstrap-binary-latest.sh` entry point that fetches a prebuilt nodelet
-# from a GitHub Actions release for this device's arch/libc instead of
-# compiling locally — this function is the seam for that: it already checks
-# for a prebuilt drop-in before building, so that future script only has to
-# populate $NOTK8S_NODELET_PREBUILT (or $REPO_ROOT/bin/nodelet directly)
-# before sourcing this file, and build_nodelet() becomes a no-op. Nothing
-# about that split needs designing later — it's just not wired up to CI yet.
+# Which components: lib/components.sh's table (nodelet, plus nodeproxy
+# unless PROXY=none — the Service-routing binary, split out of nodelet the
+# way kube-proxy is split from the kubelet upstream). Which layout:
+# NOTK8S_BUILD_LAYOUT / --layout= — `split` (a binary per component),
+# `combined` (one multi-call `notk8s` binary plus a symlink per component),
+# or `both`. Everything here loops over that table rather than naming
+# components, so a new one is a row there and nothing in this file.
+#
+# One shared cargo target dir throughout: each build after the first reuses
+# nearly all of its dependency compilation, which is also why the combined
+# binary costs so little extra to produce alongside the split ones.
+#
+# Prebuilt drop-ins short-circuit the whole cargo path (no toolchain gets
+# installed at all, see bootstrap-source.sh's own check for this):
+# $NOTK8S_NODELET_PREBUILT / $NOTK8S_NODEPROXY_PREBUILT for the split
+# layout, $NOTK8S_COMBINED_PREBUILT for a combined binary.
+# bootstrap-release.sh is the entry point that populates them from a GitHub
+# release, and CI's e2e shards use the same seam to skip rebuilding a binary
+# an earlier stage already built.
 
 # install_built_binary <source-path> <name> — copies a built/prebuilt binary to
 # $REPO_ROOT/bin/<name>, overwriting whatever's already there (a stale
