@@ -43,6 +43,8 @@
 #   ./deploy/bootstrap-source.sh --with-cri --proxy=none   # no Service proxy: something else (a real kube-proxy, Cilium, ...) owns ClusterIP/NodePort routing on this node
 #   ./deploy/bootstrap-source.sh --skip-control-plane
 #   ./deploy/bootstrap-source.sh --with-cri --skip-nodelet   # control plane + containerd/CNI only, nodelet never built/installed/started (round 124: profiling.yml's upstream-kubelet.sh comparison leg wants this exact stack with a different node agent, not nodelet sitting there unused)
+#   ./deploy/bootstrap-source.sh --with-cri --layout=combined  # one multi-call binary (bin/notk8s) instead of one per component
+#   ./deploy/bootstrap-source.sh --with-cri --layout=both      # build both layouts; run the separate binaries
 #   ./deploy/bootstrap-source.sh --keep-build-tools   # skip the end-of-run toolchain cleanup (faster re-runs)
 #   ./deploy/bootstrap-source.sh --cleanup        # stop the deployment + build-tool cleanup (keeps runtime pkgs/k3s for next time)
 #   ./deploy/bootstrap-source.sh --uninstall      # full teardown: also k3s, containerd/runc, CNI/flannel, nftables
@@ -92,6 +94,19 @@
 # `sessionAffinity: ClientIP`, regardless of this default). Both apply to
 # nodeproxy, the separate Service-routing binary — kube-proxy's job, which
 # nodelet used to do in-process and no longer does.
+#
+# --layout: split (default) | combined | both. Purely a packaging choice —
+# what gets built, not how it behaves. `split` produces one binary per
+# component (bin/nodelet, bin/nodeproxy): install only what this node runs,
+# upgrade one without touching the other. `combined` produces a single
+# multi-call binary (bin/notk8s) with a bin/<component> symlink per
+# component, which it dispatches on via argv[0] — the components still run
+# as separate processes and separate services, but they share one copy of
+# the dependency tree they have in common (tokio/kube/k8s-openapi/rustls)
+# instead of each carrying its own, which on aarch64 is ~12MB total against
+# ~17MB split. `both` builds both and runs the separate binaries, leaving
+# the combined one at bin/notk8s. Equivalent env var: NOTK8S_BUILD_LAYOUT.
+# See deploy/lib/components.sh.
 #
 # --proxy: nodeproxy (default) | none. `none` installs no Service proxy and
 # touches no nftables rules, leaving ClusterIP/NodePort routing to whatever
@@ -144,6 +159,7 @@ LB_METHOD=random
 KEEP_BUILD_TOOLS=0
 SKIP_NODELET=0
 PROXY=nodeproxy
+BUILD_LAYOUT="${NOTK8S_BUILD_LAYOUT:-split}"
 
 for arg in "$@"; do
     case "$arg" in
@@ -158,6 +174,7 @@ for arg in "$@"; do
         --ip-family=*) IP_FAMILY="${arg#--ip-family=}" ;;
         --lb-method=*) LB_METHOD="${arg#--lb-method=}" ;;
         --proxy=*) PROXY="${arg#--proxy=}" ;;
+        --layout=*) BUILD_LAYOUT="${arg#--layout=}" ;;
         --keep-build-tools) KEEP_BUILD_TOOLS=1 ;;
         -h|--help)
             grep '^#' "$0" | sed -e 's/^# \{0,1\}//' -e '1,3d'
@@ -209,6 +226,16 @@ case "$PROXY" in
     *) die "Unknown --proxy='$PROXY' (want 'nodeproxy' or 'none')." ;;
 esac
 
+case "$BUILD_LAYOUT" in
+    split|combined|both) ;;
+    *) die "Unknown --layout='$BUILD_LAYOUT' (want 'split' — one binary per component, 'combined' — one multi-call binary, or 'both'). See deploy/lib/components.sh." ;;
+esac
+# The build layout is consumed by lib/components.sh through this env var, so
+# the flag and NOTK8S_BUILD_LAYOUT are the same setting either way round.
+# Validated here rather than only in resolve_build_layout() so a typo fails
+# before the control plane install, not after it.
+export NOTK8S_BUILD_LAYOUT="$BUILD_LAYOUT"
+
 ensure_fetch_tool
 export PATH="$TOOLCHAIN_DIR/bin:$PATH"
 
@@ -227,6 +254,7 @@ source "$LIB_DIR/service-mgr.sh"
 source "$LIB_DIR/container-runtime.sh"
 source "$LIB_DIR/cni.sh"
 source "$LIB_DIR/nft.sh"
+source "$LIB_DIR/components.sh"
 source "$LIB_DIR/nodelet-build.sh"
 source "$LIB_DIR/nodelet-service.sh"
 source "$LIB_DIR/nodeproxy-service.sh"

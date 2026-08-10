@@ -41,6 +41,8 @@ cargo test -p nodelet --features cri      # cri-gated unit tests too
 
 cargo build -p nodeproxy                  # the Service proxy — no features, ever
 cargo test -p nodeproxy                   # its nft ruleset tests (need CAP_NET_ADMIN, else self-skip)
+
+cargo build --features cri -p notk8s      # combined single binary: every component in one
 ```
 
 `crates/nodeproxy` deliberately shares **none** of nodelet's dependency tree —
@@ -48,15 +50,46 @@ no `cri` feature, no tonic/prost/zbus. If a change wants one of those there,
 that's the signal the split is being eroded; the boundary is enforced by
 `crates/nodeproxy/Cargo.toml` and nothing else.
 
+## Two build layouts (split / combined)
+
+The same code ships two ways, chosen at build time — `--layout=` on the
+bootstrap entry points, or `NOTK8S_BUILD_LAYOUT`:
+
+- **split** (default): `bin/nodelet` + `bin/nodeproxy`, one binary per
+  component.
+- **combined**: `bin/notk8s`, one busybox-style multi-call binary containing
+  every component, plus a `bin/<component>` symlink per component that it
+  dispatches on via `argv[0]`.
+- **both**: builds both; the split binaries are the ones installed and run,
+  the combined one is produced alongside at `bin/notk8s`.
+
+Why: separate *crates* are what make a component replaceable; separate
+*executables* additionally cost one full copy of the shared dependency tree
+(tokio/kube/k8s-openapi/rustls) each. On aarch64 the nodeproxy split turned a
+~12MB nodelet into ~11MB + ~6MB. The combined layout buys that ~5MB back
+without giving up the split — same processes, same services, same env vars,
+and `--proxy=none` still produces a binary with no proxy compiled into it.
+
+`crates/notk8s` is packaging only: it links the component crates and
+dispatches on `argv[0]` (or `notk8s <component>`). Put no logic there. The
+shell side is driven by `deploy/lib/components.sh`'s component table, not by
+per-component `if` branches — **adding a component (`nodeapiserver`,
+`nodescheduler`, …) is a row in that table, an optional dependency in
+`crates/notk8s/Cargo.toml`, and one line in its `APPLETS` table.** If you find
+yourself adding a component's name to a third place, that's the bug.
+
+`notk8s components` prints what a given binary actually contains, one per
+line — use that rather than inferring it from how it was built.
+
 **Don't build locally on a constrained host** — use GitHub Actions.
-`.github/workflows/build.yml` (manual `workflow_dispatch`) compiles both
-crates, runs the unit tests, and uploads the binaries as run artifacts, with
-`profile` (debug/release/both) and `arch` (x86_64/aarch64/armv7l/all) inputs
-and no e2e stage. Download them with `gh run download <run-id> -n
-notk8s-<arch>-<profile>` and point a local deploy at them via
-`NOTK8S_NODELET_PREBUILT` / `NOTK8S_NODEPROXY_PREBUILT` — the same prebuilt
-seam `release.yml`'s e2e shards use, so no toolchain is installed on the
-device.
+`.github/workflows/build.yml` (manual `workflow_dispatch`) compiles every
+crate, runs the unit tests, and uploads the binaries as run artifacts, with
+`profile` (debug/release/both), `arch` (x86_64/aarch64/armv7l/all) and
+`layout` (split/combined/both) inputs and no e2e stage. Download them with
+`gh run download <run-id> -n notk8s-<arch>-<profile>` and point a local deploy
+at them via `NOTK8S_NODELET_PREBUILT` / `NOTK8S_NODEPROXY_PREBUILT` (or
+`NOTK8S_COMBINED_PREBUILT` for the combined binary) — the same prebuilt seam
+`release.yml`'s e2e shards use, so no toolchain is installed on the device.
 
 **Release profile is expensive on purpose**: `Cargo.toml`'s `[profile.release]`
 uses `lto=true, codegen-units=1` for the smallest edge binary — a real build
@@ -84,6 +117,10 @@ Run a single test: `cargo test -p nodelet --features cri <test_name_substring>`
 ./deploy/bootstrap-source.sh --with-cri     # build from source, install everything
 ./deploy/bootstrap-release.sh --with-cri    # fetch a prebuilt binary instead (no Rust toolchain)
 ```
+
+Add `--layout=combined` to either for the single-binary layout
+(`bootstrap-release.sh` then fetches the one `notk8s` release asset instead of
+the per-component ones).
 
 Both install k3s (`--disable-agent`, stripped control plane only),
 containerd/runc, CNI, and `nodelet` + `nodeproxy` as two independent
@@ -316,7 +353,7 @@ runtime.v1.RuntimeService"` again, that's where to look first.
 
 ## Architecture
 
-**Two binaries, two crates.** `crates/nodelet` is the node agent;
+**Two components, two crates, one or two binaries.** `crates/nodelet` is the node agent;
 `crates/nodeproxy` is the Service proxy (`svc.rs`: Service + EndpointSlice
 watch, one `inet not_k8s_svc` nftables table rebuilt atomically per event,
 no periodic resync). They share no code and no config — `nodeproxy` reads

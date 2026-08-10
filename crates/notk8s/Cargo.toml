@@ -1,0 +1,44 @@
+[package]
+name = "notk8s"
+description = "Combined single-binary build of the not-k8s node components (nodelet, nodeproxy, ...)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "notk8s"
+path = "src/main.rs"
+
+# This crate is a *packaging* target, not a place for logic. It links the
+# component crates and dispatches to them; anything it would be tempting to
+# implement here belongs in the component that needs it.
+#
+# Each component is an optional dependency, which gives it an implicit
+# feature of the same name — so the combined binary's contents are chosen at
+# build time:
+#
+#   cargo build -p notk8s                                         # every default component
+#   cargo build -p notk8s --features cri                          # ... with nodelet's real CRI runtime
+#   cargo build -p notk8s --no-default-features --features nodelet # node agent only
+#
+# Adding a future component (nodeapiserver, nodescheduler, ...) is: add it
+# here as an optional dependency, add it to `default`, and add one line to
+# APPLETS in src/main.rs. Nothing else in the build system needs to know
+# about it by name — deploy/lib/components.sh drives the shell side off its
+# own table, and `notk8s components` reports what a given binary actually
+# contains.
+[features]
+default = ["nodelet", "nodeproxy"]
+# nodelet's real containerd/CRI runtime. Weak (`nodelet?/cri`) so it can be
+# combined with --no-default-features without silently pulling the node
+# agent back in.
+cri = ["nodelet?/cri"]
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+nodelet = { path = "../nodelet", optional = true }
+nodeproxy = { path = "../nodeproxy", optional = true }

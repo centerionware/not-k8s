@@ -6,6 +6,15 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+# Both a library and a binary. The library exists so the combined `notk8s`
+# binary (crates/notk8s) can link this component in directly rather than
+# shipping a second executable that re-links the same tokio/kube/k8s-openapi/
+# rustls tree — see crates/notk8s/src/main.rs. The binary below is unchanged
+# and is still what a split install runs.
+[lib]
+name = "nodeproxy"
+path = "src/lib.rs"
+
 [[bin]]
 name = "nodeproxy"
 path = "src/main.rs"

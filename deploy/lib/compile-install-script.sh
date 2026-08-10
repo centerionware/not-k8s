@@ -57,6 +57,12 @@ cat > "$OUTPUT" <<HEADER
 #
 # Usage:
 #   curl -fsSL <this file's raw URL> | bash -s -- --with-cri
+#   curl -fsSL <this file's raw URL> | bash -s -- --with-cri --layout=combined
+#
+# --layout=combined installs the single multi-call \`notk8s\` binary (every
+# component in one executable, ~30% smaller than the separate per-component
+# binaries) instead of one binary per component. Same components, same
+# services, same configuration either way — see docs/ARCHITECTURE.md.
 set -euo pipefail
 
 INSTALL_DIR="\${NOTK8S_INSTALL_DIR:-/opt/not-k8s}"

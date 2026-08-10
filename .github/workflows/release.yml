@@ -33,6 +33,11 @@ jobs:
           set -e
           cargo build --features cri -p nodelet
           cargo build -p nodeproxy
+          # The combined single-binary layout (crates/notk8s) links both of
+          # the above into one executable. Built here purely so a break in
+          # it fails this stage rather than the much later build-release
+          # one — the e2e stage below still deploys the split binaries.
+          cargo build --features cri -p notk8s
       # Round 124: the e2e stage's own "Build and deploy" step used to
       # redo this exact build itself, on every one of its (now 5, see
       # below) parallel shards — the same debug binary compiled 6 times
@@ -68,6 +73,7 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p nodelet
           sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
           sudo -E env "PATH=$PATH" cargo test -p nodeproxy
+          sudo -E env "PATH=$PATH" cargo test -p notk8s
 
   # ── Stage 2: full e2e suite, real CSI + DRA reference drivers ─────────
   # Round 124: sharded 5 ways (test-e2e.sh's --shard=N/M, harness.sh's
@@ -296,6 +302,19 @@ jobs:
           cargo build -p nodeproxy $TARGET_FLAG
           # shellcheck disable=SC2086
           cargo build --release -p nodeproxy $TARGET_FLAG
+          # notk8s: the combined single-binary layout — every component in
+          # one executable, sharing one copy of the dependency tree they
+          # have in common instead of one copy each (~12MB vs ~17MB for the
+          # pair on aarch64). Published alongside the separate binaries, not
+          # instead of them: bootstrap-release.sh --layout=combined fetches
+          # this asset, the default still fetches the per-component ones.
+          # --features cri for the same reason nodelet gets it — the
+          # combined binary has to be able to do everything the separate
+          # ones can.
+          # shellcheck disable=SC2086
+          cargo build --features cri -p notk8s $TARGET_FLAG
+          # shellcheck disable=SC2086
+          cargo build --release --features cri -p notk8s $TARGET_FLAG
 
       - name: Stage binaries for upload
         run: |
@@ -306,10 +325,15 @@ jobs:
           else
             SRC_DIR="target"
           fi
-          for bin in nodelet nodeproxy; do
+          for bin in nodelet nodeproxy notk8s; do
             cp "$SRC_DIR/debug/$bin" "dist/$bin-linux-${{ matrix.arch }}-debug"
             cp "$SRC_DIR/release/$bin" "dist/$bin-linux-${{ matrix.arch }}-release"
           done
+          # Worth eyeballing on every release: the combined binary should be
+          # close to nodelet's own size, not the sum of the two. If it isn't,
+          # the components have stopped sharing a dependency tree and the
+          # combined layout has stopped buying anything.
+          du -h dist/* | sort -h
 
       - uses: actions/upload-artifact@v4
         with:
@@ -348,7 +372,7 @@ jobs:
         run: |
           set -e
           cd dist
-          for bin in nodelet nodeproxy; do
+          for bin in nodelet nodeproxy notk8s; do
             for f in "$bin"-linux-*-debug "$bin"-linux-*-release; do
               [[ -f "$f" ]] || continue
               arch_profile="${f#$bin-linux-}"
@@ -359,6 +383,49 @@ jobs:
 
       - name: Generate changelog
         run: bash deploy/lib/changelog.sh "v${{ steps.version.outputs.version }}" > changelog.md
+
+      - name: Append the asset guide
+        # A release carries three binaries per arch/profile now (nodelet,
+        # nodeproxy, notk8s), which is a genuine "which one do I want?"
+        # question rather than a naming detail — answer it in the release
+        # body instead of making people find docs/ARCHITECTURE.md first.
+        run: |
+          cat > asset-guide.md <<'GUIDE'
+
+          ---
+
+          ## Which binaries do I want?
+
+          Two layouts of the same components, both published here:
+
+          - **Separate binaries** (`nodelet-…`, `nodeproxy-…`) — one per
+            component. Install only what this node runs, upgrade one without
+            touching the other, mix with upstream components.
+          - **Combined binary** (`notk8s-…`) — every component in one
+            multi-call executable that dispatches on `argv[0]`, so a
+            `nodelet` symlink to it *is* nodelet. One copy of the dependency
+            tree they share, which is ~30% smaller than the separate pair on
+            aarch64. Same components, same processes, same services, same
+            environment variables.
+
+          The installer defaults to the separate binaries; add
+          `--layout=combined` for the single one:
+
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/centerionware/not-k8s/install-scripts/install.sh \
+            | bash -s -- --with-cri --layout=combined
+          ```
+
+          `release` is the optimized build for real deployments; `debug` is
+          for diagnosing something with symbols intact.
+          GUIDE
+          # The heredoc above is indented for readability inside the YAML;
+          # strip that indentation back out so the Markdown renders as
+          # Markdown and not as one long code block. Done on the guide
+          # alone, never on changelog.md — changelog.sh's own output is
+          # commit text this has no business reformatting.
+          sed -i 's/^          //' asset-guide.md
+          cat asset-guide.md >> changelog.md
 
       - name: Build deploy.tar.gz (what the standalone installer fetches)
         run: tar czf dist/deploy.tar.gz deploy
@@ -374,7 +441,7 @@ jobs:
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file changelog.md \
-            dist/nodelet-* dist/nodeproxy-* dist/deploy.tar.gz
+            dist/nodelet-* dist/nodeproxy-* dist/notk8s-* dist/deploy.tar.gz
 
       - name: Compile the standalone install scripts
         run: |
