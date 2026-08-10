@@ -87,6 +87,7 @@ impl pb::kv_server::Kv for EtcdApi {
             kvs: result.kvs.iter().map(convert::key_value_to_pb).collect(),
             more: result.more,
             count: result.count,
+            ..Default::default()
         }))
     }
 
@@ -144,6 +145,7 @@ impl pb::kv_server::Kv for EtcdApi {
                             kvs: r.kvs.iter().map(convert::key_value_to_pb).collect(),
                             more: r.more,
                             count: r.count,
+                            ..Default::default()
                         })
                     }
                     OpResponse::Put { prev_kv } => {
@@ -203,6 +205,7 @@ impl pb::lease_server::Lease for EtcdApi {
             id,
             ttl,
             error: String::new(),
+            ..Default::default()
         }))
     }
 
@@ -252,6 +255,7 @@ impl pb::lease_server::Lease for EtcdApi {
                             // TTL 0 is etcd's way of saying "that lease is
                             // gone" — not an error, and clients act on it.
                             ttl,
+                            ..Default::default()
                         })
                     }
                     Err(e) => Err(Status::from(e)),
@@ -289,6 +293,7 @@ impl pb::lease_server::Lease for EtcdApi {
             ttl,
             granted_ttl,
             keys,
+            ..Default::default()
         }))
     }
 
@@ -322,6 +327,7 @@ impl pb::maintenance_server::Maintenance for EtcdApi {
             errors: Vec::new(),
             db_size_in_use: 0,
             is_learner: false,
+            ..Default::default()
         }))
     }
 
@@ -409,6 +415,7 @@ impl pb::cluster_server::Cluster for EtcdApi {
                 peer_ur_ls: Vec::new(),
                 client_ur_ls: Vec::new(),
                 is_learner: false,
+                ..Default::default()
             }],
         }))
     }

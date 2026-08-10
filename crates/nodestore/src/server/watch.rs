@@ -86,20 +86,28 @@ impl pb::watch_server::Watch for EtcdApi {
         tokio::spawn(async move {
             let mut watchers: HashMap<i64, Watcher> = HashMap::new();
             let mut next_watch_id: i64 = 0;
+            // A client may close its *sending* half and keep receiving —
+            // that is what a one-shot client does after issuing its create
+            // request, and it is a legal gRPC half-close, not a hangup.
+            // Treating it as the end of the stream would deliver the
+            // "created" response and then silently nothing, which is
+            // indistinguishable from a store that never sees any writes.
+            let mut inbound_open = true;
 
             loop {
                 tokio::select! {
                     // Client → server: create/cancel/progress.
-                    incoming = inbound.message() => {
+                    incoming = inbound.message(), if inbound_open => {
                         match incoming {
                             Ok(Some(req)) => {
                                 if !handle_request(&api, req, &mut watchers, &mut next_watch_id, &tx).await {
                                     break;
                                 }
                             }
-                            // Clean half-close or a broken connection: either
-                            // way this stream is over.
-                            Ok(None) | Err(_) => break,
+                            // Half-closed: stop reading, keep delivering.
+                            Ok(None) => inbound_open = false,
+                            // A broken connection is the end of it.
+                            Err(_) => break,
                         }
                     }
 
@@ -124,6 +132,13 @@ impl pb::watch_server::Watch for EtcdApi {
                             Err(RecvError::Closed) => break,
                         }
                     }
+                }
+
+                // Nothing left to read from and nothing left to send to:
+                // without this the task would park forever on a select whose
+                // only live branch can never fire again.
+                if !inbound_open && watchers.is_empty() {
+                    break;
                 }
             }
         });

@@ -244,6 +244,50 @@ measurable — `nodeproxy` is deliberately built from a minimal dependency
 tree (no CRI/gRPC stack at all; see `crates/nodeproxy/Cargo.toml`) to keep
 that baseline small.
 
+### The datastore: etcd's API, without etcd's polling middleman
+
+`nodestore` (`crates/nodestore/`) serves the etcd v3 gRPC API over a
+sqlite-backed MVCC store, so a real kube-apiserver uses it unmodified
+(`--etcd-servers`, or k3s's `--datastore-endpoint`).
+
+It replaces kine, which does the same translation but drives watches by
+**polling**: every watcher's changes are found by re-querying the table for
+rows past a remembered revision, on a timer, whether or not anything has
+happened. Measured on the aarch64 test device, with a cluster doing nothing
+at all, that is the control plane process doing **314 read + 252 write
+syscalls a second and 26KB/s to disk**, against a 2.7MB database with a 4MB
+write-ahead log. This is the same substitution `nodelet` made against PLEG
+and `nodeproxy` made against kube-proxy's resync timer, applied to the last
+component still doing it: an applied command hands its events directly to the
+watchers, and an idle store is idle.
+
+The design points worth knowing before reading the code:
+
+- **One counter, one history.** Every write appends a row; a key's current
+  state is just its highest-revision row. Historical reads and watch replay
+  are then the same query with a different bound, rather than two mechanisms
+  that can disagree.
+- **The state machine is deterministic, and that is what makes raft
+  possible.** `apply()` reads no clock, no RNG, and no environment, so
+  replicas applying the same commands reach identical state. Anything
+  genuinely nondeterministic is resolved by the leader *before* proposing and
+  carried in the command — lease IDs, and every expiry timestamp. Revisions
+  are assigned inside `apply` from the store's own counter, never stamped on
+  by the proposer, which is what lets replicas agree on them without
+  communicating.
+- **The log entry type is ours, not etcd's.** The wire contract is etcd's and
+  moves when etcd moves; a committed log entry is replayed by future binaries
+  and must not. `command.rs` is that boundary.
+- **Replication is not pretended.** `NODESTORE_PEERS` is refused rather than
+  ignored, and `MemberAdd` returns `Unimplemented`. An operator who believes
+  they configured replication and discovers otherwise when the node dies is
+  the worst outcome available to a datastore.
+
+The intended path from here is single-node sqlite → raft replication →
+automatic promotion when a second node joins. The seam for the first step is
+`consensus.rs`'s `Consensus` trait; the state machine above it does not
+change.
+
 ### Two binaries or one: the split is in the crates, not the file count
 
 Separate crates are what make a component replaceable. Separate *executables*

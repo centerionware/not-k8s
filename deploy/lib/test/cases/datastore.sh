@@ -52,6 +52,9 @@ _nodestore_start() {
     NODESTORE_DATA_DIR="$ns_dir/data" \
     RUST_LOG="${NODESTORE_TEST_LOG:-info}" \
         "$bin" nodestore >"$ns_log" 2>&1 &
+    # The trailing `nodestore` is the applet name for a combined binary; the
+    # standalone one takes no arguments and ignores it, so one invocation
+    # covers both layouts.
     ns_pid=$!
 
     # Wait for the port rather than sleeping: a fixed sleep is either flaky
@@ -86,7 +89,6 @@ _nodestore_rpc() {
 }
 
 _b64() { printf '%s' "$1" | base64 -w0; }
-_unb64() { base64 -d 2>/dev/null; }
 
 # Range for a single key, returning the decoded value or "" if absent.
 _nodestore_get() {
@@ -339,7 +341,6 @@ test_datastore_expires_a_lease_and_its_keys() {
         "{\"key\":\"$(_b64 /registry/leased)\",\"value\":\"$(_b64 temp)\",\"lease\":\"$lease_id\"}" >/dev/null
     assert_eq "$(_nodestore_get /registry/leased)" "temp" "the leased key exists while the lease does"
 
-    try_wait_until 20 bash -c "[[ -z \"\$($(declare -f _nodestore_get _nodestore_rpc _b64 >/dev/null 2>&1); true)\" ]]" >/dev/null 2>&1 || true
     local waited=0
     while [[ -n "$(_nodestore_get /registry/leased)" ]]; do
         waited=$((waited + 1))
