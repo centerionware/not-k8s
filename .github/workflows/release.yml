@@ -384,6 +384,49 @@ jobs:
       - name: Generate changelog
         run: bash deploy/lib/changelog.sh "v${{ steps.version.outputs.version }}" > changelog.md
 
+      - name: Append the asset guide
+        # A release carries three binaries per arch/profile now (nodelet,
+        # nodeproxy, notk8s), which is a genuine "which one do I want?"
+        # question rather than a naming detail — answer it in the release
+        # body instead of making people find docs/ARCHITECTURE.md first.
+        run: |
+          cat > asset-guide.md <<'GUIDE'
+
+          ---
+
+          ## Which binaries do I want?
+
+          Two layouts of the same components, both published here:
+
+          - **Separate binaries** (`nodelet-…`, `nodeproxy-…`) — one per
+            component. Install only what this node runs, upgrade one without
+            touching the other, mix with upstream components.
+          - **Combined binary** (`notk8s-…`) — every component in one
+            multi-call executable that dispatches on `argv[0]`, so a
+            `nodelet` symlink to it *is* nodelet. One copy of the dependency
+            tree they share, which is ~30% smaller than the separate pair on
+            aarch64. Same components, same processes, same services, same
+            environment variables.
+
+          The installer defaults to the separate binaries; add
+          `--layout=combined` for the single one:
+
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/centerionware/not-k8s/install-scripts/install.sh \
+            | bash -s -- --with-cri --layout=combined
+          ```
+
+          `release` is the optimized build for real deployments; `debug` is
+          for diagnosing something with symbols intact.
+          GUIDE
+          # The heredoc above is indented for readability inside the YAML;
+          # strip that indentation back out so the Markdown renders as
+          # Markdown and not as one long code block. Done on the guide
+          # alone, never on changelog.md — changelog.sh's own output is
+          # commit text this has no business reformatting.
+          sed -i 's/^          //' asset-guide.md
+          cat asset-guide.md >> changelog.md
+
       - name: Build deploy.tar.gz (what the standalone installer fetches)
         run: tar czf dist/deploy.tar.gz deploy
 
