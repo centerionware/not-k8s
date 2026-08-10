@@ -44,7 +44,11 @@ async-trait = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled", "blob"] }
 
 [build-dependencies]
-tonic-prost-build = { workspace = true }
+# Declared with an explicit version rather than inherited: this one is not in
+# the workspace's [workspace.dependencies] (nodelet declares its own copy the
+# same way), and inheriting something that isn't there fails at manifest-parse
+# time, before any code is even looked at.
+tonic-prost-build = "0.14"
 
 [dev-dependencies]
 tempfile = "3"
