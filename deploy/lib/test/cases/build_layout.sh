@@ -23,12 +23,31 @@
 # shellcheck source=../../components.sh
 source "$REPO_ROOT/deploy/lib/components.sh"
 
-# every_component — every name in the table, wanted by this run or not.
-# Deliberately not enabled_components(): a test wants to check whatever is
-# actually installed here, and PROXY isn't set in this context.
-every_component() {
-    local row
-    for row in "${NOTK8S_COMPONENTS[@]}"; do component_field "$row" 1; done
+# every_installed_component — the table's names, in table order, filtered to
+# the ones this deployment actually installed.
+#
+# Not the whole table: the combined binary's contents are chosen at build
+# time. combined_cargo_features() passes `--no-default-features --features
+# <enabled>` whenever this run wants fewer than every component, so a
+# `--proxy=none --layout=combined` node gets a binary that correctly does not
+# contain nodeproxy — and a test demanding every table row be present would
+# fail on it for doing the right thing.
+#
+# Not enabled_components() either: that re-evaluates the predicates *now*,
+# and PROXY/DATASTORE are set at deploy time, not in this context. The
+# bin/<name> entries are the durable record of what the build decided —
+# install_combined_layout() writes exactly one per component it built in.
+#
+# A dangling symlink counts as installed (-L, not just -e). bin/nodeproxy
+# pointing at a missing bin/notk8s is precisely the breakage these tests
+# exist to catch; skipping it as "not installed" would hide it.
+every_installed_component() {
+    local row name
+    for row in "${NOTK8S_COMPONENTS[@]}"; do
+        name="$(component_field "$row" 1)"
+        [[ -e "$REPO_ROOT/bin/$name" || -L "$REPO_ROOT/bin/$name" ]] && printf '%s\n' "$name"
+    done
+    return 0
 }
 
 # The combined binary, wherever this deployment put it, or "" if this is a
@@ -50,7 +69,7 @@ test_combined_binary_contains_every_component() {
     components="$("$bin" components)"
     while read -r name; do
         assert_contains "$components" "$name" "'notk8s components' should list the '$name' component"
-    done < <(every_component)
+    done < <(every_installed_component)
 
     # A component in the dispatch table but not in the help output (or vice
     # versa) means the two have drifted, which is how a component gets
@@ -85,7 +104,6 @@ test_installed_component_binaries_are_runnable_whatever_the_layout() {
     local name
     while read -r name; do
         local path="$REPO_ROOT/bin/$name"
-        [[ -e "$path" ]] || continue   # --proxy=none, or a target/-only build
         assert_true test -x "$path"
 
         if [[ -L "$path" ]]; then
@@ -101,7 +119,7 @@ test_installed_component_binaries_are_runnable_whatever_the_layout() {
             assert_contains "$("$REPO_ROOT/bin/notk8s" components)" "$name" \
                 "the combined binary bin/$name points at should actually contain '$name'"
         fi
-    done < <(every_component)
+    done < <(every_installed_component)
 }
 
 test_a_failing_component_says_why_before_it_exits() {
@@ -122,7 +140,19 @@ test_a_failing_component_says_why_before_it_exits() {
     scratch="$(mktemp -d)"
     # A kubeconfig path that cannot resolve, so this fails at client
     # construction — before it touches nft or this node's real rules.
-    output="$(KUBECONFIG="$scratch/nonexistent" timeout 30 "$bin" 2>&1)" || rc=$?
+    # KUBERNETES_SERVICE_HOST is unset too: kube's Config::infer() tries the
+    # in-cluster environment *first*, so leaving it set is the one way this
+    # could start successfully, reach nft, and then be killed by the timeout
+    # with a non-zero status that looks like the assertion passing.
+    #
+    # Deliberately foreground, despite the long-running-command guideline:
+    # this asserts nodeproxy *exits*, and its exit status is the primary
+    # assertion. `timeout` already bounds it, and a run that needs the full
+    # 30s is a failure this test should report, not a process to detach and
+    # poll. setsid+nohup is for commands meant to outlive the caller; this
+    # one is meant to die.
+    output="$(env -u KUBERNETES_SERVICE_HOST -u KUBERNETES_SERVICE_PORT \
+        KUBECONFIG="$scratch/nonexistent" timeout 30 "$bin" 2>&1)" || rc=$?
     rm -rf "$scratch"
 
     assert_not_eq "$rc" "0" "nodeproxy should exit non-zero when it can't reach an apiserver"
