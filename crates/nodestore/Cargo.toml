@@ -63,12 +63,21 @@ protobuf = "2"
 # with default-logger disabled, since it would pull in a second logging stack.
 slog = "2"
 
+# TLS material generation. The datastore holds every Secret in the cluster and
+# the etcd API has no authentication of its own, so it is never served in the
+# clear — see src/tls.rs. Certificates are generated when an operator has not
+# supplied their own, the same thing k3s does for its own etcd, because
+# requiring hand-built PKI before anything starts is how deployments end up
+# turning security off instead of configuring it.
+rcgen = "0.13"
+
 [build-dependencies]
 # Declared with an explicit version rather than inherited: this one is not in
 # the workspace's [workspace.dependencies] (nodelet declares its own copy the
 # same way), and inheriting something that isn't there fails at manifest-parse
 # time, before any code is even looked at.
 tonic-prost-build = "0.14"
+
 
 [dev-dependencies]
 tempfile = "3"

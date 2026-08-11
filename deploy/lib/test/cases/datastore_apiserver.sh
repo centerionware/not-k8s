@@ -166,7 +166,10 @@ _apiserver_env_start() {
     echo "$APISERVER_TEST_TOKEN,e2e-admin,e2e-admin,system:masters" >"$apisrv_dir/tokens.csv"
 
     "$api_bin" \
-        --etcd-servers="http://127.0.0.1:$NODESTORE_APISERVER_PORT" \
+        --etcd-servers="https://127.0.0.1:$NODESTORE_APISERVER_PORT" \
+        --etcd-cafile="$apisrv_dir/data/pki/client/ca.crt" \
+        --etcd-certfile="$apisrv_dir/data/pki/client/client.crt" \
+        --etcd-keyfile="$apisrv_dir/data/pki/client/client.key" \
         --secure-port="$APISERVER_TEST_PORT" \
         --cert-dir="$apisrv_dir/certs" \
         --token-auth-file="$apisrv_dir/tokens.csv" \
@@ -346,7 +349,10 @@ test_apiserver_state_survives_a_datastore_restart() {
         "$ns_bin" nodestore >>"$ns_log" 2>&1 &
     ns_pid=$!
     "$api_bin" \
-        --etcd-servers="http://127.0.0.1:$NODESTORE_APISERVER_PORT" \
+        --etcd-servers="https://127.0.0.1:$NODESTORE_APISERVER_PORT" \
+        --etcd-cafile="$apisrv_dir/data/pki/client/ca.crt" \
+        --etcd-certfile="$apisrv_dir/data/pki/client/client.crt" \
+        --etcd-keyfile="$apisrv_dir/data/pki/client/client.key" \
         --secure-port="$APISERVER_TEST_PORT" \
         --cert-dir="$apisrv_dir/certs" \
         --token-auth-file="$apisrv_dir/tokens.csv" \

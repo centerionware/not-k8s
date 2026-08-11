@@ -135,7 +135,24 @@ KUBELET_CA_ARG=""
 # store is confirmed listening — k3s fails to start, repeatedly, if this
 # points at nothing.
 DATASTORE_ARG=""
-[[ -n "${NOTK8S_DATASTORE_ENDPOINT:-}" ]] && DATASTORE_ARG="--datastore-endpoint=$NOTK8S_DATASTORE_ENDPOINT"
+if [[ -n "${NOTK8S_DATASTORE_ENDPOINT:-}" ]]; then
+    DATASTORE_ARG="--datastore-endpoint=$NOTK8S_DATASTORE_ENDPOINT"
+    # The datastore requires TLS with a client certificate — it holds every
+    # Secret in the cluster and the etcd v3 API has no authentication of its
+    # own, so there is no plaintext mode to fall back to. These are k3s's
+    # spellings of kube-apiserver's --etcd-cafile/--etcd-certfile/
+    # --etcd-keyfile. Without them k3s dials in the clear and the handshake
+    # fails, which surfaces as an apiserver that never becomes ready.
+    if [[ -n "${NOTK8S_DATASTORE_CAFILE:-}" ]]; then
+        DATASTORE_ARG="$DATASTORE_ARG --datastore-cafile=$NOTK8S_DATASTORE_CAFILE"
+    fi
+    if [[ -n "${NOTK8S_DATASTORE_CERTFILE:-}" ]]; then
+        DATASTORE_ARG="$DATASTORE_ARG --datastore-certfile=$NOTK8S_DATASTORE_CERTFILE"
+    fi
+    if [[ -n "${NOTK8S_DATASTORE_KEYFILE:-}" ]]; then
+        DATASTORE_ARG="$DATASTORE_ARG --datastore-keyfile=$NOTK8S_DATASTORE_KEYFILE"
+    fi
+fi
 
 export INSTALL_K3S_EXEC="server \
     --disable-agent \

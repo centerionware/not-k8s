@@ -355,11 +355,24 @@ if want_nodestore; then
     # service "started" the moment it forks, so k3s would race a store that
     # hasn't opened its socket yet. Block until it actually answers.
     wait_for_nodestore
-    # Read by setup-control-plane.sh, which turns it into
-    # --datastore-endpoint. http:// because the store speaks plaintext gRPC on
-    # loopback by default (crates/nodestore/src/config.rs).
-    export NOTK8S_DATASTORE_ENDPOINT="http://${NODESTORE_LISTEN:-$NODESTORE_LISTEN_DEFAULT}"
-    log "Control plane will use nodestore at $NOTK8S_DATASTORE_ENDPOINT (instead of k3s's bundled kine)."
+    # Read by setup-control-plane.sh, which turns these into
+    # --datastore-endpoint and the three --datastore-*file flags.
+    #
+    # https, and with a client certificate: the datastore has no plaintext
+    # mode. It holds every Secret in the cluster and the etcd v3 API has no
+    # authentication of its own, so serving it in the clear would be worse
+    # than an open apiserver — there is no authorization layer above it to
+    # fail closed. nodestore generates this material on first start when an
+    # operator has not supplied their own; these are the paths it writes.
+    export NOTK8S_DATASTORE_ENDPOINT="https://${NODESTORE_LISTEN:-$NODESTORE_LISTEN_DEFAULT}"
+    nodestore_pki="${NODESTORE_DATA_DIR:-/var/lib/nodestore}/pki/client"
+    export NOTK8S_DATASTORE_CAFILE="$nodestore_pki/ca.crt"
+    export NOTK8S_DATASTORE_CERTFILE="$nodestore_pki/client.crt"
+    export NOTK8S_DATASTORE_KEYFILE="$nodestore_pki/client.key"
+    for f in "$NOTK8S_DATASTORE_CAFILE" "$NOTK8S_DATASTORE_CERTFILE" "$NOTK8S_DATASTORE_KEYFILE"; do
+        [[ -s "$f" ]] || die "nodestore is listening but did not write $f. The control plane cannot authenticate to it without that file — check: journalctl -u nodestore -n 50"
+    done
+    log "Control plane will use nodestore at $NOTK8S_DATASTORE_ENDPOINT over mutual TLS (instead of k3s's bundled kine)."
 fi
 
 setup_control_plane

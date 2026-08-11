@@ -83,9 +83,20 @@ _nodestore_stop() {
 # the reflection service (one more thing on the wire for no runtime benefit),
 # and the protos are right here in the repo.
 _nodestore_rpc() {
-    grpcurl -plaintext -max-time 10 \
+    grpcurl $(_nodestore_tls_flags) -max-time 10 \
         -import-path "$REPO_ROOT/crates/nodestore/proto" -proto rpc.proto \
         -d "$2" "$NODESTORE_TEST_ADDR" "$1" 2>&1
+}
+
+# The client certificate nodestore generated for itself on first start.
+#
+# There is no plaintext mode — the store holds every Secret in a real cluster
+# and the etcd API has no authentication of its own, so the listener always
+# requires a client certificate. For a single member the material is generated
+# into the data directory, which is exactly where these tests point it.
+_nodestore_tls_flags() {
+    local pki="${ns_dir:?_nodestore_start must run first}/data/pki/client"
+    echo "-cacert $pki/ca.crt -cert $pki/client.crt -key $pki/client.key"
 }
 
 _b64() { printf '%s' "$1" | base64 -w0; }
@@ -235,7 +246,7 @@ test_datastore_streams_watch_events_as_they_happen() {
     # The whole reason this component exists: a watcher is told about a
     # change because the change happened, not because it asked again.
     local watch_out="$ns_dir/watch.json"
-    grpcurl -plaintext -max-time 15 \
+    grpcurl $(_nodestore_tls_flags) -max-time 15 \
         -import-path "$REPO_ROOT/crates/nodestore/proto" -proto rpc.proto \
         -d "{\"createRequest\":{\"key\":\"$(_b64 /registry/watched/)\",\"rangeEnd\":\"$(_b64 /registry/watched0)\"}}" \
         "$NODESTORE_TEST_ADDR" etcdserverpb.Watch/Watch >"$watch_out" 2>&1 &
@@ -284,7 +295,7 @@ test_datastore_replays_missed_events_to_a_late_watcher() {
 
     local watch_out="$ns_dir/replay.json"
     # From revision 2 — the first write this store ever did.
-    timeout 12 grpcurl -plaintext -max-time 10 \
+    timeout 12 grpcurl $(_nodestore_tls_flags) -max-time 10 \
         -import-path "$REPO_ROOT/crates/nodestore/proto" -proto rpc.proto \
         -d "{\"createRequest\":{\"key\":\"$(_b64 /registry/replay/)\",\"rangeEnd\":\"$(_b64 /registry/replay0)\",\"startRevision\":\"2\"}}" \
         "$NODESTORE_TEST_ADDR" etcdserverpb.Watch/Watch >"$watch_out" 2>&1 || true

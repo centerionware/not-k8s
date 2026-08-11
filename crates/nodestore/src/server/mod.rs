@@ -34,9 +34,12 @@ macro_rules! forward_if_follower {
     ($self:ident, $client:ty, $method:ident, $req:expr) => {
         if !$self.node.is_leader() {
             let url = $self.leader_client_url().await?;
-            let mut client = <$client>::connect(url.clone()).await.map_err(|e| {
-                Status::unavailable(format!("could not reach the leader at {url}: {e}"))
-            })?;
+            // The leader's client API requires a client certificate like any
+            // other caller — a follower forwarding a write is not exempt, and
+            // making it exempt would mean the leader accepting unauthenticated
+            // writes from anything that could claim to be a peer.
+            let channel = $self.dial_leader(&url).await?;
+            let mut client = <$client>::new(channel);
             return client.$method($req).await;
         }
     };
@@ -57,15 +60,24 @@ pub struct EtcdApi {
     /// Present only in a real cluster. Its absence is what makes the
     /// membership RPCs answer "single member" rather than pretending.
     raft: Option<crate::replication::driver::RaftHandle>,
+    /// Client-domain TLS material, used when *this* member has to act as a
+    /// client of another member's client API — i.e. forwarding a write to the
+    /// leader.
+    client_tls: Option<crate::tls::Material>,
 }
 
 impl EtcdApi {
     pub fn new(node: Arc<Node>) -> EtcdApi {
-        EtcdApi { node, raft: None }
+        EtcdApi { node, raft: None, client_tls: None }
     }
 
     pub fn with_raft(mut self, handle: crate::replication::driver::RaftHandle) -> EtcdApi {
         self.raft = Some(handle);
+        self
+    }
+
+    pub fn with_client_tls(mut self, material: crate::tls::Material) -> EtcdApi {
+        self.client_tls = Some(material);
         self
     }
 
@@ -99,6 +111,30 @@ impl EtcdApi {
 
     fn current_revision(&self) -> Result<i64> {
         self.node.read(|s| s.revision())
+    }
+
+    /// Dial the leader's client API with this member's own certificate.
+    async fn dial_leader(
+        &self,
+        url: &str,
+    ) -> std::result::Result<tonic::transport::Channel, Status> {
+        let endpoint = tonic::transport::Endpoint::from_shared(url.to_string())
+            .map_err(|e| Status::internal(format!("leader URL {url} is not dialable: {e}")))?;
+        let endpoint = match &self.client_tls {
+            Some(material) => {
+                let host = crate::host_of(url);
+                let cfg = crate::tls::client_tls_config(material, host.as_deref())
+                    .map_err(|e| Status::internal(format!("building forwarding TLS: {e}")))?;
+                endpoint
+                    .tls_config(cfg)
+                    .map_err(|e| Status::internal(format!("applying forwarding TLS: {e}")))?
+            }
+            None => endpoint,
+        };
+        endpoint
+            .connect()
+            .await
+            .map_err(|e| Status::unavailable(format!("could not reach the leader at {url}: {e}")))
     }
 
     /// How long a forward will wait for the cluster to become forwardable

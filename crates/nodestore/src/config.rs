@@ -51,6 +51,21 @@ pub struct Config {
     /// writes under load.
     pub election_ticks: usize,
     pub heartbeat_ticks: usize,
+
+    /// TLS material for the client API and for the raft peer link, kept in
+    /// two separate trust domains. See [`crate::tls`] for why they are
+    /// separate and why neither is optional.
+    ///
+    /// All six are unset by default, in which case the material is generated
+    /// into `data_dir/pki/` on first start. Setting them is how an operator
+    /// brings their own PKI; the names mirror etcd's own flags so an existing
+    /// etcd deployment's certificates and automation carry over unchanged.
+    pub cert_file: Option<PathBuf>,
+    pub key_file: Option<PathBuf>,
+    pub trusted_ca_file: Option<PathBuf>,
+    pub peer_cert_file: Option<PathBuf>,
+    pub peer_key_file: Option<PathBuf>,
+    pub peer_trusted_ca_file: Option<PathBuf>,
 }
 
 impl Config {
@@ -77,6 +92,14 @@ impl Default for Config {
             initial_cluster: Vec::new(),
             election_ticks: 10,
             heartbeat_ticks: 1,
+            // Unset means "generate it", not "run without TLS" — there is no
+            // way to ask for plaintext. See crate::tls.
+            cert_file: None,
+            key_file: None,
+            trusted_ca_file: None,
+            peer_cert_file: None,
+            peer_key_file: None,
+            peer_trusted_ca_file: None,
         }
     }
 }
@@ -133,6 +156,31 @@ impl Config {
         }
         cfg.election_ticks = parse_env("NODESTORE_ELECTION_TICKS", cfg.election_ticks)?;
         cfg.heartbeat_ticks = parse_env("NODESTORE_HEARTBEAT_TICKS", cfg.heartbeat_ticks)?;
+
+        cfg.cert_file = path_env("NODESTORE_CERT_FILE");
+        cfg.key_file = path_env("NODESTORE_KEY_FILE");
+        cfg.trusted_ca_file = path_env("NODESTORE_TRUSTED_CA_FILE");
+        cfg.peer_cert_file = path_env("NODESTORE_PEER_CERT_FILE");
+        cfg.peer_key_file = path_env("NODESTORE_PEER_KEY_FILE");
+        cfg.peer_trusted_ca_file = path_env("NODESTORE_PEER_TRUSTED_CA_FILE");
+
+        // All three of a set, or none. A half-configured set is far more
+        // likely to be an oversight than a request, and the failure it would
+        // otherwise produce — quietly generating our own material while the
+        // operator believes their PKI is in use — is exactly the kind of
+        // security misconfiguration that goes unnoticed.
+        check_tls_triple(
+            "NODESTORE",
+            &cfg.cert_file,
+            &cfg.key_file,
+            &cfg.trusted_ca_file,
+        )?;
+        check_tls_triple(
+            "NODESTORE_PEER",
+            &cfg.peer_cert_file,
+            &cfg.peer_key_file,
+            &cfg.peer_trusted_ca_file,
+        )?;
 
         if cfg.election_ticks <= cfg.heartbeat_ticks {
             // Raft requires election_tick > heartbeat_tick, and a ratio near 1
@@ -244,6 +292,37 @@ fn listen_from_url(url: &str) -> String {
     let hostport = url.split("://").nth(1).unwrap_or(url);
     let port = hostport.rsplit(':').next().unwrap_or("2380");
     format!("0.0.0.0:{port}")
+}
+
+/// An optional path from the environment. Empty means unset, so a variable
+/// set to "" behaves the same as one that was never exported — which is how
+/// systemd units and shell wrappers tend to pass "no value".
+fn path_env(name: &str) -> Option<PathBuf> {
+    match std::env::var(name) {
+        Ok(v) if !v.trim().is_empty() => Some(PathBuf::from(v)),
+        _ => None,
+    }
+}
+
+fn check_tls_triple(
+    prefix: &str,
+    cert: &Option<PathBuf>,
+    key: &Option<PathBuf>,
+    ca: &Option<PathBuf>,
+) -> Result<()> {
+    let set = [cert.is_some(), key.is_some(), ca.is_some()];
+    if set.iter().all(|s| *s) || set.iter().all(|s| !*s) {
+        return Ok(());
+    }
+    Err(Error::InvalidRequest(format!(
+        "{prefix}_CERT_FILE, {prefix}_KEY_FILE and {prefix}_TRUSTED_CA_FILE must be set together \
+         or not at all (set: cert={}, key={}, ca={}). Leaving all three unset generates the \
+         material instead; setting only some would silently fall back to generated certificates \
+         while looking configured.",
+        cert.is_some(),
+        key.is_some(),
+        ca.is_some()
+    )))
 }
 
 fn parse_env<T: std::str::FromStr>(name: &str, default: T) -> Result<T> {

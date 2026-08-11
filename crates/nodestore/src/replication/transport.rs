@@ -98,11 +98,17 @@ struct PeerHandle {
 pub struct Transport {
     self_id: u64,
     peers: Mutex<HashMap<u64, PeerHandle>>,
+    /// Peer-domain TLS material. Every peer connection presents this member's
+    /// certificate and verifies the other end's against the peer CA — a raft
+    /// message is trusted absolutely by whoever receives it, so an
+    /// unauthenticated peer link would let anything that can reach the port
+    /// append entries to the log.
+    tls: Option<crate::tls::Material>,
 }
 
 impl Transport {
-    pub fn new(self_id: u64) -> Arc<Transport> {
-        Arc::new(Transport { self_id, peers: Mutex::new(HashMap::new()) })
+    pub fn new(self_id: u64, tls: Option<crate::tls::Material>) -> Arc<Transport> {
+        Arc::new(Transport { self_id, peers: Mutex::new(HashMap::new()), tls })
     }
 
     /// Reconcile connections against the replicated address book.
@@ -134,7 +140,13 @@ impl Transport {
             }
             let (tx, rx) = mpsc::channel(PEER_QUEUE_DEPTH);
             let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
-            tokio::spawn(peer_task(id, member.peer_url.clone(), rx, shutdown_rx));
+            tokio::spawn(peer_task(
+                id,
+                member.peer_url.clone(),
+                rx,
+                shutdown_rx,
+                self.tls.clone(),
+            ));
             info!(peer = id, url = %member.peer_url, "connecting to peer");
             peers.insert(
                 id,
@@ -180,6 +192,7 @@ async fn peer_task(
     url: String,
     mut rx: mpsc::Receiver<Message>,
     mut shutdown: mpsc::Receiver<()>,
+    tls: Option<crate::tls::Material>,
 ) {
     let mut client: Option<PeerClient<tonic::transport::Channel>> = None;
 
@@ -193,7 +206,7 @@ async fn peer_task(
         };
 
         if client.is_none() {
-            match PeerClient::connect(url.clone()).await {
+            match connect_peer(&url, tls.as_ref()).await {
                 Ok(c) => {
                     debug!(peer = id, url = %url, "peer connection established");
                     client = Some(c);
@@ -247,14 +260,14 @@ mod tests {
     async fn peers_exclude_this_node() {
         // Raft never addresses a message to the sender, but a transport that
         // held a connection to itself would deadlock the moment one did.
-        let t = Transport::new(1);
+        let t = Transport::new(1, None);
         t.set_peers(&[member(1, "http://127.0.0.1:1"), member(2, "http://127.0.0.1:2")]);
         assert_eq!(t.peer_ids(), vec![2]);
     }
 
     #[tokio::test]
     async fn removed_members_lose_their_connection() {
-        let t = Transport::new(1);
+        let t = Transport::new(1, None);
         t.set_peers(&[member(2, "http://127.0.0.1:2"), member(3, "http://127.0.0.1:3")]);
         assert_eq!(t.peer_ids().len(), 2);
         t.set_peers(&[member(2, "http://127.0.0.1:2")]);
@@ -265,7 +278,7 @@ mod tests {
     async fn sending_to_an_unknown_peer_is_a_no_op_rather_than_a_panic() {
         // Happens for real between a conf change being committed and the
         // address book entry being applied here.
-        let t = Transport::new(1);
+        let t = Transport::new(1, None);
         let mut msg = Message::default();
         msg.to = 99;
         t.send(msg); // must not panic
@@ -276,7 +289,7 @@ mod tests {
         // The property the whole design rests on: the raft loop hands off
         // without awaiting a network write, so one dead follower cannot make
         // the leader look dead to everyone else.
-        let t = Transport::new(1);
+        let t = Transport::new(1, None);
         t.set_peers(&[member(2, "http://127.0.0.1:1")]); // nothing listening
         let start = std::time::Instant::now();
         for _ in 0..200 {
@@ -314,4 +327,39 @@ mod tests {
         assert_eq!(state.role_name(), "candidate");
         assert!(!state.is_leader());
     }
+}
+
+/// Dial a peer with mutual TLS.
+///
+/// The certificate is verified against the *host of the peer URL*, which is
+/// why tls_sans() in lib.rs includes every address a member advertises: a
+/// member reached at an IP needs that IP as a SAN, and the usual symptom of
+/// getting this wrong is a handshake failure that looks like the peer being
+/// down.
+async fn connect_peer(
+    url: &str,
+    tls: Option<&crate::tls::Material>,
+) -> Result<PeerClient<tonic::transport::Channel>, tonic::transport::Error> {
+    let endpoint = tonic::transport::Endpoint::from_shared(url.to_string())?;
+    let endpoint = match tls {
+        Some(material) => {
+            let host = crate::host_of(url);
+            let cfg = crate::tls::client_tls_config(material, host.as_deref())
+                .map_err(|_| bad_tls_material())?;
+            endpoint.tls_config(cfg)?
+        }
+        None => endpoint,
+    };
+    let channel = endpoint.connect().await?;
+    Ok(PeerClient::new(channel))
+}
+
+/// tonic::transport::Error has no public constructor, and this path needs to
+/// report "the configured TLS material could not be read" through the same
+/// Result the dial returns. Producing one by failing a trivially-invalid
+/// endpoint parse is ugly but keeps the caller's error handling uniform; the
+/// real cause is logged where the material is loaded.
+fn bad_tls_material() -> tonic::transport::Error {
+    tonic::transport::Endpoint::from_shared("://".to_string())
+        .expect_err("'://' is not a valid endpoint")
 }

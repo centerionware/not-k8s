@@ -34,7 +34,72 @@ netns_supported() {
 netns_name() { echo "${NETNS_PREFIX}${1}"; }
 netns_ip() { echo "${NETNS_SUBNET}.${1}"; }
 netns_peer_url() { echo "http://$(netns_ip "$1"):${NETNS_PEER_PORT}"; }
-netns_client_url() { echo "http://$(netns_ip "$1"):${NETNS_CLIENT_PORT}"; }
+netns_client_url() { echo "https://$(netns_ip "$1"):${NETNS_CLIENT_PORT}"; }
+
+# netns_pki <root> <count> — generate ONE CA per trust domain, shared by every
+# member.
+#
+# This is the harness standing in for the operator. nodestore deliberately
+# refuses to generate its own material for a clustered member (see
+# crates/nodestore/src/tls.rs): each member would mint a CA only it trusted,
+# so nothing would trust anything else and the cluster would never form. A
+# real deployment supplies a common CA; so does this.
+#
+# One server certificate is shared by all members, with every member IP in its
+# SANs — simpler than issuing one per member, and equivalent for the property
+# under test.
+netns_pki() {
+    local root="$1" count="$2" dir="$root/pki"
+    # Exported rather than returned only, because the grpcurl helpers below
+    # are called from test bodies that never see the cluster root.
+    export NETNS_PKI_DIR="$dir"
+    [[ -f "$dir/ca.crt" ]] && { echo "$dir"; return 0; }
+    mkdir -p "$dir"
+
+    local sans="IP:127.0.0.1,DNS:localhost" i
+    for ((i = 1; i <= count; i++)); do
+        sans="$sans,IP:$(netns_ip "$i")"
+    done
+
+    local domain
+    for domain in ca peer-ca; do
+        openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+            -keyout "$dir/$domain.key" -out "$dir/$domain.crt" \
+            -subj "/CN=nodestore-test-$domain" >/dev/null 2>&1
+    done
+
+    # Leaf certs need both server and client usage: a member is a server to
+    # its peers on one connection and a client to them on another, and a
+    # follower forwarding a write is a client of the leader's client API.
+    local leaf
+    for leaf in server:ca peer:peer-ca client:ca; do
+        local name="${leaf%%:*}" issuer="${leaf##*:}"
+        openssl req -newkey rsa:2048 -nodes \
+            -keyout "$dir/$name.key" -out "$dir/$name.csr" \
+            -subj "/CN=nodestore-test-$name" >/dev/null 2>&1
+        openssl x509 -req -in "$dir/$name.csr" \
+            -CA "$dir/$issuer.crt" -CAkey "$dir/$issuer.key" -CAcreateserial \
+            -out "$dir/$name.crt" -days 3650 \
+            -extfile <(printf 'subjectAltName=%s\nextendedKeyUsage=serverAuth,clientAuth\n' "$sans") \
+            >/dev/null 2>&1
+    done
+    echo "$dir"
+}
+
+# The grpcurl flags every call needs now that there is no plaintext mode.
+#
+# Two sets, because the two listeners are in different trust domains on
+# purpose: a client certificate must not be usable to join the raft cluster.
+# Using the wrong set here fails the handshake, which is the property working.
+netns_tls_flags() {
+    local dir="${NETNS_PKI_DIR:?netns_pki must run first}"
+    echo "-cacert $dir/ca.crt -cert $dir/client.crt -key $dir/client.key"
+}
+
+netns_peer_tls_flags() {
+    local dir="${NETNS_PKI_DIR:?netns_pki must run first}"
+    echo "-cacert $dir/peer-ca.crt -cert $dir/peer.crt -key $dir/peer.key"
+}
 
 # netns_cluster_spec <count> — the NODESTORE_INITIAL_CLUSTER value.
 netns_cluster_spec() {
@@ -86,12 +151,19 @@ netns_start_member() {
     local i="$1" count="$2" bin="$3" root="$4"
     local ns; ns="$(netns_name "$i")"
     mkdir -p "$root/$i"
+    local pki; pki="$(netns_pki "$root" "$count")"
     ip netns exec "$ns" env \
         NODESTORE_MEMBER_ID="$i" \
         NODESTORE_INITIAL_CLUSTER="$(netns_cluster_spec "$count")" \
         NODESTORE_LISTEN="0.0.0.0:${NETNS_CLIENT_PORT}" \
         NODESTORE_ADVERTISE_CLIENT_URL="$(netns_client_url "$i")" \
         NODESTORE_DATA_DIR="$root/$i/data" \
+        NODESTORE_CERT_FILE="$pki/server.crt" \
+        NODESTORE_KEY_FILE="$pki/server.key" \
+        NODESTORE_TRUSTED_CA_FILE="$pki/ca.crt" \
+        NODESTORE_PEER_CERT_FILE="$pki/peer.crt" \
+        NODESTORE_PEER_KEY_FILE="$pki/peer.key" \
+        NODESTORE_PEER_TRUSTED_CA_FILE="$pki/peer-ca.crt" \
         RUST_LOG="${NETNS_LOG:-info}" \
         "$bin" nodestore >"$root/$i/nodestore.log" 2>&1 &
     echo $!
@@ -142,7 +214,7 @@ netns_heal() {
 
 # netns_status <index> — the peer Status RPC, as JSON.
 netns_status() {
-    grpcurl -plaintext -max-time 5 \
+    grpcurl $(netns_peer_tls_flags) -max-time 5 \
         -import-path "$REPO_ROOT/crates/nodestore/proto" -proto peer.proto \
         -d '{}' "$(netns_ip "$1"):${NETNS_PEER_PORT}" \
         notk8s.nodestore.peer.v1.Peer/Status 2>/dev/null
@@ -219,7 +291,7 @@ netns_wait_for_leader() {
 
 # netns_put <index> <key> <value> — write through this member's client port.
 netns_put() {
-    grpcurl -plaintext -max-time 15 \
+    grpcurl $(netns_tls_flags) -max-time 15 \
         -import-path "$REPO_ROOT/crates/nodestore/proto" -proto rpc.proto \
         -d "{\"key\":\"$(printf '%s' "$2" | base64 -w0)\",\"value\":\"$(printf '%s' "$3" | base64 -w0)\"}" \
         "$(netns_ip "$1"):${NETNS_CLIENT_PORT}" etcdserverpb.KV/Put 2>&1
@@ -228,7 +300,7 @@ netns_put() {
 # netns_get <index> <key> [serializable] — read it back.
 netns_get() {
     local serializable="${3:-false}"
-    grpcurl -plaintext -max-time 15 \
+    grpcurl $(netns_tls_flags) -max-time 15 \
         -import-path "$REPO_ROOT/crates/nodestore/proto" -proto rpc.proto \
         -d "{\"key\":\"$(printf '%s' "$2" | base64 -w0)\",\"serializable\":$serializable}" \
         "$(netns_ip "$1"):${NETNS_CLIENT_PORT}" etcdserverpb.KV/Range 2>/dev/null \
