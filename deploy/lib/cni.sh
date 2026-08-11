@@ -173,7 +173,7 @@ start_flanneld() {
     # journalctl -u flanneld, on the first version of this fix.
     local flanneld_bin; flanneld_bin="$(command -v flanneld)"
     local exec_cmd="$SCRIPT_DIR/run-flanneld.sh"
-    local node_name="${NODELET_NODE_NAME:-$(hostname)}"
+    local node_name="${NODELET_NODE_NAME:-$(uname -n)}"
     install_supervised_service flanneld "flanneld — CNI overlay network daemon for not-k8s" \
         "$exec_cmd" "k3s.service" \
         "NODE_NAME=$node_name" "FLANNELD_BIN=$flanneld_bin" "KUBECONFIG=$KUBECONFIG" \

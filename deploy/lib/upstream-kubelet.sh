@@ -115,7 +115,7 @@ ExecStart=$KUBELET_BIN \\
     --kubeconfig=$KUBECONFIG_PATH \\
     --config=$KUBELET_WORK_DIR/config.yaml \\
     --root-dir=$KUBELET_WORK_DIR \\
-    --hostname-override=$(hostname) \\
+    --hostname-override=$(uname -n) \\
     --node-ip=$node_ip \\
     --v=1
 Restart=on-failure
@@ -138,13 +138,13 @@ start_upstream_kubelet() {
     # kubelet updating pre-existing status/conditions/capacity instead of
     # a genuinely fresh registration — delete it first so both sides of
     # the comparison start from the same clean slate.
-    KUBECONFIG="$KUBECONFIG_PATH" kubectl delete node "$(hostname)" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+    KUBECONFIG="$KUBECONFIG_PATH" kubectl delete node "$(uname -n)" --ignore-not-found --wait=true >/dev/null 2>&1 || true
 
     systemctl enable --now "$SERVICE_NAME"
 
     log "waiting for the node to register..."
     local waited=0
-    until KUBECONFIG="$KUBECONFIG_PATH" kubectl get node "$(hostname)" >/dev/null 2>&1; do
+    until KUBECONFIG="$KUBECONFIG_PATH" kubectl get node "$(uname -n)" >/dev/null 2>&1; do
         waited=$((waited + 2))
         if (( waited >= 60 )); then
             echo "kubelet never registered a Node within 60s — check 'journalctl -u $SERVICE_NAME'" >&2
@@ -152,13 +152,13 @@ start_upstream_kubelet() {
         fi
         sleep 2
     done
-    KUBECONFIG="$KUBECONFIG_PATH" kubectl get node "$(hostname)" -o wide || true
+    KUBECONFIG="$KUBECONFIG_PATH" kubectl get node "$(uname -n)" -o wide || true
 }
 
 stop_upstream_kubelet() {
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
     systemctl disable "$SERVICE_NAME" 2>/dev/null || true
-    KUBECONFIG="$KUBECONFIG_PATH" kubectl delete node "$(hostname)" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+    KUBECONFIG="$KUBECONFIG_PATH" kubectl delete node "$(uname -n)" --ignore-not-found --wait=true >/dev/null 2>&1 || true
 }
 
 case "${1:-}" in

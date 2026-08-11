@@ -58,7 +58,7 @@ export RUST_LOG="${RUST_LOG:-info}"
 
 # Node name: let nodelet default to hostname if unset.
 # We read it here just for the startup banner.
-NODE_NAME="${NODELET_NODE_NAME:-$(hostname)}"
+NODE_NAME="${NODELET_NODE_NAME:-$(uname -n)}"
 RUNTIME="${NODELET_RUNTIME:-mock}"
 
 # ── Startup banner ───────────────────────────────────────────────────────────
