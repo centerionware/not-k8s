@@ -20,7 +20,7 @@
 #   # defaults: node-name from `hostname`, pod-name smoke-test
 set -uo pipefail
 
-NODE="${1:-$(hostname)}"
+NODE="${1:-$(uname -n)}"
 POD="${2:-smoke-test}"
 
 echo "=== containerd config.toml (full — grep for the CNI section kept coming up ==="

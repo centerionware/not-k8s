@@ -8,4 +8,4 @@
 #
 # Usage:
 #   ./deploy/remove-cloudprovider-taint.sh [node-name]   # default: `hostname`
-kubectl taint nodes "${1:-$(hostname)}" node.cloudprovider.kubernetes.io/uninitialized-
+kubectl taint nodes "${1:-$(uname -n)}" node.cloudprovider.kubernetes.io/uninitialized-
