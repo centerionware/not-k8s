@@ -199,7 +199,19 @@ jobs:
               # into a printf. See the script's own header for why.
               sudo install -m 0755 .github/scripts/zigcc-armv7.sh /usr/local/bin/zigcc-armv7
               CC_BIN=/usr/local/bin/zigcc-armv7
-              echo "armv7l C toolchain: zig cc"
+              # zig links its own musl startup files, and rustc's musl targets
+              # pass a self-contained crt1.o of their own -- so _start ends up
+              # defined twice and ld.lld rejects the link:
+              #
+              #   ld.lld: error: duplicate symbol: _start
+              #
+              # Turning off Rust's self-contained linking for this target
+              # leaves exactly one provider of crt1/crti/libc: zig.
+              # (Only on the zig path -- the musl.cc gcc above is a normal
+              # cross gcc and wants Rust's self-contained artifacts.)
+              RUSTFLAGS_VAR="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_RUSTFLAGS"
+              echo "$RUSTFLAGS_VAR=-C link-self-contained=no" >> "$GITHUB_ENV"
+              echo "armv7l C toolchain: zig cc (link-self-contained=no)"
             fi
           else
 
