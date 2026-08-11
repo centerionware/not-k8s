@@ -127,6 +127,87 @@ impl RaftLog {
         self.put_state("conf_state", &encode_pb(cs)?)
     }
 
+    /// Raise the persisted commit index to `applied` if it trails, and report
+    /// whether it had to. Called once at startup, before raft is constructed.
+    ///
+    /// # Why this is needed at all
+    ///
+    /// The two databases above are deliberately not equally durable, so on
+    /// restart they can legitimately be recovered to different points. The
+    /// asymmetry documented at the top of this file covers the state machine
+    /// falling *behind* the log — the derivable side losing its tail, which
+    /// replay fixes.
+    ///
+    /// This is the other direction, and it is not a corruption case. Raft
+    /// does not require the commit index to be durable: it is recoverable by
+    /// re-counting acknowledgements, so an implementation is free to persist
+    /// `HardState` lazily. Entries are fsynced; the commit index riding along
+    /// with them is not guaranteed to reflect the latest value. So a crash
+    /// can perfectly well leave entry 4 in the log, `applied = 4` in the
+    /// state database, and a persisted `commit = 3`.
+    ///
+    /// Handed that, raft refuses to start:
+    ///
+    /// ```text
+    /// applied(4) is out of range [prev_applied(0), min(committed(3), persisted(4))]
+    /// ```
+    ///
+    /// which is a panic inside `RawNode::new`, so the process dies on startup
+    /// and the member can never rejoin — every rolling restart of a cluster
+    /// depends on this path.
+    ///
+    /// The reconciliation is sound rather than a workaround: a member only
+    /// ever applies entries raft has told it are *committed*, and the applied
+    /// index is written in the same transaction as the state it produced. So
+    /// `applied = 4` is itself durable evidence that entry 4 was committed —
+    /// better evidence than the lazily-persisted commit index. Raising the
+    /// commit index to match cannot invent a commitment that never happened.
+    ///
+    /// # The case that is genuinely unrecoverable
+    ///
+    /// If the *log* is missing entries the state machine has already applied
+    /// (`applied` beyond the last index), that is the silent-divergence
+    /// scenario this file's header describes, and no reconciliation is
+    /// possible — the entries are gone. That is reported as an error rather
+    /// than papered over.
+    pub fn reconcile_commit_with_applied(&self, applied: u64) -> Result<bool, StoreError> {
+        if applied == 0 {
+            return Ok(false);
+        }
+        let inner = self.inner.lock().map_err(|_| StoreError::Unavailable("raft log".into()))?;
+
+        let mut hs = match RaftLog::get_state(&inner.conn, "hard_state")? {
+            Some(bytes) => decode_pb::<HardState>(&bytes)?,
+            None => HardState::default(),
+        };
+        if hs.commit >= applied {
+            return Ok(false);
+        }
+
+        // A snapshot's index counts as present even though the entries it
+        // covers have been compacted away, so the floor is whichever is
+        // higher.
+        let last = last_index_of(&inner.conn)?;
+        if applied > last {
+            return Err(StoreError::InvalidRequest(format!(
+                "raft log is behind the state machine: applied={applied} but the log ends at \
+                 {last}. The state machine has applied entries the log no longer has, so they \
+                 cannot be replayed and this replica cannot be made consistent with the cluster. \
+                 Recover it by removing this member's data directory and letting it rejoin as a \
+                 new member, which refills it from a peer."
+            )));
+        }
+
+        hs.commit = applied;
+        let encoded = encode_pb(&hs)?;
+        inner.conn.execute(
+            "INSERT INTO state (name, value) VALUES ('hard_state', ?1)
+             ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+            rusqlite::params![encoded],
+        )?;
+        Ok(true)
+    }
+
     fn put_state(&self, name: &str, value: &[u8]) -> Result<(), StoreError> {
         let inner = self.inner.lock().map_err(|_| StoreError::Unavailable("raft log".into()))?;
         inner.conn.execute(
@@ -422,6 +503,72 @@ mod tests {
         e.term = term;
         e.data = data.to_vec().into();
         e
+    }
+
+    // The exact shape a crash leaves behind when the commit index was not
+    // flushed as far as the applied index: entries 1..=4 durable, applied=4
+    // recorded by the state machine, but a persisted commit of 3.
+    //
+    // Before the reconciliation this produced a panic inside RawNode::new —
+    // "applied(4) is out of range [prev_applied(0), min(committed(3),
+    // persisted(4))]" — killing the member at startup so it could never
+    // rejoin. Found by test_a_restarted_member_catches_up_on_what_it_missed
+    // in the cluster e2e.
+    #[test]
+    fn a_commit_index_that_trails_the_applied_index_is_raised_on_restart() {
+        let (log, _d) = log();
+        log.append(&[entry(1, 1, b"a"), entry(2, 1, b"b"), entry(3, 1, b"c"), entry(4, 1, b"d")])
+            .unwrap();
+        let mut hs = HardState::default();
+        hs.term = 1;
+        hs.commit = 3;
+        log.set_hard_state(&hs).unwrap();
+
+        assert!(log.reconcile_commit_with_applied(4).unwrap(), "should have raised the commit index");
+        assert_eq!(log.initial_state().unwrap().hard_state.commit, 4);
+        // The term must survive untouched — rewriting it would rewrite this
+        // member's vote.
+        assert_eq!(log.initial_state().unwrap().hard_state.term, 1);
+    }
+
+    #[test]
+    fn a_commit_index_already_at_or_past_applied_is_left_alone() {
+        let (log, _d) = log();
+        log.append(&[entry(1, 1, b"a"), entry(2, 1, b"b")]).unwrap();
+        let mut hs = HardState::default();
+        hs.term = 2;
+        hs.commit = 2;
+        log.set_hard_state(&hs).unwrap();
+
+        assert!(!log.reconcile_commit_with_applied(2).unwrap());
+        assert!(!log.reconcile_commit_with_applied(1).unwrap());
+        assert_eq!(log.initial_state().unwrap().hard_state.commit, 2);
+    }
+
+    // The genuinely unrecoverable direction, and the one this must NOT paper
+    // over: the state machine claims to have applied an entry the log does
+    // not have. Raising the commit index there would assert a commitment
+    // nothing can substantiate, and the entry can never be replayed.
+    #[test]
+    fn an_applied_index_beyond_the_log_is_an_error_not_a_silent_repair() {
+        let (log, _d) = log();
+        log.append(&[entry(1, 1, b"a")]).unwrap();
+
+        let err = log
+            .reconcile_commit_with_applied(7)
+            .expect_err("must refuse to invent a commitment for entries the log doesn't have");
+        let msg = err.to_string();
+        assert!(msg.contains("applied=7"), "error should name the applied index: {msg}");
+        assert!(msg.contains("log ends at 1"), "error should name the log's end: {msg}");
+    }
+
+    // A member that never applied anything has nothing to reconcile — and
+    // must not have a commit index invented for it.
+    #[test]
+    fn a_fresh_member_with_nothing_applied_is_untouched() {
+        let (log, _d) = log();
+        assert!(!log.reconcile_commit_with_applied(0).unwrap());
+        assert_eq!(log.initial_state().unwrap().hard_state.commit, 0);
     }
 
     #[test]

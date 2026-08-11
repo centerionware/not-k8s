@@ -211,6 +211,15 @@ pub fn start(
 ) -> Result<RaftHandle> {
     let applied = node.read(|s| s.applied_index())?;
 
+    // Before raft sees `applied`: the persisted commit index can legitimately
+    // trail it across a restart, because raft does not require the commit
+    // index to be durable while entries and the applied index both are.
+    // RawNode::new *panics* on that combination, so a member that hit it
+    // could never restart, let alone rejoin. See the method's own comment.
+    if log.reconcile_commit_with_applied(applied)? {
+        info!(applied, "raised the persisted commit index to the applied index on restart");
+    }
+
     let cfg = RaftConfig {
         id: member_id,
         election_tick: election_ticks,

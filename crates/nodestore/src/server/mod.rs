@@ -33,7 +33,7 @@ use tonic::{Request, Response, Status};
 macro_rules! forward_if_follower {
     ($self:ident, $client:ty, $method:ident, $req:expr) => {
         if !$self.node.is_leader() {
-            let url = $self.leader_client_url()?;
+            let url = $self.leader_client_url().await?;
             let mut client = <$client>::connect(url.clone()).await.map_err(|e| {
                 Status::unavailable(format!("could not reach the leader at {url}: {e}"))
             })?;
@@ -101,28 +101,76 @@ impl EtcdApi {
         self.node.read(|s| s.revision())
     }
 
+    /// How long a forward will wait for the cluster to become forwardable
+    /// before giving up. Both conditions it waits on resolve in well under
+    /// this on a healthy cluster; it exists so a request cannot hang forever,
+    /// because apiserver blocks a worker on its storage write and a call that
+    /// never returns takes that worker with it.
+    const FORWARD_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
     /// The leader's client URL, for forwarding.
     ///
-    /// Two distinct failures, reported differently on purpose: there being no
-    /// leader right now is transient and worth retrying, whereas a leader
-    /// whose address nobody has published is a configuration problem that
-    /// retrying will not fix.
-    fn leader_client_url(&self) -> std::result::Result<String, Status> {
-        let Some(leader) = self.node.leader_id() else {
-            return Err(Status::unavailable(
-                "no leader elected right now; retry shortly",
-            ));
-        };
-        let member = self
-            .node
-            .read(|s| s.member(leader))
-            .map_err(|e| Status::internal(format!("reading the address book: {e}")))?;
-        match member.map(|m| m.client_url).filter(|u| !u.is_empty()) {
-            Some(url) => Ok(url),
-            None => Err(Status::unavailable(format!(
-                "member {leader} is the leader but has not published a client URL yet"
-            ))),
+    /// Both of the conditions this can hit are *transient*, and both are
+    /// waited on rather than failed:
+    ///
+    ///   * **No leader right now** — an election is in progress.
+    ///   * **A leader whose client URL is not in the address book yet** — the
+    ///     book is replicated state, published by a leader when it takes
+    ///     office (see [`crate::replication::bootstrap::publish_address_book`]).
+    ///     So immediately after an election there is a window where this
+    ///     member knows *who* leads but not *how to reach it*.
+    ///
+    /// That second case was previously reported as a configuration problem
+    /// retrying would not fix, and failed instantly. It is the opposite: the
+    /// URL is on its way, and the window is milliseconds. Failing inside it
+    /// broke the guarantee this whole forwarding path exists to provide —
+    /// apiserver is handed an endpoint list and expects any endpoint to accept
+    /// a write, so for that window a three-member cluster served writes only
+    /// when the request happened to land on the leader.
+    ///
+    /// Caught by `test_a_follower_forwards_writes_to_the_leader` in the
+    /// cluster e2e, which writes to a follower as soon as a leader exists —
+    /// i.e. squarely inside the window.
+    async fn leader_client_url(&self) -> std::result::Result<String, Status> {
+        let deadline = tokio::time::Instant::now() + Self::FORWARD_WAIT;
+        // Short enough that the common case (the book lands within a tick or
+        // two) costs nothing worth measuring, and this only runs on a
+        // follower that is actively forwarding a write.
+        let poll = std::time::Duration::from_millis(25);
+        let mut last_seen_leader = None;
+
+        loop {
+            if let Some(leader) = self.node.leader_id() {
+                last_seen_leader = Some(leader);
+                let member = self
+                    .node
+                    .read(|s| s.member(leader))
+                    .map_err(|e| Status::internal(format!("reading the address book: {e}")))?;
+                if let Some(url) = member.map(|m| m.client_url).filter(|u| !u.is_empty()) {
+                    return Ok(url);
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(poll).await;
         }
+
+        // Still worth distinguishing in the error, because they point at
+        // different things: no leader at all suggests quorum trouble, whereas
+        // a leader with no published address after this long suggests its
+        // NODESTORE_ADVERTISE_CLIENT_URL is unset or it cannot commit.
+        Err(match last_seen_leader {
+            Some(leader) => Status::unavailable(format!(
+                "member {leader} is the leader but published no client URL within {:?}; \
+                 check its NODESTORE_ADVERTISE_CLIENT_URL",
+                Self::FORWARD_WAIT
+            )),
+            None => Status::unavailable(format!(
+                "no leader elected within {:?}; retry shortly",
+                Self::FORWARD_WAIT
+            )),
+        })
     }
 }
 
