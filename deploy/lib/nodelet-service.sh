@@ -128,6 +128,13 @@ description="nodelet — not-k8s node agent (kubelet replacement)"
 $(nodelet_env_lines shell)
 supervisor="supervise-daemon"
 command="$SCRIPT_DIR/run-nodelet.sh"
+# Without these, supervise-daemon discards the child's stdout/stderr
+# entirely: there is no OpenRC equivalent of journalctl, so a crash-looping
+# nodelet leaves nothing behind to read except "Child command line: ..."
+# repeating in /var/log/messages. systemd users get the real error from
+# journalctl -u nodelet; this is what gives OpenRC users the same thing.
+output_log="/var/log/nodelet.log"
+error_log="/var/log/nodelet.log"
 respawn_max=0
 respawn_delay=5
 

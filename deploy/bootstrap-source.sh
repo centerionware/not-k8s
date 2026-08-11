@@ -34,6 +34,16 @@
 # the same treatment k3s already gets — not just started in the foreground
 # and left to die with this script's terminal.
 #
+# Prerequisites: bash and curl. Every script here is bash, not POSIX sh, so
+# this cannot bootstrap a system that lacks bash — the shebang fails before
+# any of the dependency tiers above get a chance to run. That is fine almost
+# everywhere, but a stock Alpine image has neither:
+#
+#   apk add bash curl        # Alpine: required before running this at all
+#
+# (Alpine cloud images may also come up with no /etc/resolv.conf at all, in
+# which case apk itself can't resolve its mirrors — check that first.)
+#
 # Usage:
 #   ./deploy/bootstrap-source.sh                  # mock runtime, k3s control plane, demo pod
 #   ./deploy/bootstrap-source.sh --with-cri       # also build+use the real containerd/CRI runtime

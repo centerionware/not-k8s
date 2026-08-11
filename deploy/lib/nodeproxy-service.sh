@@ -84,6 +84,13 @@ description="nodeproxy — not-k8s Service routing (kube-proxy replacement)"
 $(nodeproxy_env_lines shell)
 supervisor="supervise-daemon"
 command="$SCRIPT_DIR/run-nodeproxy.sh"
+# Without these, supervise-daemon discards the child's stdout/stderr
+# entirely: there is no OpenRC equivalent of journalctl, so a crash-looping
+# nodeproxy leaves nothing behind to read except "Child command line: ..."
+# repeating in /var/log/messages. systemd users get the real error from
+# journalctl -u nodeproxy; this is what gives OpenRC users the same thing.
+output_log="/var/log/nodeproxy.log"
+error_log="/var/log/nodeproxy.log"
 respawn_max=0
 respawn_delay=5
 

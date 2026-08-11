@@ -75,6 +75,24 @@ ensure_cni_base_plugins() {
 ensure_flannel_binaries() {
     command -v flanneld &>/dev/null || pkg_install "flannel" "flannel" "flannel" "flannel" "flannel" "flannel" "flannel" || true
 
+    # flanneld shells out to `iptables` for its masquerade rules (--ip-masq,
+    # which this deployment always passes) regardless of the nftables setup
+    # nodeproxy does — they are separate concerns and installing nftables does
+    # not satisfy this. Most distros ship iptables in a base install, which is
+    # why this went unnoticed; Alpine does not, and flanneld there dies after
+    # successfully leasing a subnet:
+    #
+    #   Failed to setup IPTables. iptables binary was not found:
+    #   exec: "iptables": executable file not found in $PATH
+    #
+    # Under OpenRC that failure is close to invisible: supervise-daemon keeps
+    # respawning it and `rc-service flanneld status` still reports "started",
+    # so the only symptom is /run/flannel/subnet.env never appearing and every
+    # pod on the node staying Pending.
+    command -v iptables &>/dev/null \
+        || pkg_install "iptables" "iptables" "iptables" "iptables" "iptables" "iptables" "iptables" \
+        || warn "Couldn't install iptables — flanneld needs it for --ip-masq and will fail to set up masquerade rules."
+
     local goarch; goarch="$(cni_go_arch_map)"
     if ! command -v flanneld &>/dev/null && [[ -n "$goarch" ]]; then
         local ver=0.25.6
