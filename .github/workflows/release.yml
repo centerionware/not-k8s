@@ -275,16 +275,35 @@ jobs:
           CARGO_VAR="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_LINKER"
           CC_VAR="CC_$(echo "$TRIPLE" | tr '-' '_')"
           if [[ "${{ matrix.cross }}" == "true" ]]; then
-            # Ubuntu ships no armhf *musl* cross gcc; musl.cc publishes a
-            # static prebuilt one, and is already what
-            # deploy/lib/toolchain-c.sh falls back to on a bare device.
+            # armv7l needs a musl *cross* compiler, and Ubuntu ships none.
+            #
+            # musl.cc is the obvious source (deploy/lib/toolchain-c.sh already
+            # falls back to it) but it is frequently unreachable or extremely
+            # slow from Actions runners -- an uncapped fetch hung this job for
+            # 17 minutes before being cancelled. So: try it with a hard cap,
+            # then fall back to zig, which ships a complete musl cross
+            # toolchain for every target and installs from PyPI in seconds.
             TC=armv7l-linux-musleabihf-cross
-            curl -fsSL --retry 3 -o /tmp/$TC.tgz "https://musl.cc/$TC.tgz" \
-              || curl -fsSL --retry 3 -o /tmp/$TC.tgz "https://more.musl.cc/11/x86_64-linux-musl/$TC.tgz"
-            sudo tar -xzf /tmp/$TC.tgz -C /opt
-            CC_BIN=/opt/$TC/bin/armv7l-linux-musleabihf-gcc
-            echo "/opt/$TC/bin" >> "$GITHUB_PATH"
+            if timeout 240 curl -fsSL --max-time 240 --retry 2 \
+                 -o /tmp/$TC.tgz "https://musl.cc/$TC.tgz" 2>/dev/null; then
+              sudo tar -xzf /tmp/$TC.tgz -C /opt
+              CC_BIN=/opt/$TC/bin/armv7l-linux-musleabihf-gcc
+              echo "/opt/$TC/bin" >> "$GITHUB_PATH"
+              echo "armv7l C toolchain: musl.cc"
+            else
+              echo "musl.cc unreachable or too slow — falling back to zig cc."
+              python3 -m pip install --quiet --user ziglang
+              # printf, not a heredoc: a heredoc body has to start at column
+              # 0, which would close this YAML block scalar and break the
+              # workflow file.
+              printf '#!/bin/sh\nexec python3 -m ziglang cc -target arm-linux-musleabihf "$@"\n' \
+                | sudo tee /usr/local/bin/zigcc-armv7 >/dev/null
+              sudo chmod +x /usr/local/bin/zigcc-armv7
+              CC_BIN=/usr/local/bin/zigcc-armv7
+              echo "armv7l C toolchain: zig cc"
+            fi
           else
+
             sudo apt-get update -qq
             sudo apt-get install -y -qq musl-tools musl-dev
             CC_BIN=musl-gcc
