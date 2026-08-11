@@ -293,12 +293,11 @@ jobs:
             else
               echo "musl.cc unreachable or too slow — falling back to zig cc."
               python3 -m pip install --quiet --user ziglang
-              # printf, not a heredoc: a heredoc body has to start at column
-              # 0, which would close this YAML block scalar and break the
-              # workflow file.
-              printf '#!/bin/sh\nexec python3 -m ziglang cc -target arm-linux-musleabihf "$@"\n' \
-                | sudo tee /usr/local/bin/zigcc-armv7 >/dev/null
-              sudo chmod +x /usr/local/bin/zigcc-armv7
+              # A checked-in script rather than one written inline: it has to
+              # strip cc-rs's --target=<rust triple> before calling zig, and
+              # that logic wants to be readable and reviewable, not escaped
+              # into a printf. See the script's own header for why.
+              sudo install -m 0755 .github/scripts/zigcc-armv7.sh /usr/local/bin/zigcc-armv7
               CC_BIN=/usr/local/bin/zigcc-armv7
               echo "armv7l C toolchain: zig cc"
             fi
