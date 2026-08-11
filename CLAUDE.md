@@ -416,7 +416,7 @@ obeys and that raft will depend on. Semantics live in `store.rs`, ordering in
 `consensus.rs`, replication in `replication/`, and `server/` is translation
 only — a behavioural decision made in `server/` is almost always in the wrong
 place. Replicated via raft (`tikv/raft-rs`): configure a cluster with
-`NODESTORE_INITIAL_CLUSTER=1=http://a:2380,2=http://b:2380` and
+`NODESTORE_INITIAL_CLUSTER=1=https://a:2380,2=https://b:2380` and
 `NODESTORE_MEMBER_ID`. **The raft log is a separate sqlite database on
 `synchronous=FULL` and the applied index commits in the same transaction as
 the state it produced** — read `replication/log.rs`'s header before touching

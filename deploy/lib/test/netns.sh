@@ -33,7 +33,7 @@ netns_supported() {
 
 netns_name() { echo "${NETNS_PREFIX}${1}"; }
 netns_ip() { echo "${NETNS_SUBNET}.${1}"; }
-netns_peer_url() { echo "http://$(netns_ip "$1"):${NETNS_PEER_PORT}"; }
+netns_peer_url() { echo "https://$(netns_ip "$1"):${NETNS_PEER_PORT}"; }
 netns_client_url() { echo "https://$(netns_ip "$1"):${NETNS_CLIENT_PORT}"; }
 
 # netns_pki <root> <count> — generate ONE CA per trust domain, shared by every
@@ -50,9 +50,6 @@ netns_client_url() { echo "https://$(netns_ip "$1"):${NETNS_CLIENT_PORT}"; }
 # under test.
 netns_pki() {
     local root="$1" count="$2" dir="$root/pki"
-    # Exported rather than returned only, because the grpcurl helpers below
-    # are called from test bodies that never see the cluster root.
-    export NETNS_PKI_DIR="$dir"
     [[ -f "$dir/ca.crt" ]] && { echo "$dir"; return 0; }
     mkdir -p "$dir"
 
@@ -151,7 +148,13 @@ netns_start_member() {
     local i="$1" count="$2" bin="$3" root="$4"
     local ns; ns="$(netns_name "$i")"
     mkdir -p "$root/$i"
-    local pki; pki="$(netns_pki "$root" "$count")"
+    # Assigned in the *caller*, not inside netns_pki: that function's output is
+    # read through command substitution, which runs it in a subshell, so an
+    # export there would never reach this shell. The grpcurl helpers below read
+    # this variable from test bodies that never see the cluster root.
+    NETNS_PKI_DIR="$(netns_pki "$root" "$count")"
+    export NETNS_PKI_DIR
+    local pki="$NETNS_PKI_DIR"
     ip netns exec "$ns" env \
         NODESTORE_MEMBER_ID="$i" \
         NODESTORE_INITIAL_CLUSTER="$(netns_cluster_spec "$count")" \

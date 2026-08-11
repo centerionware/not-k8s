@@ -252,14 +252,14 @@ impl Config {
     }
 }
 
-/// Parse `1=http://a:2380,2=http://b:2380`.
+/// Parse `1=https://a:2380,2=https://b:2380`.
 fn parse_initial_cluster(spec: &str) -> Result<Vec<(u64, String)>> {
     let mut out = Vec::new();
     for entry in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         let Some((id, url)) = entry.split_once('=') else {
             return Err(Error::InvalidRequest(format!(
                 "cluster member {entry:?} is not in the form <id>=<peer-url>, e.g. \
-                 1=http://10.0.0.1:2380"
+                 1=https://10.0.0.1:2380"
             )));
         };
         let id: u64 = id.trim().parse().map_err(|_| {
@@ -273,9 +273,22 @@ fn parse_initial_cluster(spec: &str) -> Result<Vec<(u64, String)>> {
             ));
         }
         let url = url.trim().to_string();
-        if !url.starts_with("http://") && !url.starts_with("https://") {
+        // https, not http: the raft peer link requires mutual TLS (see
+        // crate::tls), and a peer URL with an http scheme silently produces a
+        // plaintext dial against a TLS listener. The members then never
+        // connect, no leader is ever elected, and nothing in the logs points
+        // at the scheme — it looks like a network partition. Rejecting it here
+        // turns that into a startup error naming the actual problem.
+        if url.starts_with("http://") {
             return Err(Error::InvalidRequest(format!(
-                "peer URL {url:?} must include a scheme, e.g. http://10.0.0.1:2380"
+                "peer URL {url:?} uses http://, but the raft peer link requires TLS — use \
+                 https://. A plaintext peer URL cannot connect to a TLS peer listener, and the \
+                 symptom is a cluster that never elects a leader."
+            )));
+        }
+        if !url.starts_with("https://") {
+            return Err(Error::InvalidRequest(format!(
+                "peer URL {url:?} must include a scheme, e.g. https://10.0.0.1:2380"
             )));
         }
         if out.iter().any(|(existing, _): &(u64, String)| *existing == id) {
@@ -372,7 +385,7 @@ mod tests {
     fn an_initial_cluster_is_parsed_and_this_member_is_found_in_it() {
         let cfg = with_env(
             &[
-                ("NODESTORE_INITIAL_CLUSTER", "1=http://10.0.0.1:2380,2=http://10.0.0.2:2380"),
+                ("NODESTORE_INITIAL_CLUSTER", "1=https://10.0.0.1:2380,2=https://10.0.0.2:2380"),
                 ("NODESTORE_MEMBER_ID", "2"),
             ],
             Config::from_env,
@@ -380,7 +393,7 @@ mod tests {
         .unwrap();
         assert!(cfg.is_clustered());
         assert_eq!(cfg.initial_cluster.len(), 2);
-        assert_eq!(cfg.advertise_peer_url, "http://10.0.0.2:2380");
+        assert_eq!(cfg.advertise_peer_url, "https://10.0.0.2:2380");
         assert_eq!(cfg.peer_listen, "0.0.0.0:2380", "bind all interfaces, keep the advertised port");
     }
 
@@ -390,7 +403,7 @@ mod tests {
         // which looks like "the cluster never elects a leader" rather than
         // like a typo.
         let err = with_env(
-            &[("NODESTORE_INITIAL_CLUSTER", "1=http://a:2380,2=http://b:2380"), ("NODESTORE_MEMBER_ID", "9")],
+            &[("NODESTORE_INITIAL_CLUSTER", "1=https://a:2380,2=https://b:2380"), ("NODESTORE_MEMBER_ID", "9")],
             Config::from_env,
         )
         .expect_err("a member not in its own cluster must be refused");
@@ -401,7 +414,7 @@ mod tests {
     fn member_id_zero_is_refused() {
         // Raft uses 0 for "no member", so such a member is indistinguishable
         // from "there is no leader".
-        let err = with_env(&[("NODESTORE_INITIAL_CLUSTER", "0=http://a:2380")], Config::from_env)
+        let err = with_env(&[("NODESTORE_INITIAL_CLUSTER", "0=https://a:2380")], Config::from_env)
             .expect_err("id 0 must be refused");
         assert!(err.to_string().contains("not a usable member id"));
     }
@@ -409,7 +422,7 @@ mod tests {
     #[test]
     fn a_duplicate_member_id_is_refused() {
         let err = with_env(
-            &[("NODESTORE_INITIAL_CLUSTER", "1=http://a:2380,1=http://b:2380")],
+            &[("NODESTORE_INITIAL_CLUSTER", "1=https://a:2380,1=https://b:2380")],
             Config::from_env,
         )
         .expect_err("duplicates must be refused");
@@ -426,7 +439,7 @@ mod tests {
     #[test]
     fn the_older_peers_spelling_still_works() {
         let cfg = with_env(
-            &[("NODESTORE_PEERS", "1=http://a:2380"), ("NODESTORE_MEMBER_ID", "1")],
+            &[("NODESTORE_PEERS", "1=https://a:2380"), ("NODESTORE_MEMBER_ID", "1")],
             Config::from_env,
         )
         .unwrap();
@@ -475,5 +488,22 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.listen, "127.0.0.1:12379");
         assert_eq!(cfg.data_dir, PathBuf::from("/var/tmp/ns"));
+    }
+
+    // A plaintext peer URL against a TLS peer listener produces no error
+    // anywhere: the members simply never connect, no leader is elected, and
+    // it reads as a network partition. Found exactly that way — nine cluster
+    // e2e tests failed with "never elected a leader" and nothing in any log
+    // mentioned the scheme.
+    #[test]
+    fn an_http_peer_url_is_rejected_because_the_peer_link_requires_tls() {
+        let err = with_env(
+            &[("NODESTORE_INITIAL_CLUSTER", "1=http://a:2380"), ("NODESTORE_MEMBER_ID", "1")],
+            Config::from_env,
+        )
+        .expect_err("http:// peer URLs cannot reach a TLS peer listener");
+        let msg = err.to_string();
+        assert!(msg.contains("https://"), "should say what to use instead: {msg}");
+        assert!(msg.contains("never elects a leader"), "should name the symptom: {msg}");
     }
 }
