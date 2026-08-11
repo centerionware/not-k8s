@@ -111,16 +111,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # musl, not gnu, and deliberately. A *-linux-gnu build links against
+          # the *runner's* glibc, so a binary built on ubuntu-latest (glibc
+          # 2.39) refuses to start on anything older with
+          # "version `GLIBC_2.39' not found". Measured on real VMs rather than
+          # inferred — 4 of 5 test distros could not run the gnu artifact at
+          # all: Debian 12 (2.36), Rocky 9 (2.34), openSUSE Leap 15.6 (2.38),
+          # Alpine (no glibc whatsoever). Only Arch (2.44) was new enough.
+          #
+          # Rust's *-linux-musl targets enable crt-static by default, so these
+          # link musl *into* the executable and need nothing from the host.
+          # That is the deployment story crates/nodestore/Cargo.toml already
+          # claims -- "one binary, no runtime dependencies to install" -- and
+          # the "Verify static linking" step below turns it from a claim into
+          # something the build fails on.
           - arch: x86_64
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             runner: ubuntu-latest
             cross: false
           - arch: aarch64
-            target: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
             cross: false
           - arch: armv7l
-            target: armv7-unknown-linux-gnueabihf
+            target: armv7-unknown-linux-musleabihf
             runner: ubuntu-latest
             cross: true
     runs-on: ${{ matrix.runner }}
@@ -141,20 +155,52 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         if: steps.want.outputs.build == 'true'
 
-      - name: Add cross target + linker (armv7l only)
-        if: steps.want.outputs.build == 'true' && matrix.cross
+      # Every arch needs a musl target now, not just the cross one, so this
+      # step is no longer armv7l-only. Two C dependencies make a musl *C*
+      # compiler mandatory rather than optional: rusqlite's `bundled` SQLite
+      # and rustls's `ring` both compile C/asm, and handing them the host's
+      # glibc gcc is exactly how a "static" build acquires a silent glibc
+      # dependency again.
+      - name: Add musl target + C toolchain
+        if: steps.want.outputs.build == 'true'
         run: |
           set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-arm-linux-gnueabihf
-          rustup target add armv7-unknown-linux-gnueabihf
+          rustup target add "${{ matrix.target }}"
+
+          # Env var names the `cc` crate and cargo expect: the triple
+          # uppercased with dashes as underscores (cargo linker), and the
+          # triple verbatim with dashes as underscores (cc).
+          TRIPLE="${{ matrix.target }}"
+          CARGO_VAR="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_LINKER"
+          CC_VAR="CC_$(echo "$TRIPLE" | tr '-' '_')"
+
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            # armv7l: Ubuntu ships no armhf *musl* cross gcc, so fetch the
+            # static prebuilt one from musl.cc — the same source
+            # deploy/lib/toolchain-c.sh already falls back to on a device
+            # with no usable C compiler.
+            TC=armv7l-linux-musleabihf-cross
+            curl -fsSL --retry 3 -o /tmp/$TC.tgz "https://musl.cc/$TC.tgz" \
+              || curl -fsSL --retry 3 -o /tmp/$TC.tgz "https://more.musl.cc/11/x86_64-linux-musl/$TC.tgz"
+            sudo tar -xzf /tmp/$TC.tgz -C /opt
+            CC_BIN=/opt/$TC/bin/armv7l-linux-musleabihf-gcc
+            echo "/opt/$TC/bin" >> "$GITHUB_PATH"
+          else
+            # x86_64/aarch64 build natively, so Ubuntu's own musl-gcc targets
+            # the right architecture already.
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq musl-tools musl-dev
+            CC_BIN=musl-gcc
+          fi
+
           {
-            echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc"
-            echo "CC_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc"
+            echo "$CARGO_VAR=$CC_BIN"
+            echo "$CC_VAR=$CC_BIN"
             # protoc runs on the build host to generate code, not on the
             # target — no cross protoc needed.
             echo "PROTOC=$(command -v protoc)"
           } >> "$GITHUB_ENV"
+          echo "musl toolchain for $TRIPLE: $CC_BIN"
 
       - name: Build
         if: steps.want.outputs.build == 'true'
@@ -170,8 +216,10 @@ jobs:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
           set -e
-          TARGET_FLAG=""
-          [[ "${{ matrix.cross }}" == "true" ]] && TARGET_FLAG="--target ${{ matrix.target }}"
+          # Always explicit now. The host triple is *-linux-gnu even on the
+          # native runners, so omitting --target here is what would silently
+          # produce a dynamically linked glibc binary again.
+          TARGET_FLAG="--target ${{ matrix.target }}"
           LAYOUT="${{ inputs.layout }}"
           # Default for a dispatch that predates this input existing.
           [[ -n "$LAYOUT" ]] || LAYOUT=both
@@ -214,11 +262,10 @@ jobs:
         if: steps.want.outputs.build == 'true'
         run: |
           set -e
-          if [[ "${{ matrix.cross }}" == "true" ]]; then
-            SRC_DIR="target/${{ matrix.target }}"
-          else
-            SRC_DIR="target"
-          fi
+          # Unconditional: every arch builds with an explicit --target now, so
+          # cargo always puts the output under target/<triple>/, never
+          # target/<profile>/ directly.
+          SRC_DIR="target/${{ matrix.target }}"
           for profile in debug release; do
             [[ -d "$SRC_DIR/$profile" ]] || continue
             for bin in nodelet nodeproxy notk8s; do
@@ -235,6 +282,42 @@ jobs:
           # the combined binary: it should be close to nodelet alone, not to
           # nodelet + nodeproxy, or it isn't buying anything either.
           du -h dist/*/* | sort -h
+
+      # The property this whole change exists for, asserted rather than
+      # trusted. A dependency that quietly pulls in a dynamic libc (a -sys
+      # crate defaulting to pkg-config, someone dropping --target, a future
+      # arch row copied from the old gnu matrix) would otherwise be invisible
+      # here and only surface as "GLIBC_2.xx not found" on a user's device.
+      #
+      # Two independent checks, because they fail differently: an INTERP
+      # segment means the kernel would hand the binary to ld.so at exec time,
+      # and a NEEDED entry means it wants a shared object by name. A correct
+      # static-pie musl build has neither. readelf reads any architecture, so
+      # this works on the cross builds too.
+      - name: Verify static linking
+        if: steps.want.outputs.build == 'true'
+        run: |
+          set -e
+          fail=0
+          for f in dist/*/*; do
+            [[ -f "$f" ]] || continue
+            interp="$(readelf -l "$f" 2>/dev/null | grep -c INTERP || true)"
+            needed="$(readelf -d "$f" 2>/dev/null | grep -c 'NEEDED' || true)"
+            if [[ "$interp" != "0" || "$needed" != "0" ]]; then
+              echo "NOT STATIC: $f (INTERP segments=$interp, NEEDED entries=$needed)"
+              readelf -l "$f" 2>/dev/null | grep -A1 INTERP || true
+              readelf -d "$f" 2>/dev/null | grep NEEDED || true
+              fail=1
+            else
+              echo "static OK: $f"
+            fi
+          done
+          [[ "$fail" -eq 0 ]] || {
+            echo
+            echo "One or more binaries are dynamically linked. They would fail"
+            echo "to start on any host whose libc is older than this runner's."
+            exit 1
+          }
 
       - name: Upload debug binaries
         if: steps.want.outputs.build == 'true' && (inputs.profile == 'debug' || inputs.profile == 'both')
