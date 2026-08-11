@@ -12,6 +12,29 @@ k3s_supports_arch() {
     esac
 }
 
+# control_plane_datastore_matches — is the running k3s already using the
+# datastore this run wants?
+#
+# "k3s is installed and running" is not sufficient grounds to skip
+# reconfiguring it. A node that came up on kine and is then re-bootstrapped
+# with --datastore=nodestore would otherwise keep running on kine forever,
+# reporting success — the deployment silently ignores the flag it was given.
+#
+# This is the same trap --ip-family fell into: a second bootstrap with
+# different arguments skipped the step that would have applied them, and the
+# only symptom was that nothing changed. Worth checking the *actual* unit
+# rather than trusting that a previous run configured it, since that previous
+# run may have been given different arguments entirely.
+control_plane_datastore_matches() {
+    local want="${NOTK8S_DATASTORE_ENDPOINT:-}" unit=/etc/systemd/system/k3s.service
+    # Nothing requested: any existing configuration is acceptable, including
+    # a k3s already pointed at nodestore by an earlier run. Tearing that down
+    # is a destructive change nobody asked for on a plain re-run.
+    [[ -z "$want" ]] && return 0
+    [[ -r "$unit" ]] || return 1
+    grep -qF -- "--datastore-endpoint=$want" "$unit"
+}
+
 setup_control_plane() {
     [[ "$SKIP_CONTROL_PLANE" -eq 1 ]] && { log "Skipping control plane (--skip-control-plane)."; return 0; }
 
@@ -23,7 +46,8 @@ setup_control_plane() {
         return 0
     fi
 
-    if command -v k3s &>/dev/null && systemctl is-active --quiet k3s 2>/dev/null; then
+    if command -v k3s &>/dev/null && systemctl is-active --quiet k3s 2>/dev/null \
+       && control_plane_datastore_matches; then
         log "k3s already installed and running."
     else
         "$SCRIPT_DIR/setup-control-plane.sh"

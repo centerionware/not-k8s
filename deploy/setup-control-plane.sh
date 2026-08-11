@@ -125,6 +125,18 @@ SERVICE_CIDR="${NOTK8S_SERVICE_CIDR:-10.43.0.0/16}"
 KUBELET_CA_ARG=""
 [[ -n "${NOTK8S_KUBELET_CA_PEM:-}" ]] && KUBELET_CA_ARG="--kube-apiserver-arg=kubelet-certificate-authority=$NOTK8S_KUBELET_CA_PEM"
 
+# --datastore-endpoint: point k3s at our own datastore (crates/nodestore —
+# the etcd v3 API over sqlite) instead of its bundled kine. Unset by default,
+# in which case k3s uses kine exactly as before and nothing here changes.
+#
+# k3s treats an etcd endpoint here as a real external etcd, which is the whole
+# point: nodestore speaks the etcd v3 gRPC API, so the apiserver needs no
+# knowledge that it isn't etcd. Set by bootstrap-source.sh only after the
+# store is confirmed listening — k3s fails to start, repeatedly, if this
+# points at nothing.
+DATASTORE_ARG=""
+[[ -n "${NOTK8S_DATASTORE_ENDPOINT:-}" ]] && DATASTORE_ARG="--datastore-endpoint=$NOTK8S_DATASTORE_ENDPOINT"
+
 export INSTALL_K3S_EXEC="server \
     --disable-agent \
     --disable traefik \
@@ -139,6 +151,7 @@ export INSTALL_K3S_EXEC="server \
     --kube-controller-manager-arg=node-monitor-period=10s \
     --kube-apiserver-arg=feature-gates=ServiceAccountTokenPodNodeInfo=true \
     $KUBELET_CA_ARG \
+    $DATASTORE_ARG \
     --write-kubeconfig-mode=0644"
 
 echo "==> Starting k3s with INSTALL_K3S_EXEC:"

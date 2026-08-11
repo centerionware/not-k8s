@@ -80,12 +80,20 @@ it keeps DNAT'ing to pods that are gone."
 }
 
 # Stops+removes everything a run started: nodelet, nodeproxy and its nft
-# table, flanneld, and containerd (only the last if this script started it
-# itself rather than using an existing distro-packaged containerd.service).
+# table, nodestore, flanneld, and containerd (only the last if this script
+# started it itself rather than using an existing distro-packaged
+# containerd.service).
 stop_running_components() {
     remove_nodelet_service
     remove_nodeproxy_service
     stop_service_proxy_nft
+    # After the two node components, before the control plane goes: the
+    # apiserver is a client of the datastore, so taking the store away first
+    # just makes k3s log storage errors on its way down. Note this stops the
+    # service but deliberately leaves $NODESTORE_DATA_DIR alone — that's the
+    # cluster's entire state, and destroying it silently is unrecoverable
+    # (see remove_nodestore_service).
+    remove_nodestore_service
     log "Stopping flanneld..."
     remove_supervised_service flanneld
     log "Stopping containerd (if this script started it)..."

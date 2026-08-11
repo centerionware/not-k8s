@@ -286,6 +286,7 @@ source "$LIB_DIR/components.sh"
 source "$LIB_DIR/nodelet-build.sh"
 source "$LIB_DIR/nodelet-service.sh"
 source "$LIB_DIR/nodeproxy-service.sh"
+source "$LIB_DIR/nodestore-service.sh"
 source "$LIB_DIR/run.sh"
 source "$LIB_DIR/cleanup.sh"
 source "$LIB_DIR/uninstall.sh"
@@ -332,8 +333,37 @@ if [[ -z "${NOTK8S_NODELET_PREBUILT:-}" && "$SKIP_NODELET" -eq 0 ]]; then
     ensure_c_toolchain
     ensure_rust
 fi
+# The datastore has to exist, and be listening, *before* the control plane is
+# installed — setup_control_plane hands k3s a --datastore-endpoint pointing at
+# it, and k3s cannot serve at all if nothing answers there. That inverts this
+# script's usual order (build the binaries after the control plane is up), so
+# it's done here rather than by moving build_nodelet unconditionally: the
+# default --datastore=none path keeps exactly the ordering it has always had,
+# and only a run that asked for nodestore pays for the change.
+#
+# build_nodelet builds every *enabled* component in one pass (see
+# lib/components.sh), so this is also what produces bin/nodelet and
+# bin/nodeproxy on this path — hence the flag, so it isn't run twice.
+NODELET_ALREADY_BUILT=0
+if want_nodestore; then
+    if [[ "$SKIP_NODELET" -eq 0 ]]; then
+        build_nodelet
+        NODELET_ALREADY_BUILT=1
+    fi
+    install_nodestore_service
+    # Ordering the units is not enough on its own: systemd calls a Type=simple
+    # service "started" the moment it forks, so k3s would race a store that
+    # hasn't opened its socket yet. Block until it actually answers.
+    wait_for_nodestore
+    # Read by setup-control-plane.sh, which turns it into
+    # --datastore-endpoint. http:// because the store speaks plaintext gRPC on
+    # loopback by default (crates/nodestore/src/config.rs).
+    export NOTK8S_DATASTORE_ENDPOINT="http://${NODESTORE_LISTEN:-$NODESTORE_LISTEN_DEFAULT}"
+    log "Control plane will use nodestore at $NOTK8S_DATASTORE_ENDPOINT (instead of k3s's bundled kine)."
+fi
+
 setup_control_plane
-if [[ "$SKIP_NODELET" -eq 0 ]]; then
+if [[ "$SKIP_NODELET" -eq 0 && "$NODELET_ALREADY_BUILT" -eq 0 ]]; then
     build_nodelet
 fi
 ensure_container_runtime
