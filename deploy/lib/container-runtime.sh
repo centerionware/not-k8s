@@ -50,8 +50,41 @@ build_containerd_runc_from_source() {
         || die "containerd/runc source build did not produce usable binaries."
 }
 
+# ensure_cgroups_mounted — make sure something is mounted at /sys/fs/cgroup.
+#
+# systemd mounts the cgroup hierarchy itself, very early, so this is a no-op
+# on any systemd distro. Alpine (and OpenRC generally) does not: mounting it
+# is the job of the `cgroups` service, which is not in a default runlevel on
+# a minimal image. Nothing before this point needs cgroups, so a node comes
+# all the way up looking healthy -- containerd starts, nodelet registers, the
+# node goes Ready, the scheduler assigns pods -- and only then does every
+# sandbox fail inside runc:
+#
+#   failed to create shim task: OCI runtime create failed:
+#   runc create failed: no cgroup mount found in mountinfo
+#
+# which reads as a container-runtime bug rather than a missing mount. Worse,
+# nodelet's watch-driven reconciliation gives up after its one retry and waits
+# for the next watch event (by design -- see the PodController comment in
+# CLAUDE.md), so the pods then sit Pending indefinitely with no further
+# attempts even once cgroups do appear.
+ensure_cgroups_mounted() {
+    grep -q ' /sys/fs/cgroup ' /proc/mounts 2>/dev/null && return 0
+
+    if command -v rc-update &>/dev/null && command -v rc-service &>/dev/null; then
+        log "No cgroup hierarchy mounted — enabling OpenRC's 'cgroups' service (containers can't start without it)..."
+        rc-update add cgroups boot 2>/dev/null || true
+        rc-service cgroups start 2>/dev/null || true
+    fi
+
+    grep -q ' /sys/fs/cgroup ' /proc/mounts 2>/dev/null \
+        || warn "Nothing is mounted at /sys/fs/cgroup. Container creation will fail in runc with 'no cgroup mount found in mountinfo'. Mount it before starting workloads."
+}
+
 ensure_container_runtime() {
     [[ "$WITH_CRI" -eq 1 ]] || return 0
+
+    ensure_cgroups_mounted
 
     if command -v containerd &>/dev/null && command -v runc &>/dev/null; then
         log "containerd + runc already present."
