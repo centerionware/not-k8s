@@ -204,7 +204,7 @@ pub fn load_or_generate(
     // and client that trusted the old one.
     let (ca_cert, ca_key) = if material.ca.exists() {
         info!(?domain, dir = %dir.display(), "reusing the existing CA to issue missing TLS material");
-        load_ca(&material.ca, &ca_key_path)?
+        load_ca(domain, &material.ca, &ca_key_path)?
     } else {
         info!(?domain, dir = %dir.display(), "generating TLS material (none configured)");
         let (ca_cert, ca_key) = generate_ca(domain)?;
@@ -239,7 +239,7 @@ pub fn load_or_generate(
 /// still trusting the old one, and the resulting handshake failures read as a
 /// network fault rather than a configuration one. Telling the operator to
 /// remove the directory makes that a decision instead of an accident.
-fn load_ca(ca_path: &Path, ca_key_path: &Path) -> Result<(rcgen::Certificate, KeyPair)> {
+fn load_ca(domain: Domain, ca_path: &Path, ca_key_path: &Path) -> Result<(rcgen::Certificate, KeyPair)> {
     if !ca_key_path.exists() {
         return Err(Error::Unavailable(format!(
             "{} exists but its private key {} does not, so no further certificate can be issued \
@@ -252,32 +252,36 @@ fn load_ca(ca_path: &Path, ca_key_path: &Path) -> Result<(rcgen::Certificate, Ke
     }
     let key_pem = String::from_utf8(read(ca_key_path)?)
         .map_err(|e| Error::Unavailable(format!("{} is not valid UTF-8 PEM: {e}", ca_key_path.display())))?;
-    let ca_pem = String::from_utf8(read(ca_path)?)
-        .map_err(|e| Error::Unavailable(format!("{} is not valid UTF-8 PEM: {e}", ca_path.display())))?;
     let key = KeyPair::from_pem(&key_pem)
         .map_err(|e| Error::Unavailable(format!("reading the CA key {}: {e}", ca_key_path.display())))?;
-    // rcgen has no "certificate from PEM" type usable as an issuer, so the
-    // params are read back out of the stored certificate and re-signed with the
-    // stored key. Same subject, same key, so leaves signed by this chain verify
-    // against the ca.crt already on disk and already distributed.
-    let params = CertificateParams::from_ca_cert_pem(&ca_pem)
-        .map_err(|e| Error::Unavailable(format!("reading the CA certificate {}: {e}", ca_path.display())))?;
-    let cert = params
+    // rcgen has no issuer type that can be built from a PEM certificate
+    // without pulling in its x509-parser feature, so the CA is rebuilt from
+    // the parameters it was generated with (which are fixed per domain, right
+    // here in this file) plus the stored key. Subject DN and public key are
+    // therefore identical to the ca.crt already on disk and already
+    // distributed, which is what a leaf's chain is verified against — only the
+    // serial differs, and nothing checks the issuer's serial.
+    let cert = ca_params(domain)?
         .self_signed(&key)
-        .map_err(|e| Error::Unavailable(format!("reconstructing the CA from {}: {e}", ca_path.display())))?;
+        .map_err(|e| Error::Unavailable(format!("reconstructing the CA from {}: {e}", ca_key_path.display())))?;
     Ok((cert, key))
 }
 
-fn generate_ca(domain: Domain) -> Result<(rcgen::Certificate, KeyPair)> {
+/// The parameters every CA of this domain is issued with. One function so a
+/// reloaded CA is rebuilt exactly as it was first generated — see `load_ca`.
+fn ca_params(domain: Domain) -> Result<CertificateParams> {
     let mut params = CertificateParams::new(Vec::<String>::new())
         .map_err(|e| Error::Unavailable(format!("building CA parameters: {e}")))?;
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.distinguished_name.push(DnType::CommonName, domain.ca_common_name());
     params.key_usages =
         vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign, KeyUsagePurpose::DigitalSignature];
+    Ok(params)
+}
 
+fn generate_ca(domain: Domain) -> Result<(rcgen::Certificate, KeyPair)> {
     let key = KeyPair::generate().map_err(|e| Error::Unavailable(format!("generating CA key: {e}")))?;
-    let cert = params
+    let cert = ca_params(domain)?
         .self_signed(&key)
         .map_err(|e| Error::Unavailable(format!("self-signing the CA: {e}")))?;
     Ok((cert, key))
