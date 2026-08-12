@@ -66,7 +66,7 @@ _restart_as_one_member_cluster() {
 
 _member1_log() { tail -40 "$UPGRADE_ROOT/1/nodestore.log" 2>/dev/null; }
 
-test_a_populated_single_member_becomes_a_one_member_cluster_keeping_its_data() {
+test_upgrade_a_populated_single_member_into_a_one_member_cluster() {
     _upgrade_prepare
     trap _upgrade_stop EXIT
 
@@ -110,7 +110,7 @@ test_a_populated_single_member_becomes_a_one_member_cluster_keeping_its_data() {
 # everything. The new leader then overwrites it — correctly, by raft's rules.
 # Refusing to start is the only safe answer, and the message has to say what to
 # do instead or the operator will simply delete the data.
-test_converting_straight_to_a_multi_member_cluster_is_refused_with_the_safe_path() {
+test_upgrade_straight_to_a_multi_member_cluster_is_refused() {
     _upgrade_prepare
     trap _upgrade_stop EXIT
 
@@ -147,7 +147,7 @@ test_converting_straight_to_a_multi_member_cluster_is_refused_with_the_safe_path
 # Asserted through the observable consequence rather than by forcing a panic:
 # after being killed, the process must be *gone*, and nothing must still be
 # listening on its client port.
-test_a_member_that_stops_leaves_nothing_listening_behind_it() {
+test_upgrade_a_dead_member_leaves_nothing_listening_behind_it() {
     _upgrade_prepare
     trap _upgrade_stop EXIT
 
@@ -170,6 +170,6 @@ test_a_member_that_stops_leaves_nothing_listening_behind_it() {
     trap - EXIT
 }
 
-register_test test_a_populated_single_member_becomes_a_one_member_cluster_keeping_its_data
-register_test test_converting_straight_to_a_multi_member_cluster_is_refused_with_the_safe_path
-register_test test_a_member_that_stops_leaves_nothing_listening_behind_it
+register_test test_upgrade_a_populated_single_member_into_a_one_member_cluster
+register_test test_upgrade_straight_to_a_multi_member_cluster_is_refused
+register_test test_upgrade_a_dead_member_leaves_nothing_listening_behind_it
