@@ -178,9 +178,16 @@ netns_teardown() {
 }
 
 # netns_start_member <index> <count> <binary> <data-root> — run one member.
+#
+# NETNS_CLUSTER_SPEC overrides NODESTORE_INITIAL_CLUSTER for this member, which
+# is what the upgrade test needs: an empty value starts a real *single* member
+# (no raft at all, the mode a deployment actually begins in), and a one-entry
+# value is the converted one-member cluster it grows from. Unset means "the
+# full <count>-member cluster", which is what every other caller wants.
 netns_start_member() {
     local i="$1" count="$2" bin="$3" root="$4"
     local ns; ns="$(netns_name "$i")"
+    local spec="${NETNS_CLUSTER_SPEC-$(netns_cluster_spec "$count")}"
     mkdir -p "$root/$i"
     # Assigned in the *caller*, not inside netns_pki: that function's output is
     # read through command substitution, which runs it in a subshell, so an
@@ -191,7 +198,7 @@ netns_start_member() {
     local pki="$NETNS_PKI_DIR"
     ip netns exec "$ns" env \
         NODESTORE_MEMBER_ID="$i" \
-        NODESTORE_INITIAL_CLUSTER="$(netns_cluster_spec "$count")" \
+        NODESTORE_INITIAL_CLUSTER="$spec" \
         NODESTORE_LISTEN="0.0.0.0:${NETNS_CLIENT_PORT}" \
         NODESTORE_ADVERTISE_CLIENT_URL="$(netns_client_url "$i")" \
         NODESTORE_DATA_DIR="$root/$i/data" \
