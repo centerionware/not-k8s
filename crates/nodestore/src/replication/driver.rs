@@ -256,7 +256,10 @@ pub fn start(
         cs.voters = voters.clone();
         cs.learners = learners.clone();
         info!(?voters, ?learners, "bootstrapping cluster membership");
-        log.set_conf_state(&cs)?;
+        // Index 0: this is the seed, observed before any entry exists. Any
+        // real configuration change later carries a higher index and so wins
+        // over both this and a snapshot — see set_conf_state()'s own comment.
+        log.set_conf_state(&cs, 0)?;
         // Rebuild with the seeded membership rather than mutating the running
         // node: raft derives its progress tracker from the conf state at
         // construction.
@@ -500,7 +503,11 @@ impl Driver {
             .raw
             .apply_conf_change(&cc)
             .map_err(|e| Error::Unavailable(format!("applying conf change: {e}")))?;
-        self.log.set_conf_state(&conf_state)?;
+        // Recorded at the index of the entry that caused it. This is precisely
+        // the case that made the index necessary: a configuration change
+        // landing on top of a snapshot is newer than the membership the
+        // snapshot carries, and initial_state() has to be able to tell.
+        self.log.set_conf_state(&conf_state, entry.index)?;
 
         // The address-book update rides in the entry's context, so membership
         // and reachability commit together. A member the cluster believes in
