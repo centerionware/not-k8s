@@ -56,24 +56,77 @@ install_nodestore_service() {
 # NODESTORE_LISTEN and NODESTORE_DATA_DIR are defaulted rather than passed
 # through only when set, so the unit is self-describing — reading it tells
 # you where the store listens without having to know config.rs's defaults.
+#
+# Values are quoted for the style being generated, never emitted raw. These
+# are pass-through values this file never validates, and NODESTORE_INITIAL_
+# CLUSTER above is already a comma-and-equals-laden string — a value carrying
+# a space, `$`, backtick or `;` would break the generated init script or run a
+# command at service start, and in a systemd unit a value with a space is word
+# split so only the first word reaches the process.
 nodestore_env_lines() {
-    local style="$1" out="" kv name
+    local style="$1" out="" kv name value
     for kv in "NODESTORE_LISTEN=${NODESTORE_LISTEN:-$NODESTORE_LISTEN_DEFAULT}" \
               "NODESTORE_DATA_DIR=${NODESTORE_DATA_DIR:-/var/lib/nodestore}"; do
-        [[ "$style" == "systemd" ]] && out+="Environment=$kv"$'\n' || out+="export $kv"$'\n'
+        out+="$(nodestore_env_line "$style" "${kv%%=*}" "${kv#*=}")"$'\n'
     done
-    # Everything else the operator set, verbatim. `compgen -v` rather than
-    # `env`, so this sees shell variables the bootstrap set as well as
-    # exported ones.
+    # Everything else the operator set. `compgen -v` rather than `env`, so
+    # this sees shell variables the bootstrap set as well as exported ones.
     for name in $(compgen -v | grep '^NODESTORE_' | sort); do
         case "$name" in
             NODESTORE_LISTEN|NODESTORE_DATA_DIR) continue ;;  # already emitted above
         esac
-        [[ -n "${!name:-}" ]] || continue
-        [[ "$style" == "systemd" ]] && out+="Environment=$name=${!name}"$'\n' \
-                                    || out+="export $name=${!name}"$'\n'
+        value="${!name:-}"
+        [[ -n "$value" ]] || continue
+        out+="$(nodestore_env_line "$style" "$name" "$value")"$'\n'
     done
     printf '%s' "$out"
+}
+
+# nodestore_env_line <style> <name> <value> — one environment assignment,
+# quoted for the file it is going into.
+#
+# systemd: double quotes, with `"` and `\` escaped. systemd's own unquoting
+# handles the rest, and this is what keeps a value with a space intact.
+# shell: printf %q, which is bash's own "safe to re-read as shell input".
+nodestore_env_line() {
+    local style="$1" name="$2" value="$3"
+    if [[ "$style" == "systemd" ]]; then
+        local escaped="${value//\\/\\\\}"
+        escaped="${escaped//\"/\\\"}"
+        printf 'Environment=%s="%s"' "$name" "$escaped"
+    else
+        printf 'export %s=%q' "$name" "$value"
+    fi
+}
+
+# nodestore_listen_port <listen> — the port from a listen address. Last colon
+# wins, so an IPv6 literal's own colons don't confuse it.
+nodestore_listen_port() {
+    local listen="$1"
+    printf '%s' "${listen##*:}"
+}
+
+# nodestore_dialable_host <listen> — a host that can actually be connected to
+# *and* that the generated certificate covers.
+#
+# A wildcard bind is not an address. Dialing 0.0.0.0 happens to work on Linux,
+# but no SAN names it, so the TLS handshake fails with a certificate error
+# that reads as a PKI problem; "[::]" is not dialable at all. Both map to
+# their own loopback, which nodestore's tls_sans() always includes.
+#
+# One helper because two callers had grown their own string surgery — this one
+# and bootstrap-source.sh's NOTK8S_DATASTORE_ENDPOINT — and they disagreed.
+nodestore_dialable_host() {
+    local host="${1%:*}"
+    case "$host" in
+        ''|'0.0.0.0'|'*') host="127.0.0.1" ;;
+        '[::]'|'::') host="[::1]" ;;
+    esac
+    # A bare IPv6 literal has to be bracketed to be usable in a URL.
+    case "$host" in
+        *:*) [[ "$host" == \[*\] ]] || host="[$host]" ;;
+    esac
+    printf '%s' "$host"
 }
 
 install_nodestore_service_systemd() {
@@ -185,9 +238,17 @@ EOF
 # the bootstrap pays a few seconds here to make it impossible.
 wait_for_nodestore() {
     local timeout="${1:-30}" listen="${NODESTORE_LISTEN:-$NODESTORE_LISTEN_DEFAULT}"
-    local host="${listen%:*}" port="${listen##*:}" waited=0
+    local port waited=0 host
+    port="$(nodestore_listen_port "$listen")"
+    # Brackets are URL syntax, not part of the address — /dev/tcp/[::1]/2379
+    # is not a path that resolves, and the failure is silent, so an IPv6
+    # listen address would burn the whole timeout before "succeeding" by
+    # warning.
+    host="$(nodestore_dialable_host "$listen")"
+    host="${host#[}"
+    host="${host%]}"
 
-    log "Waiting for nodestore to accept connections on $listen..."
+    log "Waiting for nodestore to accept connections on $listen (dialing $host:$port)..."
     while (( waited < timeout )); do
         # bash's /dev/tcp — no netcat dependency, which is exactly the sort of
         # tool a minimal edge image doesn't ship.

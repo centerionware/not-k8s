@@ -137,6 +137,21 @@ KUBELET_CA_ARG=""
 DATASTORE_ARG=""
 if [[ -n "${NOTK8S_DATASTORE_ENDPOINT:-}" ]]; then
     DATASTORE_ARG="--datastore-endpoint=$NOTK8S_DATASTORE_ENDPOINT"
+    # Checked here rather than left to fail later: with an https endpoint and
+    # no client certificate, k3s installs perfectly happily and then simply
+    # never becomes ready, and the only symptom is this script's own 60s
+    # readiness loop timing out with a message that names none of this.
+    if [[ "$NOTK8S_DATASTORE_ENDPOINT" == https://* ]]; then
+        for _v in NOTK8S_DATASTORE_CAFILE NOTK8S_DATASTORE_CERTFILE NOTK8S_DATASTORE_KEYFILE; do
+            if [[ ! -s "${!_v:-}" ]]; then
+                echo "ERROR: $NOTK8S_DATASTORE_ENDPOINT needs a client certificate, but $_v is unset, empty, or names a file that does not exist." >&2
+                echo "       The datastore has no plaintext mode — it holds every Secret in the cluster and the" >&2
+                echo "       etcd v3 API has no authentication of its own, so mutual TLS is the only way in." >&2
+                echo "       Without these three, k3s would install and then never become ready." >&2
+                exit 1
+            fi
+        done
+    fi
     # The datastore requires TLS with a client certificate — it holds every
     # Secret in the cluster and the etcd v3 API has no authentication of its
     # own, so there is no plaintext mode to fall back to. These are k3s's

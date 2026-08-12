@@ -123,8 +123,23 @@ impl RaftLog {
         self.put_state("hard_state", &encode_pb(hs)?)
     }
 
-    pub fn set_conf_state(&self, cs: &ConfState) -> Result<(), StoreError> {
-        self.put_state("conf_state", &encode_pb(cs)?)
+    /// Record the cluster membership, and the log index at which it was
+    /// observed.
+    ///
+    /// The index is what makes this comparable with the membership carried in
+    /// a snapshot. Without it, `initial_state` had to assume the snapshot's
+    /// copy was always the newer of the two — true when a snapshot is
+    /// restored and nothing changes afterwards, false as soon as a
+    /// configuration change lands on top of one, at which point the node
+    /// would come back up believing in the *older* membership.
+    ///
+    /// Deliberately not written into `snapshot_meta`: that row also records
+    /// the compaction point, and moving its index to describe a later
+    /// membership would claim entries had been discarded that are still
+    /// there.
+    pub fn set_conf_state(&self, cs: &ConfState, at_index: u64) -> Result<(), StoreError> {
+        self.put_state("conf_state", &encode_pb(cs)?)?;
+        self.put_state("conf_state_index", &at_index.to_be_bytes())
     }
 
     /// Raise the persisted commit index to `applied` if it trails, and report
@@ -261,9 +276,27 @@ impl RaftLog {
     }
 
     /// Discard entries at or below `index`, which must already be covered by
-    /// a snapshot.
+    /// a recorded snapshot.
+    ///
+    /// Refuses to go past the snapshot rather than trusting the caller: this
+    /// deletes entries without touching `snapshot_meta`, so compacting beyond
+    /// the recorded snapshot index leaves the log claiming a `first_index` it
+    /// cannot honour. If it removed everything, `first_index()` would report
+    /// 1 and `term()` for a discarded index would come back `Unavailable`
+    /// instead of `Compacted` — and `Unavailable` tells raft "ask again
+    /// later" where `Compacted` tells it "send a snapshot", so a follower
+    /// that needed one would never be sent one. Use `install_snapshot()` to
+    /// move the compaction point; this only trims to it.
     pub fn compact_to(&self, index: u64) -> Result<(), StoreError> {
         let inner = self.inner.lock().map_err(|_| StoreError::Unavailable("raft log".into()))?;
+        let snapshot_index = snapshot_meta(&inner.conn)?.map(|(idx, _, _)| idx).unwrap_or(0);
+        if index > snapshot_index {
+            return Err(StoreError::InvalidRequest(format!(
+                "cannot compact to index {index}: no snapshot covers it (the recorded snapshot is \
+                 at {snapshot_index}). Install the snapshot first — compacting past it would \
+                 discard entries nothing can replace."
+            )));
+        }
         inner.conn.execute("DELETE FROM entries WHERE idx <= ?1", [index])?;
         Ok(())
     }
@@ -353,16 +386,29 @@ impl Storage for RaftLog {
             Some(bytes) => decode_pb::<HardState>(&bytes).map_err(store_err)?,
             None => HardState::default(),
         };
-        // The conf state in a snapshot wins over a separately stored one: a
-        // node that restored a snapshot has the membership as of that
-        // snapshot, which is by definition newer than anything it recorded
-        // before taking it.
-        let conf_state = match snapshot_meta(&inner.conn).map_err(store_err)? {
-            Some((_, _, cs)) => decode_pb::<ConfState>(&cs).map_err(store_err)?,
-            None => match RaftLog::get_state(&inner.conn, "conf_state").map_err(store_err)? {
-                Some(bytes) => decode_pb::<ConfState>(&bytes).map_err(store_err)?,
-                None => ConfState::default(),
-            },
+        // Whichever membership was observed later wins. The snapshot's copy is
+        // newer right after a restore, but a configuration change landing on
+        // top of a snapshot is recorded separately and at a higher index —
+        // taking the snapshot's unconditionally would bring the node back up
+        // believing in a membership it has already replaced.
+        let snapshot_conf = snapshot_meta(&inner.conn).map_err(store_err)?;
+        let stored_conf = RaftLog::get_state(&inner.conn, "conf_state").map_err(store_err)?;
+        let stored_conf_index = RaftLog::get_state(&inner.conn, "conf_state_index")
+            .map_err(store_err)?
+            .and_then(|b| <[u8; 8]>::try_from(b.as_slice()).ok())
+            .map(u64::from_be_bytes)
+            .unwrap_or(0);
+        let conf_state = match (snapshot_conf, stored_conf) {
+            (Some((snap_index, _, snap_cs)), Some(cs)) => {
+                if stored_conf_index > snap_index {
+                    decode_pb::<ConfState>(&cs).map_err(store_err)?
+                } else {
+                    decode_pb::<ConfState>(&snap_cs).map_err(store_err)?
+                }
+            }
+            (Some((_, _, snap_cs)), None) => decode_pb::<ConfState>(&snap_cs).map_err(store_err)?,
+            (None, Some(cs)) => decode_pb::<ConfState>(&cs).map_err(store_err)?,
+            (None, None) => ConfState::default(),
         };
         Ok(RaftState { hard_state, conf_state })
     }
@@ -675,7 +721,7 @@ mod tests {
 
             let mut cs = ConfState::default();
             cs.voters = vec![1, 2, 3];
-            log.set_conf_state(&cs).unwrap();
+            log.set_conf_state(&cs, 11).unwrap();
         }
         let log = RaftLog::open(&path).unwrap();
         let state = log.initial_state().unwrap();
@@ -683,6 +729,61 @@ mod tests {
         assert_eq!(state.hard_state.vote, 3);
         assert_eq!(state.hard_state.commit, 11);
         assert_eq!(state.conf_state.voters, vec![1, 2, 3]);
+    }
+
+    /// A configuration change landing on top of a snapshot is the newer
+    /// membership, even though the snapshot also carries one. Taking the
+    /// snapshot's unconditionally would bring the node back up believing in a
+    /// membership it has already replaced — and membership is what decides
+    /// who may vote.
+    #[test]
+    fn the_later_conf_state_wins_over_the_one_in_a_snapshot() {
+        let (log, _d) = log();
+        let mut old = ConfState::default();
+        old.voters = vec![1, 2, 3];
+        log.install_snapshot(snapshot_with(7, 2, old, b"s".to_vec())).unwrap();
+
+        // ...then a member is removed, at an index past the snapshot.
+        let mut new = ConfState::default();
+        new.voters = vec![1, 2];
+        log.set_conf_state(&new, 9).unwrap();
+
+        assert_eq!(log.initial_state().unwrap().conf_state.voters, vec![1, 2]);
+    }
+
+    /// ...and the other direction still holds: a snapshot restored *after* an
+    /// older recorded membership wins, which is the case that motivated
+    /// preferring the snapshot in the first place.
+    #[test]
+    fn a_newer_snapshot_still_wins_over_an_older_recorded_conf_state() {
+        let (log, _d) = log();
+        let mut old = ConfState::default();
+        old.voters = vec![1, 2];
+        log.set_conf_state(&old, 3).unwrap();
+
+        let mut new = ConfState::default();
+        new.voters = vec![1, 2, 3];
+        log.install_snapshot(snapshot_with(7, 2, new, b"s".to_vec())).unwrap();
+
+        assert_eq!(log.initial_state().unwrap().conf_state.voters, vec![1, 2, 3]);
+    }
+
+    /// compact_to() deletes entries without moving the compaction point, so
+    /// going past the snapshot would leave first_index() claiming entries the
+    /// log no longer has — and term() for a discarded index would answer
+    /// Unavailable ("ask again later") where raft needs Compacted ("send a
+    /// snapshot"), so a follower that needed one would never be sent one.
+    #[test]
+    fn compacting_past_the_recorded_snapshot_is_refused() {
+        let (log, _d) = log();
+        log.append(&[entry(1, 1, b"a"), entry(2, 1, b"b"), entry(3, 1, b"c")]).unwrap();
+
+        let err = log.compact_to(3).expect_err("nothing covers index 3 yet");
+        assert!(err.to_string().contains("no snapshot covers it"), "got: {err}");
+        assert_eq!(log.first_index().unwrap(), 1, "the log must be left alone");
+
+        log.install_snapshot(snapshot_with(2, 1, ConfState::default(), b"s".to_vec())).unwrap();
+        log.compact_to(2).expect("the snapshot covers index 2");
     }
 
     #[test]

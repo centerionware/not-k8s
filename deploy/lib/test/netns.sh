@@ -26,9 +26,35 @@ NETNS_CLIENT_PORT=2379
 # netns_supported — whether this host can run these tests at all.
 netns_supported() {
     [[ "$(id -u)" -eq 0 ]] || return 1
-    command -v ip >/dev/null 2>&1 || return 1
+    NETNS_MISSING_TOOL=""
+    # Every tool the helpers below reach for, checked up front. Each of those
+    # helpers redirects its own errors to /dev/null and returns 0 regardless,
+    # so a missing tool does not produce a failure — it produces a *false
+    # pass*: netns_partition on a host with no iptables reports success and
+    # installs no rule, and the partition test then asserts partition
+    # behaviour against a fully connected cluster. Same for netns_add_latency
+    # without tc. Checking here turns that into a clean skip.
+    local tool
+    for tool in ip openssl tc iptables grpcurl; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            NETNS_MISSING_TOOL="$tool"
+            return 1
+        fi
+    done
     ip netns list >/dev/null 2>&1 || return 1
     return 0
+}
+
+# netns_unsupported_reason — what to put in the skip message, so a skipped
+# case says which tool is missing rather than just "unsupported".
+netns_unsupported_reason() {
+    if [[ "$(id -u)" -ne 0 ]]; then
+        echo "needs root to create network namespaces"
+    elif [[ -n "${NETNS_MISSING_TOOL:-}" ]]; then
+        echo "needs $NETNS_MISSING_TOOL, which is not installed"
+    else
+        echo "network namespaces are unavailable on this host"
+    fi
 }
 
 netns_name() { echo "${NETNS_PREFIX}${1}"; }
@@ -58,11 +84,19 @@ netns_pki() {
         sans="$sans,IP:$(netns_ip "$i")"
     done
 
+    # basicConstraints/keyUsage stated explicitly rather than left to the
+    # host's openssl.cnf: a CA certificate without CA:TRUE and keyCertSign is
+    # rejected as an issuer by rustls, and the resulting failure is a
+    # handshake error during cluster setup that looks like a network fault.
+    # Which defaults apply varies by distro, so this cannot be left implicit.
     local domain
     for domain in ca peer-ca; do
         openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
             -keyout "$dir/$domain.key" -out "$dir/$domain.crt" \
-            -subj "/CN=nodestore-test-$domain" >/dev/null 2>&1
+            -subj "/CN=nodestore-test-$domain" \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign,digitalSignature" \
+            >/dev/null 2>&1
     done
 
     # Leaf certs need both server and client usage: a member is a server to

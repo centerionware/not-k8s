@@ -49,7 +49,7 @@ _cluster_start() {
     bin="$(_cluster_binary)"
     [[ -n "$bin" ]] || skip_test "no nodestore binary (build with DATASTORE=nodestore)"
     command -v grpcurl >/dev/null 2>&1 || skip_test "needs grpcurl"
-    netns_supported || skip_test "needs root and 'ip netns' for a real multi-node cluster"
+    netns_supported || skip_test "$(netns_unsupported_reason) — a real multi-node cluster cannot be stood up here"
 
     CLUSTER_ROOT="$(mktemp -d)"
     netns_teardown "$CLUSTER_SIZE"   # in case a previous run died mid-test

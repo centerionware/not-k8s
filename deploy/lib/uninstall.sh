@@ -87,12 +87,17 @@ stop_running_components() {
     remove_nodelet_service
     remove_nodeproxy_service
     stop_service_proxy_nft
-    # After the two node components, before the control plane goes: the
-    # apiserver is a client of the datastore, so taking the store away first
-    # just makes k3s log storage errors on its way down. Note this stops the
-    # service but deliberately leaves $NODESTORE_DATA_DIR alone — that's the
-    # cluster's entire state, and destroying it silently is unrecoverable
-    # (see remove_nodestore_service).
+    # After the two node components. The apiserver is a client of the
+    # datastore and k3s is not torn down until later (full_cleanup's
+    # uninstall_k3s), so k3s will log storage errors between here and there.
+    # That is expected and harmless on a teardown path: this function's job is
+    # to stop what this script started, and the alternative — leaving the
+    # store up until after k3s is gone — means a --cleanup that stops short of
+    # full_cleanup leaves the datastore running with nothing using it.
+    #
+    # Note this stops the service but deliberately leaves $NODESTORE_DATA_DIR
+    # alone — that's the cluster's entire state, and destroying it silently is
+    # unrecoverable (see remove_nodestore_service).
     remove_nodestore_service
     log "Stopping flanneld..."
     remove_supervised_service flanneld

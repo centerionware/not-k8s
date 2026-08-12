@@ -364,7 +364,14 @@ if want_nodestore; then
     # than an open apiserver — there is no authorization layer above it to
     # fail closed. nodestore generates this material on first start when an
     # operator has not supplied their own; these are the paths it writes.
-    export NOTK8S_DATASTORE_ENDPOINT="https://${NODESTORE_LISTEN:-$NODESTORE_LISTEN_DEFAULT}"
+    #
+    # Not the listen address verbatim: a wildcard bind (0.0.0.0 / [::]) is not
+    # an address k3s can dial against a certificate — no SAN names a wildcard,
+    # so the handshake fails with a certificate error that reads as a PKI
+    # problem rather than a configuration one. nodestore_dialable_host() maps
+    # it to the matching loopback, which tls_sans() always covers.
+    nodestore_listen="${NODESTORE_LISTEN:-$NODESTORE_LISTEN_DEFAULT}"
+    export NOTK8S_DATASTORE_ENDPOINT="https://$(nodestore_dialable_host "$nodestore_listen"):$(nodestore_listen_port "$nodestore_listen")"
     nodestore_pki="${NODESTORE_DATA_DIR:-/var/lib/nodestore}/pki/client"
     export NOTK8S_DATASTORE_CAFILE="$nodestore_pki/ca.crt"
     export NOTK8S_DATASTORE_CERTFILE="$nodestore_pki/client.crt"
