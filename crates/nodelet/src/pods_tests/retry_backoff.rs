@@ -1,0 +1,50 @@
+//! next_retry_delay(): the backoff schedule schedule_retry() walks when
+//! ensure_pod() keeps failing. Tested as a plain function so the schedule is
+//! pinned without spawning the detached task or waiting real seconds.
+use super::*;
+
+#[test]
+fn first_step_doubles_the_initial_delay() {
+    assert_eq!(next_retry_delay(RETRY_FIRST_DELAY), Duration::from_secs(10));
+}
+
+#[test]
+fn keeps_doubling_below_the_ceiling() {
+    assert_eq!(next_retry_delay(Duration::from_secs(10)), Duration::from_secs(20));
+    assert_eq!(next_retry_delay(Duration::from_secs(20)), Duration::from_secs(40));
+    assert_eq!(next_retry_delay(Duration::from_secs(80)), Duration::from_secs(160));
+}
+
+/// The ceiling is what makes retrying-until-fixed affordable — a doubling
+/// that would overshoot it clamps rather than skipping past it.
+#[test]
+fn clamps_at_the_ceiling_instead_of_overshooting() {
+    assert_eq!(next_retry_delay(Duration::from_secs(160)), RETRY_MAX_DELAY);
+    assert_eq!(next_retry_delay(RETRY_MAX_DELAY), RETRY_MAX_DELAY);
+}
+
+/// Once at the ceiling it stays there forever: a permanently broken pod
+/// settles at exactly one wakeup every 5 minutes, never drifting up and
+/// never overflowing.
+#[test]
+fn is_a_fixed_point_at_the_ceiling() {
+    let mut delay = RETRY_FIRST_DELAY;
+    for _ in 0..1000 {
+        delay = next_retry_delay(delay);
+    }
+    assert_eq!(delay, RETRY_MAX_DELAY);
+}
+
+/// Reaching the ceiling from the first delay takes a handful of steps, not
+/// dozens — the point is to recover promptly after a node-level fix, not to
+/// go quiet immediately.
+#[test]
+fn reaches_the_ceiling_in_a_bounded_number_of_steps() {
+    let mut delay = RETRY_FIRST_DELAY;
+    let mut steps = 0;
+    while delay < RETRY_MAX_DELAY {
+        delay = next_retry_delay(delay);
+        steps += 1;
+    }
+    assert_eq!(steps, 6);
+}

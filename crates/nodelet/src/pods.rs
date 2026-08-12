@@ -70,6 +70,27 @@ pub struct PodController {
     torn_down: Mutex<HashSet<String>>,
 }
 
+/// First retry delay, and the ceiling the backoff settles at.
+///
+/// The ceiling is what makes retrying-until-fixed affordable: a permanently
+/// broken pod costs one wakeup every 5 minutes, and a node with nothing
+/// failing schedules nothing at all. See `PodController::schedule_retry`.
+const RETRY_FIRST_DELAY: Duration = Duration::from_secs(5);
+const RETRY_MAX_DELAY: Duration = Duration::from_secs(300);
+
+/// Double the delay, up to the ceiling.
+///
+/// Split out as a plain function so the schedule is testable without running
+/// the detached task or waiting real seconds for it.
+fn next_retry_delay(current: Duration) -> Duration {
+    let doubled = current.saturating_mul(2);
+    if doubled > RETRY_MAX_DELAY {
+        RETRY_MAX_DELAY
+    } else {
+        doubled
+    }
+}
+
 impl PodController {
     pub fn new(client: Client, runtime: Arc<dyn PodRuntime>, node_name: String) -> Self {
         let host_ip = crate::node::detect_internal_ip();
@@ -375,14 +396,14 @@ impl PodController {
             }
             Err(e) => {
                 // A failed ensure_pod (e.g. a CNI plugin racing flanneld's own
-                // startup — the exact failure that motivated this) previously
-                // just sat there: this controller only reacts to watch/runtime
-                // events, and an unchanged Pod generates neither, so nothing
-                // would try again until the watch stream happened to reconnect
-                // and relist. One bounded, targeted retry — not a periodic
-                // poll — reacts to the failure itself as its own edge instead
-                // of silently dropping it.
-                warn!(pod = %format!("{ns}/{name}"), error = ?e, "ensure_pod failed; retrying once in 5s");
+                // startup — the exact failure that motivated this) would
+                // otherwise just sit there: this controller only reacts to
+                // watch/runtime events, and an unchanged Pod generates
+                // neither, so nothing would try again until the watch stream
+                // happened to reconnect and relist. Retrying with backoff
+                // reacts to the failure itself as its own edge instead of
+                // silently dropping it.
+                warn!(pod = %format!("{ns}/{name}"), error = ?e, "ensure_pod failed; retrying with backoff");
                 self.schedule_retry(ns, name);
             }
         }
@@ -395,15 +416,31 @@ impl PodController {
     /// than reusing the possibly-stale one — if it's gone or being deleted
     /// by the time a retry fires, there's nothing to do.
     ///
-    /// The two cases get different persistence on purpose. A generic
-    /// ensure_pod() *error* stays one-shot: a persistent failure should
-    /// surface as a stuck Pending pod for a human to look at, not retry
-    /// forever in the background. A pending CSI volume is different — it's
-    /// not a failure at all, just an ordinary wait on an external-attacher
-    /// that can legitimately take well over a minute under load (confirmed
-    /// live in CI), so this keeps re-polling on the same 5s cadence for as
-    /// long as that specific condition holds, bounded so a genuinely wedged
-    /// attach still eventually stops retrying instead of polling forever.
+    /// The two cases get different *cadences*, both bounded, neither a
+    /// periodic poll of anything.
+    ///
+    /// A pending CSI volume is not a failure at all — it's an ordinary wait
+    /// on an external attacher that can legitimately take well over a minute
+    /// under load (confirmed live in CI). That keeps the steady 5s cadence,
+    /// capped, so a genuinely wedged attach eventually stops.
+    ///
+    /// An ensure_pod() *error* retries with exponential backoff, from 5s up
+    /// to a 5-minute ceiling, for as long as the Pod exists. This used to be
+    /// one-shot, on the reasoning that a persistent failure should surface as
+    /// a stuck Pending pod for a human rather than retry forever. What that
+    /// missed is the case where the failure is real, external, and then
+    /// *fixed*: a node whose cgroups were not mounted failed every sandbox in
+    /// runc, and after mounting them the pods stayed Pending indefinitely,
+    /// because the Pod objects never changed and so never produced another
+    /// watch event. Only restarting nodelet cleared it. "Fix the node and
+    /// pods recover" is the behaviour real kubelet has, and it needs a retry
+    /// that outlives the failure.
+    ///
+    /// Backoff is what keeps that affordable and preserves this project's
+    /// whole point. There is still no resync loop and no polling: a node with
+    /// nothing failing schedules nothing at all and costs exactly zero, and a
+    /// permanently broken pod settles at one wakeup every 5 minutes. The cost
+    /// is proportional to what is actually broken, not to cluster size.
     fn schedule_retry(&self, ns: String, name: String) {
         let client = self.client.clone();
         let runtime = self.runtime.clone();
@@ -411,8 +448,12 @@ impl PodController {
         let health = self.health.clone();
         tokio::spawn(async move {
             const MAX_VOLUME_ATTEMPTS: u32 = 24; // ~2 minutes at 5s apart
-            for attempt in 1..=MAX_VOLUME_ATTEMPTS {
-                tokio::time::sleep(Duration::from_secs(5)).await;
+            let mut volume_attempts: u32 = 0;
+            let mut attempt: u32 = 0;
+            let mut delay = RETRY_FIRST_DELAY;
+            loop {
+                attempt += 1;
+                tokio::time::sleep(delay).await;
                 let api: Api<Pod> = Api::namespaced(client.clone(), &ns);
                 let pod = match api.get_opt(&name).await {
                     Ok(Some(p)) if p.metadata.deletion_timestamp.is_none() => p,
@@ -430,13 +471,18 @@ impl PodController {
                         if !is_waiting_for_external_resource(&status) {
                             return; // resolved, or failed for some other reason — either way, done retrying
                         }
-                        if attempt == MAX_VOLUME_ATTEMPTS {
+                        // An ordinary wait, not a failure: back to the steady
+                        // cadence rather than backing off.
+                        volume_attempts += 1;
+                        delay = RETRY_FIRST_DELAY;
+                        if volume_attempts >= MAX_VOLUME_ATTEMPTS {
                             warn!(pod = %format!("{ns}/{name}"), "still waiting for a CSI volume attach after {MAX_VOLUME_ATTEMPTS} retries — giving up; pod stays Pending until the next real watch event");
+                            return;
                         }
                     }
                     Err(e) => {
-                        warn!(pod = %format!("{ns}/{name}"), error = ?e, "retry ensure_pod also failed — waiting for the next watch event instead of retrying indefinitely");
-                        return;
+                        delay = next_retry_delay(delay);
+                        warn!(pod = %format!("{ns}/{name}"), error = ?e, attempt, retry_in = ?delay, "retry ensure_pod also failed; backing off");
                     }
                 }
             }
@@ -1078,3 +1124,6 @@ mod tests_observed_generation;
 #[cfg(test)]
 #[path = "pods_tests/container_user.rs"]
 mod tests_container_user;
+#[cfg(test)]
+#[path = "pods_tests/retry_backoff.rs"]
+mod tests_retry_backoff;
