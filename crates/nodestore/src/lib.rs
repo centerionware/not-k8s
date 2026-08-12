@@ -58,6 +58,8 @@ pub async fn run() -> Result<()> {
 /// Run with an explicit configuration — the seam the e2e tests and the
 /// integration tests use to run a store on a scratch path and port.
 pub async fn serve(cfg: config::Config) -> Result<()> {
+    install_fatal_panic_hook();
+
     let db_path = cfg.db_path();
     let store = store::Store::open(&db_path)
         .with_context(|| format!("opening the datastore at {}", db_path.display()))?;
@@ -153,6 +155,20 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
             })
             .collect();
 
+        // Asked before raft is built, because the answer decides whether an
+        // empty data directory means "new cluster" or "a member that has been
+        // wiped out from under a cluster that is still running" — and only the
+        // other members still know which. Short and best-effort: a whole
+        // cluster starting at once has nothing to answer yet, and that is the
+        // ordinary case, not a failure.
+        let probe = replication::transport::probe_cluster(
+            cfg.member_id,
+            &members,
+            peer_tls.as_ref(),
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+
         let handle = replication::driver::start(
             cfg.member_id,
             members,
@@ -161,6 +177,7 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
             Arc::clone(&transport),
             cfg.election_ticks,
             cfg.heartbeat_ticks,
+            probe,
         )
         .context("starting raft")?;
         consensus.attach(handle.clone());
@@ -279,6 +296,37 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         },
     }
     Ok(())
+}
+
+/// Make any panic kill the process instead of just the task it happened on.
+///
+/// Found live on a three-member cluster: raft-rs panicked inside the driver's
+/// tokio task (`to_commit N is out of range [last_index 0]`). Tokio's default
+/// is to unwind that one task and carry on, so the process stayed up, the
+/// client listener kept accepting connections, `systemctl is-active` kept
+/// reporting **active** — and every request returned "no leader elected within
+/// 3s" forever, because the raft driver was dead. `Restart=always` never
+/// fired, since from systemd's point of view nothing had failed.
+///
+/// A datastore is exactly the wrong place to survive a broken invariant. A
+/// panic here means some assumption about the log or the state machine did not
+/// hold, and continuing to answer reads on that basis is worse than being
+/// down: a member that is visibly gone gets its traffic taken elsewhere, while
+/// one that lies about being healthy does not. Dying loudly is also what makes
+/// the service manager's restart policy mean anything.
+///
+/// `abort`, not `exit`: it runs no destructors, so nothing gets a chance to
+/// flush half-built state over good state on the way out, and it leaves a core
+/// for whatever caused it.
+fn install_fatal_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // The default hook first, so the panic message and any backtrace land
+        // in the log exactly as they normally would.
+        previous(info);
+        tracing::error!("panicked — aborting, because a datastore that survives a broken invariant is worse than one that stops");
+        std::process::abort();
+    }));
 }
 
 /// The names and addresses this member is reachable as, for the certificate's

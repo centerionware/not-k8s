@@ -185,6 +185,51 @@ impl Transport {
     }
 }
 
+/// What a peer says about the cluster, for the one question asked before raft
+/// starts: does this cluster already exist, and does it already know me?
+#[derive(Clone, Debug, Default)]
+pub struct ClusterProbe {
+    /// Any peer answered at all.
+    pub reached_a_peer: bool,
+    /// A peer reported a term above zero — something has been elected, so this
+    /// is not a cluster being created right now.
+    pub already_running: bool,
+    /// The membership a peer reports, which is what tells a member starting
+    /// with an empty directory whether the cluster still has progress for it.
+    pub voters: Vec<u64>,
+}
+
+/// Ask the configured peers what they know, before raft is constructed.
+///
+/// Deliberately best-effort and short: every peer being unreachable is the
+/// ordinary case when a whole cluster is starting at once, and must not be
+/// turned into a failure. The only thing a caller may conclude from an empty
+/// answer is "nobody told me otherwise".
+pub async fn probe_cluster(
+    self_id: u64,
+    peers: &[Member],
+    tls: Option<&crate::tls::Material>,
+    timeout: std::time::Duration,
+) -> ClusterProbe {
+    let mut probe = ClusterProbe::default();
+    for member in peers.iter().filter(|m| m.id != self_id) {
+        let ask = async {
+            let mut client = connect_peer(&member.peer_url, tls).await.ok()?;
+            client.status(crate::pb::peer::StatusRequest {}).await.ok()
+        };
+        let Ok(Some(reply)) = tokio::time::timeout(timeout, ask).await else { continue };
+        let reply = reply.into_inner();
+        probe.reached_a_peer = true;
+        if reply.term > 0 {
+            probe.already_running = true;
+        }
+        if probe.voters.is_empty() {
+            probe.voters = reply.voters;
+        }
+    }
+    probe
+}
+
 /// One peer's connection: dial lazily, send what arrives, reconnect on
 /// failure, and exit when the peer is removed.
 async fn peer_task(

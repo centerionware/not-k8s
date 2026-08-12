@@ -199,6 +199,140 @@ pub struct Driver {
     last_role: StateRole,
 }
 
+/// The term a converted single member's synthetic snapshot is stamped with.
+///
+/// 1, not 0: raft reserves term 0 for "before anything", and a snapshot at
+/// term 0 would compare as older than any real entry.
+const SEED_TERM: u64 = 1;
+
+/// Turn a populated single member into the seed of a raft cluster, in place.
+///
+/// # Why this is needed
+///
+/// Single-member mode is not raft — `SingleNode` applies commands directly and
+/// writes no log. So a member that has been serving a cluster for a month has
+/// a full state machine and *no* raft history whatsoever. Point it at a
+/// cluster configuration and raft starts at index 0 behind a state machine at
+/// index N, which is unrecoverable by replay and is exactly what
+/// `reconcile_commit_with_applied` refuses.
+///
+/// The way out is the one etcd uses for the same shape of problem: treat the
+/// existing state as a snapshot. A snapshot is precisely "the state machine as
+/// of index N, with no need for the entries that built it", which is a true
+/// description of what this member has. Installing one at `applied` makes the
+/// log consistent with the state machine, gives the member a real log position
+/// to lead from, and — because the snapshot carries the actual data — is what
+/// every member added afterwards receives to catch up.
+///
+/// # Why only for a single-member cluster
+///
+/// This is refused unless the configured cluster is this member alone, and the
+/// reason is a real way to lose the data rather than a formality.
+///
+/// Raft's election restriction only stops a candidate with a *shorter* log
+/// from winning votes it needs from members with longer ones. Configure three
+/// members where one has the data and two are empty, and the two empty ones
+/// are a majority: they can elect each other with no reference to the member
+/// that holds everything, and the new leader then overwrites it with its own
+/// empty log. The data would be gone, correctly, by raft's own rules.
+///
+/// So the supported upgrade is the one that never puts the data in the
+/// minority: convert this member into a one-member cluster (it is the only
+/// voter, so it always wins and its state is by definition the truth), then
+/// grow with `MemberAdd`, one member at a time. Each new member joins a
+/// cluster that already has a quorum holding the data, and is caught up by the
+/// snapshot this function installed.
+fn adopt_existing_state_as_the_cluster_seed(
+    member_id: u64,
+    peers: &[Member],
+    log: &RaftLog,
+    node: &Arc<Node>,
+    applied: u64,
+) -> Result<()> {
+    let others: Vec<u64> = peers.iter().map(|m| m.id).filter(|id| *id != member_id).collect();
+    if !others.is_empty() {
+        return Err(Error::InvalidRequest(format!(
+            "this member has {applied} applied entries but no raft log, because it has been \
+             running as a single member — and single-member mode keeps no log. It cannot join a \
+             cluster that also configures members {others:?}: those start empty, and two empty \
+             members are a majority that can elect each other and overwrite everything this one \
+             holds. Convert it first by setting NODESTORE_INITIAL_CLUSTER to this member alone \
+             ({member_id}=<its peer URL>), start it, and then add the others one at a time with \
+             MemberAdd — each is then caught up from this member's data instead of voting it away."
+        )));
+    }
+
+    let mut cs = raft::eraftpb::ConfState::default();
+    cs.voters = vec![member_id];
+
+    // The snapshot carries the real state machine, not just metadata: this is
+    // what a member added later is sent, so it has to be the data itself.
+    let state = node.read(|s| s.export_snapshot())?;
+    let data = crate::encode::encode_snapshot(&state);
+    let bytes = data.len();
+    log.install_snapshot(snapshot_with(applied, SEED_TERM, cs.clone(), data))?;
+    log.set_conf_state(&cs, applied)?;
+
+    // The log now *begins* at `applied`, so raft must be told this member has
+    // committed that far. Without it raft starts at commit 0 against a first
+    // index of applied+1 and cannot reconcile the two.
+    let mut hs = raft::eraftpb::HardState::default();
+    hs.term = SEED_TERM;
+    hs.commit = applied;
+    log.set_hard_state(&hs)?;
+
+    info!(
+        index = applied,
+        bytes,
+        "converted a single member into a one-member cluster by adopting its existing state as the \
+         cluster's first snapshot — add the other members with MemberAdd, one at a time"
+    );
+    Ok(())
+}
+
+/// Refuse to start empty under an id a live cluster still has progress for.
+///
+/// # The crash this prevents
+///
+/// Found live on a three-member cluster. Member 3's data directory was removed
+/// and the member restarted under the same id. It bootstrapped a fresh
+/// membership, the leader — which still held `matched = 10` for member 3 from
+/// before — sent it a heartbeat carrying that commit index, and raft-rs
+/// panicked: `to_commit 10 is out of range [last_index 0]`. The leader had no
+/// way to know the member it was talking to was not the one it had been
+/// replicating to.
+///
+/// This is the same hazard etcd forbids structurally by requiring a member to
+/// be removed and re-added under a *new* id. `MemberRemove` + `MemberAdd` is
+/// exactly that, and is what the error points at.
+///
+/// # Why a probe rather than a local marker
+///
+/// Any marker written into the data directory disappears with the data
+/// directory, which is the very event being detected. The only party that
+/// still knows this member used to exist is the rest of the cluster, so the
+/// rest of the cluster is who gets asked.
+///
+/// A silent probe — nothing reachable, or nothing running — is deliberately
+/// permissive: a whole cluster starting at once has every member empty and no
+/// leader yet, and that has to keep working.
+fn refuse_empty_restart_into_a_live_cluster(
+    member_id: u64,
+    probe: &crate::replication::transport::ClusterProbe,
+) -> Result<()> {
+    if !probe.already_running || !probe.voters.contains(&member_id) {
+        return Ok(());
+    }
+    Err(Error::InvalidRequest(format!(
+        "this member's data directory is empty, but the cluster is already running and still \
+         counts member {member_id} as a voter — so its leader holds a replication position for an \
+         id with nothing behind it, and would drive it past the end of its own log. Remove it from \
+         the cluster with MemberRemove and add it back with MemberAdd, which issues a new id and \
+         makes the leader send a snapshot instead. (Restarting a member with the same id and an \
+         empty directory is what etcd forbids for this reason.)"
+    )))
+}
+
 /// Start the driver. Returns a handle; the loop runs on its own task.
 pub fn start(
     member_id: u64,
@@ -208,8 +342,23 @@ pub fn start(
     transport: Arc<Transport>,
     election_ticks: usize,
     heartbeat_ticks: usize,
+    /// What the peers said before raft was built. Only consulted when this
+    /// member has no history of its own — see
+    /// `refuse_empty_restart_into_a_live_cluster()`.
+    probe: crate::replication::transport::ClusterProbe,
 ) -> Result<RaftHandle> {
     let applied = node.read(|s| s.applied_index())?;
+
+    // A single member keeps no raft log at all — it has nobody to convince, so
+    // nothing is ever proposed and `raft.db` does not exist. Turning that
+    // member into a clustered one therefore starts raft with an empty log
+    // behind a state machine that is already at `applied`, which the check
+    // below correctly refuses. Seeding the log from the state machine is what
+    // makes that conversion possible in place, without discarding the data
+    // that is the entire reason to keep the member.
+    if applied > 0 && log.last_index_value()? == 0 && log.snapshot_index()? == 0 {
+        adopt_existing_state_as_the_cluster_seed(member_id, &peers, &log, &node, applied)?;
+    }
 
     // Before raft sees `applied`: the persisted commit index can legitimately
     // trail it across a restart, because raft does not require the commit
@@ -248,8 +397,23 @@ pub fn start(
     // A brand-new cluster has an empty conf state, which raft reads as "I am
     // in no cluster" — it will never campaign and never accept a proposal.
     // Seeding it from the configured membership is what bootstraps it.
+    //
+    // But an empty conf state means only "this member has no history", and
+    // there are two very different ways to have none: the cluster is being
+    // created right now, or this member's data directory was emptied under an
+    // id the cluster has been running with. `probe` is what separates them —
+    // see refuse_empty_restart_into_a_live_cluster().
     let bootstrap = raw.raft.prs().conf().voters().ids().is_empty();
-    if bootstrap && !peers.is_empty() {
+    if bootstrap {
+        refuse_empty_restart_into_a_live_cluster(member_id, &probe)?;
+    }
+    if bootstrap && probe.already_running && !probe.voters.contains(&member_id) {
+        // Added to a running cluster with MemberAdd: the leader already knows
+        // about this member and will send it a snapshot. Seeding a membership
+        // here would be this member inventing a configuration the cluster
+        // never agreed to, so it starts with none and takes the leader's.
+        info!("joining a cluster that is already running; waiting for the leader's snapshot");
+    } else if bootstrap && !peers.is_empty() {
         let voters: Vec<u64> = peers.iter().filter(|m| !m.is_learner).map(|m| m.id).collect();
         let learners: Vec<u64> = peers.iter().filter(|m| m.is_learner).map(|m| m.id).collect();
         let mut cs = raft::eraftpb::ConfState::default();
@@ -606,5 +770,48 @@ impl Driver {
         self.state.set_role(role);
         self.state.leader_id.store(leader, Ordering::Relaxed);
         self.state.term.store(term, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::replication::transport::ClusterProbe;
+
+    fn probe(running: bool, voters: Vec<u64>) -> ClusterProbe {
+        ClusterProbe { reached_a_peer: !voters.is_empty(), already_running: running, voters }
+    }
+
+    /// The crash this exists to prevent: a member restarted empty under an id
+    /// the leader still holds a replication position for, which drove raft-rs
+    /// past the end of an empty log and panicked.
+    #[test]
+    fn an_empty_member_may_not_rejoin_a_live_cluster_under_its_old_id() {
+        let err = refuse_empty_restart_into_a_live_cluster(3, &probe(true, vec![1, 2, 3]))
+            .expect_err("the leader still has progress for member 3");
+        let msg = err.to_string();
+        assert!(msg.contains("MemberRemove"), "must say how to recover: {msg}");
+        assert!(msg.contains("MemberAdd"), "must say how to recover: {msg}");
+    }
+
+    /// A whole cluster starting at once has every member empty and no leader
+    /// yet. That is the ordinary case and must not be mistaken for the crash
+    /// above — nothing has been elected, so nothing holds a position for
+    /// anyone.
+    #[test]
+    fn a_cluster_starting_from_nothing_is_not_refused() {
+        refuse_empty_restart_into_a_live_cluster(3, &probe(false, vec![1, 2, 3]))
+            .expect("no peer reported a term, so this is a cluster being created");
+        refuse_empty_restart_into_a_live_cluster(3, &ClusterProbe::default())
+            .expect("no peer answered at all, which proves nothing and must stay permissive");
+    }
+
+    /// A member added with MemberAdd is not yet a voter, so the running
+    /// cluster holds no position for it — it joins normally and is caught up
+    /// by the leader's snapshot.
+    #[test]
+    fn a_newly_added_member_joins_a_live_cluster_without_complaint() {
+        refuse_empty_restart_into_a_live_cluster(4, &probe(true, vec![1, 2, 3]))
+            .expect("member 4 is new to this cluster; nothing has a position for it");
     }
 }
