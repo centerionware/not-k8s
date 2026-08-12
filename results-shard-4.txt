@@ -1,0 +1,7 @@
+commit: a043f69875a78aafd9166cdc1bb226110e848a19
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31651992481
+timestamp (UTC): 2026-08-12T23:51:15Z
+shard: 4/5
+exit code: unknown
+----------------------------------------
+(no results captured — the run failed before test-e2e.sh could produce output)
