@@ -334,6 +334,11 @@ fn refuse_empty_restart_into_a_live_cluster(
 }
 
 /// Start the driver. Returns a handle; the loop runs on its own task.
+///
+/// `probe` is what the peers said before raft was built. It is consulted only
+/// when this member has no history of its own, to tell "a new cluster is being
+/// created" apart from "this member was emptied under a cluster that is still
+/// running" — see `refuse_empty_restart_into_a_live_cluster()`.
 pub fn start(
     member_id: u64,
     peers: Vec<Member>,
@@ -342,9 +347,6 @@ pub fn start(
     transport: Arc<Transport>,
     election_ticks: usize,
     heartbeat_ticks: usize,
-    /// What the peers said before raft was built. Only consulted when this
-    /// member has no history of its own — see
-    /// `refuse_empty_restart_into_a_live_cluster()`.
     probe: crate::replication::transport::ClusterProbe,
 ) -> Result<RaftHandle> {
     let applied = node.read(|s| s.applied_index())?;
