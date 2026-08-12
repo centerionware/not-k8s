@@ -21,6 +21,19 @@
 # Restarting containerd puts this in the class harness.sh defers to the end of
 # the run — see _reorder_env_reconfiguring_tests_last().
 
+# Is containerd actually serving again?
+#
+# The unit plus its socket, deliberately not `sudo ctr version`: ctr lives in
+# /usr/local/bin, which sudo drops from PATH under the usual secure_path, so
+# that probe fails on a perfectly healthy host and this test then reports
+# "containerd never came back up" about a containerd that is up. Same trap
+# CLAUDE.md already documents for nft in /usr/sbin. The socket is also the
+# thing that actually matters here — it is what the runtime connects to.
+_containerd_is_up() {
+    systemctl is-active --quiet containerd 2>/dev/null \
+        && [[ -S /run/containerd/containerd.sock ]]
+}
+
 test_a_pending_pod_recovers_after_the_node_failure_is_fixed() {
     if ! node_uses_cri_runtime; then skip_test "needs the cri runtime — the mock one has no sandbox to fail"; fi
     command -v systemctl >/dev/null 2>&1 || skip_test "needs systemd to stop and start containerd"
@@ -31,7 +44,7 @@ test_a_pending_pod_recovers_after_the_node_failure_is_fixed() {
 
     cleanup() {
         sudo systemctl restart containerd &>/dev/null || true
-        try_wait_until 60 bash -c "sudo ctr version &>/dev/null" || true
+        try_wait_until 60 _containerd_is_up || true
         delete_pod_if_exists "$name" || true
     }
     trap cleanup EXIT
@@ -71,7 +84,7 @@ EOF
     # long ago and this pod stayed Pending until nodelet was restarted.
     log "starting containerd again — nothing touches the Pod, so only nodelet's own retry can recover it..."
     sudo systemctl start containerd
-    try_wait_until 60 bash -c "sudo ctr version &>/dev/null" \
+    try_wait_until 60 _containerd_is_up \
         || die "containerd never came back up, so this test cannot tell recovery from a still-broken node"
 
     # Generous budget on purpose: by now the delay has backed off several
