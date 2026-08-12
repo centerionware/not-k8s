@@ -94,8 +94,20 @@ pub struct SingleNode {
 }
 
 impl SingleNode {
+    /// A fresh single member, starting from index zero.
     pub fn new(member_id: u64, cluster_id: u64) -> Self {
-        SingleNode { index: AtomicI64::new(0), member_id, cluster_id }
+        SingleNode::resuming(member_id, cluster_id, 0)
+    }
+
+    /// A single member resuming from an already-populated store.
+    ///
+    /// `applied` is the index the store last recorded. Starting from zero
+    /// instead would hand the applier indexes it has already seen, walking the
+    /// persisted `applied_index` backwards — and that value is what a later
+    /// clustered start reads to place itself in the raft log, so a stale one
+    /// would make the member claim to be behind where it actually is.
+    pub fn resuming(member_id: u64, cluster_id: u64, applied: u64) -> Self {
+        SingleNode { index: AtomicI64::new(applied as i64), member_id, cluster_id }
     }
 }
 
@@ -300,6 +312,20 @@ mod tests {
         };
         assert_eq!(index(c.submit(&put_cmd("/a", "1")).await.unwrap()), 1);
         assert_eq!(index(c.submit(&put_cmd("/b", "1")).await.unwrap()), 2);
+    }
+
+    /// A restart must not hand the applier indexes it has already applied:
+    /// Store::apply_at() writes whatever it is given, so counting from zero
+    /// again walks the persisted applied index backwards, and that value is
+    /// what a later clustered start uses to place itself in the raft log.
+    #[tokio::test]
+    async fn a_resumed_single_member_continues_from_the_persisted_index() {
+        let c = SingleNode::resuming(1, 1, 17);
+        let index = |s: Submitted| match s {
+            Submitted::ApplyLocally(i) => i,
+            Submitted::Applied(_) => panic!("single node never applies inside submit"),
+        };
+        assert_eq!(index(c.submit(&put_cmd("/a", "1")).await.unwrap()), 18);
     }
 
     #[tokio::test]

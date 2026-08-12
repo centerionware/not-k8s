@@ -168,6 +168,7 @@ pub fn load_or_generate(
     }
 
     let dir = data_dir.join("pki").join(domain.dir_name());
+    let ca_key_path = dir.join("ca.key");
     let material = Material {
         ca: dir.join("ca.crt"),
         cert: dir.join("server.crt"),
@@ -176,38 +177,98 @@ pub fn load_or_generate(
         client_key: (domain == Domain::Client).then(|| dir.join("client.key")),
     };
 
-    // Regenerating a CA that peers already trust would partition the cluster,
-    // so existing material is always reused.
-    if material.ca.exists() && material.cert.exists() && material.key.exists() {
+    // Every file this domain is supposed to end up with, so a *partially*
+    // written set is repaired rather than mistaken for a complete one. The
+    // client leaf in particular used not to be checked: a directory holding
+    // ca.crt/server.crt/server.key but no client.crt returned here as if it
+    // were finished, and deploy/bootstrap-source.sh then failed the whole run
+    // with "nodestore is listening but did not write ..." on every subsequent
+    // start, with no way to recover short of deleting the directory.
+    let expected: Vec<&PathBuf> = [Some(&material.ca), Some(&material.cert), Some(&material.key)]
+        .into_iter()
+        .chain([material.client_cert.as_ref(), material.client_key.as_ref()])
+        .flatten()
+        .collect();
+    if expected.iter().all(|p| p.exists()) {
         return Ok(material);
     }
 
     std::fs::create_dir_all(&dir)
         .map_err(|e| Error::Unavailable(format!("creating {}: {e}", dir.display())))?;
 
-    info!(?domain, dir = %dir.display(), "generating TLS material (none configured)");
+    // Regenerating a CA that peers already trust would partition the cluster,
+    // so an existing one is reloaded and reused to sign whatever is missing.
+    // This is why the CA *key* is persisted alongside ca.crt: without it a leaf
+    // could never be reissued when it expires, and the only recovery would be
+    // deleting the whole directory — which mints a new CA and breaks every peer
+    // and client that trusted the old one.
+    let (ca_cert, ca_key) = if material.ca.exists() {
+        info!(?domain, dir = %dir.display(), "reusing the existing CA to issue missing TLS material");
+        load_ca(&material.ca, &ca_key_path)?
+    } else {
+        info!(?domain, dir = %dir.display(), "generating TLS material (none configured)");
+        let (ca_cert, ca_key) = generate_ca(domain)?;
+        write_public(&material.ca, ca_cert.pem().as_bytes())?;
+        write_secret(&ca_key_path, ca_key.serialize_pem().as_bytes())?;
+        (ca_cert, ca_key)
+    };
 
-    let (ca_pem, ca_cert_params_key) = generate_ca(domain)?;
-    write_secret(&material.ca, ca_pem.as_bytes())?;
-
-    let (ca_cert, ca_key) = ca_cert_params_key;
-
-    let (cert_pem, key_pem) = sign_leaf(&ca_cert, &ca_key, sans, "nodestore-server")?;
-    write_public(&material.cert, cert_pem.as_bytes())?;
-    write_secret(&material.key, key_pem.as_bytes())?;
+    if !material.cert.exists() || !material.key.exists() {
+        let (cert_pem, key_pem) = sign_leaf(&ca_cert, &ca_key, sans, "nodestore-server")?;
+        write_public(&material.cert, cert_pem.as_bytes())?;
+        write_secret(&material.key, key_pem.as_bytes())?;
+    }
 
     if let (Some(cc), Some(ck)) = (&material.client_cert, &material.client_key) {
-        // The client certificate needs no SANs: it is only ever verified as a
-        // client, where the CN is the identity and SANs are irrelevant.
-        let (c_pem, k_pem) = sign_leaf(&ca_cert, &ca_key, &[], "kube-apiserver")?;
-        write_public(cc, c_pem.as_bytes())?;
-        write_secret(ck, k_pem.as_bytes())?;
+        if !cc.exists() || !ck.exists() {
+            // The client certificate needs no SANs: it is only ever verified as
+            // a client, where the CN is the identity and SANs are irrelevant.
+            let (c_pem, k_pem) = sign_leaf(&ca_cert, &ca_key, &[], "kube-apiserver")?;
+            write_public(cc, c_pem.as_bytes())?;
+            write_secret(ck, k_pem.as_bytes())?;
+        }
     }
 
     Ok(material)
 }
 
-fn generate_ca(domain: Domain) -> Result<(String, (rcgen::Certificate, KeyPair))> {
+/// Reload a previously generated CA so it can sign further leaves.
+///
+/// Deliberately an error, not a silent regeneration, when the key is missing:
+/// minting a fresh CA under the same path would leave every peer and client
+/// still trusting the old one, and the resulting handshake failures read as a
+/// network fault rather than a configuration one. Telling the operator to
+/// remove the directory makes that a decision instead of an accident.
+fn load_ca(ca_path: &Path, ca_key_path: &Path) -> Result<(rcgen::Certificate, KeyPair)> {
+    if !ca_key_path.exists() {
+        return Err(Error::Unavailable(format!(
+            "{} exists but its private key {} does not, so no further certificate can be issued \
+             from it. Remove {} to start over with a freshly generated CA — every peer and client \
+             that trusted the old one will have to be given the new ca.crt.",
+            ca_path.display(),
+            ca_key_path.display(),
+            ca_path.parent().unwrap_or(ca_path).display(),
+        )));
+    }
+    let key_pem = String::from_utf8(read(ca_key_path)?)
+        .map_err(|e| Error::Unavailable(format!("{} is not valid UTF-8 PEM: {e}", ca_key_path.display())))?;
+    let ca_pem = String::from_utf8(read(ca_path)?)
+        .map_err(|e| Error::Unavailable(format!("{} is not valid UTF-8 PEM: {e}", ca_path.display())))?;
+    let key = KeyPair::from_pem(&key_pem)
+        .map_err(|e| Error::Unavailable(format!("reading the CA key {}: {e}", ca_key_path.display())))?;
+    // rcgen has no "certificate from PEM" type usable as an issuer, so the
+    // params are read back out of the stored certificate and re-signed with the
+    // stored key. Same subject, same key, so leaves signed by this chain verify
+    // against the ca.crt already on disk and already distributed.
+    let params = CertificateParams::from_ca_cert_pem(&ca_pem)
+        .map_err(|e| Error::Unavailable(format!("reading the CA certificate {}: {e}", ca_path.display())))?;
+    let cert = params
+        .self_signed(&key)
+        .map_err(|e| Error::Unavailable(format!("reconstructing the CA from {}: {e}", ca_path.display())))?;
+    Ok((cert, key))
+}
+
+fn generate_ca(domain: Domain) -> Result<(rcgen::Certificate, KeyPair)> {
     let mut params = CertificateParams::new(Vec::<String>::new())
         .map_err(|e| Error::Unavailable(format!("building CA parameters: {e}")))?;
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -219,7 +280,7 @@ fn generate_ca(domain: Domain) -> Result<(String, (rcgen::Certificate, KeyPair))
     let cert = params
         .self_signed(&key)
         .map_err(|e| Error::Unavailable(format!("self-signing the CA: {e}")))?;
-    Ok((cert.pem(), (cert, key)))
+    Ok((cert, key))
 }
 
 fn sign_leaf(
@@ -390,6 +451,67 @@ mod tests {
             err.to_string().contains("NODESTORE_PEER_CERT_FILE"),
             "peer domain should name the peer variables: {err}"
         );
+    }
+
+    /// The CA key has to outlive the first start, or no leaf can ever be
+    /// reissued and the only recovery is deleting the CA every peer trusts.
+    #[test]
+    fn the_ca_key_is_persisted_alongside_the_ca_certificate() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = load_or_generate(dir.path(), Domain::Client, None, &["localhost".to_string()], false)
+            .unwrap();
+        let ca_key = m.ca.parent().unwrap().join("ca.key");
+        assert!(ca_key.exists(), "the CA key must be kept, or leaves can never be reissued");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&ca_key).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "CA key must be 0600, got {mode:o}");
+        }
+    }
+
+    /// A half-written directory used to read as a finished one: the reuse
+    /// check looked only at ca/server, so a missing client leaf was never
+    /// re-issued and bootstrap failed identically on every later start.
+    #[test]
+    fn a_missing_client_leaf_is_reissued_from_the_existing_ca() {
+        let dir = tempfile::tempdir().unwrap();
+        let sans = vec!["localhost".to_string()];
+        let first = load_or_generate(dir.path(), Domain::Client, None, &sans, false).unwrap();
+        let ca_before = std::fs::read(&first.ca).unwrap();
+        let server_before = std::fs::read(&first.cert).unwrap();
+
+        std::fs::remove_file(first.client_cert.as_ref().unwrap()).unwrap();
+        std::fs::remove_file(first.client_key.as_ref().unwrap()).unwrap();
+
+        let second = load_or_generate(dir.path(), Domain::Client, None, &sans, false).unwrap();
+        assert!(second.client_cert.as_ref().unwrap().exists(), "the client leaf must be re-issued");
+        assert!(second.client_key.as_ref().unwrap().exists());
+        // ...from the *same* CA, and without disturbing the server leaf, or
+        // every peer and client that trusted the old CA would break.
+        assert_eq!(ca_before, std::fs::read(&second.ca).unwrap(), "the CA must not be regenerated");
+        assert_eq!(server_before, std::fs::read(&second.cert).unwrap(), "the server leaf must be left alone");
+    }
+
+    /// Deployments created before the CA key was persisted have a ca.crt with
+    /// no key. Silently minting a new CA under the same path would leave every
+    /// peer trusting the old one, and the handshake failures would read as a
+    /// network fault — so this says what happened and what it costs to fix.
+    #[test]
+    fn a_ca_with_no_key_is_a_clear_error_not_a_silent_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let sans = vec!["localhost".to_string()];
+        let m = load_or_generate(dir.path(), Domain::Client, None, &sans, false).unwrap();
+        let ca_before = std::fs::read(&m.ca).unwrap();
+        std::fs::remove_file(m.ca.parent().unwrap().join("ca.key")).unwrap();
+        std::fs::remove_file(m.client_cert.as_ref().unwrap()).unwrap();
+
+        let err = load_or_generate(dir.path(), Domain::Client, None, &sans, false)
+            .expect_err("must not quietly replace a CA that peers already trust");
+        let msg = err.to_string();
+        assert!(msg.contains("ca.key"), "should name the missing key: {msg}");
+        assert!(msg.contains("Remove"), "should say how to recover: {msg}");
+        assert_eq!(ca_before, std::fs::read(&m.ca).unwrap(), "the existing CA must be left untouched");
     }
 
     #[cfg(unix)]

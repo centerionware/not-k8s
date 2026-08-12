@@ -32,7 +32,28 @@ control_plane_datastore_matches() {
     # is a destructive change nobody asked for on a plain re-run.
     [[ -z "$want" ]] && return 0
     [[ -r "$unit" ]] || return 1
-    grep -qF -- "--datastore-endpoint=$want" "$unit"
+    # A plain substring match would also accept a *longer* endpoint that
+    # merely starts with the wanted one — `…:2379` matching a unit configured
+    # for `…:23790` — and report "already correct" for a k3s pointed at a
+    # different datastore entirely. That is precisely the silent "nothing
+    # changed" this function exists to catch, so the value has to be followed
+    # by a delimiter or the end of the line.
+    local escaped
+    escaped=$(printf '%s' "$want" | sed 's/[][\.*^$\/&]/\\&/g')
+    grep -qE -- "--datastore-endpoint=$escaped([[:space:]\"']|\$)" "$unit" || return 1
+    # The certificate paths are part of the configuration too: a run that
+    # changes only those would otherwise keep the old unit, and k3s would go
+    # on presenting a client certificate that is no longer the right one.
+    local var flag name value
+    for var in CAFILE:cafile CERTFILE:certfile KEYFILE:keyfile; do
+        flag="${var#*:}"
+        name="NOTK8S_DATASTORE_${var%%:*}"
+        value="${!name:-}"
+        [[ -z "$value" ]] && continue
+        escaped=$(printf '%s' "$value" | sed 's/[][\.*^$\/&]/\\&/g')
+        grep -qE -- "--datastore-$flag=$escaped([[:space:]\"']|\$)" "$unit" || return 1
+    done
+    return 0
 }
 
 setup_control_plane() {

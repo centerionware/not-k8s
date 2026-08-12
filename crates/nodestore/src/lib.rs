@@ -174,7 +174,13 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
 
         (node, Some(handle))
     } else {
-        let consensus = Arc::new(consensus::SingleNode::new(cfg.member_id, cfg.cluster_id));
+        // Resume the index from what the store has already applied, rather
+        // than from zero. Store::apply_at() writes whatever index it is given,
+        // so a restarted single member counting from zero again would move the
+        // persisted applied index *backwards* — and that value is what a later
+        // clustered start reads to decide where in the raft log it stands.
+        let applied = store.applied_index().context("reading the applied index")?;
+        let consensus = Arc::new(consensus::SingleNode::resuming(cfg.member_id, cfg.cluster_id, applied));
         (consensus::Node::new(store, consensus, cfg.watch_buffer), None)
     };
 
@@ -187,6 +193,17 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
     // The peer server carries raft traffic and nothing else, on its own port.
     // A raft message is trusted absolutely by whoever receives it, so this is
     // never merged into the client listener.
+    // A peer-server failure has to bring the whole member down, not just its
+    // own task. A member that keeps serving the client API with a dead raft
+    // link answers reads it can no longer keep current and can never be
+    // replicated to again — it diverges from the cluster silently, which is
+    // strictly worse than being unreachable. This channel carries the failure
+    // back out to the select! at the end of this function.
+    let (peer_failed_tx, peer_failed_rx) = tokio::sync::oneshot::channel::<anyhow::Error>();
+    // Kept alive for the whole function: with no raft the sender is never
+    // dropped, so the receiver simply never fires.
+    let mut peer_failed_tx = Some(peer_failed_tx);
+
     if let Some(handle) = raft.clone() {
         let peer_addr: std::net::SocketAddr = cfg
             .peer_listen
@@ -194,34 +211,27 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
             .with_context(|| format!("NODESTORE_PEER_LISTEN={:?} is not a valid address", cfg.peer_listen))?;
         let peer_service = replication::peer_service::PeerService::new(handle, Arc::clone(&node));
         let peer_tls_for_server = peer_tls.clone();
+        let tx = peer_failed_tx.take().expect("the peer sender is taken exactly once");
         info!(%peer_addr, member = cfg.member_id, "serving raft peer traffic");
         tokio::spawn(async move {
-            let Some(material) = peer_tls_for_server else {
-                tracing::error!("a clustered member has no peer TLS material; refusing to serve raft in the clear");
-                return;
-            };
-            let tls = match tls::server_tls_config(&material) {
-                Ok(t) => t,
-                Err(e) => {
-                    tracing::error!(error = %e, "could not build peer TLS config");
-                    return;
-                }
-            };
-            let mut server = match tonic::transport::Server::builder().tls_config(tls) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!(error = %e, "could not apply peer TLS config");
-                    return;
-                }
-            };
-            if let Err(e) = server
-                .add_service(pb::peer::peer_server::PeerServer::new(peer_service))
-                .serve(peer_addr)
-                .await
-            {
-                // Without a peer server this member can receive nothing, so
-                // it can never be replicated to. Loud, and fatal in effect.
-                tracing::error!(error = %e, "the raft peer server stopped");
+            let result = async {
+                let material = peer_tls_for_server.context(
+                    "a clustered member has no peer TLS material; refusing to serve raft in the clear",
+                )?;
+                let tls = tls::server_tls_config(&material).context("building peer TLS config")?;
+                tonic::transport::Server::builder()
+                    .tls_config(tls)
+                    .context("applying peer TLS config")?
+                    .add_service(pb::peer::peer_server::PeerServer::new(peer_service))
+                    .serve(peer_addr)
+                    .await
+                    .context("the raft peer server stopped")
+            }
+            .await;
+            if let Err(e) = result {
+                // The receiver is only gone if serve() has already returned,
+                // in which case the process is on its way down anyway.
+                let _ = tx.send(e);
             }
         });
     }
@@ -243,7 +253,7 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         cluster_server::ClusterServer, kv_server::KvServer, lease_server::LeaseServer,
         maintenance_server::MaintenanceServer, watch_server::WatchServer,
     };
-    tonic::transport::Server::builder()
+    let client_server = tonic::transport::Server::builder()
         .tls_config(tls::server_tls_config(&client_tls).context("building client API TLS")?)
         .context("applying client API TLS")?
         .add_service(KvServer::new(api.clone()))
@@ -251,9 +261,23 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         .add_service(LeaseServer::new(api.clone()))
         .add_service(MaintenanceServer::new(api.clone()))
         .add_service(ClusterServer::new(api))
-        .serve(addr)
-        .await
-        .context("the gRPC server stopped")?;
+        .serve(addr);
+    tokio::pin!(client_server);
+
+    // Whichever of the two servers stops first ends the process. See the
+    // channel's own comment above for why a dead peer link must not be
+    // survivable.
+    tokio::select! {
+        r = &mut client_server => r.context("the gRPC server stopped")?,
+        recv = peer_failed_rx => match recv {
+            Ok(e) => return Err(e.context(
+                "the raft peer server stopped, so this member can no longer be replicated to",
+            )),
+            // The sender was dropped without sending: there is no peer server
+            // on this member at all. Nothing to watch for — keep serving.
+            Err(_) => client_server.await.context("the gRPC server stopped")?,
+        },
+    }
     Ok(())
 }
 

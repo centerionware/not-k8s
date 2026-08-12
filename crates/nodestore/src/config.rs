@@ -218,7 +218,21 @@ impl Config {
                 cfg.peer_listen = listen_from_url(&cfg.advertise_peer_url);
             }
             if cfg.advertise_client_url.is_empty() {
-                cfg.advertise_client_url = format!("http://{}", cfg.listen);
+                // https for the same reason the peer URLs are: the client API
+                // is a mutual-TLS listener, and this URL is what a follower
+                // hands back so a write can be forwarded to the leader. An
+                // http:// value there produces a plaintext dial against a TLS
+                // listener, so every forwarded write fails with a transport
+                // error that names nothing useful.
+                cfg.advertise_client_url = format!("https://{}", cfg.listen);
+            }
+            if cfg.advertise_client_url.starts_with("http://") {
+                return Err(Error::InvalidRequest(format!(
+                    "NODESTORE_ADVERTISE_CLIENT_URL={:?} uses http://, but the client API is a \
+                     mutual-TLS listener — use https://. Followers forward writes to this URL, so \
+                     a plaintext value makes every write through a follower fail.",
+                    cfg.advertise_client_url
+                )));
             }
         }
 
@@ -236,8 +250,9 @@ impl Config {
             // doing. But it is worth saying out loud.
             warn!(
                 listen = %cfg.listen,
-                "serving the datastore on all interfaces — there is no authentication on this API, \
-                 so anything that can reach this port can read and write the entire cluster state"
+                "serving the datastore on all interfaces — this port holds every Secret in the \
+                 cluster, and the only thing standing in front of it is the client CA, so anything \
+                 holding a certificate signed by it can read and write all of the cluster state"
             );
         }
 
@@ -303,9 +318,24 @@ fn parse_initial_cluster(spec: &str) -> Result<Vec<(u64, String)>> {
 /// binding all interfaces.
 fn listen_from_url(url: &str) -> String {
     let hostport = url.split("://").nth(1).unwrap_or(url);
-    let port = hostport.rsplit(':').next().unwrap_or("2380");
+    // Drop any path or query first: "https://10.0.0.1:2380/raft" would
+    // otherwise yield the port "2380/raft".
+    let hostport = hostport.split(['/', '?', '#']).next().unwrap_or(hostport);
+    // Only a numeric tail is a port. The old `rsplit(':').next()` could not
+    // fall back, because rsplit always yields at least one item — so
+    // "https://peer.example" produced "0.0.0.0:peer.example", which failed
+    // much later at parse/bind time with a message naming neither the URL nor
+    // the variable it came from.
+    let port = match hostport.rsplit_once(':') {
+        Some((_, p)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => p,
+        _ => DEFAULT_PEER_PORT,
+    };
     format!("0.0.0.0:{port}")
 }
+
+/// The port a peer URL is assumed to use when it names none — etcd's peer
+/// port, which is what an operator writing `https://host` will have meant.
+const DEFAULT_PEER_PORT: &str = "2380";
 
 /// An optional path from the environment. Empty means unset, so a variable
 /// set to "" behaves the same as one that was never exported — which is how
@@ -505,5 +535,53 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("https://"), "should say what to use instead: {msg}");
         assert!(msg.contains("never elects a leader"), "should name the symptom: {msg}");
+    }
+
+    /// The client API is a mutual-TLS listener, so the URL a follower hands
+    /// back for write forwarding has to be https or every forwarded write
+    /// fails on a plaintext dial.
+    #[test]
+    fn the_default_advertised_client_url_is_https() {
+        let cfg = with_env(
+            &[
+                ("NODESTORE_INITIAL_CLUSTER", "1=https://10.0.0.1:2380"),
+                ("NODESTORE_MEMBER_ID", "1"),
+            ],
+            Config::from_env,
+        )
+        .unwrap();
+        assert!(
+            cfg.advertise_client_url.starts_with("https://"),
+            "got {}",
+            cfg.advertise_client_url
+        );
+    }
+
+    #[test]
+    fn an_http_advertised_client_url_is_rejected() {
+        let err = with_env(
+            &[
+                ("NODESTORE_INITIAL_CLUSTER", "1=https://10.0.0.1:2380"),
+                ("NODESTORE_MEMBER_ID", "1"),
+                ("NODESTORE_ADVERTISE_CLIENT_URL", "http://10.0.0.1:2379"),
+            ],
+            Config::from_env,
+        )
+        .expect_err("a plaintext client URL cannot reach the mutual-TLS client listener");
+        assert!(err.to_string().contains("https://"), "should say what to use instead: {err}");
+    }
+
+    /// `rsplit(':').next()` can never fall back, so a URL with no port used to
+    /// yield the listen address "0.0.0.0:peer.example" and a URL with a path
+    /// yielded "0.0.0.0:2380/raft". Both failed far away from the cause.
+    #[test]
+    fn a_peer_url_port_is_only_taken_when_it_is_actually_a_port() {
+        assert_eq!(listen_from_url("https://10.0.0.1:2380"), "0.0.0.0:2380");
+        assert_eq!(listen_from_url("https://peer.example"), "0.0.0.0:2380", "no port — fall back");
+        assert_eq!(listen_from_url("https://10.0.0.1:2381/raft"), "0.0.0.0:2381", "drop the path");
+        assert_eq!(listen_from_url("https://peer.example/raft"), "0.0.0.0:2380");
+        // An IPv6 literal's last colon-separated field is not a port either.
+        assert_eq!(listen_from_url("https://[fd00::1]"), "0.0.0.0:2380");
+        assert_eq!(listen_from_url("https://[fd00::1]:2382"), "0.0.0.0:2382");
     }
 }
