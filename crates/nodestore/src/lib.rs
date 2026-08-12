@@ -82,7 +82,7 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         tls::Domain::Client,
         configured_material(&cfg.cert_file, &cfg.key_file, &cfg.trusted_ca_file),
         &sans,
-        cfg.is_clustered(),
+        cfg.has_other_members(),
     )
     .context("preparing client API TLS material")?;
     info!(
@@ -131,7 +131,7 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
                 &cfg.peer_trusted_ca_file,
             ),
             &sans,
-            cfg.is_clustered(),
+            cfg.has_other_members(),
         )
         .context("preparing raft peer TLS material")?;
         info!(ca = %peer_material.ca.display(), "raft peer link requires mutual TLS");

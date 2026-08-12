@@ -70,8 +70,31 @@ pub struct Config {
 
 impl Config {
     /// Whether this member is part of a multi-member cluster.
+    /// Whether to run raft at all.
+    ///
+    /// Any configured cluster counts, including one naming only this member.
+    /// That is not a pedantic case — it is the whole upgrade path: a populated
+    /// single member is converted by pointing it at a cluster of itself, and
+    /// only then grown with `MemberAdd`. Treating that as "not clustered" ran
+    /// it as a plain single member with no raft, which made the conversion
+    /// impossible to express. Found by the e2e that walks the real sequence.
     pub fn is_clustered(&self) -> bool {
-        self.initial_cluster.len() > 1
+        !self.initial_cluster.is_empty()
+    }
+
+    /// Whether this member shares a cluster with anyone else.
+    ///
+    /// Distinct from [`Self::is_clustered`] because it answers a different
+    /// question: not "does raft run" but "must the PKI have been agreed with
+    /// somebody". Certificates cannot be generated for a member that has peers
+    /// — each would mint a CA only it trusted and the cluster could not form
+    /// (see [`crate::tls`]). With no peers that reasoning does not apply,
+    /// there is nobody to disagree with, so a one-member cluster keeps the
+    /// material it already generated as a single member. Requiring hand-built
+    /// PKI purely to convert would put a gate in front of the upgrade for no
+    /// security gain.
+    pub fn has_other_members(&self) -> bool {
+        self.initial_cluster.iter().any(|(id, _)| *id != self.member_id)
     }
 }
 
@@ -480,7 +503,46 @@ mod tests {
     fn no_cluster_configured_means_single_member() {
         let cfg = with_env(&[], Config::from_env).unwrap();
         assert!(!cfg.is_clustered());
+        assert!(!cfg.has_other_members());
         assert!(cfg.peer_listen.is_empty(), "no peer server without peers");
+    }
+
+    /// A cluster naming only this member is a real one-member raft cluster,
+    /// not a plain single member. It is the middle step of the upgrade path:
+    /// a populated single member is converted by pointing it at a cluster of
+    /// itself and only then grown with MemberAdd. Treating it as unclustered
+    /// ran it with no raft, which made the conversion impossible to express —
+    /// caught by the e2e that walks the real sequence, not by any unit test.
+    #[test]
+    fn a_cluster_of_one_still_runs_raft() {
+        let cfg = with_env(
+            &[
+                ("NODESTORE_INITIAL_CLUSTER", "1=https://10.0.0.1:2380"),
+                ("NODESTORE_MEMBER_ID", "1"),
+            ],
+            Config::from_env,
+        )
+        .unwrap();
+        assert!(cfg.is_clustered(), "a configured cluster runs raft even with one member");
+        // ...but it has nobody to agree a CA with, so it may still generate
+        // its own material — which is exactly what it already has from its
+        // single-member life. Requiring hand-built PKI purely to convert would
+        // gate the upgrade for no security gain.
+        assert!(!cfg.has_other_members());
+    }
+
+    #[test]
+    fn a_cluster_with_peers_needs_material_agreed_with_them() {
+        let cfg = with_env(
+            &[
+                ("NODESTORE_INITIAL_CLUSTER", "1=https://10.0.0.1:2380,2=https://10.0.0.2:2380"),
+                ("NODESTORE_MEMBER_ID", "1"),
+            ],
+            Config::from_env,
+        )
+        .unwrap();
+        assert!(cfg.is_clustered());
+        assert!(cfg.has_other_members(), "member 2 is somebody to disagree with");
     }
 
     #[test]
