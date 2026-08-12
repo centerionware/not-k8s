@@ -419,7 +419,7 @@ test_datastore_refuses_a_cluster_it_cannot_be_part_of() {
     dir="$(mktemp -d)"
     out="$(NODESTORE_LISTEN=127.0.0.1:23791 NODESTORE_DATA_DIR="$dir/data" \
         NODESTORE_MEMBER_ID=9 \
-        NODESTORE_INITIAL_CLUSTER="1=http://10.0.0.1:2380,2=http://10.0.0.2:2380" \
+        NODESTORE_INITIAL_CLUSTER="1=https://10.0.0.1:2380,2=https://10.0.0.2:2380" \
         timeout 20 "$bin" nodestore 2>&1)" || rc=$?
     rm -rf "$dir"
 
