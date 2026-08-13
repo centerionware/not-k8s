@@ -458,3 +458,167 @@ pub fn run_unreserve(registry: &Registry, state: &mut CycleState, pod: &PodInfo,
 #[cfg(test)]
 #[path = "cycle_tests.rs"]
 mod tests;
+
+// ── Preemption ──────────────────────────────────────────────────────────
+//
+// Driven from here rather than from a `PostFilterPlugin`, and the reason is
+// structural rather than behavioural. Preemption's dry runs must re-run the
+// Filter plugins against a hypothetical pod set, and a plugin is not handed
+// the other plugins — upstream solves this by passing a framework Handle into
+// the plugin, which is a larger surface than this crate needs for one caller.
+//
+// The behaviour is unchanged: it runs only when zero nodes were feasible,
+// only over nodes rejected as `Unschedulable`, and produces the same victims
+// upstream's DefaultPreemption would. `preempt.rs` holds every rule; this is
+// the part that needs the registry.
+
+/// What a preemption attempt concluded.
+pub struct PreemptionOutcome {
+    /// The node promised to the preemptor.
+    pub nominated_node: String,
+    /// Pods that must be deleted before it can be placed, as `namespace/name`.
+    pub victims: Vec<String>,
+}
+
+impl Scheduler {
+    /// Try to make room for `pod` by evicting less important pods.
+    ///
+    /// Returns `None` when preemption is not eligible, no node is a
+    /// candidate, or no victim set makes the pod fit — all of which mean
+    /// "leave the cluster alone", which is the right answer far more often
+    /// than not.
+    pub fn preempt(
+        &self,
+        pod: &PodInfo,
+        snapshot: &Snapshot,
+        node_statuses: &NodeToStatus,
+        budgets: &[crate::preempt::PdbState],
+        nominator: &crate::preempt::Nominator,
+        rng: &mut Rng,
+    ) -> Option<PreemptionOutcome> {
+        use crate::preempt::{
+            eligible_to_preempt, offset_and_num_candidates, pick_one_node, select_victims_on_node,
+            Candidate,
+        };
+
+        // A nomination still draining means room is already being made; a
+        // second attempt would evict a second set of pods for it.
+        let nominated = nominator.nominated_node(&pod.uid);
+        let draining = nominated
+            .and_then(|n| snapshot.node(n))
+            .map(|n| n.pods.iter().any(|p| p.priority < pod.priority))
+            .unwrap_or(false);
+        eligible_to_preempt(pod.preemption_policy.as_deref(), draining, false).ok()?;
+
+        // Only nodes eviction could actually fix. A node rejected as
+        // UnschedulableAndUnresolvable — wrong name, unmatched affinity, no
+        // topology domain — stays rejected however many pods die on it.
+        let candidates_by_name = node_statuses.preemption_candidates();
+        if candidates_by_name.is_empty() {
+            return None;
+        }
+
+        let (offset, wanted) =
+            offset_and_num_candidates(candidates_by_name.len() as i32, rng);
+
+        let mut found: Vec<Candidate> = Vec::new();
+        for i in 0..candidates_by_name.len() {
+            if found.len() as i32 >= wanted {
+                break;
+            }
+            let idx = (offset as usize + i) % candidates_by_name.len();
+            let Some(node) = snapshot.node(candidates_by_name[idx]) else {
+                continue;
+            };
+
+            // A fresh CycleState per node: PreFilter's per-cycle work is
+            // cheap to redo and sharing one across nodes would leak one
+            // node's hypothetical removals into the next node's answer.
+            let mut state = CycleState::default();
+            for plugin in &self.registry.pre_filter {
+                plugin.pre_filter(&mut state, pod, snapshot);
+            }
+
+            let mut budgets = budgets.to_vec();
+            let victims = select_victims_on_node(pod, node, &mut budgets, |removed| {
+                self.fits_without(&mut state, pod, node, removed)
+            });
+
+            if let Some(victims) = victims {
+                let victim_pods: Vec<&PodInfo> = node
+                    .pods
+                    .iter()
+                    .filter(|p| victims.pods.contains(&p.name))
+                    .map(|p| p.as_ref())
+                    .collect();
+                let highest = victim_pods.iter().map(|p| p.priority).max().unwrap_or(0);
+                found.push(Candidate {
+                    node: node.name.clone(),
+                    highest_victim_priority: highest,
+                    sum_victim_priorities: victim_pods.iter().map(|p| p.priority as i64).sum(),
+                    latest_start_of_highest: victim_pods
+                        .iter()
+                        .filter(|p| p.priority == highest)
+                        .map(|p| p.queued_at)
+                        .max(),
+                    victims,
+                });
+            }
+        }
+
+        let best = pick_one_node(&found)?;
+        let node = snapshot.node(&best.node)?;
+        Some(PreemptionOutcome {
+            nominated_node: best.node.clone(),
+            victims: node
+                .pods
+                .iter()
+                .filter(|p| best.victims.pods.contains(&p.name))
+                .map(|p| p.key())
+                .collect(),
+        })
+    }
+
+    /// Would the pod fit on this node with `removed` hypothetically gone?
+    ///
+    /// The removals are applied to `CycleState` through each plugin's
+    /// `PreFilterExtensions`, the filters are run, and then the removals are
+    /// **undone**. That undo is what makes the state reusable across trials,
+    /// and it is only correct because every extension's add/remove pair is
+    /// symmetric — each is a `+1`/`-1` on the same counter. A plugin whose
+    /// pair was not symmetric would corrupt every subsequent trial rather
+    /// than only its own, which is why they are tested in pairs.
+    fn fits_without(
+        &self,
+        state: &mut CycleState,
+        pod: &PodInfo,
+        node: &NodeInfo,
+        removed: &[&PodInfo],
+    ) -> bool {
+        for plugin in &self.registry.pre_filter {
+            if let Some(ext) = plugin.extensions() {
+                for victim in removed {
+                    ext.remove_pod(state, pod, victim, node);
+                }
+            }
+        }
+
+        let fits = self.registry.filter.iter().all(|plugin| {
+            if state.filter_skipped(plugin.name()) {
+                return true;
+            }
+            let status = plugin.filter(state, pod, node);
+            status.is_success() || status.is_skip()
+        });
+
+        for plugin in &self.registry.pre_filter {
+            if let Some(ext) = plugin.extensions() {
+                for victim in removed {
+                    ext.add_pod(state, pod, victim, node);
+                }
+            }
+        }
+
+        fits
+    }
+}
