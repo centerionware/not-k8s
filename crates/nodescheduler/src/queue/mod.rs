@@ -68,6 +68,14 @@ struct Unschedulable {
     unschedulable_plugins: Vec<&'static str>,
     /// Plugins that rejected it with `Pending` — retry immediately.
     pending_plugins: Vec<&'static str>,
+    /// Parked by `PreEnqueue` rather than by a scheduling cycle.
+    ///
+    /// The two are woken completely differently and conflating them strands
+    /// pods. A cycle-rejected pod is woken by a cluster event some plugin
+    /// subscribed to. A PreEnqueue-rejected pod — a gated one — is woken by
+    /// its own spec changing, which is not a cluster event about anything
+    /// else, and which `update()` is the only thing that sees.
+    held_by_pre_enqueue: bool,
     since: Instant,
 }
 
@@ -147,6 +155,7 @@ impl SchedulingQueue {
                     pod,
                     unschedulable_plugins: Vec::new(),
                     pending_plugins: Vec::new(),
+                    held_by_pre_enqueue: true,
                     since: Instant::now(),
                 },
             );
@@ -181,7 +190,28 @@ impl SchedulingQueue {
             let mut inner = self.inner.lock().unwrap();
 
             if let Some(entry) = inner.unschedulable.get_mut(&pod.uid) {
-                entry.pod = carry_queue_state(&entry.pod, &pod);
+                let merged = carry_queue_state(&entry.pod, &pod);
+
+                // A pod held by PreEnqueue is held by its own spec, so its
+                // own spec changing is the only thing that can release it —
+                // and that arrives here, as an update, not as a cluster event
+                // about something else. Without this a gated pod stays parked
+                // until the five-minute safety net, however promptly its gate
+                // is removed.
+                //
+                // Deliberately narrow: only pods PreEnqueue is holding are
+                // re-evaluated. Re-activating a *cycle*-rejected pod on every
+                // edit is the hot loop this method exists to prevent, and
+                // every failed pod is edited, because being told why it failed
+                // is an edit.
+                if entry.held_by_pre_enqueue && (self.pre_enqueue)(&merged).is_success() {
+                    inner.unschedulable.remove(&pod.uid);
+                    drop(inner);
+                    self.push_active(merged);
+                    return;
+                }
+
+                entry.pod = merged;
                 return;
             }
             if let Some(slot) = inner.active.iter_mut().find(|p| p.uid == pod.uid) {
@@ -357,6 +387,7 @@ impl SchedulingQueue {
                 pod,
                 unschedulable_plugins,
                 pending_plugins,
+                held_by_pre_enqueue: false,
                 since: Instant::now(),
             },
         );

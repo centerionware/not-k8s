@@ -417,3 +417,74 @@ fn updating_an_active_pod_keeps_it_active_exactly_once() {
     q.update(pod("p", 0));
     assert_eq!(q.active_len(), 1);
 }
+
+// ── Releasing a pod held by PreEnqueue ──────────────────────────────────
+//
+// A gated pod is held by its own spec, so its own spec changing is the only
+// thing that can release it — and that arrives as an update, not as a cluster
+// event about anything else. Both halves of that were missing: the pod was
+// parked with no rejecting plugin recorded (so no hint could ever match it),
+// and `update` left it parked unconditionally. It sat until the five-minute
+// safety net however promptly its gate was removed.
+
+/// A queue whose PreEnqueue holds any pod named "gated…", so the hold can be
+/// released mid-test by handing it a pod under a different name.
+fn queue_holding_gated() -> SchedulingQueue {
+    queue_with_pre_enqueue(Arc::new(|p: &PodInfo| {
+        if p.name.starts_with("gated") {
+            Status::unschedulable("SchedulingGates", "waiting for scheduling gates")
+        } else {
+            Status::success()
+        }
+    }))
+}
+
+#[test]
+fn ungating_a_pod_releases_it_immediately() {
+    // THE fix. Without it the pod waits 5 minutes for the safety net, which
+    // reads as "the scheduler is slow" rather than "the scheduler is wrong".
+    let q = queue_holding_gated();
+    let mut gated = (*pod("gated-p", 0)).clone();
+    gated.uid = "p".to_string();
+    q.add(Arc::new(gated));
+
+    assert_eq!(q.unschedulable_len(), 1, "held while gated");
+    assert_eq!(q.active_len(), 0);
+
+    // Same pod (same uid), now ungated.
+    let mut ungated = (*pod("ungated-p", 0)).clone();
+    ungated.uid = "p".to_string();
+    q.update(Arc::new(ungated));
+
+    assert_eq!(q.active_len(), 1, "removing the gate must release the pod at once");
+    assert_eq!(q.unschedulable_len(), 0);
+}
+
+#[test]
+fn a_still_gated_pod_stays_held_when_edited() {
+    // An edit that does not remove the gate must change nothing.
+    let q = queue_holding_gated();
+    let mut gated = (*pod("gated-p", 0)).clone();
+    gated.uid = "p".to_string();
+    q.add(Arc::new(gated.clone()));
+
+    q.update(Arc::new(gated));
+
+    assert_eq!(q.unschedulable_len(), 1);
+    assert_eq!(q.active_len(), 0);
+}
+
+#[test]
+fn a_cycle_rejected_pod_is_not_released_by_a_mere_edit() {
+    // The distinction the fix turns on. A pod parked by a scheduling *cycle*
+    // must not be re-activated just because it was edited — that is the hot
+    // loop report.rs closes, and every failed pod gets edited, because being
+    // told why it failed is an edit.
+    let q = queue_holding_gated();
+    q.add_unschedulable(pod("does-not-fit", 0), vec!["Fit"], vec![]);
+
+    q.update(pod("does-not-fit", 0));
+
+    assert_eq!(q.unschedulable_len(), 1, "an edit is not a reason to retry a cycle rejection");
+    assert_eq!(q.active_len(), 0);
+}

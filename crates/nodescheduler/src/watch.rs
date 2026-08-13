@@ -335,9 +335,25 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, targets: &WatchTargets)
                     // rebuild with different logging. One line per unplaced
                     // pod is proportionate — assigned pods, which are the
                     // bulk of the traffic, log nothing here.
-                    if previous.is_some() {
+                    if let Some(old) = &previous {
                         tracing::debug!(pod = %info.key(), "queued (update)");
                         targets.queue.update(info);
+
+                        // An unplaced pod changing is a cluster event too, and
+                        // this branch used to emit none — only the assigned-pod
+                        // branch did. So a plugin subscribing to a pod-spec
+                        // change (SchedulingGates waits on exactly one:
+                        // UPDATE_POD_SCHEDULING_GATES_ELIMINATED) could never
+                        // be woken by it, and its pods sat until the
+                        // five-minute net.
+                        let action = pod_action_types(old, &pod);
+                        if !action.is_empty() {
+                            targets.queue.move_all_to_active_or_backoff(
+                                ClusterEvent::new(EventResource::UnschedulablePod, action),
+                                Some(ChangedObject::Pod(Box::new(old.clone()))),
+                                Some(ChangedObject::Pod(Box::new(pod))),
+                            );
+                        }
                     } else {
                         tracing::info!(pod = %info.key(), "queued for scheduling");
                         targets.queue.add(info);
