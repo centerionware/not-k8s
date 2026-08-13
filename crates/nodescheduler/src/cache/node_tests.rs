@@ -177,7 +177,7 @@ fn conditions_are_projected_without_their_heartbeat_timestamps() {
                 status: "True".to_string(),
                 last_heartbeat_time: Some(
                     k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
-                        k8s_openapi::jiff::Timestamp::from_second(1_000).unwrap(),
+                        chrono::DateTime::from_timestamp(1_000, 0).unwrap(),
                     ),
                 ),
                 ..Default::default()

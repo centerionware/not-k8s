@@ -106,7 +106,7 @@ Semantics, ordering and translation are separated the way `nodestore` separates
 `store.rs` / `consensus.rs` / `server/`. A behavioural decision made in
 `watch.rs` is almost always in the wrong place.
 
-```text
+```
 crates/nodescheduler/src/
   lib.rs              run(): config, client, leader election, wiring
   config.rs           NODESCHEDULER_* env + KubeSchedulerConfiguration, profiles
@@ -138,7 +138,7 @@ crates/nodescheduler/src/
 Taken from `pkg/scheduler/apis/config/v1/default_plugins.go`, expressed as
 MultiPoint upstream. Score weights in parentheses.
 
-```text
+```
 SchedulingGates                          NodeResourcesFit (1)
 PrioritySort                             VolumeRestrictions
 NodeUnschedulable                        NodeVolumeLimits
@@ -150,19 +150,9 @@ DefaultPreemption                        NodeResourcesBalancedAllocation (1)
 ImageLocality (1)                        DefaultBinder
 ```
 
-Plus `DynamicResources`, upstream's own `DRAAdminAccess`-independent default
-— here it is unconditional, since this project has no separate feature-gate
-mechanism to make it optional. Upstream inserts it **immediately before
-DefaultPreemption**, deliberately, so that freeing an idle `ResourceClaim` is
-tried before evicting a pod doing useful work. That ordering is real here
-too: `DynamicResources` is the only `PostFilterPlugin` registered
-(`post_filter: vec![Box::new(dra.clone())]`), and `Scheduler::preempt`'s own
-fallback is driven separately from `lib.rs`'s `scheduling_loop`, only after
-`schedule_one` itself returns `Unschedulable` — so a claim-freeing dry run
-always gets tried before eviction ever does, with no explicit ordering code
-needed to guarantee it. See `dynamic_resources.rs`'s module header (its
-`PostFilter` section) for what the dry run actually does, and the rest of
-Phase 5's scope.
+Plus `DynamicResources` when DRA is enabled, inserted **immediately before
+DefaultPreemption** — deliberately, so that freeing an idle `ResourceClaim`
+is tried before evicting a pod that is doing useful work.
 
 ### Where the docs are wrong
 
@@ -188,7 +178,7 @@ filtering, and mixing the two changes bin-packing subtly.
 full gate (branch → test → build.yml → e2e → merge) and leaves a cluster that
 works, just with less of the surface covered.
 
-**Phase 1 — a scheduler that schedules.** ✅ Implemented. Framework traits, the projection
+**Phase 1 — a scheduler that schedules.** Framework traits, the projection
 cache and generation-based snapshot, the event-driven queue with the full
 `ActionType` bit decomposition, leader election, `DefaultBinder`, and the
 plugins that need no extra informers: `PrioritySort`, `SchedulingGates`,
@@ -198,126 +188,30 @@ plugins that need no extra informers: `PrioritySort`, `SchedulingGates`,
 scheduler for a cluster without PVs, spread constraints or preemption, and it
 is where the footprint claim gets measured.
 
-**Phase 2 — topology.** ✅ Implemented: `PodTopologySpread` and
-`InterPodAffinity`, both with the `AddPod`/`RemovePod` extensions preemption
-depends on.
+**Phase 2 — topology.** `PodTopologySpread` (including system default
+constraints, and therefore the Service/RC/RS/StatefulSet listers) and
+`InterPodAffinity` (and therefore the Namespace lister). These are the two
+plugins with real algorithmic content and the two where `AddPod`/`RemovePod`
+correctness starts to matter.
 
-Both of this phase's parity gaps are now closed, and it is worth recording
-what they were, because each had a plausible argument for leaving it:
+**Phase 3 — preemption.** `DefaultPreemption` + the PDB informer +
+`NominatedNodeName` + nominated-pod injection during Filter. Async preemption
+(beta and default-on at 1.33) means the preemptor must be held out of the
+active queue while its own preemption is in flight.
 
-  * **System default constraints** are applied. They need the
-    Service/ReplicaSet/ReplicationController/StatefulSet watches, whose only
-    consumer is that feature, and because they are `ScheduleAnyway` their
-    absence changed **scores and never feasibility** — no pod was placed that
-    upstream would refuse, none refused that upstream would place. That made
-    them cheap to skip and still meant every pod declaring no constraints of
-    its own scored differently from upstream. The selector is derived from the
-    workloads that *select* the pod, ANDed, per upstream's `DefaultSelector`;
-    a pod no workload selects gets no default constraints at all.
-  * **`namespaceSelector`** on a pod affinity term is resolved against real
-    Namespace labels. It used to fail *open* — over-matching can only refuse a
-    placement, while under-matching silently disables a rule the author wrote
-    and co-locates pods meant to be kept apart. That is the right ranking of
-    two wrong answers rather than the right answer.
+**Phase 4 — storage.** `VolumeBinding`, `VolumeZone`, `VolumeRestrictions`,
+`NodeVolumeLimits`, and the PV/PVC/StorageClass/CSINode/CSIDriver/
+CSIStorageCapacity informers. The reference CSI driver the e2e harness already
+installs (`e2e-full-setup.sh`) is what proves this.
 
-**Phase 3 — preemption.** ✅ Implemented. The PDB watch, `NominatedNodeName`,
-nominated-pod injection during Filter, victim selection with reprieve, and the
-six-way node choice.
-
-One structural deviation from upstream, with no behavioural difference:
-preemption is driven from `cycle.rs` rather than being a `PostFilter` plugin.
-Its dry runs must re-run the *Filter* plugins against a hypothetical pod set,
-and a plugin is not handed the other plugins — upstream solves that by passing
-a framework `Handle` into every plugin, which is a much larger surface than
-this crate needs for one caller. Every rule still lives in `preempt.rs`; only
-the part that needs the registry lives in the cycle. It still runs exactly
-when zero nodes were feasible, still considers only nodes rejected
-`Unschedulable`, and still picks the same victims.
-
-**Phase 4 — storage.** ✅ Implemented: `VolumeRestrictions` (the five in-tree
-legacy volume-identity conflicts, per node, plus `ReadWriteOncePod`
-exclusivity, cluster-wide), `NodeVolumeLimits` (CSI per-driver per-node volume
-ceilings from `CSINode`), `VolumeZone` (a PV's legacy zone/region *labels*
-against a node's), and `VolumeBinding` (unbound-immediate PVCs block a pod
-outright; unbound `WaitForFirstConsumer` PVCs are checked against
-`StorageClass.allowedTopologies` and, when a driver opts in,
-`CSIStorageCapacity`; an already-bound PV's `nodeAffinity` is enforced;
-`PreBind` writes `volume.kubernetes.io/selected-node` and polls for `Bound`).
-The PV/PVC/StorageClass/CSINode/CSIDriver/CSIStorageCapacity informers all
-start unconditionally now, the same as Pod/Node — see "Informers" below for
-what that changes about the footprint claim. The reference CSI driver the
-e2e harness already installs (`e2e-full-setup.sh`) is what proves this.
-
-`VolumeBinding` also matches a `PersistentVolumeClaim` against an
-already-existing, unclaimed `PersistentVolume` (a static PV — matched by
-`storageClassName`/access modes/capacity, an explicit `selector`, or an exact
-`spec.volumeName` pre-bind), tried before dynamic provisioning is even
-considered, matching upstream's own priority order. Two pods that could both
-claim the same free static PV is a real scarce-resource race, the same shape
-`DynamicResources`' device assume cache exists for — `Reserve` tentatively
-marks the PV it picked, `Unreserve`/`PostBind` release the mark. `PreBind`
-writes `PersistentVolumeClaim.spec.volumeName` for a static claim (the
-built-in PV binder controller completes the actual bind, including
-`PersistentVolume.spec.claimRef`, from that alone) instead of the
-`selected-node` annotation dynamic provisioning uses. See
-`volume_binding.rs`'s module header for the full accounting.
-
-**Phase 5 — DRA, profiles, extenders.**
-
-`DynamicResources` (DRA) is ✅ implemented, real CEL and all: a claim's
-`spec.devices.requests[]` — `deviceClassName` + `count`
-(`allocationMode: ExactCount`, the default) — is evaluated against real
-`ResourceSlice` device inventory using an actual CEL interpreter
-(`cel-interpreter`, a new dependency scoped to exactly this — see
-`framework/plugins/dynamic_resources.rs`'s module header for why a
-pattern-matched subset of CEL wasn't good enough and the environment this
-exposes to a selector). A claim already allocated and reused by a second pod
-is handled — only `reservedFor` needs updating. `PreEnqueue` holds a pod
-whose template-based claim hasn't been generated yet, the same "not yet
-rejected, not yet reached scheduling" reasoning `SchedulingGates` uses.
-`PreBind` writes `status.allocation` + `status.reservedFor` in one step (DRA
-has no external process to poll for, unlike `VolumeBinding`'s PVC binding).
-
-`firstAvailable` subrequests, `adminAccess`, `allocationMode: All`,
-cross-request `constraints` (`matchAttribute`), and a `ResourceSlice` using
-`nodeSelector`/per-device node selection are all ✅ implemented too, each
-checked directly against upstream's real allocator
-(`k8s.io/dynamic-resource-allocation/structured/allocator.go`) rather than
-assumed from the API docs — see `dynamic_resources.rs`'s module header for
-the one real algorithmic divergence (`allocate_on_node` is a single greedy
-forward pass; upstream's is a full backtracking search) and the two real
-bugs that source-reading caught (the `v1.NodeSelector`-not-`LabelSelector`
-type on `ResourceSlice.nodeSelector`, and `ClaimPlan::Nothing` never
-re-checking an existing allocation's topology on a node that already held
-the reservation).
-
-`PostFilter` is ✅ implemented too: a claim already allocated to a topology
-no node satisfies, with nothing else still reserving it, gets deallocated so
-the next attempt can pick differently — checked against upstream's real
-`DynamicResources.PostFilter`. This needed `PostFilterPlugin` to become
-`async` (zero existing implementors at the time, so free to widen).
-
-The CEL environment itself still diverges from upstream in one way: device
-capacity (and the `quantity(str)` function's return) is a plain `f64`, not
-upstream's own arbitrary-precision `apiservercel` `Quantity` — `quantity.rs`
-implements the same named methods
-(`isGreaterThan`/`isLessThan`/`compareTo`/`add`/`sub`/`sign`/`isInteger`/
-`asInteger`/`asApproximateFloat`) against that float, since `cel-interpreter`'s
-`Value` is a closed enum with no opaque-type variant to add a real `Quantity`
-without forking it. Every real selector expression evaluates correctly under
-this; the gap is precision only, for magnitudes no real device capacity gets
-near. See `dynamic_resources.rs`'s module header for the full accounting.
+**Phase 5 — DRA, profiles, extenders.** `DynamicResources`, multi-profile
+`schedulerName` dispatch, and HTTP extenders.
 
 DRA needs the raw-request escape hatch: `resource.k8s.io/v1` does not exist in
 the pinned `k8s-openapi` v1_33 schema (only `v1alpha3`/`v1beta1`/`v1beta2`), so
-`ResourceClaim`/`DeviceClass`/`ResourceSlice` access goes through hand-written
-structs (`cache/dra.rs`) rather than typed `kube-openapi` generated ones —
-same pattern `crates/nodelet/src/runtime/cri/claims.rs` uses on the node
-side, extended here to also *write*, and to be watchable: each struct
-implements `k8s_openapi::Resource`/`Metadata` by hand so `kube::Api`/
-`kube::runtime::watcher` work on it exactly like any generated type, via
-`kube-core`'s existing blanket impl. Do not bump the schema pin; see
-CLAUDE.md.
+`ResourceClaim` access goes through a hand-written struct and
+`client.request()`, exactly as `crates/nodelet/src/runtime/cri/claims.rs`
+already does. Do not bump the schema pin; see CLAUDE.md.
 
 The DRA contract with `nodelet` is worth stating explicitly because the two
 halves live in different components: the scheduler writes
@@ -327,73 +221,23 @@ scheduler must never write an allocation for a node it is not about to bind to,
 and must roll it back on bind failure — otherwise nodelet sees a claim
 allocated to a node that never received the pod, and the device leaks.
 
-**Multi-profile `schedulerName` dispatch is ✅ implemented.**
-`NODESCHEDULER_PROFILE_NAME` accepts a comma-separated list; every name gets
-its own `Registry` (built from the same `default_registry` blueprint — this
-crate has no per-profile plugin configuration, so there is nothing to
-actually differ between them beyond the name), all sharing one queue, one
-`QueueSort`/`PreEnqueue` chain, and one watch layer. `watch.rs`'s
-`route_pod` queues a pod naming *any* of the configured profiles;
-`lib.rs`'s `scheduling_loop` resolves the right `Registry` per popped pod
-from `pod.scheduler_name` before running its cycle. `cycle.rs`'s `Scheduler`
-deliberately holds no `Registry` of its own — see its module header's
-"Multiple profiles, one `Scheduler`" — because the sweep position and
-preemption's nomination promises have to stay consistent across profiles
-that place pods onto the same nodes, and every method that needs a plugin
-set now takes it as an explicit parameter instead.
-
-**HTTP extenders are ✅ implemented** (`extender.rs`), configured via
-`NODESCHEDULER_EXTENDERS_JSON` — a JSON array using upstream
-`KubeSchedulerConfiguration` extender field names (`urlPrefix`, `filterVerb`,
-`prioritizeVerb`, `weight`, `nodeCacheCapable`, `ignorable`,
-`managedResources`), so an operator's existing extender config needs no
-translation beyond wrapping it in an env var. `schedule_one` runs configured
-extenders' Filter sequentially right after plugin Filter (narrowing the same
-way upstream's `findNodesThatPassExtenders` does — a later extender only
-sees nodes an earlier one already accepted) and Prioritize right after plugin
-Score (rescaled from the extender's own `[0, 10]` range onto the plugins'
-`[0, 100]` one — `score * weight * 10`, matching upstream's real combining
-formula in `schedule_one.go`'s `prioritizeNodes` — then added into the
-already-weighted plugin totals). `managedResources` is honored: an extender naming specific
-extended resources is only consulted for a pod requesting at least one of
-them. An `ignorable` extender that errors is logged and skipped rather than
-failing the cycle.
-
-Two things are refused outright at config-parse time, by name, rather than
-silently ignored: `bindVerb` (an extender-driven Bind never runs here —
-`DefaultBinder` always binds) and `preemptVerb` (the separate
-extender-preemption interface — ordinary preemption proceeds without
-consulting it). `tlsConfig` is refused the same way; a custom CA/client cert
-would silently not apply. `enableHTTPS` doesn't exist as a separate field at
-all — `urlPrefix` is expected to already carry its scheme (`"https://…"`) the
-way every other URL this project's env vars accept does, making a standalone
-HTTPS toggle redundant rather than missing.
-
 ## Informers: start only what a plugin asked for
 
 Upstream registers Pod and Node unconditionally and everything else only if
 some enabled plugin's `EventsToRegister()` named that resource. We copy that
-exactly. Through Phase 3 that meant `--scheduler=nodescheduler` on a cluster
-with no PVs cost two watches, not nine; Phase 4's four storage plugins are
-themselves unconditional default-profile plugins (there is no "no storage
-filters" mode, upstream included), so their six informers now start
-unconditionally too — the same footprint upstream itself pays once its
-default profile is running, PVs or not.
+exactly — it is both the parity behaviour and the footprint behaviour, and it
+means `--scheduler=nodescheduler` on a cluster with no PVs costs two watches,
+not nine.
 
 One deliberate knob beyond parity: `PodTopologySpread`'s *default constraints*
 are the sole consumer of the Service, ReplicationController, ReplicaSet and
 StatefulSet informers, and because they are `ScheduleAnyway` they affect
-**scoring only, never feasibility**. Parity keeps them, and is the default
-(`defaultingType: SystemDefaulting` is upstream's default too).
-`NODESCHEDULER_TOPOLOGY_DEFAULTING=None` turns them off and genuinely drops
-those four watches — `watch.rs` starts a `stream::pending()` in their place
-rather than starting a watch whose events are ignored — at the cost of slightly
-different scores on pods that declare no constraints of their own. That is a
-documented, opt-in divergence, off by default, because the default has to be
-parity.
-
-The Namespace watch has no such knob: `namespaceSelector` is unconditional, so
-it is unconditional too. One watch of small, rarely-changing objects.
+**scoring only, never feasibility**. Parity keeps them (`defaultingType:
+SystemDefaulting` is the upstream default, and it does populate those
+constraints). `NODESCHEDULER_TOPOLOGY_DEFAULTING=None` turns them off and drops
+four informers, at the cost of slightly different scores on pods that declare no
+constraints of their own. That is a documented, opt-in divergence — off by
+default, because the default has to be parity.
 
 ## Correctness details most likely to be got wrong
 

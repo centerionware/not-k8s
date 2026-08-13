@@ -56,22 +56,15 @@ pub struct Resources {
 
 impl Resources {
     /// Element-wise sum, used to accumulate a node's committed total.
-    /// Saturating, not `+=`: a legal-but-absurd quantity like `cpu: "1E"`
-    /// (accepted by the apiserver) parses to a value near `i64::MAX`, and
-    /// plain addition on that panics in debug and wraps in release — a
-    /// wrapped total goes negative, making the node look emptier than
-    /// empty, the exact failure `sub`'s own clamp below exists to prevent.
     pub fn add(&mut self, other: &Resources) {
-        self.milli_cpu = self.milli_cpu.saturating_add(other.milli_cpu);
-        self.memory = self.memory.saturating_add(other.memory);
-        self.ephemeral_storage = self.ephemeral_storage.saturating_add(other.ephemeral_storage);
+        self.milli_cpu += other.milli_cpu;
+        self.memory += other.memory;
+        self.ephemeral_storage += other.ephemeral_storage;
         for (k, v) in &other.hugepages {
-            let e = self.hugepages.entry(k.clone()).or_default();
-            *e = e.saturating_add(*v);
+            *self.hugepages.entry(k.clone()).or_default() += v;
         }
         for (k, v) in &other.extended {
-            let e = self.extended.entry(k.clone()).or_default();
-            *e = e.saturating_add(*v);
+            *self.extended.entry(k.clone()).or_default() += v;
         }
     }
 
@@ -172,124 +165,53 @@ impl Resources {
     }
 }
 
-/// Parse a Kubernetes quantity into a plain number of base units.
+/// Parse a Kubernetes quantity to its base unit (bytes, or a plain count).
 ///
-/// # The suffix set is not optional, and the apiserver will use it
-///
-/// A quantity is `<signedNumber><suffix>`, where the suffix is a binary one
-/// (`Ki`/`Mi`/`Gi`/`Ti`/`Pi`/`Ei`), a decimal SI one (`m`/`k`/`M`/`G`/`T`/
-/// `P`/`E` — note lowercase `k`, there is no `K`), or a decimal exponent
-/// (`e3`/`E3`).
-///
-/// Handling only the ones that *look* likely is how this went wrong the
-/// first time. A pod submitted with `cpu: "10000"` comes back from the
-/// apiserver as `cpu: "10k"`, because quantities are canonicalised to their
-/// shortest form on the way in — so the string this ever sees is not
-/// necessarily the string anyone wrote. `10k` fell through to a bare
-/// `f64::parse`, failed, and became **zero**: the pod appeared to request no
-/// CPU at all, `names()` returned nothing for it, the fit check skipped the
-/// resource entirely, and a 10000-core pod was bound to a 4-core node. See
-/// docs/E2E_FINDINGS.md finding 20.
-///
-/// `E` is ambiguous on purpose in the spec: `1E` is one exa, `1E3` is one
-/// thousand. They are told apart by whether digits follow.
-pub(crate) fn parse_quantity_f64(s: &str) -> Option<f64> {
+/// Kubernetes accepts binary suffixes (Ki/Mi/Gi/…), decimal SI suffixes
+/// (k/M/G/…, where lowercase `k` is the SI one and there is no `K`), decimal
+/// exponents (`1e3`), and the milli suffix `m`. This has to be right rather
+/// than approximate — it feeds real filtering decisions, and a memory limit
+/// parsed as a count instead of bytes silently makes a node look infinitely
+/// large.
+pub fn parse_quantity(s: &str) -> i64 {
     let s = s.trim();
     if s.is_empty() {
-        return None;
+        return 0;
     }
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    if bytes[i] == b'+' || bytes[i] == b'-' {
-        i += 1;
-    }
-    while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
-        i += 1;
-    }
-    // Exponent form, but only when digits actually follow — otherwise this is
-    // the exa suffix and belongs to the multiplier below.
-    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
-        let mut j = i + 1;
-        if j < bytes.len() && (bytes[j] == b'+' || bytes[j] == b'-') {
-            j += 1;
-        }
-        if j < bytes.len() && bytes[j].is_ascii_digit() {
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            i = j;
+    // Milli, the one suffix that divides rather than multiplies. Rounds up:
+    // 1500m of a countable resource is 2 whole units, and rounding down would
+    // let a pod claim less than it asked for.
+    if let Some(num) = s.strip_suffix('m') {
+        if let Ok(v) = num.parse::<f64>() {
+            return (v / 1000.0).ceil() as i64;
         }
     }
-
-    let (number, suffix) = s.split_at(i);
-    let value: f64 = number.parse().ok()?;
-
-    let multiplier = match suffix {
-        "" => 1.0,
-        "m" => 0.001,
-        "k" => 1e3,
-        "M" => 1e6,
-        "G" => 1e9,
-        "T" => 1e12,
-        "P" => 1e15,
-        "E" => 1e18,
-        "Ki" => 1024.0,
-        "Mi" => 1024.0 * 1024.0,
-        "Gi" => 1024.0 * 1024.0 * 1024.0,
-        "Ti" => 1024.0f64.powi(4),
-        "Pi" => 1024.0f64.powi(5),
-        "Ei" => 1024.0f64.powi(6),
-        // Unknown suffix. Deliberately not "assume base units" — that is the
-        // same fail-open guess that made `10k` read as zero.
-        _ => return None,
-    };
-    Some(value * multiplier)
-}
-
-/// Parse a quantity to whole base units (bytes, or a plain count).
-///
-/// Rounds **up**: `1500m` of a countable resource is two whole units, and
-/// rounding down would hand a pod less than it asked for.
-pub fn parse_quantity(s: &str) -> i64 {
-    match parse_quantity_f64(s) {
-        Some(v) => v.ceil() as i64,
-        None => {
-            unparseable(s);
-            0
+    let binary = [("Ki", 1i64 << 10), ("Mi", 1 << 20), ("Gi", 1 << 30), ("Ti", 1 << 40), ("Pi", 1 << 50), ("Ei", 1 << 60)];
+    for (suffix, mult) in binary {
+        if let Some(num) = s.strip_suffix(suffix) {
+            return num.trim().parse::<f64>().map(|v| (v * mult as f64) as i64).unwrap_or(0);
         }
     }
+    let decimal = [("k", 1e3), ("M", 1e6), ("G", 1e9), ("T", 1e12), ("P", 1e15), ("E", 1e18)];
+    for (suffix, mult) in decimal {
+        if let Some(num) = s.strip_suffix(suffix) {
+            return num.trim().parse::<f64>().map(|v| (v * mult) as i64).unwrap_or(0);
+        }
+    }
+    // Bare number, possibly in exponent form (`1e3`). f64 handles both.
+    s.parse::<f64>().map(|v| v as i64).unwrap_or(0)
 }
 
 /// Parse a quantity into **millis** — the representation CPU is stored in.
 pub fn parse_quantity_milli(s: &str) -> i64 {
-    match parse_quantity_f64(s) {
-        // Milli is the canonical granularity for CPU, so every real value is
-        // exact here and `round` is only guarding float representation.
-        Some(v) => (v * 1000.0).round() as i64,
-        None => {
-            unparseable(s);
-            0
-        }
+    let s = s.trim();
+    if let Some(num) = s.strip_suffix('m') {
+        return num.trim().parse::<f64>().map(|v| v as i64).unwrap_or(0);
     }
-}
-
-/// A quantity the apiserver accepted but this cannot read.
-///
-/// Zero is returned because there is no safe answer that works for both
-/// callers — a request that cannot be read should fail closed (never fit),
-/// while an allocatable that cannot be read should fail closed the other way
-/// (offer nothing), and both are "0" only for allocatable. What makes this
-/// tolerable is that it should now be unreachable: the apiserver validates
-/// quantities on admission and this understands every suffix it can emit. So
-/// reaching here is a bug in this parser, and it must be loud rather than
-/// silently making a pod look free.
-fn unparseable(s: &str) {
-    tracing::warn!(
-        quantity = %s,
-        "could not parse a resource quantity — treating it as zero, which will make \
-         scheduling decisions wrong for this object. This should be unreachable; the \
-         apiserver validates quantities. Please report it."
-    );
+    if s.is_empty() {
+        return 0;
+    }
+    s.parse::<f64>().map(|v| (v * 1000.0).round() as i64).unwrap_or(0)
 }
 
 /// A host port a pod has claimed.
@@ -310,61 +232,6 @@ impl HostPort {
         }
         let wildcard = |ip: &str| ip.is_empty() || ip == "0.0.0.0" || ip == "::";
         wildcard(&self.ip) || wildcard(&other.ip) || self.ip == other.ip
-    }
-}
-
-/// One of the five in-tree volume sources `VolumeRestrictions` still checks
-/// for cross-pod conflicts on the same node.
-///
-/// Every in-tree cloud volume plugin except these five was removed outright
-/// (see docs/SCHEDULER.md, "Where the docs are wrong" — that removal is what
-/// took `EBSLimits`/`GCEPDLimits`/`AzureDiskLimits` out of the default filter
-/// list). These five volume *source* fields are still real, still validated
-/// by the apiserver, and a cluster running two pods that reference the same
-/// underlying disk on the same node is still a real double-attach outside
-/// upstream's control — so the check stays, even though it will rarely fire
-/// on an all-CSI cluster.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LegacyVolumeId {
-    GcePersistentDisk { pd_name: String, read_only: bool },
-    AwsElasticBlockStore { volume_id: String, read_only: bool },
-    Iscsi { target_portal: String, iqn: String, lun: i32 },
-    Rbd { monitors: Vec<String>, image: String, pool: String },
-    Cinder { volume_id: String },
-}
-
-impl LegacyVolumeId {
-    /// Whether two claims on these identities can coexist on one node.
-    ///
-    /// GCE PD and AWS EBS both allow two *read-only* attachments of the same
-    /// disk to coexist — that is the one upstream nuance here, matching
-    /// `gcePersistentDiskConflicts`/`awsElasticBlockStoreConflicts`. Every
-    /// other kind conflicts unconditionally on identity: iSCSI targets, RBD
-    /// images and Cinder volumes have no shared-read mode in these checks.
-    pub fn conflicts_with(&self, other: &LegacyVolumeId) -> bool {
-        match (self, other) {
-            (
-                LegacyVolumeId::GcePersistentDisk { pd_name: a, read_only: ro_a },
-                LegacyVolumeId::GcePersistentDisk { pd_name: b, read_only: ro_b },
-            ) => a == b && !(*ro_a && *ro_b),
-            (
-                LegacyVolumeId::AwsElasticBlockStore { volume_id: a, read_only: ro_a },
-                LegacyVolumeId::AwsElasticBlockStore { volume_id: b, read_only: ro_b },
-            ) => a == b && !(*ro_a && *ro_b),
-            (
-                LegacyVolumeId::Iscsi { target_portal: tp_a, iqn: iqn_a, lun: lun_a },
-                LegacyVolumeId::Iscsi { target_portal: tp_b, iqn: iqn_b, lun: lun_b },
-            ) => tp_a == tp_b && iqn_a == iqn_b && lun_a == lun_b,
-            (
-                LegacyVolumeId::Rbd { monitors: m_a, image: i_a, pool: p_a },
-                LegacyVolumeId::Rbd { monitors: m_b, image: i_b, pool: p_b },
-            ) => m_a == m_b && i_a == i_b && p_a == p_b,
-            (
-                LegacyVolumeId::Cinder { volume_id: a },
-                LegacyVolumeId::Cinder { volume_id: b },
-            ) => a == b,
-            _ => false,
-        }
     }
 }
 
@@ -396,38 +263,12 @@ pub struct PodInfo {
     pub container_count: usize,
     /// PVC names this pod mounts, for the phase-4 volume plugins.
     pub pvc_names: Vec<String>,
-    /// The five in-tree volume sources `VolumeRestrictions` still checks for
-    /// conflicts — see [`LegacyVolumeId`].
-    pub legacy_volumes: Vec<LegacyVolumeId>,
-    /// Driver names of this pod's ephemeral inline CSI volumes (`spec.volumes[].csi`,
-    /// not a PVC). `NodeVolumeLimits` counts these against the same per-driver
-    /// per-node ceiling as PVC-backed volumes — a driver has no way to tell
-    /// the two apart once attached.
-    pub csi_ephemeral_drivers: Vec<String>,
-    /// `spec.resourceClaims`, for DRA — one entry per pod-claim, naming
-    /// either an already-existing `ResourceClaim` or a template to generate
-    /// one from.
-    pub resource_claims: Vec<PodClaimRef>,
-    /// `status.resourceClaimStatuses`, keyed by the pod-claim's own `name`
-    /// (matching `resource_claims[].name`) — the *generated* `ResourceClaim`
-    /// object name once the resource-claim controller has created one for a
-    /// template-based entry. `None` means "no claim needed" (upstream writes
-    /// this to say a template-based entry was intentionally skipped, not
-    /// merely "not yet"); a `name` present in `resource_claims` but absent
-    /// from this map means "not yet — still waiting on the controller".
-    pub resource_claim_statuses: BTreeMap<String, Option<String>>,
+    /// `spec.resourceClaims`, for DRA.
+    pub resource_claim_names: Vec<String>,
     pub owner_references: Vec<OwnerRef>,
     /// When this pod entered the queue. Preserved across requeues — see the
     /// module header.
-    pub queued_at: k8s_openapi::jiff::Timestamp,
-    /// `status.startTime` — `None` for a pod that has never actually run yet
-    /// (still Pending, or just assumed/bound with no kubelet report back
-    /// yet). Used for preemption's equal-priority tiebreak
-    /// (`preempt.rs`'s `more_important`) instead of `queued_at`: upstream's
-    /// own `MoreImportantPod` compares real start time, not queue entry —
-    /// a pod that has been *running* longer has more accumulated state to
-    /// lose, which is a different thing from having been *waiting* longer.
-    pub start_time: Option<k8s_openapi::jiff::Timestamp>,
+    pub queued_at: chrono::DateTime<chrono::Utc>,
     /// How many scheduling cycles this pod has already burned, for backoff.
     pub attempts: u32,
     /// Set by preemption; the node this pod has been promised.
@@ -440,34 +281,6 @@ pub struct PodInfo {
 pub struct PreferredTerm {
     pub weight: i32,
     pub selector: k8s_openapi::api::core::v1::NodeSelectorTerm,
-}
-
-/// One `spec.resourceClaims[]` entry — a pod-local claim name, and how to
-/// find the real object: either directly, or via a template that still
-/// needs `resource_claim_statuses` to resolve.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PodClaimRef {
-    pub name: String,
-    pub resource_claim_name: Option<String>,
-    pub resource_claim_template_name: Option<String>,
-}
-
-impl PodClaimRef {
-    /// The real `ResourceClaim` object name to fetch — direct is a pure
-    /// pass-through; template-based needs the generated name the
-    /// resource-claim controller recorded in `status.resourceClaimStatuses`
-    /// (keyed by this pod-claim's own `name`, not the template's).
-    /// `None` if that hasn't happened yet. Mirrors
-    /// `crates/nodelet/src/runtime/cri/claims.rs`'s
-    /// `resource_claim_object_name()` exactly — not shared code (the two
-    /// components share none, per CLAUDE.md), the same small pure function
-    /// independently re-derived twice because both genuinely need it.
-    pub fn object_name(&self, statuses: &BTreeMap<String, Option<String>>) -> Option<String> {
-        if let Some(name) = &self.resource_claim_name {
-            return Some(name.clone());
-        }
-        statuses.get(&self.name).cloned().flatten()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -498,7 +311,7 @@ impl PodInfo {
     }
 
     /// Project an API pod.
-    pub fn from_pod(pod: &Pod, queued_at: k8s_openapi::jiff::Timestamp) -> Self {
+    pub fn from_pod(pod: &Pod, queued_at: chrono::DateTime<chrono::Utc>) -> Self {
         let spec = pod.spec.clone().unwrap_or_default();
         let meta = &pod.metadata;
 
@@ -559,12 +372,8 @@ impl PodInfo {
             scheduling_gates: spec.scheduling_gates.clone().unwrap_or_default(),
             host_ports,
             requests: pod_requests(pod),
-            // The same container set `images` was built from — init
-            // containers contribute image entries too, and ImageLocality's
-            // cap scales with this count, so counting only spec.containers
-            // let init-container images carry excess weight.
-            container_count: images.len(),
             images,
+            container_count: spec.containers.len(),
             pvc_names: spec
                 .volumes
                 .iter()
@@ -573,30 +382,11 @@ impl PodInfo {
                     v.persistent_volume_claim.as_ref().map(|p| p.claim_name.clone())
                 })
                 .collect(),
-            legacy_volumes: spec.volumes.iter().flatten().filter_map(legacy_volume_id).collect(),
-            csi_ephemeral_drivers: spec
-                .volumes
-                .iter()
-                .flatten()
-                .filter_map(|v| v.csi.as_ref().map(|c| c.driver.clone()))
-                .collect(),
-            resource_claims: spec
+            resource_claim_names: spec
                 .resource_claims
                 .iter()
                 .flatten()
-                .map(|c| PodClaimRef {
-                    name: c.name.clone(),
-                    resource_claim_name: c.resource_claim_name.clone(),
-                    resource_claim_template_name: c.resource_claim_template_name.clone(),
-                })
-                .collect(),
-            resource_claim_statuses: pod
-                .status
-                .as_ref()
-                .and_then(|s| s.resource_claim_statuses.as_ref())
-                .into_iter()
-                .flat_map(|v| v.iter())
-                .map(|s| (s.name.clone(), s.resource_claim_name.clone()))
+                .map(|c| c.name.clone())
                 .collect(),
             owner_references: meta
                 .owner_references
@@ -609,7 +399,6 @@ impl PodInfo {
                 })
                 .collect(),
             queued_at,
-            start_time: pod.status.as_ref().and_then(|s| s.start_time.clone()).map(|t| t.0),
             attempts: 0,
             nominated_node_name: pod
                 .status
@@ -617,43 +406,6 @@ impl PodInfo {
                 .and_then(|s| s.nominated_node_name.clone()),
         }
     }
-}
-
-/// Pull a [`LegacyVolumeId`] out of a pod's volume source, if it is one of
-/// the five kinds `VolumeRestrictions` still checks. Every other volume type
-/// — including every CSI volume, which is what this project's own reference
-/// deploys use — projects to `None`.
-fn legacy_volume_id(v: &k8s_openapi::api::core::v1::Volume) -> Option<LegacyVolumeId> {
-    if let Some(gce) = &v.gce_persistent_disk {
-        return Some(LegacyVolumeId::GcePersistentDisk {
-            pd_name: gce.pd_name.clone(),
-            read_only: gce.read_only.unwrap_or(false),
-        });
-    }
-    if let Some(ebs) = &v.aws_elastic_block_store {
-        return Some(LegacyVolumeId::AwsElasticBlockStore {
-            volume_id: ebs.volume_id.clone(),
-            read_only: ebs.read_only.unwrap_or(false),
-        });
-    }
-    if let Some(iscsi) = &v.iscsi {
-        return Some(LegacyVolumeId::Iscsi {
-            target_portal: iscsi.target_portal.clone(),
-            iqn: iscsi.iqn.clone(),
-            lun: iscsi.lun,
-        });
-    }
-    if let Some(rbd) = &v.rbd {
-        return Some(LegacyVolumeId::Rbd {
-            monitors: rbd.monitors.clone(),
-            image: rbd.image.clone(),
-            pool: rbd.pool.clone().unwrap_or_else(|| "rbd".to_string()),
-        });
-    }
-    if let Some(cinder) = &v.cinder {
-        return Some(LegacyVolumeId::Cinder { volume_id: cinder.volume_id.clone() });
-    }
-    None
 }
 
 /// A pod's effective resource request.

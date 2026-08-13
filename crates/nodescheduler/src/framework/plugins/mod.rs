@@ -13,12 +13,11 @@
 //! than upstream would, forever, which is precisely the class of divergence
 //! this project exists not to have.
 //!
-//! Phase 1 is everything that needs no informer beyond Pod and Node; later
-//! phases (topology, preemption, storage, DRA) added their own plugins and
-//! informers on top without touching Phase 1's shape. Multi-profile dispatch
-//! (`lib.rs`'s `schedule_forever` calls this once per
-//! `NODESCHEDULER_PROFILE_NAME` entry) means the `Registry` this builds is
-//! not necessarily *the* profile — see docs/SCHEDULER.md's "Phase 5".
+//! Phase 1 is everything that needs no informer beyond Pod and Node. The
+//! plugins named in the upstream list but absent from this module
+//! (`VolumeBinding`, `PodTopologySpread`, `InterPodAffinity`,
+//! `DefaultPreemption`, …) are later phases; their absence changes placement
+//! quality, never correctness of what is here.
 //!
 //! # Two rules every file in this directory obeys
 //!
@@ -51,25 +50,16 @@
 //!   `hugepages` and `extended` maps of resource-name → quantity.
 
 pub mod default_binder;
-pub mod dynamic_resources;
 pub mod image_locality;
-pub mod inter_pod_affinity;
 pub mod node_affinity;
 pub mod node_name;
 pub mod node_ports;
 pub mod node_resources_balanced_allocation;
 pub mod node_resources_fit;
 pub mod node_unschedulable;
-pub mod node_volume_limits;
-pub mod pod_topology_spread;
 pub mod priority_sort;
-pub mod quantity;
 pub mod scheduling_gates;
-pub mod selector;
 pub mod taint_toleration;
-pub mod volume_binding;
-pub mod volume_restrictions;
-pub mod volume_zone;
 
 use super::{MAX_NODE_SCORE, Registry};
 
@@ -113,38 +103,16 @@ pub(crate) fn default_normalize_score(reverse: bool, scores: &mut [i64]) {
 /// — but it is a measurable one on a large cluster, and matching upstream
 /// means a profile dumped from either scheduler compares equal.
 ///
-/// `client` is used by [`default_binder::DefaultBinder`] (writes the
-/// Binding), [`volume_binding::VolumeBinding`] (annotates and polls a PVC in
-/// `PreBind`), and [`dynamic_resources::DynamicResources`] (writes a
-/// ResourceClaim's allocation and reservation in `PreBind`) — the only three
-/// plugins in this directory that perform I/O; everything else here is a
-/// pure function of the snapshot.
-pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profile_name: &str) -> Registry {
-    // One instance each, cloned into every vec it belongs to — see
-    // `DynamicResources`'s (respectively `VolumeBinding`'s) own doc comment
-    // on why each plugin's assume cache must be shared rather than
-    // reconstructed per extension point.
-    let dra = dynamic_resources::DynamicResources::new(client.clone());
-    let vb = volume_binding::VolumeBinding::new(client.clone(), cfg.volume_bind_timeout);
+/// `client` is used by exactly one plugin, [`default_binder::DefaultBinder`];
+/// it is the only plugin in this directory that performs I/O.
+pub fn default_registry(client: kube::Client) -> Registry {
     Registry {
-        profile_name: profile_name.to_string(),
-        pre_enqueue: vec![
-            Box::new(scheduling_gates::SchedulingGates),
-            Box::new(dra.clone()),
-        ],
+        profile_name: "default-scheduler".to_string(),
+        pre_enqueue: vec![Box::new(scheduling_gates::SchedulingGates)],
         queue_sort: Some(Box::new(priority_sort::PrioritySort)),
         pre_filter: vec![
             Box::new(node_ports::NodePorts),
             Box::new(node_resources_fit::NodeResourcesFit::default()),
-            Box::new(volume_restrictions::VolumeRestrictions),
-            Box::new(node_volume_limits::NodeVolumeLimits),
-            Box::new(vb.clone()),
-            Box::new(volume_zone::VolumeZone),
-            Box::new(pod_topology_spread::PodTopologySpread {
-                defaulting: cfg.topology_defaulting,
-            }),
-            Box::new(inter_pod_affinity::InterPodAffinity::default()),
-            Box::new(dra.clone()),
         ],
         filter: vec![
             Box::new(node_unschedulable::NodeUnschedulable),
@@ -153,22 +121,8 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profi
             Box::new(node_affinity::NodeAffinity::default()),
             Box::new(node_ports::NodePorts),
             Box::new(node_resources_fit::NodeResourcesFit::default()),
-            Box::new(volume_restrictions::VolumeRestrictions),
-            Box::new(node_volume_limits::NodeVolumeLimits),
-            Box::new(vb.clone()),
-            Box::new(volume_zone::VolumeZone),
-            Box::new(pod_topology_spread::PodTopologySpread {
-                defaulting: cfg.topology_defaulting,
-            }),
-            Box::new(inter_pod_affinity::InterPodAffinity::default()),
-            Box::new(dra.clone()),
         ],
-        // Runs before `Scheduler::preempt`'s fallback (see
-        // `PostFilterPlugin`'s own doc comment): freeing a claim this pod
-        // already owns but can't use anywhere is strictly cheaper than
-        // evicting another pod, and upstream orders its own registered
-        // plugins the same way.
-        post_filter: vec![Box::new(dra.clone())],
+        post_filter: Vec::new(),
         pre_score: vec![
             Box::new(taint_toleration::TaintToleration),
             Box::new(node_affinity::NodeAffinity::default()),
@@ -177,10 +131,6 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profi
             Box::new(
                 node_resources_balanced_allocation::NodeResourcesBalancedAllocation::default(),
             ),
-            Box::new(pod_topology_spread::PodTopologySpread {
-                defaulting: cfg.topology_defaulting,
-            }),
-            Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         score: vec![
             Box::new(taint_toleration::TaintToleration),
@@ -190,16 +140,12 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profi
             Box::new(
                 node_resources_balanced_allocation::NodeResourcesBalancedAllocation::default(),
             ),
-            Box::new(pod_topology_spread::PodTopologySpread {
-                defaulting: cfg.topology_defaulting,
-            }),
-            Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
-        reserve: vec![Box::new(vb.clone()), Box::new(dra.clone())],
+        reserve: Vec::new(),
         permit: Vec::new(),
-        pre_bind: vec![Box::new(vb.clone()), Box::new(dra.clone())],
+        pre_bind: Vec::new(),
         bind: vec![Box::new(default_binder::DefaultBinder::new(client))],
-        post_bind: vec![Box::new(vb), Box::new(dra)],
+        post_bind: Vec::new(),
     }
 }
 

@@ -31,7 +31,6 @@
 //! test failure. Every plugin's set is therefore asserted exactly in its own
 //! unit tests.
 
-pub mod plugins;
 pub mod status;
 
 use crate::cache::{NodeInfo, PodInfo, Snapshot};
@@ -161,16 +160,11 @@ pub enum ChangedObject {
 
 /// Runs before a pod is admitted to the active queue at all.
 ///
-/// A rejection here is *quiet*: **this scheduler** writes no condition and no
+/// A rejection here is *quiet*: no `PodScheduled=False` condition and no
 /// event, because the pod is not being rejected by scheduling — it has not
-/// entered scheduling.
-///
-/// The apiserver does mark a gated pod `PodScheduled=False` with `reason:
-/// SchedulingGated` at admission, which is what `kubectl` renders as the
-/// `SchedulingGated` status. The distinction that matters is the reason:
-/// writing `Unschedulable` over it, or emitting a `FailedScheduling` event,
-/// reports a controller doing its job as a broken pod, and every dashboard
-/// believes it.
+/// entered scheduling. That is exactly the observable behaviour of a pod with
+/// scheduling gates, and getting it wrong (writing a condition) makes gated
+/// pods look broken to every dashboard.
 pub trait PreEnqueuePlugin: Plugin {
     fn pre_enqueue(&self, pod: &PodInfo) -> Status;
 }
@@ -194,12 +188,9 @@ pub trait PreFilterPlugin: Plugin {
 
     /// Incremental re-evaluation for preemption's dry runs. `Some` only for
     /// plugins whose PreFilter state depends on which pods are on the node —
-    /// NodeResourcesFit, InterPodAffinity, PodTopologySpread,
-    /// VolumeRestrictions (its `ReadWriteOncePod` half only — see that
-    /// plugin's module header for why a Filter-based, preemption-resolvable
-    /// RWOP check needs this). Preemption is wrong without these: it removes
-    /// victims hypothetically and must see the resulting state, not the
-    /// original.
+    /// NodeResourcesFit, InterPodAffinity, PodTopologySpread. Preemption is
+    /// wrong without these: it removes victims hypothetically and must see
+    /// the resulting state, not the original.
     fn extensions(&self) -> Option<&dyn PreFilterExtensions> {
         None
     }
@@ -229,16 +220,9 @@ pub trait FilterPlugin: Plugin {
     fn filter(&self, state: &CycleState, pod: &PodInfo, node: &NodeInfo) -> Status;
 }
 
-/// Runs only when zero nodes were feasible, before `Scheduler::preempt`'s
-/// fallback (driven from `lib.rs`'s `scheduling_loop`, once `schedule_one`
-/// itself returns `Unschedulable` — see `cycle.rs`'s "Preemption" section
-/// header for why that one direct call isn't a `PostFilterPlugin`). `async`
-/// because the one real implementor (`DynamicResources`) needs a network
-/// round trip to deallocate a stuck claim — no implementor existed when this
-/// was still synchronous, so widening it cost nothing.
-#[async_trait::async_trait]
+/// Runs only when zero nodes were feasible. This is where preemption lives.
 pub trait PostFilterPlugin: Plugin {
-    async fn post_filter(
+    fn post_filter(
         &self,
         state: &mut CycleState,
         pod: &PodInfo,

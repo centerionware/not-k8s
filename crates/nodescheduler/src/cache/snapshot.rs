@@ -31,21 +31,9 @@
 //! that makes the natural iteration order spread pods across failure domains
 //! even before `PodTopologySpread` scores anything — which is what stops a
 //! cluster whose node names sort by rack from packing one rack first.
-//!
-//! That round-robin order is itself only recomputed when it actually could
-//! have changed — a node joining/leaving, or an existing node's zone label
-//! changing. A pod binding or unbinding (by far the most common mutation,
-//! and the reason the cache's generation bumps on nearly every cycle) moves
-//! neither, so `update_snapshot` patches that node's entry in place via
-//! `node_positions` instead of paying for a full `zone_round_robin` walk.
-//! Skipping this would quietly undo the whole point of the incremental
-//! design above: the node *contents* would stay O(changed), but the node
-//! *order* would go back to O(cluster size) on nearly every cycle.
 
-use super::dra::{RawDeviceClass, RawResourceClaim, RawResourceSlice};
 use super::node::NodeInfo;
 use super::pod::PodInfo;
-use super::storage::{CsiDriverInfo, CsiNodeInfo, PvInfo, PvcInfo, StorageCapacityInfo, StorageClassInfo};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -54,12 +42,6 @@ use std::sync::Arc;
 pub struct Snapshot {
     /// Zone-round-robin order — see the module header.
     nodes: Vec<Arc<NodeInfo>>,
-    /// name -> index into `nodes`, kept in step with it. Lets
-    /// `update_snapshot` patch a changed node's entry in place — without
-    /// recomputing the whole round-robin order — whenever the change didn't
-    /// touch cluster membership or any node's zone. Only trustworthy right
-    /// after `nodes` was itself rebuilt; see `update_snapshot`.
-    node_positions: HashMap<String, usize>,
     by_name: HashMap<String, Arc<NodeInfo>>,
     /// Pre-filtered subsets, so `InterPodAffinity` does not walk every node to
     /// find the few that matter.
@@ -68,51 +50,6 @@ pub struct Snapshot {
     /// The highest generation any node in this snapshot carries. The walk
     /// stops when it reaches a node at or below this.
     generation: u64,
-
-    /// Namespace labels, for `InterPodAffinity`'s `namespaceSelector`.
-    ///
-    /// The only consumer, and the only reason a scheduler watches Namespaces
-    /// at all. Without it a term using `namespaceSelector` cannot be
-    /// evaluated, and the choice is between under-matching — silently
-    /// disabling a rule the author wrote — and over-matching. Neither is
-    /// parity; resolving it properly is.
-    pub namespaces: Arc<HashMap<String, BTreeMap<String, String>>>,
-
-    /// Label selectors of the workloads that own pods, for
-    /// `PodTopologySpread`'s system default constraints.
-    ///
-    /// Upstream derives the default constraints' selector from the pod's
-    /// owning Service/ReplicaSet/ReplicationController/StatefulSet, which is
-    /// what these four watches exist for and their only consumer.
-    pub workload_selectors: Vec<WorkloadSelector>,
-
-    /// Phase 4's storage objects, copied wholesale — see the module header
-    /// in `storage.rs` for why these are not tracked incrementally the way
-    /// nodes are.
-    pub pvs: Arc<HashMap<String, PvInfo>>,
-    pub pvcs: Arc<HashMap<String, PvcInfo>>,
-    pub storage_classes: Arc<HashMap<String, StorageClassInfo>>,
-    /// Keyed by node name.
-    pub csi_nodes: Arc<HashMap<String, CsiNodeInfo>>,
-    /// Keyed by driver name.
-    pub csi_drivers: Arc<HashMap<String, CsiDriverInfo>>,
-    pub storage_capacities: Arc<Vec<StorageCapacityInfo>>,
-
-    /// Phase 5's DRA objects, copied wholesale for the same reason as
-    /// Phase 4's storage objects — see `storage.rs`'s module header.
-    /// Keyed `namespace/name`.
-    pub resource_claims: Arc<HashMap<String, RawResourceClaim>>,
-    /// Keyed by class name.
-    pub device_classes: Arc<HashMap<String, RawDeviceClass>>,
-    /// Keyed by slice object name.
-    pub resource_slices: Arc<HashMap<String, RawResourceSlice>>,
-}
-
-/// One workload's selector, for deriving a pod's default spread constraints.
-#[derive(Clone, Debug)]
-pub struct WorkloadSelector {
-    pub namespace: String,
-    pub selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector,
 }
 
 impl Snapshot {
@@ -132,98 +69,9 @@ impl Snapshot {
         self.nodes.is_empty()
     }
 
-    /// Every workload selector in this namespace that matches these labels.
-    ///
-    /// Upstream ANDs them: a pod owned by a ReplicaSet *and* selected by a
-    /// Service spreads against the intersection, not against either alone.
-    pub fn matching_workload_selectors(
-        &self,
-        namespace: &str,
-        labels: &BTreeMap<String, String>,
-    ) -> Vec<&WorkloadSelector> {
-        self.workload_selectors
-            .iter()
-            .filter(|w| {
-                w.namespace == namespace
-                    && crate::framework::plugins::selector::matches_selector(
-                        Some(&w.selector),
-                        labels,
-                    )
-            })
-            .collect()
-    }
-
     /// How many nodes hold a given image, for `ImageLocality`'s spread ratio.
     pub fn nodes_with_image(&self, image: &str) -> i64 {
         self.nodes.iter().filter(|n| n.images.contains_key(image)).count() as i64
-    }
-
-    pub fn pv(&self, name: &str) -> Option<&super::storage::PvInfo> {
-        self.pvs.get(name)
-    }
-
-    pub fn pvc(&self, namespace: &str, name: &str) -> Option<&super::storage::PvcInfo> {
-        self.pvcs.get(&format!("{namespace}/{name}"))
-    }
-
-    pub fn storage_class(&self, name: &str) -> Option<&super::storage::StorageClassInfo> {
-        self.storage_classes.get(name)
-    }
-
-    pub fn csi_node(&self, node_name: &str) -> Option<&super::storage::CsiNodeInfo> {
-        self.csi_nodes.get(node_name)
-    }
-
-    pub fn csi_driver(&self, name: &str) -> Option<&super::storage::CsiDriverInfo> {
-        self.csi_drivers.get(name)
-    }
-
-    pub fn resource_claim(&self, namespace: &str, name: &str) -> Option<&RawResourceClaim> {
-        self.resource_claims.get(&format!("{namespace}/{name}"))
-    }
-
-    pub fn device_class(&self, name: &str) -> Option<&RawDeviceClass> {
-        self.device_classes.get(name)
-    }
-
-    /// Every `ResourceSlice` that could supply a device to `node`: its own
-    /// node-local slices, every `allNodes: true` slice, every
-    /// `nodeSelector`-scoped slice this node's labels satisfy, and every
-    /// `perDeviceNodeSelection: true` slice unconditionally — the latter
-    /// defers node applicability to each individual device, which
-    /// `dynamic_resources.rs`'s `candidates_for_node` resolves once it has
-    /// the device in hand (see that function's doc comment).
-    pub fn resource_slices_for_node<'a>(
-        &'a self,
-        node: &'a NodeInfo,
-    ) -> impl Iterator<Item = &'a RawResourceSlice> + 'a {
-        self.resource_slices.values().filter(move |s| {
-            s.spec.node_name.as_deref() == Some(node.name.as_str())
-                || s.spec.all_nodes == Some(true)
-                || s.spec.per_device_node_selection == Some(true)
-                || s.spec
-                    .node_selector
-                    .as_ref()
-                    .is_some_and(|sel| crate::framework::plugins::node_affinity::matches_node_selector(sel, node))
-        })
-    }
-
-    /// Every pod, cluster-wide, that references this PVC — for
-    /// `ReadWriteOncePod`, which is a cluster-wide exclusivity rule, not a
-    /// per-node one. Walking every node's pod list here rather than
-    /// maintaining a dedicated index is the same trade `matching_workload_selectors`
-    /// makes: this runs at most once per pod per scheduling cycle, not once
-    /// per node, so it is linear in cluster pod count rather than quadratic.
-    pub fn pods_using_pvc<'a>(
-        &'a self,
-        namespace: &str,
-        pvc_name: &str,
-    ) -> impl Iterator<Item = &'a Arc<PodInfo>> + 'a {
-        let namespace = namespace.to_string();
-        let pvc_name = pvc_name.to_string();
-        self.nodes.iter().flat_map(|n| n.pods.iter()).filter(move |p| {
-            p.namespace == namespace && p.pvc_names.iter().any(|n| *n == pvc_name)
-        })
     }
 }
 
@@ -240,26 +88,6 @@ pub struct Cache {
     /// the caller having to remember where it went. Deleted pods routinely
     /// arrive with only a uid.
     pod_locations: HashMap<String, String>,
-
-    /// Namespace labels and workload selectors. Unlike nodes and pods these
-    /// change rarely and are small, so they are copied wholesale into each
-    /// snapshot rather than tracked by generation — the same trade the PDB
-    /// mirror makes, and for the same reason.
-    namespaces: Arc<HashMap<String, BTreeMap<String, String>>>,
-    workload_selectors: HashMap<String, WorkloadSelector>,
-
-    /// Phase 4's storage objects. Same wholesale-copy treatment as
-    /// `namespaces` — see `storage.rs`'s module header.
-    pvs: Arc<HashMap<String, PvInfo>>,
-    pvcs: Arc<HashMap<String, PvcInfo>>,
-    storage_classes: Arc<HashMap<String, StorageClassInfo>>,
-    csi_nodes: Arc<HashMap<String, CsiNodeInfo>>,
-    csi_drivers: Arc<HashMap<String, CsiDriverInfo>>,
-    storage_capacities: Arc<Vec<StorageCapacityInfo>>,
-
-    resource_claims: Arc<HashMap<String, RawResourceClaim>>,
-    device_classes: Arc<HashMap<String, RawDeviceClass>>,
-    resource_slices: Arc<HashMap<String, RawResourceSlice>>,
 }
 
 impl Cache {
@@ -359,116 +187,6 @@ impl Cache {
         self.touch(node_name);
     }
 
-    pub fn upsert_namespace(&mut self, name: &str, labels: BTreeMap<String, String>) {
-        Arc::make_mut(&mut self.namespaces).insert(name.to_string(), labels);
-        self.generation += 1;
-    }
-
-    pub fn remove_namespace(&mut self, name: &str) {
-        Arc::make_mut(&mut self.namespaces).remove(name);
-        self.generation += 1;
-    }
-
-    /// `key` identifies the workload uniquely across kinds — a ReplicaSet and
-    /// a Service may share a name in one namespace, and collapsing them would
-    /// drop one of their selectors.
-    pub fn upsert_workload(&mut self, key: String, w: WorkloadSelector) {
-        self.workload_selectors.insert(key, w);
-        self.generation += 1;
-    }
-
-    pub fn remove_workload(&mut self, key: &str) {
-        self.workload_selectors.remove(key);
-        self.generation += 1;
-    }
-
-    pub fn upsert_pv(&mut self, name: String, pv: PvInfo) {
-        Arc::make_mut(&mut self.pvs).insert(name, pv);
-        self.generation += 1;
-    }
-
-    pub fn remove_pv(&mut self, name: &str) {
-        Arc::make_mut(&mut self.pvs).remove(name);
-        self.generation += 1;
-    }
-
-    pub fn upsert_pvc(&mut self, key: String, pvc: PvcInfo) {
-        Arc::make_mut(&mut self.pvcs).insert(key, pvc);
-        self.generation += 1;
-    }
-
-    pub fn remove_pvc(&mut self, key: &str) {
-        Arc::make_mut(&mut self.pvcs).remove(key);
-        self.generation += 1;
-    }
-
-    pub fn upsert_storage_class(&mut self, name: String, sc: StorageClassInfo) {
-        Arc::make_mut(&mut self.storage_classes).insert(name, sc);
-        self.generation += 1;
-    }
-
-    pub fn remove_storage_class(&mut self, name: &str) {
-        Arc::make_mut(&mut self.storage_classes).remove(name);
-        self.generation += 1;
-    }
-
-    pub fn upsert_csi_node(&mut self, node_name: String, info: CsiNodeInfo) {
-        Arc::make_mut(&mut self.csi_nodes).insert(node_name, info);
-        self.generation += 1;
-    }
-
-    pub fn remove_csi_node(&mut self, node_name: &str) {
-        Arc::make_mut(&mut self.csi_nodes).remove(node_name);
-        self.generation += 1;
-    }
-
-    pub fn upsert_csi_driver(&mut self, name: String, info: CsiDriverInfo) {
-        Arc::make_mut(&mut self.csi_drivers).insert(name, info);
-        self.generation += 1;
-    }
-
-    pub fn remove_csi_driver(&mut self, name: &str) {
-        Arc::make_mut(&mut self.csi_drivers).remove(name);
-        self.generation += 1;
-    }
-
-    /// Whole-list rebuild, same trade the PDB mirror makes: few objects,
-    /// rarely change, and `VolumeBinding` reads the whole set per pod anyway.
-    pub fn set_storage_capacities(&mut self, capacities: Vec<StorageCapacityInfo>) {
-        self.storage_capacities = Arc::new(capacities);
-        self.generation += 1;
-    }
-
-    pub fn upsert_resource_claim(&mut self, key: String, claim: RawResourceClaim) {
-        Arc::make_mut(&mut self.resource_claims).insert(key, claim);
-        self.generation += 1;
-    }
-
-    pub fn remove_resource_claim(&mut self, key: &str) {
-        Arc::make_mut(&mut self.resource_claims).remove(key);
-        self.generation += 1;
-    }
-
-    pub fn upsert_device_class(&mut self, name: String, class: RawDeviceClass) {
-        Arc::make_mut(&mut self.device_classes).insert(name, class);
-        self.generation += 1;
-    }
-
-    pub fn remove_device_class(&mut self, name: &str) {
-        Arc::make_mut(&mut self.device_classes).remove(name);
-        self.generation += 1;
-    }
-
-    pub fn upsert_resource_slice(&mut self, name: String, slice: RawResourceSlice) {
-        Arc::make_mut(&mut self.resource_slices).insert(name, slice);
-        self.generation += 1;
-    }
-
-    pub fn remove_resource_slice(&mut self, name: &str) {
-        Arc::make_mut(&mut self.resource_slices).remove(name);
-        self.generation += 1;
-    }
-
     /// Which node a pod is committed to, if any.
     pub fn pod_node(&self, uid: &str) -> Option<&str> {
         self.pod_locations.get(uid).map(String::as_str)
@@ -500,26 +218,9 @@ impl Cache {
         // nodes the cache no longer has. Cheap: one lookup per retained node.
         let dropped_any = snapshot.by_name.keys().any(|n| !self.nodes.contains_key(n));
 
-        // A namespace or workload change moves the cache generation without
-        // touching any node, so the node walk finds nothing. Returning early
-        // there would leave the snapshot holding stale namespace labels
-        // forever — the sort of staleness that surfaces as an affinity rule
-        // that stopped applying and nothing to explain why.
-        let metadata_stale = snapshot.generation != self.generation;
-        if changed.is_empty() && !dropped_any && !metadata_stale {
+        if changed.is_empty() && !dropped_any {
             return;
         }
-
-        // Whether the round-robin order can only have shifted (a node
-        // joining/leaving, or an existing node's zone changing) — computed
-        // against `snapshot.by_name` *before* this walk's changes are
-        // applied to it, below. See the module header for why this matters.
-        const ZONE_LABEL: &str = "topology.kubernetes.io/zone";
-        let reorder_needed = dropped_any
-            || changed.iter().any(|node| match snapshot.by_name.get(&node.name) {
-                None => true, // newly joined the cluster
-                Some(prev) => prev.labels.get(ZONE_LABEL) != node.labels.get(ZONE_LABEL),
-            });
 
         for node in &changed {
             snapshot.by_name.insert(node.name.clone(), node.clone());
@@ -529,35 +230,7 @@ impl Cache {
         }
 
         snapshot.generation = self.generation;
-        snapshot.namespaces = self.namespaces.clone();
-        snapshot.workload_selectors = self.workload_selectors.values().cloned().collect();
-        snapshot.pvs = self.pvs.clone();
-        snapshot.pvcs = self.pvcs.clone();
-        snapshot.storage_classes = self.storage_classes.clone();
-        snapshot.csi_nodes = self.csi_nodes.clone();
-        snapshot.csi_drivers = self.csi_drivers.clone();
-        snapshot.storage_capacities = self.storage_capacities.clone();
-        snapshot.resource_claims = self.resource_claims.clone();
-        snapshot.device_classes = self.device_classes.clone();
-        snapshot.resource_slices = self.resource_slices.clone();
-        if reorder_needed {
-            snapshot.nodes = zone_round_robin(&snapshot.by_name);
-            snapshot.node_positions = snapshot
-                .nodes
-                .iter()
-                .enumerate()
-                .map(|(i, n)| (n.name.clone(), i))
-                .collect();
-        } else {
-            // Membership and every zone assignment are unchanged, so the
-            // order stays valid — just refresh the entries the walk found,
-            // in place, at the positions `node_positions` already knows.
-            for node in &changed {
-                if let Some(&i) = snapshot.node_positions.get(&node.name) {
-                    snapshot.nodes[i] = node.clone();
-                }
-            }
-        }
+        snapshot.nodes = zone_round_robin(&snapshot.by_name);
         snapshot.nodes_with_pods_with_affinity = snapshot
             .nodes
             .iter()
