@@ -299,9 +299,17 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, targets: &WatchTargets)
                     //
                     // `add` re-runs PreEnqueue, so a still-gated pod is held
                     // rather than admitted.
+                    // At info, not debug: "did this pod reach the scheduler
+                    // at all" is the first question asked of any pod that
+                    // stays Pending, and answering it should not require a
+                    // rebuild with different logging. One line per unplaced
+                    // pod is proportionate — assigned pods, which are the
+                    // bulk of the traffic, log nothing here.
                     if previous.is_some() {
+                        tracing::debug!(pod = %info.key(), "queued (update)");
                         targets.queue.update(info);
                     } else {
+                        tracing::info!(pod = %info.key(), "queued for scheduling");
                         targets.queue.add(info);
                     }
                 }
