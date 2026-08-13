@@ -1,39 +1,18 @@
-commit: f97b0345eb475f0d8fe2b860d0c9c87dfec372e4
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31746297755
-timestamp (UTC): 2026-08-13T21:42:17Z
+commit: 51589f0e616d6c958b97b4746e076c1b737129d7
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31747433472
+timestamp (UTC): 2026-08-13T21:57:13Z
 shard: 4/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786657216
+==> Test namespace: not-k8s-e2e-1786658144
 ==> 205 test(s) registered total (before sharding); running now...
 ==> Shard 4/5: 38 test(s) selected
 ▶ test_scheduler_leaves_a_gated_pod_alone
-==> FATAL: timed out after 60s waiting for: sched-gated to be bound to a node
-  ✘ FAIL (72s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 13 21:40:03 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:03.081729Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:40:03 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:03.082583Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:40:03 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:03.207321Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:40:03 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:03.207488Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:40:03 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:03.208804Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:40:03 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:03.484196Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:40:03 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:03.484980Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:40:03 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:03.485655Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:40:03 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:03.863963Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:40:03 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:03.865946Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:40:03 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:03.866341Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:40:04 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:04.557748Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 357 (402)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 13 21:40:04 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:04.559479Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 357 (402)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 13 21:40:04 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:04.560486Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 398 (402)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 13 21:40:42 runnervmzvulz run-nodelet.sh[14332]: 2026-08-13T21:40:42.819250Z  INFO node status pushed
+  ✔ PASS (11s)
 ▶ test_scheduler_wakes_a_pending_pod_on_a_real_event
-  ✔ PASS (41s)
+  ✔ PASS (68s)
 
 ════════════════════════════════════════
-Results: 1 passed, 1 failed, 0 skipped
-Failed:
-  - test_scheduler_leaves_a_gated_pod_alone
+Results: 2 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786657216...
+==> Cleaning up test namespace not-k8s-e2e-1786658144...
