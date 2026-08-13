@@ -51,6 +51,7 @@
 
 pub mod default_binder;
 pub mod image_locality;
+pub mod inter_pod_affinity;
 pub mod node_affinity;
 pub mod node_name;
 pub mod node_ports;
@@ -59,6 +60,7 @@ pub mod node_resources_fit;
 pub mod node_unschedulable;
 pub mod priority_sort;
 pub mod scheduling_gates;
+pub mod selector;
 pub mod taint_toleration;
 
 use super::{MAX_NODE_SCORE, Registry};
@@ -113,6 +115,7 @@ pub fn default_registry(client: kube::Client) -> Registry {
         pre_filter: vec![
             Box::new(node_ports::NodePorts),
             Box::new(node_resources_fit::NodeResourcesFit::default()),
+            Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         filter: vec![
             Box::new(node_unschedulable::NodeUnschedulable),
@@ -121,6 +124,7 @@ pub fn default_registry(client: kube::Client) -> Registry {
             Box::new(node_affinity::NodeAffinity::default()),
             Box::new(node_ports::NodePorts),
             Box::new(node_resources_fit::NodeResourcesFit::default()),
+            Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         post_filter: Vec::new(),
         pre_score: vec![
@@ -131,6 +135,7 @@ pub fn default_registry(client: kube::Client) -> Registry {
             Box::new(
                 node_resources_balanced_allocation::NodeResourcesBalancedAllocation::default(),
             ),
+            Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         score: vec![
             Box::new(taint_toleration::TaintToleration),
@@ -140,6 +145,7 @@ pub fn default_registry(client: kube::Client) -> Registry {
             Box::new(
                 node_resources_balanced_allocation::NodeResourcesBalancedAllocation::default(),
             ),
+            Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         reserve: Vec::new(),
         permit: Vec::new(),
