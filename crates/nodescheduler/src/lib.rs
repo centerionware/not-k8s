@@ -35,6 +35,7 @@ pub mod election;
 pub mod events;
 pub mod framework;
 pub mod queue;
+pub mod report;
 pub mod watch;
 
 /// Install rustls' default CryptoProvider, unless something already did.
@@ -117,7 +118,8 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
         tokio::spawn(async move { run_safety_net(queue, interval).await })
     };
 
-    let result = scheduling_loop(registry, queue, cache, assumed, cfg).await;
+    let result =
+        scheduling_loop(registry, queue, cache, assumed, client.clone(), cfg).await;
 
     watches.abort();
     safety_net.abort();
@@ -151,6 +153,7 @@ async fn scheduling_loop(
     queue: Arc<queue::SchedulingQueue>,
     cache: Arc<Mutex<cache::Cache>>,
     assumed: Arc<Mutex<cache::AssumedPods>>,
+    client: kube::Client,
     cfg: &config::Config,
 ) -> Result<()> {
     let mut scheduler =
@@ -215,11 +218,43 @@ async fn scheduling_loop(
             } => {
                 tracing::debug!(pod = %pod.key(), %reason, ?nominated_node, "unschedulable");
                 queue.done(&pod.uid);
+
+                // Tell the cluster why, off the scheduling loop. Without this
+                // the pod sits Pending with an empty Events section and no
+                // conditions, and there is no way to tell "nothing has room"
+                // from "the scheduler is not running" — see report.rs.
+                let client = client.clone();
+                let reported = pod.clone();
+                let profile = cfg.profile_name.clone();
+                let reason_text = reason.clone();
+                let nominated = nominated_node.clone();
+                tokio::spawn(async move {
+                    report::report_unschedulable(
+                        &client,
+                        &reported,
+                        &reason_text,
+                        nominated.as_deref(),
+                        &profile,
+                    )
+                    .await;
+                });
+
                 queue.add_unschedulable(pod, unschedulable_plugins, pending_plugins);
             }
             cycle::CycleOutcome::Error { reason } => {
                 tracing::warn!(pod = %pod.key(), %reason, "scheduling cycle failed");
                 queue.done(&pod.uid);
+                // Reported too: a plugin malfunction leaves the pod just as
+                // Pending as a genuine rejection does, and the user is owed
+                // the same explanation either way.
+                let client = client.clone();
+                let reported = pod.clone();
+                let profile = cfg.profile_name.clone();
+                let reason_text = reason.clone();
+                tokio::spawn(async move {
+                    report::report_unschedulable(&client, &reported, &reason_text, None, &profile)
+                        .await;
+                });
                 queue.add_unschedulable(pod, Vec::new(), Vec::new());
             }
         }

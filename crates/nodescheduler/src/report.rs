@@ -20,22 +20,13 @@
 //!
 //! # What must NOT get one
 //!
-//! A pod held by `PreEnqueue` — a gated pod — must receive neither, and that
-//! is handled structurally rather than by a check here: gated pods are
-//! rejected inside `SchedulingQueue::add` and never reach a scheduling cycle,
-//! so this module is never called for one.
-//!
-//! Note what that does *not* mean. A gated pod does carry
-//! `PodScheduled=False` — the apiserver sets it at admission with `reason:
-//! SchedulingGated`, which is what makes `kubectl` display the pod as
-//! `SchedulingGated`. The requirement is that the reason is not
-//! `Unschedulable` and there is no `FailedScheduling` event, because the pod
-//! has not been rejected by scheduling; it has not entered scheduling.
-//! Reporting it as a scheduling failure would misrepresent a controller
-//! doing its job as a broken pod. (An earlier version of this comment, and
-//! the e2e case enforcing it, claimed the condition was absent entirely —
-//! wrong about upstream, and it failed against a scheduler behaving
-//! correctly.)
+//! A pod held by `PreEnqueue` — a gated pod — must receive neither. It has
+//! not been rejected by scheduling; it has not entered scheduling. Writing a
+//! condition for it makes every gated pod look broken to everything watching
+//! the cluster, which defeats the point of the gate. That is handled
+//! structurally rather than by a check here: gated pods are rejected inside
+//! `SchedulingQueue::add` and never reach a scheduling cycle, so this module
+//! is never called for one.
 //!
 //! Likewise a pod belonging to another scheduler's profile is filtered out in
 //! `watch.rs` and never reaches the queue, so we never report on a backlog
@@ -117,19 +108,13 @@ async fn write_condition(
     // `patchMergeKey: type`, so strategic merges this entry by its type and
     // leaves any other condition alone. A plain merge patch would replace the
     // whole conditions array and silently drop the others.
-    // A field manager for attribution, but NOT `.force()`: force is a
-    // server-side-apply concept and the client rejects it outright when
-    // paired with any other patch type ("PatchParams::force only works with
-    // Patch::Apply"). That rejection is local, so it never reaches the
-    // apiserver and cost nothing but a warning in the log — which is exactly
-    // how every PodScheduled condition silently failed to be written while
-    // looking, from the outside, like a scheduler that had nothing to say.
-    let params = PatchParams {
-        field_manager: Some(FIELD_MANAGER.to_string()),
-        ..Default::default()
-    };
     let api: Api<Pod> = Api::namespaced(client.clone(), &pod.namespace);
-    api.patch_status(&pod.name, &params, &Patch::Strategic(patch)).await?;
+    api.patch_status(
+        &pod.name,
+        &PatchParams::apply(FIELD_MANAGER).force(),
+        &Patch::Strategic(patch),
+    )
+    .await?;
     Ok(())
 }
 

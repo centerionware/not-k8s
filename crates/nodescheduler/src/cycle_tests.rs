@@ -221,3 +221,145 @@ fn below_covers_its_whole_range() {
     }
     assert!(seen.iter().all(|s| *s));
 }
+
+// ── The whole cycle, against a real filter chain ────────────────────────
+//
+// Everything above tests the cycle's arithmetic in isolation, and every
+// plugin tests its own predicate in isolation. Both passed while the first
+// live e2e run bound a pod requesting 10000 CPU to a 4-CPU node — which is
+// the gap those two kinds of test leave between them: nothing exercised
+// "run the real PreFilter, then the real Filter, and see what the cycle
+// concludes".
+//
+// These do. They are the smallest thing that would have caught it.
+
+use crate::cache::{Cache, PodInfo, Resources};
+use crate::framework::plugins::node_resources_fit::NodeResourcesFit;
+use crate::framework::Registry;
+use k8s_openapi::api::core::v1::{Node, NodeStatus};
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use std::collections::BTreeMap;
+
+/// One node, `cpu` cores and 4Gi, with the real NodeResourcesFit wired into
+/// both PreFilter and Filter exactly as `default_registry` does.
+fn fit_scheduler(cpu_cores: &str) -> (Scheduler, crate::cache::Snapshot) {
+    let registry = Arc::new(Registry {
+        profile_name: "test".to_string(),
+        pre_filter: vec![Box::new(NodeResourcesFit::default())],
+        filter: vec![Box::new(NodeResourcesFit::default())],
+        ..Default::default()
+    });
+
+    let mut cache = Cache::new();
+    cache.upsert_node(&Node {
+        metadata: ObjectMeta { name: Some("worker".to_string()), ..Default::default() },
+        status: Some(NodeStatus {
+            allocatable: Some(BTreeMap::from([
+                ("cpu".to_string(), Quantity(cpu_cores.to_string())),
+                ("memory".to_string(), Quantity("4Gi".to_string())),
+                ("pods".to_string(), Quantity("110".to_string())),
+            ])),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let snapshot = cache.snapshot();
+    (Scheduler::new(registry, 0), snapshot)
+}
+
+fn pod_wanting_milli_cpu(milli: i64) -> PodInfo {
+    PodInfo {
+        namespace: "default".to_string(),
+        name: "p".to_string(),
+        uid: "p".to_string(),
+        requests: Resources { milli_cpu: milli, ..Default::default() },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_pod_larger_than_the_node_is_not_scheduled() {
+    // The exact e2e case: 10000 cores against a 4-core node.
+    let (mut sched, snapshot) = fit_scheduler("4");
+    let pod = pod_wanting_milli_cpu(10_000 * 1000);
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = sched.schedule_one(&pod, &snapshot, &mut rng);
+
+    match outcome {
+        CycleOutcome::Unschedulable { reason, unschedulable_plugins, .. } => {
+            assert!(
+                reason.contains("Insufficient cpu"),
+                "the reason must name the resource that did not fit, got: {reason}"
+            );
+            assert!(
+                unschedulable_plugins.contains(&"NodeResourcesFit"),
+                "NodeResourcesFit must be recorded, or no event can ever requeue this pod"
+            );
+        }
+        CycleOutcome::Scheduled { node } => {
+            panic!("a 10000-core pod was scheduled onto a 4-core node ({node})")
+        }
+        CycleOutcome::Error { reason } => panic!("unexpected error: {reason}"),
+    }
+}
+
+#[test]
+fn a_pod_that_fits_is_scheduled() {
+    // The other half: proving the rejection above is not simply "rejects
+    // everything", which would pass the test above for the wrong reason.
+    let (mut sched, snapshot) = fit_scheduler("4");
+    let pod = pod_wanting_milli_cpu(500);
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = sched.schedule_one(&pod, &snapshot, &mut rng);
+
+    match outcome {
+        CycleOutcome::Scheduled { node } => assert_eq!(node, "worker"),
+        CycleOutcome::Unschedulable { reason, .. } => {
+            panic!("a 500m pod should fit a 4-core node, got: {reason}")
+        }
+        CycleOutcome::Error { reason } => panic!("unexpected error: {reason}"),
+    }
+}
+
+#[test]
+fn a_pod_exactly_filling_the_node_still_fits() {
+    let (mut sched, snapshot) = fit_scheduler("4");
+    let pod = pod_wanting_milli_cpu(4000);
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = sched.schedule_one(&pod, &snapshot, &mut rng);
+    assert!(matches!(outcome, CycleOutcome::Scheduled { .. }));
+}
+
+#[test]
+fn one_millicore_over_capacity_does_not_fit() {
+    // The boundary, stated explicitly: > allocatable, not >=.
+    let (mut sched, snapshot) = fit_scheduler("4");
+    let pod = pod_wanting_milli_cpu(4001);
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = sched.schedule_one(&pod, &snapshot, &mut rng);
+    assert!(
+        matches!(outcome, CycleOutcome::Unschedulable { .. }),
+        "4001m must not fit a 4-core node"
+    );
+}
+
+#[test]
+fn an_empty_cluster_reports_no_nodes_rather_than_scheduling_nowhere() {
+    let registry = Arc::new(Registry::default());
+    let mut sched = Scheduler::new(registry, 0);
+    let snapshot = crate::cache::Snapshot::default();
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = sched.schedule_one(&pod_wanting_milli_cpu(1), &snapshot, &mut rng);
+    match outcome {
+        CycleOutcome::Unschedulable { reason, .. } => {
+            assert!(reason.contains("no nodes"), "got: {reason}")
+        }
+        _ => panic!("an empty cluster must not schedule anything"),
+    }
+}
