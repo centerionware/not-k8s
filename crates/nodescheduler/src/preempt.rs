@@ -237,15 +237,24 @@ where
     let mut victims: Vec<&PodInfo> = Vec::new();
     let mut pdb_violations = 0usize;
 
+    // Both groups are already sorted most-important-first, and the offering
+    // runs in exactly that order: whoever is offered back first is most
+    // likely to be spared, because the preemptor still has room at that
+    // point. PDB-covered pods lead, then the important, then the cheap — so
+    // the pods that stay evicted are the least important non-protected ones.
+    //
+    // Iterating this list in reverse inverts the whole rule: the cheapest
+    // pods get spared and the important ones die, while the preemptor is
+    // still placed successfully and every outcome-based test still passes.
+    // That is precisely what the first version did, and what
+    // `the_least_important_pod_is_taken_first` caught.
     let offer_order: Vec<(&PodInfo, bool)> = violating
         .iter()
         .map(|p| (*p, true))
         .chain(non_violating.iter().map(|p| (*p, false)))
-        // Least important last: reprieve the important ones first within each
-        // group, so the cheapest-to-lose pods are the ones that stay evicted.
         .collect();
 
-    for (candidate, is_violating) in offer_order.into_iter().rev() {
+    for (candidate, is_violating) in offer_order {
         // Try putting this one back.
         let trial: Vec<&PodInfo> = still_removed
             .iter()
