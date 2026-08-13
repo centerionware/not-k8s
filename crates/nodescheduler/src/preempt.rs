@@ -307,7 +307,7 @@ pub fn pick_one_node(candidates: &[Candidate]) -> Option<&Candidate> {
     // Every stage is "smallest wins", so a preference for *larger* is encoded
     // by negating rather than by a second comparator — one direction to get
     // right instead of six.
-    narrow(&mut set, |c| c.pdb_violations as i64);
+    narrow(&mut set, |c| c.victims.pdb_violations as i64);
     narrow(&mut set, |c| c.highest_victim_priority as i64);
     narrow(&mut set, |c| c.sum_victim_priorities);
     narrow(&mut set, |c| c.victims.pods.len() as i64);
