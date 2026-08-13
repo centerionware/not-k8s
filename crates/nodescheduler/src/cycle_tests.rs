@@ -236,7 +236,7 @@ fn below_covers_its_whole_range() {
 use crate::cache::{Cache, PodInfo, Resources};
 use crate::framework::plugins::node_resources_fit::NodeResourcesFit;
 use crate::framework::Registry;
-use k8s_openapi::api::core::v1::{Node, NodeStatus};
+use k8s_openapi::api::core::v1::{Node, NodeStatus, Pod};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use std::collections::BTreeMap;
