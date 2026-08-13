@@ -1,102 +1,232 @@
 #!/usr/bin/env bash
 # measure.sh — Measure idle CPU%/CPU-seconds/RSS *over time* (1-second
-# samples, not just a single before/after delta), and — where the runner's
-# perf_event access allows it — real hardware cycles/instructions, for the
-# k3s control-plane process and nodelet.
+# samples, not just a single before/after delta), and — where the host's
+# perf_event access allows it — real hardware cycles/instructions, for every
+# process this stack runs.
 #
-# Round 124: rewritten twice in the same round after a published CI report
-# came back showing 0.00% CPU for *both* processes, traced to real gaps:
-#   1. It silently fell back from pidstat to a single before/after
-#      /proc/<pid>/stat delta whenever `pidstat` (the `sysstat` package)
-#      wasn't installed — true by default on GitHub's ubuntu-latest
-#      runners. That single-delta approach needs at least one full CLK_TCK
-#      (usually 10ms) of combined CPU time across the *whole* window to
-#      register as anything but exactly zero.
-#   2. The old 30s window was short enough to plausibly miss every
-#      periodic cycle (status push, GC interval, informer resync) on an
-#      otherwise-empty idle cluster, and only ever reported one final
-#      average — no way to see *when* activity happened.
-# Second pass: dropped the pidstat/sysstat dependency entirely in favor of
-# a self-contained per-second /proc sampling loop (finer-grained than
-# pidstat's own 2s default, and needs nothing installed on any Linux
-# runner), and now emits a real per-second time series (CSV) per process
-# instead of only a final summary, so a report can chart what actually
-# happened over the whole window instead of one number.
+# ── One row per component, not one variable pair per component ──────────────
 #
-# IMPORTANT caveat this script's own output makes explicit rather than
-# implying false precision: k3s runs kubelet (when the agent isn't
-# disabled) as an embedded goroutine inside the *same* OS process as the
-# apiserver/kine-SQLite/controller-manager/scheduler — there is no separate
-# "kubelet" binary/process to isolate the way a vanilla kubeadm cluster
-# has. So on stock k3s, the "k3s server" row/series below is the *entire*
-# stack combined (control plane + kubelet + kube-proxy + flannel), not
-# kubelet alone. nodelet, by contrast, genuinely is its own separate
-# process on both sides. Don't read the stock-side number as "kubelet's
-# own number."
+# This script used to know about exactly two processes, "k3s server" and "the
+# node agent", as two hand-maintained sets of K3S_*/NODELET_* variables
+# threaded through sampling, perf, summarising and reporting. That shape was
+# already wrong once nodeproxy was split out of nodelet (its cost silently
+# stopped being counted anywhere — see .github/workflows/profiling.yml's own
+# note on why the published comparison runs --proxy=none), and wrong again
+# once nodestore replaced kine (the work moved *out* of the k3s process into
+# one nothing was watching, which flatters the k3s number for free).
 #
-# Per-process outputs (written under --out-dir, default a fresh mktemp -d):
-#   <name>-timeseries.csv   second,rss_kb,cpu_pct — the real per-second data
+# So components live in the table below, the same way deploy/lib/components.sh
+# holds the deploy side's list. **Adding a component — `nodeapiserver`,
+# `nodescheduler`, whatever replaces the next piece of the control plane — is
+# one row here.** Nothing else in this file names a component.
+#
+# A row whose process is not running is reported as absent and skipped, so the
+# same table covers every deployment shape: with or without nodeproxy
+# (--proxy=none), with kine or with nodestore (--datastore=nodestore), and,
+# later, with k3s's apiserver/scheduler or with ours.
+#
+# ── What the k3s row actually contains ─────────────────────────────────────
+#
+# k3s is one OS process holding whatever has not been replaced yet: apiserver,
+# controller-manager, scheduler, kine+SQLite unless a datastore row below is
+# running, and the embedded kubelet unless the agent is disabled (this repo's
+# bootstrap always passes --disable-agent). There is no way to isolate those
+# at the process level, so the k3s row is a *remainder*, and it shrinks as
+# components move out of it. The summary says so rather than letting the
+# number be read as "the apiserver's cost".
+#
+# Outputs (written under the out-dir, default a fresh mktemp -d):
+#   <slot>-timeseries.csv   second,rss_kb,cpu_pct — the real per-second data
 #   summary.txt             human-readable table + MEASURE_* machine block
 #     (cycles/instructions/IPC in the summary are a single whole-window
 #     aggregate from perf, not a per-second series — see the perf section
 #     below for why)
 #
+# The `k3s-timeseries.csv` and `nodelet-timeseries.csv` names, and the
+# MEASURE_K3S_*/MEASURE_NODELET_* keys, are load-bearing: profiling.yml's
+# report job and deploy/lib/render-profiling-charts.py read exactly those.
+# New components add new names alongside them; these two do not get renamed.
+#
 # Usage:
-#   ./deploy/measure.sh                          # 30s sample window
-#   ./deploy/measure.sh 120                       # 120s sample window
-#   ./deploy/measure.sh 120 /tmp/measure-out       # explicit output directory
+#   ./deploy/measure.sh                        # 30s sample window
+#   ./deploy/measure.sh 120                    # 120s window
+#   ./deploy/measure.sh 120 /tmp/measure-out   # explicit output directory
+#   ./deploy/measure.sh 120 /tmp/out kubelet   # measure a different node agent
 #
 set -uo pipefail
 
 SAMPLE_SECS="${1:-30}"
 OUT_DIR="${2:-}"
-# Round 124: the node-agent side of the comparison is nodelet by default,
-# but the same script also drives the upstream-kubelet.sh profiling phase
-# (deploy/lib/upstream-kubelet.sh) -- pass a different process-match
-# pattern (e.g. "kubelet") as $3 to measure that agent instead. Internal
-# variable names stay NODELET_* either way (this file's job is "the
-# non-control-plane node agent slot," not literally nodelet specifically).
+# The node-agent side of the comparison is nodelet by default, but this same
+# script drives the upstream-kubelet.sh profiling leg (deploy/lib/upstream-
+# kubelet.sh) — pass a different process-match pattern (e.g. "kubelet") as $3
+# to measure that agent instead. The slot keeps its `nodelet` identity in the
+# output either way: this file's job is "the node agent slot", and the
+# published report compares the two legs by putting a different process in the
+# same slot.
 AGENT_PATTERN="${3:-nodelet}"
 [[ -n "$OUT_DIR" ]] || OUT_DIR="$(mktemp -d /tmp/not-k8s-measure.XXXXXX)"
 mkdir -p "$OUT_DIR"
 
-find_pid() {
-    pgrep -fo "$1" 2>/dev/null || true
+# ── The component table ─────────────────────────────────────────────────────
+#
+# Row format (pipe-separated, no spaces around the pipes):
+#
+#   <slot>|<match pattern>|<label>|<what it is>
+#
+#   slot     identifies this component everywhere in the output: its CSV is
+#            <slot>-timeseries.csv and its machine-block keys are
+#            MEASURE_<SLOT>_*. Stable across releases — a report compares
+#            runs by these names, so renaming one breaks history.
+#   pattern  what to look for. Matched against the executable name first and
+#            the full command line second — see find_pid() for why that order
+#            matters.
+#   label    what the human-readable table calls it.
+#   what     one line for the summary's legend, so a reader who has never
+#            seen this stack knows what the row is.
+#
+# Order is the order rows print in: control plane first, then the datastore,
+# then the node components.
+MEASURE_COMPONENTS=(
+    "k3s|k3s server|k3s server|everything not yet replaced: apiserver, controller-manager, scheduler, and kine+SQLite unless a datastore row below is running"
+    "nodestore|nodestore|nodestore|the datastore — etcd v3 over SQLite, replacing kine"
+    "nodelet|$AGENT_PATTERN|$AGENT_PATTERN|the node agent, replacing kubelet"
+    "nodeproxy|nodeproxy|nodeproxy|Service/ClusterIP/NodePort routing, replacing kube-proxy"
+    # Not written yet. Rows cost nothing when the process is absent, and
+    # having them here means the day they exist they are measured by the
+    # profiling that already runs, rather than the day someone remembers.
+    "nodeapiserver|nodeapiserver|nodeapiserver|the API server, replacing kube-apiserver"
+    "nodescheduler|nodescheduler|nodescheduler|the scheduler, replacing kube-scheduler"
+    # The upstream components this project replaces, run as real standalone
+    # processes by deploy/lib/upstream-kubelet.sh and
+    # deploy/lib/upstream-kube-proxy.sh. Present only on the upstream leg of a
+    # comparison, absent on ours — which is what lets one table measure both
+    # legs without being told which leg it is on.
+    "kubelet|kubelet|kubelet|upstream kubelet, the node agent nodelet replaces"
+    "kube-proxy|kube-proxy|kube-proxy|upstream kube-proxy, the Service routing nodeproxy replaces"
+    # Not ours, and measured precisely because they are not.
+    #
+    # Stock k3s runs flannel *inside* the k3s process and brings its own
+    # containerd; this stack runs flanneld as its own service and uses the
+    # host's containerd. Counting only the not-k8s binaries would put
+    # flannel's cost inside k3s's row on one side and nowhere at all on the
+    # other, which makes the comparison flatter this project for free — the
+    # exact failure this table exists to stop. They are rows, so both sides
+    # are whole-stack numbers.
+    "containerd|containerd|containerd|the container runtime (k3s bundles its own; this stack uses the host's)"
+    "flanneld|flanneld|flanneld|the CNI overlay daemon (a separate service here, in-process on stock k3s)"
+)
+
+# ── Process discovery ───────────────────────────────────────────────────────
+
+# Our own process tree, so a pattern can never match the thing doing the
+# measuring. This is not hypothetical: every one of these patterns appears in
+# this script's own command line and in the shell that launched it, and a
+# full-command-line match would happily return that shell — a process with a
+# tiny RSS and no CPU, which reports as a beautifully efficient component.
+_self_tree() {
+    local pid=$$ depth=0
+    while [[ "$pid" -gt 1 && "$depth" -lt 12 ]]; do
+        echo "$pid"
+        pid="$(awk '{ print $4 }' "/proc/$pid/stat" 2>/dev/null)" || break
+        [[ -n "$pid" ]] || break
+        depth=$(( depth + 1 ))
+    done
 }
+SELF_TREE="$(_self_tree | tr '\n' ' ')"
+
+# The oldest process matching a pattern, excluding ourselves.
+#
+# Executable name first (`pgrep -x`), full command line second (`pgrep -f`):
+# a bare name like "nodelet" matches the real binary exactly, while the
+# command-line fallback is what finds "k3s server" (two words, only ever a
+# command line) and a path-qualified pattern like "/usr/local/bin/kubelet".
+# Doing it in the other order is how a wrapper script — run-nodelet.sh, or the
+# shell that invoked this one — wins over the binary it started, and the
+# measurement then reports the wrapper's near-zero footprint as the
+# component's.
+find_pid() {
+    local pattern="$1" candidates pid
+    for candidates in "$(pgrep -x "$pattern" 2>/dev/null)" "$(pgrep -f "$pattern" 2>/dev/null)"; do
+        for pid in $candidates; do
+            [[ " $SELF_TREE " == *" $pid "* ]] && continue
+            echo "$pid"
+            return 0
+        done
+    done
+    return 0
+}
+
 get_rss_kb() {
     awk '/^VmRSS:/ { print $2 }' "/proc/$1/status" 2>/dev/null || echo "0"
 }
 get_cpu_ticks() {
     local pid="$1" stat after_comm
     stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || { echo "0"; return; }
+    # Everything after the comm field, because comm can itself contain spaces
+    # and parentheses; utime and stime are then fields 12 and 13.
     after_comm="${stat##*) }"
     echo $(( $(echo "$after_comm" | awk '{print $12}') + $(echo "$after_comm" | awk '{print $13}') ))
 }
 
-K3S_PID="$(find_pid 'k3s server')"
-NODELET_PID="$(find_pid "$AGENT_PATTERN")"
+declare -A SLOT_PATTERN SLOT_LABEL SLOT_WHAT SLOT_PID SLOT_CSV
+declare -A SLOT_PREV_TICKS SLOT_TICKS_TOTAL SLOT_RSS_PEAK
+declare -A SLOT_PERF_RAW SLOT_PERF_BGPID
+declare -A SLOT_CPU_AVG SLOT_RSS_MB SLOT_CPU_SECONDS SLOT_CPU_SECONDS_SOURCE
+declare -A SLOT_CYCLES SLOT_INSTRUCTIONS SLOT_IPC SLOT_TASK_CLOCK
+SLOTS=()
+PRESENT=()
 
-if [[ -z "$K3S_PID" && -z "$NODELET_PID" ]]; then
-    echo "ERROR: Neither k3s server nor nodelet process found." >&2
-    echo "       Start the control plane and nodelet first." >&2
+CLAIMED_PIDS=" "
+for row in "${MEASURE_COMPONENTS[@]}"; do
+    IFS='|' read -r slot pattern label what <<<"$row"
+    SLOTS+=("$slot")
+    SLOT_PATTERN[$slot]="$pattern"
+    SLOT_LABEL[$slot]="$label"
+    SLOT_WHAT[$slot]="$what"
+    SLOT_CSV[$slot]="$OUT_DIR/${slot}-timeseries.csv"
+    pid="$(find_pid "$pattern")"
+    # One process is counted once. The node-agent slot's pattern is
+    # caller-overridable ($3), so pointing it at kubelet makes it match the
+    # same process the `kubelet` row below matches — and COMBINED would then
+    # count that process twice, inflating the leg this comparison is supposed
+    # to be fair to. First row to claim a PID keeps it.
+    if [[ -n "$pid" && "$CLAIMED_PIDS" == *" $pid "* ]]; then
+        pid=""
+    fi
+    SLOT_PID[$slot]="$pid"
+    if [[ -n "$pid" ]]; then
+        CLAIMED_PIDS="$CLAIMED_PIDS$pid "
+        PRESENT+=("$slot")
+    fi
+done
+
+if [[ "${#PRESENT[@]}" -eq 0 ]]; then
+    echo "ERROR: none of the components in the table are running." >&2
+    echo "       Start the control plane and the node components first." >&2
     exit 1
 fi
 
 echo "==> Process discovery:"
-[[ -n "$K3S_PID" ]]     && echo "    k3s server PID: $K3S_PID"     || echo "    k3s server: NOT RUNNING"
-[[ -n "$NODELET_PID" ]] && echo "    $AGENT_PATTERN PID:    $NODELET_PID" || echo "    $AGENT_PATTERN:    NOT RUNNING"
+for slot in "${SLOTS[@]}"; do
+    if [[ -n "${SLOT_PID[$slot]}" ]]; then
+        printf '    %-14s PID %s (matched %s)\n' "$slot" "${SLOT_PID[$slot]}" "${SLOT_PATTERN[$slot]}"
+    else
+        printf '    %-14s NOT RUNNING\n' "$slot"
+    fi
+done
 echo "    output directory: $OUT_DIR"
 echo ""
 
 CLK_TCK="$(getconf CLK_TCK)"
 
 # ── Test hardware, for context on every report this feeds ───────────────────
-# Round 124: results are only meaningful relative to the specific hardware
-# they ran on (GitHub-hosted runners aren't a fixed spec -- Azure picks
-# whatever's available in a pool at dispatch time), so record it rather
-# than leaving a reader to assume/guess. x86 cpuinfo has "model name";
-# ARM's doesn't, usually just "Model" (the board) or numeric "CPU part" --
-# tried in that order, falling back to "unknown" rather than a guess.
+# Results are only meaningful relative to the specific hardware they ran on
+# (GitHub-hosted runners aren't a fixed spec -- Azure picks whatever's
+# available in a pool at dispatch time), so record it rather than leaving a
+# reader to assume/guess. x86 cpuinfo has "model name"; ARM's doesn't, usually
+# just "Model" (the board) or numeric "CPU part" -- tried in that order,
+# falling back to "unknown" rather than a guess.
 CPU_ARCH="$(uname -m)"
 CPU_CORES="$(nproc 2>/dev/null || echo "?")"
 CPU_MODEL="$(awk -F': *' '/^model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null)"
@@ -140,80 +270,55 @@ command -v perf >/dev/null 2>&1 && PERF_INSTALLED=true
 # to empty). A single whole-window aggregate read is simpler, robust, and
 # still gives real cycles/instructions/task-clock numbers -- just as a
 # summary total rather than its own time series.
-K3S_PERF_RAW="$OUT_DIR/.k3s-perf-raw.txt"
-NODELET_PERF_RAW="$OUT_DIR/.nodelet-perf-raw.txt"
-K3S_PERF_BGPID=""
-NODELET_PERF_BGPID=""
-
 if $PERF_INSTALLED; then
     if $PERF_OK; then
         echo "==> perf available with real hardware counters; sampling cycles/instructions/task-clock (whole-window aggregate), concurrently with the per-second RSS/CPU loop below"
     else
-        echo "==> perf is installed but hardware performance counters aren't reachable on this runner"
+        echo "==> perf is installed but hardware performance counters aren't reachable on this host"
         echo "    (confirmed common on virtualized cloud runners -- the hypervisor doesn't expose the"
         echo "    PMU to the guest at all, root or not); still sampling task-clock, a software event"
         echo "    that gives sub-millisecond-precision CPU time regardless."
     fi
-    if [[ -n "$K3S_PID" ]]; then
-        perf stat -e cycles,instructions,task-clock -p "$K3S_PID" -o "$K3S_PERF_RAW" -- sleep "$SAMPLE_SECS" 2>/dev/null &
-        K3S_PERF_BGPID=$!
-    fi
-    if [[ -n "$NODELET_PID" ]]; then
-        perf stat -e cycles,instructions,task-clock -p "$NODELET_PID" -o "$NODELET_PERF_RAW" -- sleep "$SAMPLE_SECS" 2>/dev/null &
-        NODELET_PERF_BGPID=$!
-    fi
+    for slot in "${PRESENT[@]}"; do
+        SLOT_PERF_RAW[$slot]="$OUT_DIR/.${slot}-perf-raw.txt"
+        perf stat -e cycles,instructions,task-clock -p "${SLOT_PID[$slot]}" \
+            -o "${SLOT_PERF_RAW[$slot]}" -- sleep "$SAMPLE_SECS" 2>/dev/null &
+        SLOT_PERF_BGPID[$slot]=$!
+    done
 else
     echo "==> perf not installed; cycles/instructions/task-clock will be omitted, CPU-seconds (from /proc, ~10ms"
     echo "    resolution) and RSS remain the primary metrics."
 fi
 echo ""
-echo "==> sampling RSS + CPU% every 1s for ${SAMPLE_SECS}s..."
+echo "==> sampling RSS + CPU% every 1s for ${SAMPLE_SECS}s across ${#PRESENT[@]} component(s)..."
 
-K3S_TS="$OUT_DIR/k3s-timeseries.csv"
-NODELET_TS="$OUT_DIR/nodelet-timeseries.csv"
-echo "second,rss_kb,cpu_pct" > "$K3S_TS"
-echo "second,rss_kb,cpu_pct" > "$NODELET_TS"
-
-k3s_prev_ticks=0
-nodelet_prev_ticks=0
-[[ -n "$K3S_PID" ]]     && k3s_prev_ticks="$(get_cpu_ticks "$K3S_PID")"
-[[ -n "$NODELET_PID" ]] && nodelet_prev_ticks="$(get_cpu_ticks "$NODELET_PID")"
-
-k3s_rss_peak_kb=0
-nodelet_rss_peak_kb=0
-k3s_ticks_total=0
-nodelet_ticks_total=0
+for slot in "${PRESENT[@]}"; do
+    echo "second,rss_kb,cpu_pct" > "${SLOT_CSV[$slot]}"
+    SLOT_PREV_TICKS[$slot]="$(get_cpu_ticks "${SLOT_PID[$slot]}")"
+    SLOT_TICKS_TOTAL[$slot]=0
+    SLOT_RSS_PEAK[$slot]=0
+done
 
 for (( sec=1; sec<=SAMPLE_SECS; sec++ )); do
     sleep 1
-
-    if [[ -n "$K3S_PID" ]] && [[ -d "/proc/$K3S_PID" ]]; then
-        rss="$(get_rss_kb "$K3S_PID")"
-        ticks="$(get_cpu_ticks "$K3S_PID")"
-        delta=$(( ticks - k3s_prev_ticks ))
+    for slot in "${PRESENT[@]}"; do
+        pid="${SLOT_PID[$slot]}"
+        [[ -d "/proc/$pid" ]] || continue
+        rss="$(get_rss_kb "$pid")"
+        ticks="$(get_cpu_ticks "$pid")"
+        delta=$(( ticks - SLOT_PREV_TICKS[$slot] ))
         (( delta < 0 )) && delta=0
-        k3s_prev_ticks="$ticks"
-        k3s_ticks_total=$(( k3s_ticks_total + delta ))
-        (( rss > k3s_rss_peak_kb )) && k3s_rss_peak_kb="$rss"
+        SLOT_PREV_TICKS[$slot]="$ticks"
+        SLOT_TICKS_TOTAL[$slot]=$(( SLOT_TICKS_TOTAL[$slot] + delta ))
+        (( rss > SLOT_RSS_PEAK[$slot] )) && SLOT_RSS_PEAK[$slot]="$rss"
         pct="$(awk -v d="$delta" -v c="$CLK_TCK" 'BEGIN { printf "%.2f", (d / c) * 100 }')"
-        echo "$sec,$rss,$pct" >> "$K3S_TS"
-    fi
-
-    if [[ -n "$NODELET_PID" ]] && [[ -d "/proc/$NODELET_PID" ]]; then
-        rss="$(get_rss_kb "$NODELET_PID")"
-        ticks="$(get_cpu_ticks "$NODELET_PID")"
-        delta=$(( ticks - nodelet_prev_ticks ))
-        (( delta < 0 )) && delta=0
-        nodelet_prev_ticks="$ticks"
-        nodelet_ticks_total=$(( nodelet_ticks_total + delta ))
-        (( rss > nodelet_rss_peak_kb )) && nodelet_rss_peak_kb="$rss"
-        pct="$(awk -v d="$delta" -v c="$CLK_TCK" 'BEGIN { printf "%.2f", (d / c) * 100 }')"
-        echo "$sec,$rss,$pct" >> "$NODELET_TS"
-    fi
+        echo "$sec,$rss,$pct" >> "${SLOT_CSV[$slot]}"
+    done
 done
 
-[[ -n "$K3S_PERF_BGPID" ]]     && wait "$K3S_PERF_BGPID" 2>/dev/null
-[[ -n "$NODELET_PERF_BGPID" ]] && wait "$NODELET_PERF_BGPID" 2>/dev/null
+for slot in "${PRESENT[@]}"; do
+    [[ -n "${SLOT_PERF_BGPID[$slot]:-}" ]] && wait "${SLOT_PERF_BGPID[$slot]}" 2>/dev/null
+done
 
 # perf stat's default text report has lines like (exact spacing/thousands
 # separators vary by version):
@@ -233,10 +338,6 @@ parse_perf_value() {
         }
     ' "$file"
 }
-K3S_CYCLES="$(parse_perf_value "$K3S_PERF_RAW" 'cycles')"
-K3S_INSTRUCTIONS="$(parse_perf_value "$K3S_PERF_RAW" 'instructions')"
-NODELET_CYCLES="$(parse_perf_value "$NODELET_PERF_RAW" 'cycles')"
-NODELET_INSTRUCTIONS="$(parse_perf_value "$NODELET_PERF_RAW" 'instructions')"
 
 # task-clock is a software event (always available, even when hardware
 # cycles/instructions aren't -- see the perf section above), with real
@@ -269,9 +370,6 @@ parse_perf_task_clock_seconds() {
         }
     ' "$file"
 }
-K3S_TASK_CLOCK_SECONDS="$(parse_perf_task_clock_seconds "$K3S_PERF_RAW")"
-NODELET_TASK_CLOCK_SECONDS="$(parse_perf_task_clock_seconds "$NODELET_PERF_RAW")"
-rm -f "$K3S_PERF_RAW" "$NODELET_PERF_RAW"
 
 # ── Summary stats derived from the time series ───────────────────────────────
 
@@ -280,11 +378,6 @@ summarize_cpu_avg() {
     [[ -s "$csv" ]] || { echo "0.00"; return; }
     awk -F, 'NR>1 { n++; cpu_sum += $3 } END { printf "%.2f", (n>0 ? cpu_sum/n : 0) }' "$csv"
 }
-K3S_CPU_AVG="$(summarize_cpu_avg "$K3S_TS")"
-NODELET_CPU_AVG="$(summarize_cpu_avg "$NODELET_TS")"
-
-K3S_RSS_MB="$(awk -v kb="$k3s_rss_peak_kb" 'BEGIN { printf "%.1f", kb / 1024 }')"
-NODELET_RSS_MB="$(awk -v kb="$nodelet_rss_peak_kb" 'BEGIN { printf "%.1f", kb / 1024 }')"
 
 # CPU-seconds: prefer perf's task-clock (sub-millisecond precision,
 # already normalized to real seconds above) when it actually reported
@@ -308,50 +401,88 @@ cpu_seconds_from_ticks_or_task_clock() {
         printf "%.6f", v
     }'
 }
-K3S_CPU_SECONDS="$(cpu_seconds_from_ticks_or_task_clock "$k3s_ticks_total" "$K3S_TASK_CLOCK_SECONDS")"
-NODELET_CPU_SECONDS="$(cpu_seconds_from_ticks_or_task_clock "$nodelet_ticks_total" "$NODELET_TASK_CLOCK_SECONDS")"
-K3S_CPU_SECONDS_SOURCE="$([[ -n "$K3S_TASK_CLOCK_SECONDS" ]] && echo "perf-task-clock" || echo "proc-ticks")"
-NODELET_CPU_SECONDS_SOURCE="$([[ -n "$NODELET_TASK_CLOCK_SECONDS" ]] && echo "perf-task-clock" || echo "proc-ticks")"
 
 calc_ipc() {
     [[ -n "$1" && -n "$2" && "$2" != "0" ]] || { echo ""; return; }
     awk -v i="$1" -v c="$2" 'BEGIN { printf "%.3f", i / c }'
 }
-K3S_IPC="$(calc_ipc "$K3S_INSTRUCTIONS" "$K3S_CYCLES")"
-NODELET_IPC="$(calc_ipc "$NODELET_INSTRUCTIONS" "$NODELET_CYCLES")"
 
-COMBINED_RSS_MB="$(awk -v a="$K3S_RSS_MB" -v b="$NODELET_RSS_MB" 'BEGIN { printf "%.1f", a + b }')"
-COMBINED_CPU_SECONDS="$(awk -v a="$K3S_CPU_SECONDS" -v b="$NODELET_CPU_SECONDS" 'BEGIN { printf "%.3f", a + b }')"
-COMBINED_CPU_AVG="$(awk -v a="$K3S_CPU_AVG" -v b="$NODELET_CPU_AVG" 'BEGIN { printf "%.2f", a + b }')"
+for slot in "${PRESENT[@]}"; do
+    raw="${SLOT_PERF_RAW[$slot]:-}"
+    SLOT_CYCLES[$slot]="$(parse_perf_value "$raw" 'cycles')"
+    SLOT_INSTRUCTIONS[$slot]="$(parse_perf_value "$raw" 'instructions')"
+    SLOT_TASK_CLOCK[$slot]="$(parse_perf_task_clock_seconds "$raw")"
+    [[ -n "$raw" ]] && rm -f "$raw"
+
+    SLOT_CPU_AVG[$slot]="$(summarize_cpu_avg "${SLOT_CSV[$slot]}")"
+    SLOT_RSS_MB[$slot]="$(awk -v kb="${SLOT_RSS_PEAK[$slot]}" 'BEGIN { printf "%.1f", kb / 1024 }')"
+    SLOT_CPU_SECONDS[$slot]="$(cpu_seconds_from_ticks_or_task_clock \
+        "${SLOT_TICKS_TOTAL[$slot]}" "${SLOT_TASK_CLOCK[$slot]}")"
+    SLOT_CPU_SECONDS_SOURCE[$slot]="$([[ -n "${SLOT_TASK_CLOCK[$slot]}" ]] && echo "perf-task-clock" || echo "proc-ticks")"
+    SLOT_IPC[$slot]="$(calc_ipc "${SLOT_INSTRUCTIONS[$slot]}" "${SLOT_CYCLES[$slot]}")"
+done
+
+# COMBINED is every present component summed — the whole stack's real cost on
+# this node, which is the number that actually matters to anyone deciding
+# whether to run it. With only k3s and a node agent present (what
+# profiling.yml's published comparison runs) this is exactly what it has
+# always been.
+COMBINED_RSS_MB=0; COMBINED_CPU_AVG=0; COMBINED_CPU_SECONDS=0
+COMBINED_CYCLES=""; COMBINED_INSTRUCTIONS=""
 sum_or_blank() {
     [[ -z "$1" && -z "$2" ]] && { echo ""; return; }
     awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN { printf "%.0f", a + b }'
 }
-COMBINED_CYCLES="$(sum_or_blank "$K3S_CYCLES" "$NODELET_CYCLES")"
-COMBINED_INSTRUCTIONS="$(sum_or_blank "$K3S_INSTRUCTIONS" "$NODELET_INSTRUCTIONS")"
+for slot in "${PRESENT[@]}"; do
+    COMBINED_RSS_MB="$(awk -v a="$COMBINED_RSS_MB" -v b="${SLOT_RSS_MB[$slot]}" 'BEGIN { printf "%.1f", a + b }')"
+    COMBINED_CPU_AVG="$(awk -v a="$COMBINED_CPU_AVG" -v b="${SLOT_CPU_AVG[$slot]}" 'BEGIN { printf "%.2f", a + b }')"
+    COMBINED_CPU_SECONDS="$(awk -v a="$COMBINED_CPU_SECONDS" -v b="${SLOT_CPU_SECONDS[$slot]:-0}" 'BEGIN { printf "%.3f", a + b }')"
+    COMBINED_CYCLES="$(sum_or_blank "$COMBINED_CYCLES" "${SLOT_CYCLES[$slot]}")"
+    COMBINED_INSTRUCTIONS="$(sum_or_blank "$COMBINED_INSTRUCTIONS" "${SLOT_INSTRUCTIONS[$slot]}")"
+done
 
 # ── Human-readable + machine-readable summary ───────────────────────────────
 
 fmt_or_na() { [[ -n "$1" ]] && echo "$1" || echo "N/A"; }
 
+row_fmt="  %-16s %10s %10s %10s %14s %14s %8s\n"
+rule() { printf "$row_fmt" "────────────────" "──────────" "──────────" "──────────" "──────────────" "──────────────" "────────"; }
 {
-    printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "PROCESS" "avg CPU%" "CPU-sec" "RSS (MB)" "cycles" "instructions" "IPC"
-    printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "────────────────" "──────────" "──────────" "──────────" "──────────────" "──────────────" "────────"
-    [[ -n "$K3S_PID" ]] && printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "k3s server" "${K3S_CPU_AVG}%" "$K3S_CPU_SECONDS" "$K3S_RSS_MB" "$(fmt_or_na "$K3S_CYCLES")" "$(fmt_or_na "$K3S_INSTRUCTIONS")" "$(fmt_or_na "$K3S_IPC")"
-    [[ -n "$NODELET_PID" ]] && printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "$AGENT_PATTERN" "${NODELET_CPU_AVG}%" "$NODELET_CPU_SECONDS" "$NODELET_RSS_MB" "$(fmt_or_na "$NODELET_CYCLES")" "$(fmt_or_na "$NODELET_INSTRUCTIONS")" "$(fmt_or_na "$NODELET_IPC")"
-    printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "────────────────" "──────────" "──────────" "──────────" "──────────────" "──────────────" "────────"
-    printf "  %-16s %10s %10s %10s %14s %14s %8s\n" "COMBINED" "${COMBINED_CPU_AVG}%" "$COMBINED_CPU_SECONDS" "$COMBINED_RSS_MB" "$(fmt_or_na "$COMBINED_CYCLES")" "$(fmt_or_na "$COMBINED_INSTRUCTIONS")" "N/A"
+    printf "$row_fmt" "PROCESS" "avg CPU%" "CPU-sec" "RSS (MB)" "cycles" "instructions" "IPC"
+    rule
+    for slot in "${PRESENT[@]}"; do
+        printf "$row_fmt" "${SLOT_LABEL[$slot]}" "${SLOT_CPU_AVG[$slot]}%" \
+            "$(fmt_or_na "${SLOT_CPU_SECONDS[$slot]}")" "${SLOT_RSS_MB[$slot]}" \
+            "$(fmt_or_na "${SLOT_CYCLES[$slot]}")" "$(fmt_or_na "${SLOT_INSTRUCTIONS[$slot]}")" \
+            "$(fmt_or_na "${SLOT_IPC[$slot]}")"
+    done
+    rule
+    printf "$row_fmt" "COMBINED" "${COMBINED_CPU_AVG}%" "$COMBINED_CPU_SECONDS" "$COMBINED_RSS_MB" \
+        "$(fmt_or_na "$COMBINED_CYCLES")" "$(fmt_or_na "$COMBINED_INSTRUCTIONS")" "N/A"
+    echo ""
+    echo "  what each row is:"
+    for slot in "${PRESENT[@]}"; do
+        printf "    %-14s %s\n" "${SLOT_LABEL[$slot]}" "${SLOT_WHAT[$slot]}"
+    done
+    absent=""
+    for slot in "${SLOTS[@]}"; do
+        [[ -z "${SLOT_PID[$slot]}" ]] && absent="$absent $slot"
+    done
+    [[ -n "$absent" ]] && echo "  not running on this host (not measured):$absent"
     echo ""
     echo "  test hardware: arch=$CPU_ARCH cores=$CPU_CORES model=\"$CPU_MODEL\""
     echo "  sample window: ${SAMPLE_SECS}s, 1 sample/sec"
-    echo "  perf hardware counters (cycles/instructions): $($PERF_OK && echo "available" || echo "unavailable on this runner")"
-    echo "  CPU-seconds precision: k3s=$K3S_CPU_SECONDS_SOURCE $AGENT_PATTERN=$NODELET_CPU_SECONDS_SOURCE (perf-task-clock = sub-ms via perf; proc-ticks = ~10ms via /proc, whenever perf's task-clock wasn't available)"
+    echo "  perf hardware counters (cycles/instructions): $($PERF_OK && echo "available" || echo "unavailable on this host")"
+    printf "  CPU-seconds precision:"
+    for slot in "${PRESENT[@]}"; do printf " %s=%s" "$slot" "${SLOT_CPU_SECONDS_SOURCE[$slot]}"; done
+    echo " (perf-task-clock = sub-ms via perf; proc-ticks = ~10ms via /proc, whenever perf's task-clock wasn't available)"
     echo ""
-    echo "  NOTE: on stock k3s, \"k3s server\" is the entire stack (apiserver + kine/SQLite +"
-    echo "  controller-manager + scheduler + the embedded kubelet, when the agent isn't"
-    echo "  disabled, all in one OS process) -- k3s does not run kubelet as a separate"
-    echo "  process the way a vanilla kubeadm cluster does, so there is no way to"
-    echo "  isolate \"kubelet's own number\" from this row at the process level."
+    echo "  NOTE: the \"k3s server\" row is one OS process holding everything not yet"
+    echo "  replaced — apiserver + controller-manager + scheduler, plus kine/SQLite"
+    echo "  whenever nodestore is not the datastore, plus the embedded kubelet whenever"
+    echo "  the agent isn't disabled. Those cannot be isolated at the process level, so"
+    echo "  read that row as a remainder that shrinks as components move out of it, not"
+    echo "  as any one component's cost."
 } | tee "$OUT_DIR/summary.txt"
 
 machine_block() {
@@ -362,29 +493,29 @@ machine_block() {
     echo "MEASURE_CPU_ARCH=$CPU_ARCH"
     echo "MEASURE_CPU_CORES=$CPU_CORES"
     echo "MEASURE_CPU_MODEL=$CPU_MODEL"
-    echo "MEASURE_K3S_PRESENT=$([[ -n "$K3S_PID" ]] && echo true || echo false)"
-    echo "MEASURE_K3S_RSS_MB=$K3S_RSS_MB"
-    echo "MEASURE_K3S_CPU_AVG_PCT=$K3S_CPU_AVG"
-    echo "MEASURE_K3S_CPU_SECONDS=$K3S_CPU_SECONDS"
-    echo "MEASURE_K3S_CPU_SECONDS_SOURCE=$K3S_CPU_SECONDS_SOURCE"
-    echo "MEASURE_K3S_CYCLES=$K3S_CYCLES"
-    echo "MEASURE_K3S_INSTRUCTIONS=$K3S_INSTRUCTIONS"
-    echo "MEASURE_K3S_IPC=$K3S_IPC"
-    echo "MEASURE_NODELET_PRESENT=$([[ -n "$NODELET_PID" ]] && echo true || echo false)"
-    echo "MEASURE_NODELET_RSS_MB=$NODELET_RSS_MB"
-    echo "MEASURE_NODELET_CPU_AVG_PCT=$NODELET_CPU_AVG"
-    echo "MEASURE_NODELET_CPU_SECONDS=$NODELET_CPU_SECONDS"
-    echo "MEASURE_NODELET_CPU_SECONDS_SOURCE=$NODELET_CPU_SECONDS_SOURCE"
-    echo "MEASURE_NODELET_CYCLES=$NODELET_CYCLES"
-    echo "MEASURE_NODELET_INSTRUCTIONS=$NODELET_INSTRUCTIONS"
-    echo "MEASURE_NODELET_IPC=$NODELET_IPC"
+    # Every slot in the table gets keys, present or not, so a consumer can
+    # tell "measured as zero" from "was not running" without guessing.
+    for slot in "${SLOTS[@]}"; do
+        key="$(echo "$slot" | tr '[:lower:]-' '[:upper:]_')"
+        if [[ -z "${SLOT_PID[$slot]}" ]]; then
+            echo "MEASURE_${key}_PRESENT=false"
+            continue
+        fi
+        echo "MEASURE_${key}_PRESENT=true"
+        echo "MEASURE_${key}_RSS_MB=${SLOT_RSS_MB[$slot]}"
+        echo "MEASURE_${key}_CPU_AVG_PCT=${SLOT_CPU_AVG[$slot]}"
+        echo "MEASURE_${key}_CPU_SECONDS=${SLOT_CPU_SECONDS[$slot]}"
+        echo "MEASURE_${key}_CPU_SECONDS_SOURCE=${SLOT_CPU_SECONDS_SOURCE[$slot]}"
+        echo "MEASURE_${key}_CYCLES=${SLOT_CYCLES[$slot]}"
+        echo "MEASURE_${key}_INSTRUCTIONS=${SLOT_INSTRUCTIONS[$slot]}"
+        echo "MEASURE_${key}_IPC=${SLOT_IPC[$slot]}"
+        echo "MEASURE_${key}_TIMESERIES_CSV=${SLOT_CSV[$slot]}"
+    done
     echo "MEASURE_COMBINED_RSS_MB=$COMBINED_RSS_MB"
     echo "MEASURE_COMBINED_CPU_AVG_PCT=$COMBINED_CPU_AVG"
     echo "MEASURE_COMBINED_CPU_SECONDS=$COMBINED_CPU_SECONDS"
     echo "MEASURE_COMBINED_CYCLES=$COMBINED_CYCLES"
     echo "MEASURE_COMBINED_INSTRUCTIONS=$COMBINED_INSTRUCTIONS"
-    echo "MEASURE_K3S_TIMESERIES_CSV=$K3S_TS"
-    echo "MEASURE_NODELET_TIMESERIES_CSV=$NODELET_TS"
     echo "=== END MEASURE ==="
 }
 machine_block | tee -a "$OUT_DIR/summary.txt"
