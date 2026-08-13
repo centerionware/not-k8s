@@ -219,7 +219,13 @@ fn handle_node_event(ev: Event<Node>, mirror: &mut Mirror, targets: &WatchTarget
         // A relist started. Drop the mirror so stale objects cannot produce
         // phantom diffs against whatever arrives next.
         Event::Init => mirror.nodes.clear(),
-        Event::InitDone => {}
+        // Logged at info, and deliberately: a relist is rare on a healthy
+        // cluster, and its absence is the difference between "the watch died"
+        // and "the watch is alive but delivering nothing" — a distinction a
+        // live run could not be made to answer without it.
+        Event::InitDone => {
+            tracing::info!(nodes = mirror.nodes.len(), "node watch (re)listed")
+        }
         Event::InitApply(node) | Event::Apply(node) => {
             let name = node.name_any();
             let previous = mirror.nodes.insert(name.clone(), node.clone());
@@ -258,7 +264,9 @@ fn handle_node_event(ev: Event<Node>, mirror: &mut Mirror, targets: &WatchTarget
 fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, targets: &WatchTargets) {
     match ev {
         Event::Init => mirror.pods.clear(),
-        Event::InitDone => {}
+        Event::InitDone => {
+            tracing::info!(pods = mirror.pods.len(), "pod watch (re)listed")
+        }
         Event::InitApply(pod) | Event::Apply(pod) => {
             let key = pod_key(&pod);
             let previous = mirror.pods.insert(key.clone(), pod.clone());
