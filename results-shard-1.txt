@@ -1,18 +1,18 @@
-commit: f8ae99fe27e08a9353cbe6be5b235a16d171034b
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31738274832
-timestamp (UTC): 2026-08-13T20:01:03Z
+commit: cb4f1d950d551fd7859e55e60a5afe206a854884
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31739582105
+timestamp (UTC): 2026-08-13T20:16:23Z
 shard: 1/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786651253
+==> Test namespace: not-k8s-e2e-1786652173
 ==> 205 test(s) registered total (before sharding); running now...
 ==> Shard 1/5: 45 test(s) selected
 ▶ test_scheduler_honours_a_node_selector_that_matches
-  ✔ PASS (0s)
+  ✔ PASS (1s)
 ▶ test_scheduler_holds_the_leader_lease
-  ✔ PASS (9s)
+  ✔ PASS (8s)
 
 ════════════════════════════════════════
 Results: 2 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786651253...
+==> Cleaning up test namespace not-k8s-e2e-1786652173...
