@@ -117,12 +117,30 @@ EOF
     assert_eq "$(pod_field "$pod" '{.spec.nodeName}')" "" \
         "a gated pod must not be bound"
 
-    # The quiet part, and the one most likely to regress: a gated pod is not
-    # being *rejected* by scheduling, it has not entered scheduling. Writing a
-    # PodScheduled=False condition here makes every gated pod look broken to
-    # everything watching the cluster.
-    assert_eq "$(pod_condition_status "$pod" PodScheduled)" "" \
-        "a gated pod must carry no PodScheduled condition at all"
+    # The quiet part, and the one most likely to regress.
+    #
+    # A gated pod DOES carry PodScheduled=False — the apiserver sets it at
+    # admission with reason SchedulingGated, which is what makes kubectl show
+    # the pod's status as "SchedulingGated". An earlier version of this test
+    # asserted the condition was absent entirely; that was wrong about
+    # upstream, and it failed against a scheduler that was behaving
+    # perfectly.
+    #
+    # What must hold is that the *reason* is not ours. A gated pod has not
+    # been rejected by scheduling, it has not entered scheduling, so
+    # reason=Unschedulable (which is what report.rs writes) would misreport a
+    # controller doing its job as a scheduling failure.
+    local reason
+    reason="$(pod_field "$pod" '{.status.conditions[?(@.type=="PodScheduled")].reason}')"
+    assert_not_eq "$reason" "Unschedulable" \
+        "a gated pod must not be reported as a scheduling failure — it never entered scheduling"
+
+    # And no FailedScheduling event, for the same reason: a gated pod must
+    # not appear in kubectl describe as something the scheduler rejected.
+    local events
+    events="$(kctl get events --field-selector "involvedObject.name=$pod,reason=FailedScheduling" -o name 2>/dev/null || true)"
+    assert_eq "$events" "" \
+        "a gated pod must not get a FailedScheduling event from the scheduler"
 
     # Removing the gate must place it — and must do so promptly, via the
     # UPDATE_POD_SCHEDULING_GATES_ELIMINATED subscription rather than the

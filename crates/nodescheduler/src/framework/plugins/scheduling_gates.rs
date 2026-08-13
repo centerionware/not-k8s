@@ -3,13 +3,19 @@
 //!
 //! # A gated pod is not a rejected pod
 //!
-//! This is the one place in the crate where a rejection must be *silent*: no
-//! `PodScheduled=False` condition, no scheduling event, no "0/5 nodes are
-//! available" message. The pod has not been rejected by scheduling — it has
-//! not entered scheduling. That is exactly what upstream does, and it is the
-//! observable contract the feature was designed around: a gate is how an
-//! external controller says "not yet", and dashboards must not light up
-//! because a queue-management controller is doing its job.
+//! This is the one place in the crate where a rejection must be *silent* on
+//! our part: no `FailedScheduling` event, and no `PodScheduled` condition
+//! written by us. The pod has not been rejected by scheduling — it has not
+//! entered scheduling. A gate is how an external controller says "not yet",
+//! and dashboards must not light up because a queue-management controller is
+//! doing its job.
+//!
+//! The apiserver separately marks the pod `PodScheduled=False` with `reason:
+//! SchedulingGated` at admission — that is upstream behaviour, it is what
+//! makes `kubectl` show the pod as `SchedulingGated`, and it is not ours to
+//! suppress. What we must not do is overwrite that reason with
+//! `Unschedulable`, which would turn "waiting on a gate" into "the scheduler
+//! could not place this".
 //!
 //! Writing a condition here is a tempting one-line "improvement" that makes
 //! every gated pod look broken to everything watching the cluster. The

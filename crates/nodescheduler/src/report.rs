@@ -20,13 +20,22 @@
 //!
 //! # What must NOT get one
 //!
-//! A pod held by `PreEnqueue` — a gated pod — must receive neither. It has
-//! not been rejected by scheduling; it has not entered scheduling. Writing a
-//! condition for it makes every gated pod look broken to everything watching
-//! the cluster, which defeats the point of the gate. That is handled
-//! structurally rather than by a check here: gated pods are rejected inside
-//! `SchedulingQueue::add` and never reach a scheduling cycle, so this module
-//! is never called for one.
+//! A pod held by `PreEnqueue` — a gated pod — must receive neither, and that
+//! is handled structurally rather than by a check here: gated pods are
+//! rejected inside `SchedulingQueue::add` and never reach a scheduling cycle,
+//! so this module is never called for one.
+//!
+//! Note what that does *not* mean. A gated pod does carry
+//! `PodScheduled=False` — the apiserver sets it at admission with `reason:
+//! SchedulingGated`, which is what makes `kubectl` display the pod as
+//! `SchedulingGated`. The requirement is that the reason is not
+//! `Unschedulable` and there is no `FailedScheduling` event, because the pod
+//! has not been rejected by scheduling; it has not entered scheduling.
+//! Reporting it as a scheduling failure would misrepresent a controller
+//! doing its job as a broken pod. (An earlier version of this comment, and
+//! the e2e case enforcing it, claimed the condition was absent entirely —
+//! wrong about upstream, and it failed against a scheduler behaving
+//! correctly.)
 //!
 //! Likewise a pod belonging to another scheduler's profile is filtered out in
 //! `watch.rs` and never reaches the queue, so we never report on a backlog
