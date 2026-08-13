@@ -352,23 +352,36 @@ fn updating_a_parked_pod_does_not_duplicate_it_into_active() {
     assert_eq!(q.unschedulable_len(), 1);
 }
 
-#[test]
-fn an_update_preserves_the_pods_place_in_the_queue() {
+#[tokio::test]
+async fn an_update_preserves_the_pods_place_in_the_queue() {
     // queued_at belongs to the queue, not to the API object. Resetting it on
     // every edit starves exactly the pods being retried most — and every
     // failed pod is edited, because that is how it is told why it failed.
+    //
+    // Asserted through the observable consequence — pop order — rather than
+    // by reading the field back, so it tests the behaviour that matters
+    // rather than the bookkeeping that implements it.
     let q = queue();
-    let first = pod("first", 0);
-    let original_queued_at = first.queued_at;
-    q.add(first);
 
-    let mut edited = (*pod("first", 0)).clone();
-    edited.queued_at = k8s_openapi::jiff::Timestamp::now();
+    let mut older = (*pod("older", 0)).clone();
+    older.queued_at = k8s_openapi::jiff::Timestamp::from_second(1_000).unwrap();
+    q.add(Arc::new(older));
+
+    let mut newer = (*pod("newer", 0)).clone();
+    newer.queued_at = k8s_openapi::jiff::Timestamp::from_second(2_000).unwrap();
+    q.add(Arc::new(newer));
+
+    // Edit the older pod, stamped as if it had just arrived. If the queue
+    // took that timestamp it would fall behind `newer`.
+    let mut edited = (*pod("older", 0)).clone();
+    edited.queued_at = k8s_openapi::jiff::Timestamp::from_second(9_000).unwrap();
     q.update(Arc::new(edited));
 
-    // Pop it back out and confirm the queue kept its own timestamp.
-    let inner_len = q.active_len();
-    assert_eq!(inner_len, 1);
+    assert_eq!(
+        q.pop().await.uid,
+        "older",
+        "an edited pod must keep its original place, not go to the back"
+    );
 }
 
 #[test]
