@@ -1,10 +1,10 @@
-commit: e8b0b5d5ba52ffe3b69c20214b09e932af5d52c4
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31689736138
-timestamp (UTC): 2026-08-13T10:14:26Z
+commit: 33c6f92f2af66289cd6ab7568d205724d1382988
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31718099248
+timestamp (UTC): 2026-08-13T16:02:40Z
 shard: 1/5
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786615996
+==> Test namespace: not-k8s-e2e-1786636890
 ==> 205 test(s) registered total (before sharding); running now...
 ==> Shard 1/5: 45 test(s) selected
 ▶ test_scheduler_honours_a_node_selector_that_matches
@@ -13,21 +13,21 @@ exit code: 1
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 13 10:12:50 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:12:50.202920Z  INFO CreateContainer succeeded container=node-driver-registrar container_id=ae77d72b5fd7175b4557478d4279561e8a4c291a457b842468105a783564a276
-    Aug 13 10:12:51 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:12:51.447557Z  INFO CreateContainer succeeded container=liveness-probe container_id=01e302b47056ceeba3a88f03dc10dd6a2982a55406d21d4349656901543d984f
-    Aug 13 10:12:53 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:12:53.795598Z  INFO CreateContainer succeeded container=csi-attacher container_id=baa681af607bc055c3217b0094a82ac59b17583fd641a8519ef0e8f535ae0521
-    Aug 13 10:12:55 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:12:55.597848Z  INFO CreateContainer succeeded container=csi-provisioner container_id=3d0e689b9d7e6c511f4d033a06a6867e75ac650417e756551607653e16a2ea49
-    Aug 13 10:12:56 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:12:56.464872Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 13 10:12:57 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:12:57.442194Z  INFO CreateContainer succeeded container=csi-resizer container_id=5cb7db23a54507381eb46d9a3c6672ee5f4cae8e296cd7da7e7a4a54b3175052
-    Aug 13 10:12:59 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:12:59.048977Z  INFO CreateContainer succeeded container=csi-snapshotter container_id=b2c4d086f7d5dcebec1bd7cdf6275a5cb37bd869ed8382f363bed259174d481c
-    Aug 13 10:13:07 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:13:07.412442Z  INFO node status pushed
-    Aug 13 10:13:09 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:13:09.714287Z  INFO CreateContainer succeeded container=plugin container_id=b0eb52e1581daa5238f3d3760b41deedea99a37edcb2246f8d5c2aaffa4c2706
-    Aug 13 10:13:11 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:13:11.418543Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-8krlq
-    Aug 13 10:13:11 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:13:11.532683Z  INFO CreateContainer succeeded container=plugin container_id=ad0f243becfad97cda7deae8d83e85d4699e175377367720861e4b020586f48f
-    Aug 13 10:13:11 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:13:11.685250Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-8krlq
-    Aug 13 10:13:16 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:13:16.482725Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-2dcddc63-f139-4a9a-a6c9-c2324f7822d5.sock plugin_type=DRAPlugin
-    Aug 13 10:13:18 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:13:18.205633Z  INFO CreateContainer succeeded container=c container_id=cb3d691ad1abe683092ec7ddadd99cd57fcfcfc6467ab67cd802e3dc02749e02
-    Aug 13 10:14:07 runnervmvrwv9 run-nodelet.sh[14335]: 2026-08-13T10:14:07.455504Z  INFO node status pushed
+    Aug 13 16:01:03 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:03.813173Z  INFO CreateContainer succeeded container=node-driver-registrar container_id=c7bc2e936a1ac7f0b1d8d2d822c5c3edc7a7bfa0d2b018f95050a80a712d1de2
+    Aug 13 16:01:04 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:04.683654Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 13 16:01:04 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:04.883626Z  INFO CreateContainer succeeded container=liveness-probe container_id=1834a55da625601c953f21c6d19d3574f392791aceb853071060b0c6f3f97bdd
+    Aug 13 16:01:06 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:06.374990Z  INFO CreateContainer succeeded container=csi-attacher container_id=194a865f23b9c139898e3a531c39633f80992ff25c3b4d103aee95c3b639b7e4
+    Aug 13 16:01:08 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:08.237088Z  INFO CreateContainer succeeded container=csi-provisioner container_id=89a074a00b298a9a53746a0960f35d69b43c640197d124f4d017688f340b47c8
+    Aug 13 16:01:10 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:10.007968Z  INFO CreateContainer succeeded container=csi-resizer container_id=2344b84df61e9e39388c42ffd0d743aa87ffeb8273eabc01439b29e1db2b0ecf
+    Aug 13 16:01:11 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:11.678252Z  INFO CreateContainer succeeded container=csi-snapshotter container_id=4f29c20489044d34c9adcf50d596576af88835abb25e0810dcc1722b8459cdf8
+    Aug 13 16:01:21 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:21.790856Z  INFO CreateContainer succeeded container=plugin container_id=df582865a303769da7335c3898e28bf4a2e8583a4cee36e94a04f9d0a83d2a2b
+    Aug 13 16:01:24 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:24.747021Z  INFO node status pushed
+    Aug 13 16:01:25 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:25.707067Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-m5b8c
+    Aug 13 16:01:25 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:25.821997Z  INFO CreateContainer succeeded container=plugin container_id=a352f698ff44fca52a4d852d4a3aa21539ab45f1d0bd402e09f4343724e7464d
+    Aug 13 16:01:25 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:25.945551Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-m5b8c
+    Aug 13 16:01:32 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:32.510132Z  INFO CreateContainer succeeded container=c container_id=a82924e89f257eb2dc0463e0930ae7b0a3699ae42cfb91ae2ccdafc30f967da3
+    Aug 13 16:01:34 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:34.706023Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-be9810de-ca96-4343-ba09-a57ad1bea54a.sock plugin_type=DRAPlugin
+    Aug 13 16:02:24 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:02:24.788516Z  INFO node status pushed
 ▶ test_scheduler_holds_the_leader_lease
   ✔ PASS (8s)
 
@@ -36,4 +36,4 @@ Results: 1 passed, 1 failed, 0 skipped
 Failed:
   - test_scheduler_honours_a_node_selector_that_matches
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786615996...
+==> Cleaning up test namespace not-k8s-e2e-1786636890...
