@@ -97,6 +97,17 @@ MEASURE_COMPONENTS=(
     # profiling that already runs, rather than the day someone remembers.
     "nodeapiserver|nodeapiserver|nodeapiserver|the API server, replacing kube-apiserver"
     "nodescheduler|nodescheduler|nodescheduler|the scheduler, replacing kube-scheduler"
+    # Not ours, and measured precisely because they are not.
+    #
+    # Stock k3s runs flannel *inside* the k3s process and brings its own
+    # containerd; this stack runs flanneld as its own service and uses the
+    # host's containerd. Counting only the not-k8s binaries would put
+    # flannel's cost inside k3s's row on one side and nowhere at all on the
+    # other, which makes the comparison flatter this project for free — the
+    # exact failure this table exists to stop. They are rows, so both sides
+    # are whole-stack numbers.
+    "containerd|containerd|containerd|the container runtime (k3s bundles its own; this stack uses the host's)"
+    "flanneld|flanneld|flanneld|the CNI overlay daemon (a separate service here, in-process on stock k3s)"
 )
 
 # ── Process discovery ───────────────────────────────────────────────────────
