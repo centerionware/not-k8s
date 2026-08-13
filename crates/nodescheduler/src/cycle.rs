@@ -56,7 +56,7 @@
 use crate::cache::{NodeInfo, PodInfo, Snapshot};
 use crate::framework::status::{Code, NodeToStatus, Status};
 use crate::framework::{CycleState, Registry, MAX_NODE_SCORE};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Below this many nodes, always consider all of them: the saving is not worth
 /// the risk of missing a good placement on a small cluster.
@@ -182,135 +182,70 @@ pub enum CycleOutcome {
         reason: String,
         unschedulable_plugins: Vec<&'static str>,
         pending_plugins: Vec<&'static str>,
-        /// Set once preemption has promised this pod a node.
+        /// Set by a PostFilter plugin that freed capacity — the pod is
+        /// promised this node once its victims are gone.
         nominated_node: Option<String>,
-        /// Why each node was rejected. Carried out of the cycle because
-        /// preemption's first question is which nodes eviction could
-        /// plausibly fix — the ones rejected `Unschedulable` rather than
-        /// `UnschedulableAndUnresolvable` — and that answer only exists here.
-        node_statuses: NodeToStatus,
     },
     /// A plugin itself failed. Retried; never treated as a placement decision.
     Error { reason: String },
 }
 
-/// Everything a cycle needs that is not the pod, minus the plugin registry.
-///
-/// The registry is *not* a field here, deliberately — see the module's
-/// "Multiple profiles, one Scheduler" section below. Everything that genuinely
-/// is per-cycle-but-cluster-wide state (the round-robin sweep position, and
-/// which nodes are already promised to a pending preemption) lives here
-/// instead, shared across every profile's cycles because they all compete for
-/// the same nodes.
-///
-/// # Multiple profiles, one `Scheduler`
-///
-/// A cluster can run several `spec.schedulerName` profiles out of one
-/// process, sharing one queue and one `QueueSort` — see `docs/SCHEDULER.md`'s
-/// "Phase 5" and `lib.rs`'s `schedule_forever`. What must **not** be shared
-/// per profile is `next_start_node_index`/`nominator`: two profiles placing
-/// pods onto the same nodes have to see one consistent sweep position and one
-/// consistent set of preemption promises, or they double-book exactly the way
-/// two pods within one profile would. So `Scheduler` holds no `Registry` at
-/// all; every method below takes the calling cycle's `&Registry` as an
-/// explicit parameter, resolved by the caller from `pod.scheduler_name`.
+/// Everything a cycle needs that is not the pod.
 pub struct Scheduler {
+    pub registry: Registry,
     pub percentage_of_nodes_to_score: i32,
     /// Rotates across cycles; see [`advance_start_index`].
     pub next_start_node_index: usize,
-    /// Pods that have preempted and are waiting for their victims to drain.
-    ///
-    /// Shared (not owned outright) with `watch::WatchTargets` — a pod
-    /// deleted before it ever reaches this cycle's own "scheduled" branch
-    /// (see `lib.rs`) needs its nomination cleared from the same map the
-    /// watch task can reach, or it leaks: `Nominator` has no TTL and a
-    /// filter treats every nominee on a node as permanently there (see
-    /// `find_feasible_nodes`'s nominees loop below) until something calls
-    /// `remove`.
-    pub nominator: Arc<Mutex<crate::preempt::Nominator>>,
 }
 
 impl Scheduler {
-    pub fn new(percentage_of_nodes_to_score: i32, nominator: Arc<Mutex<crate::preempt::Nominator>>) -> Self {
-        Self {
-            percentage_of_nodes_to_score,
-            next_start_node_index: 0,
-            nominator,
-        }
+    pub fn new(registry: Registry, percentage_of_nodes_to_score: i32) -> Self {
+        Self { registry, percentage_of_nodes_to_score, next_start_node_index: 0 }
     }
 
-    /// Run one full scheduling cycle for one pod, against `registry` — the
-    /// profile this pod's `spec.schedulerName` resolved to.
-    ///
-    /// Returns the [`CycleState`] alongside the outcome: PreFilter and Reserve
-    /// wrote into it, and the binding cycle needs exactly that state to run
-    /// PreBind and — on failure — to unwind the right reservations. Dropping
-    /// it here instead would make `unreserve` a no-op, and a plugin that had
-    /// claimed something would leak it on every failed bind.
-    pub async fn schedule_one(
+    /// Run one full scheduling cycle for one pod.
+    pub fn schedule_one(
         &mut self,
-        registry: &Registry,
-        extenders: &[crate::extender::Extender],
         pod: &PodInfo,
         snapshot: &Snapshot,
         rng: &mut Rng,
-    ) -> (CycleOutcome, CycleState) {
+    ) -> CycleOutcome {
         if snapshot.is_empty() {
-            return (
-                CycleOutcome::Unschedulable {
-                    reason: "no nodes available to schedule pods".to_string(),
-                    // Not an empty list: an empty `unschedulable_plugins`
-                    // tells the queue no registered hint applies, so
-                    // nothing ever re-wakes this pod except the blind
-                    // backoff timer — found live in CI as
-                    // test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection
-                    // flaking whenever its pod's very first cycle lands in
-                    // the empty-cache window right after a scheduler
-                    // restart: the pod got parked with no event
-                    // subscription at all and never got a second cycle to
-                    // actually reach the extender. `NodeResourcesFit` is
-                    // unconditionally present in every profile and its own
-                    // `events_to_register()` already reacts to `Node ADD`
-                    // — reusing it here is exactly the event that resolves
-                    // "there were no nodes".
-                    unschedulable_plugins: vec![crate::framework::plugins::node_resources_fit::NAME],
-                    pending_plugins: Vec::new(),
-                    nominated_node: None,
-                    node_statuses: NodeToStatus::default(),
-                },
-                CycleState::default(),
-            );
+            return CycleOutcome::Unschedulable {
+                reason: "no nodes available to schedule pods".to_string(),
+                unschedulable_plugins: Vec::new(),
+                pending_plugins: Vec::new(),
+                nominated_node: None,
+            };
         }
 
         let mut state = CycleState::default();
 
         // ── PreFilter ───────────────────────────────────────────────────
         let mut restricted: Option<Vec<String>> = None;
-        for plugin in &registry.pre_filter {
+        for plugin in &self.registry.pre_filter {
             let (status, nodes) = plugin.pre_filter(&mut state, pod, snapshot);
             match status.code {
                 Code::Success | Code::Skip => {}
                 Code::Error => {
-                    return (CycleOutcome::Error { reason: status.to_string() }, state);
+                    return CycleOutcome::Error { reason: status.to_string() };
                 }
                 _ => {
                     // A whole-cluster rejection: no point looking at nodes.
-                    let (unschedulable_plugins, pending_plugins) =
-                        if status.code == Code::Pending {
-                            (Vec::new(), vec![status.plugin])
+                    return CycleOutcome::Unschedulable {
+                        reason: status.to_string(),
+                        unschedulable_plugins: if status.code == Code::Pending {
+                            Vec::new()
                         } else {
-                            (vec![status.plugin], Vec::new())
-                        };
-                    return (
-                        CycleOutcome::Unschedulable {
-                            reason: status.to_string(),
-                            unschedulable_plugins,
-                            pending_plugins,
-                            nominated_node: None,
-                            node_statuses: NodeToStatus::default(),
+                            vec![status.plugin]
                         },
-                        state,
-                    );
+                        pending_plugins: if status.code == Code::Pending {
+                            vec![status.plugin]
+                        } else {
+                            Vec::new()
+                        },
+                        nominated_node: None,
+                    };
                 }
             }
             // Intersect rather than replace: two plugins each naming a node
@@ -325,117 +260,57 @@ impl Scheduler {
             }
         }
 
-        // Computed before Filter, not just before scoring: `find_feasible_nodes`
-        // itself needs to know whether an extender can still turn one more
-        // feasible node into a meaningful choice, or its own "nothing to
-        // score, stop at one" short-circuit (`registry.score.is_empty()`)
-        // would strand an extender-only prioritizer at a single candidate
-        // before it ever got a say.
-        let any_prioritizer = extenders.iter().any(|e| e.config.prioritize_verb.is_some());
-
         // ── Filter ──────────────────────────────────────────────────────
         let (feasible, node_statuses, processed) =
-            self.find_feasible_nodes(registry, &mut state, pod, snapshot, restricted.as_deref(), any_prioritizer);
+            self.find_feasible_nodes(&state, pod, snapshot, restricted.as_deref());
 
         self.next_start_node_index =
             advance_start_index(self.next_start_node_index, processed, snapshot.num_nodes());
 
-        // ── HTTP extenders' Filter ──────────────────────────────────────
-        //
-        // Run in configured order, each one narrowing what the last left —
-        // upstream's own `findNodesThatPassExtenders` does the same
-        // sequential narrowing rather than intersecting independent calls,
-        // so a later extender only ever sees nodes every earlier one already
-        // accepted. A node an extender rejects becomes `Unschedulable` (its
-        // own reason recorded, same as a plugin's); one on the *unresolvable*
-        // list is excluded from preemption candidacy the same way a plugin's
-        // `UnschedulableAndUnresolvable` verdict is. An `ignorable` extender
-        // that errors is logged and skipped rather than failing the whole
-        // cycle — that is the entire meaning of the flag.
-        let mut feasible = feasible;
-        let mut node_statuses = node_statuses;
-        for extender in extenders {
-            if feasible.is_empty() {
-                break;
-            }
-            if !extender.config.applies_to(pod) {
-                continue; // managedResources set, and pod requests none of them
-            }
-            let refs: Vec<&NodeInfo> = feasible.iter().map(|n| n.as_ref()).collect();
-            match extender.filter(pod, &refs).await {
-                Ok(Some(outcome)) => {
-                    for (node, reason) in &outcome.failed {
-                        node_statuses.record(node.clone(), Status::unschedulable("HTTPExtender", reason.clone()));
-                    }
-                    for (node, reason) in &outcome.failed_unresolvable {
-                        node_statuses.record(node.clone(), Status::unresolvable("HTTPExtender", reason.clone()));
-                    }
-                    feasible.retain(|n| outcome.passed.contains(&n.name));
-                }
-                Ok(None) => {} // this extender has no filterVerb configured
-                Err(e) => {
-                    if extender.config.ignorable {
-                        tracing::warn!(extender = %extender.config.url_prefix, error = %e, "ignorable extender filter call failed; continuing without it");
-                    } else {
-                        return (CycleOutcome::Error { reason: e.to_string() }, state);
-                    }
-                }
-            }
-        }
-
         if feasible.is_empty() {
             // ── PostFilter (preemption) ─────────────────────────────────
-            for plugin in &registry.post_filter {
+            for plugin in &self.registry.post_filter {
                 let (status, nominated) =
-                    plugin.post_filter(&mut state, pod, snapshot, &node_statuses).await;
+                    plugin.post_filter(&mut state, pod, snapshot, &node_statuses);
                 if status.is_success() || nominated.is_some() {
-                    return (
-                        CycleOutcome::Unschedulable {
-                            reason: status.to_string(),
-                            unschedulable_plugins: node_statuses.rejecting_plugins(),
-                            pending_plugins: Vec::new(),
-                            nominated_node: nominated,
-                            node_statuses,
-                        },
-                        state,
-                    );
+                    return CycleOutcome::Unschedulable {
+                        reason: status.to_string(),
+                        unschedulable_plugins: node_statuses.rejecting_plugins(),
+                        pending_plugins: Vec::new(),
+                        nominated_node: nominated,
+                    };
                 }
             }
-            return (
-                CycleOutcome::Unschedulable {
-                    reason: node_statuses.summary(snapshot.num_nodes()),
-                    unschedulable_plugins: node_statuses.rejecting_plugins(),
-                    pending_plugins: Vec::new(),
-                    nominated_node: None,
-                    node_statuses,
-                },
-                state,
-            );
+            let mut unschedulable = node_statuses.rejecting_plugins();
+            let pending: Vec<&'static str> = Vec::new();
+            unschedulable.retain(|p| !pending.contains(p));
+            return CycleOutcome::Unschedulable {
+                reason: node_statuses.summary(snapshot.num_nodes()),
+                unschedulable_plugins: unschedulable,
+                pending_plugins: pending,
+                nominated_node: None,
+            };
         }
 
-        // A single candidate needs no scoring, extenders included — there is
-        // nothing left to distinguish it from. With more than one candidate,
-        // scoring can still matter even with zero Score *plugins* if an
-        // extender configures `prioritizeVerb` — `any_prioritizer` above is
-        // exactly what let `find_feasible_nodes` collect more than one
-        // candidate in the first place.
-        if feasible.len() == 1 || (registry.score.is_empty() && !any_prioritizer) {
-            return (CycleOutcome::Scheduled { node: feasible[0].name.clone() }, state);
+        // A single candidate needs no scoring — and with no Score plugins at
+        // all, scoring cannot distinguish anything anyway.
+        if feasible.len() == 1 || self.registry.score.is_empty() {
+            return CycleOutcome::Scheduled { node: feasible[0].name.clone() };
         }
 
         // ── PreScore / Score / Normalize ────────────────────────────────
         let refs: Vec<&NodeInfo> = feasible.iter().map(|n| n.as_ref()).collect();
-        for plugin in &registry.pre_score {
+        for plugin in &self.registry.pre_score {
             let status = plugin.pre_score(&mut state, pod, &refs);
             if status.code == Code::Error {
-                return (CycleOutcome::Error { reason: status.to_string() }, state);
+                return CycleOutcome::Error { reason: status.to_string() };
             }
         }
 
         let mut totals: Vec<(String, i64)> =
             feasible.iter().map(|n| (n.name.clone(), 0i64)).collect();
 
-        for plugin in &registry.score {
+        for plugin in &self.registry.score {
             if state.score_skipped(plugin.name()) {
                 continue;
             }
@@ -443,65 +318,27 @@ impl Scheduler {
             for node in &feasible {
                 match plugin.score(&state, pod, node) {
                     Ok(v) => raw.push(v),
-                    Err(status) => {
-                        return (CycleOutcome::Error { reason: status.to_string() }, state)
-                    }
+                    Err(status) => return CycleOutcome::Error { reason: status.to_string() },
                 }
             }
             let status = plugin.normalize(&state, pod, &mut raw);
             if status.code == Code::Error {
-                return (CycleOutcome::Error { reason: status.to_string() }, state);
+                return CycleOutcome::Error { reason: status.to_string() };
             }
             let weight = plugin.weight();
             for (total, score) in totals.iter_mut().zip(raw.iter()) {
                 // Clamp before weighting: a plugin whose normalize is wrong
                 // must not be able to swamp every other plugin's contribution.
-                total.1 += (*score).clamp(0, MAX_NODE_SCORE) * weight;
+                total.1 += score.clamp(0, MAX_NODE_SCORE) * weight;
             }
         }
 
-        // ── HTTP extenders' Prioritize ──────────────────────────────────
-        //
-        // Added into the already-normalized-and-weighted plugin totals.
-        // `Extender::prioritize` already applied upstream's own rescale
-        // (`score * weight * MAX_NODE_SCORE / MaxExtenderPriority`), so what
-        // lands here is on the same `[0, MAX_NODE_SCORE]`-per-weight-unit
-        // scale a plugin's contribution is — see that function's doc
-        // comment for the upstream source this was checked against. An
-        // `ignorable` extender that errors here is skipped, not fatal — the
-        // pod still gets placed using whatever scores plugins and any other
-        // extenders already produced.
-        let refs: Vec<&NodeInfo> = feasible.iter().map(|n| n.as_ref()).collect();
-        for extender in extenders {
-            if !extender.config.applies_to(pod) {
-                continue; // managedResources set, and pod requests none of them
-            }
-            match extender.prioritize(pod, &refs).await {
-                Ok(Some(scores)) => {
-                    for (host, score) in scores {
-                        if let Some(total) = totals.iter_mut().find(|(n, _)| *n == host) {
-                            total.1 += score;
-                        }
-                    }
-                }
-                Ok(None) => {} // this extender has no prioritizeVerb configured
-                Err(e) => {
-                    if extender.config.ignorable {
-                        tracing::warn!(extender = %extender.config.url_prefix, error = %e, "ignorable extender prioritize call failed; continuing without it");
-                    } else {
-                        return (CycleOutcome::Error { reason: e.to_string() }, state);
-                    }
-                }
-            }
-        }
-
-        let outcome = match select_host(&totals, rng) {
+        match select_host(&totals, rng) {
             Some(node) => CycleOutcome::Scheduled { node },
             None => CycleOutcome::Error {
                 reason: "scoring produced no candidate despite feasible nodes".to_string(),
             },
-        };
-        (outcome, state)
+        }
     }
 
     /// Sweep nodes until enough are feasible, starting where the last cycle
@@ -513,22 +350,16 @@ impl Scheduler {
     /// found.
     fn find_feasible_nodes(
         &self,
-        registry: &Registry,
-        state: &mut CycleState,
+        state: &CycleState,
         pod: &PodInfo,
         snapshot: &Snapshot,
         restricted: Option<&[String]>,
-        any_prioritizer: bool,
     ) -> (Vec<Arc<NodeInfo>>, NodeToStatus, usize) {
         let all = snapshot.nodes();
         let num_all = all.len();
-        let wanted = if registry.score.is_empty() && !any_prioritizer {
+        let wanted = if self.registry.score.is_empty() {
             // With nothing to compare on, the first feasible node is as good
-            // as the best one, so stop at one. An extender's own
-            // `prioritizeVerb` counts as "something to compare on" even when
-            // no built-in Score plugin is registered — otherwise the sweep
-            // would strand a profile with an extender-only prioritizer at a
-            // single candidate before the extender ever got a say.
+            // as the best one, so stop at one.
             1
         } else {
             num_feasible_nodes_to_find(self.percentage_of_nodes_to_score, num_all as i32)
@@ -549,33 +380,8 @@ impl Scheduler {
                 }
             }
 
-            // Pods already promised this node by a previous preemption must
-            // be treated as if they were on it. Skipping this has two
-            // preemptors both see the same freed capacity and both claim it —
-            // a double-booking that only appears under concurrent preemption
-            // and that no single-pod test reproduces.
-            //
-            // Only nominees at least as important as this pod count. A less
-            // important nominee cannot legitimately keep us out; it would
-            // itself be preemptable.
-            let nominees: Vec<Arc<PodInfo>> = self
-                .nominator
-                .lock()
-                .unwrap()
-                .nominated_on(&node.name)
-                .into_iter()
-                .filter(|n| n.priority >= pod.priority && n.uid != pod.uid)
-                .collect();
-            for plugin in &registry.pre_filter {
-                if let Some(ext) = plugin.extensions() {
-                    for nominee in &nominees {
-                        ext.add_pod(state, pod, nominee, node);
-                    }
-                }
-            }
-
             let mut rejected = None;
-            for plugin in &registry.filter {
+            for plugin in &self.registry.filter {
                 if state.filter_skipped(plugin.name()) {
                     continue;
                 }
@@ -586,18 +392,6 @@ impl Scheduler {
                     // un-reject the node, and running them is pure cost on
                     // the node-count-times-plugin-count hot path.
                     break;
-                }
-            }
-
-            // Undo, so the next node is judged on its own merits. Same
-            // symmetry requirement as preemption's dry runs — an asymmetric
-            // add/remove pair would leak this node's nominees into every
-            // later node's answer.
-            for plugin in &registry.pre_filter {
-                if let Some(ext) = plugin.extensions() {
-                    for nominee in &nominees {
-                        ext.remove_pod(state, pod, nominee, node);
-                    }
                 }
             }
 
@@ -645,174 +439,3 @@ pub fn run_unreserve(registry: &Registry, state: &mut CycleState, pod: &PodInfo,
 #[cfg(test)]
 #[path = "cycle_tests.rs"]
 mod tests;
-
-// ── Preemption ──────────────────────────────────────────────────────────
-//
-// Driven from here rather than from a `PostFilterPlugin`, and the reason is
-// structural rather than behavioural. Preemption's dry runs must re-run the
-// Filter plugins against a hypothetical pod set, and a plugin is not handed
-// the other plugins — upstream solves this by passing a framework Handle into
-// the plugin, which is a larger surface than this crate needs for one caller.
-//
-// The behaviour is unchanged: it runs only when zero nodes were feasible,
-// only over nodes rejected as `Unschedulable`, and produces the same victims
-// upstream's DefaultPreemption would. `preempt.rs` holds every rule; this is
-// the part that needs the registry.
-
-/// What a preemption attempt concluded.
-pub struct PreemptionOutcome {
-    /// The node promised to the preemptor.
-    pub nominated_node: String,
-    /// Pods that must be deleted before it can be placed, as `namespace/name`.
-    pub victims: Vec<String>,
-}
-
-impl Scheduler {
-    /// Try to make room for `pod` by evicting less important pods.
-    ///
-    /// Returns `None` when preemption is not eligible, no node is a
-    /// candidate, or no victim set makes the pod fit — all of which mean
-    /// "leave the cluster alone", which is the right answer far more often
-    /// than not.
-    pub fn preempt(
-        &self,
-        registry: &Registry,
-        pod: &PodInfo,
-        snapshot: &Snapshot,
-        node_statuses: &NodeToStatus,
-        budgets: &[crate::preempt::PdbState],
-        rng: &mut Rng,
-    ) -> Option<PreemptionOutcome> {
-        use crate::preempt::{
-            eligible_to_preempt, offset_and_num_candidates, pick_one_node, select_victims_on_node,
-            Candidate,
-        };
-
-        // A nomination still draining means room is already being made; a
-        // second attempt would evict a second set of pods for it.
-        let nominated = self
-            .nominator
-            .lock()
-            .unwrap()
-            .nominated_node(&pod.uid)
-            .map(str::to_string);
-        let draining = nominated
-            .as_deref()
-            .and_then(|n| snapshot.node(n))
-            .map(|n| n.pods.iter().any(|p| p.priority < pod.priority))
-            .unwrap_or(false);
-        eligible_to_preempt(pod.preemption_policy.as_deref(), draining, false).ok()?;
-
-        // Only nodes eviction could actually fix. A node rejected as
-        // UnschedulableAndUnresolvable — wrong name, unmatched affinity, no
-        // topology domain — stays rejected however many pods die on it.
-        let candidates_by_name = node_statuses.preemption_candidates();
-        if candidates_by_name.is_empty() {
-            return None;
-        }
-
-        let (offset, wanted) =
-            offset_and_num_candidates(candidates_by_name.len() as i32, rng);
-
-        let mut found: Vec<Candidate> = Vec::new();
-        for i in 0..candidates_by_name.len() {
-            if found.len() as i32 >= wanted {
-                break;
-            }
-            let idx = (offset as usize + i) % candidates_by_name.len();
-            let Some(node) = snapshot.node(candidates_by_name[idx]) else {
-                continue;
-            };
-
-            // A fresh CycleState per node: PreFilter's per-cycle work is
-            // cheap to redo and sharing one across nodes would leak one
-            // node's hypothetical removals into the next node's answer.
-            let mut state = CycleState::default();
-            for plugin in &registry.pre_filter {
-                plugin.pre_filter(&mut state, pod, snapshot);
-            }
-
-            let mut budgets = budgets.to_vec();
-            let victims = select_victims_on_node(pod, node, &mut budgets, |removed| {
-                self.fits_without(registry, &mut state, pod, node, removed)
-            });
-
-            if let Some(victims) = victims {
-                let victim_pods: Vec<&PodInfo> = node
-                    .pods
-                    .iter()
-                    .filter(|p| victims.pods.contains(&p.key()))
-                    .map(|p| p.as_ref())
-                    .collect();
-                let highest = victim_pods.iter().map(|p| p.priority).max().unwrap_or(0);
-                found.push(Candidate {
-                    node: node.name.clone(),
-                    highest_victim_priority: highest,
-                    sum_victim_priorities: victim_pods.iter().map(|p| p.priority as i64).sum(),
-                    latest_start_of_highest: victim_pods
-                        .iter()
-                        .filter(|p| p.priority == highest)
-                        .map(|p| crate::preempt::pod_start_time(p))
-                        .max(),
-                    victims,
-                });
-            }
-        }
-
-        let best = pick_one_node(&found)?;
-        let node = snapshot.node(&best.node)?;
-        Some(PreemptionOutcome {
-            nominated_node: best.node.clone(),
-            victims: node
-                .pods
-                .iter()
-                .filter(|p| best.victims.pods.contains(&p.key()))
-                .map(|p| p.key())
-                .collect(),
-        })
-    }
-
-    /// Would the pod fit on this node with `removed` hypothetically gone?
-    ///
-    /// The removals are applied to `CycleState` through each plugin's
-    /// `PreFilterExtensions`, the filters are run, and then the removals are
-    /// **undone**. That undo is what makes the state reusable across trials,
-    /// and it is only correct because every extension's add/remove pair is
-    /// symmetric — each is a `+1`/`-1` on the same counter. A plugin whose
-    /// pair was not symmetric would corrupt every subsequent trial rather
-    /// than only its own, which is why they are tested in pairs.
-    fn fits_without(
-        &self,
-        registry: &Registry,
-        state: &mut CycleState,
-        pod: &PodInfo,
-        node: &NodeInfo,
-        removed: &[&PodInfo],
-    ) -> bool {
-        for plugin in &registry.pre_filter {
-            if let Some(ext) = plugin.extensions() {
-                for victim in removed {
-                    ext.remove_pod(state, pod, victim, node);
-                }
-            }
-        }
-
-        let fits = registry.filter.iter().all(|plugin| {
-            if state.filter_skipped(plugin.name()) {
-                return true;
-            }
-            let status = plugin.filter(state, pod, node);
-            status.is_success() || status.is_skip()
-        });
-
-        for plugin in &registry.pre_filter {
-            if let Some(ext) = plugin.extensions() {
-                for victim in removed {
-                    ext.add_pod(state, pod, victim, node);
-                }
-            }
-        }
-
-        fits
-    }
-}

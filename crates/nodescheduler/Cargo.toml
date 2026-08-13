@@ -36,6 +36,5 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 futures = { workspace = true }
 rustls = { workspace = true }
-chrono = { workspace = true }
 async-trait = { workspace = true }
 http = "1"

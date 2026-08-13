@@ -29,7 +29,7 @@
 //! `MAX_CONTAINER_THRESHOLD` (1000 MB) are capped, so one enormous image
 //! cannot swamp every other consideration.
 
-use crate::cache::{NodeInfo, PodInfo, Snapshot};
+use crate::cache::{NodeInfo, PodInfo};
 use crate::framework::status::Status;
 use crate::framework::{CycleState, Plugin, PreScorePlugin, ScorePlugin, MAX_NODE_SCORE};
 

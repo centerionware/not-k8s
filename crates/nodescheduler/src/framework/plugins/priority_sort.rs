@@ -45,13 +45,13 @@ impl QueueSortPlugin for PrioritySort {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration, Utc};
+    use k8s_openapi::jiff::{Span, Timestamp};
 
     fn pod_at(name: &str, priority: i32, secs: i64) -> PodInfo {
         PodInfo {
             name: name.to_string(),
             priority,
-            queued_at: Utc::now() + Duration::seconds(secs),
+            queued_at: Timestamp::now() + Span::new().seconds(secs),
             ..Default::default()
         }
     }

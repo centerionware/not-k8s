@@ -50,7 +50,8 @@ use backoff::BackoffQueue;
 use hints::{HintRegistry, RequeueDecision};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 use tokio::sync::Notify;
 
 /// How long a pod may sit in `unschedulable` before it is retried regardless.

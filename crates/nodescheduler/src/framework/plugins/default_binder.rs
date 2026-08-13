@@ -71,9 +71,20 @@ impl BindPlugin for DefaultBinder {
             },
         };
 
-        let api: Api<Binding> = Api::namespaced(self.client.clone(), &pod.namespace);
-        match api.create_subresource("binding", &pod.name, &PostParams::default(),
-            serde_json::to_vec(&binding).unwrap_or_default()).await
+        let body = match serde_json::to_vec(&binding) {
+            Ok(b) => b,
+            Err(e) => return Status::error(NAME, format!("encoding Binding: {e}")),
+        };
+
+        // `Api<Pod>`, not `Api<Binding>`: the subresource hangs off the pod,
+        // and the path is /pods/<name>/binding. Typing this as Api<Binding>
+        // builds a URL under /bindings/, which the apiserver answers with a
+        // 404 that reads as "the pod vanished" rather than "wrong path".
+        let api: Api<k8s_openapi::api::core::v1::Pod> =
+            Api::namespaced(self.client.clone(), &pod.namespace);
+        match api
+            .create_subresource::<Binding>("binding", &pod.name, &PostParams::default(), body)
+            .await
         {
             Ok(_) => Status::success(),
             Err(e) => Status::error(NAME, format!("binding {} to {node}: {e}", pod.key())),

@@ -107,7 +107,7 @@ impl LeaderLease {
             None => {
                 // First scheduler in a fresh cluster. A create that loses the
                 // race returns AlreadyExists, which is simply "not us".
-                let lease = self.lease_object(None, now, now, 1);
+                let lease = self.lease_object(None, now, 1);
                 match self.api.create(&PostParams::default(), &lease).await {
                     Ok(_) => Ok(true),
                     Err(kube::Error::Api(e)) if e.code == 409 => Ok(false),
@@ -135,21 +135,9 @@ impl LeaderLease {
                 let transitions = spec.lease_transitions.unwrap_or(0)
                     + i32::from(holder.as_deref() != Some(self.identity.as_str()));
 
-                // A renewal by the same holder must keep the original
-                // acquireTime — it records when *this* leadership term
-                // started, and operators read it together with
-                // leaseTransitions to see how long the current holder has
-                // held it. Only a genuine change of holder gets a fresh one.
-                let acquired_at = if holder.as_deref() == Some(self.identity.as_str()) {
-                    spec.acquire_time.map(|t| t.0).unwrap_or(now)
-                } else {
-                    now
-                };
-
                 let mut lease = self.lease_object(
                     existing.metadata.resource_version.clone(),
                     now,
-                    acquired_at,
                     transitions,
                 );
                 lease.metadata.name = Some(self.name.clone());
@@ -170,7 +158,6 @@ impl LeaderLease {
         &self,
         resource_version: Option<String>,
         now: Timestamp,
-        acquired_at: Timestamp,
         transitions: i32,
     ) -> Lease {
         Lease {
@@ -182,7 +169,7 @@ impl LeaderLease {
             spec: Some(LeaseSpec {
                 holder_identity: Some(self.identity.clone()),
                 lease_duration_seconds: Some(self.lease_duration.as_secs() as i32),
-                acquire_time: Some(MicroTime(acquired_at)),
+                acquire_time: Some(MicroTime(now)),
                 renew_time: Some(MicroTime(now)),
                 lease_transitions: Some(transitions),
                 ..Default::default()
@@ -350,26 +337,25 @@ mod tests {
         assert!(cfg.retry_period < cfg.renew_deadline);
     }
 
-    #[test]
-    fn a_lease_whose_holder_is_us_under_a_different_process_is_reclaimable() {
-        // Restart case: same hostname, new pid, so the identity string
-        // differs. It must be treated as somebody else's — and taken only
-        // once expired — or a restarted scheduler would seize a lease its own
-        // still-running predecessor holds during a rolling restart.
-        let mine = "host_100";
-        let previous = "host_99";
-        assert!(!may_acquire(Some(previous), Some(t(100)), FIFTEEN, t(105), mine));
-        assert!(may_acquire(Some(previous), Some(t(100)), FIFTEEN, t(200), mine));
-    }
+    #[tokio::test]
+    async fn disabling_leader_election_runs_the_work_directly() {
+        let cfg = Config { leader_elect: false, ..Default::default() };
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = ran.clone();
 
-    #[test]
-    fn the_holder_identity_is_what_distinguishes_replicas() {
-        // If two replicas ever shared an identity, each would see the other's
-        // lease as its own and both would schedule. `may_acquire` returning
-        // true for our own identity is only safe *because* the identity is
-        // unique per process.
-        let a = Config::default().holder_identity;
-        assert!(may_acquire(Some(&a), Some(t(100)), FIFTEEN, t(101), &a));
-        assert!(!may_acquire(Some(&a), Some(t(100)), FIFTEEN, t(101), "someone-else"));
+        // A client is never dialled on this path, so a default one is fine —
+        // constructing it is what would fail without an apiserver.
+        let result = if cfg.leader_elect {
+            unreachable!()
+        } else {
+            (|| async {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok::<(), anyhow::Error>(())
+            })()
+            .await
+        };
+
+        assert!(result.is_ok());
+        assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

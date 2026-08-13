@@ -18,7 +18,7 @@ fn ready_condition(status: &str, heartbeat_secs: i64) -> NodeCondition {
         type_: "Ready".to_string(),
         status: status.to_string(),
         last_heartbeat_time: Some(Time(
-            chrono::DateTime::from_timestamp(heartbeat_secs, 0).unwrap(),
+            k8s_openapi::jiff::Timestamp::from_second(heartbeat_secs).unwrap(),
         )),
         ..Default::default()
     }

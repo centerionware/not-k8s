@@ -39,7 +39,7 @@ use crate::events::{ActionType, ClusterEvent, EventResource};
 use crate::framework::status::{Code, Status};
 use crate::framework::{CycleState, Registry};
 use crate::queue::SchedulingQueue;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// What the binding cycle concluded, for the caller's bookkeeping.
 #[derive(Debug, PartialEq, Eq)]
@@ -149,27 +149,23 @@ pub fn handle_outcome(
     outcome: &BindOutcome,
     pod: Arc<PodInfo>,
     queue: &SchedulingQueue,
-    assumed: &Mutex<crate::cache::AssumedPods>,
-    cache: &Mutex<crate::cache::Cache>,
+    assumed: &mut crate::cache::AssumedPods,
 ) {
     match outcome {
         BindOutcome::Bound => {
             // The reservation stays until the informer delivers the real bound
             // pod — see cache/assume.rs for why releasing here would be wrong.
-            assumed.lock().unwrap().finish_binding(&pod.uid);
+            assumed.finish_binding(&pod.uid);
         }
         BindOutcome::Rejected { reason, plugins } => {
             tracing::info!(pod = %pod.key(), %reason, "binding cycle rejected the pod");
-            release(&pod, assumed, cache);
+            assumed.forget(&pod.uid);
             queue.add_unschedulable(pod, plugins.clone(), Vec::new());
         }
         BindOutcome::Failed { reason } => {
             tracing::warn!(pod = %pod.key(), %reason, "binding cycle failed; requeueing");
-            release(&pod, assumed, cache);
-            // No plugin to name, so straight to backoff — see
-            // requeue_after_failure's own doc comment for why
-            // add_unschedulable's event-hint matching would strand this pod.
-            queue.requeue_after_failure(pod);
+            assumed.forget(&pod.uid);
+            queue.add_unschedulable(pod, Vec::new(), Vec::new());
 
             // The capacity this pod had assumed is free again. Nothing about
             // any other pod's rejection changed, so no ordinary event will
@@ -181,27 +177,6 @@ pub fn handle_outcome(
             );
         }
     }
-}
-
-/// Undo the assume: drop the reservation **and** un-commit the resources.
-///
-/// Both halves, always. The scheduling cycle does two things when it places a
-/// pod — records the reservation in `AssumedPods` and adds the pod to the
-/// node's running totals in the `Cache` — and forgetting only the first leaves
-/// the node permanently looking fuller than it is. There is no sweeper to
-/// notice: assumed pods never expire, and the `Cache` is only corrected by an
-/// informer event that will never arrive for a pod that was never bound.
-///
-/// The visible symptom would be a node that quietly stops accepting pods it
-/// has room for, with nothing in any log to say why, and it would accumulate
-/// with every failed bind until the process restarted.
-fn release(
-    pod: &PodInfo,
-    assumed: &Mutex<crate::cache::AssumedPods>,
-    cache: &Mutex<crate::cache::Cache>,
-) {
-    assumed.lock().unwrap().forget(&pod.uid);
-    cache.lock().unwrap().remove_pod(&pod.uid);
 }
 
 #[cfg(test)]

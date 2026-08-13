@@ -268,7 +268,7 @@ pub struct PodInfo {
     pub owner_references: Vec<OwnerRef>,
     /// When this pod entered the queue. Preserved across requeues — see the
     /// module header.
-    pub queued_at: chrono::DateTime<chrono::Utc>,
+    pub queued_at: k8s_openapi::jiff::Timestamp,
     /// How many scheduling cycles this pod has already burned, for backoff.
     pub attempts: u32,
     /// Set by preemption; the node this pod has been promised.
@@ -311,7 +311,7 @@ impl PodInfo {
     }
 
     /// Project an API pod.
-    pub fn from_pod(pod: &Pod, queued_at: chrono::DateTime<chrono::Utc>) -> Self {
+    pub fn from_pod(pod: &Pod, queued_at: k8s_openapi::jiff::Timestamp) -> Self {
         let spec = pod.spec.clone().unwrap_or_default();
         let meta = &pod.metadata;
 
