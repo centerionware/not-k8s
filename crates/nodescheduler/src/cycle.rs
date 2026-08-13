@@ -199,11 +199,18 @@ pub struct Scheduler {
     pub percentage_of_nodes_to_score: i32,
     /// Rotates across cycles; see [`advance_start_index`].
     pub next_start_node_index: usize,
+    /// Pods that have preempted and are waiting for their victims to drain.
+    pub nominator: crate::preempt::Nominator,
 }
 
 impl Scheduler {
     pub fn new(registry: Arc<Registry>, percentage_of_nodes_to_score: i32) -> Self {
-        Self { registry, percentage_of_nodes_to_score, next_start_node_index: 0 }
+        Self {
+            registry,
+            percentage_of_nodes_to_score,
+            next_start_node_index: 0,
+            nominator: Default::default(),
+        }
     }
 
     /// Run one full scheduling cycle for one pod.
@@ -275,7 +282,7 @@ impl Scheduler {
 
         // ── Filter ──────────────────────────────────────────────────────
         let (feasible, node_statuses, processed) =
-            self.find_feasible_nodes(&state, pod, snapshot, restricted.as_deref());
+            self.find_feasible_nodes(&mut state, pod, snapshot, restricted.as_deref());
 
         self.next_start_node_index =
             advance_start_index(self.next_start_node_index, processed, snapshot.num_nodes());
@@ -369,7 +376,7 @@ impl Scheduler {
     /// found.
     fn find_feasible_nodes(
         &self,
-        state: &CycleState,
+        state: &mut CycleState,
         pod: &PodInfo,
         snapshot: &Snapshot,
         restricted: Option<&[String]>,
@@ -399,6 +406,29 @@ impl Scheduler {
                 }
             }
 
+            // Pods already promised this node by a previous preemption must
+            // be treated as if they were on it. Skipping this has two
+            // preemptors both see the same freed capacity and both claim it —
+            // a double-booking that only appears under concurrent preemption
+            // and that no single-pod test reproduces.
+            //
+            // Only nominees at least as important as this pod count. A less
+            // important nominee cannot legitimately keep us out; it would
+            // itself be preemptable.
+            let nominees: Vec<Arc<PodInfo>> = self
+                .nominator
+                .nominated_on(&node.name)
+                .into_iter()
+                .filter(|n| n.priority >= pod.priority && n.uid != pod.uid)
+                .collect();
+            for plugin in &self.registry.pre_filter {
+                if let Some(ext) = plugin.extensions() {
+                    for nominee in &nominees {
+                        ext.add_pod(state, pod, nominee, node);
+                    }
+                }
+            }
+
             let mut rejected = None;
             for plugin in &self.registry.filter {
                 if state.filter_skipped(plugin.name()) {
@@ -411,6 +441,18 @@ impl Scheduler {
                     // un-reject the node, and running them is pure cost on
                     // the node-count-times-plugin-count hot path.
                     break;
+                }
+            }
+
+            // Undo, so the next node is judged on its own merits. Same
+            // symmetry requirement as preemption's dry runs — an asymmetric
+            // add/remove pair would leak this node's nominees into every
+            // later node's answer.
+            for plugin in &self.registry.pre_filter {
+                if let Some(ext) = plugin.extensions() {
+                    for nominee in &nominees {
+                        ext.remove_pod(state, pod, nominee, node);
+                    }
                 }
             }
 

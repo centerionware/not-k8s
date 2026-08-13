@@ -385,13 +385,30 @@ fn the_offset_is_always_inside_the_candidate_range() {
 
 // ── Nomination ──────────────────────────────────────────────────────────
 
+fn nominee(uid: &str) -> Arc<PodInfo> {
+    Arc::new(PodInfo { uid: uid.to_string(), name: uid.to_string(), ..Default::default() })
+}
+
 #[test]
 fn a_nominated_pod_is_recorded_against_its_node() {
     let mut n = Nominator::default();
-    n.nominate("p", "worker-1");
+    n.nominate(nominee("p"), "worker-1");
 
     assert_eq!(n.nominated_node("p"), Some("worker-1"));
-    assert_eq!(n.nominated_on("worker-1"), &["p".to_string()]);
+    assert_eq!(n.nominated_on("worker-1").len(), 1);
+    assert_eq!(n.nominated_on("worker-1")[0].uid, "p");
+}
+
+#[test]
+fn a_nominee_is_returned_whole_not_just_its_id() {
+    // A filter injecting it needs its requests and labels, and they cannot be
+    // recovered from the snapshot — a nominated pod is not placed yet.
+    let mut n = Nominator::default();
+    let mut p = (*nominee("p")).clone();
+    p.requests.milli_cpu = 500;
+    n.nominate(Arc::new(p), "worker-1");
+
+    assert_eq!(n.nominated_on("worker-1")[0].requests.milli_cpu, 500);
 }
 
 #[test]
@@ -399,8 +416,8 @@ fn a_node_can_hold_several_nominees() {
     // And every one of them must be visible to the next pod filtering that
     // node — otherwise two preemptors both claim the same freed capacity.
     let mut n = Nominator::default();
-    n.nominate("a", "worker-1");
-    n.nominate("b", "worker-1");
+    n.nominate(nominee("a"), "worker-1");
+    n.nominate(nominee("b"), "worker-1");
 
     assert_eq!(n.nominated_on("worker-1").len(), 2);
 }
@@ -408,19 +425,19 @@ fn a_node_can_hold_several_nominees() {
 #[test]
 fn re_nominating_a_pod_moves_it_rather_than_duplicating_it() {
     let mut n = Nominator::default();
-    n.nominate("p", "worker-1");
-    n.nominate("p", "worker-2");
+    n.nominate(nominee("p"), "worker-1");
+    n.nominate(nominee("p"), "worker-2");
 
     assert_eq!(n.nominated_node("p"), Some("worker-2"));
     assert!(n.nominated_on("worker-1").is_empty());
-    assert_eq!(n.nominated_on("worker-2"), &["p".to_string()]);
+    assert_eq!(n.nominated_on("worker-2").len(), 1);
     assert_eq!(n.len(), 1);
 }
 
 #[test]
 fn removing_a_nomination_frees_the_node() {
     let mut n = Nominator::default();
-    n.nominate("p", "worker-1");
+    n.nominate(nominee("p"), "worker-1");
     n.remove("p");
 
     assert_eq!(n.nominated_node("p"), None);
