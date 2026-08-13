@@ -25,6 +25,16 @@ k3s_supports_arch() {
 # only symptom was that nothing changed. Worth checking the *actual* unit
 # rather than trusting that a previous run configured it, since that previous
 # run may have been given different arguments entirely.
+# Escape every ERE metacharacter, so a value is matched literally.
+#
+# The previous set missed +, ?, (, ), {, } and |. A certificate path or
+# endpoint containing any of them matched nothing, this function reported "not
+# configured", and the deploy reinstalled k3s on every single re-run — a false
+# negative that is slow and confusing rather than loud.
+_ere_escape() {
+    printf '%s' "$1" | sed 's![][\\.*^$(){}?+|]!\\&!g'
+}
+
 control_plane_datastore_matches() {
     local want="${NOTK8S_DATASTORE_ENDPOINT:-}" unit=/etc/systemd/system/k3s.service
     # Nothing requested: any existing configuration is acceptable, including
@@ -39,7 +49,7 @@ control_plane_datastore_matches() {
     # changed" this function exists to catch, so the value has to be followed
     # by a delimiter or the end of the line.
     local escaped
-    escaped=$(printf '%s' "$want" | sed 's/[][\.*^$\/&]/\\&/g')
+    escaped="$(_ere_escape "$want")"
     grep -qE -- "--datastore-endpoint=$escaped([[:space:]\"']|\$)" "$unit" || return 1
     # The certificate paths are part of the configuration too: a run that
     # changes only those would otherwise keep the old unit, and k3s would go
@@ -50,7 +60,7 @@ control_plane_datastore_matches() {
         name="NOTK8S_DATASTORE_${var%%:*}"
         value="${!name:-}"
         [[ -z "$value" ]] && continue
-        escaped=$(printf '%s' "$value" | sed 's/[][\.*^$\/&]/\\&/g')
+        escaped="$(_ere_escape "$value")"
         grep -qE -- "--datastore-$flag=$escaped([[:space:]\"']|\$)" "$unit" || return 1
     done
     return 0

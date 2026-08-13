@@ -496,6 +496,18 @@ impl Driver {
                 if failed > 0 {
                     warn!(failed, "failed in-flight proposals while stopping");
                 }
+                // Stop claiming to be anything before returning. ClusterState
+                // is a cache of the last role/term/leader this driver saw, and
+                // nothing else updates it — so a driver that stops while this
+                // member was the leader leaves is_leader() answering true and
+                // leader_id() naming this member, permanently. The client API
+                // reads exactly those: it would keep serving local reads as if
+                // current, keep advertising itself as the leader over Status,
+                // and keep attracting the forwarded writes it can no longer
+                // commit. Demoting to a follower with no known leader makes
+                // every one of those paths report unavailable, which is true.
+                self.state.set_role(StateRole::Follower);
+                self.state.leader_id.store(0, Ordering::Relaxed);
                 // Every handle now reports Unavailable, which is the truth:
                 // this member can no longer replicate. The process stays up so
                 // it remains diagnosable, and so a supervisor's restart is a
@@ -624,13 +636,37 @@ impl Driver {
                         continue;
                     }
                     let (proposal_id, cmd) = decode_entry(&entry.data)?;
-                    let result = self.node.apply_committed(index, &cmd);
-                    if let Err(e) = &result {
-                        // The entry is committed cluster-wide; failing to
-                        // apply it here means this replica has diverged.
-                        error!(index, error = %e, "failed to apply a committed entry");
+                    match self.node.apply_committed(index, &cmd) {
+                        Ok(applied) => self.proposals.complete(proposal_id, Ok(applied)),
+                        Err(e) => {
+                            // The entry is committed cluster-wide, so failing
+                            // to apply it here means this replica has
+                            // diverged — and it must not walk past it.
+                            //
+                            // This used to log and carry on to the
+                            // applied_index store below. The store rolls its
+                            // own applied index back with the failed
+                            // transaction, so the in-memory value then ran
+                            // ahead of the persisted one; maintain_snapshot()
+                            // reads exactly that in-memory value and stamps it
+                            // into the snapshot metadata while exporting the
+                            // state as it actually is. The result is a
+                            // snapshot claiming index N carrying the state at
+                            // N-1, and any member restoring it records having
+                            // applied an entry it never received. That is the
+                            // silent divergence replication/log.rs's header
+                            // exists to rule out, produced by the recovery
+                            // path rather than by any fault.
+                            error!(index, error = %e, "failed to apply a committed entry; stopping this member");
+                            self.proposals.complete(
+                                proposal_id,
+                                Err(Error::Unavailable(format!(
+                                    "failed to apply committed entry {index}: {e}"
+                                ))),
+                            );
+                            return Err(e);
+                        }
                     }
-                    self.proposals.complete(proposal_id, result);
                 }
                 EntryType::EntryConfChange | EntryType::EntryConfChangeV2 => {
                     self.apply_conf_change(&entry, index)?;

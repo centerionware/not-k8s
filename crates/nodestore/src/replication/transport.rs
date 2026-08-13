@@ -385,7 +385,20 @@ async fn connect_peer(
     url: &str,
     tls: Option<&crate::tls::Material>,
 ) -> Result<PeerClient<tonic::transport::Channel>, tonic::transport::Error> {
-    let endpoint = tonic::transport::Endpoint::from_shared(url.to_string())?;
+    // Both bounded, because neither the dial nor the request had any limit
+    // and a peer whose host stops responding *after* the TCP handshake would
+    // otherwise park its task until the OS TCP timeout — minutes. The task is
+    // what drains that peer's queue, so while it sits there every later raft
+    // message for that peer is dropped on a full queue and the member never
+    // reconnects. probe_cluster() escaped this only because it wraps its call
+    // in tokio::time::timeout; peer_task() had nothing.
+    //
+    // Near the heartbeat interval on purpose: retrying is raft's job, not this
+    // transport's, and a timeout of roughly one heartbeat hands it back at the
+    // rate raft already expects to retry at.
+    let endpoint = tonic::transport::Endpoint::from_shared(url.to_string())?
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(2));
     let endpoint = match tls {
         Some(material) => {
             let host = crate::host_of(url);

@@ -93,6 +93,12 @@ nodestore_env_line() {
     if [[ "$style" == "systemd" ]]; then
         local escaped="${value//\\/\\\\}"
         escaped="${escaped//\"/\\\"}"
+        # systemd expands %-specifiers in Environment= values, so a literal
+        # percent has to be doubled. Without this, a percent-encoded character
+        # in a URL (%2F in a path, say) is silently eaten or replaced with
+        # something unrelated — %H becomes the hostname — and the value the
+        # process receives is not the value written here.
+        escaped="${escaped//%/%%}"
         printf 'Environment=%s="%s"' "$name" "$escaped"
     else
         printf 'export %s=%q' "$name" "$value"

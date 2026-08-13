@@ -81,11 +81,22 @@ jobs:
         # release.yml's own e2e stage stays on split — the default is what
         # gates a release; this is the on-demand check of the other one.
         #
-        # DATASTORE=nodestore builds the datastore binary too. It is not
-        # installed as a service or wired to the control plane — it only
-        # needs to exist for datastore.sh and datastore_apiserver.sh, which
-        # run their own throwaway instances rather than touching the
-        # cluster's own storage.
+        # DATASTORE=nodestore does more than build the binary, and this
+        # comment used to claim otherwise: bootstrap-source.sh installs
+        # nodestore as a service and points k3s at it with
+        # --datastore-endpoint, so the whole suite below runs against a
+        # control plane whose storage is nodestore rather than k3s's bundled
+        # kine. That is deliberate and is the stronger coverage — every test
+        # here becomes an assertion that a real apiserver works on it — but it
+        # does mean a failure anywhere in this suite can be a datastore
+        # failure, not only a nodelet one.
+        #
+        # datastore.sh and datastore_apiserver.sh are unaffected either way:
+        # they run their own throwaway instances on scratch paths and ports
+        # rather than touching the cluster's own storage.
+        #
+        # Set DATASTORE=none to run this suite against bundled kine instead,
+        # which is what isolates a nodelet regression from a datastore one.
         env:
           NOTK8S_BUILD_PROFILE: debug
           NOTK8S_BUILD_LAYOUT: ${{ inputs.layout || 'split' }}
