@@ -74,9 +74,9 @@ pub enum NamespaceScope {
     Explicit(Vec<String>),
     /// Every namespace (`namespaceSelector: {}`).
     All,
-    /// A `namespaceSelector` with real requirements, which needs a Namespace
-    /// watch to resolve. See [`NamespaceScope`]'s doc comment.
-    NeedsNamespaceLister,
+    /// A `namespaceSelector` with real requirements, resolved against the
+    /// namespace labels the scheduler watches.
+    Selected(LabelSelector),
 }
 
 pub fn namespace_scope(
@@ -99,7 +99,7 @@ pub fn namespace_scope(
             if empty {
                 NamespaceScope::All
             } else {
-                NamespaceScope::NeedsNamespaceLister
+                NamespaceScope::Selected(sel.clone())
             }
         }
     }
@@ -107,18 +107,26 @@ pub fn namespace_scope(
 
 /// Whether a pod in `pod_namespace` is inside `scope`, for a term declared by
 /// a pod in `own_namespace`.
-pub fn namespace_in_scope(scope: &NamespaceScope, own_namespace: &str, pod_namespace: &str) -> bool {
+///
+/// `namespace_labels` maps namespace name to its labels — the scheduler's
+/// Namespace watch. An earlier version had no such watch and made
+/// `namespaceSelector` terms match everything, on the reasoning that
+/// over-matching only refuses a placement while under-matching silently
+/// disables a rule. That was the better of two wrong answers, and it is not
+/// what upstream does: the selector is evaluated against the real labels.
+pub fn namespace_in_scope(
+    scope: &NamespaceScope,
+    own_namespace: &str,
+    pod_namespace: &str,
+    namespace_labels: &std::collections::HashMap<String, BTreeMap<String, String>>,
+) -> bool {
     match scope {
         NamespaceScope::OwnOnly => pod_namespace == own_namespace,
         NamespaceScope::Explicit(list) => list.iter().any(|n| n == pod_namespace),
         NamespaceScope::All => true,
-        // Fail *open* here, uniquely. Under-matching silently disables an
-        // affinity rule the user wrote, which is the worse error: an
-        // anti-affinity that quietly stops applying co-locates pods that were
-        // meant to be spread, and nothing reports it. Over-matching is
-        // conservative — it can only refuse a placement — and the plugin logs
-        // once when it happens.
-        NamespaceScope::NeedsNamespaceLister => true,
+        NamespaceScope::Selected(sel) => namespace_labels
+            .get(pod_namespace)
+            .is_some_and(|labels| matches_selector(Some(sel), labels)),
     }
 }
 
@@ -212,18 +220,20 @@ mod tests {
     #[test]
     fn no_namespaces_and_no_selector_means_the_pods_own_namespace() {
         assert_eq!(namespace_scope(None, None), NamespaceScope::OwnOnly);
-        assert!(namespace_in_scope(&NamespaceScope::OwnOnly, "prod", "prod"));
-        assert!(!namespace_in_scope(&NamespaceScope::OwnOnly, "prod", "dev"));
+        let ns = std::collections::HashMap::new();
+        assert!(namespace_in_scope(&NamespaceScope::OwnOnly, "prod", "prod", &ns));
+        assert!(!namespace_in_scope(&NamespaceScope::OwnOnly, "prod", "dev", &ns));
     }
 
     #[test]
     fn an_explicit_list_is_used_verbatim() {
         let scope = namespace_scope(Some(&vec!["a".to_string(), "b".to_string()]), None);
         assert_eq!(scope, NamespaceScope::Explicit(vec!["a".to_string(), "b".to_string()]));
-        assert!(namespace_in_scope(&scope, "own", "a"));
-        assert!(!namespace_in_scope(&scope, "own", "c"));
+        let ns = std::collections::HashMap::new();
+        assert!(namespace_in_scope(&scope, "own", "a", &ns));
+        assert!(!namespace_in_scope(&scope, "own", "c", &ns));
         assert!(
-            !namespace_in_scope(&scope, "own", "own"),
+            !namespace_in_scope(&scope, "own", "own", &ns),
             "an explicit list replaces the own-namespace default, it does not extend it"
         );
     }
@@ -233,20 +243,25 @@ mod tests {
         let empty = LabelSelector { match_labels: None, match_expressions: None };
         let scope = namespace_scope(None, Some(&empty));
         assert_eq!(scope, NamespaceScope::All);
-        assert!(namespace_in_scope(&scope, "prod", "anything"));
+        let ns = std::collections::HashMap::new();
+        assert!(namespace_in_scope(&scope, "prod", "anything", &ns));
     }
 
     #[test]
-    fn a_real_namespace_selector_is_reported_rather_than_silently_narrowed() {
-        // Treating it as "own namespace" would under-match, which silently
-        // disables the rule the user wrote — the failure mode this enum
-        // exists to prevent.
+    fn a_namespace_selector_is_evaluated_against_real_namespace_labels() {
+        // Not approximated in either direction. An earlier version matched
+        // everything for want of a Namespace watch; that was the better of
+        // two wrong answers rather than the right one.
         let scope = namespace_scope(None, Some(&sel_labels(&[("env", "prod")])));
-        assert_eq!(scope, NamespaceScope::NeedsNamespaceLister);
+        let mut ns = std::collections::HashMap::new();
+        ns.insert("prod-a".to_string(), labels(&[("env", "prod")]));
+        ns.insert("staging".to_string(), labels(&[("env", "staging")]));
+
+        assert!(namespace_in_scope(&scope, "own", "prod-a", &ns));
+        assert!(!namespace_in_scope(&scope, "own", "staging", &ns));
         assert!(
-            namespace_in_scope(&scope, "own", "somewhere-else"),
-            "unresolved namespace selectors must fail open — over-matching only refuses a \
-             placement, under-matching co-locates pods that were meant to be apart"
+            !namespace_in_scope(&scope, "own", "never-heard-of-it", &ns),
+            "a namespace with no known labels cannot satisfy a selector"
         );
     }
 }

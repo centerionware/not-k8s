@@ -50,6 +50,30 @@ pub struct Snapshot {
     /// The highest generation any node in this snapshot carries. The walk
     /// stops when it reaches a node at or below this.
     generation: u64,
+
+    /// Namespace labels, for `InterPodAffinity`'s `namespaceSelector`.
+    ///
+    /// The only consumer, and the only reason a scheduler watches Namespaces
+    /// at all. Without it a term using `namespaceSelector` cannot be
+    /// evaluated, and the choice is between under-matching — silently
+    /// disabling a rule the author wrote — and over-matching. Neither is
+    /// parity; resolving it properly is.
+    pub namespaces: Arc<HashMap<String, BTreeMap<String, String>>>,
+
+    /// Label selectors of the workloads that own pods, for
+    /// `PodTopologySpread`'s system default constraints.
+    ///
+    /// Upstream derives the default constraints' selector from the pod's
+    /// owning Service/ReplicaSet/ReplicationController/StatefulSet, which is
+    /// what these four watches exist for and their only consumer.
+    pub workload_selectors: Vec<WorkloadSelector>,
+}
+
+/// One workload's selector, for deriving a pod's default spread constraints.
+#[derive(Clone, Debug)]
+pub struct WorkloadSelector {
+    pub namespace: String,
+    pub selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector,
 }
 
 impl Snapshot {
@@ -67,6 +91,27 @@ impl Snapshot {
 
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    /// Every workload selector in this namespace that matches these labels.
+    ///
+    /// Upstream ANDs them: a pod owned by a ReplicaSet *and* selected by a
+    /// Service spreads against the intersection, not against either alone.
+    pub fn matching_workload_selectors(
+        &self,
+        namespace: &str,
+        labels: &BTreeMap<String, String>,
+    ) -> Vec<&WorkloadSelector> {
+        self.workload_selectors
+            .iter()
+            .filter(|w| {
+                w.namespace == namespace
+                    && crate::framework::plugins::selector::matches_selector(
+                        Some(&w.selector),
+                        labels,
+                    )
+            })
+            .collect()
     }
 
     /// How many nodes hold a given image, for `ImageLocality`'s spread ratio.
@@ -88,6 +133,13 @@ pub struct Cache {
     /// the caller having to remember where it went. Deleted pods routinely
     /// arrive with only a uid.
     pod_locations: HashMap<String, String>,
+
+    /// Namespace labels and workload selectors. Unlike nodes and pods these
+    /// change rarely and are small, so they are copied wholesale into each
+    /// snapshot rather than tracked by generation — the same trade the PDB
+    /// mirror makes, and for the same reason.
+    namespaces: Arc<HashMap<String, BTreeMap<String, String>>>,
+    workload_selectors: HashMap<String, WorkloadSelector>,
 }
 
 impl Cache {
@@ -187,6 +239,29 @@ impl Cache {
         self.touch(node_name);
     }
 
+    pub fn upsert_namespace(&mut self, name: &str, labels: BTreeMap<String, String>) {
+        Arc::make_mut(&mut self.namespaces).insert(name.to_string(), labels);
+        self.generation += 1;
+    }
+
+    pub fn remove_namespace(&mut self, name: &str) {
+        Arc::make_mut(&mut self.namespaces).remove(name);
+        self.generation += 1;
+    }
+
+    /// `key` identifies the workload uniquely across kinds — a ReplicaSet and
+    /// a Service may share a name in one namespace, and collapsing them would
+    /// drop one of their selectors.
+    pub fn upsert_workload(&mut self, key: String, w: WorkloadSelector) {
+        self.workload_selectors.insert(key, w);
+        self.generation += 1;
+    }
+
+    pub fn remove_workload(&mut self, key: &str) {
+        self.workload_selectors.remove(key);
+        self.generation += 1;
+    }
+
     /// Which node a pod is committed to, if any.
     pub fn pod_node(&self, uid: &str) -> Option<&str> {
         self.pod_locations.get(uid).map(String::as_str)
@@ -218,7 +293,13 @@ impl Cache {
         // nodes the cache no longer has. Cheap: one lookup per retained node.
         let dropped_any = snapshot.by_name.keys().any(|n| !self.nodes.contains_key(n));
 
-        if changed.is_empty() && !dropped_any {
+        // A namespace or workload change moves the cache generation without
+        // touching any node, so the node walk finds nothing. Returning early
+        // there would leave the snapshot holding stale namespace labels
+        // forever — the sort of staleness that surfaces as an affinity rule
+        // that stopped applying and nothing to explain why.
+        let metadata_stale = snapshot.generation != self.generation;
+        if changed.is_empty() && !dropped_any && !metadata_stale {
             return;
         }
 
@@ -230,6 +311,8 @@ impl Cache {
         }
 
         snapshot.generation = self.generation;
+        snapshot.namespaces = self.namespaces.clone();
+        snapshot.workload_selectors = self.workload_selectors.values().cloned().collect();
         snapshot.nodes = zone_round_robin(&snapshot.by_name);
         snapshot.nodes_with_pods_with_affinity = snapshot
             .nodes

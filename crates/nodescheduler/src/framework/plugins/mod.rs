@@ -108,7 +108,7 @@ pub(crate) fn default_normalize_score(reverse: bool, scores: &mut [i64]) {
 ///
 /// `client` is used by exactly one plugin, [`default_binder::DefaultBinder`];
 /// it is the only plugin in this directory that performs I/O.
-pub fn default_registry(client: kube::Client) -> Registry {
+pub fn default_registry(client: kube::Client, cfg: &crate::config::Config) -> Registry {
     Registry {
         profile_name: "default-scheduler".to_string(),
         pre_enqueue: vec![Box::new(scheduling_gates::SchedulingGates)],
@@ -116,7 +116,9 @@ pub fn default_registry(client: kube::Client) -> Registry {
         pre_filter: vec![
             Box::new(node_ports::NodePorts),
             Box::new(node_resources_fit::NodeResourcesFit::default()),
-            Box::new(pod_topology_spread::PodTopologySpread),
+            Box::new(pod_topology_spread::PodTopologySpread {
+                defaulting: cfg.topology_defaulting,
+            }),
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         filter: vec![
@@ -126,7 +128,9 @@ pub fn default_registry(client: kube::Client) -> Registry {
             Box::new(node_affinity::NodeAffinity::default()),
             Box::new(node_ports::NodePorts),
             Box::new(node_resources_fit::NodeResourcesFit::default()),
-            Box::new(pod_topology_spread::PodTopologySpread),
+            Box::new(pod_topology_spread::PodTopologySpread {
+                defaulting: cfg.topology_defaulting,
+            }),
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         post_filter: Vec::new(),
@@ -138,7 +142,9 @@ pub fn default_registry(client: kube::Client) -> Registry {
             Box::new(
                 node_resources_balanced_allocation::NodeResourcesBalancedAllocation::default(),
             ),
-            Box::new(pod_topology_spread::PodTopologySpread),
+            Box::new(pod_topology_spread::PodTopologySpread {
+                defaulting: cfg.topology_defaulting,
+            }),
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         score: vec![
@@ -149,7 +155,9 @@ pub fn default_registry(client: kube::Client) -> Registry {
             Box::new(
                 node_resources_balanced_allocation::NodeResourcesBalancedAllocation::default(),
             ),
-            Box::new(pod_topology_spread::PodTopologySpread),
+            Box::new(pod_topology_spread::PodTopologySpread {
+                defaulting: cfg.topology_defaulting,
+            }),
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         reserve: Vec::new(),

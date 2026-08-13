@@ -38,20 +38,27 @@
 //!   * `nodeTaintsPolicy: Ignore` (**default**) — taints disregarded unless
 //!     asked otherwise.
 //!
-//! # What is not implemented here
+//! # System default constraints
 //!
-//! **System default constraints.** With `defaultingType: SystemDefaulting`
-//! upstream applies built-in constraints (maxSkew 3 across zones, 5 across
-//! hosts) to pods that declare none, deriving the label selector from the
-//! pod's owning Service/ReplicaSet/ReplicationController/StatefulSet — which
-//! needs four informers whose only consumer is this feature.
+//! With `defaultingType: SystemDefaulting` (upstream's default, and ours) a
+//! pod that declares **no** constraints of its own gets two built-in ones:
+//! maxSkew 3 across `topology.kubernetes.io/zone`, maxSkew 5 across
+//! `kubernetes.io/hostname`, both `ScheduleAnyway`.
 //!
-//! They are `ScheduleAnyway`, so their absence changes **scores, never
-//! feasibility**: no pod is placed that upstream would have refused, and none
-//! is refused that upstream would have placed. `NODESCHEDULER_TOPOLOGY_
-//! DEFAULTING` already exists to select the behaviour, and the gap is stated
-//! in docs/SCHEDULER.md rather than left for someone to discover from a
-//! scoring difference.
+//! Their selector is not the pod's own labels. Upstream derives it from the
+//! workloads that *select* the pod — Service, ReplicationController,
+//! ReplicaSet, StatefulSet — and **ANDs** them: a pod behind a Service and
+//! owned by a ReplicaSet spreads against the intersection. A pod no workload
+//! selects gets no default constraints at all, which is why the empty-selector
+//! case returns nothing rather than a constraint matching everything. That is
+//! what the four extra watches feeding [`Snapshot::workload_selectors`] exist
+//! for; they have no other consumer, and `NODESCHEDULER_TOPOLOGY_DEFAULTING=
+//! None` is the way to switch both them and this off.
+//!
+//! Because both defaults are `ScheduleAnyway` they are resolved with
+//! `hard: false` and so touch **scores only, never feasibility** — matching
+//! upstream, where `PreFilter` builds defaults with the `DoNotSchedule` action
+//! and therefore always gets an empty list.
 
 use super::node_affinity::matches_node_selector;
 use super::selector::matches_selector;
@@ -100,7 +107,62 @@ struct SpreadState {
 }
 
 #[derive(Default)]
-pub struct PodTopologySpread;
+pub struct PodTopologySpread {
+    pub defaulting: crate::config::TopologyDefaulting,
+}
+
+/// Upstream's `systemDefaultConstraints`, verbatim.
+///
+/// Both are `ScheduleAnyway`; see the module header for why that makes them a
+/// scoring-only feature.
+fn system_default_constraints() -> Vec<TopologySpreadConstraint> {
+    vec![
+        TopologySpreadConstraint {
+            max_skew: 3,
+            topology_key: "topology.kubernetes.io/zone".to_string(),
+            when_unsatisfiable: "ScheduleAnyway".to_string(),
+            ..Default::default()
+        },
+        TopologySpreadConstraint {
+            max_skew: 5,
+            topology_key: "kubernetes.io/hostname".to_string(),
+            when_unsatisfiable: "ScheduleAnyway".to_string(),
+            ..Default::default()
+        },
+    ]
+}
+
+/// The selector the default constraints spread against: every workload
+/// selecting this pod, ANDed.
+///
+/// `None` when no workload selects it — upstream's `selector.Empty()` check,
+/// which drops the default constraints entirely rather than applying one that
+/// matches every pod in the namespace. Getting that backwards would make a
+/// standalone pod spread against unrelated workloads.
+fn default_selector(pod: &PodInfo, snapshot: &Snapshot) -> Option<LabelSelector> {
+    let workloads = snapshot.matching_workload_selectors(&pod.namespace, &pod.labels);
+    if workloads.is_empty() {
+        return None;
+    }
+
+    let mut merged = LabelSelector::default();
+    let mut labels = std::collections::BTreeMap::new();
+    let mut exprs: Vec<LabelSelectorRequirement> = Vec::new();
+    for w in workloads {
+        for (k, v) in w.selector.match_labels.iter().flatten() {
+            labels.insert(k.clone(), v.clone());
+        }
+        exprs.extend(w.selector.match_expressions.iter().flatten().cloned());
+    }
+    if labels.is_empty() && exprs.is_empty() {
+        // Every selecting workload had an empty selector — the same "matches
+        // everything" case, reached by a different route.
+        return None;
+    }
+    merged.match_labels = (!labels.is_empty()).then_some(labels);
+    merged.match_expressions = (!exprs.is_empty()).then_some(exprs);
+    Some(merged)
+}
 
 /// `matchLabelKeys` folded into the selector.
 ///
@@ -204,17 +266,42 @@ impl PreFilterPlugin for PodTopologySpread {
         pod: &PodInfo,
         snapshot: &Snapshot,
     ) -> (Status, Option<Vec<String>>) {
-        if pod.topology_spread_constraints.is_empty() {
-            // System default constraints would apply here; see the module
-            // header for why their absence is a scoring difference only.
+        // A pod that declares its own constraints never gets the defaults —
+        // upstream treats the two as alternatives, not as a merge.
+        let mut default_constraints = Vec::new();
+        let mut default_selector_for_all = None;
+        let constraints: &[TopologySpreadConstraint] = if !pod.topology_spread_constraints.is_empty()
+        {
+            &pod.topology_spread_constraints
+        } else if self.defaulting == crate::config::TopologyDefaulting::SystemDefaulting {
+            match default_selector(pod, snapshot) {
+                Some(sel) => {
+                    default_selector_for_all = Some(sel);
+                    default_constraints = system_default_constraints();
+                    &default_constraints
+                }
+                // No workload selects this pod, so there is nothing to spread
+                // it against.
+                None => &[],
+            }
+        } else {
+            &[]
+        };
+
+        if constraints.is_empty() {
             state.skip_filter(NAME);
             state.skip_score(NAME);
             return (Status::skip(), None);
         }
 
         let mut resolved = Vec::new();
-        for c in &pod.topology_spread_constraints {
-            let selector = effective_selector(c, pod);
+        for c in constraints {
+            // The default constraints carry no selector of their own; theirs
+            // is derived once, from the workloads, and shared by both.
+            let selector = match &default_selector_for_all {
+                Some(sel) => Some(sel.clone()),
+                None => effective_selector(c, pod),
+            };
             let hard = c.when_unsatisfiable == "DoNotSchedule";
             let mut counts: HashMap<String, i64> = HashMap::new();
 

@@ -255,3 +255,78 @@ fn the_affinity_subsets_track_which_nodes_actually_have_such_pods() {
         .collect();
     assert_eq!(names, vec!["b"]);
 }
+
+// ── Metadata: namespaces and workload selectors ─────────────────────────
+
+fn label_map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+fn selector_for(pairs: &[(&str, &str)]) -> k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+    k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+        match_labels: Some(label_map(pairs)),
+        match_expressions: None,
+    }
+}
+
+#[test]
+fn a_namespace_change_alone_still_refreshes_the_snapshot() {
+    // The incremental walk is driven by node generations, so a change that
+    // touches no node finds nothing to copy. Returning early there would
+    // leave the snapshot holding namespace labels from startup forever — an
+    // affinity rule that stops applying, with nothing in any log to say why.
+    let mut cache = Cache::new();
+    cache.upsert_node(&node("n1"));
+    let mut snap = Snapshot::default();
+    cache.update_snapshot(&mut snap);
+    assert!(snap.namespaces.is_empty());
+
+    cache.upsert_namespace("prod", label_map(&[("env", "prod")]));
+    cache.update_snapshot(&mut snap);
+    assert_eq!(snap.namespaces.get("prod"), Some(&label_map(&[("env", "prod")])));
+
+    cache.remove_namespace("prod");
+    cache.update_snapshot(&mut snap);
+    assert!(snap.namespaces.is_empty(), "a deleted namespace must leave the snapshot");
+}
+
+#[test]
+fn a_replicaset_and_a_service_of_the_same_name_both_survive() {
+    // Keyed by kind as well as name. Collapsing them drops one selector, and
+    // the pod then spreads against half of what it should.
+    let mut cache = Cache::new();
+    cache.upsert_workload(
+        "rs/default/web".to_string(),
+        WorkloadSelector { namespace: "default".to_string(), selector: selector_for(&[("app", "web")]) },
+    );
+    cache.upsert_workload(
+        "svc/default/web".to_string(),
+        WorkloadSelector {
+            namespace: "default".to_string(),
+            selector: selector_for(&[("tier", "front")]),
+        },
+    );
+    let mut snap = Snapshot::default();
+    cache.update_snapshot(&mut snap);
+    assert_eq!(snap.workload_selectors.len(), 2);
+
+    let matches = snap.matching_workload_selectors("default", &label_map(&[("app", "web")]));
+    assert_eq!(matches.len(), 1, "only the selector that actually matches applies");
+
+    cache.remove_workload("svc/default/web");
+    cache.update_snapshot(&mut snap);
+    assert_eq!(snap.workload_selectors.len(), 1);
+}
+
+#[test]
+fn workload_selectors_do_not_cross_namespaces() {
+    let mut cache = Cache::new();
+    cache.upsert_workload(
+        "rs/other/web".to_string(),
+        WorkloadSelector { namespace: "other".to_string(), selector: selector_for(&[("app", "web")]) },
+    );
+    let mut snap = Snapshot::default();
+    cache.update_snapshot(&mut snap);
+    assert!(snap.matching_workload_selectors("default", &label_map(&[("app", "web")])).is_empty());
+    assert_eq!(snap.matching_workload_selectors("other", &label_map(&[("app", "web")])).len(), 1);
+}

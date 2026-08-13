@@ -55,7 +55,8 @@ use crate::framework::{
     PreScorePlugin, ScorePlugin, MAX_NODE_SCORE,
 };
 use k8s_openapi::api::core::v1::{PodAffinityTerm, WeightedPodAffinityTerm};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 pub const NAME: &str = "InterPodAffinity";
 
@@ -85,6 +86,14 @@ struct AffinityState {
     /// Per domain, per preferred term index: matching pods, for scoring.
     preferred_affinity_counts: HashMap<DomainKey, i64>,
     preferred_anti_affinity_counts: HashMap<DomainKey, i64>,
+
+    /// Namespace labels, for terms using `namespaceSelector`.
+    ///
+    /// Carried in the cycle state rather than read from the snapshot at use
+    /// time because `PreFilterExtensions` — the add/remove-pod hooks
+    /// preemption drives — are handed no snapshot. `Arc`, so the per-cycle
+    /// clone is a refcount bump and not a copy of every namespace.
+    namespace_labels: Arc<HashMap<String, BTreeMap<String, String>>>,
 }
 
 impl AffinityState {
@@ -111,9 +120,14 @@ impl Default for InterPodAffinity {
 
 /// Whether an existing pod matches a term, from the perspective of a pod in
 /// `own_namespace`.
-fn pod_matches_term(term: &PodAffinityTerm, existing: &PodInfo, own_namespace: &str) -> bool {
+fn pod_matches_term(
+    term: &PodAffinityTerm,
+    existing: &PodInfo,
+    own_namespace: &str,
+    namespace_labels: &HashMap<String, BTreeMap<String, String>>,
+) -> bool {
     let scope = namespace_scope(term.namespaces.as_ref(), term.namespace_selector.as_ref());
-    if !namespace_in_scope(&scope, own_namespace, &existing.namespace) {
+    if !namespace_in_scope(&scope, own_namespace, &existing.namespace, namespace_labels) {
         return false;
     }
     matches_selector(term.label_selector.as_ref(), &existing.labels)
@@ -127,13 +141,14 @@ fn tally(
     existing: &PodInfo,
     node: &NodeInfo,
     own_namespace: &str,
+    namespace_labels: &HashMap<String, BTreeMap<String, String>>,
     sign: i64,
 ) {
     for term in terms {
         let Some(value) = node.labels.get(&term.topology_key) else {
             continue;
         };
-        if pod_matches_term(term, existing, own_namespace) {
+        if pod_matches_term(term, existing, own_namespace, namespace_labels) {
             *counts.entry(domain_key(&term.topology_key, value)).or_insert(0) += sign;
         }
     }
@@ -197,6 +212,7 @@ impl PreFilterPlugin for InterPodAffinity {
                 .and_then(|a| a.pod_anti_affinity.as_ref())
                 .and_then(|a| a.preferred_during_scheduling_ignored_during_execution.clone())
                 .unwrap_or_default(),
+            namespace_labels: snapshot.namespaces.clone(),
             ..Default::default()
         };
 
@@ -207,6 +223,9 @@ impl PreFilterPlugin for InterPodAffinity {
             s.preferred_affinity.iter().map(|w| w.pod_affinity_term.clone()).collect();
         let preferred_anti_terms: Vec<PodAffinityTerm> =
             s.preferred_anti_affinity.iter().map(|w| w.pod_affinity_term.clone()).collect();
+        // Held separately so the tally loop can borrow `s`'s count maps
+        // mutably while still reading the labels. Refcount bump, not a copy.
+        let ns_labels = s.namespace_labels.clone();
 
         for node in snapshot.nodes() {
             // Only pods that declared anti-affinity can forbid anything, and
@@ -222,8 +241,12 @@ impl PreFilterPlugin for InterPodAffinity {
                     // write backwards.
                     let scope =
                         namespace_scope(term.namespaces.as_ref(), term.namespace_selector.as_ref());
-                    if namespace_in_scope(&scope, &existing.namespace, &pod.namespace)
-                        && matches_selector(term.label_selector.as_ref(), &pod.labels)
+                    if namespace_in_scope(
+                        &scope,
+                        &existing.namespace,
+                        &pod.namespace,
+                        &s.namespace_labels,
+                    ) && matches_selector(term.label_selector.as_ref(), &pod.labels)
                     {
                         *s.existing_anti_affinity
                             .entry(domain_key(&term.topology_key, value))
@@ -233,13 +256,22 @@ impl PreFilterPlugin for InterPodAffinity {
             }
 
             for existing in &node.pods {
-                tally(&mut s.affinity_counts, &s.required_affinity, existing, node, &pod.namespace, 1);
+                tally(
+                    &mut s.affinity_counts,
+                    &s.required_affinity,
+                    existing,
+                    node,
+                    &pod.namespace,
+                    &ns_labels,
+                    1,
+                );
                 tally(
                     &mut s.anti_affinity_counts,
                     &s.required_anti_affinity,
                     existing,
                     node,
                     &pod.namespace,
+                    &ns_labels,
                     1,
                 );
                 tally(
@@ -248,6 +280,7 @@ impl PreFilterPlugin for InterPodAffinity {
                     existing,
                     node,
                     &pod.namespace,
+                    &ns_labels,
                     1,
                 );
                 tally(
@@ -256,6 +289,7 @@ impl PreFilterPlugin for InterPodAffinity {
                     existing,
                     node,
                     &pod.namespace,
+                    &ns_labels,
                     1,
                 );
             }
@@ -328,16 +362,34 @@ fn adjust(state: &mut CycleState, pod: &PodInfo, other: &PodInfo, node: &NodeInf
         s.preferred_affinity.iter().map(|w| w.pod_affinity_term.clone()).collect();
     let preferred_anti: Vec<PodAffinityTerm> =
         s.preferred_anti_affinity.iter().map(|w| w.pod_affinity_term.clone()).collect();
+    let ns_labels = s.namespace_labels.clone();
 
-    tally(&mut s.affinity_counts, &required_affinity, other, node, &pod.namespace, sign);
-    tally(&mut s.anti_affinity_counts, &required_anti, other, node, &pod.namespace, sign);
-    tally(&mut s.preferred_affinity_counts, &preferred_affinity, other, node, &pod.namespace, sign);
+    tally(&mut s.affinity_counts, &required_affinity, other, node, &pod.namespace, &ns_labels, sign);
+    tally(
+        &mut s.anti_affinity_counts,
+        &required_anti,
+        other,
+        node,
+        &pod.namespace,
+        &ns_labels,
+        sign,
+    );
+    tally(
+        &mut s.preferred_affinity_counts,
+        &preferred_affinity,
+        other,
+        node,
+        &pod.namespace,
+        &ns_labels,
+        sign,
+    );
     tally(
         &mut s.preferred_anti_affinity_counts,
         &preferred_anti,
         other,
         node,
         &pod.namespace,
+        &ns_labels,
         sign,
     );
 
@@ -346,7 +398,7 @@ fn adjust(state: &mut CycleState, pod: &PodInfo, other: &PodInfo, node: &NodeInf
             continue;
         };
         let scope = namespace_scope(term.namespaces.as_ref(), term.namespace_selector.as_ref());
-        if namespace_in_scope(&scope, &other.namespace, &pod.namespace)
+        if namespace_in_scope(&scope, &other.namespace, &pod.namespace, &ns_labels)
             && matches_selector(term.label_selector.as_ref(), &pod.labels)
         {
             *s.existing_anti_affinity
