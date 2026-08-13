@@ -31,12 +31,25 @@
 //! instead would be correct and would also make idle cost scale with cluster
 //! size.
 //!
-//! # Watch failures
+//! # Watch failures, and why they need backoff of their own
 //!
-//! `kube::runtime::watcher` re-lists and self-heals internally, surfacing a
-//! relist as a fresh `Event::Init`, so an error is logged and ignored. Only a
-//! fully-terminated stream is rebuilt, after the 2s delay this repo uses
-//! everywhere for the same purpose.
+//! `kube::runtime::watcher` re-lists and self-heals across an *interrupted*
+//! stream, surfacing the relist as a fresh `Event::Init`. It does not,
+//! however, pace a watch that cannot **start**: with the apiserver down,
+//! every poll returns `WatchStartFailed` immediately, so a loop that merely
+//! logs and polls again spins at full CPU and writes thousands of identical
+//! log lines a second.
+//!
+//! That is not hypothetical — it is what the first live run of this component
+//! did, for the whole window where k3s restarts (`setup-control-plane.sh`
+//! runs twice, the second pass adding the kubelet CA). The scheduling loop
+//! starved alongside it, and the only visible symptom was pods not being
+//! placed, which reads as a scheduling bug rather than a watch one.
+//!
+//! So consecutive failures back off, and any successful event resets it. This
+//! is the same lesson as `SchedulingQueue::update`: a retry path with no
+//! pacing is a busy-loop, and both of this component's busy-loops were
+//! introduced by code that looked obviously correct in isolation.
 
 use crate::cache::{Cache, PodInfo};
 use crate::config::Config;
@@ -53,6 +66,25 @@ use std::sync::{Arc, Mutex};
 
 /// The house delay before rebuilding a stream that ended entirely.
 const WATCH_RESTART_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// First pause after a watch fails to start, doubling to [`WATCH_MAX_BACKOFF`].
+const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+/// Ceiling. Low enough that a scheduler is placing pods again within seconds
+/// of the apiserver returning, which is the whole point of it being here.
+const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait after `n` consecutive failures.
+///
+/// Pure and separate so the curve is testable without an apiserver to break.
+fn watch_backoff(consecutive_failures: u32) -> std::time::Duration {
+    if consecutive_failures == 0 {
+        return std::time::Duration::ZERO;
+    }
+    let doubled = WATCH_INITIAL_BACKOFF
+        .checked_mul(1u32 << (consecutive_failures - 1).min(16))
+        .unwrap_or(WATCH_MAX_BACKOFF);
+    doubled.min(WATCH_MAX_BACKOFF)
+}
 
 /// Whether a pod is this profile's business, and which half of the split it
 /// belongs to.
@@ -124,13 +156,27 @@ pub async fn run(client: Client, targets: WatchTargets, _cfg: &Config) -> anyhow
     let mut mirror = Mirror::default();
     let mut nodes = watch_nodes(&client);
     let mut pods = watch_pods(&client);
+    // Counted per stream: one watch can be failing while the other is fine.
+    let mut node_failures: u32 = 0;
+    let mut pod_failures: u32 = 0;
 
     loop {
         tokio::select! {
             event = nodes.next() => match event {
-                Some(Ok(ev)) => handle_node_event(ev, &mut mirror, &targets),
+                Some(Ok(ev)) => {
+                    node_failures = 0;
+                    handle_node_event(ev, &mut mirror, &targets);
+                }
                 Some(Err(e)) => {
-                    tracing::warn!(error = ?e, "node watch error; watcher will retry");
+                    node_failures = node_failures.saturating_add(1);
+                    let pause = watch_backoff(node_failures);
+                    // Only the first failure of a run is worth a line. The
+                    // apiserver being down for a minute must not produce a
+                    // minute of identical warnings.
+                    if node_failures == 1 {
+                        tracing::warn!(error = ?e, "node watch error; retrying with backoff");
+                    }
+                    tokio::time::sleep(pause).await;
                 }
                 None => {
                     tracing::warn!("node watch stream ended; rebuilding");
@@ -139,9 +185,17 @@ pub async fn run(client: Client, targets: WatchTargets, _cfg: &Config) -> anyhow
                 }
             },
             event = pods.next() => match event {
-                Some(Ok(ev)) => handle_pod_event(ev, &mut mirror, &targets),
+                Some(Ok(ev)) => {
+                    pod_failures = 0;
+                    handle_pod_event(ev, &mut mirror, &targets);
+                }
                 Some(Err(e)) => {
-                    tracing::warn!(error = ?e, "pod watch error; watcher will retry");
+                    pod_failures = pod_failures.saturating_add(1);
+                    let pause = watch_backoff(pod_failures);
+                    if pod_failures == 1 {
+                        tracing::warn!(error = ?e, "pod watch error; retrying with backoff");
+                    }
+                    tokio::time::sleep(pause).await;
                 }
                 None => {
                     tracing::warn!("pod watch stream ended; rebuilding");
@@ -308,6 +362,35 @@ mod tests {
             route_pod(&pod(Some("worker-1"), "batch-scheduler"), "default-scheduler"),
             PodRoute::Cache
         );
+    }
+
+    #[test]
+    fn the_first_watch_failure_pauses_before_retrying() {
+        // Zero here is the spin: the apiserver refuses the connection, the
+        // poll returns instantly, and the loop polls again forever.
+        assert!(watch_backoff(1) > std::time::Duration::ZERO);
+        assert_eq!(watch_backoff(1), WATCH_INITIAL_BACKOFF);
+    }
+
+    #[test]
+    fn repeated_watch_failures_back_off_and_then_stop_growing() {
+        assert_eq!(watch_backoff(2), WATCH_INITIAL_BACKOFF * 2);
+        assert_eq!(watch_backoff(3), WATCH_INITIAL_BACKOFF * 4);
+        assert_eq!(watch_backoff(30), WATCH_MAX_BACKOFF);
+        // Far past any plausible outage: must saturate, not overflow.
+        assert_eq!(watch_backoff(u32::MAX), WATCH_MAX_BACKOFF);
+    }
+
+    #[test]
+    fn the_ceiling_is_short_enough_to_recover_promptly() {
+        // A scheduler that waits minutes after the apiserver returns is a
+        // cluster that places no pods for minutes.
+        assert!(WATCH_MAX_BACKOFF <= std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_healthy_watch_waits_for_nothing() {
+        assert_eq!(watch_backoff(0), std::time::Duration::ZERO);
     }
 
     #[test]
