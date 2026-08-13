@@ -1,37 +1,37 @@
-commit: e8b0b5d5ba52ffe3b69c20214b09e932af5d52c4
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31689736138
-timestamp (UTC): 2026-08-13T10:13:07Z
+commit: 33c6f92f2af66289cd6ab7568d205724d1382988
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31718099248
+timestamp (UTC): 2026-08-13T16:02:04Z
 shard: 2/5
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786615976
+==> Test namespace: not-k8s-e2e-1786636911
 ==> 205 test(s) registered total (before sharding); running now...
 ==> Shard 2/5: 45 test(s) selected
 ▶ test_scheduler_rejects_a_pod_that_does_not_fit
-==> FATAL: assertion failed: a pod requesting more CPU than exists must stay unbound — got 'runnervmzvulz', want ''
-  ✘ FAIL (11s, exit 1)
+==> FATAL: assertion failed: a pod requesting more CPU than exists must stay unbound — got 'runnervmvrwv9', want ''
+  ✘ FAIL (10s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 13 10:12:29 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:29.404043Z  INFO CreateContainer succeeded container=hostpath container_id=344db63a4e768957ed2166f33954f42aa9c56172ac8a0acb448c769859effd30
-    Aug 13 10:12:30 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:30.618941Z  INFO CreateContainer succeeded container=node-driver-registrar container_id=06636e532987088d9ff526937b2f1257e8b6b351d560ba92156e3f20aaea764b
-    Aug 13 10:12:31 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:31.209367Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 13 10:12:31 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:31.585655Z  INFO CreateContainer succeeded container=liveness-probe container_id=9f386b4f474254301108d2fb0b6b54fe1778cdafeb6942609d1d9d84c3158385
-    Aug 13 10:12:33 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:33.019194Z  INFO CreateContainer succeeded container=csi-attacher container_id=f3ba49ea2a7e7de8d3dae0621620af77d252d38b6782cc821a6f186599cc2297
-    Aug 13 10:12:34 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:34.822763Z  INFO CreateContainer succeeded container=csi-provisioner container_id=8901c1e8c1de8e9a83e36485a10b9af14530b04fac136ee18e9957290f5bc313
-    Aug 13 10:12:36 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:36.438822Z  INFO CreateContainer succeeded container=csi-resizer container_id=d09f4c1ff8057722e006d9c2c7b8d5cdf628d029f7e04ce80d1c18e5c4c68d91
-    Aug 13 10:12:37 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:37.920845Z  INFO CreateContainer succeeded container=csi-snapshotter container_id=97c1b33d84bc1c8ad7d6214ccb7b60d93f6127f75cc8549a0452ae8697592ba4
-    Aug 13 10:12:48 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:48.136125Z  INFO CreateContainer succeeded container=plugin container_id=7a7f9ecc8dd44420c6b504909dc24c532ee9a0c1bd0c9b8b9fc0d02b246253d5
-    Aug 13 10:12:51 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:51.358340Z  INFO node status pushed
-    Aug 13 10:12:51 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:51.858754Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-jx4ct
-    Aug 13 10:12:51 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:51.966226Z  INFO CreateContainer succeeded container=plugin container_id=ffdfc3c17119bce1df5388eebe421fb7407658daa87b98a299cd95723d9c0835
-    Aug 13 10:12:52 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:52.084991Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-jx4ct
-    Aug 13 10:12:58 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:12:58.620302Z  INFO CreateContainer succeeded container=c container_id=10ac2efc8f03b3234329c61669158f70bf6bc78a1e22c95f79aab90edfedf18d
-    Aug 13 10:13:01 runnervmzvulz run-nodelet.sh[14241]: 2026-08-13T10:13:01.227777Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-59e04ad1-fe11-4078-869d-a08e00987743.sock plugin_type=DRAPlugin
+    Aug 13 16:01:46 runnervmvrwv9 run-nodelet.sh[14312]: 2026-08-13T16:01:46.833242Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-q8m2b
+    Aug 13 16:01:47 runnervmvrwv9 run-nodelet.sh[14312]: 2026-08-13T16:01:47.007871Z  INFO CreateContainer succeeded container=plugin container_id=9b6643d5ad82d5e0bb7515406bb8bf05c5608f56cffdaa50a465d9067f1bf89e
+    Aug 13 16:01:47 runnervmvrwv9 run-nodelet.sh[14312]: 2026-08-13T16:01:47.184655Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-q8m2b
+    Aug 13 16:01:52 runnervmvrwv9 run-nodelet.sh[14312]: 2026-08-13T16:01:52.213976Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-9ce58330-0dfb-4e53-8319-88c89ad8244f.sock plugin_type=DRAPlugin
+    Aug 13 16:01:52 runnervmvrwv9 run-nodelet.sh[14312]: 2026-08-13T16:01:52.214249Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-45481bee-3ca0-4205-93bc-25e7d6fdf0b1-reg.sock error=connecting to plugin registration socket
+    Aug 13 16:01:52 runnervmvrwv9 run-nodelet.sh[14312]: Caused by:
+    Aug 13 16:01:52 runnervmvrwv9 run-nodelet.sh[14312]:     0: transport error
+    Aug 13 16:01:52 runnervmvrwv9 run-nodelet.sh[14312]:     1: Connection refused (os error 111)
+    Aug 13 16:01:52 runnervmvrwv9 run-nodelet.sh[14312]:     2: Connection refused (os error 111)
+    Aug 13 16:01:53 runnervmvrwv9 run-nodelet.sh[14312]: 2026-08-13T16:01:53.197913Z  INFO CreateContainer succeeded container=c container_id=d3413529a42fd07677cc93cb41b4fdd58180d98ea29cbabfc38eae99718c514d
+    Aug 13 16:02:02 runnervmvrwv9 run-nodelet.sh[14312]: 2026-08-13T16:02:02.214991Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-45481bee-3ca0-4205-93bc-25e7d6fdf0b1-reg.sock error=connecting to plugin registration socket
+    Aug 13 16:02:02 runnervmvrwv9 run-nodelet.sh[14312]: Caused by:
+    Aug 13 16:02:02 runnervmvrwv9 run-nodelet.sh[14312]:     0: transport error
+    Aug 13 16:02:02 runnervmvrwv9 run-nodelet.sh[14312]:     1: Connection refused (os error 111)
+    Aug 13 16:02:02 runnervmvrwv9 run-nodelet.sh[14312]:     2: Connection refused (os error 111)
 
 ════════════════════════════════════════
 Results: 0 passed, 1 failed, 0 skipped
 Failed:
   - test_scheduler_rejects_a_pod_that_does_not_fit
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786615976...
+==> Cleaning up test namespace not-k8s-e2e-1786636911...
