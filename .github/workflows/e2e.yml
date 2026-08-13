@@ -31,9 +31,40 @@ permissions:
   contents: write
 
 jobs:
+  # Sharded 5 ways, exactly like release.yml's own e2e stage — same
+  # test-e2e.sh --shard=N/M and harness.sh _filter_shard() machinery, same
+  # needs_drivers split, and needs_drivers MUST keep matching harness.sh's
+  # NUM_DRIVER_SHARDS (they are not wired together).
+  #
+  # Not a speed optimisation: unsharded, this workflow could not finish an
+  # unfiltered run at all. Confirmed live — a full suite here ran for
+  # exactly 90 minutes and was killed by the cap, reporting "cancelled",
+  # which looks identical to someone having pressed cancel and says nothing
+  # about whether anything passed. That made the documented "run the full
+  # suite on your branch before merging" step impossible to actually
+  # perform, so every unfiltered dispatch was a 90-minute way of learning
+  # nothing.
+  #
+  # --only dispatches were unaffected and stay that way: a filter that
+  # matches a handful of tests runs them on every shard's cluster, and the
+  # shards that match nothing finish in setup time.
   e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+            needs_drivers: true
+          - shard: 2
+            needs_drivers: true
+          - shard: 3
+            needs_drivers: false
+          - shard: 4
+            needs_drivers: false
+          - shard: 5
+            needs_drivers: false
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 40
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -59,16 +90,23 @@ jobs:
         # CSI/DRA-gated at all (see e2e-misc-prereqs.sh's own header).
         run: sudo -E bash deploy/lib/e2e-misc-prereqs.sh
 
+      - name: Make the kubeconfig readable
+        # Every shard needs this, including the ones that skip the driver
+        # install below — same split release.yml already makes.
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+        run: sudo chmod 644 "$KUBECONFIG"
+
       - name: Install reference CSI + DRA drivers
+        if: matrix.needs_drivers
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
-          sudo chmod 644 "$KUBECONFIG"
           # See release.yml's own e2e job for why this has an external
           # ceiling well below the drivers' own internal ~5min timeout.
           sudo -E timeout 180 bash deploy/lib/e2e-full-setup.sh
 
-      - name: Run the e2e suite
+      - name: Run this shard's e2e tests (${{ matrix.shard }}/5)
         id: e2e
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
@@ -100,7 +138,7 @@ jobs:
             ONLY_FLAG="--only=${{ inputs.only }}"
           fi
           # shellcheck disable=SC2086
-          ./deploy/test-e2e.sh $ONLY_FLAG 2>&1 | tee /tmp/e2e-raw.txt
+          ./deploy/test-e2e.sh --shard=${{ matrix.shard }}/5 $ONLY_FLAG 2>&1 | tee /tmp/e2e-raw.txt
           exit_code=${PIPESTATUS[0]}
           # Strip ANSI color codes for a clean plain-text results file.
           sed -r 's/\x1b\[[0-9;]*m//g' /tmp/e2e-raw.txt > /tmp/e2e-results.txt
@@ -120,11 +158,13 @@ jobs:
         env:
           RESULTS_BRANCH: e2e-results
           RUN_EXIT_CODE: ${{ steps.e2e.outputs.exit_code }}
+          SHARD: ${{ matrix.shard }}
         run: |
           {
             echo "commit: $GITHUB_SHA"
             echo "workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo "timestamp (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "shard: ${SHARD}/5"
             echo "exit code: ${RUN_EXIT_CODE:-unknown}"
             echo "----------------------------------------"
             cat /tmp/e2e-results.txt 2>/dev/null || echo "(no results captured — the run failed before test-e2e.sh could produce output)"
@@ -132,6 +172,14 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # The run itself dirties the working tree — the build updates
+          # Cargo.lock — and `git checkout -B` then refuses with "your local
+          # changes would be overwritten", failing a job that had already
+          # produced its results. Publishing must not depend on a pristine
+          # tree; nothing here is worth keeping, since this step writes a text
+          # file and then the runner is destroyed.
+          git reset --hard HEAD
 
           if git ls-remote --exit-code --heads origin "$RESULTS_BRANCH" >/dev/null 2>&1; then
             git fetch origin "$RESULTS_BRANCH"
@@ -141,10 +189,23 @@ jobs:
             git rm -rf . >/dev/null 2>&1 || true
           fi
 
-          cp /tmp/e2e-results-final.txt results.txt
-          git add results.txt
-          git commit -m "e2e results for ${GITHUB_SHA:0:12}" --allow-empty
-          git push origin "$RESULTS_BRANCH" --force
+          # One file per shard, and a merge-rather-than-force push: five jobs
+          # finish at unpredictable times, and --force from each of them would
+          # leave whichever pushed last as the only surviving result. Retry
+          # around the race where two shards push between one's fetch and its
+          # own push.
+          cp /tmp/e2e-results-final.txt "results-shard-${SHARD}.txt"
+          git add "results-shard-${SHARD}.txt"
+          git commit -m "e2e results (shard ${SHARD}/5) for ${GITHUB_SHA:0:12}" --allow-empty
+          for attempt in 1 2 3 4 5; do
+            if git push origin "HEAD:$RESULTS_BRANCH"; then
+              break
+            fi
+            echo "push rejected (another shard got there first); rebasing onto it — attempt $attempt"
+            git fetch origin "$RESULTS_BRANCH"
+            git rebase "origin/$RESULTS_BRANCH" || git rebase --abort
+            sleep $((attempt * 5))
+          done
 
       - name: Fail the job if the e2e suite failed
         if: steps.e2e.outputs.exit_code != '0'
