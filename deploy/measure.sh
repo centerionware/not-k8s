@@ -97,6 +97,13 @@ MEASURE_COMPONENTS=(
     # profiling that already runs, rather than the day someone remembers.
     "nodeapiserver|nodeapiserver|nodeapiserver|the API server, replacing kube-apiserver"
     "nodescheduler|nodescheduler|nodescheduler|the scheduler, replacing kube-scheduler"
+    # The upstream components this project replaces, run as real standalone
+    # processes by deploy/lib/upstream-kubelet.sh and
+    # deploy/lib/upstream-kube-proxy.sh. Present only on the upstream leg of a
+    # comparison, absent on ours — which is what lets one table measure both
+    # legs without being told which leg it is on.
+    "kubelet|kubelet|kubelet|upstream kubelet, the node agent nodelet replaces"
+    "kube-proxy|kube-proxy|kube-proxy|upstream kube-proxy, the Service routing nodeproxy replaces"
     # Not ours, and measured precisely because they are not.
     #
     # Stock k3s runs flannel *inside* the k3s process and brings its own
@@ -170,6 +177,7 @@ declare -A SLOT_CYCLES SLOT_INSTRUCTIONS SLOT_IPC SLOT_TASK_CLOCK
 SLOTS=()
 PRESENT=()
 
+CLAIMED_PIDS=" "
 for row in "${MEASURE_COMPONENTS[@]}"; do
     IFS='|' read -r slot pattern label what <<<"$row"
     SLOTS+=("$slot")
@@ -177,8 +185,20 @@ for row in "${MEASURE_COMPONENTS[@]}"; do
     SLOT_LABEL[$slot]="$label"
     SLOT_WHAT[$slot]="$what"
     SLOT_CSV[$slot]="$OUT_DIR/${slot}-timeseries.csv"
-    SLOT_PID[$slot]="$(find_pid "$pattern")"
-    [[ -n "${SLOT_PID[$slot]}" ]] && PRESENT+=("$slot")
+    pid="$(find_pid "$pattern")"
+    # One process is counted once. The node-agent slot's pattern is
+    # caller-overridable ($3), so pointing it at kubelet makes it match the
+    # same process the `kubelet` row below matches — and COMBINED would then
+    # count that process twice, inflating the leg this comparison is supposed
+    # to be fair to. First row to claim a PID keeps it.
+    if [[ -n "$pid" && "$CLAIMED_PIDS" == *" $pid "* ]]; then
+        pid=""
+    fi
+    SLOT_PID[$slot]="$pid"
+    if [[ -n "$pid" ]]; then
+        CLAIMED_PIDS="$CLAIMED_PIDS$pid "
+        PRESENT+=("$slot")
+    fi
 done
 
 if [[ "${#PRESENT[@]}" -eq 0 ]]; then
