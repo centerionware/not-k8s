@@ -363,3 +363,99 @@ fn an_empty_cluster_reports_no_nodes_rather_than_scheduling_nowhere() {
         _ => panic!("an empty cluster must not schedule anything"),
     }
 }
+
+// ── Through the projection, not around it ───────────────────────────────
+//
+// The tests above build `PodInfo` by hand, which is how they passed while
+// the live cluster bound a 10000-core pod to a 4-core node: the real path
+// goes through `PodInfo::from_pod` -> `pod_requests` -> `parse_quantity_*`
+// first, and hand-built fixtures skip every one of those.
+//
+// So these start from an actual `Pod` object, exactly as the watch layer
+// receives it, and run the whole way to a cycle outcome. Any future test of
+// a placement decision should start here rather than at `PodInfo`.
+
+fn api_pod_requesting(cpu: &str) -> Pod {
+    Pod {
+        metadata: ObjectMeta {
+            name: Some("toobig".to_string()),
+            namespace: Some("default".to_string()),
+            uid: Some("toobig-uid".to_string()),
+            ..Default::default()
+        },
+        spec: Some(k8s_openapi::api::core::v1::PodSpec {
+            containers: vec![k8s_openapi::api::core::v1::Container {
+                name: "c".to_string(),
+                resources: Some(k8s_openapi::api::core::v1::ResourceRequirements {
+                    requests: Some(BTreeMap::from([(
+                        "cpu".to_string(),
+                        Quantity(cpu.to_string()),
+                    )])),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_real_pod_object_asking_for_10000_cores_is_projected_as_10000_cores() {
+    // The step the hand-built fixtures skipped. "10000" with no suffix means
+    // 10000 whole cores, i.e. ten million millicores — if this ever came back
+    // as 10000 millicores it would look like a 10-core request and fit
+    // almost anywhere.
+    let info = PodInfo::from_pod(&api_pod_requesting("10000"), Default::default());
+    assert_eq!(info.requests.milli_cpu, 10_000_000);
+    assert_eq!(
+        info.requests.names(),
+        vec!["cpu".to_string()],
+        "cpu must appear in the requested set, or the fit check skips it entirely"
+    );
+}
+
+#[test]
+fn a_real_pod_object_larger_than_the_node_is_not_scheduled() {
+    // The live e2e case, end to end: API object -> projection -> cycle.
+    let (mut sched, snapshot) = fit_scheduler("4");
+    let pod = PodInfo::from_pod(&api_pod_requesting("10000"), Default::default());
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = sched.schedule_one(&pod, &snapshot, &mut rng);
+
+    match outcome {
+        CycleOutcome::Unschedulable { reason, .. } => {
+            assert!(reason.contains("Insufficient cpu"), "got: {reason}")
+        }
+        CycleOutcome::Scheduled { node } => panic!(
+            "a real Pod object requesting 10000 cores was scheduled onto a 4-core node ({node})"
+        ),
+        CycleOutcome::Error { reason } => panic!("unexpected error: {reason}"),
+    }
+}
+
+#[test]
+fn a_real_pod_object_that_fits_is_scheduled() {
+    let (mut sched, snapshot) = fit_scheduler("4");
+    let pod = PodInfo::from_pod(&api_pod_requesting("500m"), Default::default());
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = sched.schedule_one(&pod, &snapshot, &mut rng);
+    assert!(
+        matches!(outcome, CycleOutcome::Scheduled { .. }),
+        "500m must fit a 4-core node"
+    );
+}
+
+#[test]
+fn a_node_object_advertising_four_cores_is_projected_as_4000_millicores() {
+    // The other half of the same arithmetic. If allocatable were read in
+    // whole cores while requests were in millicores, every node would look
+    // 1000x smaller than it is and nothing would ever schedule.
+    let (_, snapshot) = fit_scheduler("4");
+    let node = snapshot.node("worker").expect("the node is in the snapshot");
+    assert_eq!(node.allocatable.milli_cpu, 4000);
+    assert_eq!(node.allocatable_pods, 110);
+}

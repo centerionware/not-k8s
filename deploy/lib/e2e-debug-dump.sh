@@ -44,6 +44,22 @@ echo "── nodelet.service logs (last 200 lines) ──"
 sudo journalctl -u nodelet.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
 
 echo ""
+# Only present when this deployment runs our scheduler (SCHEDULER=nodescheduler).
+# Worth dumping unconditionally rather than gating on it: when placement is
+# what broke, "the unit is not installed" is itself the answer, and the first
+# live run of nodescheduler was diagnosed almost blind for want of exactly
+# this — the dump tailed nodelet and said nothing about what decided the
+# placement.
+echo "── nodescheduler.service ──"
+sudo systemctl status nodescheduler.service --no-pager -l 2>&1 || echo "(nodescheduler.service not found/not running — k3s's own scheduler is placing pods)"
+echo ""
+echo "── nodescheduler.service logs (last 200 lines) ──"
+sudo journalctl -u nodescheduler.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
+echo ""
+echo "── scheduler lease ──"
+kubectl get lease kube-scheduler -n kube-system -o yaml 2>&1 | head -30 || echo "(no scheduler lease)"
+
+echo ""
 echo "── k3s.service ──"
 sudo systemctl status k3s.service --no-pager -l 2>&1 || echo "(k3s.service not found/not running)"
 
