@@ -155,6 +155,53 @@ impl SchedulingQueue {
         self.push_active(pod);
     }
 
+    /// A pod this queue already knows about was edited.
+    ///
+    /// # Why this is not just `add`
+    ///
+    /// Treating every pod update as an arrival is a hot loop, and `report.rs`
+    /// closes it: a failed cycle patches the pod's status to say why, the
+    /// apiserver emits an update for that patch, `add` puts the pod straight
+    /// back into the active queue skipping its backoff, the cycle fails
+    /// again, and it patches again — at full speed, forever, hammering the
+    /// apiserver on behalf of a pod that simply does not fit.
+    ///
+    /// So an update replaces the stored object *where the pod already is* and
+    /// leaves its position alone. A pod being edited does not by itself make
+    /// it schedulable; only a cluster event a plugin subscribed to does, and
+    /// that arrives through [`Self::move_all_to_active_or_backoff`].
+    ///
+    /// It also carries forward the two fields the watch layer cannot know,
+    /// because they belong to the queue rather than to the API object:
+    /// `queued_at` (fairness — resetting it on every edit starves exactly the
+    /// pods being retried most) and `attempts` (backoff — resetting it pins
+    /// the delay at its 1s floor).
+    pub fn update(&self, pod: Arc<PodInfo>) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+
+            if let Some(entry) = inner.unschedulable.get_mut(&pod.uid) {
+                entry.pod = carry_queue_state(&entry.pod, &pod);
+                return;
+            }
+            if let Some(slot) = inner.active.iter_mut().find(|p| p.uid == pod.uid) {
+                *slot = carry_queue_state(slot, &pod);
+                return;
+            }
+        }
+
+        // Serving backoff: deliberately left alone rather than replaced. The
+        // heap is ordered by expiry, and re-inserting would either reset that
+        // expiry — reopening the loop above — or need the old deadline read
+        // back out. The stored object is at most one backoff period stale
+        // (10s at the ceiling), which no scheduling decision is sensitive to.
+        if self.backoff.lock().unwrap().contains(&pod.uid) {
+            return;
+        }
+
+        self.add(pod);
+    }
+
     fn push_active(&self, pod: Arc<PodInfo>) {
         {
             let mut inner = self.inner.lock().unwrap();
@@ -492,3 +539,12 @@ impl SchedulingQueue {
 #[cfg(test)]
 #[path = "queue_tests.rs"]
 mod tests;
+
+/// Merge an updated pod object with the queue-owned fields of the one it
+/// replaces. See [`SchedulingQueue::update`].
+fn carry_queue_state(previous: &Arc<PodInfo>, updated: &Arc<PodInfo>) -> Arc<PodInfo> {
+    let mut merged = (**updated).clone();
+    merged.queued_at = previous.queued_at;
+    merged.attempts = previous.attempts;
+    Arc::new(merged)
+}
