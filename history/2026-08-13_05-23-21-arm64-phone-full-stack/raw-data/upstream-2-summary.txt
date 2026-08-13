@@ -1,0 +1,92 @@
+  PROCESS            avg CPU%    CPU-sec   RSS (MB)         cycles   instructions      IPC
+  ──────────────── ────────── ────────── ────────── ────────────── ────────────── ────────
+  k3s server           21.58%  26.699240      373.8            N/A            N/A      N/A
+  kubelet               4.73%   6.002830       73.5            N/A            N/A      N/A
+  kube-proxy            0.12%   0.370850       45.7            N/A            N/A      N/A
+  containerd            1.89%   5.761720       46.2            N/A            N/A      N/A
+  flanneld              0.92%   4.232670       36.8            N/A            N/A      N/A
+  ──────────────── ────────── ────────── ────────── ────────────── ────────────── ────────
+  COMBINED             29.24%     43.068      576.0            N/A            N/A      N/A
+
+  what each row is:
+    k3s server     everything not yet replaced: apiserver, controller-manager, scheduler, and kine+SQLite unless a datastore row below is running
+    kubelet        upstream kubelet, the node agent nodelet replaces
+    kube-proxy     upstream kube-proxy, the Service routing nodeproxy replaces
+    containerd     the container runtime (k3s bundles its own; this stack uses the host's)
+    flanneld       the CNI overlay daemon (a separate service here, in-process on stock k3s)
+  not running on this host (not measured): nodestore nodelet nodeproxy nodeapiserver nodescheduler
+
+  test hardware: arch=aarch64 cores=8 model="unknown"
+  sample window: 120s, 1 sample/sec
+  perf hardware counters (cycles/instructions): available
+  CPU-seconds precision: k3s=perf-task-clock kubelet=perf-task-clock kube-proxy=perf-task-clock containerd=perf-task-clock flanneld=perf-task-clock (perf-task-clock = sub-ms via perf; proc-ticks = ~10ms via /proc, whenever perf's task-clock wasn't available)
+
+  NOTE: the "k3s server" row is one OS process holding everything not yet
+  replaced — apiserver + controller-manager + scheduler, plus kine/SQLite
+  whenever nodestore is not the datastore, plus the embedded kubelet whenever
+  the agent isn't disabled. Those cannot be isolated at the process level, so
+  read that row as a remainder that shrinks as components move out of it, not
+  as any one component's cost.
+=== MEASURE ===
+MEASURE_SAMPLE_SECS=120
+MEASURE_PERF_AVAILABLE=true
+MEASURE_OUT_DIR=/home/droid/nk8s-profile/run/upstream-2
+MEASURE_CPU_ARCH=aarch64
+MEASURE_CPU_CORES=8
+MEASURE_CPU_MODEL=unknown
+MEASURE_K3S_PRESENT=true
+MEASURE_K3S_RSS_MB=373.8
+MEASURE_K3S_CPU_AVG_PCT=21.58
+MEASURE_K3S_CPU_SECONDS=26.699240
+MEASURE_K3S_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_K3S_CYCLES=
+MEASURE_K3S_INSTRUCTIONS=
+MEASURE_K3S_IPC=
+MEASURE_K3S_TIMESERIES_CSV=/home/droid/nk8s-profile/run/upstream-2/k3s-timeseries.csv
+MEASURE_NODESTORE_PRESENT=false
+MEASURE_NODELET_PRESENT=false
+MEASURE_NODEPROXY_PRESENT=false
+MEASURE_NODEAPISERVER_PRESENT=false
+MEASURE_NODESCHEDULER_PRESENT=false
+MEASURE_KUBELET_PRESENT=true
+MEASURE_KUBELET_RSS_MB=73.5
+MEASURE_KUBELET_CPU_AVG_PCT=4.73
+MEASURE_KUBELET_CPU_SECONDS=6.002830
+MEASURE_KUBELET_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_KUBELET_CYCLES=
+MEASURE_KUBELET_INSTRUCTIONS=
+MEASURE_KUBELET_IPC=
+MEASURE_KUBELET_TIMESERIES_CSV=/home/droid/nk8s-profile/run/upstream-2/kubelet-timeseries.csv
+MEASURE_KUBE_PROXY_PRESENT=true
+MEASURE_KUBE_PROXY_RSS_MB=45.7
+MEASURE_KUBE_PROXY_CPU_AVG_PCT=0.12
+MEASURE_KUBE_PROXY_CPU_SECONDS=0.370850
+MEASURE_KUBE_PROXY_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_KUBE_PROXY_CYCLES=
+MEASURE_KUBE_PROXY_INSTRUCTIONS=
+MEASURE_KUBE_PROXY_IPC=
+MEASURE_KUBE_PROXY_TIMESERIES_CSV=/home/droid/nk8s-profile/run/upstream-2/kube-proxy-timeseries.csv
+MEASURE_CONTAINERD_PRESENT=true
+MEASURE_CONTAINERD_RSS_MB=46.2
+MEASURE_CONTAINERD_CPU_AVG_PCT=1.89
+MEASURE_CONTAINERD_CPU_SECONDS=5.761720
+MEASURE_CONTAINERD_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_CONTAINERD_CYCLES=
+MEASURE_CONTAINERD_INSTRUCTIONS=
+MEASURE_CONTAINERD_IPC=
+MEASURE_CONTAINERD_TIMESERIES_CSV=/home/droid/nk8s-profile/run/upstream-2/containerd-timeseries.csv
+MEASURE_FLANNELD_PRESENT=true
+MEASURE_FLANNELD_RSS_MB=36.8
+MEASURE_FLANNELD_CPU_AVG_PCT=0.92
+MEASURE_FLANNELD_CPU_SECONDS=4.232670
+MEASURE_FLANNELD_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_FLANNELD_CYCLES=
+MEASURE_FLANNELD_INSTRUCTIONS=
+MEASURE_FLANNELD_IPC=
+MEASURE_FLANNELD_TIMESERIES_CSV=/home/droid/nk8s-profile/run/upstream-2/flanneld-timeseries.csv
+MEASURE_COMBINED_RSS_MB=576.0
+MEASURE_COMBINED_CPU_AVG_PCT=29.24
+MEASURE_COMBINED_CPU_SECONDS=43.068
+MEASURE_COMBINED_CYCLES=
+MEASURE_COMBINED_INSTRUCTIONS=
+=== END MEASURE ===

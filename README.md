@@ -11,6 +11,20 @@ control plane and the same containerd — only the node agent differs.
 ![RSS over time](latest/rss-over-time.png)
 ![CPU % over time](latest/cpu-over-time.png)
 
+## Manual runs on real hardware
+
+Runs done by hand on physical ARM hardware rather than a CI runner. They do
+not feed `latest/`, which stays the canonical CI comparison.
+
+- [`history/2026-08-13_05-23-21-arm64-phone-full-stack/`](history/2026-08-13_05-23-21-arm64-phone-full-stack/README.md) — **whole-stack** comparison
+  on a Pixel 7: `nodestore`+`nodelet`+`nodeproxy` against upstream
+  `kine`+`kubelet`+`kube-proxy`, every process on the node counted, 3 fresh
+  installs per leg, legs alternating. 468 MB / 24.98 CPU-sec against
+  572 MB / 37.16 CPU-sec.
+- [`history/2026-08-09_00-59-17-arm64-phone/`](history/2026-08-09_00-59-17-arm64-phone/README.md)
+  — the earlier agent-only comparison (`nodelet` vs `kubelet`) on the same
+  device.
+
 ## Methodology
 
 - 6 GitHub Actions runners, provisioned identically and in parallel: 3
