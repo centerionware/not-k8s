@@ -1,39 +1,18 @@
-commit: 33c6f92f2af66289cd6ab7568d205724d1382988
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31718099248
-timestamp (UTC): 2026-08-13T16:02:40Z
+commit: bb950d3e3917d5757a1dfa0c0aa7544ad5b7ab7e
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31735155893
+timestamp (UTC): 2026-08-13T19:23:53Z
 shard: 1/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786636890
+==> Test namespace: not-k8s-e2e-1786649023
 ==> 205 test(s) registered total (before sharding); running now...
 ==> Shard 1/5: 45 test(s) selected
 ▶ test_scheduler_honours_a_node_selector_that_matches
-==> FATAL: timed out after 60s waiting for: pod_field
-  ✘ FAIL (61s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 13 16:01:03 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:03.813173Z  INFO CreateContainer succeeded container=node-driver-registrar container_id=c7bc2e936a1ac7f0b1d8d2d822c5c3edc7a7bfa0d2b018f95050a80a712d1de2
-    Aug 13 16:01:04 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:04.683654Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 13 16:01:04 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:04.883626Z  INFO CreateContainer succeeded container=liveness-probe container_id=1834a55da625601c953f21c6d19d3574f392791aceb853071060b0c6f3f97bdd
-    Aug 13 16:01:06 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:06.374990Z  INFO CreateContainer succeeded container=csi-attacher container_id=194a865f23b9c139898e3a531c39633f80992ff25c3b4d103aee95c3b639b7e4
-    Aug 13 16:01:08 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:08.237088Z  INFO CreateContainer succeeded container=csi-provisioner container_id=89a074a00b298a9a53746a0960f35d69b43c640197d124f4d017688f340b47c8
-    Aug 13 16:01:10 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:10.007968Z  INFO CreateContainer succeeded container=csi-resizer container_id=2344b84df61e9e39388c42ffd0d743aa87ffeb8273eabc01439b29e1db2b0ecf
-    Aug 13 16:01:11 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:11.678252Z  INFO CreateContainer succeeded container=csi-snapshotter container_id=4f29c20489044d34c9adcf50d596576af88835abb25e0810dcc1722b8459cdf8
-    Aug 13 16:01:21 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:21.790856Z  INFO CreateContainer succeeded container=plugin container_id=df582865a303769da7335c3898e28bf4a2e8583a4cee36e94a04f9d0a83d2a2b
-    Aug 13 16:01:24 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:24.747021Z  INFO node status pushed
-    Aug 13 16:01:25 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:25.707067Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-m5b8c
-    Aug 13 16:01:25 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:25.821997Z  INFO CreateContainer succeeded container=plugin container_id=a352f698ff44fca52a4d852d4a3aa21539ab45f1d0bd402e09f4343724e7464d
-    Aug 13 16:01:25 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:25.945551Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-m5b8c
-    Aug 13 16:01:32 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:32.510132Z  INFO CreateContainer succeeded container=c container_id=a82924e89f257eb2dc0463e0930ae7b0a3699ae42cfb91ae2ccdafc30f967da3
-    Aug 13 16:01:34 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:01:34.706023Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-be9810de-ca96-4343-ba09-a57ad1bea54a.sock plugin_type=DRAPlugin
-    Aug 13 16:02:24 runnervmzvulz run-nodelet.sh[14348]: 2026-08-13T16:02:24.788516Z  INFO node status pushed
+  ✔ PASS (1s)
 ▶ test_scheduler_holds_the_leader_lease
   ✔ PASS (8s)
 
 ════════════════════════════════════════
-Results: 1 passed, 1 failed, 0 skipped
-Failed:
-  - test_scheduler_honours_a_node_selector_that_matches
+Results: 2 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786636890...
+==> Cleaning up test namespace not-k8s-e2e-1786649023...
