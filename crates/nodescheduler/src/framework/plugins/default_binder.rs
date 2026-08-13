@@ -26,14 +26,9 @@ use crate::framework::status::Status;
 use crate::framework::{BindPlugin, Plugin};
 use k8s_openapi::api::core::v1::{Binding, ObjectReference};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use kube::api::{Api, PostParams};
 
 pub const NAME: &str = "DefaultBinder";
-
-/// `kube` 4.0 sets no default read/write timeout on its own — a stalled
-/// request here would hang `bind_one`/`handle_outcome` forever, leaving the
-/// pod's Reserve assumption never released and the node looking permanently
-/// short on capacity to every later cycle.
-const BIND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub struct DefaultBinder {
     client: kube::Client,
@@ -76,46 +71,12 @@ impl BindPlugin for DefaultBinder {
             },
         };
 
-        let body = match serde_json::to_vec(&binding) {
-            Ok(b) => b,
-            Err(e) => return Status::error(NAME, format!("encoding Binding: {e}")),
-        };
-
-        // A raw request rather than `Api::create_subresource`, which is the
-        // house pattern for subresources this client doesn't generate a
-        // helper for — see nodelet's container_support.rs, which POSTs a
-        // TokenRequest exactly this way.
-        //
-        // It also sidesteps a real trap: the binding subresource hangs off
-        // the *pod*, so the path is /pods/<name>/binding. Reaching for
-        // `Api<Binding>` builds a URL under /bindings/, which the apiserver
-        // answers with a 404 that reads as "the pod vanished" rather than
-        // "wrong path" — a long way from the actual mistake.
-        let uri = format!(
-            "/api/v1/namespaces/{}/pods/{}/binding",
-            pod.namespace, pod.name
-        );
-        let req = match http::Request::builder()
-            .method("POST")
-            .uri(uri)
-            .header("Content-Type", "application/json")
-            .body(body)
+        let api: Api<Binding> = Api::namespaced(self.client.clone(), &pod.namespace);
+        match api.create_subresource("binding", &pod.name, &PostParams::default(),
+            serde_json::to_vec(&binding).unwrap_or_default()).await
         {
-            Ok(r) => r,
-            Err(e) => return Status::error(NAME, format!("building the Binding request: {e}")),
-        };
-
-        // The apiserver answers a successful binding with a Status object,
-        // not the Binding — so this deserializes into the untyped value and
-        // ignores it. Asking for `Binding` back would fail on every
-        // successful bind.
-        match tokio::time::timeout(BIND_TIMEOUT, self.client.request::<serde_json::Value>(req)).await {
-            Ok(Ok(_)) => Status::success(),
-            Ok(Err(e)) => Status::error(NAME, format!("binding {} to {node}: {e}", pod.key())),
-            Err(_) => Status::error(
-                NAME,
-                format!("binding {} to {node} did not respond within {}s", pod.key(), BIND_TIMEOUT.as_secs()),
-            ),
+            Ok(_) => Status::success(),
+            Err(e) => Status::error(NAME, format!("binding {} to {node}: {e}", pod.key())),
         }
     }
 }

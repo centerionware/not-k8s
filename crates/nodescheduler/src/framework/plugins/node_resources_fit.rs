@@ -78,14 +78,6 @@ struct FitState {
     /// design (`sub` clamps at zero) and a signed delta would need a second
     /// representation for no benefit.
     freed: Resources,
-    /// Preemption's hypothetical pod-count change, signed (unlike
-    /// `delta`/`freed`, this one number is cheap to keep signed instead of
-    /// needing an add/sub pair). Found via review: `filter`'s pod-count
-    /// check used to read `node.pod_count()` raw, so evicting a victim
-    /// could never unstick a node that was rejected for being at its pod
-    /// limit specifically — only the resource checks below it saw
-    /// preemption's dry-run removals.
-    pod_count_delta: i64,
 }
 
 #[derive(Default)]
@@ -152,7 +144,6 @@ impl PreFilterExtensions for NodeResourcesFit {
     ) -> Status {
         let mut fit = state.read::<FitState>(NAME).cloned().unwrap_or_default();
         fit.delta.add(&pod_to_add.requests);
-        fit.pod_count_delta += 1;
         state.write(NAME, fit);
         Status::success()
     }
@@ -166,7 +157,6 @@ impl PreFilterExtensions for NodeResourcesFit {
     ) -> Status {
         let mut fit = state.read::<FitState>(NAME).cloned().unwrap_or_default();
         fit.freed.add(&pod_to_remove.requests);
-        fit.pod_count_delta -= 1;
         state.write(NAME, fit);
         Status::success()
     }
@@ -184,12 +174,8 @@ impl FilterPlugin for NodeResourcesFit {
         });
 
         // Pod count first: it is one comparison and it is the limit a busy
-        // node hits before any resource does. Adjusted by preemption's
-        // dry-run add/remove the same way the resource checks below are —
-        // otherwise evicting a victim could never unstick a node rejected
-        // for being at its pod-count limit specifically.
-        let committed_pod_count = node.pod_count() + fit.pod_count_delta;
-        if node.allocatable_pods > 0 && committed_pod_count >= node.allocatable_pods {
+        // node hits before any resource does.
+        if node.allocatable_pods > 0 && node.pod_count() >= node.allocatable_pods {
             return Status::unschedulable(NAME, "Too many pods");
         }
 
@@ -206,30 +192,9 @@ impl FilterPlugin for NodeResourcesFit {
             // different failure from one it has run out of, and the message
             // is the only thing an operator sees.
             if allocatable == 0 {
-                tracing::debug!(
-                    node = %node.name, resource = %name,
-                    "rejecting: node advertises no allocatable capacity for this resource at all"
-                );
                 return Status::unschedulable(NAME, format!("Insufficient {name}"));
             }
             if used + want > allocatable {
-                // At debug rather than info: this fires on every rejected
-                // pod on a busy cluster, same volume class as the
-                // unschedulable log line itself. But without the actual
-                // numbers, "Insufficient cpu" alone is unfalsifiable against
-                // a live cluster's own `kubectl describe node` — found live
-                // in CI chasing a flake where this plugin rejected a pod
-                // for want of ~1000m while every other view of the cluster
-                // (Allocated resources, the real pod list) showed under
-                // 1200m committed against 4000m allocatable. Whether that
-                // was a real transient shortfall or a cache-accounting bug
-                // was unanswerable after the fact with only the reason
-                // string to go on — this is what the next occurrence needs.
-                tracing::debug!(
-                    node = %node.name, resource = %name,
-                    committed = used, requested = want, allocatable,
-                    "rejecting: committed + requested exceeds allocatable"
-                );
                 return Status::unschedulable(NAME, format!("Insufficient {name}"));
             }
         }
@@ -411,32 +376,6 @@ mod tests {
 
         let s = NodeResourcesFit::default().filter(&state_for(&p), &p, &n);
         assert_eq!(s.reasons[0], "Too many pods");
-    }
-
-    #[test]
-    fn hypothetically_removing_a_pod_makes_room_under_the_pod_ceiling_too() {
-        // Same question as hypothetically_removing_a_pod_makes_room, but for
-        // the pod-count check specifically — found via review: that check
-        // used to read node.pod_count() raw, so it was the one thing
-        // preemption's dry-run removals never reached. A node at its pod
-        // ceiling could then never be preempted into, no matter how much
-        // spare CPU/memory a victim's eviction would free.
-        let p = pod_wanting(1, 0);
-        let mut n = node_with(2000, 0, 0, 0);
-        n.allocatable_pods = 1;
-        n.add_pod(std::sync::Arc::new(pod("existing")), 1);
-        let plugin = NodeResourcesFit::default();
-        let mut state = state_for(&p);
-
-        assert_eq!(plugin.filter(&state, &p, &n).reasons[0], "Too many pods");
-
-        let victim = pod("existing");
-        plugin.remove_pod(&mut state, &p, &victim, &n);
-
-        assert!(
-            plugin.filter(&state, &p, &n).is_success(),
-            "the preemptor must fit once the victim is hypothetically gone, including past the pod-count ceiling"
-        );
     }
 
     #[test]

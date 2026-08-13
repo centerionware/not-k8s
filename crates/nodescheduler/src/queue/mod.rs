@@ -50,8 +50,7 @@ use backoff::BackoffQueue;
 use hints::{HintRegistry, RequeueDecision};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
 /// How long a pod may sit in `unschedulable` before it is retried regardless.
@@ -68,14 +67,6 @@ struct Unschedulable {
     unschedulable_plugins: Vec<&'static str>,
     /// Plugins that rejected it with `Pending` — retry immediately.
     pending_plugins: Vec<&'static str>,
-    /// Parked by `PreEnqueue` rather than by a scheduling cycle.
-    ///
-    /// The two are woken completely differently and conflating them strands
-    /// pods. A cycle-rejected pod is woken by a cluster event some plugin
-    /// subscribed to. A PreEnqueue-rejected pod — a gated one — is woken by
-    /// its own spec changing, which is not a cluster event about anything
-    /// else, and which `update()` is the only thing that sees.
-    held_by_pre_enqueue: bool,
     since: Instant,
 }
 
@@ -155,81 +146,12 @@ impl SchedulingQueue {
                     pod,
                     unschedulable_plugins: Vec::new(),
                     pending_plugins: Vec::new(),
-                    held_by_pre_enqueue: true,
                     since: Instant::now(),
                 },
             );
             return;
         }
         self.push_active(pod);
-    }
-
-    /// A pod this queue already knows about was edited.
-    ///
-    /// # Why this is not just `add`
-    ///
-    /// Treating every pod update as an arrival is a hot loop, and `report.rs`
-    /// closes it: a failed cycle patches the pod's status to say why, the
-    /// apiserver emits an update for that patch, `add` puts the pod straight
-    /// back into the active queue skipping its backoff, the cycle fails
-    /// again, and it patches again — at full speed, forever, hammering the
-    /// apiserver on behalf of a pod that simply does not fit.
-    ///
-    /// So an update replaces the stored object *where the pod already is* and
-    /// leaves its position alone. A pod being edited does not by itself make
-    /// it schedulable; only a cluster event a plugin subscribed to does, and
-    /// that arrives through [`Self::move_all_to_active_or_backoff`].
-    ///
-    /// It also carries forward the two fields the watch layer cannot know,
-    /// because they belong to the queue rather than to the API object:
-    /// `queued_at` (fairness — resetting it on every edit starves exactly the
-    /// pods being retried most) and `attempts` (backoff — resetting it pins
-    /// the delay at its 1s floor).
-    pub fn update(&self, pod: Arc<PodInfo>) {
-        {
-            let mut inner = self.inner.lock().unwrap();
-
-            if let Some(entry) = inner.unschedulable.get_mut(&pod.uid) {
-                let merged = carry_queue_state(&entry.pod, &pod);
-
-                // A pod held by PreEnqueue is held by its own spec, so its
-                // own spec changing is the only thing that can release it —
-                // and that arrives here, as an update, not as a cluster event
-                // about something else. Without this a gated pod stays parked
-                // until the five-minute safety net, however promptly its gate
-                // is removed.
-                //
-                // Deliberately narrow: only pods PreEnqueue is holding are
-                // re-evaluated. Re-activating a *cycle*-rejected pod on every
-                // edit is the hot loop this method exists to prevent, and
-                // every failed pod is edited, because being told why it failed
-                // is an edit.
-                if entry.held_by_pre_enqueue && (self.pre_enqueue)(&merged).is_success() {
-                    inner.unschedulable.remove(&pod.uid);
-                    drop(inner);
-                    self.push_active(merged);
-                    return;
-                }
-
-                entry.pod = merged;
-                return;
-            }
-            if let Some(slot) = inner.active.iter_mut().find(|p| p.uid == pod.uid) {
-                *slot = carry_queue_state(slot, &pod);
-                return;
-            }
-        }
-
-        // Serving backoff: deliberately left alone rather than replaced. The
-        // heap is ordered by expiry, and re-inserting would either reset that
-        // expiry — reopening the loop above — or need the old deadline read
-        // back out. The stored object is at most one backoff period stale
-        // (10s at the ceiling), which no scheduling decision is sensitive to.
-        if self.backoff.lock().unwrap().contains(&pod.uid) {
-            return;
-        }
-
-        self.add(pod);
     }
 
     fn push_active(&self, pod: Arc<PodInfo>) {
@@ -324,20 +246,6 @@ impl SchedulingQueue {
         unschedulable_plugins: Vec<&'static str>,
         pending_plugins: Vec<&'static str>,
     ) {
-        // Charge the pod for the cycle it just spent. This is the *only*
-        // place `attempts` moves, because this is the only place a cycle is
-        // known to have been wasted — and without it every requeue would be
-        // priced as a first attempt, so `backoff_duration` would return the
-        // 1s initial delay forever and a permanently unschedulable pod would
-        // re-enter the active queue once a second indefinitely. That is a
-        // busy-loop wearing a backoff queue's clothing, and it would only
-        // show up as unexplained CPU on a cluster with a stuck pod.
-        let pod = {
-            let mut p = (*pod).clone();
-            p.attempts = p.attempts.saturating_add(1);
-            Arc::new(p)
-        };
-
         // The in-flight replay. Without this the pod waits for the *next*
         // matching event, which on a quiet cluster may never come.
         let replay: Vec<(ClusterEvent, Option<ChangedObject>, Option<ChangedObject>)> = {
@@ -387,30 +295,9 @@ impl SchedulingQueue {
                 pod,
                 unschedulable_plugins,
                 pending_plugins,
-                held_by_pre_enqueue: false,
                 since: Instant::now(),
             },
         );
-    }
-
-    /// For a cycle that failed for a reason no plugin can explain — a bind
-    /// RPC error, an internal plugin bug — straight to the backoff timer,
-    /// not through `add_unschedulable`'s event-hint matching. With no
-    /// plugin names to record, `HintRegistry::decide` returns `Skip` for
-    /// every event, including the one that actually freed whatever this
-    /// pod needs (`AssignedPod` delete) — `add_unschedulable` would strand
-    /// it until the 5-minute safety net instead of the real retry. A
-    /// timer-based requeue needs no plugin cooperation to fire.
-    pub fn requeue_after_failure(&self, pod: Arc<PodInfo>) {
-        // Same attempts accounting `add_unschedulable` documents: without
-        // it every requeue prices as a first attempt and `backoff_duration`
-        // never grows past its 1s floor.
-        let pod = {
-            let mut p = (*pod).clone();
-            p.attempts = p.attempts.saturating_add(1);
-            Arc::new(p)
-        };
-        self.push_backoff(pod);
     }
 
     fn push_backoff(&self, pod: Arc<PodInfo>) {
@@ -590,12 +477,3 @@ impl SchedulingQueue {
 #[cfg(test)]
 #[path = "queue_tests.rs"]
 mod tests;
-
-/// Merge an updated pod object with the queue-owned fields of the one it
-/// replaces. See [`SchedulingQueue::update`].
-fn carry_queue_state(previous: &Arc<PodInfo>, updated: &Arc<PodInfo>) -> Arc<PodInfo> {
-    let mut merged = (**updated).clone();
-    merged.queued_at = previous.queued_at;
-    merged.attempts = previous.attempts;
-    Arc::new(merged)
-}

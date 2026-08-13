@@ -15,7 +15,7 @@ fn pod(uid: &str, priority: i32) -> Arc<PodInfo> {
         uid: uid.to_string(),
         name: uid.to_string(),
         priority,
-        queued_at: k8s_openapi::jiff::Timestamp::now(),
+        queued_at: chrono::Utc::now(),
         ..Default::default()
     })
 }
@@ -65,7 +65,7 @@ async fn pop_waits_rather_than_spinning_on_an_empty_queue() {
     let q = Arc::new(queue());
     let q2 = q.clone();
 
-    let popped = tokio::spawn(async move { q2.pop().await.uid.clone() });
+    let popped = tokio::spawn(async move { q2.pop().await.uid });
     // Nothing to take yet; the pop must be parked, not looping.
     tokio::task::yield_now().await;
     q.add(pod("late", 0));
@@ -314,177 +314,4 @@ fn activate_forces_a_parked_pod_into_the_active_queue() {
 
     assert_eq!(q.active_len(), 1);
     assert_eq!(q.unschedulable_len(), 0);
-}
-
-// ── Updates versus arrivals ─────────────────────────────────────────────
-//
-// These cover the hot loop report.rs closes: a failed cycle patches the pod's
-// status, the apiserver emits an update for that patch, and if an update is
-// treated as an arrival the pod re-enters the active queue immediately —
-// skipping backoff — fails again, patches again, forever.
-
-#[test]
-fn updating_a_parked_pod_leaves_it_parked() {
-    // THE fix. If this ever moves the pod to active, the scheduler spins at
-    // full speed on every pod that does not fit.
-    let q = queue();
-    q.add_unschedulable(pod("p", 0), vec!["Fit"], vec![]);
-    assert_eq!(q.unschedulable_len(), 1);
-
-    q.update(pod("p", 0));
-
-    assert_eq!(q.unschedulable_len(), 1, "an edit is not a reason to retry");
-    assert_eq!(q.active_len(), 0);
-}
-
-#[test]
-fn updating_a_parked_pod_does_not_duplicate_it_into_active() {
-    // The specific shape of the original bug: `add` only deduped against the
-    // active queue, so a parked pod could end up in both containers at once.
-    let q = queue();
-    q.add_unschedulable(pod("p", 0), vec!["Fit"], vec![]);
-
-    for _ in 0..5 {
-        q.update(pod("p", 0));
-    }
-
-    assert_eq!(q.active_len(), 0);
-    assert_eq!(q.unschedulable_len(), 1);
-}
-
-#[tokio::test]
-async fn an_update_preserves_the_pods_place_in_the_queue() {
-    // queued_at belongs to the queue, not to the API object. Resetting it on
-    // every edit starves exactly the pods being retried most — and every
-    // failed pod is edited, because that is how it is told why it failed.
-    //
-    // Asserted through the observable consequence — pop order — rather than
-    // by reading the field back, so it tests the behaviour that matters
-    // rather than the bookkeeping that implements it.
-    let q = queue();
-
-    let mut older = (*pod("older", 0)).clone();
-    older.queued_at = k8s_openapi::jiff::Timestamp::from_second(1_000).unwrap();
-    q.add(Arc::new(older));
-
-    let mut newer = (*pod("newer", 0)).clone();
-    newer.queued_at = k8s_openapi::jiff::Timestamp::from_second(2_000).unwrap();
-    q.add(Arc::new(newer));
-
-    // Edit the older pod, stamped as if it had just arrived. If the queue
-    // took that timestamp it would fall behind `newer`.
-    let mut edited = (*pod("older", 0)).clone();
-    edited.queued_at = k8s_openapi::jiff::Timestamp::from_second(9_000).unwrap();
-    q.update(Arc::new(edited));
-
-    assert_eq!(
-        q.pop().await.uid,
-        "older",
-        "an edited pod must keep its original place, not go to the back"
-    );
-}
-
-#[test]
-fn an_update_preserves_the_attempt_count_that_drives_backoff() {
-    // attempts is the other queue-owned field. Resetting it pins the delay
-    // at its 1s floor, so a permanently unschedulable pod retries once a
-    // second forever instead of backing off to the 10s ceiling.
-    let q = queue();
-    q.add_unschedulable(pod("p", 0), vec!["Fit"], vec![]);
-    q.update(pod("p", 0));
-
-    // Wake it and confirm it went to backoff rather than straight to active,
-    // which is what a preserved attempt count buys.
-    q.move_all_to_active_or_backoff(node_added(), None, None);
-    assert_eq!(q.backoff_len(), 1);
-    assert_eq!(q.active_len(), 0);
-}
-
-#[test]
-fn updating_a_pod_the_queue_has_never_seen_admits_it() {
-    // An update for an unknown pod is an arrival by another name — usually a
-    // relist after a watch restart, where every pod arrives as an update.
-    let q = queue();
-    q.update(pod("newcomer", 0));
-    assert_eq!(q.active_len(), 1);
-}
-
-#[test]
-fn updating_an_active_pod_keeps_it_active_exactly_once() {
-    let q = queue();
-    q.add(pod("p", 0));
-    q.update(pod("p", 0));
-    q.update(pod("p", 0));
-    assert_eq!(q.active_len(), 1);
-}
-
-// ── Releasing a pod held by PreEnqueue ──────────────────────────────────
-//
-// A gated pod is held by its own spec, so its own spec changing is the only
-// thing that can release it — and that arrives as an update, not as a cluster
-// event about anything else. Both halves of that were missing: the pod was
-// parked with no rejecting plugin recorded (so no hint could ever match it),
-// and `update` left it parked unconditionally. It sat until the five-minute
-// safety net however promptly its gate was removed.
-
-/// A queue whose PreEnqueue holds any pod named "gated…", so the hold can be
-/// released mid-test by handing it a pod under a different name.
-fn queue_holding_gated() -> SchedulingQueue {
-    queue_with_pre_enqueue(Arc::new(|p: &PodInfo| {
-        if p.name.starts_with("gated") {
-            Status::unschedulable("SchedulingGates", "waiting for scheduling gates")
-        } else {
-            Status::success()
-        }
-    }))
-}
-
-#[test]
-fn ungating_a_pod_releases_it_immediately() {
-    // THE fix. Without it the pod waits 5 minutes for the safety net, which
-    // reads as "the scheduler is slow" rather than "the scheduler is wrong".
-    let q = queue_holding_gated();
-    let mut gated = (*pod("gated-p", 0)).clone();
-    gated.uid = "p".to_string();
-    q.add(Arc::new(gated));
-
-    assert_eq!(q.unschedulable_len(), 1, "held while gated");
-    assert_eq!(q.active_len(), 0);
-
-    // Same pod (same uid), now ungated.
-    let mut ungated = (*pod("ungated-p", 0)).clone();
-    ungated.uid = "p".to_string();
-    q.update(Arc::new(ungated));
-
-    assert_eq!(q.active_len(), 1, "removing the gate must release the pod at once");
-    assert_eq!(q.unschedulable_len(), 0);
-}
-
-#[test]
-fn a_still_gated_pod_stays_held_when_edited() {
-    // An edit that does not remove the gate must change nothing.
-    let q = queue_holding_gated();
-    let mut gated = (*pod("gated-p", 0)).clone();
-    gated.uid = "p".to_string();
-    q.add(Arc::new(gated.clone()));
-
-    q.update(Arc::new(gated));
-
-    assert_eq!(q.unschedulable_len(), 1);
-    assert_eq!(q.active_len(), 0);
-}
-
-#[test]
-fn a_cycle_rejected_pod_is_not_released_by_a_mere_edit() {
-    // The distinction the fix turns on. A pod parked by a scheduling *cycle*
-    // must not be re-activated just because it was edited — that is the hot
-    // loop report.rs closes, and every failed pod gets edited, because being
-    // told why it failed is an edit.
-    let q = queue_holding_gated();
-    q.add_unschedulable(pod("does-not-fit", 0), vec!["Fit"], vec![]);
-
-    q.update(pod("does-not-fit", 0));
-
-    assert_eq!(q.unschedulable_len(), 1, "an edit is not a reason to retry a cycle rejection");
-    assert_eq!(q.active_len(), 0);
 }

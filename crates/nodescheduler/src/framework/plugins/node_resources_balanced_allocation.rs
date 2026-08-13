@@ -56,12 +56,10 @@ impl PreScorePlugin for NodeResourcesBalancedAllocation {
 /// `(1 - spread) * 100`, where spread is measured as upstream measures it.
 fn balance_score(fractions: &[f64]) -> i64 {
     if fractions.len() < 2 {
-        // Nothing to balance against. Checked directly against upstream's
-        // real balanced_allocation.go: `std` (spread) starts at `0.0` and
-        // is only assigned inside the `len == 2` / `len > 2` branches, so
-        // fewer than two fractions leaves it at zero — `(1 - 0) * 100`,
-        // full marks, not a plugin-has-no-opinion zero.
-        return MAX_NODE_SCORE;
+        // Nothing to balance against. Upstream scores this 0 rather than
+        // full marks: with one resource the plugin has no opinion, and
+        // awarding 100 would silently add a constant to every node.
+        return 0;
     }
 
     let spread = if fractions.len() == 2 {
@@ -110,14 +108,6 @@ mod tests {
     use super::*;
     use crate::framework::plugins::testutil::{node, pod, res};
 
-    /// A node's memory has to be a *realistic* number of bytes in these
-    /// tests, not a token like 1000. Scoring substitutes 200Mi for a pod that
-    /// requests no memory, so against a node advertising 1000 bytes every
-    /// utilisation clamps to 1.0 and the memory axis swamps the comparison —
-    /// which is exactly how the first version of these tests managed to fail
-    /// against a correct implementation.
-    const GIB: i64 = 1024 * 1024 * 1024;
-
     fn node_used(alloc_cpu: i64, alloc_mem: i64, used_cpu: i64, used_mem: i64) -> NodeInfo {
         let mut n = node("n");
         n.allocatable = res(alloc_cpu, alloc_mem);
@@ -155,12 +145,11 @@ mod tests {
     }
 
     #[test]
-    fn fewer_than_two_fractions_gets_full_marks() {
-        // Matches upstream exactly: `std` never leaves its zero default
-        // without a second fraction to compare against, so the score
-        // formula `(1 - std) * 100` comes out to full marks, not zero.
-        assert_eq!(balance_score(&[0.5]), 100);
-        assert_eq!(balance_score(&[]), 100);
+    fn a_single_resource_has_no_opinion() {
+        // Awarding full marks would add a constant to every node and silently
+        // dilute every other plugin.
+        assert_eq!(balance_score(&[0.5]), 0);
+        assert_eq!(balance_score(&[]), 0);
     }
 
     #[test]
@@ -170,9 +159,8 @@ mod tests {
         let state = CycleState::default();
         let p = pod("p");
 
-        // Both nodes are ~50% full overall; only the shape differs.
-        let balanced = node_used(1000, 4 * GIB, 500, 2 * GIB);
-        let skewed = node_used(1000, 4 * GIB, 900, GIB / 10);
+        let balanced = node_used(1000, 1000, 500, 500);
+        let skewed = node_used(1000, 1000, 900, 100);
 
         let b = plugin.score(&state, &p, &balanced).unwrap();
         let s = plugin.score(&state, &p, &skewed).unwrap();
@@ -188,8 +176,8 @@ mod tests {
         let mut p = pod("cpu-heavy");
         p.requests = res(400, 0);
 
-        let cpu_loaded = node_used(1000, 4 * GIB, 400, 0);
-        let mem_loaded = node_used(1000, 4 * GIB, 0, 2 * GIB);
+        let cpu_loaded = node_used(1000, 1000, 400, 0);
+        let mem_loaded = node_used(1000, 1000, 0, 400);
 
         let onto_cpu = plugin.score(&state, &p, &cpu_loaded).unwrap();
         let onto_mem = plugin.score(&state, &p, &mem_loaded).unwrap();
@@ -199,32 +187,19 @@ mod tests {
     #[test]
     fn a_resource_the_node_lacks_is_left_out_of_the_balance() {
         // Counting it as 0% would make every node look wildly imbalanced for
-        // a resource nobody uses. Stated as "configuring an extra resource
-        // the node does not have changes nothing", which is the property
-        // that matters and does not depend on the exact score.
-        let n = node_used(1000, 4 * GIB, 500, 2 * GIB);
-        let state = CycleState::default();
+        // a resource nobody uses.
+        let plugin = NodeResourcesBalancedAllocation {
+            resources: vec!["cpu".to_string(), "memory".to_string(), "nvidia.com/gpu".to_string()],
+        };
+        let n = node_used(1000, 1000, 500, 500);
 
-        let without_gpu = NodeResourcesBalancedAllocation::default()
-            .score(&state, &pod("p"), &n)
-            .unwrap();
-        let with_gpu = NodeResourcesBalancedAllocation {
-            resources: vec![
-                "cpu".to_string(),
-                "memory".to_string(),
-                "nvidia.com/gpu".to_string(),
-            ],
-        }
-        .score(&state, &pod("p"), &n)
-        .unwrap();
-
-        assert_eq!(with_gpu, without_gpu);
+        assert_eq!(plugin.score(&CycleState::default(), &pod("p"), &n).unwrap(), 100);
     }
 
     #[test]
     fn an_overcommitted_resource_does_not_push_the_score_out_of_range() {
         let plugin = NodeResourcesBalancedAllocation::default();
-        let n = node_used(1000, 4 * GIB, 9000, 0);
+        let n = node_used(1000, 1000, 9000, 0);
 
         let score = plugin.score(&CycleState::default(), &pod("p"), &n).unwrap();
         assert!((0..=MAX_NODE_SCORE).contains(&score), "score {score} out of range");

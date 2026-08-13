@@ -31,6 +31,7 @@
 //! test failure. Every plugin's set is therefore asserted exactly in its own
 //! unit tests.
 
+pub mod plugins;
 pub mod status;
 
 use crate::cache::{NodeInfo, PodInfo, Snapshot};

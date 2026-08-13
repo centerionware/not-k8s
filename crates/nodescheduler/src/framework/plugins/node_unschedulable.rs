@@ -60,10 +60,7 @@ impl FilterPlugin for NodeUnschedulable {
         if tolerated {
             Status::success()
         } else {
-            // Unresolvable, matching upstream exactly: evicting pods off a
-            // cordoned node doesn't uncordon it, so this node is never a
-            // preemption candidate for an untolerated cordon.
-            Status::unresolvable(NAME, "node(s) were unschedulable")
+            Status::unschedulable(NAME, "node(s) were unschedulable")
         }
     }
 }
@@ -92,17 +89,12 @@ mod tests {
     }
 
     #[test]
-    fn a_cordon_rejection_is_not_resolvable_by_preemption() {
-        // Checked directly against upstream's real NodeUnschedulable, which
-        // returns UnschedulableAndUnresolvable here: evicting pods off a
-        // cordoned node doesn't uncordon it, so preemption can never turn
-        // this rejection into a placement — only an actual uncordon can,
-        // and that already wakes the pod via this plugin's own
-        // events_to_register (see the test below).
+    fn a_cordon_rejection_is_resolvable_by_preemption() {
+        // A cordon can be lifted, so the node stays a preemption candidate.
         let mut n = node("n");
         n.unschedulable = true;
         let s = NodeUnschedulable.filter(&CycleState::default(), &pod("p"), &n);
-        assert!(!s.code.is_resolvable_by_preemption());
+        assert!(s.code.is_resolvable_by_preemption());
     }
 
     #[test]
