@@ -80,6 +80,24 @@ const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_mil
 /// ends costs the cluster.
 const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Whether this failure is worth a log line.
+///
+/// The first version logged only the very first failure of a run, on the
+/// reasoning that a minute of downtime must not produce a minute of
+/// identical warnings. That was right about the noise and wrong about the
+/// consequence: a sustained outage then produced exactly one warning
+/// followed by total silence, which is indistinguishable from a wedged
+/// watch — and a live run was misdiagnosed as exactly that for several
+/// rounds, because "still retrying, apiserver still down" and "dead" looked
+/// identical in the log.
+///
+/// So: the first few, then one roughly every ten afterwards. A long outage
+/// stays legible without becoming a flood, and the paired "recovered" line
+/// makes its duration explicit.
+fn should_log_failure(consecutive: u32) -> bool {
+    consecutive <= 3 || consecutive % 10 == 0
+}
+
 /// How long to wait after `n` consecutive failures.
 ///
 /// Pure and separate so the curve is testable without an apiserver to break.
@@ -171,17 +189,23 @@ pub async fn run(client: Client, targets: WatchTargets, _cfg: &Config) -> anyhow
         tokio::select! {
             event = nodes.next() => match event {
                 Some(Ok(ev)) => {
+                    if node_failures > 0 {
+                        tracing::info!(
+                            after_failures = node_failures,
+                            "node watch recovered"
+                        );
+                    }
                     node_failures = 0;
                     handle_node_event(ev, &mut mirror, &targets);
                 }
                 Some(Err(e)) => {
                     node_failures = node_failures.saturating_add(1);
                     let pause = watch_backoff(node_failures);
-                    // Only the first failure of a run is worth a line. The
-                    // apiserver being down for a minute must not produce a
-                    // minute of identical warnings.
-                    if node_failures == 1 {
-                        tracing::warn!(error = ?e, "node watch error; retrying with backoff");
+                    if should_log_failure(node_failures) {
+                        tracing::warn!(
+                            error = ?e, consecutive = node_failures,
+                            "node watch error; retrying with backoff"
+                        );
                     }
                     tokio::time::sleep(pause).await;
                 }
@@ -193,14 +217,20 @@ pub async fn run(client: Client, targets: WatchTargets, _cfg: &Config) -> anyhow
             },
             event = pods.next() => match event {
                 Some(Ok(ev)) => {
+                    if pod_failures > 0 {
+                        tracing::info!(after_failures = pod_failures, "pod watch recovered");
+                    }
                     pod_failures = 0;
                     handle_pod_event(ev, &mut mirror, &targets);
                 }
                 Some(Err(e)) => {
                     pod_failures = pod_failures.saturating_add(1);
                     let pause = watch_backoff(pod_failures);
-                    if pod_failures == 1 {
-                        tracing::warn!(error = ?e, "pod watch error; retrying with backoff");
+                    if should_log_failure(pod_failures) {
+                        tracing::warn!(
+                            error = ?e, consecutive = pod_failures,
+                            "pod watch error; retrying with backoff"
+                        );
                     }
                     tokio::time::sleep(pause).await;
                 }
@@ -427,6 +457,30 @@ mod tests {
             "a scheduler that waits this long after the apiserver returns is a \
              cluster that places no pods for that long"
         );
+    }
+
+    #[test]
+    fn a_sustained_outage_stays_visible_without_flooding() {
+        // The first few, so a short blip is fully described; then one in ten,
+        // so a long outage remains legible. Logging only the first — the
+        // original behaviour — made "still retrying" and "wedged" identical
+        // in the log, and a live failure was misread as the latter for
+        // several rounds because of it.
+        assert!(should_log_failure(1));
+        assert!(should_log_failure(2));
+        assert!(should_log_failure(3));
+        assert!(!should_log_failure(4));
+        assert!(should_log_failure(10));
+        assert!(!should_log_failure(11));
+        assert!(should_log_failure(100));
+    }
+
+    #[test]
+    fn a_long_outage_logs_a_bounded_number_of_lines() {
+        // Ten minutes at the 5s ceiling is ~120 failures; that must be tens
+        // of lines, not hundreds.
+        let lines = (1..=120u32).filter(|n| should_log_failure(*n)).count();
+        assert!(lines < 20, "{lines} lines for a ten-minute outage is a flood");
     }
 
     #[test]
