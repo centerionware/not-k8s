@@ -169,8 +169,28 @@ if [[ -n "${NOTK8S_DATASTORE_ENDPOINT:-}" ]]; then
     fi
 fi
 
+# ── Our scheduler instead of k3s's ──────────────────────────────────────────
+#
+# SCHEDULER=nodescheduler (bootstrap-source.sh --scheduler=nodescheduler) means
+# crates/nodescheduler is installed as its own service and does the placing, so
+# k3s must stop running its own kube-scheduler in-process. These are two halves
+# of one switch, not independent knobs: leaving both on gives two schedulers
+# watching the same unbound pods and both writing Bindings, which is a race
+# whose usual symptom is a pod bound to a node that a different scheduler
+# already rejected — intermittent, and very hard to read backwards from.
+#
+# Deliberately not defaulted on: with SCHEDULER unset this expands to nothing
+# and the control plane is exactly what every release so far shipped.
+SCHEDULER_ARG=""
+if [[ "${SCHEDULER:-none}" == "nodescheduler" ]]; then
+    SCHEDULER_ARG="--disable-scheduler"
+    echo "==> SCHEDULER=nodescheduler — disabling k3s's own kube-scheduler; ours will do the placing."
+    echo "    (Until nodescheduler is running, new pods stay Pending. That is expected, not a hang.)"
+fi
+
 export INSTALL_K3S_EXEC="server \
     --disable-agent \
+    $SCHEDULER_ARG \
     --disable traefik \
     --disable servicelb \
     --disable local-storage \

@@ -1,0 +1,41 @@
+[package]
+name = "nodescheduler"
+description = "kube-scheduler's job: pod placement, done event-driven"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "nodescheduler"
+path = "src/main.rs"
+
+[lib]
+name = "nodescheduler"
+path = "src/lib.rs"
+
+# Deliberately the same minimal dependency set as nodeproxy: tokio, kube,
+# k8s-openapi, rustls and nothing else. A scheduler is a pure apiserver
+# client — it talks to no runtime, no kernel subsystem, and no node-local
+# anything. If a change here wants tonic/prost/zbus, that is the signal
+# something is being put in the wrong component.
+#
+# `http` is the one addition over nodeproxy's list, and only because DRA's
+# `resource.k8s.io/v1` does not exist in the pinned k8s-openapi v1_33
+# schema, so ResourceClaim access goes through a raw request into a
+# hand-written struct — the same escape hatch nodelet's runtime/cri/claims.rs
+# already uses, for the same reason (see CLAUDE.md on the v1_33 pin).
+[dependencies]
+tokio = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+rustls = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+http = "1"
