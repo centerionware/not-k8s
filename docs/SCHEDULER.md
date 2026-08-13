@@ -188,16 +188,37 @@ plugins that need no extra informers: `PrioritySort`, `SchedulingGates`,
 scheduler for a cluster without PVs, spread constraints or preemption, and it
 is where the footprint claim gets measured.
 
-**Phase 2 — topology.** `PodTopologySpread` (including system default
-constraints, and therefore the Service/RC/RS/StatefulSet listers) and
-`InterPodAffinity` (and therefore the Namespace lister). These are the two
-plugins with real algorithmic content and the two where `AddPod`/`RemovePod`
-correctness starts to matter.
+**Phase 2 — topology.** ✅ Implemented: `PodTopologySpread` and
+`InterPodAffinity`, both with the `AddPod`/`RemovePod` extensions preemption
+depends on.
 
-**Phase 3 — preemption.** `DefaultPreemption` + the PDB informer +
-`NominatedNodeName` + nominated-pod injection during Filter. Async preemption
-(beta and default-on at 1.33) means the preemptor must be held out of the
-active queue while its own preemption is in flight.
+Two deliberate gaps, both narrower than they sound:
+
+  * **System default constraints** are not applied. They need the
+    Service/ReplicaSet/ReplicationController/StatefulSet listers, whose only
+    consumer is that feature, and because they are `ScheduleAnyway` their
+    absence changes **scores and never feasibility** — no pod is placed that
+    upstream would refuse, none refused that upstream would place.
+    `NODESCHEDULER_TOPOLOGY_DEFAULTING` selects the behaviour.
+  * **`namespaceSelector`** on a pod affinity term needs a Namespace watch
+    this scheduler does not run. Such terms fail *open* (`selector.rs`'s
+    `NeedsNamespaceLister`): over-matching can only refuse a placement, while
+    under-matching would silently disable a rule the author wrote and
+    co-locate pods meant to be kept apart.
+
+**Phase 3 — preemption.** ✅ Implemented. The PDB watch, `NominatedNodeName`,
+nominated-pod injection during Filter, victim selection with reprieve, and the
+six-way node choice.
+
+One structural deviation from upstream, with no behavioural difference:
+preemption is driven from `cycle.rs` rather than being a `PostFilter` plugin.
+Its dry runs must re-run the *Filter* plugins against a hypothetical pod set,
+and a plugin is not handed the other plugins — upstream solves that by passing
+a framework `Handle` into every plugin, which is a much larger surface than
+this crate needs for one caller. Every rule still lives in `preempt.rs`; only
+the part that needs the registry lives in the cycle. It still runs exactly
+when zero nodes were feasible, still considers only nodes rejected
+`Unschedulable`, and still picks the same victims.
 
 **Phase 4 — storage.** `VolumeBinding`, `VolumeZone`, `VolumeRestrictions`,
 `NodeVolumeLimits`, and the PV/PVC/StorageClass/CSINode/CSIDriver/

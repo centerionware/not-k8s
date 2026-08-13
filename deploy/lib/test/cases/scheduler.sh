@@ -53,6 +53,25 @@ _pod_is_bound() { # _pod_is_bound <pod>
     [[ -n "$(pod_field "$1" '{.spec.nodeName}')" ]]
 }
 
+# The node's allocatable CPU in millicores, whichever spelling it uses.
+#
+# The apiserver canonicalises quantities, so this comes back as "4", "3800m"
+# or even "4k" depending on the value — the same canonicalisation that made a
+# 10000-core pod look like it requested nothing (docs/E2E_FINDINGS.md finding
+# 21). Only the two forms a node realistically reports are handled here, and
+# anything else yields 0 so the caller skips rather than computing a nonsense
+# request.
+_node_allocatable_milli_cpu() { # _node_allocatable_milli_cpu <node>
+    local raw
+    raw="$(kubectl get node "$1" -o jsonpath='{.status.allocatable.cpu}' 2>/dev/null)"
+    case "$raw" in
+        "")      echo 0 ;;
+        *m)      echo "${raw%m}" ;;
+        *[!0-9]*) echo 0 ;;
+        *)       echo $(( raw * 1000 )) ;;
+    esac
+}
+
 # The node every pod lands on in a single-node deployment. Several tests need
 # to name it to build an affinity or a taint.
 _the_node() {
@@ -671,3 +690,167 @@ YAML
     delete_pod_if_exists "$second"
 }
 register_test test_scheduler_honours_topology_spread
+
+# ── Phase 3: preemption ─────────────────────────────────────────────────
+
+test_scheduler_preempts_a_lower_priority_pod() {
+    _require_nodescheduler
+    local low="sched-preempt-low" high="sched-preempt-high" node
+    node="$(_the_node)"
+    assert_not_empty "$node" "needs at least one node"
+    delete_pod_if_exists "$low"
+    delete_pod_if_exists "$high"
+
+    # Cluster-scoped, so named for this suite and cleaned up at the end.
+    kubectl apply -f - >/dev/null <<YAML
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: sched-test-low
+value: 100
+globalDefault: false
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: sched-test-high
+value: 100000
+globalDefault: false
+YAML
+
+    # Claim most of the node, so the high-priority pod cannot fit beside it
+    # and the only way to place it is to take this one's room.
+    local milli
+    milli="$(_node_allocatable_milli_cpu "$node")"
+    [[ "$milli" -gt 0 ]] || skip_test "node reports no allocatable CPU to work with"
+    local most=$(( milli * 60 / 100 ))
+
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $low
+spec:
+  priorityClassName: sched-test-low
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+    resources:
+      requests:
+        cpu: "${most}m"
+YAML
+    wait_until 60 "$low to be bound to a node" _pod_is_bound "$low" \
+        || die "the low-priority pod was never scheduled"
+
+    local start=$SECONDS
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $high
+spec:
+  priorityClassName: sched-test-high
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+    resources:
+      requests:
+        cpu: "${most}m"
+YAML
+
+    # The whole point: the high-priority pod is placed, and it happens by
+    # evicting the low-priority one rather than by waiting for capacity that
+    # is never coming.
+    wait_until 120 "$high to be bound to a node" _pod_is_bound "$high" \
+        || die "preemption never made room for the high-priority pod"
+    local elapsed=$((SECONDS - start))
+
+    wait_until 60 "$low to be gone" pod_gone "$low" \
+        || die "the high-priority pod was placed but the low-priority one was never evicted"
+
+    [[ "$elapsed" -lt 120 ]] \
+        || die "took ${elapsed}s to preempt — too slow to be the event path"
+
+    delete_pod_if_exists "$high"
+    kubectl delete priorityclass sched-test-low sched-test-high --ignore-not-found >/dev/null 2>&1 || true
+}
+register_test test_scheduler_preempts_a_lower_priority_pod
+
+test_scheduler_does_not_preempt_when_policy_forbids_it() {
+    _require_nodescheduler
+    local low="sched-nopreempt-low" high="sched-nopreempt-high" node
+    node="$(_the_node)"
+    delete_pod_if_exists "$low"
+    delete_pod_if_exists "$high"
+
+    kubectl apply -f - >/dev/null <<YAML
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: sched-test-low
+value: 100
+globalDefault: false
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: sched-test-never
+value: 100000
+preemptionPolicy: Never
+globalDefault: false
+YAML
+
+    local milli
+    milli="$(_node_allocatable_milli_cpu "$node")"
+    [[ "$milli" -gt 0 ]] || skip_test "node reports no allocatable CPU to work with"
+    local most=$(( milli * 60 / 100 ))
+
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $low
+spec:
+  priorityClassName: sched-test-low
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+    resources:
+      requests:
+        cpu: "${most}m"
+YAML
+    wait_until 60 "$low to be bound to a node" _pod_is_bound "$low" \
+        || die "the low-priority pod was never scheduled"
+
+    # Higher priority, but forbidden from preempting. It must wait rather than
+    # evict — a scheduler that ignores preemptionPolicy kills work the author
+    # explicitly protected.
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $high
+spec:
+  priorityClassName: sched-test-never
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+    resources:
+      requests:
+        cpu: "${most}m"
+YAML
+
+    sleep 20
+    assert_eq "$(pod_field "$high" '{.spec.nodeName}')" "" \
+        "a pod with preemptionPolicy Never must wait, not evict"
+    assert_true pod_exists "$low"
+
+    delete_pod_if_exists "$high"
+    delete_pod_if_exists "$low"
+    kubectl delete priorityclass sched-test-low sched-test-never --ignore-not-found >/dev/null 2>&1 || true
+}
+register_test test_scheduler_does_not_preempt_when_policy_forbids_it
