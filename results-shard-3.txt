@@ -1,40 +1,18 @@
-commit: 0aeb217405673e47d0a716747b9c2594154c0e9e
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31744506808
-timestamp (UTC): 2026-08-13T21:17:16Z
+commit: 101934f285ebd187de949974df8c58c69be1d170
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31745219891
+timestamp (UTC): 2026-08-13T21:25:20Z
 shard: 3/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786655768
+==> Test namespace: not-k8s-e2e-1786656304
 ==> 205 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 39 test(s) selected
 ▶ test_scheduler_places_an_ordinary_pod
-==> WARNING: apply_manifest: kubectl apply failed — likely to surface downstream as a misleading 'pod never reached Running' instead of this real error: Error from server (Forbidden): error when creating "STDIN": pods "sched-basic" is forbidden: error looking up service account not-k8s-e2e-1786655768/default: serviceaccount "default" not found
-==> FATAL: timed out after 60s waiting for: sched-basic to be bound to a node
-  ✘ FAIL (63s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 13 21:15:56 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:56.420401Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:15:56 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:56.420537Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:15:56 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:56.560956Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:15:56 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:56.565671Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:15:56 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:56.566637Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:15:56 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:56.828068Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:15:56 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:56.832754Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:15:56 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:56.834629Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:15:57 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:57.229076Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:15:57 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:57.232976Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:15:57 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:57.235191Z ERROR failed with status 503 Service Unavailable
-    Aug 13 21:15:57 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:57.844679Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 356 (396)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 13 21:15:57 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:57.847487Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 356 (396)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 13 21:15:57 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:15:57.849450Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 387 (396)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 13 21:16:39 runnervmzvulz run-nodelet.sh[14257]: 2026-08-13T21:16:39.656076Z  INFO node status pushed
+  ✔ PASS (3s)
 ▶ test_scheduler_respects_a_taint_and_its_toleration
-  ✔ PASS (4s)
+  ✔ PASS (3s)
 
 ════════════════════════════════════════
-Results: 1 passed, 1 failed, 0 skipped
-Failed:
-  - test_scheduler_places_an_ordinary_pod
+Results: 2 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786655768...
+==> Cleaning up test namespace not-k8s-e2e-1786656304...
