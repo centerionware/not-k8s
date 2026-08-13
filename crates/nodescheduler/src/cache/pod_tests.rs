@@ -278,7 +278,7 @@ fn host_port_zero_is_unset_and_is_not_projected() {
         }),
         ..Default::default()
     };
-    let info = PodInfo::from_pod(&pod, chrono::Utc::now());
+    let info = PodInfo::from_pod(&pod, k8s_openapi::jiff::Timestamp::now());
     assert!(info.host_ports.is_empty());
 }
 
@@ -292,14 +292,14 @@ fn an_unscheduled_pod_has_no_node_name() {
         spec: Some(PodSpec { node_name: Some(String::new()), ..Default::default() }),
         ..Default::default()
     };
-    assert_eq!(PodInfo::from_pod(&pod, chrono::Utc::now()).node_name, None);
+    assert_eq!(PodInfo::from_pod(&pod, k8s_openapi::jiff::Timestamp::now()).node_name, None);
 }
 
 #[test]
 fn the_scheduler_name_defaults_to_default_scheduler() {
     let pod = Pod { spec: Some(PodSpec::default()), ..Default::default() };
     assert_eq!(
-        PodInfo::from_pod(&pod, chrono::Utc::now()).scheduler_name,
+        PodInfo::from_pod(&pod, k8s_openapi::jiff::Timestamp::now()).scheduler_name,
         "default-scheduler"
     );
 }

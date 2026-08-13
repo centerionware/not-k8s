@@ -213,7 +213,16 @@ impl BackoffQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::queue::test_support::test_pod;
+    use crate::cache::PodInfo;
+
+    fn test_pod(uid: &str, priority: i32, _attempts: u32) -> std::sync::Arc<PodInfo> {
+        std::sync::Arc::new(PodInfo {
+            uid: uid.to_string(),
+            name: uid.to_string(),
+            priority,
+            ..Default::default()
+        })
+    }
 
     #[test]
     fn the_backoff_sequence_doubles_from_one_second_and_settles_at_ten() {

@@ -15,7 +15,7 @@ fn pod(uid: &str, priority: i32) -> Arc<PodInfo> {
         uid: uid.to_string(),
         name: uid.to_string(),
         priority,
-        queued_at: chrono::Utc::now(),
+        queued_at: k8s_openapi::jiff::Timestamp::now(),
         ..Default::default()
     })
 }
@@ -65,7 +65,7 @@ async fn pop_waits_rather_than_spinning_on_an_empty_queue() {
     let q = Arc::new(queue());
     let q2 = q.clone();
 
-    let popped = tokio::spawn(async move { q2.pop().await.uid });
+    let popped = tokio::spawn(async move { q2.pop().await.uid.clone() });
     // Nothing to take yet; the pop must be parked, not looping.
     tokio::task::yield_now().await;
     q.add(pod("late", 0));
