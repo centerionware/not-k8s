@@ -165,53 +165,124 @@ impl Resources {
     }
 }
 
-/// Parse a Kubernetes quantity to its base unit (bytes, or a plain count).
+/// Parse a Kubernetes quantity into a plain number of base units.
 ///
-/// Kubernetes accepts binary suffixes (Ki/Mi/Gi/…), decimal SI suffixes
-/// (k/M/G/…, where lowercase `k` is the SI one and there is no `K`), decimal
-/// exponents (`1e3`), and the milli suffix `m`. This has to be right rather
-/// than approximate — it feeds real filtering decisions, and a memory limit
-/// parsed as a count instead of bytes silently makes a node look infinitely
-/// large.
-pub fn parse_quantity(s: &str) -> i64 {
+/// # The suffix set is not optional, and the apiserver will use it
+///
+/// A quantity is `<signedNumber><suffix>`, where the suffix is a binary one
+/// (`Ki`/`Mi`/`Gi`/`Ti`/`Pi`/`Ei`), a decimal SI one (`m`/`k`/`M`/`G`/`T`/
+/// `P`/`E` — note lowercase `k`, there is no `K`), or a decimal exponent
+/// (`e3`/`E3`).
+///
+/// Handling only the ones that *look* likely is how this went wrong the
+/// first time. A pod submitted with `cpu: "10000"` comes back from the
+/// apiserver as `cpu: "10k"`, because quantities are canonicalised to their
+/// shortest form on the way in — so the string this ever sees is not
+/// necessarily the string anyone wrote. `10k` fell through to a bare
+/// `f64::parse`, failed, and became **zero**: the pod appeared to request no
+/// CPU at all, `names()` returned nothing for it, the fit check skipped the
+/// resource entirely, and a 10000-core pod was bound to a 4-core node. See
+/// docs/E2E_FINDINGS.md finding 20.
+///
+/// `E` is ambiguous on purpose in the spec: `1E` is one exa, `1E3` is one
+/// thousand. They are told apart by whether digits follow.
+fn parse_quantity_f64(s: &str) -> Option<f64> {
     let s = s.trim();
     if s.is_empty() {
-        return 0;
+        return None;
     }
-    // Milli, the one suffix that divides rather than multiplies. Rounds up:
-    // 1500m of a countable resource is 2 whole units, and rounding down would
-    // let a pod claim less than it asked for.
-    if let Some(num) = s.strip_suffix('m') {
-        if let Ok(v) = num.parse::<f64>() {
-            return (v / 1000.0).ceil() as i64;
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    if bytes[i] == b'+' || bytes[i] == b'-' {
+        i += 1;
+    }
+    while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+        i += 1;
+    }
+    // Exponent form, but only when digits actually follow — otherwise this is
+    // the exa suffix and belongs to the multiplier below.
+    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+        let mut j = i + 1;
+        if j < bytes.len() && (bytes[j] == b'+' || bytes[j] == b'-') {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j].is_ascii_digit() {
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            i = j;
         }
     }
-    let binary = [("Ki", 1i64 << 10), ("Mi", 1 << 20), ("Gi", 1 << 30), ("Ti", 1 << 40), ("Pi", 1 << 50), ("Ei", 1 << 60)];
-    for (suffix, mult) in binary {
-        if let Some(num) = s.strip_suffix(suffix) {
-            return num.trim().parse::<f64>().map(|v| (v * mult as f64) as i64).unwrap_or(0);
+
+    let (number, suffix) = s.split_at(i);
+    let value: f64 = number.parse().ok()?;
+
+    let multiplier = match suffix {
+        "" => 1.0,
+        "m" => 0.001,
+        "k" => 1e3,
+        "M" => 1e6,
+        "G" => 1e9,
+        "T" => 1e12,
+        "P" => 1e15,
+        "E" => 1e18,
+        "Ki" => 1024.0,
+        "Mi" => 1024.0 * 1024.0,
+        "Gi" => 1024.0 * 1024.0 * 1024.0,
+        "Ti" => 1024.0f64.powi(4),
+        "Pi" => 1024.0f64.powi(5),
+        "Ei" => 1024.0f64.powi(6),
+        // Unknown suffix. Deliberately not "assume base units" — that is the
+        // same fail-open guess that made `10k` read as zero.
+        _ => return None,
+    };
+    Some(value * multiplier)
+}
+
+/// Parse a quantity to whole base units (bytes, or a plain count).
+///
+/// Rounds **up**: `1500m` of a countable resource is two whole units, and
+/// rounding down would hand a pod less than it asked for.
+pub fn parse_quantity(s: &str) -> i64 {
+    match parse_quantity_f64(s) {
+        Some(v) => v.ceil() as i64,
+        None => {
+            unparseable(s);
+            0
         }
     }
-    let decimal = [("k", 1e3), ("M", 1e6), ("G", 1e9), ("T", 1e12), ("P", 1e15), ("E", 1e18)];
-    for (suffix, mult) in decimal {
-        if let Some(num) = s.strip_suffix(suffix) {
-            return num.trim().parse::<f64>().map(|v| (v * mult) as i64).unwrap_or(0);
-        }
-    }
-    // Bare number, possibly in exponent form (`1e3`). f64 handles both.
-    s.parse::<f64>().map(|v| v as i64).unwrap_or(0)
 }
 
 /// Parse a quantity into **millis** — the representation CPU is stored in.
 pub fn parse_quantity_milli(s: &str) -> i64 {
-    let s = s.trim();
-    if let Some(num) = s.strip_suffix('m') {
-        return num.trim().parse::<f64>().map(|v| v as i64).unwrap_or(0);
+    match parse_quantity_f64(s) {
+        // Milli is the canonical granularity for CPU, so every real value is
+        // exact here and `round` is only guarding float representation.
+        Some(v) => (v * 1000.0).round() as i64,
+        None => {
+            unparseable(s);
+            0
+        }
     }
-    if s.is_empty() {
-        return 0;
-    }
-    s.parse::<f64>().map(|v| (v * 1000.0).round() as i64).unwrap_or(0)
+}
+
+/// A quantity the apiserver accepted but this cannot read.
+///
+/// Zero is returned because there is no safe answer that works for both
+/// callers — a request that cannot be read should fail closed (never fit),
+/// while an allocatable that cannot be read should fail closed the other way
+/// (offer nothing), and both are "0" only for allocatable. What makes this
+/// tolerable is that it should now be unreachable: the apiserver validates
+/// quantities on admission and this understands every suffix it can emit. So
+/// reaching here is a bug in this parser, and it must be loud rather than
+/// silently making a pod look free.
+fn unparseable(s: &str) {
+    tracing::warn!(
+        quantity = %s,
+        "could not parse a resource quantity — treating it as zero, which will make \
+         scheduling decisions wrong for this object. This should be unreachable; the \
+         apiserver validates quantities. Please report it."
+    );
 }
 
 /// A host port a pod has claimed.
