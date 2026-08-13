@@ -344,17 +344,25 @@ pub fn pick_one_node(candidates: &[Candidate]) -> Option<&Candidate> {
 #[derive(Debug, Default)]
 pub struct Nominator {
     by_pod: HashMap<String, String>,
+    /// The nominees themselves, not just their ids: a filter injecting them
+    /// needs their requests, labels and affinity terms, and re-deriving that
+    /// from the snapshot is impossible because a nominated pod is by
+    /// definition not placed yet.
+    pods: HashMap<String, std::sync::Arc<PodInfo>>,
     by_node: HashMap<String, Vec<String>>,
 }
 
 impl Nominator {
-    pub fn nominate(&mut self, pod_uid: &str, node: &str) {
-        self.remove(pod_uid);
-        self.by_pod.insert(pod_uid.to_string(), node.to_string());
-        self.by_node.entry(node.to_string()).or_default().push(pod_uid.to_string());
+    pub fn nominate(&mut self, pod: std::sync::Arc<PodInfo>, node: &str) {
+        let uid = pod.uid.clone();
+        self.remove(&uid);
+        self.by_pod.insert(uid.clone(), node.to_string());
+        self.pods.insert(uid.clone(), pod);
+        self.by_node.entry(node.to_string()).or_default().push(uid);
     }
 
     pub fn remove(&mut self, pod_uid: &str) {
+        self.pods.remove(pod_uid);
         if let Some(node) = self.by_pod.remove(pod_uid) {
             if let Some(list) = self.by_node.get_mut(&node) {
                 list.retain(|u| u != pod_uid);
@@ -370,8 +378,11 @@ impl Nominator {
     }
 
     /// Pods promised this node, which a filter must treat as already present.
-    pub fn nominated_on(&self, node: &str) -> &[String] {
-        self.by_node.get(node).map(Vec::as_slice).unwrap_or(&[])
+    pub fn nominated_on(&self, node: &str) -> Vec<std::sync::Arc<PodInfo>> {
+        self.by_node
+            .get(node)
+            .map(|uids| uids.iter().filter_map(|u| self.pods.get(u).cloned()).collect())
+            .unwrap_or_default()
     }
 
     pub fn len(&self) -> usize {
