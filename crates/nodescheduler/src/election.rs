@@ -337,25 +337,26 @@ mod tests {
         assert!(cfg.retry_period < cfg.renew_deadline);
     }
 
-    #[tokio::test]
-    async fn disabling_leader_election_runs_the_work_directly() {
-        let cfg = Config { leader_elect: false, ..Default::default() };
-        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = ran.clone();
+    #[test]
+    fn a_lease_whose_holder_is_us_under_a_different_process_is_reclaimable() {
+        // Restart case: same hostname, new pid, so the identity string
+        // differs. It must be treated as somebody else's — and taken only
+        // once expired — or a restarted scheduler would seize a lease its own
+        // still-running predecessor holds during a rolling restart.
+        let mine = "host_100";
+        let previous = "host_99";
+        assert!(!may_acquire(Some(previous), Some(t(100)), FIFTEEN, t(105), mine));
+        assert!(may_acquire(Some(previous), Some(t(100)), FIFTEEN, t(200), mine));
+    }
 
-        // A client is never dialled on this path, so a default one is fine —
-        // constructing it is what would fail without an apiserver.
-        let result = if cfg.leader_elect {
-            unreachable!()
-        } else {
-            (|| async {
-                flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok::<(), anyhow::Error>(())
-            })()
-            .await
-        };
-
-        assert!(result.is_ok());
-        assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
+    #[test]
+    fn the_holder_identity_is_what_distinguishes_replicas() {
+        // If two replicas ever shared an identity, each would see the other's
+        // lease as its own and both would schedule. `may_acquire` returning
+        // true for our own identity is only safe *because* the identity is
+        // unique per process.
+        let a = Config::default().holder_identity;
+        assert!(may_acquire(Some(&a), Some(t(100)), FIFTEEN, t(101), &a));
+        assert!(!may_acquire(Some(&a), Some(t(100)), FIFTEEN, t(101), "someone-else"));
     }
 }

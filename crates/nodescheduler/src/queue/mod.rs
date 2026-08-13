@@ -247,6 +247,20 @@ impl SchedulingQueue {
         unschedulable_plugins: Vec<&'static str>,
         pending_plugins: Vec<&'static str>,
     ) {
+        // Charge the pod for the cycle it just spent. This is the *only*
+        // place `attempts` moves, because this is the only place a cycle is
+        // known to have been wasted — and without it every requeue would be
+        // priced as a first attempt, so `backoff_duration` would return the
+        // 1s initial delay forever and a permanently unschedulable pod would
+        // re-enter the active queue once a second indefinitely. That is a
+        // busy-loop wearing a backoff queue's clothing, and it would only
+        // show up as unexplained CPU on a cluster with a stuck pod.
+        let pod = {
+            let mut p = (*pod).clone();
+            p.attempts = p.attempts.saturating_add(1);
+            Arc::new(p)
+        };
+
         // The in-flight replay. Without this the pod waits for the *next*
         // matching event, which on a quiet cluster may never come.
         let replay: Vec<(ClusterEvent, Option<ChangedObject>, Option<ChangedObject>)> = {

@@ -73,7 +73,9 @@ pub async fn run() -> Result<()> {
 
 /// The leader's work: watch, and place pods until stopped.
 async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<()> {
-    let registry = framework::plugins::default_registry(client.clone());
+    // Shared, because the binding cycle runs on its own task and needs the
+    // same plugin set the scheduling cycle used.
+    let registry = Arc::new(framework::plugins::default_registry(client.clone()));
 
     // Only the resources some enabled plugin actually subscribed to get a
     // watch. On a cluster with no PersistentVolumes that is Pod and Node and
@@ -87,21 +89,15 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
     let mut hints = queue::hints::HintRegistry::new();
     register_plugin_events(&registry, &mut hints);
 
-    // The queue borrows the QueueSort and PreEnqueue plugins as plain
-    // closures rather than holding the registry: the scheduling loop needs
-    // `&mut Registry` for the cycle, and threading a lock through the queue's
-    // hot path to share it would cost more than the two indirections do.
-    let less = queue_sort_fn(&registry);
-    let pre_enqueue = pre_enqueue_fn(&registry);
-
     let queue = Arc::new(queue::SchedulingQueue::new(
         hints,
-        less,
-        pre_enqueue,
+        queue_sort_fn(registry.clone()),
+        pre_enqueue_fn(registry.clone()),
         queue::backoff::BackoffQueue::new(cfg.pod_initial_backoff, cfg.pod_max_backoff),
         cfg.max_in_unschedulable,
     ));
     let cache = Arc::new(Mutex::new(cache::Cache::new()));
+    let assumed = Arc::new(Mutex::new(cache::AssumedPods::new()));
 
     let watch_targets = watch::WatchTargets {
         cache: cache.clone(),
@@ -121,7 +117,7 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
         tokio::spawn(async move { run_safety_net(queue, interval).await })
     };
 
-    let result = scheduling_loop(registry, queue, cache, cfg).await;
+    let result = scheduling_loop(registry, queue, cache, assumed, cfg).await;
 
     watches.abort();
     safety_net.abort();
@@ -138,7 +134,7 @@ async fn run_safety_net(queue: Arc<queue::SchedulingQueue>, max_wait: std::time:
     loop {
         match queue.next_timeout_deadline() {
             Some(at) => {
-                tokio::time::sleep(at.saturating_duration_since(std::time::Instant::now())).await;
+                tokio::time::sleep_until(at).await;
                 queue.flush_timed_out();
             }
             // Nothing parked. Nothing to wake for — check back no sooner than
@@ -149,19 +145,17 @@ async fn run_safety_net(queue: Arc<queue::SchedulingQueue>, max_wait: std::time:
 }
 
 /// Pop, place, bind. One pod at a time through the cycle; binding cycles run
-/// concurrently.
+/// concurrently on their own tasks.
 async fn scheduling_loop(
-    mut registry: framework::Registry,
+    registry: Arc<framework::Registry>,
     queue: Arc<queue::SchedulingQueue>,
     cache: Arc<Mutex<cache::Cache>>,
+    assumed: Arc<Mutex<cache::AssumedPods>>,
     cfg: &config::Config,
 ) -> Result<()> {
-    let mut scheduler = cycle::Scheduler::new(
-        std::mem::take(&mut registry),
-        cfg.percentage_of_nodes_to_score,
-    );
+    let mut scheduler =
+        cycle::Scheduler::new(registry.clone(), cfg.percentage_of_nodes_to_score);
     let mut snapshot = cache::Snapshot::default();
-    let mut assumed = cache::AssumedPods::new();
 
     loop {
         let pod = queue.pop().await;
@@ -172,23 +166,46 @@ async fn scheduling_loop(
         // Seeded here, outside the cycle — the cycle itself reads no clock.
         let mut rng = cycle::Rng::from_clock();
 
-        match scheduler.schedule_one(&pod, &snapshot, &mut rng) {
+        let (outcome, mut state) = scheduler.schedule_one(&pod, &snapshot, &mut rng);
+
+        match outcome {
             cycle::CycleOutcome::Scheduled { node } => {
-                // Assume first: the next cycle must see this capacity as spent
-                // before any API call happens.
-                let placed = assumed.assume(&pod, &node);
-                cache.lock().unwrap().add_pod(placed.clone());
+                // Reserve and Permit run HERE, in the scheduling cycle, while
+                // no other pod is mid-cycle — see cycle.rs's header. Only
+                // what follows is concurrent.
+                let reserved = cycle::run_reserve(&registry, &mut state, &pod, &node);
+                if !reserved.is_success() {
+                    tracing::info!(pod = %pod.key(), %node, status = %reserved, "reserve rejected");
+                    queue.done(&pod.uid);
+                    let plugins = if reserved.plugin.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![reserved.plugin]
+                    };
+                    queue.add_unschedulable(pod, plugins, Vec::new());
+                    continue;
+                }
+
+                // Assume before binding: the next cycle must see this capacity
+                // as spent before any API call happens.
+                let placed = assumed.lock().unwrap().assume(&pod, &node);
+                cache.lock().unwrap().add_pod(placed);
                 queue.done(&pod.uid);
 
                 tracing::info!(pod = %pod.key(), %node, "scheduled");
 
-                // Binding runs on its own task so a slow PreBind cannot stall
-                // placement for everyone else.
-                // NOTE: the Reserve state and the registry are not yet threaded
-                // into the spawned task; with no Reserve or PreBind plugins in
-                // the phase-1 profile there is nothing to carry, and this is
-                // where phase 4's VolumeBinding will need it.
-                let _ = &mut assumed;
+                // The binding cycle, on its own task. This is what keeps a
+                // PreBind that waits up to 600s for a volume from stalling
+                // placement for every other pod in the cluster.
+                let registry = registry.clone();
+                let queue = queue.clone();
+                let cache = cache.clone();
+                let assumed = assumed.clone();
+                tokio::spawn(async move {
+                    let outcome =
+                        binder::bind_one(&registry, state, pod.clone(), node).await;
+                    binder::handle_outcome(&outcome, pod, &queue, &assumed, &cache);
+                });
             }
             cycle::CycleOutcome::Unschedulable {
                 reason,
@@ -231,40 +248,35 @@ fn register_plugin_events(
     }
 }
 
-/// The queue's ordering, lifted out of the QueueSort plugin.
+/// The queue's ordering — the QueueSort plugin itself, not a copy of it.
 ///
-/// Falls back to priority-then-age if no QueueSort plugin is configured, which
-/// the default profile always has — but a queue with no ordering at all would
-/// starve high-priority pods silently, so there is no "unordered" mode.
-fn queue_sort_fn(registry: &framework::Registry) -> queue::LessFn {
-    match &registry.queue_sort {
-        Some(_) => Arc::new(|a: &cache::PodInfo, b: &cache::PodInfo| {
-            if a.priority != b.priority {
-                a.priority > b.priority
-            } else {
-                a.queued_at < b.queued_at
-            }
-        }),
-        None => Arc::new(|a: &cache::PodInfo, b: &cache::PodInfo| a.priority > b.priority),
-    }
+/// Holding the registry in the closure rather than reimplementing the
+/// comparison is the whole point: a second copy of the ordering rule would
+/// drift from the plugin silently, and the symptom (pods served in the wrong
+/// order under contention) is one nobody attributes to a duplicated
+/// comparator.
+fn queue_sort_fn(registry: Arc<framework::Registry>) -> queue::LessFn {
+    Arc::new(move |a: &cache::PodInfo, b: &cache::PodInfo| match &registry.queue_sort {
+        Some(plugin) => plugin.less(a, b),
+        // Structurally impossible with the default profile, which always has
+        // PrioritySort — but an unordered queue would starve high-priority
+        // pods silently, so there is no "unordered" mode even here.
+        None => a.priority > b.priority,
+    })
 }
 
-/// Admission, lifted out of the PreEnqueue plugins.
-fn pre_enqueue_fn(registry: &framework::Registry) -> queue::PreEnqueueFn {
-    // Only the names are captured, not the plugins: the closure outlives the
-    // borrow. With SchedulingGates the check is a field test on the pod, so
-    // this stays cheap and avoids sharing the registry across the queue's lock.
-    let gates_enabled = registry
-        .pre_enqueue
-        .iter()
-        .any(|p| p.name() == framework::plugins::scheduling_gates::NAME);
-
+/// Admission — every PreEnqueue plugin, in order.
+///
+/// Same reasoning as `queue_sort_fn`: this runs the real plugins rather than
+/// re-testing `scheduling_gates` by hand, so a new PreEnqueue plugin is
+/// honoured by the queue the moment it is added to the profile.
+fn pre_enqueue_fn(registry: Arc<framework::Registry>) -> queue::PreEnqueueFn {
     Arc::new(move |pod: &cache::PodInfo| {
-        if gates_enabled && !pod.scheduling_gates.is_empty() {
-            return framework::status::Status::unschedulable(
-                framework::plugins::scheduling_gates::NAME,
-                "waiting for scheduling gates",
-            );
+        for plugin in &registry.pre_enqueue {
+            let status = plugin.pre_enqueue(pod);
+            if !status.is_success() {
+                return status;
+            }
         }
         framework::status::Status::success()
     })
