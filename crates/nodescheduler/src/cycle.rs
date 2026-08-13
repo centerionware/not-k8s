@@ -543,7 +543,6 @@ impl Scheduler {
         snapshot: &Snapshot,
         node_statuses: &NodeToStatus,
         budgets: &[crate::preempt::PdbState],
-        nominator: &crate::preempt::Nominator,
         rng: &mut Rng,
     ) -> Option<PreemptionOutcome> {
         use crate::preempt::{
@@ -553,7 +552,7 @@ impl Scheduler {
 
         // A nomination still draining means room is already being made; a
         // second attempt would evict a second set of pods for it.
-        let nominated = nominator.nominated_node(&pod.uid);
+        let nominated = self.nominator.nominated_node(&pod.uid);
         let draining = nominated
             .and_then(|n| snapshot.node(n))
             .map(|n| n.pods.iter().any(|p| p.priority < pod.priority))
