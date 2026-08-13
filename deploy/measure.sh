@@ -104,6 +104,11 @@ MEASURE_COMPONENTS=(
     # legs without being told which leg it is on.
     "kubelet|kubelet|kubelet|upstream kubelet, the node agent nodelet replaces"
     "kube-proxy|kube-proxy|kube-proxy|upstream kube-proxy, the Service routing nodeproxy replaces"
+    # No upstream-kube-scheduler.sh rig yet, so this row is absent on both
+    # legs today and costs nothing. It exists for the same reason the
+    # nodescheduler row above does: the day something runs a standalone
+    # kube-scheduler to compare against, it is already measured.
+    "kube-scheduler|kube-scheduler|kube-scheduler|upstream kube-scheduler, the pod placement nodescheduler replaces"
     # Not ours, and measured precisely because they are not.
     #
     # Stock k3s runs flannel *inside* the k3s process and brings its own
