@@ -36,6 +36,9 @@ jobs:
           # nodestore: no features either (deploy/lib/components.sh's row
           # for it has an empty cargo-features field, same as nodeproxy).
           cargo build -p nodestore
+          # nodescheduler: no features either — it is a pure apiserver
+          # client, so there is no cri/mock split to select.
+          cargo build -p nodescheduler
           # The combined single-binary layout (crates/notk8s) links all of
           # the above into one executable. Built here purely so a break in
           # it fails this stage rather than the much later build-release
@@ -59,6 +62,7 @@ jobs:
           path: |
             target/debug/nodelet
             target/debug/nodeproxy
+            target/debug/nodescheduler
           retention-days: 1
       - name: cargo test (both feature sets)
         # Under sudo: some tests (nodeproxy's svc.rs nft_check() ones) open
@@ -77,6 +81,7 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
           sudo -E env "PATH=$PATH" cargo test -p nodeproxy
           sudo -E env "PATH=$PATH" cargo test -p nodestore
+          sudo -E env "PATH=$PATH" cargo test -p nodescheduler
           sudo -E env "PATH=$PATH" cargo test -p notk8s
 
   # ── Stage 2: full e2e suite, real CSI + DRA reference drivers ─────────
@@ -132,11 +137,26 @@ jobs:
         # NOTK8S_NODELET_PREBUILT (nodelet-build.sh) skips rebuilding
         # entirely — build-and-test already built and uploaded this exact
         # binary once above; every shard just installs it.
+        #
+        # SCHEDULER=nodescheduler makes ours the scheduler this cluster
+        # actually runs, and passes --disable-scheduler to k3s. Without it
+        # every case in test/cases/scheduler.sh self-skips and the suite
+        # reports green while proving nothing about placement — which is
+        # worse than not having the tests. It also means a placement
+        # regression now fails *any* shard, since nothing gets scheduled at
+        # all if our scheduler is broken.
+        #
+        # Enabling it obliges the prebuilt set to be complete:
+        # use_prebuilt_binaries() refuses to mix prebuilt and from-source
+        # components, so NOTK8S_NODESCHEDULER_PREBUILT is not optional here.
         env:
           NOTK8S_NODELET_PREBUILT: ${{ github.workspace }}/dist-bin/nodelet
           NOTK8S_NODEPROXY_PREBUILT: ${{ github.workspace }}/dist-bin/nodeproxy
+          NOTK8S_NODESCHEDULER_PREBUILT: ${{ github.workspace }}/dist-bin/nodescheduler
+          SCHEDULER: nodescheduler
         run: |
-          chmod +x "$NOTK8S_NODELET_PREBUILT" "$NOTK8S_NODEPROXY_PREBUILT"
+          chmod +x "$NOTK8S_NODELET_PREBUILT" "$NOTK8S_NODEPROXY_PREBUILT" \
+                   "$NOTK8S_NODESCHEDULER_PREBUILT"
           sudo -E ./deploy/bootstrap-source.sh --with-cri
 
       - name: Make the kubeconfig readable
