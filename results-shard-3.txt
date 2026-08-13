@@ -1,40 +1,40 @@
-commit: cb4f1d950d551fd7859e55e60a5afe206a854884
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31739582105
-timestamp (UTC): 2026-08-13T20:17:17Z
+commit: c5abf85ec1b5c4354887149382102a4ce6db5ed1
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31740893785
+timestamp (UTC): 2026-08-13T20:32:44Z
 shard: 3/5
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786652170
+==> Test namespace: not-k8s-e2e-1786653095
 ==> 205 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 39 test(s) selected
 ▶ test_scheduler_places_an_ordinary_pod
-==> WARNING: apply_manifest: kubectl apply failed — likely to surface downstream as a misleading 'pod never reached Running' instead of this real error: Error from server (Forbidden): error when creating "STDIN": pods "sched-basic" is forbidden: error looking up service account not-k8s-e2e-1786652170/default: serviceaccount "default" not found
+==> WARNING: apply_manifest: kubectl apply failed — likely to surface downstream as a misleading 'pod never reached Running' instead of this real error: Error from server (Forbidden): error when creating "STDIN": pods "sched-basic" is forbidden: error looking up service account not-k8s-e2e-1786653095/default: serviceaccount "default" not found
 ==> FATAL: timed out after 60s waiting for: sched-basic to be bound to a node
   ✘ FAIL (63s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 13 20:15:57 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:57.343362Z ERROR failed with status 503 Service Unavailable
-    Aug 13 20:15:57 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:57.504799Z ERROR failed with status 503 Service Unavailable
-    Aug 13 20:15:57 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:57.505081Z ERROR failed with status 503 Service Unavailable
-    Aug 13 20:15:57 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:57.507300Z ERROR failed with status 503 Service Unavailable
-    Aug 13 20:15:57 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:57.642780Z ERROR failed with status 503 Service Unavailable
-    Aug 13 20:15:57 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:57.643702Z ERROR failed with status 503 Service Unavailable
-    Aug 13 20:15:57 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:57.644074Z ERROR failed with status 503 Service Unavailable
-    Aug 13 20:15:58 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:58.098189Z ERROR failed with status 503 Service Unavailable
-    Aug 13 20:15:58 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:58.099577Z ERROR failed with status 503 Service Unavailable
-    Aug 13 20:15:58 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:58.101041Z ERROR failed with status 503 Service Unavailable
-    Aug 13 20:15:58 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:58.833380Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 394 (397)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 13 20:15:58 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:58.835339Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 356 (397)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 13 20:15:58 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:15:58.837462Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 356 (397)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 13 20:16:03 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:16:03.153842Z  INFO CreateContainer succeeded container=coredns container_id=19641480071ca45367526c441c753f9753bf9eb50611e3bae4acfa11561c6314
-    Aug 13 20:16:38 runnervmvrwv9 run-nodelet.sh[14315]: 2026-08-13T20:16:38.654301Z  INFO node status pushed
+    Aug 13 20:31:21 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:21.465173Z ERROR failed with status 503 Service Unavailable
+    Aug 13 20:31:21 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:21.617684Z ERROR failed with status 503 Service Unavailable
+    Aug 13 20:31:21 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:21.620211Z ERROR failed with status 503 Service Unavailable
+    Aug 13 20:31:21 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:21.621181Z ERROR failed with status 503 Service Unavailable
+    Aug 13 20:31:21 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:21.843601Z ERROR failed with status 503 Service Unavailable
+    Aug 13 20:31:21 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:21.846343Z ERROR failed with status 503 Service Unavailable
+    Aug 13 20:31:21 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:21.846412Z ERROR failed with status 503 Service Unavailable
+    Aug 13 20:31:22 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:22.119523Z ERROR failed with status 503 Service Unavailable
+    Aug 13 20:31:22 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:22.121152Z ERROR failed with status 503 Service Unavailable
+    Aug 13 20:31:22 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:22.123570Z ERROR failed with status 503 Service Unavailable
+    Aug 13 20:31:22 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:22.539302Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 358 (404)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 13 20:31:22 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:22.541088Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 358 (404)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 13 20:31:22 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:22.543228Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 398 (404)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 13 20:31:25 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:31:25.838759Z  INFO CreateContainer succeeded container=coredns container_id=5f35982a7eed0dca731155655afc514698a9799d43346e5902993b5c6bdd321c
+    Aug 13 20:32:00 runnervmzvulz run-nodelet.sh[14256]: 2026-08-13T20:32:00.383116Z  INFO node status pushed
 ▶ test_scheduler_respects_a_taint_and_its_toleration
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 
 ════════════════════════════════════════
 Results: 1 passed, 1 failed, 0 skipped
 Failed:
   - test_scheduler_places_an_ordinary_pod
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786652170...
+==> Cleaning up test namespace not-k8s-e2e-1786653095...
