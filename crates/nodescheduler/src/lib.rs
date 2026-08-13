@@ -106,20 +106,45 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
         profile_name: cfg.profile_name.clone(),
     };
 
-    let watches = {
+    let mut watches = {
         let client = client.clone();
         let cfg = cfg.clone();
         tokio::spawn(async move { watch::run(client, watch_targets, &cfg).await })
     };
 
-    let safety_net = {
+    let mut safety_net = {
         let queue = queue.clone();
         let interval = cfg.max_in_unschedulable;
         tokio::spawn(async move { run_safety_net(queue, interval).await })
     };
 
-    let result =
-        scheduling_loop(registry, queue, cache, assumed, client.clone(), cfg).await;
+    // All three are supervised, and any one of them ending ends the process.
+    //
+    // The first version spawned these two and never looked at them again,
+    // only awaiting the scheduling loop. That produces the single worst
+    // failure this component has: if the watch task dies, no pod ever
+    // reaches the queue, `pop()` blocks forever, and the process sits there
+    // holding the leader lease and scheduling nothing — indefinitely, with
+    // nothing in the log after the last pod it managed to place. A standby
+    // replica cannot take over, because the lease is still being renewed. It
+    // is strictly worse than crashing, and it is exactly what a live run did.
+    //
+    // Exiting instead lets the service manager restart us and the lease
+    // lapse, which is the recovery path the whole design already assumes.
+    let result = tokio::select! {
+        r = scheduling_loop(registry, queue, cache, assumed, client.clone(), cfg) => r,
+        r = &mut watches => match r {
+            Ok(Ok(())) => Err(anyhow::anyhow!("the watch layer stopped on its own")),
+            Ok(Err(e)) => Err(e.context("the watch layer failed")),
+            // A panic in the watch task. Surfaced rather than swallowed —
+            // this is the case that produced a silent zombie.
+            Err(e) => Err(anyhow::anyhow!("the watch layer panicked: {e}")),
+        },
+        r = &mut safety_net => Err(anyhow::anyhow!(
+            "the unschedulable-timeout task stopped ({r:?}); pods parked by an incomplete \
+             QueueingHint would now wait forever rather than five minutes"
+        )),
+    };
 
     watches.abort();
     safety_net.abort();
