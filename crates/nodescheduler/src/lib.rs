@@ -135,7 +135,9 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
     // Exiting instead lets the service manager restart us and the lease
     // lapse, which is the recovery path the whole design already assumes.
     let result = tokio::select! {
-        r = scheduling_loop(registry, queue, cache, assumed, client.clone(), cfg) => r,
+        r = scheduling_loop(
+            registry, queue, cache, assumed, budgets, client.clone(), cfg,
+        ) => r,
         r = &mut watches => match r {
             Ok(Ok(())) => Err(anyhow::anyhow!("the watch layer stopped on its own")),
             Ok(Err(e)) => Err(e.context("the watch layer failed")),
@@ -244,6 +246,7 @@ async fn scheduling_loop(
                 unschedulable_plugins,
                 pending_plugins,
                 nominated_node,
+                node_statuses,
             } => {
                 // Nothing fits. Before parking the pod, see whether evicting
                 // less important pods would make room. This is the only thing
