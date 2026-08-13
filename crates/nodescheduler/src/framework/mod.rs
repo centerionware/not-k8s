@@ -161,11 +161,16 @@ pub enum ChangedObject {
 
 /// Runs before a pod is admitted to the active queue at all.
 ///
-/// A rejection here is *quiet*: no `PodScheduled=False` condition and no
+/// A rejection here is *quiet*: **this scheduler** writes no condition and no
 /// event, because the pod is not being rejected by scheduling — it has not
-/// entered scheduling. That is exactly the observable behaviour of a pod with
-/// scheduling gates, and getting it wrong (writing a condition) makes gated
-/// pods look broken to every dashboard.
+/// entered scheduling.
+///
+/// The apiserver does mark a gated pod `PodScheduled=False` with `reason:
+/// SchedulingGated` at admission, which is what `kubectl` renders as the
+/// `SchedulingGated` status. The distinction that matters is the reason:
+/// writing `Unschedulable` over it, or emitting a `FailedScheduling` event,
+/// reports a controller doing its job as a broken pod, and every dashboard
+/// believes it.
 pub trait PreEnqueuePlugin: Plugin {
     fn pre_enqueue(&self, pod: &PodInfo) -> Status;
 }
