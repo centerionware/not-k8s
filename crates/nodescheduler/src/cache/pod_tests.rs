@@ -80,11 +80,74 @@ fn milli_of_a_countable_resource_rounds_up() {
 }
 
 #[test]
-fn an_unparseable_quantity_reads_as_zero_rather_than_panicking() {
-    // A malformed quantity is the apiserver's problem to reject; the
-    // scheduler must not take the process down over one bad object.
+fn the_apiservers_canonical_form_of_a_large_cpu_request_parses() {
+    // THE bug. A pod submitted as cpu: "10000" comes back from the apiserver
+    // as "10k" — quantities are canonicalised to their shortest form on
+    // admission, so the string this sees is not the string anyone wrote.
+    // "10k" used to fall through to a bare f64 parse, fail, and read as
+    // ZERO, which made a 10000-core pod look like it requested no CPU at all
+    // and fit anywhere. See docs/E2E_FINDINGS.md finding 20.
+    assert_eq!(parse_quantity_milli("10k"), 10_000_000);
+    assert_eq!(parse_quantity_milli("10000"), 10_000_000);
+    assert_eq!(
+        parse_quantity_milli("10k"),
+        parse_quantity_milli("10000"),
+        "the canonical form and the written form must mean the same thing"
+    );
+}
+
+#[test]
+fn every_decimal_si_suffix_parses() {
+    // Rare on CPU, but the apiserver will emit any of them, and an unhandled
+    // one reads as zero — i.e. as "requests nothing".
+    assert_eq!(parse_quantity("1k"), 1_000);
+    assert_eq!(parse_quantity("1M"), 1_000_000);
+    assert_eq!(parse_quantity("1G"), 1_000_000_000);
+    assert_eq!(parse_quantity("1T"), 1_000_000_000_000);
+    assert_eq!(parse_quantity("1P"), 1_000_000_000_000_000);
+    assert_eq!(parse_quantity("1E"), 1_000_000_000_000_000_000);
+}
+
+#[test]
+fn every_binary_suffix_parses() {
+    assert_eq!(parse_quantity("1Ki"), 1024);
+    assert_eq!(parse_quantity("1Mi"), 1024 * 1024);
+    assert_eq!(parse_quantity("1Gi"), 1024 * 1024 * 1024);
+    assert_eq!(parse_quantity("1Ti"), 1024i64.pow(4));
+    assert_eq!(parse_quantity("1Pi"), 1024i64.pow(5));
+    assert_eq!(parse_quantity("1Ei"), 1024i64.pow(6));
+}
+
+#[test]
+fn exa_is_told_apart_from_an_exponent() {
+    // `1E` is one exa; `1E3` is one thousand. Both are legal and they differ
+    // by fifteen orders of magnitude.
+    assert_eq!(parse_quantity("1E"), 1_000_000_000_000_000_000);
+    assert_eq!(parse_quantity("1E3"), 1_000);
+    assert_eq!(parse_quantity("1e3"), 1_000);
+}
+
+#[test]
+fn an_unknown_suffix_does_not_silently_become_base_units() {
+    // Guessing "probably bytes" is the same fail-open reasoning that made
+    // "10k" read as zero. An unknown suffix is a parser bug, and the warning
+    // is the point.
     assert_eq!(parse_quantity("not-a-number"), 0);
+    assert_eq!(parse_quantity("12Zi"), 0);
     assert_eq!(parse_quantity_milli("¿"), 0);
+}
+
+#[test]
+fn a_cpu_request_never_reads_as_zero_for_any_form_the_apiserver_emits() {
+    // The property that actually matters, stated directly: whatever
+    // canonical spelling comes back, a pod that asked for CPU must not look
+    // like a pod that asked for none — that is what lets it fit anywhere.
+    for spelling in ["100m", "1", "2.5", "10k", "1500m", "0.5", "16", "1e3"] {
+        assert!(
+            parse_quantity_milli(spelling) > 0,
+            "cpu request {spelling:?} parsed as zero, which would make the pod look free"
+        );
+    }
 }
 
 // ── Resource arithmetic ─────────────────────────────────────────────────
