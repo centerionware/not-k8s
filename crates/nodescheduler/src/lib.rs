@@ -100,11 +100,13 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
     ));
     let cache = Arc::new(Mutex::new(cache::Cache::new()));
     let assumed = Arc::new(Mutex::new(cache::AssumedPods::new()));
+    let budgets = Arc::new(Mutex::new(Vec::new()));
 
     let watch_targets = watch::WatchTargets {
         cache: cache.clone(),
         queue: queue.clone(),
         profile_name: cfg.profile_name.clone(),
+        budgets: budgets.clone(),
     };
 
     let mut watches = {
@@ -179,6 +181,7 @@ async fn scheduling_loop(
     queue: Arc<queue::SchedulingQueue>,
     cache: Arc<Mutex<cache::Cache>>,
     assumed: Arc<Mutex<cache::AssumedPods>>,
+    budgets: Arc<Mutex<Vec<preempt::PdbState>>>,
     client: kube::Client,
     cfg: &config::Config,
 ) -> Result<()> {
@@ -242,6 +245,41 @@ async fn scheduling_loop(
                 pending_plugins,
                 nominated_node,
             } => {
+                // Nothing fits. Before parking the pod, see whether evicting
+                // less important pods would make room. This is the only thing
+                // in the component that destroys running work, so it runs
+                // last, only here, and only when nothing else worked.
+                if nominated_node.is_none() {
+                    let pdbs = budgets.lock().unwrap().clone();
+                    let outcome = scheduler.preempt(
+                        &pod,
+                        &snapshot,
+                        &node_statuses,
+                        &pdbs,
+                        &mut rng,
+                    );
+                    if let Some(outcome) = outcome {
+                        tracing::info!(
+                            pod = %pod.key(),
+                            node = %outcome.nominated_node,
+                            victims = ?outcome.victims,
+                            "preempting to make room"
+                        );
+                        // Record the promise before the evictions start, so
+                        // the next pod filtering that node already sees this
+                        // one as taking the space — otherwise both claim it.
+                        scheduler.nominator.nominate(pod.clone(), &outcome.nominated_node);
+
+                        let client = client.clone();
+                        let preemptor = pod.clone();
+                        let node = outcome.nominated_node.clone();
+                        let victims = outcome.victims.clone();
+                        tokio::spawn(async move {
+                            evict_victims(&client, &preemptor, &node, &victims).await;
+                        });
+                    }
+                }
+
                 // Info rather than debug. This is *the* answer to "why is my
                 // pod Pending", and burying it below the default filter meant
                 // the one thing an operator needs was invisible without a
@@ -345,4 +383,60 @@ fn pre_enqueue_fn(registry: Arc<framework::Registry>) -> queue::PreEnqueueFn {
         }
         framework::status::Status::success()
     })
+}
+
+/// Delete a preemption's victims, and record the promise on the pod.
+///
+/// Off the scheduling loop: a burst of deletions must not stall placement for
+/// every other pod, and the preemptor cannot be scheduled until the victims
+/// are actually gone anyway — it is retried when their deletions arrive as
+/// watch events.
+///
+/// `nominatedNodeName` is written first and deliberately. It is what tells
+/// everything else — cluster-autoscaler especially — that this pod is spoken
+/// for and does not need a new node built for it. Writing it after the
+/// evictions would leave a window where the pods are dying and nothing says
+/// why.
+async fn evict_victims(
+    client: &kube::Client,
+    preemptor: &cache::PodInfo,
+    node: &str,
+    victims: &[String],
+) {
+    use kube::api::{Api, DeleteParams, Patch, PatchParams};
+
+    let patch = serde_json::json!({ "status": { "nominatedNodeName": node } });
+    let api: Api<k8s_openapi::api::core::v1::Pod> =
+        Api::namespaced(client.clone(), &preemptor.namespace);
+    if let Err(e) = api
+        .patch_status(
+            &preemptor.name,
+            &PatchParams {
+                field_manager: Some("nodescheduler".to_string()),
+                ..Default::default()
+            },
+            &Patch::Strategic(patch),
+        )
+        .await
+    {
+        tracing::warn!(pod = %preemptor.key(), error = %e, "couldn't record nominatedNodeName");
+    }
+
+    for victim in victims {
+        let Some((namespace, name)) = victim.split_once('/') else {
+            continue;
+        };
+        let api: Api<k8s_openapi::api::core::v1::Pod> =
+            Api::namespaced(client.clone(), namespace);
+        match api.delete(name, &DeleteParams::default()).await {
+            Ok(_) => tracing::info!(victim = %victim, for_pod = %preemptor.key(), "evicted"),
+            // A victim that is already gone is the ordinary race, not a
+            // failure: something else deleted it between the decision and
+            // here, which is exactly the outcome preemption wanted.
+            Err(kube::Error::Api(e)) if e.code == 404 => {}
+            Err(e) => {
+                tracing::warn!(victim = %victim, error = %e, "couldn't evict a preemption victim")
+            }
+        }
+    }
 }

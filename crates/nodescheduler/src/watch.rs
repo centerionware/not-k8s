@@ -145,6 +145,12 @@ pub struct WatchTargets {
     pub cache: Arc<Mutex<Cache>>,
     pub queue: Arc<SchedulingQueue>,
     pub profile_name: String,
+    /// PodDisruptionBudgets, mirrored for preemption.
+    ///
+    /// Started only when preemption is enabled, per the rule that an informer
+    /// exists because something asked for it. A cluster that never preempts
+    /// pays nothing for this watch.
+    pub budgets: Arc<Mutex<Vec<crate::preempt::PdbState>>>,
 }
 
 /// Mirrors of the last version of each object, so updates can be diffed.
@@ -170,6 +176,36 @@ fn watch_pods(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pod>>
     watcher(api, watcher::Config::default()).boxed()
 }
 
+type Pdb = k8s_openapi::api::policy::v1::PodDisruptionBudget;
+
+fn watch_pdbs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pdb>>> {
+    let api: Api<Pdb> = Api::all(client.clone());
+    watcher(api, watcher::Config::default()).boxed()
+}
+
+/// Mirror PodDisruptionBudgets for preemption.
+///
+/// A whole-list rebuild per event rather than an incremental mirror: PDBs are
+/// few (one per workload at most), change rarely, and preemption reads the
+/// whole set anyway. Incremental bookkeeping here would be more code and more
+/// ways to drift for no measurable gain — the opposite trade from the pod and
+/// node caches, which are large and change constantly.
+fn handle_pdb_event(ev: Event<Pdb>, mirror: &mut HashMap<String, Pdb>, targets: &WatchTargets) {
+    match ev {
+        Event::Init => mirror.clear(),
+        Event::InitDone => {}
+        Event::InitApply(p) | Event::Apply(p) => {
+            mirror.insert(format!("{}/{}", p.namespace().unwrap_or_default(), p.name_any()), p);
+        }
+        Event::Delete(p) => {
+            mirror.remove(&format!("{}/{}", p.namespace().unwrap_or_default(), p.name_any()));
+        }
+    }
+    let rebuilt: Vec<crate::preempt::PdbState> =
+        mirror.values().map(crate::preempt::PdbState::from_api).collect();
+    *targets.budgets.lock().unwrap() = rebuilt;
+}
+
 /// Run the watches until they stop.
 ///
 /// Only the informers the enabled plugins actually asked for are started —
@@ -179,8 +215,11 @@ fn watch_pods(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pod>>
 /// parity behaviour and the footprint behaviour.
 pub async fn run(client: Client, targets: WatchTargets, _cfg: &Config) -> anyhow::Result<()> {
     let mut mirror = Mirror::default();
+    let mut pdb_mirror: HashMap<String, Pdb> = HashMap::new();
     let mut nodes = watch_nodes(&client);
     let mut pods = watch_pods(&client);
+    let mut pdbs = watch_pdbs(&client);
+    let mut pdb_failures: u32 = 0;
     // Counted per stream: one watch can be failing while the other is fine.
     let mut node_failures: u32 = 0;
     let mut pod_failures: u32 = 0;
@@ -213,6 +252,28 @@ pub async fn run(client: Client, targets: WatchTargets, _cfg: &Config) -> anyhow
                     tracing::warn!("node watch stream ended; rebuilding");
                     tokio::time::sleep(WATCH_RESTART_DELAY).await;
                     nodes = watch_nodes(&client);
+                }
+            },
+            event = pdbs.next() => match event {
+                Some(Ok(ev)) => {
+                    pdb_failures = 0;
+                    handle_pdb_event(ev, &mut pdb_mirror, &targets);
+                }
+                Some(Err(e)) => {
+                    pdb_failures = pdb_failures.saturating_add(1);
+                    let pause = watch_backoff(pdb_failures);
+                    if should_log_failure(pdb_failures) {
+                        tracing::warn!(
+                            error = ?e, consecutive = pdb_failures,
+                            "PodDisruptionBudget watch error; retrying with backoff"
+                        );
+                    }
+                    tokio::time::sleep(pause).await;
+                }
+                None => {
+                    tracing::warn!("PodDisruptionBudget watch stream ended; rebuilding");
+                    tokio::time::sleep(WATCH_RESTART_DELAY).await;
+                    pdbs = watch_pdbs(&client);
                 }
             },
             event = pods.next() => match event {

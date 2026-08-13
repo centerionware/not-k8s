@@ -182,9 +182,13 @@ pub enum CycleOutcome {
         reason: String,
         unschedulable_plugins: Vec<&'static str>,
         pending_plugins: Vec<&'static str>,
-        /// Set by a PostFilter plugin that freed capacity — the pod is
-        /// promised this node once its victims are gone.
+        /// Set once preemption has promised this pod a node.
         nominated_node: Option<String>,
+        /// Why each node was rejected. Carried out of the cycle because
+        /// preemption's first question is which nodes eviction could
+        /// plausibly fix — the ones rejected `Unschedulable` rather than
+        /// `UnschedulableAndUnresolvable` — and that answer only exists here.
+        node_statuses: NodeToStatus,
     },
     /// A plugin itself failed. Retried; never treated as a placement decision.
     Error { reason: String },
@@ -233,6 +237,7 @@ impl Scheduler {
                     unschedulable_plugins: Vec::new(),
                     pending_plugins: Vec::new(),
                     nominated_node: None,
+                    node_statuses: NodeToStatus::default(),
                 },
                 CycleState::default(),
             );
@@ -263,6 +268,7 @@ impl Scheduler {
                             unschedulable_plugins,
                             pending_plugins,
                             nominated_node: None,
+                            node_statuses: NodeToStatus::default(),
                         },
                         state,
                     );
@@ -299,6 +305,7 @@ impl Scheduler {
                             unschedulable_plugins: node_statuses.rejecting_plugins(),
                             pending_plugins: Vec::new(),
                             nominated_node: nominated,
+                            node_statuses,
                         },
                         state,
                     );
@@ -310,6 +317,7 @@ impl Scheduler {
                     unschedulable_plugins: node_statuses.rejecting_plugins(),
                     pending_plugins: Vec::new(),
                     nominated_node: None,
+                    node_statuses,
                 },
                 state,
             );
