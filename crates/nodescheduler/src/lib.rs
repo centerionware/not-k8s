@@ -34,6 +34,7 @@ pub mod cycle;
 pub mod election;
 pub mod events;
 pub mod framework;
+pub mod preempt;
 pub mod queue;
 pub mod report;
 pub mod watch;
