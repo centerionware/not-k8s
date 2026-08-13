@@ -368,12 +368,24 @@ fn a_hard_constraint_contributes_nothing_to_the_score() {
 
 #[test]
 fn larger_topologies_carry_more_weight() {
-    // ln(n+2): the difference between 3 and 4 domains matters, between 300
-    // and 400 barely.
     assert!(topology_normalizing_weight(3) > topology_normalizing_weight(1));
+}
+
+#[test]
+fn each_additional_domain_is_worth_less_than_the_last() {
+    // The saturation property, stated as *marginal* weight — one more domain
+    // at 300 versus one more at 3.
+    //
+    // The first version of this test compared w(400)-w(300) against
+    // w(4)-w(3) and failed, correctly: that is a hundred-domain span against
+    // a one-domain span, so of course it is bigger. Unequal intervals say the
+    // opposite of the property and sound just as reasonable.
+    let step_at_3 = topology_normalizing_weight(4) - topology_normalizing_weight(3);
+    let step_at_300 = topology_normalizing_weight(301) - topology_normalizing_weight(300);
+
     assert!(
-        topology_normalizing_weight(400) - topology_normalizing_weight(300)
-            < topology_normalizing_weight(4) - topology_normalizing_weight(3)
+        step_at_300 < step_at_3,
+        "one more domain should matter less at 300 than at 3, got {step_at_300} vs {step_at_3}"
     );
 }
 
