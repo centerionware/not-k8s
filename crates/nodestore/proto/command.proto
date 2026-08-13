@@ -1,0 +1,217 @@
+// The raft log entry format, and the snapshot format.
+//
+// This is deliberately NOT etcd's proto. The distinction is the one
+// src/command.rs opens with: etcd's wire types are a contract with clients
+// and move when etcd moves, whereas a committed log entry is replayed on
+// every replica and after every restart — possibly by a newer binary than the
+// one that wrote it — and so is a compatibility contract with our own past.
+//
+// Protobuf rather than a serde encoding for exactly that reason: field
+// numbers give the log a forward- and backward-compatible evolution story,
+// and a Vec<u8> value stays bytes on the wire instead of becoming a JSON
+// array of numbers.
+//
+// Rules for changing this file:
+//   * never renumber or reuse a field number;
+//   * new fields must be optional-by-absence, i.e. the zero value has to mean
+//     "what old entries meant";
+//   * never change the meaning of an existing field — add a new one.
+syntax = "proto3";
+
+package notk8s.nodestore.v1;
+
+message Empty {}
+
+message Interval {
+  bytes from = 1;
+  bytes to = 2;
+}
+
+// Mirrors command::KeyRange. etcd's own (key, range_end) overloading is
+// decoded exactly once, before anything reaches the log, so a stored entry is
+// unambiguous forever.
+message KeyRange {
+  oneof kind {
+    bytes single = 1;
+    Interval between = 2;
+    bytes from = 3;
+    Empty all = 4;
+  }
+}
+
+message PutOp {
+  bytes key = 1;
+  bytes value = 2;
+  int64 lease = 3;
+  bool prev_kv = 4;
+  bool ignore_value = 5;
+  bool ignore_lease = 6;
+}
+
+message DeleteOp {
+  KeyRange range = 1;
+  bool prev_kv = 2;
+}
+
+enum CompareResult {
+  COMPARE_RESULT_EQUAL = 0;
+  COMPARE_RESULT_GREATER = 1;
+  COMPARE_RESULT_LESS = 2;
+  COMPARE_RESULT_NOT_EQUAL = 3;
+}
+
+message Compare {
+  bytes key = 1;
+  CompareResult result = 2;
+  oneof target {
+    int64 version = 3;
+    int64 create_revision = 4;
+    int64 mod_revision = 5;
+    bytes value = 6;
+    int64 lease = 7;
+  }
+}
+
+enum SortTarget {
+  SORT_TARGET_KEY = 0;
+  SORT_TARGET_VERSION = 1;
+  SORT_TARGET_CREATE_REVISION = 2;
+  SORT_TARGET_MOD_REVISION = 3;
+  SORT_TARGET_VALUE = 4;
+}
+
+message Sort {
+  SortTarget target = 1;
+  bool ascending = 2;
+}
+
+message RangeQuery {
+  KeyRange range = 1;
+  int64 revision = 2;
+  int64 limit = 3;
+  bool keys_only = 4;
+  bool count_only = 5;
+  // Absent means the store's default order (by key ascending).
+  Sort sort = 6;
+}
+
+message RequestOp {
+  oneof op {
+    RangeQuery range = 1;
+    PutOp put = 2;
+    DeleteOp delete = 3;
+  }
+}
+
+message TxnOp {
+  repeated Compare compare = 1;
+  repeated RequestOp success = 2;
+  repeated RequestOp failure = 3;
+}
+
+message Compact {
+  int64 revision = 1;
+}
+
+// Both the id and the clock reading are chosen by the leader before the entry
+// is proposed — see src/command.rs on why apply() may not read a clock.
+message LeaseGrant {
+  int64 id = 1;
+  int64 ttl_secs = 2;
+  int64 now_unix_secs = 3;
+}
+
+message LeaseRevoke {
+  int64 id = 1;
+}
+
+message LeaseKeepAlive {
+  int64 id = 1;
+  int64 now_unix_secs = 2;
+}
+
+message ExpireLeases {
+  int64 now_unix_secs = 1;
+}
+
+// The cluster's address book, replicated through the log like everything
+// else.
+//
+// raft itself only knows member *ids*; how to reach a member is our problem.
+// Keeping it in the state machine rather than in each node's configuration is
+// what lets a node that joins later, or restarts, learn the cluster's shape
+// from the log instead of from whatever its operator happened to type.
+message SetMember {
+  uint64 id = 1;
+  // Where peers reach this member for raft traffic.
+  string peer_url = 2;
+  // Where clients (and forwarding followers) reach its etcd API.
+  string client_url = 3;
+  string name = 4;
+  bool is_learner = 5;
+}
+
+message RemoveMember {
+  uint64 id = 1;
+}
+
+message Command {
+  oneof kind {
+    PutOp put = 1;
+    DeleteOp delete = 2;
+    TxnOp txn = 3;
+    Compact compact = 4;
+    LeaseGrant lease_grant = 5;
+    LeaseRevoke lease_revoke = 6;
+    LeaseKeepAlive lease_keep_alive = 7;
+    ExpireLeases expire_leases = 8;
+    SetMember set_member = 9;
+    RemoveMember remove_member = 10;
+  }
+}
+
+// What actually goes in a raft log entry.
+//
+// `proposal_id` is how a result finds its way back to the caller that
+// proposed it: the proposer registers a waiter under this id, and the applier
+// — which on a follower is applying an entry nobody local proposed — completes
+// it if one is registered. Unique per proposing node per process lifetime.
+message LogEntry {
+  uint64 proposal_id = 1;
+  Command command = 2;
+}
+
+// ── Snapshots ────────────────────────────────────────────────────────────
+//
+// A snapshot is the whole state machine at one applied index. It exists
+// because a follower that has fallen behind a compacted log cannot be caught
+// up by replaying entries that no longer exist — that is not an optimisation,
+// it is the only way such a follower ever rejoins.
+
+message SnapshotKv {
+  bytes key = 1;
+  bytes value = 2;
+  int64 create_revision = 3;
+  int64 mod_revision = 4;
+  int64 version = 5;
+  int64 lease = 6;
+}
+
+message SnapshotLease {
+  int64 id = 1;
+  int64 ttl_secs = 2;
+  int64 expires_at = 3;
+}
+
+message SnapshotState {
+  int64 revision = 1;
+  int64 compact_revision = 2;
+  // Live keys only. History below the current revision is deliberately not
+  // carried: a restoring follower cannot serve reads or watches from before
+  // the snapshot anyway, and shipping the full history would make a snapshot
+  // unbounded in the one situation where it needs to be quick.
+  repeated SnapshotKv kvs = 3;
+  repeated SnapshotLease leases = 4;
+  repeated SetMember members = 5;
+  uint64 applied_index = 6;
+}

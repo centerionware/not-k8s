@@ -50,6 +50,32 @@ every_installed_component() {
     return 0
 }
 
+# every_dispatched_component — the installed components that reach their code
+# *through* the combined binary, i.e. bin/<name> is a symlink to it.
+#
+# Narrower than every_installed_component on purpose. A standalone
+# bin/<name> is its own executable and says nothing about what the combined
+# binary contains, so requiring the binary to contain it is a claim about
+# two unrelated files. That is not hypothetical: install_built_binary() and
+# link_component_binary() `rm -f bin/<name>` only for the components the
+# *current* run installs, so a component dropped between runs (deploy with
+# DATASTORE=nodestore --layout=both, re-deploy without it) leaves a stale
+# standalone bin/nodestore behind while the new combined binary correctly no
+# longer contains it.
+#
+# The cost is that under --layout=both, where bin/<name> are real per-
+# component binaries, this yields nothing and the containment check below
+# asserts nothing. Accepted: the table-membership and help-drift checks in
+# the same test still run, and the layout that actually depends on argv[0]
+# dispatch is the one this covers.
+every_dispatched_component() {
+    local name
+    while read -r name; do
+        [[ -L "$REPO_ROOT/bin/$name" ]] && printf '%s\n' "$name"
+    done < <(every_installed_component)
+    return 0
+}
+
 # The combined binary, wherever this deployment put it, or "" if this is a
 # split install.
 _combined_binary() {
@@ -68,13 +94,13 @@ test_combined_binary_contains_every_component() {
     local components name
     components="$("$bin" components)"
 
-    # Every component installed here must be in the binary: that's the
-    # dispatch contract. bin/nodelet is a symlink to this binary, so a
+    # Every component that dispatches through this binary must be in it:
+    # that's the whole contract. bin/nodelet is a symlink to it, so a
     # nodelet it doesn't contain is a service that starts and immediately
     # dies on "component was not built into this binary".
     while read -r name; do
         assert_contains "$components" "$name" "'notk8s components' should list the '$name' component"
-    done < <(every_installed_component)
+    done < <(every_dispatched_component)
 
     # ...but not the converse. These are deliberately not compared as equal
     # sets: the released `notk8s` asset is built with default features

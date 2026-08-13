@@ -10,7 +10,7 @@
 #
 # Row format (pipe-separated, no spaces around the pipes):
 #
-#   <name>|<cargo package>|<cargo features>|<enabled-predicate>|<prebuilt env var>
+#   <name>|<cargo package>|<cargo features>|<enabled-predicate>|<prebuilt env var>|<needs-protoc>
 #
 #   name             installed binary name, and the applet name the combined
 #                    binary dispatches on (argv[0]) — they must match, that's
@@ -25,9 +25,18 @@
 #   prebuilt env var lets a caller supply an already-built binary instead of
 #                    compiling (the seam CI's e2e shards and the
 #                    build-in-CI/test-on-device loop use — see CLAUDE.md).
+#   needs protoc     "protoc" when this component compiles .proto files at
+#                    build time, empty otherwise. Used to decide whether to
+#                    install protoc at all — it used to be inferable from
+#                    --with-cri alone, until nodestore (whose etcd protos are
+#                    not optional) made that no longer true.
 NOTK8S_COMPONENTS=(
-    "nodelet|nodelet|@cri|want_nodelet|NOTK8S_NODELET_PREBUILT"
-    "nodeproxy|nodeproxy||want_nodeproxy|NOTK8S_NODEPROXY_PREBUILT"
+    # nodelet only needs protoc under --with-cri, which is what @cri
+    # resolves to; the protoc column is therefore also conditional for it,
+    # handled by component_needs_protoc below.
+    "nodelet|nodelet|@cri|want_nodelet|NOTK8S_NODELET_PREBUILT|@cri"
+    "nodeproxy|nodeproxy||want_nodeproxy|NOTK8S_NODEPROXY_PREBUILT|"
+    "nodestore|nodestore||want_nodestore|NOTK8S_NODESTORE_PREBUILT|protoc"
 )
 
 # Whether this run wants the node agent. --skip-nodelet is handled by the
@@ -41,6 +50,16 @@ want_nodelet() { return 0; }
 # since that matches the behaviour of every release before the split, when
 # nodelet did this job in-process.
 want_nodeproxy() { [[ "${PROXY:-nodeproxy}" != "none" ]]; }
+
+# Whether this run wants the datastore. Unlike nodelet/nodeproxy, this
+# defaults OFF: nodelet and nodeproxy are node components every node runs by
+# default, but the datastore is a control-plane component, and today that
+# job is still done by k3s's own bundled kine — a node has to opt into ours
+# explicitly via DATASTORE=nodestore. Note this predicate only decides what
+# a given device's own build includes; a release build takes the crate's
+# default features regardless, so it ships a combined binary containing
+# every component (nodestore included) no matter what any device sets here.
+want_nodestore() { [[ "${DATASTORE:-none}" == "nodestore" ]]; }
 
 # component_field <row> <1-based index> — pipe-separated field accessor.
 component_field() { echo "$1" | cut -d'|' -f"$2"; }
@@ -81,6 +100,21 @@ component_cargo_features() {
         @cri) [[ "${WITH_CRI:-0}" -eq 1 ]] && echo "--features cri" || echo "" ;;
         *) echo "--features $spec" ;;
     esac
+}
+
+# any_component_needs_protoc — whether this run has to install protoc before
+# building. Asked of the table so a new component that compiles protos gets
+# it without anyone remembering to widen a --with-cri check.
+any_component_needs_protoc() {
+    local name spec
+    while read -r name; do
+        spec="$(component_field "$(component_row "$name")" 6)"
+        case "$spec" in
+            protoc) return 0 ;;
+            @cri) [[ "${WITH_CRI:-0}" -eq 1 ]] && return 0 ;;
+        esac
+    done < <(enabled_components)
+    return 1
 }
 
 # ─────────────────────────────────────────────────────────────────────────

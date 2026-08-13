@@ -266,7 +266,10 @@ build_nodelet() {
     fi
 
     cd "$REPO_ROOT"
-    if [[ "$WITH_CRI" -eq 1 ]]; then
+    # Not `if [[ $WITH_CRI -eq 1 ]]` any more: protoc is needed by whichever
+    # enabled components compile .proto files, which since nodestore is no
+    # longer the same question as "is the real container runtime wanted".
+    if any_component_needs_protoc; then
         ensure_protoc
     fi
 

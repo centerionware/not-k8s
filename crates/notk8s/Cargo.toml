@@ -29,7 +29,7 @@ path = "src/main.rs"
 # own table, and `notk8s components` reports what a given binary actually
 # contains.
 [features]
-default = ["nodelet", "nodeproxy"]
+default = ["nodelet", "nodeproxy", "nodestore"]
 # nodelet's real containerd/CRI runtime. Weak (`nodelet?/cri`) so it can be
 # combined with --no-default-features without silently pulling the node
 # agent back in.
@@ -42,3 +42,4 @@ tracing-subscriber = { workspace = true }
 
 nodelet = { path = "../nodelet", optional = true }
 nodeproxy = { path = "../nodeproxy", optional = true }
+nodestore = { path = "../nodestore", optional = true }

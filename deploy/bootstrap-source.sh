@@ -118,6 +118,15 @@
 # the combined one at bin/notk8s. Equivalent env var: NOTK8S_BUILD_LAYOUT.
 # See deploy/lib/components.sh.
 #
+# --datastore: none (default) | nodestore. `none` leaves the control plane's
+# storage to k3s's own bundled kine, which is what every release so far has
+# done. `nodestore` additionally BUILDS the datastore binary
+# (crates/nodestore — the etcd v3 API over sqlite, event-driven instead of
+# kine's polling); it does not yet install it as a service or repoint the
+# control plane at it, because that is an ordering constraint on the control
+# plane's own startup rather than a node-side concern. Today this flag is
+# what the datastore's e2e coverage uses to get a binary to test.
+#
 # --proxy: nodeproxy (default) | none. `none` installs no Service proxy and
 # touches no nftables rules, leaving ClusterIP/NodePort routing to whatever
 # else this node runs (a real kube-proxy, Cilium, kube-router). This is the
@@ -169,6 +178,7 @@ LB_METHOD=random
 KEEP_BUILD_TOOLS=0
 SKIP_NODELET=0
 PROXY=nodeproxy
+DATASTORE="${DATASTORE:-none}"
 BUILD_LAYOUT="${NOTK8S_BUILD_LAYOUT:-split}"
 
 for arg in "$@"; do
@@ -184,6 +194,7 @@ for arg in "$@"; do
         --ip-family=*) IP_FAMILY="${arg#--ip-family=}" ;;
         --lb-method=*) LB_METHOD="${arg#--lb-method=}" ;;
         --proxy=*) PROXY="${arg#--proxy=}" ;;
+        --datastore=*) DATASTORE="${arg#--datastore=}" ;;
         --layout=*) BUILD_LAYOUT="${arg#--layout=}" ;;
         --keep-build-tools) KEEP_BUILD_TOOLS=1 ;;
         -h|--help)
@@ -236,6 +247,13 @@ case "$PROXY" in
     *) die "Unknown --proxy='$PROXY' (want 'nodeproxy' or 'none')." ;;
 esac
 
+case "$DATASTORE" in
+    none|nodestore) ;;
+    *) die "Unknown --datastore='$DATASTORE' (want 'none' — k3s's own bundled kine, the default — or 'nodestore')." ;;
+esac
+# Read by lib/components.sh's want_nodestore predicate.
+export DATASTORE
+
 case "$BUILD_LAYOUT" in
     split|combined|both) ;;
     *) die "Unknown --layout='$BUILD_LAYOUT' (want 'split' — one binary per component, 'combined' — one multi-call binary, or 'both'). See deploy/lib/components.sh." ;;
@@ -268,6 +286,7 @@ source "$LIB_DIR/components.sh"
 source "$LIB_DIR/nodelet-build.sh"
 source "$LIB_DIR/nodelet-service.sh"
 source "$LIB_DIR/nodeproxy-service.sh"
+source "$LIB_DIR/nodestore-service.sh"
 source "$LIB_DIR/run.sh"
 source "$LIB_DIR/cleanup.sh"
 source "$LIB_DIR/uninstall.sh"
@@ -314,8 +333,57 @@ if [[ -z "${NOTK8S_NODELET_PREBUILT:-}" && "$SKIP_NODELET" -eq 0 ]]; then
     ensure_c_toolchain
     ensure_rust
 fi
+# The datastore has to exist, and be listening, *before* the control plane is
+# installed — setup_control_plane hands k3s a --datastore-endpoint pointing at
+# it, and k3s cannot serve at all if nothing answers there. That inverts this
+# script's usual order (build the binaries after the control plane is up), so
+# it's done here rather than by moving build_nodelet unconditionally: the
+# default --datastore=none path keeps exactly the ordering it has always had,
+# and only a run that asked for nodestore pays for the change.
+#
+# build_nodelet builds every *enabled* component in one pass (see
+# lib/components.sh), so this is also what produces bin/nodelet and
+# bin/nodeproxy on this path — hence the flag, so it isn't run twice.
+NODELET_ALREADY_BUILT=0
+if want_nodestore; then
+    if [[ "$SKIP_NODELET" -eq 0 ]]; then
+        build_nodelet
+        NODELET_ALREADY_BUILT=1
+    fi
+    install_nodestore_service
+    # Ordering the units is not enough on its own: systemd calls a Type=simple
+    # service "started" the moment it forks, so k3s would race a store that
+    # hasn't opened its socket yet. Block until it actually answers.
+    wait_for_nodestore
+    # Read by setup-control-plane.sh, which turns these into
+    # --datastore-endpoint and the three --datastore-*file flags.
+    #
+    # https, and with a client certificate: the datastore has no plaintext
+    # mode. It holds every Secret in the cluster and the etcd v3 API has no
+    # authentication of its own, so serving it in the clear would be worse
+    # than an open apiserver — there is no authorization layer above it to
+    # fail closed. nodestore generates this material on first start when an
+    # operator has not supplied their own; these are the paths it writes.
+    #
+    # Not the listen address verbatim: a wildcard bind (0.0.0.0 / [::]) is not
+    # an address k3s can dial against a certificate — no SAN names a wildcard,
+    # so the handshake fails with a certificate error that reads as a PKI
+    # problem rather than a configuration one. nodestore_dialable_host() maps
+    # it to the matching loopback, which tls_sans() always covers.
+    nodestore_listen="${NODESTORE_LISTEN:-$NODESTORE_LISTEN_DEFAULT}"
+    export NOTK8S_DATASTORE_ENDPOINT="https://$(nodestore_dialable_host "$nodestore_listen"):$(nodestore_listen_port "$nodestore_listen")"
+    nodestore_pki="${NODESTORE_DATA_DIR:-/var/lib/nodestore}/pki/client"
+    export NOTK8S_DATASTORE_CAFILE="$nodestore_pki/ca.crt"
+    export NOTK8S_DATASTORE_CERTFILE="$nodestore_pki/client.crt"
+    export NOTK8S_DATASTORE_KEYFILE="$nodestore_pki/client.key"
+    for f in "$NOTK8S_DATASTORE_CAFILE" "$NOTK8S_DATASTORE_CERTFILE" "$NOTK8S_DATASTORE_KEYFILE"; do
+        [[ -s "$f" ]] || die "nodestore is listening but did not write $f. The control plane cannot authenticate to it without that file — check: journalctl -u nodestore -n 50"
+    done
+    log "Control plane will use nodestore at $NOTK8S_DATASTORE_ENDPOINT over mutual TLS (instead of k3s's bundled kine)."
+fi
+
 setup_control_plane
-if [[ "$SKIP_NODELET" -eq 0 ]]; then
+if [[ "$SKIP_NODELET" -eq 0 && "$NODELET_ALREADY_BUILT" -eq 0 ]]; then
     build_nodelet
 fi
 ensure_container_runtime

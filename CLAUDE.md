@@ -42,8 +42,16 @@ cargo test -p nodelet --features cri      # cri-gated unit tests too
 cargo build -p nodeproxy                  # the Service proxy — no features, ever
 cargo test -p nodeproxy                   # its nft ruleset tests (need CAP_NET_ADMIN, else self-skip)
 
+cargo build -p nodestore                  # the datastore — needs protoc (etcd protos), no features
+cargo test -p nodestore                   # its MVCC/revision semantics tests
 cargo build --features cri -p notk8s      # combined single binary: every component in one
 ```
+
+**`protoc` is no longer a `--features cri` concern only.** `nodestore`
+compiles the vendored etcd protos unconditionally, so a build that includes it
+needs `protoc` on PATH regardless of the container runtime. The deploy side
+decides this from `deploy/lib/components.sh`'s table
+(`any_component_needs_protoc`), not from `--with-cri`.
 
 `crates/nodeproxy` deliberately shares **none** of nodelet's dependency tree —
 no `cri` feature, no tonic/prost/zbus. If a change wants one of those there,
@@ -400,7 +408,24 @@ runtime.v1.RuntimeService"` again, that's where to look first.
 
 ## Architecture
 
-**Two components, two crates, one or two binaries.** `crates/nodelet` is the node agent;
+**`crates/nodestore` is the datastore** — the etcd v3 gRPC API over sqlite,
+replacing kine. Read `crates/nodestore/src/command.rs` first: it states the
+determinism rules (`apply()` reads no clock, no RNG, no environment; the
+leader resolves nondeterminism *before* proposing) that the rest of the crate
+obeys and that raft will depend on. Semantics live in `store.rs`, ordering in
+`consensus.rs`, replication in `replication/`, and `server/` is translation
+only — a behavioural decision made in `server/` is almost always in the wrong
+place. Replicated via raft (`tikv/raft-rs`): configure a cluster with
+`NODESTORE_INITIAL_CLUSTER=1=https://a:2380,2=https://b:2380` and
+`NODESTORE_MEMBER_ID`. **The raft log is a separate sqlite database on
+`synchronous=FULL` and the applied index commits in the same transaction as
+the state it produced** — read `replication/log.rs`'s header before touching
+either, that pairing is what makes a crash recoverable instead of silently
+divergent. e2e coverage is
+`deploy/lib/test/cases/datastore.sh`, which drives the real gRPC API with
+`grpcurl` against a throwaway store, never the running cluster's own.
+
+**Three components, three crates, one or several binaries.** `crates/nodelet` is the node agent;
 `crates/nodeproxy` is the Service proxy (`svc.rs`: Service + EndpointSlice
 watch, one `inet not_k8s_svc` nftables table rebuilt atomically per event,
 no periodic resync). They share no code and no config — `nodeproxy` reads

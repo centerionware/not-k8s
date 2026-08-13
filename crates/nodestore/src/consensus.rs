@@ -1,0 +1,407 @@
+//! Where an ordering decision is made, so that raft can later make it
+//! differently without anything else changing.
+//!
+//! # The shape of the seam
+//!
+//! Every mutation takes exactly one path:
+//!
+//! ```text
+//!   gRPC handler
+//!       └─ Node::propose(Command)
+//!            ├─ Consensus::commit(&cmd)   ← decides WHEN the command is in the log
+//!            └─ Node::apply_committed()   ← deterministic state machine, identical on every replica
+//!                 ├─ Store::apply()       (one sqlite transaction)
+//!                 └─ WatchHub::publish()  (fan-out, no polling)
+//! ```
+//!
+//! [`SingleNode`] makes `commit` a no-op: there is nobody to agree with, so a
+//! command is committed the moment it is proposed, and the mutex around the
+//! store provides the total order. Under raft, `commit` becomes "append to the
+//! log, replicate, wait for a quorum, return the assigned index", and
+//! `apply_committed` moves off the proposing task onto the single applier that
+//! walks the committed log in index order — the proposer then waits for its
+//! index instead of applying it itself.
+//!
+//! What matters is that **nothing above this file knows which of those is
+//! happening**. The gRPC layer proposes commands; it does not know whether a
+//! quorum was involved.
+//!
+//! # Why the state machine, not the proposer, assigns revisions
+//!
+//! A revision is assigned inside [`crate::store::Store::apply`], from the
+//! store's own counter, as a function of the command sequence alone. Two
+//! replicas applying the same log therefore produce identical revisions
+//! without communicating about them. Had the proposer stamped a revision onto
+//! the command instead — the obvious shortcut on a single node — every replica
+//! would need the leader to also be the only writer, forever, and the
+//! single-node implementation would have quietly become the design.
+
+use crate::command::Command;
+use crate::error::{Error, Result};
+use crate::store::{Applied, Store};
+use crate::watch::WatchHub;
+use async_trait::async_trait;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// What submitting a command produced.
+///
+/// The two variants exist because the two implementations apply at different
+/// places, and pretending otherwise would put a second applier in the system.
+/// Under raft the *driver* applies committed entries, in index order, on
+/// every member — including the one that proposed. On a single node there is
+/// no driver, so the caller applies. Anything that applied in both places
+/// would apply twice on the proposing member.
+#[derive(Debug)]
+pub enum Submitted {
+    /// Already applied by the consensus layer; here is the result.
+    Applied(Applied),
+    /// Committed at this index; the caller must apply it.
+    ApplyLocally(u64),
+}
+
+/// Ordering of commands. The one thing a multi-node deployment changes.
+#[async_trait]
+pub trait Consensus: Send + Sync {
+    /// Get `cmd` committed. Returning an error means it is *not* in the log
+    /// and had no effect.
+    async fn submit(&self, cmd: &Command) -> Result<Submitted>;
+
+    /// Whether this member may serve writes. Reads that must be linearizable
+    /// also require it.
+    fn is_leader(&self) -> bool;
+
+    /// Raft term, reported in every response header. Zero without raft.
+    fn term(&self) -> u64;
+
+    fn member_id(&self) -> u64;
+    fn cluster_id(&self) -> u64;
+
+    /// Which member is the leader, when this one is not. `None` means either
+    /// "there is no leader right now" (a real state during an election) or
+    /// "there is only this member".
+    fn leader_id(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// The single-node implementation: everything is committed immediately,
+/// because there is no one else to convince.
+pub struct SingleNode {
+    index: AtomicI64,
+    member_id: u64,
+    cluster_id: u64,
+}
+
+impl SingleNode {
+    /// A fresh single member, starting from index zero.
+    pub fn new(member_id: u64, cluster_id: u64) -> Self {
+        SingleNode::resuming(member_id, cluster_id, 0)
+    }
+
+    /// A single member resuming from an already-populated store.
+    ///
+    /// `applied` is the index the store last recorded. Starting from zero
+    /// instead would hand the applier indexes it has already seen, walking the
+    /// persisted `applied_index` backwards — and that value is what a later
+    /// clustered start reads to place itself in the raft log, so a stale one
+    /// would make the member claim to be behind where it actually is.
+    pub fn resuming(member_id: u64, cluster_id: u64, applied: u64) -> Self {
+        SingleNode { index: AtomicI64::new(applied as i64), member_id, cluster_id }
+    }
+}
+
+#[async_trait]
+impl Consensus for SingleNode {
+    async fn submit(&self, _cmd: &Command) -> Result<Submitted> {
+        // The index still advances and is still handed to the applier: it is
+        // the value raft supplies, and the state machine records it either
+        // way, so a single-node store that later joins a cluster does not
+        // start from index zero.
+        Ok(Submitted::ApplyLocally(self.index.fetch_add(1, Ordering::SeqCst) as u64 + 1))
+    }
+
+    fn is_leader(&self) -> bool {
+        true
+    }
+
+    fn term(&self) -> u64 {
+        0
+    }
+
+    fn member_id(&self) -> u64 {
+        self.member_id
+    }
+
+    fn cluster_id(&self) -> u64 {
+        self.cluster_id
+    }
+}
+
+/// A running datastore: the store, the consensus decision, and the watch
+/// fan-out, bound together.
+pub struct Node {
+    store: Mutex<Store>,
+    consensus: Arc<dyn Consensus>,
+    watch: WatchHub,
+    /// Source of lease IDs. Leader-side on purpose — see the determinism note
+    /// in [`crate::command`]: the id is chosen *before* the command enters the
+    /// log so every replica applies the same one.
+    next_lease_id: AtomicI64,
+}
+
+impl Node {
+    pub fn new(store: Store, consensus: Arc<dyn Consensus>, watch_capacity: usize) -> Arc<Node> {
+        // Seeded from the clock so ids don't repeat across restarts, which
+        // would let a client's stale keepalive refresh a *different* lease
+        // that happens to have been handed the same id.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(1)
+            .abs()
+            .max(1);
+        Arc::new(Node {
+            store: Mutex::new(store),
+            consensus,
+            watch: WatchHub::new(watch_capacity),
+            next_lease_id: AtomicI64::new(seed),
+        })
+    }
+
+    pub fn watch_hub(&self) -> &WatchHub {
+        &self.watch
+    }
+
+    pub fn term(&self) -> u64 {
+        self.consensus.term()
+    }
+
+    pub fn member_id(&self) -> u64 {
+        self.consensus.member_id()
+    }
+
+    pub fn cluster_id(&self) -> u64 {
+        self.consensus.cluster_id()
+    }
+
+    pub fn is_leader(&self) -> bool {
+        self.consensus.is_leader()
+    }
+
+    /// Allocate a lease id. Never called during apply.
+    pub fn allocate_lease_id(&self) -> i64 {
+        // i64::MAX wraps to a negative id, which etcd treats as invalid, so
+        // keep it in the positive half.
+        self.next_lease_id.fetch_add(1, Ordering::SeqCst) & 0x7fff_ffff_ffff_ffff
+    }
+
+    /// Read under the same lock the applier uses, so a read never observes a
+    /// half-applied command.
+    pub fn read<R>(&self, f: impl FnOnce(&Store) -> Result<R>) -> Result<R> {
+        let store = self.lock_store()?;
+        f(&store)
+    }
+
+    /// Propose a mutation and return once it has been applied here.
+    ///
+    /// No leader check here on purpose: each implementation knows better. The
+    /// raft driver rejects a proposal from a non-leader at the point it would
+    /// enter the log, which is both authoritative and race-free — a check out
+    /// here could pass and then be stale by the time the entry is proposed.
+    pub async fn propose(&self, cmd: Command) -> Result<Applied> {
+        match self.consensus.submit(&cmd).await? {
+            Submitted::Applied(applied) => Ok(applied),
+            Submitted::ApplyLocally(index) => self.apply_committed(index, &cmd),
+        }
+    }
+
+    pub fn leader_id(&self) -> Option<u64> {
+        self.consensus.leader_id()
+    }
+
+    /// Apply a committed command. Deterministic: same log, same state, on
+    /// every replica.
+    ///
+    /// Under raft this is called by the applier task walking committed entries
+    /// in index order, not by the proposer. It takes `index` for that reason —
+    /// so the signature does not have to change when it does.
+    pub fn apply_committed(&self, index: u64, cmd: &Command) -> Result<Applied> {
+        // Published while the lock is still held, so the order watchers see is
+        // the order the store applied.
+        //
+        // The earlier version released the lock first, on the theory that
+        // holding it across the fan-out would let a slow watcher block the
+        // applier. That theory was simply wrong: `broadcast::Sender::send` is
+        // synchronous and never waits on a receiver — it overwrites the oldest
+        // slot and lets the reader observe `Lagged`. So there was no hazard to
+        // avoid, and releasing early created a real one. Two concurrent
+        // proposers could apply 2 then 3 and publish 3 then 2, and a watcher
+        // that tracks the highest revision it has seen discards the older
+        // batch as already-delivered — a silent gap, with no lag signal to
+        // tell it to re-read. Exactly what watch.rs promises cannot happen.
+        let mut store = self.lock_store()?;
+        let applied = store.apply_at(index, cmd)?;
+        if !applied.events.is_empty() {
+            self.watch.publish(applied.revision, applied.events.clone());
+        }
+        drop(store);
+        Ok(applied)
+    }
+
+    /// Replace the state machine with a snapshot. Only the raft driver calls
+    /// this, on a follower that has been told its own state is too far behind
+    /// to be caught up from the log.
+    pub fn restore_snapshot(&self, state: &crate::store::SnapshotState) -> Result<()> {
+        let mut store = self.lock_store()?;
+        store.restore_snapshot(state)
+    }
+
+    fn lock_store(&self) -> Result<std::sync::MutexGuard<'_, Store>> {
+        // A poisoned mutex means a previous apply panicked mid-transaction.
+        // sqlite has already rolled that transaction back, so the data is
+        // intact, but the process has proven it can panic inside the applier
+        // and continuing would be pretending otherwise.
+        self.store
+            .lock()
+            .map_err(|_| Error::Unavailable("the applier panicked; state is unsafe to continue from".to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::{KeyRange, PutOp, RangeQuery};
+    use std::path::Path;
+
+    fn node() -> Arc<Node> {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        Node::new(store, Arc::new(SingleNode::new(1, 1)), 64)
+    }
+
+    fn put_cmd(key: &str, value: &str) -> Command {
+        Command::Put(PutOp {
+            key: key.as_bytes().to_vec(),
+            value: value.as_bytes().to_vec(),
+            lease: 0,
+            prev_kv: false,
+            ignore_value: false,
+            ignore_lease: false,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_proposal_is_applied_and_readable() {
+        let n = node();
+        let applied = n.propose(put_cmd("/a", "1")).await.unwrap();
+        assert_eq!(applied.revision, 2);
+        let got = n
+            .read(|s| s.range(&RangeQuery::current(KeyRange::Single(b"/a".to_vec()))))
+            .unwrap();
+        assert_eq!(got.kvs[0].value, b"1");
+    }
+
+    #[tokio::test]
+    async fn commit_indices_are_sequential_and_start_at_one() {
+        // Not load-bearing on a single node, but raft's are, and this is the
+        // counter that becomes the log index.
+        let c = SingleNode::new(1, 1);
+        let index = |s: Submitted| match s {
+            Submitted::ApplyLocally(i) => i,
+            Submitted::Applied(_) => panic!("single node never applies inside submit"),
+        };
+        assert_eq!(index(c.submit(&put_cmd("/a", "1")).await.unwrap()), 1);
+        assert_eq!(index(c.submit(&put_cmd("/b", "1")).await.unwrap()), 2);
+    }
+
+    /// A restart must not hand the applier indexes it has already applied:
+    /// Store::apply_at() writes whatever it is given, so counting from zero
+    /// again walks the persisted applied index backwards, and that value is
+    /// what a later clustered start uses to place itself in the raft log.
+    #[tokio::test]
+    async fn a_resumed_single_member_continues_from_the_persisted_index() {
+        let c = SingleNode::resuming(1, 1, 17);
+        let index = |s: Submitted| match s {
+            Submitted::ApplyLocally(i) => i,
+            Submitted::Applied(_) => panic!("single node never applies inside submit"),
+        };
+        assert_eq!(index(c.submit(&put_cmd("/a", "1")).await.unwrap()), 18);
+    }
+
+    #[tokio::test]
+    async fn concurrent_proposals_are_serialized_into_distinct_revisions() {
+        // The property the mutex is there for: N concurrent writers produce N
+        // distinct revisions with no gaps, because apply is the only writer.
+        let n = node();
+        let mut tasks = Vec::new();
+        for i in 0..16 {
+            let n = n.clone();
+            tasks.push(tokio::spawn(async move {
+                n.propose(put_cmd(&format!("/k{i}"), "v")).await.unwrap().revision
+            }));
+        }
+        let mut revisions = Vec::new();
+        for t in tasks {
+            revisions.push(t.await.unwrap());
+        }
+        revisions.sort_unstable();
+        revisions.dedup();
+        assert_eq!(revisions.len(), 16, "every write got its own revision");
+        assert_eq!(revisions.first().copied(), Some(2));
+        assert_eq!(revisions.last().copied(), Some(17));
+    }
+
+    #[tokio::test]
+    async fn concurrent_writers_publish_batches_in_revision_order() {
+        // The regression test for publishing outside the store lock.
+        //
+        // The old code applied under the lock and published after releasing
+        // it, so two concurrent proposers could apply 2 then 3 and publish 3
+        // then 2. A watcher tracking the highest revision it has seen then
+        // discards the older batch as already-delivered — a silent gap with no
+        // lag signal telling it to re-read.
+        //
+        // Distinctness is what the existing concurrency test asserts, and it
+        // cannot see this; only the *order* can.
+        let n = node();
+        let mut rx = n.watch_hub().subscribe();
+
+        let mut tasks = Vec::new();
+        for i in 0..24 {
+            let n = n.clone();
+            tasks.push(tokio::spawn(async move {
+                n.propose(put_cmd(&format!("/k{i}"), "v")).await.unwrap();
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+
+        let mut previous = 0i64;
+        let mut seen = 0;
+        while let Ok(batch) = rx.try_recv() {
+            assert!(
+                batch.revision > previous,
+                "watch batches arrived out of order: {} after {}",
+                batch.revision,
+                previous
+            );
+            previous = batch.revision;
+            seen += 1;
+        }
+        assert_eq!(seen, 24, "every write should have produced exactly one batch");
+    }
+
+    #[tokio::test]
+    async fn lease_ids_are_unique_and_positive() {
+        // Negative ids are invalid to etcd, and a repeated id would let one
+        // client's keepalive refresh another client's lease.
+        let n = node();
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..1000 {
+            let id = n.allocate_lease_id();
+            assert!(id > 0, "lease id must be positive, got {id}");
+            assert!(ids.insert(id), "duplicate lease id {id}");
+        }
+    }
+}

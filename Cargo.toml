@@ -4,7 +4,7 @@ resolver = "2"
 # above — it links them, it isn't a component itself. Adding a new component
 # crate means adding it here *and* as an optional dependency of notk8s, so
 # both build layouts (split / combined) cover it.
-members = ["crates/nodelet", "crates/nodeproxy", "crates/notk8s"]
+members = ["crates/nodelet", "crates/nodeproxy", "crates/nodestore", "crates/notk8s"]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,7 +27,7 @@ async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # CRI (real container runtime) deps — only pulled in with --features cri
-tonic = { version = "0.14", default-features = false, features = ["transport", "codegen", "channel", "server", "router"] }
+tonic = { version = "0.14", default-features = false, features = ["transport", "codegen", "channel", "server", "router", "tls-ring"] }
 prost = "0.14"
 prost-types = "0.14"
 tonic-prost = "0.14"

@@ -244,6 +244,87 @@ measurable — `nodeproxy` is deliberately built from a minimal dependency
 tree (no CRI/gRPC stack at all; see `crates/nodeproxy/Cargo.toml`) to keep
 that baseline small.
 
+### The datastore: etcd's API, without etcd's polling middleman
+
+`nodestore` (`crates/nodestore/`) serves the etcd v3 gRPC API over a
+sqlite-backed MVCC store, so a real kube-apiserver uses it unmodified
+(`--etcd-servers`, or k3s's `--datastore-endpoint`).
+
+It replaces kine, which does the same translation but drives watches by
+**polling**: every watcher's changes are found by re-querying the table for
+rows past a remembered revision, on a timer, whether or not anything has
+happened. Measured on the aarch64 test device, with a cluster doing nothing
+at all, that is the control plane process doing **314 read + 252 write
+syscalls a second and 26KB/s to disk**, against a 2.7MB database with a 4MB
+write-ahead log. This is the same substitution `nodelet` made against PLEG
+and `nodeproxy` made against kube-proxy's resync timer, applied to the last
+component still doing it: an applied command hands its events directly to the
+watchers, and an idle store is idle.
+
+The design points worth knowing before reading the code:
+
+- **One counter, one history.** Every write appends a row; a key's current
+  state is just its highest-revision row. Historical reads and watch replay
+  are then the same query with a different bound, rather than two mechanisms
+  that can disagree.
+- **The state machine is deterministic, and that is what makes raft
+  possible.** `apply()` reads no clock, no RNG, and no environment, so
+  replicas applying the same commands reach identical state. Anything
+  genuinely nondeterministic is resolved by the leader *before* proposing and
+  carried in the command — lease IDs, and every expiry timestamp. Revisions
+  are assigned inside `apply` from the store's own counter, never stamped on
+  by the proposer, which is what lets replicas agree on them without
+  communicating.
+- **The log entry type is ours, not etcd's.** The wire contract is etcd's and
+  moves when etcd moves; a committed log entry is replayed by future binaries
+  and must not. `command.rs` is that boundary.
+- **Replication is not pretended.** `NODESTORE_PEERS` is refused rather than
+  ignored, and `MemberAdd` returns `Unimplemented`. An operator who believes
+  they configured replication and discovers otherwise when the node dies is
+  the worst outcome available to a datastore.
+
+### Replication
+
+Raft, via `tikv/raft-rs` — the consensus algorithm only, with the log storage,
+the transport and the state machine all still ours (`src/replication/`). A
+hand-rolled Raft was the alternative and was rejected on the grounds that
+consensus bugs are silent, catastrophic, and surface only under exactly the
+partition and crash conditions that are hardest to reproduce.
+
+Three decisions there are load-bearing, and each had a tempting wrong answer:
+
+- **The raft log is a separate sqlite database at `synchronous = FULL`**, while
+  the state machine's stays at `NORMAL`. Raft's correctness rests on an
+  acknowledged entry being durable; the state machine is *derivable* — it is
+  the log applied in order — so losing its tail is recoverable by replay. That
+  recovery works only because the applied index commits in the **same
+  transaction** as the state it produced: both roll back together, leaving an
+  older but consistent replica. Stored separately, a crash between them leaves
+  a replica believing it applied an entry it did not, and no replay fixes that.
+- **The transport is deliberately lossy.** Raft assumes messages are lost,
+  delayed, duplicated and reordered, and recovers by resending *state*. A
+  transport that queued forever would deliver stale appends to a peer that has
+  moved on, and turn one slow follower into unbounded memory growth on the
+  leader.
+- **Followers forward writes rather than refusing them.** kube-apiserver is
+  configured with an endpoint list and expects any of them to work; a refusing
+  follower makes a three-member cluster serve writes a third of the time.
+  Reads split on the client's own `serializable` flag — anything else goes to
+  the leader, since a stale local read means a resourceVersion going backwards.
+
+New members join as **learners**: they receive the log without counting for
+quorum, so catching up a fresh replica — possibly by shipping it an entire
+snapshot — cannot stall the cluster it is joining.
+
+Failure behaviour is exercised against real processes in real network
+namespaces (`deploy/lib/test/cases/datastore_cluster.sh`), including a
+SIGKILL'd leader, a partitioned leader that still believes it leads, and a
+member left without quorum, which must **refuse** writes rather than accept
+one that will be silently discarded when the majority returns.
+
+Still ahead: automatic promotion from single-node to replicated when a second
+node joins.
+
 ### Two binaries or one: the split is in the crates, not the file count
 
 Separate crates are what make a component replaceable. Separate *executables*

@@ -80,9 +80,27 @@ jobs:
         # indistinguishable from the split layout it was written against.
         # release.yml's own e2e stage stays on split — the default is what
         # gates a release; this is the on-demand check of the other one.
+        #
+        # DATASTORE=nodestore does more than build the binary, and this
+        # comment used to claim otherwise: bootstrap-source.sh installs
+        # nodestore as a service and points k3s at it with
+        # --datastore-endpoint, so the whole suite below runs against a
+        # control plane whose storage is nodestore rather than k3s's bundled
+        # kine. That is deliberate and is the stronger coverage — every test
+        # here becomes an assertion that a real apiserver works on it — but it
+        # does mean a failure anywhere in this suite can be a datastore
+        # failure, not only a nodelet one.
+        #
+        # datastore.sh and datastore_apiserver.sh are unaffected either way:
+        # they run their own throwaway instances on scratch paths and ports
+        # rather than touching the cluster's own storage.
+        #
+        # Set DATASTORE=none to run this suite against bundled kine instead,
+        # which is what isolates a nodelet regression from a datastore one.
         env:
           NOTK8S_BUILD_PROFILE: debug
           NOTK8S_BUILD_LAYOUT: ${{ inputs.layout || 'split' }}
+          DATASTORE: nodestore
         run: sudo -E ./deploy/bootstrap-source.sh --with-cri
 
       - name: Install misc e2e prerequisites (hugepages, grpcurl)
@@ -173,12 +191,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # The run itself dirties the working tree — the build updates
-          # Cargo.lock — and `git checkout -B` then refuses with "your local
-          # changes would be overwritten", failing a job that had already
-          # produced its results. Publishing must not depend on a pristine
-          # tree; nothing here is worth keeping, since this step writes a text
-          # file and then the runner is destroyed.
+          # Found live: the run itself dirties the working tree — a build
+          # updates Cargo.lock — and `git checkout -B` then refuses with
+          # "your local changes would be overwritten", failing an e2e run
+          # that had already produced its results. Publishing results must
+          # not depend on the tree being pristine, so discard whatever the
+          # build touched first. Nothing here is worth keeping: this job
+          # publishes a text file and then the runner is destroyed.
           git reset --hard HEAD
 
           if git ls-remote --exit-code --heads origin "$RESULTS_BRANCH" >/dev/null 2>&1; then
