@@ -928,3 +928,75 @@ to re-fetch the Pod object). Reuses the exact same `ensure_pod()` path
 every other pod-creation flow already goes through — no new
 container-creation logic, no duplicated volume/pull-secret/claim-device
 resolution.
+
+### 20. Fixed: `nodescheduler`'s first live run — a Pending pod that explained nothing, and a self-inflicted hot loop in the fix for it
+
+The first time `crates/nodescheduler` was deployed to a real cluster
+(`SCHEDULER=nodescheduler`, k3s's own scheduler disabled), 277 unit tests
+were green and three of the nine new e2e cases failed immediately. Two
+findings came out of it, and the second is the more interesting one because
+this project's own fix caused it.
+
+**Found**: `deploy/lib/test/cases/scheduler.sh` asserted that a pod
+requesting more CPU than any node advertises reports
+`status.conditions[PodScheduled] = False`. It reported nothing at all — no
+condition, no event.
+
+**Root cause**: the scheduling loop handled `CycleOutcome::Unschedulable` by
+parking the pod in the queue and logging at `debug`, and never told the
+apiserver anything. That is the worst diagnostic state Kubernetes has: the
+pod sits Pending, `kubectl describe` shows an empty Events section, and
+there is no way to distinguish "no node has enough CPU" from "the scheduler
+is not running at all". Cluster-autoscaler also keys off that condition to
+decide whether to add a node, so its absence is not cosmetic.
+
+**Fixed**: `report.rs` writes both halves — the machine-readable condition
+(`reason: Unschedulable`, plus `nominatedNodeName` when preemption has
+promised one) and a `FailedScheduling` Warning event for `kubectl
+describe`. Spawned off the scheduling loop: two apiserver round trips per
+failed pod, on a loop that handles one pod at a time by design, would let a
+burst of unschedulable pods throttle the schedulable ones queued behind
+them. A gated pod still gets neither, structurally rather than by a check —
+`PreEnqueue` rejections never reach a scheduling cycle.
+
+**Then that fix closed a loop.** `watch.rs` treated every pod update as a
+fresh arrival: it re-projected with `queued_at = now` and called
+`SchedulingQueue::add`, which only deduplicated against the *active* queue,
+so a pod parked in `unschedulable` could sit in both containers at once.
+With `report.rs` in place that becomes a spin:
+
+```
+cycle fails -> report patches the pod's status to say why
+            -> apiserver emits a pod update
+            -> add() pushes it back to active, skipping backoff
+            -> cycle fails -> ...
+```
+
+at full speed, forever, hammering the apiserver on behalf of a pod that
+simply does not fit. Neither half is a bug alone — reporting a failure is
+correct, and re-queueing on a pod change is *nearly* correct — which is
+exactly why unit tests on either side stayed green.
+
+**Fixed**: `SchedulingQueue::update` replaces the stored object where the
+pod already is and leaves its position alone. An edit is not a reason to
+retry; only a cluster event some plugin subscribed to is, and that arrives
+through `move_all_to_active_or_backoff`. It carries forward the two fields
+that belong to the queue rather than to the API object — `queued_at`
+(resetting it starves precisely the pods being retried most, which is every
+failed pod, because being told why it failed *is* an edit) and `attempts`
+(without which backoff stays pinned at its 1s floor).
+
+**What the unit tests could not have caught, and why.** Every plugin tests
+its own predicate in isolation and `cycle.rs` tests its arithmetic in
+isolation; nothing ran the real PreFilter and the real Filter together and
+checked what the cycle concluded. The first attempt to reproduce the live
+failure as a unit test *passed*, because it hand-built `PodInfo` and so
+skipped `PodInfo::from_pod` -> `pod_requests` -> `parse_quantity_*`, which
+is what the live path hits first. `cycle_tests.rs` now starts from a real
+`Pod` object and runs through to a cycle outcome; any future test of a
+placement decision should start there rather than at `PodInfo`.
+
+**Also**: `deploy/lib/e2e-debug-dump.sh` now dumps `nodescheduler`'s unit
+status, journal and the `kube-scheduler` lease. The first run had to be
+diagnosed almost blind — the dump tailed nodelet and said nothing about
+what had actually made the placement decision.
