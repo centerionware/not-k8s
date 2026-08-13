@@ -58,6 +58,7 @@ pub mod node_ports;
 pub mod node_resources_balanced_allocation;
 pub mod node_resources_fit;
 pub mod node_unschedulable;
+pub mod pod_topology_spread;
 pub mod priority_sort;
 pub mod scheduling_gates;
 pub mod selector;
@@ -115,6 +116,7 @@ pub fn default_registry(client: kube::Client) -> Registry {
         pre_filter: vec![
             Box::new(node_ports::NodePorts),
             Box::new(node_resources_fit::NodeResourcesFit::default()),
+            Box::new(pod_topology_spread::PodTopologySpread),
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         filter: vec![
@@ -124,6 +126,7 @@ pub fn default_registry(client: kube::Client) -> Registry {
             Box::new(node_affinity::NodeAffinity::default()),
             Box::new(node_ports::NodePorts),
             Box::new(node_resources_fit::NodeResourcesFit::default()),
+            Box::new(pod_topology_spread::PodTopologySpread),
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         post_filter: Vec::new(),
@@ -135,6 +138,7 @@ pub fn default_registry(client: kube::Client) -> Registry {
             Box::new(
                 node_resources_balanced_allocation::NodeResourcesBalancedAllocation::default(),
             ),
+            Box::new(pod_topology_spread::PodTopologySpread),
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         score: vec![
@@ -145,6 +149,7 @@ pub fn default_registry(client: kube::Client) -> Registry {
             Box::new(
                 node_resources_balanced_allocation::NodeResourcesBalancedAllocation::default(),
             ),
+            Box::new(pod_topology_spread::PodTopologySpread),
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
         reserve: Vec::new(),
