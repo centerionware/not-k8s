@@ -378,8 +378,14 @@ impl PreScorePlugin for PodTopologySpread {
 ///
 /// Larger topologies count for more, so a constraint over many zones is not
 /// drowned out by one over two. Logarithmic rather than linear so the effect
-/// saturates — the difference between 3 and 4 domains matters, between 300
-/// and 400 barely.
+/// saturates: each *additional* domain is worth less than the one before it,
+/// because the derivative of `ln(n+2)` is `1/(n+2)`.
+///
+/// Stated as marginal cost deliberately. Comparing unequal spans says the
+/// opposite and sounds just as plausible — going from 300 to 400 domains is a
+/// bigger jump than 3 to 4, precisely because it is a hundred domains rather
+/// than one. The first version of this comment made that mistake, and so did
+/// the test asserting it.
 fn topology_normalizing_weight(domains: usize) -> f64 {
     ((domains + 2) as f64).ln()
 }
