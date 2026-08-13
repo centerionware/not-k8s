@@ -1,41 +1,16 @@
-commit: bb950d3e3917d5757a1dfa0c0aa7544ad5b7ab7e
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31735155893
-timestamp (UTC): 2026-08-13T19:23:46Z
+commit: f8ae99fe27e08a9353cbe6be5b235a16d171034b
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31738274832
+timestamp (UTC): 2026-08-13T20:01:48Z
 shard: 2/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786649013
+==> Test namespace: not-k8s-e2e-1786651296
 ==> 205 test(s) registered total (before sharding); running now...
 ==> Shard 2/5: 45 test(s) selected
 ▶ test_scheduler_rejects_a_pod_that_does_not_fit
-==> WARNING: pod was bound to 'runnervmzvulz' — dumping the inputs the fit check uses:
-==> WARNING:   node allocatable: {"cpu":"4","ephemeral-storage":"154894188544","hugepages-2Mi":"134217728","memory":"16766414848","pods":"110"}
-==> WARNING:   pod requests:     {"cpu":"10k"}
-==> WARNING:   pod conditions:   [{"lastProbeTime":null,"lastTransitionTime":"2026-08-13T19:23:34Z","observedGeneration":1,"status":"True","type":"Initialized"},{"lastProbeTime":null,"lastTransitionTime":"2026-08-13T19:23:34Z","status":"True","type":"PodScheduled"},{"lastProbeTime":null,"lastTransitionTime":"2026-08-13T19:23:34Z","observedGeneration":1,"status":"True","type":"ContainersReady"},{"lastProbeTime":null,"lastTransitionTime":"2026-08-13T19:23:34Z","observedGeneration":1,"status":"True","type":"Ready"},{"lastProbeTime":null,"lastTransitionTime":"2026-08-13T19:23:34Z","observedGeneration":1,"status":"False","type":"PodResizeInProgress"}]
-==> FATAL: assertion failed: a pod requesting more CPU than exists must stay unbound — got 'runnervmzvulz', want ''
-  ✘ FAIL (10s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 13 19:23:13 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:13.299710Z  INFO CreateContainer succeeded container=hostpath container_id=cf93694144914a1d4ef2e988534fb9d8079ef1e3be7f98241702c90ab1ce4acc
-    Aug 13 19:23:14 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:14.286242Z  INFO CreateContainer succeeded container=node-driver-registrar container_id=67d1109b148caa626fa143cae814b987b57faa8f4d2f51a28319c4180c7c8d3e
-    Aug 13 19:23:14 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:14.566477Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 13 19:23:14 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:14.880657Z  INFO CreateContainer succeeded container=liveness-probe container_id=1d8fc451b3c78796313d1d59fb0ef55f36c215b26288aa7c025952283ca3b522
-    Aug 13 19:23:15 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:15.895497Z  INFO CreateContainer succeeded container=csi-attacher container_id=742ebf4388a24f621dde5392e477a70dc1cb994a8c732d5fe73c25fcfe670afe
-    Aug 13 19:23:17 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:17.043313Z  INFO CreateContainer succeeded container=csi-provisioner container_id=aca1ee58a1bed9414813935a9e5e6a1e9f7497bdd5689ac03471d2407bdadc6e
-    Aug 13 19:23:19 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:19.050015Z  INFO CreateContainer succeeded container=csi-resizer container_id=a1170f7b61b06578a4d673f4e0cb254c6344eea26f9731abb6cdea0d6afad02f
-    Aug 13 19:23:20 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:20.709416Z  INFO CreateContainer succeeded container=csi-snapshotter container_id=7c7a8ae2fa5700c83ce2c9bc4c15d5099c42fec7bece9c0885a4dd231b100cfb
-    Aug 13 19:23:26 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:26.673682Z  INFO CreateContainer succeeded container=plugin container_id=80ff91456dbcb30fb81281945fb79800153c8610115b41d9d1ba1cc9d578dd3f
-    Aug 13 19:23:28 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:28.692022Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-n77jg
-    Aug 13 19:23:28 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:28.828797Z  INFO CreateContainer succeeded container=plugin container_id=85dee2f737f83f936980ce34da45b15f028b21bde7068c26951f0a881ae19118
-    Aug 13 19:23:29 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:29.005188Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-n77jg
-    Aug 13 19:23:34 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:34.596694Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-0edfb06e-c73f-4b71-9782-608921929d53.sock plugin_type=DRAPlugin
-    Aug 13 19:23:34 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:34.697594Z  INFO node status pushed
-    Aug 13 19:23:34 runnervmzvulz run-nodelet.sh[14164]: 2026-08-13T19:23:34.913981Z  INFO CreateContainer succeeded container=c container_id=4cfacad87e6ac405d724dccf6d970ddadddc76750e57b20e9fce02346664dd7b
+  ✔ PASS (11s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
-Failed:
-  - test_scheduler_rejects_a_pod_that_does_not_fit
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786649013...
+==> Cleaning up test namespace not-k8s-e2e-1786651296...
