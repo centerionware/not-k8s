@@ -267,11 +267,42 @@ fn load_ca(domain: Domain, ca_path: &Path, ca_key_path: &Path) -> Result<(rcgen:
     Ok((cert, key))
 }
 
+/// The validity window every certificate generated here is issued with, CA
+/// and leaf alike. Stated rather than inherited from rcgen's defaults, because
+/// the right window follows from this code's reissue policy, and that policy
+/// is: nothing here ever reissues.
+///
+/// `load_or_generate` returns the existing files untouched whenever the whole
+/// set is present, so a generated certificate lives as long as the data
+/// directory does. A conventional short-lived window would therefore not
+/// produce rotation — it would produce a cluster that stops trusting itself on
+/// a date nobody wrote down, with no path back except deleting the pki
+/// directory. An operator who wants rotation supplies their own material and
+/// takes this path out of the picture entirely.
+///
+/// The lower bound is the epoch for a reason of its own: these run on edge
+/// devices, many of which boot with no RTC and a clock somewhere in 1970 until
+/// NTP lands. A `not_before` of "now" would make the first handshake after a
+/// reboot fail as not-yet-valid, which reads as a network fault.
+///
+/// Both bounds are fixed constants, which also keeps `ca_params` reproducible:
+/// `load_ca` rebuilds the CA from these same parameters, and a window derived
+/// from the current time would differ on every reload.
+fn set_validity(params: &mut CertificateParams) -> Result<()> {
+    // 2100-01-01T00:00:00Z.
+    const NOT_AFTER_UNIX: i64 = 4_102_444_800;
+    params.not_before = time::OffsetDateTime::UNIX_EPOCH;
+    params.not_after = time::OffsetDateTime::from_unix_timestamp(NOT_AFTER_UNIX)
+        .map_err(|e| Error::Unavailable(format!("building the certificate validity window: {e}")))?;
+    Ok(())
+}
+
 /// The parameters every CA of this domain is issued with. One function so a
 /// reloaded CA is rebuilt exactly as it was first generated — see `load_ca`.
 fn ca_params(domain: Domain) -> Result<CertificateParams> {
     let mut params = CertificateParams::new(Vec::<String>::new())
         .map_err(|e| Error::Unavailable(format!("building CA parameters: {e}")))?;
+    set_validity(&mut params)?;
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.distinguished_name.push(DnType::CommonName, domain.ca_common_name());
     params.key_usages =
@@ -295,6 +326,7 @@ fn sign_leaf(
 ) -> Result<(String, String)> {
     let mut params = CertificateParams::new(sans.to_vec())
         .map_err(|e| Error::Unavailable(format!("building certificate parameters: {e}")))?;
+    set_validity(&mut params)?;
     params.distinguished_name.push(DnType::CommonName, common_name);
     params.use_authority_key_identifier_extension = true;
     params.key_usages =

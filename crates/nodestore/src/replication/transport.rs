@@ -381,10 +381,17 @@ mod tests {
 /// member reached at an IP needs that IP as a SAN, and the usual symptom of
 /// getting this wrong is a handshake failure that looks like the peer being
 /// down.
+///
+/// The error type is boxed rather than `tonic::transport::Error` because one
+/// of the failures here is ours, not tonic's: the configured TLS material
+/// could not be read. tonic's error has no public constructor, so reporting
+/// that through it would mean manufacturing one, and every way of doing that
+/// depends on some dependency continuing to reject some input. Both callers
+/// only ever log this, so the concrete type buys nothing.
 async fn connect_peer(
     url: &str,
     tls: Option<&crate::tls::Material>,
-) -> Result<PeerClient<tonic::transport::Channel>, tonic::transport::Error> {
+) -> Result<PeerClient<tonic::transport::Channel>, Box<dyn std::error::Error + Send + Sync>> {
     // Both bounded, because neither the dial nor the request had any limit
     // and a peer whose host stops responding *after* the TCP handshake would
     // otherwise park its task until the OS TCP timeout — minutes. The task is
@@ -402,22 +409,11 @@ async fn connect_peer(
     let endpoint = match tls {
         Some(material) => {
             let host = crate::host_of(url);
-            let cfg = crate::tls::client_tls_config(material, host.as_deref())
-                .map_err(|_| bad_tls_material())?;
+            let cfg = crate::tls::client_tls_config(material, host.as_deref())?;
             endpoint.tls_config(cfg)?
         }
         None => endpoint,
     };
     let channel = endpoint.connect().await?;
     Ok(PeerClient::new(channel))
-}
-
-/// tonic::transport::Error has no public constructor, and this path needs to
-/// report "the configured TLS material could not be read" through the same
-/// Result the dial returns. Producing one by failing a trivially-invalid
-/// endpoint parse is ugly but keeps the caller's error handling uniform; the
-/// real cause is logged where the material is loaded.
-fn bad_tls_material() -> tonic::transport::Error {
-    tonic::transport::Endpoint::from_shared("://".to_string())
-        .expect_err("'://' is not a valid endpoint")
 }

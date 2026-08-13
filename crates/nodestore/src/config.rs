@@ -409,16 +409,28 @@ mod tests {
     // racing each other into flakes.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Removes what `with_env` set, on the way out of the scope — including
+    /// the way out that a failed assertion takes. The lock is recovered from
+    /// poisoning above, so a panicking test that left its variables set would
+    /// otherwise leak them into every test that ran after it, and those tests
+    /// would then fail pointing at a setting they never touched.
+    struct EnvGuard<'a>(&'a [(&'a str, &'a str)]);
+
+    impl Drop for EnvGuard<'_> {
+        fn drop(&mut self) {
+            for (k, _) in self.0 {
+                std::env::remove_var(k);
+            }
+        }
+    }
+
     fn with_env<R>(vars: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         for (k, v) in vars {
             std::env::set_var(k, v);
         }
-        let out = f();
-        for (k, _) in vars {
-            std::env::remove_var(k);
-        }
-        out
+        let _cleanup = EnvGuard(vars);
+        f()
     }
 
     #[test]

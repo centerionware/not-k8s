@@ -62,7 +62,14 @@ const TICK_INTERVAL: Duration = Duration::from_millis(100);
 /// rather than claiming the write did not happen.
 const PROPOSAL_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Entries kept in the log beyond the last snapshot before compacting.
+/// How far the applied index may run beyond the last snapshot before a new
+/// snapshot is taken. A growth threshold, not a retention window: taking one
+/// compacts the log all the way to the applied index (`Log::install_snapshot`
+/// deletes every entry at or below it), so nothing is kept behind it. A
+/// follower that falls even one entry behind the compaction point is caught up
+/// by a snapshot rather than by an append, which is the trade this constant
+/// sets — larger keeps more of the log appendable, at the cost of a longer
+/// replay on restart.
 const LOG_COMPACT_THRESHOLD: u64 = 5_000;
 
 /// What the driver accepts from the outside.

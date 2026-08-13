@@ -125,7 +125,14 @@ test_upgrade_straight_to_a_multi_member_cluster_is_refused() {
 
     # Now the mistake: point it straight at a three-member cluster.
     netns_start_member 1 "$UPGRADE_SIZE" "$UPGRADE_BIN" "$UPGRADE_ROOT" >/dev/null
-    sleep 8
+    # Poll rather than sleeping a fixed interval: on a loaded runner the member
+    # can take longer than any constant to get as far as refusing, and this
+    # test would then fail on a missing string and name the wrong cause.
+    waited=0
+    until _member1_log | grep -q MemberAdd; do
+        sleep 1; waited=$((waited + 1))
+        [[ "$waited" -ge 30 ]] && break
+    done
 
     local log; log="$(_member1_log)"
     assert_contains "$log" "MemberAdd" "the refusal must name the safe path, or the data gets deleted instead"
@@ -139,14 +146,28 @@ test_upgrade_straight_to_a_multi_member_cluster_is_refused() {
     trap - EXIT
 }
 
-# Bug 3: the panic that did not stop the process. A member that panics must
-# die, so its service manager restarts it — one that keeps its listener open
-# while its raft driver is dead looks healthy to systemd and to a load
-# balancer, and fails every request for as long as nobody notices.
+# Related to bug 3, and honest about how far it gets: this asserts that a
+# member which has stopped leaves nothing of itself behind — no process in its
+# namespace, nothing still answering on its client port.
 #
-# Asserted through the observable consequence rather than by forcing a panic:
-# after being killed, the process must be *gone*, and nothing must still be
-# listening on its client port.
+# It does **not** reproduce bug 3 itself. That bug was a panic inside the raft
+# driver's tokio task, which unwound only that task and left the process up,
+# the listener open and `systemctl is-active` reporting active while every
+# request failed. The fix is `install_fatal_panic_hook` in
+# crates/nodestore/src/lib.rs, and nothing this harness can send makes the
+# driver panic: the specific panic that was seen live
+# (`to_commit N is out of range [last_index 0]`, an empty member rejoining a
+# running cluster) is now refused at startup by the guard in
+# replication/driver.rs, and there is no fault-injection knob to force another.
+#
+# The nearby storage-failure path is deliberately *not* a substitute for it:
+# when `on_ready` fails, the driver stops but the process stays up on purpose,
+# demoted to a follower with no leader so every handle reports unavailable —
+# see the comment at that `return` in replication/driver.rs. Asserting an exit
+# there would be asserting the opposite of the intended behaviour.
+#
+# So what remains testable is the consequence: once a member is gone, it is
+# wholly gone.
 test_upgrade_a_dead_member_leaves_nothing_listening_behind_it() {
     _upgrade_prepare
     trap _upgrade_stop EXIT
