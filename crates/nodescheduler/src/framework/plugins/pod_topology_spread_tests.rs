@@ -82,7 +82,7 @@ fn cluster(placements: &[(&str, &str)]) -> Snapshot {
 }
 
 fn prefiltered(p: &PodInfo, snap: &Snapshot) -> (PodTopologySpread, CycleState, Status) {
-    let plugin = PodTopologySpread;
+    let plugin = PodTopologySpread::default();
     let mut state = CycleState::default();
     let (status, _) = plugin.pre_filter(&mut state, p, snap);
     (plugin, state, status)
@@ -465,7 +465,7 @@ fn a_pod_with_no_constraints_skips_the_plugin() {
     let snap = cluster(&[("a", "n-east")]);
     let mut p = pod("plain");
     p.namespace = "default".to_string();
-    let plugin = PodTopologySpread;
+    let plugin = PodTopologySpread::default();
     let mut state = CycleState::default();
 
     let (status, _) = plugin.pre_filter(&mut state, &p, &snap);
@@ -477,7 +477,7 @@ fn a_pod_with_no_constraints_skips_the_plugin() {
 
 #[test]
 fn it_registers_exactly_the_events_that_can_unstick_a_rejected_pod() {
-    let events = PodTopologySpread.events_to_register();
+    let events = PodTopologySpread::default().events_to_register();
     let pairs: Vec<(EventResource, ActionType)> =
         events.iter().map(|e| (e.event.resource, e.event.action)).collect();
 
@@ -502,7 +502,155 @@ fn it_registers_exactly_the_events_that_can_unstick_a_rejected_pod() {
 #[test]
 fn a_node_heartbeat_does_not_wake_a_pod_this_plugin_rejected() {
     let heartbeat = ClusterEvent::new(EventResource::Node, ActionType::UPDATE_NODE_CONDITION);
-    for reg in PodTopologySpread.events_to_register() {
+    for reg in PodTopologySpread::default().events_to_register() {
         assert!(!reg.event.matches(&heartbeat));
     }
+}
+
+// ── System default constraints ──────────────────────────────────────────
+//
+// The failure mode these guard is silent in both directions: applying the
+// defaults to a pod no workload selects spreads it against strangers, and
+// failing to apply them to a Deployment's pods packs a replica set into one
+// zone while every counter still reads zero.
+
+fn workload(ns: &str, app: &str) -> crate::cache::WorkloadSelector {
+    crate::cache::WorkloadSelector {
+        namespace: ns.to_string(),
+        selector: LabelSelector {
+            match_labels: Some(BTreeMap::from([("app".to_string(), app.to_string())])),
+            match_expressions: None,
+        },
+    }
+}
+
+/// The same three zones, plus workloads that select `app=web`.
+fn cluster_with_workloads(
+    placements: &[(&str, &str)],
+    workloads: &[(&str, crate::cache::WorkloadSelector)],
+) -> Snapshot {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n-east", "east"));
+    cache.upsert_node(&api_node("n-west", "west"));
+    cache.upsert_node(&api_node("n-north", "north"));
+    for (uid, node) in placements {
+        cache.add_pod(placed(uid, node));
+    }
+    for (key, w) in workloads {
+        cache.upsert_workload(key.to_string(), w.clone());
+    }
+    cache.snapshot()
+}
+
+fn bare(name: &str) -> PodInfo {
+    let mut p = pod(name);
+    p.namespace = "default".to_string();
+    p.labels = BTreeMap::from([("app".to_string(), "web".to_string())]);
+    p
+}
+
+#[test]
+fn a_pod_no_workload_selects_gets_no_default_constraints() {
+    // Upstream's `selector.Empty()` check. Defaulting to a constraint that
+    // matches everything would spread a standalone pod against unrelated
+    // workloads — the opposite of what an absent selector means.
+    let snap = cluster_with_workloads(&[("a", "n-east")], &[]);
+    let (_, state, status) = prefiltered(&bare("incoming"), &snap);
+    assert!(status.is_skip(), "no selecting workload means no defaults: {status:?}");
+    assert!(state.score_skipped(NAME));
+}
+
+#[test]
+fn a_pod_selected_by_a_workload_gets_the_two_system_defaults() {
+    let snap = cluster_with_workloads(&[("a", "n-east")], &[("rs/default/web", workload("default", "web"))]);
+    let (_, state, status) = prefiltered(&bare("incoming"), &snap);
+    assert!(status.is_success(), "{status:?}");
+
+    let s = state.read::<SpreadState>(NAME).expect("state written");
+    let mut keys: Vec<&str> = s.constraints.iter().map(|c| c.topology_key.as_str()).collect();
+    keys.sort();
+    assert_eq!(keys, vec!["kubernetes.io/hostname", "topology.kubernetes.io/zone"]);
+
+    let zone = s.constraints.iter().find(|c| c.topology_key == ZONE).unwrap();
+    let host =
+        s.constraints.iter().find(|c| c.topology_key == "kubernetes.io/hostname").unwrap();
+    assert_eq!((zone.max_skew, host.max_skew), (3, 5));
+}
+
+#[test]
+fn the_system_defaults_never_make_a_node_infeasible() {
+    // Both are ScheduleAnyway, which is why upstream's PreFilter — which asks
+    // for DoNotSchedule constraints only — always gets an empty list from the
+    // defaulting path. Resolving them as soft here is the same guarantee: no
+    // pod is refused that upstream would have placed.
+    let snap = cluster_with_workloads(
+        // Enough in one zone to blow past maxSkew 3 if it were ever hard.
+        &[("a", "n-east"), ("b", "n-east"), ("c", "n-east"), ("d", "n-east"), ("e", "n-east")],
+        &[("rs/default/web", workload("default", "web"))],
+    );
+    let (plugin, state, status) = prefiltered(&bare("incoming"), &snap);
+    assert!(status.is_success(), "{status:?}");
+    assert!(
+        state.read::<SpreadState>(NAME).unwrap().constraints.iter().all(|c| !c.hard),
+        "system defaults are ScheduleAnyway"
+    );
+    let p = bare("incoming");
+    for name in ["n-east", "n-west", "n-north"] {
+        assert!(
+            plugin.filter(&state, &p, node(&snap, name)).is_success(),
+            "{name} must stay feasible under the defaults"
+        );
+    }
+    // But they must still move the score, or the feature does nothing.
+    let east = plugin.score(&state, &p, node(&snap, "n-east")).unwrap();
+    let west = plugin.score(&state, &p, node(&snap, "n-west")).unwrap();
+    assert!(east > west, "the crowded zone must score worse pre-normalization: {east} vs {west}");
+}
+
+#[test]
+fn a_pods_own_constraints_replace_the_defaults_rather_than_adding_to_them() {
+    let snap = cluster_with_workloads(&[], &[("rs/default/web", workload("default", "web"))]);
+    let (_, state, _) = prefiltered(&incoming(constraint(1, true)), &snap);
+    let s = state.read::<SpreadState>(NAME).unwrap();
+    assert_eq!(s.constraints.len(), 1, "defaults must not be merged in");
+    assert!(s.constraints[0].hard);
+}
+
+#[test]
+fn several_workloads_selecting_the_same_pod_are_anded() {
+    // A pod behind a Service *and* owned by a ReplicaSet spreads against the
+    // intersection. Taking either alone counts pods that are not its peers.
+    let mut svc = workload("default", "web");
+    svc.selector.match_labels =
+        Some(BTreeMap::from([("tier".to_string(), "front".to_string())]));
+    let snap = cluster_with_workloads(
+        &[],
+        &[("rs/default/web", workload("default", "web")), ("svc/default/web", svc)],
+    );
+    let mut p = bare("incoming");
+    p.labels.insert("tier".to_string(), "front".to_string());
+
+    let (_, state, status) = prefiltered(&p, &snap);
+    assert!(status.is_success(), "{status:?}");
+    let s = state.read::<SpreadState>(NAME).unwrap();
+    let sel = s.constraints[0].selector.as_ref().expect("derived selector");
+    let labels = sel.match_labels.as_ref().unwrap();
+    assert_eq!(labels.get("app").map(String::as_str), Some("web"));
+    assert_eq!(labels.get("tier").map(String::as_str), Some("front"));
+}
+
+#[test]
+fn a_workload_in_another_namespace_does_not_select_the_pod() {
+    let snap = cluster_with_workloads(&[], &[("rs/other/web", workload("other", "web"))]);
+    let (_, _, status) = prefiltered(&bare("incoming"), &snap);
+    assert!(status.is_skip(), "cross-namespace workload must not apply: {status:?}");
+}
+
+#[test]
+fn defaulting_none_switches_the_whole_thing_off() {
+    let snap = cluster_with_workloads(&[], &[("rs/default/web", workload("default", "web"))]);
+    let plugin = PodTopologySpread { defaulting: crate::config::TopologyDefaulting::None };
+    let mut state = CycleState::default();
+    let (status, _) = plugin.pre_filter(&mut state, &bare("incoming"), &snap);
+    assert!(status.is_skip(), "{status:?}");
 }

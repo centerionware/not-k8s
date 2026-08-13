@@ -177,10 +177,101 @@ fn watch_pods(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pod>>
 }
 
 type Pdb = k8s_openapi::api::policy::v1::PodDisruptionBudget;
+type Ns = k8s_openapi::api::core::v1::Namespace;
+type Svc = k8s_openapi::api::core::v1::Service;
+type Rs = k8s_openapi::api::apps::v1::ReplicaSet;
+type Sts = k8s_openapi::api::apps::v1::StatefulSet;
+type Rc = k8s_openapi::api::core::v1::ReplicationController;
+
+fn watch_namespaces(client: &Client) -> BoxStream<'static, watcher::Result<Event<Ns>>> {
+    watcher(Api::<Ns>::all(client.clone()), watcher::Config::default()).boxed()
+}
+/// The four workload watches exist only to derive `PodTopologySpread`'s
+/// system default constraints, so `TopologyDefaulting::None` must actually
+/// drop them rather than merely ignore what they deliver — that is the whole
+/// point of the setting.
+///
+/// Disabled means [`futures::stream::pending`], which never yields, not
+/// [`futures::stream::empty`], which yields `None` immediately. An always-ready
+/// `None` arm in a `select!` spins the loop at 100% CPU — the exact shape of
+/// the bug filed as issue #16 against nodelet.
+fn watch_workload<K>(client: &Client, enabled: bool) -> BoxStream<'static, watcher::Result<Event<K>>>
+where
+    K: kube::Resource<DynamicType = ()>
+        + Clone
+        + std::fmt::Debug
+        + serde::de::DeserializeOwned
+        + Send
+        + Sync
+        + 'static,
+{
+    if !enabled {
+        return futures::stream::pending().boxed();
+    }
+    watcher(Api::<K>::all(client.clone()), watcher::Config::default()).boxed()
+}
+
+/// A Service's selector, as a LabelSelector.
+///
+/// Services carry a plain `map[string]string`, not a LabelSelector, so it is
+/// converted rather than borrowed. An *empty* service selector selects
+/// nothing (it is a headless/manually-managed Service), which is the opposite
+/// of an empty LabelSelector — so it is dropped rather than converted into
+/// one that matches every pod in the namespace.
+fn service_selector(svc: &Svc) -> Option<k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector> {
+    let map = svc.spec.as_ref()?.selector.clone()?;
+    if map.is_empty() {
+        return None;
+    }
+    Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+        match_labels: Some(map),
+        match_expressions: None,
+    })
+}
 
 fn watch_pdbs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pdb>>> {
     let api: Api<Pdb> = Api::all(client.clone());
     watcher(api, watcher::Config::default()).boxed()
+}
+
+/// Mirror a workload's selector into the cache.
+///
+/// One function for all four kinds because the only thing that differs is
+/// where the selector lives. The key carries the kind so a Service and a
+/// ReplicaSet sharing a name in one namespace do not collapse into each
+/// other and lose a selector.
+fn handle_workload_event<K, F>(
+    ev: Event<K>,
+    kind: &str,
+    targets: &WatchTargets,
+    selector_of: F,
+) where
+    K: kube::Resource<DynamicType = ()> + Clone,
+    F: Fn(&K) -> Option<k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector>,
+{
+    let key = |o: &K| {
+        format!("{kind}/{}/{}", o.meta().namespace.clone().unwrap_or_default(), o.name_any())
+    };
+    let mut cache = targets.cache.lock().unwrap();
+    match ev {
+        Event::Init | Event::InitDone => {}
+        Event::InitApply(o) | Event::Apply(o) => {
+            let k = key(&o);
+            match selector_of(&o) {
+                Some(selector) => cache.upsert_workload(
+                    k,
+                    crate::cache::snapshot::WorkloadSelector {
+                        namespace: o.meta().namespace.clone().unwrap_or_default(),
+                        selector,
+                    },
+                ),
+                // A workload that selects nothing must not linger from an
+                // earlier revision that did.
+                None => cache.remove_workload(&k),
+            }
+        }
+        Event::Delete(o) => cache.remove_workload(&key(&o)),
+    }
 }
 
 /// Mirror PodDisruptionBudgets for preemption.
@@ -206,6 +297,41 @@ fn handle_pdb_event(ev: Event<Pdb>, mirror: &mut HashMap<String, Pdb>, targets: 
     *targets.budgets.lock().unwrap() = rebuilt;
 }
 
+/// Error/end handling shared by the four workload watches.
+///
+/// Returns `true` when the caller must rebuild the stream — it ended, and an
+/// ended stream in a `select!` is ready forever after, so ignoring it spins
+/// the loop rather than merely losing updates.
+async fn workload_stream_hiccup<K>(
+    event: &Option<watcher::Result<Event<K>>>,
+    what: &str,
+    failures: &mut u32,
+) -> bool {
+    match event {
+        Some(Ok(_)) => {
+            *failures = 0;
+            false
+        }
+        Some(Err(e)) => {
+            *failures = failures.saturating_add(1);
+            let pause = watch_backoff(*failures);
+            if should_log_failure(*failures) {
+                tracing::warn!(
+                    error = ?e, consecutive = *failures, watch = what,
+                    "workload watch error; retrying with backoff"
+                );
+            }
+            tokio::time::sleep(pause).await;
+            false
+        }
+        None => {
+            tracing::warn!(watch = what, "workload watch stream ended; rebuilding");
+            tokio::time::sleep(WATCH_RESTART_DELAY).await;
+            true
+        }
+    }
+}
+
 /// Run the watches until they stop.
 ///
 /// Only the informers the enabled plugins actually asked for are started —
@@ -213,16 +339,33 @@ fn handle_pdb_event(ev: Event<Pdb>, mirror: &mut HashMap<String, Pdb>, targets: 
 /// that resource in `events_to_register()`. On a cluster with no
 /// PersistentVolumes that is two watches rather than nine, and it is both the
 /// parity behaviour and the footprint behaviour.
-pub async fn run(client: Client, targets: WatchTargets, _cfg: &Config) -> anyhow::Result<()> {
+pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow::Result<()> {
     let mut mirror = Mirror::default();
     let mut pdb_mirror: HashMap<String, Pdb> = HashMap::new();
     let mut nodes = watch_nodes(&client);
     let mut pods = watch_pods(&client);
     let mut pdbs = watch_pdbs(&client);
     let mut pdb_failures: u32 = 0;
+    // The metadata watches. Small, rarely-changing objects whose only
+    // consumers are InterPodAffinity's namespaceSelector and
+    // PodTopologySpread's system default constraints — but both are parity,
+    // so both are watched.
+    let mut namespaces = watch_namespaces(&client);
+    // Namespaces are watched unconditionally — `namespaceSelector` has no
+    // opt-out — but the four workload watches follow the defaulting setting.
+    let workloads = cfg.topology_defaulting == crate::config::TopologyDefaulting::SystemDefaulting;
+    let mut services = watch_workload::<Svc>(&client, workloads);
+    let mut replicasets = watch_workload::<Rs>(&client, workloads);
+    let mut statefulsets = watch_workload::<Sts>(&client, workloads);
+    let mut rcs = watch_workload::<Rc>(&client, workloads);
     // Counted per stream: one watch can be failing while the other is fine.
     let mut node_failures: u32 = 0;
     let mut pod_failures: u32 = 0;
+    let mut ns_failures: u32 = 0;
+    let mut svc_failures: u32 = 0;
+    let mut rs_failures: u32 = 0;
+    let mut sts_failures: u32 = 0;
+    let mut rc_failures: u32 = 0;
 
     loop {
         tokio::select! {
@@ -252,6 +395,76 @@ pub async fn run(client: Client, targets: WatchTargets, _cfg: &Config) -> anyhow
                     tracing::warn!("node watch stream ended; rebuilding");
                     tokio::time::sleep(WATCH_RESTART_DELAY).await;
                     nodes = watch_nodes(&client);
+                }
+            },
+            event = namespaces.next() => match event {
+                Some(Ok(ev)) => {
+                    let mut cache = targets.cache.lock().unwrap();
+                    match ev {
+                        Event::Init | Event::InitDone => {}
+                        Event::InitApply(ns) | Event::Apply(ns) => cache.upsert_namespace(
+                            &ns.name_any(),
+                            ns.metadata.labels.clone().unwrap_or_default(),
+                        ),
+                        Event::Delete(ns) => cache.remove_namespace(&ns.name_any()),
+                    }
+                }
+                Some(Err(e)) => {
+                    ns_failures = ns_failures.saturating_add(1);
+                    let pause = watch_backoff(ns_failures);
+                    if should_log_failure(ns_failures) {
+                        tracing::warn!(
+                            error = ?e, consecutive = ns_failures,
+                            "namespace watch error; retrying with backoff"
+                        );
+                    }
+                    tokio::time::sleep(pause).await;
+                }
+                // Not ignorable: a `None` arm is instantly ready every time
+                // round, which turns the select! into a spin loop.
+                None => {
+                    tracing::warn!("namespace watch stream ended; rebuilding");
+                    tokio::time::sleep(WATCH_RESTART_DELAY).await;
+                    namespaces = watch_namespaces(&client);
+                }
+            },
+            event = services.next() => {
+                if workload_stream_hiccup(&event, "service", &mut svc_failures).await {
+                    services = watch_workload::<Svc>(&client, workloads);
+                } else if let Some(Ok(ev)) = event {
+                    handle_workload_event(ev, "svc", &targets, service_selector);
+                }
+            },
+            event = replicasets.next() => {
+                if workload_stream_hiccup(&event, "replicaset", &mut rs_failures).await {
+                    replicasets = watch_workload::<Rs>(&client, workloads);
+                } else if let Some(Ok(ev)) = event {
+                    handle_workload_event(ev, "rs", &targets, |o: &Rs| {
+                        o.spec.as_ref().map(|s| s.selector.clone())
+                    });
+                }
+            },
+            event = statefulsets.next() => {
+                if workload_stream_hiccup(&event, "statefulset", &mut sts_failures).await {
+                    statefulsets = watch_workload::<Sts>(&client, workloads);
+                } else if let Some(Ok(ev)) = event {
+                    handle_workload_event(ev, "sts", &targets, |o: &Sts| {
+                        o.spec.as_ref().map(|s| s.selector.clone())
+                    });
+                }
+            },
+            event = rcs.next() => {
+                if workload_stream_hiccup(&event, "replicationcontroller", &mut rc_failures).await {
+                    rcs = watch_workload::<Rc>(&client, workloads);
+                } else if let Some(Ok(ev)) = event {
+                    handle_workload_event(ev, "rc", &targets, |o: &Rc| {
+                        let map = o.spec.as_ref()?.selector.clone()?;
+                        if map.is_empty() { return None; }
+                        Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+                            match_labels: Some(map),
+                            match_expressions: None,
+                        })
+                    });
                 }
             },
             event = pdbs.next() => match event {

@@ -26,4 +26,4 @@ pub use pod::{
     HostPort, OwnerRef, PodInfo, PreferredTerm, Resources, DEFAULT_MEMORY_REQUEST,
     DEFAULT_MILLI_CPU_REQUEST,
 };
-pub use snapshot::{Cache, Snapshot};
+pub use snapshot::{Cache, Snapshot, WorkloadSelector};

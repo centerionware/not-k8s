@@ -39,12 +39,13 @@ mod defaults {
 }
 
 /// How `PodTopologySpread` behaves for pods that declare no constraints.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TopologyDefaulting {
     /// Upstream's default: apply the built-in `ScheduleAnyway` constraints
     /// (maxSkew 3 across zones, 5 across hosts). Costs four extra informers —
     /// Service, ReplicationController, ReplicaSet, StatefulSet — whose only
     /// purpose is deriving the label selector for these.
+    #[default]
     SystemDefaulting,
     /// Apply nothing. Drops those four watches at the cost of slightly
     /// different scores for pods with no constraints of their own. Since the

@@ -77,7 +77,7 @@ pub async fn run() -> Result<()> {
 async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<()> {
     // Shared, because the binding cycle runs on its own task and needs the
     // same plugin set the scheduling cycle used.
-    let registry = Arc::new(framework::plugins::default_registry(client.clone()));
+    let registry = Arc::new(framework::plugins::default_registry(client.clone(), cfg));
 
     // Only the resources some enabled plugin actually subscribed to get a
     // watch. On a cluster with no PersistentVolumes that is Pod and Node and
