@@ -71,7 +71,14 @@ const WATCH_RESTART_DELAY: std::time::Duration = std::time::Duration::from_secs(
 const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
 /// Ceiling. Low enough that a scheduler is placing pods again within seconds
 /// of the apiserver returning, which is the whole point of it being here.
-const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+///
+/// 30s was the first value and it was wrong — it contradicted this very
+/// comment. A real apiserver restart took ~72s to recover from, because the
+/// doubling reached the ceiling while the apiserver was still down and then
+/// slept through most of its return. Retrying a failed watch every 5s during
+/// an outage costs nothing; not placing pods for a minute after the outage
+/// ends costs the cluster.
+const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How long to wait after `n` consecutive failures.
 ///
@@ -376,16 +383,21 @@ mod tests {
     fn repeated_watch_failures_back_off_and_then_stop_growing() {
         assert_eq!(watch_backoff(2), WATCH_INITIAL_BACKOFF * 2);
         assert_eq!(watch_backoff(3), WATCH_INITIAL_BACKOFF * 4);
-        assert_eq!(watch_backoff(30), WATCH_MAX_BACKOFF);
+        assert_eq!(watch_backoff(20), WATCH_MAX_BACKOFF);
         // Far past any plausible outage: must saturate, not overflow.
         assert_eq!(watch_backoff(u32::MAX), WATCH_MAX_BACKOFF);
     }
 
     #[test]
     fn the_ceiling_is_short_enough_to_recover_promptly() {
-        // A scheduler that waits minutes after the apiserver returns is a
-        // cluster that places no pods for minutes.
-        assert!(WATCH_MAX_BACKOFF <= std::time::Duration::from_secs(30));
+        // Measured, not guessed: a 30s ceiling turned a real apiserver
+        // restart into ~72s of placing nothing, because the doubling hit the
+        // ceiling while it was still down and then slept through its return.
+        assert!(
+            WATCH_MAX_BACKOFF <= std::time::Duration::from_secs(5),
+            "a scheduler that waits this long after the apiserver returns is a \
+             cluster that places no pods for that long"
+        );
     }
 
     #[test]

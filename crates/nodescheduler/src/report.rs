@@ -108,13 +108,19 @@ async fn write_condition(
     // `patchMergeKey: type`, so strategic merges this entry by its type and
     // leaves any other condition alone. A plain merge patch would replace the
     // whole conditions array and silently drop the others.
+    // A field manager for attribution, but NOT `.force()`: force is a
+    // server-side-apply concept and the client rejects it outright when
+    // paired with any other patch type ("PatchParams::force only works with
+    // Patch::Apply"). That rejection is local, so it never reaches the
+    // apiserver and cost nothing but a warning in the log — which is exactly
+    // how every PodScheduled condition silently failed to be written while
+    // looking, from the outside, like a scheduler that had nothing to say.
+    let params = PatchParams {
+        field_manager: Some(FIELD_MANAGER.to_string()),
+        ..Default::default()
+    };
     let api: Api<Pod> = Api::namespaced(client.clone(), &pod.namespace);
-    api.patch_status(
-        &pod.name,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Strategic(patch),
-    )
-    .await?;
+    api.patch_status(&pod.name, &params, &Patch::Strategic(patch)).await?;
     Ok(())
 }
 
