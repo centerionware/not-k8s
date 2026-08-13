@@ -313,7 +313,20 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, targets: &WatchTargets)
                         targets.queue.add(info);
                     }
                 }
-                PodRoute::Ignore => {}
+                PodRoute::Ignore => {
+                    // An unplaced pod we are deliberately not touching,
+                    // because another scheduler's profile owns it. Logged
+                    // because "ignored" and "never arrived" are
+                    // indistinguishable in a log that only records what it
+                    // acted on — and telling them apart is the difference
+                    // between a routing bug and a watch bug.
+                    tracing::info!(
+                        pod = %info.key(),
+                        scheduler_name = %info.scheduler_name,
+                        profile = %targets.profile_name,
+                        "ignoring a pod owned by another scheduler"
+                    );
+                }
             }
         }
         Event::Delete(pod) => {
