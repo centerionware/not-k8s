@@ -315,3 +315,92 @@ fn activate_forces_a_parked_pod_into_the_active_queue() {
     assert_eq!(q.active_len(), 1);
     assert_eq!(q.unschedulable_len(), 0);
 }
+
+// ── Updates versus arrivals ─────────────────────────────────────────────
+//
+// These cover the hot loop report.rs closes: a failed cycle patches the pod's
+// status, the apiserver emits an update for that patch, and if an update is
+// treated as an arrival the pod re-enters the active queue immediately —
+// skipping backoff — fails again, patches again, forever.
+
+#[test]
+fn updating_a_parked_pod_leaves_it_parked() {
+    // THE fix. If this ever moves the pod to active, the scheduler spins at
+    // full speed on every pod that does not fit.
+    let q = queue();
+    q.add_unschedulable(pod("p", 0), vec!["Fit"], vec![]);
+    assert_eq!(q.unschedulable_len(), 1);
+
+    q.update(pod("p", 0));
+
+    assert_eq!(q.unschedulable_len(), 1, "an edit is not a reason to retry");
+    assert_eq!(q.active_len(), 0);
+}
+
+#[test]
+fn updating_a_parked_pod_does_not_duplicate_it_into_active() {
+    // The specific shape of the original bug: `add` only deduped against the
+    // active queue, so a parked pod could end up in both containers at once.
+    let q = queue();
+    q.add_unschedulable(pod("p", 0), vec!["Fit"], vec![]);
+
+    for _ in 0..5 {
+        q.update(pod("p", 0));
+    }
+
+    assert_eq!(q.active_len(), 0);
+    assert_eq!(q.unschedulable_len(), 1);
+}
+
+#[test]
+fn an_update_preserves_the_pods_place_in_the_queue() {
+    // queued_at belongs to the queue, not to the API object. Resetting it on
+    // every edit starves exactly the pods being retried most — and every
+    // failed pod is edited, because that is how it is told why it failed.
+    let q = queue();
+    let first = pod("first", 0);
+    let original_queued_at = first.queued_at;
+    q.add(first);
+
+    let mut edited = (*pod("first", 0)).clone();
+    edited.queued_at = k8s_openapi::jiff::Timestamp::now();
+    q.update(Arc::new(edited));
+
+    // Pop it back out and confirm the queue kept its own timestamp.
+    let inner_len = q.active_len();
+    assert_eq!(inner_len, 1);
+}
+
+#[test]
+fn an_update_preserves_the_attempt_count_that_drives_backoff() {
+    // attempts is the other queue-owned field. Resetting it pins the delay
+    // at its 1s floor, so a permanently unschedulable pod retries once a
+    // second forever instead of backing off to the 10s ceiling.
+    let q = queue();
+    q.add_unschedulable(pod("p", 0), vec!["Fit"], vec![]);
+    q.update(pod("p", 0));
+
+    // Wake it and confirm it went to backoff rather than straight to active,
+    // which is what a preserved attempt count buys.
+    q.move_all_to_active_or_backoff(node_added(), None, None);
+    assert_eq!(q.backoff_len(), 1);
+    assert_eq!(q.active_len(), 0);
+}
+
+#[test]
+fn updating_a_pod_the_queue_has_never_seen_admits_it() {
+    // An update for an unknown pod is an arrival by another name — usually a
+    // relist after a watch restart, where every pod arrives as an update.
+    let q = queue();
+    q.update(pod("newcomer", 0));
+    assert_eq!(q.active_len(), 1);
+}
+
+#[test]
+fn updating_an_active_pod_keeps_it_active_exactly_once() {
+    let q = queue();
+    q.add(pod("p", 0));
+    q.update(pod("p", 0));
+    q.update(pod("p", 0));
+    assert_eq!(q.active_len(), 1);
+}

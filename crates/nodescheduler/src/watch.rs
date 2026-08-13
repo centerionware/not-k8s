@@ -224,9 +224,17 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, targets: &WatchTargets)
                     }
                 }
                 PodRoute::Queue => {
+                    // A first sighting is an arrival; anything else is an
+                    // edit. Conflating them is a hot loop — see
+                    // SchedulingQueue::update, which this exists to call.
+                    //
                     // `add` re-runs PreEnqueue, so a still-gated pod is held
                     // rather than admitted.
-                    targets.queue.add(info);
+                    if previous.is_some() {
+                        targets.queue.update(info);
+                    } else {
+                        targets.queue.add(info);
+                    }
                 }
                 PodRoute::Ignore => {}
             }
