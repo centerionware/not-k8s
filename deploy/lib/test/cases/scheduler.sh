@@ -477,3 +477,197 @@ test_scheduler_holds_the_leader_lease() {
         "the lease renewTime must advance — a stale lease means another replica will take over mid-flight"
 }
 register_test test_scheduler_holds_the_leader_lease
+
+# ── Phase 2: topology ───────────────────────────────────────────────────
+#
+# All three run on a single node, which CI has. Anti-affinity and affinity
+# scope to kubernetes.io/hostname, where the domain *is* the node; spread is
+# made to bite with minDomains, which forces globalMin to 0 while fewer
+# domains exist than the constraint asks for. Without that a one-node cluster
+# has globalMin equal to its own count, skew is always 0, and the constraint
+# silently passes — which would make this test prove nothing.
+
+test_scheduler_honours_pod_anti_affinity() {
+    _require_nodescheduler
+    local first="sched-anti-a" second="sched-anti-b"
+    delete_pod_if_exists "$first"
+    delete_pod_if_exists "$second"
+
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $first
+  labels:
+    sched-test: anti
+spec:
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+YAML
+    wait_until 60 "$first to be bound to a node" _pod_is_bound "$first" \
+        || die "the first pod was never scheduled"
+
+    # Requires no pod labelled sched-test=anti on the same host. The first
+    # pod is exactly that, so on a single-node cluster there is nowhere left.
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $second
+  labels:
+    sched-test: anti
+spec:
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            sched-test: anti
+        topologyKey: kubernetes.io/hostname
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+YAML
+
+    sleep 10
+    assert_eq "$(pod_field "$second" '{.spec.nodeName}')" "" \
+        "anti-affinity must keep the second pod off the node the first is on"
+    assert_eq "$(pod_condition_status "$second" PodScheduled)" "False" \
+        "and it must say why, rather than sitting Pending with no explanation"
+
+    # Deleting the blocker must release it promptly — via the AssignedPod
+    # DELETE subscription, not the five-minute net.
+    local start=$SECONDS
+    delete_pod_if_exists "$first"
+    wait_until 90 "$second to be bound to a node" _pod_is_bound "$second" \
+        || die "removing the conflicting pod never got the anti-affinity pod scheduled"
+    local elapsed=$((SECONDS - start))
+    [[ "$elapsed" -lt 60 ]] \
+        || die "took ${elapsed}s after the conflict was removed — that is the safety net, not the event"
+
+    delete_pod_if_exists "$second"
+}
+register_test test_scheduler_honours_pod_anti_affinity
+
+test_scheduler_honours_pod_affinity() {
+    _require_nodescheduler
+    local anchor="sched-affin-anchor" follower="sched-affin-follower"
+    delete_pod_if_exists "$anchor"
+    delete_pod_if_exists "$follower"
+
+    # The follower requires an anchor pod on the same host. Created first,
+    # while no anchor exists, so it must stay Pending — proving the rule is
+    # actually evaluated rather than trivially satisfied.
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $follower
+spec:
+  affinity:
+    podAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            sched-test: anchor
+        topologyKey: kubernetes.io/hostname
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+YAML
+
+    sleep 10
+    assert_eq "$(pod_field "$follower" '{.spec.nodeName}')" "" \
+        "pod affinity with nothing to match must not be satisfied"
+
+    local start=$SECONDS
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $anchor
+  labels:
+    sched-test: anchor
+spec:
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+YAML
+
+    wait_until 90 "$follower to be bound to a node" _pod_is_bound "$follower" \
+        || die "creating the anchor never satisfied the follower's pod affinity"
+    local elapsed=$((SECONDS - start))
+    [[ "$elapsed" -lt 60 ]] \
+        || die "took ${elapsed}s after the anchor appeared — that is the safety net, not the event"
+
+    assert_eq "$(pod_field "$follower" '{.spec.nodeName}')" "$(pod_field "$anchor" '{.spec.nodeName}')" \
+        "affinity must place the follower on the same node as its anchor"
+
+    delete_pod_if_exists "$follower"
+    delete_pod_if_exists "$anchor"
+}
+register_test test_scheduler_honours_pod_affinity
+
+test_scheduler_honours_topology_spread() {
+    _require_nodescheduler
+    local first="sched-spread-a" second="sched-spread-b"
+    delete_pod_if_exists "$first"
+    delete_pod_if_exists "$second"
+
+    # minDomains 2 on a one-node cluster: fewer eligible domains exist than
+    # asked for, so globalMin is forced to 0 and the skew limit applies. This
+    # is the guard that stops the constraint silently doing nothing on a
+    # narrow cluster, and it is what makes this testable with one node.
+    local spread='
+  topologySpreadConstraints:
+  - maxSkew: 1
+    minDomains: 2
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        sched-test: spread'
+
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $first
+  labels:
+    sched-test: spread
+spec:$spread
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+YAML
+    wait_until 60 "$first to be bound to a node" _pod_is_bound "$first" \
+        || die "the first pod should fit: one pod in one domain is skew 1"
+
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $second
+  labels:
+    sched-test: spread
+spec:$spread
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+YAML
+
+    sleep 10
+    assert_eq "$(pod_field "$second" '{.spec.nodeName}')" "" \
+        "a second pod in the same domain would be skew 2, over maxSkew 1"
+
+    delete_pod_if_exists "$first"
+    delete_pod_if_exists "$second"
+}
+register_test test_scheduler_honours_topology_spread
