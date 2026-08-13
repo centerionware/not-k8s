@@ -241,7 +241,11 @@ async fn scheduling_loop(
                 pending_plugins,
                 nominated_node,
             } => {
-                tracing::debug!(pod = %pod.key(), %reason, ?nominated_node, "unschedulable");
+                // Info rather than debug. This is *the* answer to "why is my
+                // pod Pending", and burying it below the default filter meant
+                // the one thing an operator needs was invisible without a
+                // restart at a different log level.
+                tracing::info!(pod = %pod.key(), %reason, ?nominated_node, "unschedulable");
                 queue.done(&pod.uid);
 
                 // Tell the cluster why, off the scheduling loop. Without this
