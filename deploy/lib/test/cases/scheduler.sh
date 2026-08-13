@@ -40,6 +40,19 @@ _require_nodescheduler() {
         || skip_test "nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these"
 }
 
+# Has the scheduler bound this pod yet?
+#
+# wait_until takes <timeout> <description> <command...> and needs a command
+# that *exits* 0, not one that prints a value. Passing `pod_field` directly
+# silently consumed it as the description and then tried to execute the pod's
+# name as a command, so the wait could never succeed and every such test
+# failed after its full timeout. The giveaway was the harness reporting
+# "waiting for: pod_field" — the description slot echoing back a function
+# name.
+_pod_is_bound() { # _pod_is_bound <pod>
+    [[ -n "$(pod_field "$1" '{.spec.nodeName}')" ]]
+}
+
 # The node every pod lands on in a single-node deployment. Several tests need
 # to name it to build an affinity or a taint.
 _the_node() {
@@ -68,13 +81,13 @@ EOF
     # nodeName being set is the scheduler's whole output; Running additionally
     # proves the Binding was one kubelet could act on, rather than merely one
     # the apiserver accepted.
-    wait_until 60 pod_field "$pod" '{.spec.nodeName}' \
+    wait_until 60 "$pod to be bound to a node" _pod_is_bound "$pod" \
         || die "pod was never bound to a node — is nodescheduler running and leader?"
     local node
     node="$(pod_field "$pod" '{.spec.nodeName}')"
     assert_not_empty "$node" "the scheduler must record its decision in spec.nodeName"
 
-    wait_until 90 pod_is_phase "$pod" Running \
+    wait_until 90 "$pod to reach Running" pod_is_phase "$pod" Running \
         || die "pod was bound to $node but never reached Running"
 
     delete_pod_if_exists "$pod"
@@ -117,7 +130,7 @@ EOF
     kctl patch pod "$pod" --type=json -p '[{"op":"remove","path":"/spec/schedulingGates"}]' >/dev/null
 
     local start=$SECONDS
-    wait_until 60 pod_field "$pod" '{.spec.nodeName}' \
+    wait_until 60 "$pod to be bound to a node" _pod_is_bound "$pod" \
         || die "ungating the pod never got it scheduled"
     local elapsed=$((SECONDS - start))
     [[ "$elapsed" -lt 60 ]] \
@@ -182,7 +195,7 @@ spec:
     command: ["sh", "-c", "sleep 300"]
 EOF
 
-    wait_until 60 pod_field "$pod" '{.spec.nodeName}' \
+    wait_until 60 "$pod to be bound to a node" _pod_is_bound "$pod" \
         || { kubectl label node "$node" example.com/sched-test- >/dev/null 2>&1
              die "a pod selecting a label the node has was never scheduled"; }
     assert_eq "$(pod_field "$pod" '{.spec.nodeName}')" "$node" \
@@ -216,7 +229,21 @@ spec:
 EOF
 
     sleep 10
-    assert_eq "$(pod_field "$pod" '{.spec.nodeName}')" "" \
+    # Self-diagnosing on failure. The first live run bound this pod and the
+    # cause could not be determined from the assertion alone — every unit test
+    # of the same path, including one driving a real Pod object through the
+    # projection and the cycle, correctly rejects it. So if it happens again,
+    # print the two numbers the decision is actually made from rather than
+    # prompting another round-trip to find out.
+    local bound_to
+    bound_to="$(pod_field "$pod" '{.spec.nodeName}')"
+    if [[ -n "$bound_to" ]]; then
+        warn "pod was bound to '$bound_to' — dumping the inputs the fit check uses:"
+        warn "  node allocatable: $(kubectl get node "$bound_to" -o jsonpath='{.status.allocatable}' 2>&1)"
+        warn "  pod requests:     $(pod_field "$pod" '{.spec.containers[0].resources.requests}')"
+        warn "  pod conditions:   $(pod_field "$pod" '{.status.conditions}')"
+    fi
+    assert_eq "$bound_to" "" \
         "a pod requesting more CPU than exists must stay unbound"
 
     # The message is the deliverable here — "Insufficient cpu" is what tells a
@@ -269,7 +296,7 @@ spec:
     command: ["sh", "-c", "sleep 300"]
 EOF
 
-    if ! wait_until 60 pod_field "$tolerating" '{.spec.nodeName}'; then
+    if ! wait_until 60 "$tolerating to be bound to a node" _pod_is_bound "$tolerating"; then
         kubectl taint node "$node" example.com/sched-test- >/dev/null 2>&1 || true
         die "the tolerating pod was never scheduled onto the tainted node"
     fi
@@ -281,7 +308,7 @@ EOF
     kubectl taint node "$node" example.com/sched-test- >/dev/null 2>&1 || true
 
     local start=$SECONDS
-    wait_until 60 pod_field "$tainted" '{.spec.nodeName}' \
+    wait_until 60 "$tainted to be bound to a node" _pod_is_bound "$tainted" \
         || die "removing the taint never got the untolerating pod scheduled"
     local elapsed=$((SECONDS - start))
     [[ "$elapsed" -lt 60 ]] \
@@ -332,7 +359,7 @@ spec:
       requests:
         cpu: "${each}m"
 EOF
-    wait_until 60 pod_field "$blocker" '{.spec.nodeName}' \
+    wait_until 60 "$blocker to be bound to a node" _pod_is_bound "$blocker" \
         || die "the blocking pod was never scheduled"
 
     apply_manifest <<EOF
@@ -363,7 +390,7 @@ EOF
     local start=$SECONDS
     delete_pod_if_exists "$blocker"
 
-    wait_until 120 pod_field "$waiter" '{.spec.nodeName}' \
+    wait_until 120 "$waiter to be bound to a node" _pod_is_bound "$waiter" \
         || die "freeing the CPU never got the waiting pod scheduled at all"
     local elapsed=$((SECONDS - start))
 
