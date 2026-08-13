@@ -22,6 +22,13 @@ Usage:
         --summary "nodelet=summary1.txt,summary2.txt,summary3.txt" \
         --summary "upstream kubelet=summary1.txt,summary2.txt,summary3.txt"
 
+A row can read any component measure.sh knows about, not just the node
+agent, by naming its slot:
+
+    render-profiling-charts.py <out_dir> \
+        --series "nodestore=csv1,csv2,csv3" --slot "nodestore=nodestore" \
+        --summary "nodestore=summary1.txt,summary2.txt,summary3.txt"
+
 Writes <out_dir>/rss-over-time.png, <out_dir>/cpu-over-time.png, and
 <out_dir>/stats.md. Any input file that's missing/empty/unparseable is
 skipped, not fabricated — everything downstream just works with whatever
@@ -157,11 +164,20 @@ def fmt_stat(stats, decimals=1):
     return f"{fmt % stats['mean']} (range {fmt % stats['min']}–{fmt % stats['max']}, n={stats['n']})"
 
 
-def render_stats_table(agents_summaries, out_path):
+def render_stats_table(agents_summaries, out_path, slots=None):
     """agents_summaries: [(label, [summary_dict, ...replicates]), ...].
     Writes a markdown fragment: one aggregated (mean + range) row per
     agent, plus a full per-replicate raw table underneath for anyone who
-    wants to see the individual runs behind the aggregate."""
+    wants to see the individual runs behind the aggregate.
+
+    `slots` maps a label to the measure.sh slot whose MEASURE_<SLOT>_*
+    keys that row reads, defaulting to NODELET — the node-agent slot this
+    script was originally written around. measure.sh now emits one such
+    key set per component in its table (nodestore, nodeproxy, and
+    nodeapiserver/nodescheduler when they exist), so a report can put any
+    of them in a row by naming the slot here; nothing else in this file
+    knows a component's name."""
+    slots = slots or {}
     # CPU-seconds (real processor time actually consumed) leads as the
     # primary CPU metric, not avg CPU% -- a percentage over a fixed
     # window is noisy and easy to round away at near-idle utilization
@@ -173,13 +189,16 @@ def render_stats_table(agents_summaries, out_path):
     # here whenever a runner's perf access actually allows it, N/A
     # otherwise, never fabricated.
     metrics = [
-        ("RSS (MB)", "NODELET_RSS_MB", 1),
-        ("CPU-seconds used", "NODELET_CPU_SECONDS", 3),
-        ("avg CPU %", "NODELET_CPU_AVG_PCT", 2),
-        ("cycles", "NODELET_CYCLES", 0),
-        ("instructions", "NODELET_INSTRUCTIONS", 0),
-        ("IPC", "NODELET_IPC", 3),
+        ("RSS (MB)", "RSS_MB", 1),
+        ("CPU-seconds used", "CPU_SECONDS", 3),
+        ("avg CPU %", "CPU_AVG_PCT", 2),
+        ("cycles", "CYCLES", 0),
+        ("instructions", "INSTRUCTIONS", 0),
+        ("IPC", "IPC", 3),
     ]
+
+    def key_for(label, suffix):
+        return f"{slots.get(label, 'NODELET')}_{suffix}"
 
     lines = []
 
@@ -205,8 +224,8 @@ def render_stats_table(agents_summaries, out_path):
     lines.append("|---|" + "---|" * len(metrics))
     for label, summaries in agents_summaries:
         cells = []
-        for _, key, decimals in metrics:
-            values = [parse_float(s.get(key)) for s in summaries]
+        for _, suffix, decimals in metrics:
+            values = [parse_float(s.get(key_for(label, suffix))) for s in summaries]
             cells.append(fmt_stat(replicate_stats(values), decimals))
         lines.append(f"| **{label}** | " + " | ".join(cells) + " |")
 
@@ -218,8 +237,8 @@ def render_stats_table(agents_summaries, out_path):
     for label, summaries in agents_summaries:
         for i, s in enumerate(summaries, 1):
             cells = []
-            for _, key, decimals in metrics:
-                v = parse_float(s.get(key))
+            for _, suffix, decimals in metrics:
+                v = parse_float(s.get(key_for(label, suffix)))
                 cells.append(("%." + str(decimals) + "f") % v if v is not None else "N/A")
             lines.append(f"| {label} | {i} | " + " | ".join(cells) + " |")
     lines.append("")
@@ -248,7 +267,16 @@ def main():
         "--summary", action="append", default=[], metavar="LABEL=TXT1,TXT2,...",
         help="repeatable; one per agent, comma-separated replicate summary.txt paths",
     )
+    parser.add_argument(
+        "--slot", action="append", default=[], metavar="LABEL=SLOT",
+        help="repeatable; which measure.sh slot's MEASURE_<SLOT>_* keys a row reads "
+             "(k3s, nodestore, nodelet, nodeproxy, ...). Defaults to NODELET.",
+    )
     args = parser.parse_args()
+    slots = {}
+    for spec in args.slot:
+        label, rest = parse_labeled_list_arg(spec)
+        slots[label] = rest[0].upper() if rest else "NODELET"
     os.makedirs(args.out_dir, exist_ok=True)
 
     agents_timeseries = []
@@ -283,7 +311,7 @@ def main():
 
     rss_ok = render_band_chart(agents_timeseries, "rss", "RSS (MB)", "RSS over time", rss_path)
     cpu_ok = render_band_chart(agents_timeseries, "cpu", "CPU %", "CPU % over time", cpu_path)
-    render_stats_table(agents_summaries, stats_path)
+    render_stats_table(agents_summaries, stats_path, slots)
 
     print(f"RSS chart: {'written to ' + rss_path if rss_ok else 'skipped (no data)'}")
     print(f"CPU chart: {'written to ' + cpu_path if cpu_ok else 'skipped (no data)'}")
