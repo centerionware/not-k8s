@@ -267,6 +267,53 @@ export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
 **5. Merge once it's green**, then let `release.yml` run the full gate.
 
+### The merge protocol, in order
+
+Every change — including a one-line fix, including something that "only"
+touches a shell script — goes through the same gates, in this order. None
+of them is skippable, and **passing an earlier gate is never a substitute
+for a later one**: a green `build.yml` proves the code compiles and the unit
+tests pass, and proves nothing whatsoever about whether a real node still
+comes up.
+
+1. **Branch.** Never commit to `main`. One branch per concern; anything
+   outside the scope of the PR you're working on becomes its own branch and
+   its own PR.
+2. **Write the test that would have caught it.** A behavioural fix needs a
+   case in `deploy/lib/test/cases/*.sh` that fails without the fix and
+   passes with it — a unit test alone does not close a bug that only exists
+   against real infrastructure. `cases/retry_backoff.sh` is the shape to
+   copy: break the real thing (stop containerd), prove the bad state
+   actually happened, repair it, assert recovery. If a fix genuinely has no
+   observable runtime behaviour (a doc, a comment, a CI matrix entry), say
+   so explicitly in the PR rather than leaving it unsaid.
+3. **Open the PR.** Push the branch and open it before asking CI for
+   anything, so runs have somewhere to be reported and CodeRabbit gets its
+   pass.
+4. **Build it in CI.** `gh workflow run build.yml --ref <branch> -f
+   profile=debug -f arch=<arch-of-your-test-box>`. This is also the *only*
+   sanctioned way to compile: **do not build locally.** The dev box here
+   OOMs on a release build and has no toolchain installed at all.
+5. **Run e2e against the real binaries.** Download the artifact (streamed —
+   see the `gh run download` warning below), `install` it over `bin/` on the
+   test box, restart the units, and run `./deploy/test-e2e.sh`. Use
+   `--only=` for the tests the change actually touches while iterating, but
+   the branch does not merge on a filtered run alone — a full unfiltered
+   suite (locally, or `gh workflow run e2e.yml --ref <branch>`) is what
+   green means here. This is the gate that has caught essentially every real
+   bug in `docs/E2E_FINDINGS.md`; unit tests caught approximately none of
+   them.
+6. **Merge, then rebase.** Squash-merge to `main` only once 4 *and* 5 are
+   green, then rebase every other open PR onto the new `main` and re-run
+   their own gates. Rebasing is part of merging, not a follow-up chore — a
+   stale PR is one that has never been tested against the code it will land
+   on.
+
+If a gate can't be run — the e2e host is powered off, an artifact won't
+build for the target arch — that is a reason to **stop and say so**, not a
+reason to merge on the gates that did pass. Name the gate that was skipped
+and why, and leave the PR open.
+
 ### Things that will bite you here
 
 - **A stale `flanneld` survives a re-bootstrap.** The installer leaves an

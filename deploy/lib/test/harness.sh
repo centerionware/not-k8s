@@ -108,7 +108,10 @@ _reorder_env_reconfiguring_tests_last() {
     local -a normal=() deferred=()
     local name
     for name in "${TESTS_REGISTERED[@]}"; do
-        if declare -f "$name" 2>/dev/null | grep -qE 'nodelet_restart_with_env|nodeproxy_(restart|restore)_|sudo (systemctl restart containerd|swapon|mkswap)'; then
+        # stop|start as well as restart: a test that deliberately takes
+        # containerd down for a while (cases/retry_backoff.sh) disrupts every
+        # concurrent pod on this node just as much as one that restarts it.
+        if declare -f "$name" 2>/dev/null | grep -qE 'nodelet_restart_with_env|nodeproxy_(restart|restore)_|sudo (systemctl (restart|stop|start) containerd|swapon|mkswap)'; then
             deferred+=("$name")
         else
             normal+=("$name")
