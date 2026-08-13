@@ -138,25 +138,25 @@ jobs:
         # entirely — build-and-test already built and uploaded this exact
         # binary once above; every shard just installs it.
         #
-        # SCHEDULER=nodescheduler makes ours the scheduler this cluster
-        # actually runs, and passes --disable-scheduler to k3s. Without it
-        # every case in test/cases/scheduler.sh self-skips and the suite
-        # reports green while proving nothing about placement — which is
-        # worse than not having the tests. It also means a placement
-        # regression now fails *any* shard, since nothing gets scheduled at
-        # all if our scheduler is broken.
+        # SCHEDULER is deliberately NOT set here. nodescheduler is phase 1
+        # (docs/SCHEDULER.md) — no VolumeBinding, no DynamicResources, no
+        # PodTopologySpread, no InterPodAffinity, no preemption — so enabling
+        # it for the full suite would make a phase-1 component the gate for
+        # phase-4/5 tests: a WaitForFirstConsumer PVC never gets provisioned
+        # without the VolumeBinding plugin writing selected-node, and a
+        # ResourceClaim is never allocated without DynamicResources writing
+        # status.allocation. Those failures would be correct and unactionable.
         #
-        # Enabling it obliges the prebuilt set to be complete:
-        # use_prebuilt_binaries() refuses to mix prebuilt and from-source
-        # components, so NOTK8S_NODESCHEDULER_PREBUILT is not optional here.
+        # The release gate therefore tests what a release actually ships by
+        # default: k3s's own scheduler. cases/scheduler.sh self-skips, and its
+        # coverage comes from a targeted dispatch instead —
+        # `gh workflow run e2e.yml -f scheduler=nodescheduler -f only=scheduler`.
+        # Turn this on here once phases 4 and 5 land.
         env:
           NOTK8S_NODELET_PREBUILT: ${{ github.workspace }}/dist-bin/nodelet
           NOTK8S_NODEPROXY_PREBUILT: ${{ github.workspace }}/dist-bin/nodeproxy
-          NOTK8S_NODESCHEDULER_PREBUILT: ${{ github.workspace }}/dist-bin/nodescheduler
-          SCHEDULER: nodescheduler
         run: |
-          chmod +x "$NOTK8S_NODELET_PREBUILT" "$NOTK8S_NODEPROXY_PREBUILT" \
-                   "$NOTK8S_NODESCHEDULER_PREBUILT"
+          chmod +x "$NOTK8S_NODELET_PREBUILT" "$NOTK8S_NODEPROXY_PREBUILT"
           sudo -E ./deploy/bootstrap-source.sh --with-cri
 
       - name: Make the kubeconfig readable
