@@ -1,18 +1,18 @@
-commit: 101934f285ebd187de949974df8c58c69be1d170
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31745219891
-timestamp (UTC): 2026-08-13T21:26:14Z
+commit: f97b0345eb475f0d8fe2b860d0c9c87dfec372e4
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31746297755
+timestamp (UTC): 2026-08-13T21:40:11Z
 shard: 5/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786656340
+==> Test namespace: not-k8s-e2e-1786657178
 ==> 205 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 38 test(s) selected
 ▶ test_scheduler_honours_a_node_selector_that_matches_nothing
   ✔ PASS (11s)
 ▶ test_scheduler_ignores_pods_for_another_scheduler
-  ✔ PASS (13s)
+  ✔ PASS (12s)
 
 ════════════════════════════════════════
 Results: 2 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786656340...
+==> Cleaning up test namespace not-k8s-e2e-1786657178...
