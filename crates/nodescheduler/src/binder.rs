@@ -39,7 +39,7 @@ use crate::events::{ActionType, ClusterEvent, EventResource};
 use crate::framework::status::{Code, Status};
 use crate::framework::{CycleState, Registry};
 use crate::queue::SchedulingQueue;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// What the binding cycle concluded, for the caller's bookkeeping.
 #[derive(Debug, PartialEq, Eq)]
@@ -149,22 +149,23 @@ pub fn handle_outcome(
     outcome: &BindOutcome,
     pod: Arc<PodInfo>,
     queue: &SchedulingQueue,
-    assumed: &mut crate::cache::AssumedPods,
+    assumed: &Mutex<crate::cache::AssumedPods>,
+    cache: &Mutex<crate::cache::Cache>,
 ) {
     match outcome {
         BindOutcome::Bound => {
             // The reservation stays until the informer delivers the real bound
             // pod — see cache/assume.rs for why releasing here would be wrong.
-            assumed.finish_binding(&pod.uid);
+            assumed.lock().unwrap().finish_binding(&pod.uid);
         }
         BindOutcome::Rejected { reason, plugins } => {
             tracing::info!(pod = %pod.key(), %reason, "binding cycle rejected the pod");
-            assumed.forget(&pod.uid);
+            release(&pod, assumed, cache);
             queue.add_unschedulable(pod, plugins.clone(), Vec::new());
         }
         BindOutcome::Failed { reason } => {
             tracing::warn!(pod = %pod.key(), %reason, "binding cycle failed; requeueing");
-            assumed.forget(&pod.uid);
+            release(&pod, assumed, cache);
             queue.add_unschedulable(pod, Vec::new(), Vec::new());
 
             // The capacity this pod had assumed is free again. Nothing about
@@ -177,6 +178,27 @@ pub fn handle_outcome(
             );
         }
     }
+}
+
+/// Undo the assume: drop the reservation **and** un-commit the resources.
+///
+/// Both halves, always. The scheduling cycle does two things when it places a
+/// pod — records the reservation in `AssumedPods` and adds the pod to the
+/// node's running totals in the `Cache` — and forgetting only the first leaves
+/// the node permanently looking fuller than it is. There is no sweeper to
+/// notice: assumed pods never expire, and the `Cache` is only corrected by an
+/// informer event that will never arrive for a pod that was never bound.
+///
+/// The visible symptom would be a node that quietly stops accepting pods it
+/// has room for, with nothing in any log to say why, and it would accumulate
+/// with every failed bind until the process restarted.
+fn release(
+    pod: &PodInfo,
+    assumed: &Mutex<crate::cache::AssumedPods>,
+    cache: &Mutex<crate::cache::Cache>,
+) {
+    assumed.lock().unwrap().forget(&pod.uid);
+    cache.lock().unwrap().remove_pod(&pod.uid);
 }
 
 #[cfg(test)]

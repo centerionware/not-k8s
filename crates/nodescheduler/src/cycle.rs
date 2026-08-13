@@ -191,32 +191,44 @@ pub enum CycleOutcome {
 }
 
 /// Everything a cycle needs that is not the pod.
+///
+/// The registry is shared rather than owned because the binding cycle needs
+/// it too, on its own task, concurrently with the next scheduling cycle.
 pub struct Scheduler {
-    pub registry: Registry,
+    pub registry: Arc<Registry>,
     pub percentage_of_nodes_to_score: i32,
     /// Rotates across cycles; see [`advance_start_index`].
     pub next_start_node_index: usize,
 }
 
 impl Scheduler {
-    pub fn new(registry: Registry, percentage_of_nodes_to_score: i32) -> Self {
+    pub fn new(registry: Arc<Registry>, percentage_of_nodes_to_score: i32) -> Self {
         Self { registry, percentage_of_nodes_to_score, next_start_node_index: 0 }
     }
 
     /// Run one full scheduling cycle for one pod.
+    ///
+    /// Returns the [`CycleState`] alongside the outcome: PreFilter and Reserve
+    /// wrote into it, and the binding cycle needs exactly that state to run
+    /// PreBind and — on failure — to unwind the right reservations. Dropping
+    /// it here instead would make `unreserve` a no-op, and a plugin that had
+    /// claimed something would leak it on every failed bind.
     pub fn schedule_one(
         &mut self,
         pod: &PodInfo,
         snapshot: &Snapshot,
         rng: &mut Rng,
-    ) -> CycleOutcome {
+    ) -> (CycleOutcome, CycleState) {
         if snapshot.is_empty() {
-            return CycleOutcome::Unschedulable {
-                reason: "no nodes available to schedule pods".to_string(),
-                unschedulable_plugins: Vec::new(),
-                pending_plugins: Vec::new(),
-                nominated_node: None,
-            };
+            return (
+                CycleOutcome::Unschedulable {
+                    reason: "no nodes available to schedule pods".to_string(),
+                    unschedulable_plugins: Vec::new(),
+                    pending_plugins: Vec::new(),
+                    nominated_node: None,
+                },
+                CycleState::default(),
+            );
         }
 
         let mut state = CycleState::default();
@@ -228,24 +240,25 @@ impl Scheduler {
             match status.code {
                 Code::Success | Code::Skip => {}
                 Code::Error => {
-                    return CycleOutcome::Error { reason: status.to_string() };
+                    return (CycleOutcome::Error { reason: status.to_string() }, state);
                 }
                 _ => {
                     // A whole-cluster rejection: no point looking at nodes.
-                    return CycleOutcome::Unschedulable {
-                        reason: status.to_string(),
-                        unschedulable_plugins: if status.code == Code::Pending {
-                            Vec::new()
+                    let (unschedulable_plugins, pending_plugins) =
+                        if status.code == Code::Pending {
+                            (Vec::new(), vec![status.plugin])
                         } else {
-                            vec![status.plugin]
+                            (vec![status.plugin], Vec::new())
+                        };
+                    return (
+                        CycleOutcome::Unschedulable {
+                            reason: status.to_string(),
+                            unschedulable_plugins,
+                            pending_plugins,
+                            nominated_node: None,
                         },
-                        pending_plugins: if status.code == Code::Pending {
-                            vec![status.plugin]
-                        } else {
-                            Vec::new()
-                        },
-                        nominated_node: None,
-                    };
+                        state,
+                    );
                 }
             }
             // Intersect rather than replace: two plugins each naming a node
@@ -273,29 +286,32 @@ impl Scheduler {
                 let (status, nominated) =
                     plugin.post_filter(&mut state, pod, snapshot, &node_statuses);
                 if status.is_success() || nominated.is_some() {
-                    return CycleOutcome::Unschedulable {
-                        reason: status.to_string(),
-                        unschedulable_plugins: node_statuses.rejecting_plugins(),
-                        pending_plugins: Vec::new(),
-                        nominated_node: nominated,
-                    };
+                    return (
+                        CycleOutcome::Unschedulable {
+                            reason: status.to_string(),
+                            unschedulable_plugins: node_statuses.rejecting_plugins(),
+                            pending_plugins: Vec::new(),
+                            nominated_node: nominated,
+                        },
+                        state,
+                    );
                 }
             }
-            let mut unschedulable = node_statuses.rejecting_plugins();
-            let pending: Vec<&'static str> = Vec::new();
-            unschedulable.retain(|p| !pending.contains(p));
-            return CycleOutcome::Unschedulable {
-                reason: node_statuses.summary(snapshot.num_nodes()),
-                unschedulable_plugins: unschedulable,
-                pending_plugins: pending,
-                nominated_node: None,
-            };
+            return (
+                CycleOutcome::Unschedulable {
+                    reason: node_statuses.summary(snapshot.num_nodes()),
+                    unschedulable_plugins: node_statuses.rejecting_plugins(),
+                    pending_plugins: Vec::new(),
+                    nominated_node: None,
+                },
+                state,
+            );
         }
 
         // A single candidate needs no scoring — and with no Score plugins at
         // all, scoring cannot distinguish anything anyway.
         if feasible.len() == 1 || self.registry.score.is_empty() {
-            return CycleOutcome::Scheduled { node: feasible[0].name.clone() };
+            return (CycleOutcome::Scheduled { node: feasible[0].name.clone() }, state);
         }
 
         // ── PreScore / Score / Normalize ────────────────────────────────
@@ -303,7 +319,7 @@ impl Scheduler {
         for plugin in &self.registry.pre_score {
             let status = plugin.pre_score(&mut state, pod, &refs);
             if status.code == Code::Error {
-                return CycleOutcome::Error { reason: status.to_string() };
+                return (CycleOutcome::Error { reason: status.to_string() }, state);
             }
         }
 
@@ -318,27 +334,30 @@ impl Scheduler {
             for node in &feasible {
                 match plugin.score(&state, pod, node) {
                     Ok(v) => raw.push(v),
-                    Err(status) => return CycleOutcome::Error { reason: status.to_string() },
+                    Err(status) => {
+                        return (CycleOutcome::Error { reason: status.to_string() }, state)
+                    }
                 }
             }
             let status = plugin.normalize(&state, pod, &mut raw);
             if status.code == Code::Error {
-                return CycleOutcome::Error { reason: status.to_string() };
+                return (CycleOutcome::Error { reason: status.to_string() }, state);
             }
             let weight = plugin.weight();
             for (total, score) in totals.iter_mut().zip(raw.iter()) {
                 // Clamp before weighting: a plugin whose normalize is wrong
                 // must not be able to swamp every other plugin's contribution.
-                total.1 += score.clamp(0, MAX_NODE_SCORE) * weight;
+                total.1 += (*score).clamp(0, MAX_NODE_SCORE) * weight;
             }
         }
 
-        match select_host(&totals, rng) {
+        let outcome = match select_host(&totals, rng) {
             Some(node) => CycleOutcome::Scheduled { node },
             None => CycleOutcome::Error {
                 reason: "scoring produced no candidate despite feasible nodes".to_string(),
             },
-        }
+        };
+        (outcome, state)
     }
 
     /// Sweep nodes until enough are feasible, starting where the last cycle

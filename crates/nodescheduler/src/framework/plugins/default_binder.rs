@@ -26,7 +26,6 @@ use crate::framework::status::Status;
 use crate::framework::{BindPlugin, Plugin};
 use k8s_openapi::api::core::v1::{Binding, ObjectReference};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use kube::api::{Api, PostParams};
 
 pub const NAME: &str = "DefaultBinder";
 
@@ -76,16 +75,35 @@ impl BindPlugin for DefaultBinder {
             Err(e) => return Status::error(NAME, format!("encoding Binding: {e}")),
         };
 
-        // `Api<Pod>`, not `Api<Binding>`: the subresource hangs off the pod,
-        // and the path is /pods/<name>/binding. Typing this as Api<Binding>
-        // builds a URL under /bindings/, which the apiserver answers with a
-        // 404 that reads as "the pod vanished" rather than "wrong path".
-        let api: Api<k8s_openapi::api::core::v1::Pod> =
-            Api::namespaced(self.client.clone(), &pod.namespace);
-        match api
-            .create_subresource::<Binding>("binding", &pod.name, &PostParams::default(), body)
-            .await
+        // A raw request rather than `Api::create_subresource`, which is the
+        // house pattern for subresources this client doesn't generate a
+        // helper for — see nodelet's container_support.rs, which POSTs a
+        // TokenRequest exactly this way.
+        //
+        // It also sidesteps a real trap: the binding subresource hangs off
+        // the *pod*, so the path is /pods/<name>/binding. Reaching for
+        // `Api<Binding>` builds a URL under /bindings/, which the apiserver
+        // answers with a 404 that reads as "the pod vanished" rather than
+        // "wrong path" — a long way from the actual mistake.
+        let uri = format!(
+            "/api/v1/namespaces/{}/pods/{}/binding",
+            pod.namespace, pod.name
+        );
+        let req = match http::Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("Content-Type", "application/json")
+            .body(body)
         {
+            Ok(r) => r,
+            Err(e) => return Status::error(NAME, format!("building the Binding request: {e}")),
+        };
+
+        // The apiserver answers a successful binding with a Status object,
+        // not the Binding — so this deserializes into the untyped value and
+        // ignores it. Asking for `Binding` back would fail on every
+        // successful bind.
+        match self.client.request::<serde_json::Value>(req).await {
             Ok(_) => Status::success(),
             Err(e) => Status::error(NAME, format!("binding {} to {node}: {e}", pod.key())),
         }
