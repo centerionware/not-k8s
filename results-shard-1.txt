@@ -1,14 +1,16 @@
 commit: 6e5e6d2e43374b6e53b297b1049a508701e3d1cf
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31840362402
-timestamp (UTC): 2026-08-14T21:03:20Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31840870362
+timestamp (UTC): 2026-08-14T21:10:44Z
 shard: 1/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786741400
+==> Test namespace: not-k8s-e2e-1786741821
 ==> 198 test(s) registered total (before sharding); running now...
 ==> Shard 1/5: 44 test(s) selected
+▶ test_the_node_still_reconciles_pods_after_an_apiserver_restart
+  ✔ PASS (22s)
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 0 skipped
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786741400...
+==> Cleaning up test namespace not-k8s-e2e-1786741821...
