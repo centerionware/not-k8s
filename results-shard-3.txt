@@ -1,14 +1,38 @@
-commit: 98ea7878a8ba59cdf4da11d76fde44ffe5becb53
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31831085511
-timestamp (UTC): 2026-08-14T19:02:00Z
+commit: 22949fdc0bf675fc4dbe90551a26cf6bbfa45f66
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31832278794
+timestamp (UTC): 2026-08-14T19:19:25Z
 shard: 3/5
-exit code: 0
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786734120
-==> 196 test(s) registered total (before sharding); running now...
+==> Test namespace: not-k8s-e2e-1786735070
+==> 197 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 37 test(s) selected
+▶ test_a_slow_terminating_pod_does_not_stall_another_pods_creation
+==> WARNING: apply_manifest: kubectl apply failed — likely to surface downstream as a misleading 'pod never reached Running' instead of this real error: Error from server (Forbidden): error when creating "STDIN": pods "term-blocker" is forbidden: error looking up service account not-k8s-e2e-1786735070/default: serviceaccount "default" not found
+==> FATAL: timed out after 90s waiting for: term-blocker Running
+  ✘ FAIL (92s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 14 19:17:39 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:39.507296Z ERROR failed with status 503 Service Unavailable
+    Aug 14 19:17:39 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:39.508312Z ERROR failed with status 503 Service Unavailable
+    Aug 14 19:17:39 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:39.599586Z ERROR failed with status 503 Service Unavailable
+    Aug 14 19:17:39 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:39.602327Z ERROR failed with status 503 Service Unavailable
+    Aug 14 19:17:39 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:39.604310Z ERROR failed with status 503 Service Unavailable
+    Aug 14 19:17:39 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:39.866538Z ERROR failed with status 503 Service Unavailable
+    Aug 14 19:17:39 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:39.868320Z ERROR failed with status 503 Service Unavailable
+    Aug 14 19:17:39 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:39.870324Z ERROR failed with status 503 Service Unavailable
+    Aug 14 19:17:40 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:40.355452Z ERROR failed with status 503 Service Unavailable
+    Aug 14 19:17:40 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:40.356079Z ERROR failed with status 503 Service Unavailable
+    Aug 14 19:17:40 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:40.356171Z ERROR failed with status 503 Service Unavailable
+    Aug 14 19:17:40 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:40.764032Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 371 (411)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 14 19:17:40 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:40.764292Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 405 (411)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 14 19:17:40 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:17:40.764484Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 371 (411)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 14 19:18:24 runnervmzvulz run-nodelet.sh[13826]: 2026-08-14T19:18:24.378276Z  INFO node status pushed
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 0 skipped
+Results: 0 passed, 1 failed, 0 skipped
+Failed:
+  - test_a_slow_terminating_pod_does_not_stall_another_pods_creation
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786734120...
+==> Cleaning up test namespace not-k8s-e2e-1786735070...
