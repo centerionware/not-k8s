@@ -48,7 +48,7 @@ struct AttachedByNodeAndDriver(HashMap<String, HashMap<String, usize>>);
 /// never registered on that node at all, which this plugin does not enforce
 /// against — that is a mount-time failure for the driver to report, not a
 /// scheduling-time one.
-struct LimitsByNodeAndDriver(HashMap<String, std::collections::BTreeMap<String, Option<i32>>>);
+struct LimitsByNodeAndDriver(HashMap<String, HashMap<String, Option<i32>>>);
 
 #[derive(Default)]
 pub struct NodeVolumeLimits;
@@ -130,7 +130,7 @@ fn attached_counts_by_node(snapshot: &Snapshot) -> HashMap<String, HashMap<Strin
         .collect()
 }
 
-fn limits_by_node(snapshot: &Snapshot) -> HashMap<String, std::collections::BTreeMap<String, Option<i32>>> {
+fn limits_by_node(snapshot: &Snapshot) -> HashMap<String, HashMap<String, Option<i32>>> {
     snapshot
         .nodes()
         .iter()

@@ -182,6 +182,12 @@ type Svc = k8s_openapi::api::core::v1::Service;
 type Rs = k8s_openapi::api::apps::v1::ReplicaSet;
 type Sts = k8s_openapi::api::apps::v1::StatefulSet;
 type Rc = k8s_openapi::api::core::v1::ReplicationController;
+type Pv = k8s_openapi::api::core::v1::PersistentVolume;
+type Pvc = k8s_openapi::api::core::v1::PersistentVolumeClaim;
+type Sc = k8s_openapi::api::storage::v1::StorageClass;
+type CsiNode = k8s_openapi::api::storage::v1::CSINode;
+type CsiDriver = k8s_openapi::api::storage::v1::CSIDriver;
+type CsiStorageCapacity = k8s_openapi::api::storage::v1::CSIStorageCapacity;
 
 fn watch_namespaces(client: &Client) -> BoxStream<'static, watcher::Result<Event<Ns>>> {
     watcher(Api::<Ns>::all(client.clone()), watcher::Config::default()).boxed()
@@ -232,6 +238,119 @@ fn service_selector(svc: &Svc) -> Option<k8s_openapi::apimachinery::pkg::apis::m
 fn watch_pdbs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pdb>>> {
     let api: Api<Pdb> = Api::all(client.clone());
     watcher(api, watcher::Config::default()).boxed()
+}
+
+/// Phase 4's six storage watches. Unconditional, the same as the pod/node/PDB
+/// watches — `VolumeBinding`/`VolumeRestrictions`/`NodeVolumeLimits`/
+/// `VolumeZone` are always in the default profile, exactly as they are
+/// upstream, so there is no cluster-with-no-PVs case left where these cost
+/// nothing; see docs/SCHEDULER.md's "Informers" section for the up-to-date
+/// accounting.
+fn watch_pvs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pv>>> {
+    watcher(Api::<Pv>::all(client.clone()), watcher::Config::default()).boxed()
+}
+fn watch_pvcs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pvc>>> {
+    watcher(Api::<Pvc>::all(client.clone()), watcher::Config::default()).boxed()
+}
+fn watch_storage_classes(client: &Client) -> BoxStream<'static, watcher::Result<Event<Sc>>> {
+    watcher(Api::<Sc>::all(client.clone()), watcher::Config::default()).boxed()
+}
+fn watch_csi_nodes(client: &Client) -> BoxStream<'static, watcher::Result<Event<CsiNode>>> {
+    watcher(Api::<CsiNode>::all(client.clone()), watcher::Config::default()).boxed()
+}
+fn watch_csi_drivers(client: &Client) -> BoxStream<'static, watcher::Result<Event<CsiDriver>>> {
+    watcher(Api::<CsiDriver>::all(client.clone()), watcher::Config::default()).boxed()
+}
+fn watch_csi_storage_capacities(
+    client: &Client,
+) -> BoxStream<'static, watcher::Result<Event<CsiStorageCapacity>>> {
+    watcher(Api::<CsiStorageCapacity>::all(client.clone()), watcher::Config::default()).boxed()
+}
+
+fn handle_pv_event(ev: Event<Pv>, targets: &WatchTargets) {
+    let mut cache = targets.cache.lock().unwrap();
+    match ev {
+        Event::Init | Event::InitDone => {}
+        Event::InitApply(pv) | Event::Apply(pv) => {
+            let name = pv.metadata.name.clone().unwrap_or_default();
+            cache.upsert_pv(name, crate::cache::PvInfo::from_api(&pv));
+        }
+        Event::Delete(pv) => cache.remove_pv(&pv.metadata.name.clone().unwrap_or_default()),
+    }
+}
+
+fn handle_pvc_event(ev: Event<Pvc>, targets: &WatchTargets) {
+    let mut cache = targets.cache.lock().unwrap();
+    match ev {
+        Event::Init | Event::InitDone => {}
+        Event::InitApply(pvc) | Event::Apply(pvc) => {
+            let info = crate::cache::PvcInfo::from_api(&pvc);
+            cache.upsert_pvc(info.key(), info);
+        }
+        Event::Delete(pvc) => {
+            let ns = pvc.metadata.namespace.clone().unwrap_or_default();
+            let name = pvc.metadata.name.clone().unwrap_or_default();
+            cache.remove_pvc(&format!("{ns}/{name}"));
+        }
+    }
+}
+
+fn handle_storage_class_event(ev: Event<Sc>, targets: &WatchTargets) {
+    let mut cache = targets.cache.lock().unwrap();
+    match ev {
+        Event::Init | Event::InitDone => {}
+        Event::InitApply(sc) | Event::Apply(sc) => {
+            let name = sc.metadata.name.clone().unwrap_or_default();
+            cache.upsert_storage_class(name, crate::cache::StorageClassInfo::from_api(&sc));
+        }
+        Event::Delete(sc) => cache.remove_storage_class(&sc.metadata.name.clone().unwrap_or_default()),
+    }
+}
+
+fn handle_csi_node_event(ev: Event<CsiNode>, targets: &WatchTargets) {
+    let mut cache = targets.cache.lock().unwrap();
+    match ev {
+        Event::Init | Event::InitDone => {}
+        Event::InitApply(n) | Event::Apply(n) => {
+            let name = n.metadata.name.clone().unwrap_or_default();
+            cache.upsert_csi_node(name, crate::cache::CsiNodeInfo::from_api(&n));
+        }
+        Event::Delete(n) => cache.remove_csi_node(&n.metadata.name.clone().unwrap_or_default()),
+    }
+}
+
+fn handle_csi_driver_event(ev: Event<CsiDriver>, targets: &WatchTargets) {
+    let mut cache = targets.cache.lock().unwrap();
+    match ev {
+        Event::Init | Event::InitDone => {}
+        Event::InitApply(d) | Event::Apply(d) => {
+            let name = d.metadata.name.clone().unwrap_or_default();
+            cache.upsert_csi_driver(name, crate::cache::CsiDriverInfo::from_api(&d));
+        }
+        Event::Delete(d) => cache.remove_csi_driver(&d.metadata.name.clone().unwrap_or_default()),
+    }
+}
+
+/// Whole-list rebuild, same trade `handle_pdb_event` makes: few objects,
+/// rarely change, and `VolumeBinding` reads the whole set per pod anyway.
+fn handle_csi_storage_capacity_event(
+    ev: Event<CsiStorageCapacity>,
+    mirror: &mut HashMap<String, CsiStorageCapacity>,
+    targets: &WatchTargets,
+) {
+    match ev {
+        Event::Init => mirror.clear(),
+        Event::InitDone => {}
+        Event::InitApply(c) | Event::Apply(c) => {
+            mirror.insert(c.metadata.name.clone().unwrap_or_default(), c);
+        }
+        Event::Delete(c) => {
+            mirror.remove(&c.metadata.name.clone().unwrap_or_default());
+        }
+    }
+    let rebuilt: Vec<crate::cache::StorageCapacityInfo> =
+        mirror.values().map(crate::cache::StorageCapacityInfo::from_api).collect();
+    targets.cache.lock().unwrap().set_storage_capacities(rebuilt);
 }
 
 /// Mirror a workload's selector into the cache.
@@ -358,6 +477,15 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
     let mut replicasets = watch_workload::<Rs>(&client, workloads);
     let mut statefulsets = watch_workload::<Sts>(&client, workloads);
     let mut rcs = watch_workload::<Rc>(&client, workloads);
+    // Phase 4's storage watches, unconditional — see `watch_pvs`'s doc
+    // comment.
+    let mut pvs = watch_pvs(&client);
+    let mut pvcs = watch_pvcs(&client);
+    let mut storage_classes = watch_storage_classes(&client);
+    let mut csi_nodes = watch_csi_nodes(&client);
+    let mut csi_drivers = watch_csi_drivers(&client);
+    let mut csi_storage_capacities = watch_csi_storage_capacities(&client);
+    let mut csc_mirror: HashMap<String, CsiStorageCapacity> = HashMap::new();
     // Counted per stream: one watch can be failing while the other is fine.
     let mut node_failures: u32 = 0;
     let mut pod_failures: u32 = 0;
@@ -366,6 +494,12 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
     let mut rs_failures: u32 = 0;
     let mut sts_failures: u32 = 0;
     let mut rc_failures: u32 = 0;
+    let mut pv_failures: u32 = 0;
+    let mut pvc_failures: u32 = 0;
+    let mut sc_failures: u32 = 0;
+    let mut csi_node_failures: u32 = 0;
+    let mut csi_driver_failures: u32 = 0;
+    let mut csc_failures: u32 = 0;
 
     loop {
         tokio::select! {
@@ -465,6 +599,48 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
                             match_expressions: None,
                         })
                     });
+                }
+            },
+            event = pvs.next() => {
+                if workload_stream_hiccup(&event, "persistentvolume", &mut pv_failures).await {
+                    pvs = watch_pvs(&client);
+                } else if let Some(Ok(ev)) = event {
+                    handle_pv_event(ev, &targets);
+                }
+            },
+            event = pvcs.next() => {
+                if workload_stream_hiccup(&event, "persistentvolumeclaim", &mut pvc_failures).await {
+                    pvcs = watch_pvcs(&client);
+                } else if let Some(Ok(ev)) = event {
+                    handle_pvc_event(ev, &targets);
+                }
+            },
+            event = storage_classes.next() => {
+                if workload_stream_hiccup(&event, "storageclass", &mut sc_failures).await {
+                    storage_classes = watch_storage_classes(&client);
+                } else if let Some(Ok(ev)) = event {
+                    handle_storage_class_event(ev, &targets);
+                }
+            },
+            event = csi_nodes.next() => {
+                if workload_stream_hiccup(&event, "csinode", &mut csi_node_failures).await {
+                    csi_nodes = watch_csi_nodes(&client);
+                } else if let Some(Ok(ev)) = event {
+                    handle_csi_node_event(ev, &targets);
+                }
+            },
+            event = csi_drivers.next() => {
+                if workload_stream_hiccup(&event, "csidriver", &mut csi_driver_failures).await {
+                    csi_drivers = watch_csi_drivers(&client);
+                } else if let Some(Ok(ev)) = event {
+                    handle_csi_driver_event(ev, &targets);
+                }
+            },
+            event = csi_storage_capacities.next() => {
+                if workload_stream_hiccup(&event, "csistoragecapacity", &mut csc_failures).await {
+                    csi_storage_capacities = watch_csi_storage_capacities(&client);
+                } else if let Some(Ok(ev)) = event {
+                    handle_csi_storage_capacity_event(ev, &mut csc_mirror, &targets);
                 }
             },
             event = pdbs.next() => match event {

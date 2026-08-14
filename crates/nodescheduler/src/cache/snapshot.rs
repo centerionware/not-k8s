@@ -34,6 +34,7 @@
 
 use super::node::NodeInfo;
 use super::pod::PodInfo;
+use super::storage::{CsiDriverInfo, CsiNodeInfo, PvInfo, PvcInfo, StorageCapacityInfo, StorageClassInfo};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -67,6 +68,18 @@ pub struct Snapshot {
     /// owning Service/ReplicaSet/ReplicationController/StatefulSet, which is
     /// what these four watches exist for and their only consumer.
     pub workload_selectors: Vec<WorkloadSelector>,
+
+    /// Phase 4's storage objects, copied wholesale — see the module header
+    /// in `storage.rs` for why these are not tracked incrementally the way
+    /// nodes are.
+    pub pvs: Arc<HashMap<String, PvInfo>>,
+    pub pvcs: Arc<HashMap<String, PvcInfo>>,
+    pub storage_classes: Arc<HashMap<String, StorageClassInfo>>,
+    /// Keyed by node name.
+    pub csi_nodes: Arc<HashMap<String, CsiNodeInfo>>,
+    /// Keyed by driver name.
+    pub csi_drivers: Arc<HashMap<String, CsiDriverInfo>>,
+    pub storage_capacities: Arc<Vec<StorageCapacityInfo>>,
 }
 
 /// One workload's selector, for deriving a pod's default spread constraints.
@@ -118,6 +131,44 @@ impl Snapshot {
     pub fn nodes_with_image(&self, image: &str) -> i64 {
         self.nodes.iter().filter(|n| n.images.contains_key(image)).count() as i64
     }
+
+    pub fn pv(&self, name: &str) -> Option<&super::storage::PvInfo> {
+        self.pvs.get(name)
+    }
+
+    pub fn pvc(&self, namespace: &str, name: &str) -> Option<&super::storage::PvcInfo> {
+        self.pvcs.get(&format!("{namespace}/{name}"))
+    }
+
+    pub fn storage_class(&self, name: &str) -> Option<&super::storage::StorageClassInfo> {
+        self.storage_classes.get(name)
+    }
+
+    pub fn csi_node(&self, node_name: &str) -> Option<&super::storage::CsiNodeInfo> {
+        self.csi_nodes.get(node_name)
+    }
+
+    pub fn csi_driver(&self, name: &str) -> Option<&super::storage::CsiDriverInfo> {
+        self.csi_drivers.get(name)
+    }
+
+    /// Every pod, cluster-wide, that references this PVC — for
+    /// `ReadWriteOncePod`, which is a cluster-wide exclusivity rule, not a
+    /// per-node one. Walking every node's pod list here rather than
+    /// maintaining a dedicated index is the same trade `matching_workload_selectors`
+    /// makes: this runs at most once per pod per scheduling cycle, not once
+    /// per node, so it is linear in cluster pod count rather than quadratic.
+    pub fn pods_using_pvc<'a>(
+        &'a self,
+        namespace: &str,
+        pvc_name: &str,
+    ) -> impl Iterator<Item = &'a Arc<PodInfo>> + 'a {
+        let namespace = namespace.to_string();
+        let pvc_name = pvc_name.to_string();
+        self.nodes.iter().flat_map(|n| n.pods.iter()).filter(move |p| {
+            p.namespace == namespace && p.pvc_names.iter().any(|n| *n == pvc_name)
+        })
+    }
 }
 
 /// The authoritative cluster state the snapshot is taken from.
@@ -140,6 +191,15 @@ pub struct Cache {
     /// mirror makes, and for the same reason.
     namespaces: Arc<HashMap<String, BTreeMap<String, String>>>,
     workload_selectors: HashMap<String, WorkloadSelector>,
+
+    /// Phase 4's storage objects. Same wholesale-copy treatment as
+    /// `namespaces` — see `storage.rs`'s module header.
+    pvs: Arc<HashMap<String, PvInfo>>,
+    pvcs: Arc<HashMap<String, PvcInfo>>,
+    storage_classes: Arc<HashMap<String, StorageClassInfo>>,
+    csi_nodes: Arc<HashMap<String, CsiNodeInfo>>,
+    csi_drivers: Arc<HashMap<String, CsiDriverInfo>>,
+    storage_capacities: Arc<Vec<StorageCapacityInfo>>,
 }
 
 impl Cache {
@@ -262,6 +322,63 @@ impl Cache {
         self.generation += 1;
     }
 
+    pub fn upsert_pv(&mut self, name: String, pv: PvInfo) {
+        Arc::make_mut(&mut self.pvs).insert(name, pv);
+        self.generation += 1;
+    }
+
+    pub fn remove_pv(&mut self, name: &str) {
+        Arc::make_mut(&mut self.pvs).remove(name);
+        self.generation += 1;
+    }
+
+    pub fn upsert_pvc(&mut self, key: String, pvc: PvcInfo) {
+        Arc::make_mut(&mut self.pvcs).insert(key, pvc);
+        self.generation += 1;
+    }
+
+    pub fn remove_pvc(&mut self, key: &str) {
+        Arc::make_mut(&mut self.pvcs).remove(key);
+        self.generation += 1;
+    }
+
+    pub fn upsert_storage_class(&mut self, name: String, sc: StorageClassInfo) {
+        Arc::make_mut(&mut self.storage_classes).insert(name, sc);
+        self.generation += 1;
+    }
+
+    pub fn remove_storage_class(&mut self, name: &str) {
+        Arc::make_mut(&mut self.storage_classes).remove(name);
+        self.generation += 1;
+    }
+
+    pub fn upsert_csi_node(&mut self, node_name: String, info: CsiNodeInfo) {
+        Arc::make_mut(&mut self.csi_nodes).insert(node_name, info);
+        self.generation += 1;
+    }
+
+    pub fn remove_csi_node(&mut self, node_name: &str) {
+        Arc::make_mut(&mut self.csi_nodes).remove(node_name);
+        self.generation += 1;
+    }
+
+    pub fn upsert_csi_driver(&mut self, name: String, info: CsiDriverInfo) {
+        Arc::make_mut(&mut self.csi_drivers).insert(name, info);
+        self.generation += 1;
+    }
+
+    pub fn remove_csi_driver(&mut self, name: &str) {
+        Arc::make_mut(&mut self.csi_drivers).remove(name);
+        self.generation += 1;
+    }
+
+    /// Whole-list rebuild, same trade the PDB mirror makes: few objects,
+    /// rarely change, and `VolumeBinding` reads the whole set per pod anyway.
+    pub fn set_storage_capacities(&mut self, capacities: Vec<StorageCapacityInfo>) {
+        self.storage_capacities = Arc::new(capacities);
+        self.generation += 1;
+    }
+
     /// Which node a pod is committed to, if any.
     pub fn pod_node(&self, uid: &str) -> Option<&str> {
         self.pod_locations.get(uid).map(String::as_str)
@@ -313,6 +430,12 @@ impl Cache {
         snapshot.generation = self.generation;
         snapshot.namespaces = self.namespaces.clone();
         snapshot.workload_selectors = self.workload_selectors.values().cloned().collect();
+        snapshot.pvs = self.pvs.clone();
+        snapshot.pvcs = self.pvcs.clone();
+        snapshot.storage_classes = self.storage_classes.clone();
+        snapshot.csi_nodes = self.csi_nodes.clone();
+        snapshot.csi_drivers = self.csi_drivers.clone();
+        snapshot.storage_capacities = self.storage_capacities.clone();
         snapshot.nodes = zone_round_robin(&snapshot.by_name);
         snapshot.nodes_with_pods_with_affinity = snapshot
             .nodes

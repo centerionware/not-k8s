@@ -224,10 +224,30 @@ the part that needs the registry lives in the cycle. It still runs exactly
 when zero nodes were feasible, still considers only nodes rejected
 `Unschedulable`, and still picks the same victims.
 
-**Phase 4 — storage.** `VolumeBinding`, `VolumeZone`, `VolumeRestrictions`,
-`NodeVolumeLimits`, and the PV/PVC/StorageClass/CSINode/CSIDriver/
-CSIStorageCapacity informers. The reference CSI driver the e2e harness already
-installs (`e2e-full-setup.sh`) is what proves this.
+**Phase 4 — storage.** ✅ Implemented: `VolumeRestrictions` (the five in-tree
+legacy volume-identity conflicts, per node, plus `ReadWriteOncePod`
+exclusivity, cluster-wide), `NodeVolumeLimits` (CSI per-driver per-node volume
+ceilings from `CSINode`), `VolumeZone` (a PV's legacy zone/region *labels*
+against a node's), and `VolumeBinding` (unbound-immediate PVCs block a pod
+outright; unbound `WaitForFirstConsumer` PVCs are checked against
+`StorageClass.allowedTopologies` and, when a driver opts in,
+`CSIStorageCapacity`; an already-bound PV's `nodeAffinity` is enforced;
+`PreBind` writes `volume.kubernetes.io/selected-node` and polls for `Bound`).
+The PV/PVC/StorageClass/CSINode/CSIDriver/CSIStorageCapacity informers all
+start unconditionally now, the same as Pod/Node — see "Informers" below for
+what that changes about the footprint claim. The reference CSI driver the
+e2e harness already installs (`e2e-full-setup.sh`) is what proves this.
+
+One gap, deliberate and recorded rather than silent: `VolumeBinding` does not
+match a `PersistentVolumeClaim` against an already-existing, admin-provisioned
+`PersistentVolume` (a static PV, matched by `storageClassName`/access
+modes/capacity or an explicit `selector`). Upstream races that against dynamic
+provisioning at `Reserve` with its own assume cache so two pods cannot claim
+the same static PV; this project's own reference deploy provisions everything
+dynamically, the same way most real CSI drivers are actually used, so the
+gap is real but narrow. See `volume_binding.rs`'s module header for the full
+accounting — this is the next piece of Phase 4 to close, not a stopping
+point.
 
 **Phase 5 — DRA, profiles, extenders.** `DynamicResources`, multi-profile
 `schedulerName` dispatch, and HTTP extenders.
@@ -250,9 +270,12 @@ allocated to a node that never received the pod, and the device leaks.
 
 Upstream registers Pod and Node unconditionally and everything else only if
 some enabled plugin's `EventsToRegister()` named that resource. We copy that
-exactly — it is both the parity behaviour and the footprint behaviour, and it
-means `--scheduler=nodescheduler` on a cluster with no PVs costs two watches,
-not nine.
+exactly. Through Phase 3 that meant `--scheduler=nodescheduler` on a cluster
+with no PVs cost two watches, not nine; Phase 4's four storage plugins are
+themselves unconditional default-profile plugins (there is no "no storage
+filters" mode, upstream included), so their six informers now start
+unconditionally too — the same footprint upstream itself pays once its
+default profile is running, PVs or not.
 
 One deliberate knob beyond parity: `PodTopologySpread`'s *default constraints*
 are the sole consumer of the Service, ReplicationController, ReplicaSet and

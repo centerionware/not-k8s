@@ -36,17 +36,6 @@ fn first(labels: &BTreeMap<String, String>, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|k| labels.get(*k).cloned())
 }
 
-/// An in-tree zonal PV label can name several zones, joined by `__` —
-/// upstream's own `LabelZonesToSet` convention — so membership, not string
-/// equality, is the right test. Exact equality would reject every node for
-/// a multi-zone PV (`us-east-1a__us-east-1b` matches no node's plain
-/// `us-east-1a` label), and since this plugin returns `Unresolvable`, no
-/// preemption could fix that either — the pod would simply never place.
-fn label_contains(pv_value: &str, node_value: Option<&str>) -> bool {
-    let Some(node_value) = node_value else { return false };
-    pv_value.split("__").any(|z| z == node_value)
-}
-
 /// This pod's bound PVs' zone/region constraints, resolved once per cycle.
 struct WantedZones(Vec<(Option<String>, Option<String>)>);
 
@@ -114,12 +103,12 @@ impl FilterPlugin for VolumeZone {
 
         for (zone, region) in &wanted.0 {
             if let Some(z) = zone {
-                if !label_contains(z, node_zone.as_deref()) {
+                if node_zone.as_deref() != Some(z.as_str()) {
                     return Status::unresolvable(NAME, "node(s) had no available volume zone");
                 }
             }
             if let Some(r) = region {
-                if !label_contains(r, node_region.as_deref()) {
+                if node_region.as_deref() != Some(r.as_str()) {
                     return Status::unresolvable(NAME, "node(s) had no available volume zone");
                 }
             }
