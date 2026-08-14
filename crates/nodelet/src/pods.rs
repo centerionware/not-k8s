@@ -67,7 +67,10 @@ pub struct PodController {
     /// confirms the object actually left the apiserver, so this stays
     /// bounded by "pods currently mid-termination", not "every pod this
     /// node has ever run."
-    torn_down: Mutex<HashSet<String>>,
+    ///
+    /// `Arc` because `spawn_teardown` hands it to a detached task, which is
+    /// what clears the entry once the teardown has actually finished.
+    torn_down: Arc<Mutex<HashSet<String>>>,
 }
 
 /// First retry delay, and the ceiling the backoff settles at.
@@ -106,7 +109,7 @@ impl PodController {
             probe_events_rx: Some(probe_events_rx),
             health: probes::new_health_map(),
             probe_tasks: Mutex::new(HashMap::new()),
-            torn_down: Mutex::new(HashSet::new()),
+            torn_down: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -304,10 +307,7 @@ impl PodController {
                 // then forget the UID: the object genuinely left the
                 // apiserver, so there's nothing left to guard against
                 // re-tearing-down.
-                self.teardown(&pod).await;
-                if let Some(uid) = pod.metadata.uid.as_deref() {
-                    self.torn_down.lock().unwrap().remove(uid);
-                }
+                self.spawn_teardown(pod, true);
             }
             Event::Init | Event::InitDone => {}
         }
@@ -344,7 +344,7 @@ impl PodController {
                     return; // already handled this pod's teardown
                 }
             }
-            self.teardown(&pod).await;
+            self.spawn_teardown(pod, false);
             return;
         }
 
@@ -508,23 +508,63 @@ impl PodController {
     /// a previous call to this same function, already finished it) is the
     /// other caller; the delete call below tolerates a 404 as success so
     /// this stays a no-op harmless double-call in that case.
-    async fn teardown(&self, pod: &Pod) {
-        if let Some((ns, name)) = key_parts(pod) {
-            self.stop_probe_supervisor(&ns, &name);
-            if let Err(e) = self.runtime.remove_pod(pod).await {
+    /// Tear a pod down on its own task, so terminating one pod does not
+    /// stop this node reconciling every other one.
+    ///
+    /// The blocking part is not incidental and not short: `remove_pod()`
+    /// issues a CRI `StopContainer` per container, and StopContainer's
+    /// contract is to wait out the pod's `terminationGracePeriodSeconds`
+    /// before killing — the default is 30s and the field is arbitrary
+    /// user input. Awaited inline (as this was) in the single serial
+    /// watch-event loop, deleting one pod with a 60s grace period meant
+    /// this node created no pods, updated no statuses, and handled no
+    /// probe or runtime events for a full minute. Nothing about that is
+    /// visible as an error: the node stays Ready and every delayed pod
+    /// simply looks slow to start.
+    ///
+    /// `reconcile()`'s own comment already recorded the serial loop as "a
+    /// real, if unconfirmed, contributor to pods intermittently taking far
+    /// longer than expected to reach Running in CI" — this is that
+    /// mechanism, and detaching removes it rather than merely deduplicating
+    /// the calls into it.
+    ///
+    /// The probe supervisor is stopped **synchronously**, before the spawn.
+    /// It is pure local bookkeeping (aborting tasks, clearing a map) with
+    /// nothing to await, and doing it here rather than on the detached task
+    /// means a container cannot be restarted by its own liveness probe
+    /// during the grace period it is meanwhile being asked to stop for.
+    fn spawn_teardown(&self, pod: Pod, forget_uid: bool) {
+        let Some((ns, name)) = key_parts(&pod) else { return };
+        self.stop_probe_supervisor(&ns, &name);
+
+        let runtime = self.runtime.clone();
+        let client = self.client.clone();
+        let torn_down = self.torn_down.clone();
+        tokio::spawn(async move {
+            if let Err(e) = runtime.remove_pod(&pod).await {
                 warn!(pod = %format!("{ns}/{name}"), error = ?e, "remove_pod failed");
                 return;
             }
             info!(pod = %format!("{ns}/{name}"), "torn down");
 
-            let api: Api<Pod> = Api::namespaced(self.client.clone(), &ns);
+            let api: Api<Pod> = Api::namespaced(client, &ns);
             let dp = DeleteParams { grace_period_seconds: Some(0), ..Default::default() };
             match api.delete(&name, &dp).await {
                 Ok(_) => {}
                 Err(kube::Error::Api(e)) if e.code == 404 => {}
                 Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "final delete of pod object failed"),
             }
-        }
+
+            // Only after the teardown has actually finished. Dropping the
+            // UID at spawn time would re-open the dedupe window for the
+            // whole duration of the grace period — exactly when the
+            // redundant events arrive.
+            if forget_uid {
+                if let Some(uid) = pod.metadata.uid.as_deref() {
+                    torn_down.lock().unwrap().remove(uid);
+                }
+            }
+        });
     }
 
     /// Runtime told us a pod's actual state changed — reconcile just its status.
