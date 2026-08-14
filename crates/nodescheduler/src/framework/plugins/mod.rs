@@ -120,10 +120,12 @@ pub(crate) fn default_normalize_score(reverse: bool, scores: &mut [i64]) {
 /// plugins in this directory that perform I/O; everything else here is a
 /// pure function of the snapshot.
 pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profile_name: &str) -> Registry {
-    // One instance, cloned into every vec it belongs to — see
-    // `DynamicResources`'s own doc comment on why its assume cache must be
-    // shared rather than reconstructed per extension point.
+    // One instance each, cloned into every vec it belongs to — see
+    // `DynamicResources`'s (respectively `VolumeBinding`'s) own doc comment
+    // on why each plugin's assume cache must be shared rather than
+    // reconstructed per extension point.
     let dra = dynamic_resources::DynamicResources::new(client.clone());
+    let vb = volume_binding::VolumeBinding::new(client.clone(), cfg.volume_bind_timeout);
     Registry {
         profile_name: profile_name.to_string(),
         pre_enqueue: vec![
@@ -136,7 +138,7 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profi
             Box::new(node_resources_fit::NodeResourcesFit::default()),
             Box::new(volume_restrictions::VolumeRestrictions),
             Box::new(node_volume_limits::NodeVolumeLimits),
-            Box::new(volume_binding::VolumeBinding::new(client.clone(), cfg.volume_bind_timeout)),
+            Box::new(vb.clone()),
             Box::new(volume_zone::VolumeZone),
             Box::new(pod_topology_spread::PodTopologySpread {
                 defaulting: cfg.topology_defaulting,
@@ -153,7 +155,7 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profi
             Box::new(node_resources_fit::NodeResourcesFit::default()),
             Box::new(volume_restrictions::VolumeRestrictions),
             Box::new(node_volume_limits::NodeVolumeLimits),
-            Box::new(volume_binding::VolumeBinding::new(client.clone(), cfg.volume_bind_timeout)),
+            Box::new(vb.clone()),
             Box::new(volume_zone::VolumeZone),
             Box::new(pod_topology_spread::PodTopologySpread {
                 defaulting: cfg.topology_defaulting,
@@ -193,14 +195,11 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profi
             }),
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
-        reserve: vec![Box::new(dra.clone())],
+        reserve: vec![Box::new(vb.clone()), Box::new(dra.clone())],
         permit: Vec::new(),
-        pre_bind: vec![
-            Box::new(volume_binding::VolumeBinding::new(client.clone(), cfg.volume_bind_timeout)),
-            Box::new(dra.clone()),
-        ],
+        pre_bind: vec![Box::new(vb.clone()), Box::new(dra.clone())],
         bind: vec![Box::new(default_binder::DefaultBinder::new(client))],
-        post_bind: vec![Box::new(dra)],
+        post_bind: vec![Box::new(vb), Box::new(dra)],
     }
 }
 

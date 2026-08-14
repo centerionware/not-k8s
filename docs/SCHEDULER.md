@@ -244,16 +244,19 @@ start unconditionally now, the same as Pod/Node — see "Informers" below for
 what that changes about the footprint claim. The reference CSI driver the
 e2e harness already installs (`e2e-full-setup.sh`) is what proves this.
 
-One gap, deliberate and recorded rather than silent: `VolumeBinding` does not
-match a `PersistentVolumeClaim` against an already-existing, admin-provisioned
-`PersistentVolume` (a static PV, matched by `storageClassName`/access
-modes/capacity or an explicit `selector`). Upstream races that against dynamic
-provisioning at `Reserve` with its own assume cache so two pods cannot claim
-the same static PV; this project's own reference deploy provisions everything
-dynamically, the same way most real CSI drivers are actually used, so the
-gap is real but narrow. See `volume_binding.rs`'s module header for the full
-accounting — this is the next piece of Phase 4 to close, not a stopping
-point.
+`VolumeBinding` also matches a `PersistentVolumeClaim` against an
+already-existing, unclaimed `PersistentVolume` (a static PV — matched by
+`storageClassName`/access modes/capacity, an explicit `selector`, or an exact
+`spec.volumeName` pre-bind), tried before dynamic provisioning is even
+considered, matching upstream's own priority order. Two pods that could both
+claim the same free static PV is a real scarce-resource race, the same shape
+`DynamicResources`' device assume cache exists for — `Reserve` tentatively
+marks the PV it picked, `Unreserve`/`PostBind` release the mark. `PreBind`
+writes `PersistentVolumeClaim.spec.volumeName` for a static claim (the
+built-in PV binder controller completes the actual bind, including
+`PersistentVolume.spec.claimRef`, from that alone) instead of the
+`selected-node` annotation dynamic provisioning uses. See
+`volume_binding.rs`'s module header for the full accounting.
 
 **Phase 5 — DRA, profiles, extenders.**
 
