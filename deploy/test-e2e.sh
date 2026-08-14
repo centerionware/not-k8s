@@ -95,6 +95,32 @@ fi
 log "Test namespace: $TEST_NAMESPACE"
 kubectl create namespace "$TEST_NAMESPACE" >/dev/null 2>&1 || true
 
+# Wait for the namespace's `default` ServiceAccount before any test runs.
+#
+# Creating a namespace does not create its ServiceAccount — the
+# controller-manager's serviceaccount controller does, moments later. Until
+# it exists, every pod creation in that namespace is rejected outright:
+#
+#   Error from server (Forbidden): pods "x" is forbidden: error looking up
+#   service account <ns>/default: serviceaccount "default" not found
+#
+# The pod is then never created, and whatever the test waits for next burns
+# its entire timeout on an object that cannot appear — surfacing as a
+# misleading "never scheduled"/"never reached Running" rather than the real
+# and immediate rejection. Only the first test or two of a run can lose this
+# race, which is what makes it so confusing: the same test passes on its own
+# and fails when it happens to be scheduled first.
+#
+# Found live, and expensively: it cost several rounds of investigation into
+# nodescheduler before anyone read past the FATAL lines to the warning
+# apply_manifest had been printing all along.
+for _ in $(seq 1 30); do
+    kubectl -n "$TEST_NAMESPACE" get serviceaccount default >/dev/null 2>&1 && break
+    sleep 1
+done
+kubectl -n "$TEST_NAMESPACE" get serviceaccount default >/dev/null 2>&1 \
+    || die "the 'default' ServiceAccount never appeared in $TEST_NAMESPACE after 30s — every pod create in this run would be rejected with a Forbidden error that reads as a scheduling failure, so failing now names the real cause instead of burning the whole suite on misleading secondary failures"
+
 cleanup_namespace() {
     if [[ "$KEEP_NAMESPACE" -eq 1 ]]; then
         warn "--keep set: leaving namespace $TEST_NAMESPACE in place for inspection. Clean up with: kubectl delete namespace $TEST_NAMESPACE"
