@@ -1168,3 +1168,174 @@ EOF
     delete_pod_and_pvc "$second" "$claim"
 }
 register_test test_scheduler_enforces_read_write_once_pod_exclusivity
+
+# ── Phase 5: HTTP extenders ─────────────────────────────────────────────
+#
+# extender.rs is unit-tested for parsing/wire-format fidelity with no
+# cluster involved. What that can't prove is that a real HTTP round trip
+# out of cycle.rs's now-async schedule_one actually happens, that a
+# rejection an extender returns actually blocks a real Binding, and that
+# the reason it gave surfaces on the pod the way any other filter
+# rejection's does. fake_extender.py fakes the extender, not the protocol
+# — same "real protocol, fabricated backend" pattern fake_device_plugin.py
+# (device_plugins.sh) uses.
+
+_fake_extender_setup() { # sets FEXT_* globals; skips if python3 is missing
+    if ! command -v python3 &>/dev/null; then
+        skip_test "python3 not on PATH — needed to run the fake HTTP extender"
+    fi
+    FEXT_WORK="$(mktemp -d)"
+    FEXT_PORT=18762
+    FEXT_CONTROL="$FEXT_WORK/control"
+    FEXT_LOG="$FEXT_WORK/requests.log"
+    FEXT_SERVER_LOG="$FEXT_WORK/server.log"
+    echo "accept" > "$FEXT_CONTROL"
+    : > "$FEXT_LOG"
+
+    cat > "$FEXT_WORK/fake_extender.py" <<'PYEOF'
+# Fake HTTP extender for e2e testing — speaks the real
+# k8s.io/kube-scheduler/extender/v1 wire format (PascalCase, no envelope)
+# against whatever verdict the control file (argv[2]) currently holds,
+# polled fresh on every request so a test can flip behaviour mid-run with
+# no restart: "accept" passes every node back via NodeNames (the same
+# explicit-list shape a real extender uses, not the "neither field set"
+# edge case); "reject:<reason>" fails every node it was asked about with
+# that reason and deliberately omits NodeNames/Nodes, exercising the "an
+# extender that never echoes back a survivor is read as nobody passing"
+# case a real extender.go was checked against.
+import sys, json, http.server, socketserver
+
+port, control_file, log_file = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        args = json.loads(self.rfile.read(length))
+        pod_name = (args.get("Pod") or {}).get("metadata", {}).get("name", "")
+        node_items = ((args.get("Nodes") or {}).get("items")) or []
+        node_names = [n.get("metadata", {}).get("name", "") for n in node_items]
+        with open(log_file, "a") as f:
+            f.write(f"{self.path} pod={pod_name} nodes={','.join(node_names)}\n")
+
+        try:
+            verdict = open(control_file).read().strip()
+        except FileNotFoundError:
+            verdict = "accept"
+
+        if self.path.endswith("/filter"):
+            if verdict.startswith("reject:"):
+                reason = verdict[len("reject:"):]
+                result = {"FailedNodes": {n: reason for n in node_names}}
+            else:
+                result = {"NodeNames": node_names}
+        else:
+            result = {"Error": f"fake extender has no verb {self.path}"}
+
+        payload = json.dumps(result).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+with socketserver.TCPServer(("127.0.0.1", port), Handler) as httpd:
+    httpd.serve_forever()
+PYEOF
+
+    python3 "$FEXT_WORK/fake_extender.py" "$FEXT_PORT" "$FEXT_CONTROL" "$FEXT_LOG" \
+        > "$FEXT_SERVER_LOG" 2>&1 &
+    FEXT_PID=$!
+    wait_until 10 "fake HTTP extender listening on 127.0.0.1:$FEXT_PORT" \
+        bash -c "exec 3<>/dev/tcp/127.0.0.1/$FEXT_PORT" \
+        || { kill "$FEXT_PID" 2>/dev/null || true; skip_test "fake HTTP extender never started listening — see $FEXT_SERVER_LOG"; }
+}
+
+_fake_extender_teardown() {
+    nodescheduler_restore_env
+    [[ -n "${FEXT_PID:-}" ]] && kill "$FEXT_PID" 2>/dev/null || true
+    [[ -n "${FEXT_WORK:-}" ]] && rm -rf "$FEXT_WORK"
+}
+
+test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection() {
+    _require_nodescheduler
+    _fake_extender_setup
+    trap '_fake_extender_teardown' EXIT
+
+    echo "reject:no-gpu-quota-fake-extender" > "$FEXT_CONTROL"
+    # systemd's own Environment= parsing strips a bare `"` out of an
+    # assignment (confirmed live: `Environment=V=[{"a":"b"}]` reaches the
+    # process as `[{a:b}]`, silently invalid JSON) — `\"` is how a literal
+    # quote survives into the child's environment.
+    local json_env
+    json_env='NODESCHEDULER_EXTENDERS_JSON=[{\"urlPrefix\":\"http://127.0.0.1:'"$FEXT_PORT"'\",\"filterVerb\":\"filter\"}]'
+    nodescheduler_restart_with_env "$json_env"
+
+    local pod="sched-extender-reject"
+    delete_pod_if_exists "$pod"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $pod
+spec:
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+EOF
+
+    sleep 10
+    assert_eq "$(pod_field "$pod" '{.spec.nodeName}')" "" \
+        "a pod the extender rejects on every node must never be scheduled"
+    assert_contains "$(kctl get events --field-selector involvedObject.name="$pod" -o jsonpath='{.items[*].message}' 2>/dev/null)" \
+        "no-gpu-quota-fake-extender" "the FailedScheduling event must carry the extender's own rejection reason"
+    assert_contains "$(cat "$FEXT_LOG")" "/filter pod=$pod" \
+        "the extender must actually have been called with this pod"
+
+    delete_pod_if_exists "$pod"
+    _fake_extender_teardown
+    trap - EXIT
+}
+register_test test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection
+
+test_scheduler_schedules_a_pod_an_http_extender_approves() {
+    _require_nodescheduler
+    _fake_extender_setup
+    trap '_fake_extender_teardown' EXIT
+
+    echo "accept" > "$FEXT_CONTROL"
+    # systemd's own Environment= parsing strips a bare `"` out of an
+    # assignment (confirmed live: `Environment=V=[{"a":"b"}]` reaches the
+    # process as `[{a:b}]`, silently invalid JSON) — `\"` is how a literal
+    # quote survives into the child's environment.
+    local json_env
+    json_env='NODESCHEDULER_EXTENDERS_JSON=[{\"urlPrefix\":\"http://127.0.0.1:'"$FEXT_PORT"'\",\"filterVerb\":\"filter\"}]'
+    nodescheduler_restart_with_env "$json_env"
+
+    local pod="sched-extender-accept"
+    delete_pod_if_exists "$pod"
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $pod
+spec:
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+EOF
+
+    wait_until 60 "$pod to be bound to a node" _pod_is_bound "$pod" \
+        || die "an extender approving every node must not block scheduling — is nodescheduler actually calling it? check $FEXT_SERVER_LOG"
+    assert_contains "$(cat "$FEXT_LOG")" "/filter pod=$pod" \
+        "the extender must actually have been called with this pod, not merely have never blocked it"
+
+    delete_pod_if_exists "$pod"
+    _fake_extender_teardown
+    trap - EXIT
+}
+register_test test_scheduler_schedules_a_pod_an_http_extender_approves

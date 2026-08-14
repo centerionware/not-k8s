@@ -431,10 +431,12 @@ impl Scheduler {
 
         // ── HTTP extenders' Prioritize ──────────────────────────────────
         //
-        // Added directly into the already-normalized-and-weighted plugin
-        // totals, unscaled — upstream does the same: an extender's own score
-        // times its own configured `weight`, with no rescaling onto
-        // `[0, MAX_NODE_SCORE]` the way a plugin's raw score is. An
+        // Added into the already-normalized-and-weighted plugin totals.
+        // `Extender::prioritize` already applied upstream's own rescale
+        // (`score * weight * MAX_NODE_SCORE / MaxExtenderPriority`), so what
+        // lands here is on the same `[0, MAX_NODE_SCORE]`-per-weight-unit
+        // scale a plugin's contribution is — see that function's doc
+        // comment for the upstream source this was checked against. An
         // `ignorable` extender that errors here is skipped, not fatal — the
         // pod still gets placed using whatever scores plugins and any other
         // extenders already produced.
