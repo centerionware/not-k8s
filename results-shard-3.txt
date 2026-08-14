@@ -1,26 +1,22 @@
 commit: 0f5728f8f5744af2e8bb55148d15ddc4e90307e4
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31778072354
-timestamp (UTC): 2026-08-14T07:01:38Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31778442661
+timestamp (UTC): 2026-08-14T07:09:06Z
 shard: 3/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786690884
+==> Test namespace: not-k8s-e2e-1786691297
 ==> 216 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 41 test(s) selected
 ▶ test_scheduler_places_an_ordinary_pod
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (7s)
 ▶ test_scheduler_respects_a_taint_and_its_toleration
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (4s)
 ▶ test_scheduler_honours_pod_affinity
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (29s)
 ▶ test_scheduler_schedules_pods_that_get_default_spread_constraints
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (1s)
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 4 skipped
+Results: 4 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786690884...
+==> Cleaning up test namespace not-k8s-e2e-1786691297...
