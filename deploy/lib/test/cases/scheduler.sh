@@ -1019,3 +1019,152 @@ YAML
     kctl delete service "$name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
 }
 register_test test_scheduler_schedules_pods_that_get_default_spread_constraints
+
+# Phase 4: storage plugins (VolumeBinding's WaitForFirstConsumer path, and
+# VolumeRestrictions' ReadWriteOncePod exclusivity). Needs real infrastructure
+# this suite can't stand up itself — see e2e-full-setup.sh, which installs
+# csi-driver-host-path and applies the WaitForFirstConsumer StorageClass this
+# case needs (TEST_CSI_STORAGE_CLASS_WAIT); the other two classes it applies
+# are both Immediate and cannot exercise this path at all.
+test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen() {
+    _require_nodescheduler
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if [[ -z "${TEST_CSI_STORAGE_CLASS_WAIT:-}" ]]; then
+        skip_test "TEST_CSI_STORAGE_CLASS_WAIT not set — export it to a WaitForFirstConsumer StorageClass to exercise this"
+    fi
+
+    local claim="sched-wfc-claim" name="sched-wfc-pod"
+    kctl delete pod "$name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    kctl delete pvc "$claim" --ignore-not-found >/dev/null 2>&1 || true
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: $claim
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: $TEST_CSI_STORAGE_CLASS_WAIT
+  resources:
+    requests:
+      storage: 64Mi
+EOF
+
+    sleep 8
+    assert_eq "$(kubectl get pvc "$claim" -n "$TEST_NAMESPACE" -o jsonpath='{.status.phase}')" "Pending" \
+        "a WaitForFirstConsumer PVC must stay unbound with no pod referencing it yet"
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "sleep 300"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: $claim
+EOF
+
+    if ! try_wait_until 90 pod_is_phase "$name" Running; then
+        local reason
+        reason="$(kctl get pvc "$claim" -o jsonpath='{.status.phase}' 2>/dev/null)"
+        delete_pod_and_pvc "$name" "$claim"
+        skip_test "PVC never bound after a node was chosen (phase=$reason) — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS_WAIT"
+    fi
+
+    local node selected_node
+    node="$(pod_field "$name" '{.spec.nodeName}')"
+    selected_node="$(kctl get pvc "$claim" -o jsonpath='{.metadata.annotations.volume\.kubernetes\.io/selected-node}')"
+    assert_eq "$selected_node" "$node" \
+        "VolumeBinding's PreBind must annotate the PVC with the exact node it chose"
+    assert_eq "$(kctl get pvc "$claim" -o jsonpath='{.status.phase}')" "Bound" \
+        "the PVC must actually be Bound once the pod is Running"
+
+    delete_pod_and_pvc "$name" "$claim"
+}
+register_test test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen
+
+test_scheduler_enforces_read_write_once_pod_exclusivity() {
+    _require_nodescheduler
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+    if [[ -z "${TEST_CSI_STORAGE_CLASS:-}" ]]; then
+        skip_test "TEST_CSI_STORAGE_CLASS not set — export it to a StorageClass backed by a CSI driver to exercise this"
+    fi
+
+    local claim="sched-rwop-claim" first="sched-rwop-a" second="sched-rwop-b"
+    kctl delete pod "$first" "$second" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    kctl delete pvc "$claim" --ignore-not-found >/dev/null 2>&1 || true
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: $claim
+spec:
+  accessModes: ["ReadWriteOncePod"]
+  storageClassName: $TEST_CSI_STORAGE_CLASS
+  resources:
+    requests:
+      storage: 64Mi
+EOF
+
+    if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
+        kctl delete pvc "$claim" --ignore-not-found >/dev/null 2>&1
+        skip_test "ReadWriteOncePod PVC never bound — driver for TEST_CSI_STORAGE_CLASS may not support that access mode"
+    fi
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $first
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "sleep 300"]
+      volumeMounts: [{name: data, mountPath: /data}]
+  volumes:
+    - name: data
+      persistentVolumeClaim: {claimName: $claim}
+EOF
+    wait_until 60 "$first to be bound to a node" _pod_is_bound "$first" \
+        || die "the first RWOP pod was never scheduled"
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $second
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "sleep 300"]
+      volumeMounts: [{name: data, mountPath: /data}]
+  volumes:
+    - name: data
+      persistentVolumeClaim: {claimName: $claim}
+EOF
+
+    sleep 10
+    assert_eq "$(pod_field "$second" '{.spec.nodeName}')" "" \
+        "a second pod must never be scheduled while a ReadWriteOncePod PVC is already claimed"
+    assert_contains "$(kubectl get events -n "$TEST_NAMESPACE" --field-selector involvedObject.name="$second" -o jsonpath='{.items[*].message}' 2>/dev/null)" \
+        "ReadWriteOncePod" "the pod must say why, not just sit Pending"
+
+    delete_pod_if_exists "$first"
+    wait_until 60 "$second to be bound to a node" _pod_is_bound "$second" \
+        || die "freeing the ReadWriteOncePod claim never got the second pod scheduled"
+
+    delete_pod_and_pvc "$second" "$claim"
+}
+register_test test_scheduler_enforces_read_write_once_pod_exclusivity
