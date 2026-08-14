@@ -1,20 +1,21 @@
 commit: 0f5728f8f5744af2e8bb55148d15ddc4e90307e4
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31778072354
-timestamp (UTC): 2026-08-14T07:01:11Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31778442661
+timestamp (UTC): 2026-08-14T07:11:21Z
 shard: 4/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786690861
+==> Test namespace: not-k8s-e2e-1786691316
 ==> 216 test(s) registered total (before sharding); running now...
 ==> Shard 4/5: 41 test(s) selected
 ▶ test_scheduler_wakes_a_pending_pod_on_a_real_event
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (45s)
 ▶ test_scheduler_honours_topology_spread
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (11s)
+▶ test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen
+    (skip: PVC never bound after a node was chosen (phase=Pending) — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS_WAIT)
+  ○ SKIP (99s)
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 2 skipped
+Results: 2 passed, 0 failed, 1 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786690861...
+==> Cleaning up test namespace not-k8s-e2e-1786691316...
