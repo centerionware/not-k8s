@@ -1,26 +1,22 @@
 commit: 0f5728f8f5744af2e8bb55148d15ddc4e90307e4
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31778072354
-timestamp (UTC): 2026-08-14T07:01:55Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31778442661
+timestamp (UTC): 2026-08-14T07:10:37Z
 shard: 2/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786690914
+==> Test namespace: not-k8s-e2e-1786691337
 ==> 216 test(s) registered total (before sharding); running now...
 ==> Shard 2/5: 47 test(s) selected
 ▶ test_scheduler_rejects_a_pod_that_does_not_fit
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (10s)
 ▶ test_scheduler_honours_pod_anti_affinity
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (43s)
 ▶ test_scheduler_resolves_a_namespace_selector_against_real_labels
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (11s)
 ▶ test_scheduler_schedules_a_pod_an_http_extender_approves
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (35s)
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 4 skipped
+Results: 4 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786690914...
+==> Cleaning up test namespace not-k8s-e2e-1786691337...
