@@ -327,19 +327,39 @@ fn cel_device(driver: &str, basic: &crate::cache::dra::RawBasicDevice) -> CelDev
     CelDevice { driver: driver.to_string(), attributes, capacity }
 }
 
-/// Whether a device satisfies every one of a list of CEL selectors. Fails
-/// closed: a selector that does not parse, does not bind, or does not
-/// evaluate to a plain `true` excludes the device rather than admitting it —
-/// the same posture `LegacyVolumeId`'s unknown-operator branch and this
-/// crate's other "malformed input" cases take throughout.
+/// Every distinct CEL expression a claim's requests could evaluate,
+/// pre-compiled once — before the per-node loop, not once per device per
+/// node. `pre_filter_impl` evaluates the *same* set of expressions against
+/// every node's candidate devices (selectors come from the claim's requests
+/// and their resolved device classes, neither of which vary by node), so
+/// compiling inside the node/device loops was pure waste that scaled as
+/// nodes × devices-per-node × selectors for every pod. `None` remembers an
+/// expression that failed to compile, so a malformed selector still fails
+/// closed without retrying the same doomed compile on every device.
+type CompiledSelectors = HashMap<String, Option<cel_interpreter::Program>>;
+
+fn compile_selectors(exprs: impl Iterator<Item = String>, cache: &mut CompiledSelectors) {
+    for expr in exprs {
+        cache.entry(expr).or_insert_with_key(|e| cel_interpreter::Program::compile(e).ok());
+    }
+}
+
+/// Whether a device satisfies every one of a list of CEL selectors, using
+/// already-compiled programs from `compiled`. Fails closed: a selector
+/// missing from the cache (compile error, or a bug that let one through
+/// uncompiled), that does not bind, or that does not evaluate to a plain
+/// `true` excludes the device rather than admitting it — the same posture
+/// `LegacyVolumeId`'s unknown-operator branch and this crate's other
+/// "malformed input" cases take throughout.
 fn device_matches(
     selectors: &[crate::cache::dra::RawDeviceSelector],
     driver: &str,
     basic: &crate::cache::dra::RawBasicDevice,
+    compiled: &CompiledSelectors,
 ) -> bool {
     for sel in selectors {
         let Some(cel) = &sel.cel else { continue };
-        let Ok(program) = cel_interpreter::Program::compile(&cel.expression) else {
+        let Some(Some(program)) = compiled.get(&cel.expression) else {
             return false;
         };
         let mut ctx = cel_interpreter::Context::default();
@@ -530,6 +550,7 @@ fn allocate_on_node(
     device_classes: &HashMap<&str, &RawDeviceClass>,
     candidates: &[Candidate],
     excluded: &HashSet<DeviceId>,
+    compiled: &CompiledSelectors,
 ) -> Option<Vec<RawDeviceRequestAllocationResult>> {
     let mut picked: HashSet<DeviceId> = HashSet::new();
     let mut out = Vec::new();
@@ -571,7 +592,7 @@ fn allocate_on_node(
                 if !eff.admin_access && (excluded.contains(&id) || trial_picked.contains(&id)) {
                     continue;
                 }
-                if !device_matches(&selectors, &c.driver, &c.basic) {
+                if !device_matches(&selectors, &c.driver, &c.basic, compiled) {
                     continue;
                 }
                 if !constraint_allows(&mut trial_states, &eff.result_name, &c.driver, &c.basic) {
@@ -697,11 +718,36 @@ fn pre_filter_impl(
             }
             let constraints = claim.spec.devices.as_ref().and_then(|d| d.constraints.clone()).unwrap_or_default();
 
+            // Every expression this claim's requests could evaluate,
+            // compiled once — the same set gets checked against every
+            // node's candidates below, so compiling inside that loop (or
+            // inside `allocate_on_node`, once per device) would repeat the
+            // same compile nodes × devices-per-node times. See
+            // `compile_selectors`'s doc comment.
+            let mut compiled = CompiledSelectors::new();
+            for req in &requests {
+                // Already validated above — every request has at least one
+                // alternative, or this function already returned.
+                let Some(alternatives) = effective_requests(req) else { continue };
+                for eff in &alternatives {
+                    compile_selectors(
+                        eff.selectors.iter().filter_map(|s| s.cel.as_ref().map(|c| c.expression.clone())),
+                        &mut compiled,
+                    );
+                    if let Some(class) = device_classes.get(eff.device_class_name.as_str()) {
+                        compile_selectors(
+                            class.spec.selectors.iter().flatten().filter_map(|s| s.cel.as_ref().map(|c| c.expression.clone())),
+                            &mut compiled,
+                        );
+                    }
+                }
+            }
+
             let mut by_node = HashMap::new();
             for node in snapshot.nodes() {
                 let candidates = candidates_for_node(snapshot, node);
                 if let Some(devices) =
-                    allocate_on_node(&requests, &constraints, &device_classes, &candidates, excluded)
+                    allocate_on_node(&requests, &constraints, &device_classes, &candidates, excluded, &compiled)
                 {
                     by_node.insert(node.name.clone(), devices);
                 }
@@ -792,10 +838,14 @@ impl crate::framework::PostFilterPlugin for DynamicResources {
         };
 
         let body = serde_json::json!({ "status": { "allocation": null, "reservedFor": null } });
-        if let Err(status) = raw_patch_claim_status(&self.client, &namespace, &name, body).await {
-            return (status, None);
+        match raw_patch_claim_status(&self.client, &namespace, &name, body).await {
+            Ok(()) => (Status::unschedulable(NAME, "deallocation of ResourceClaim completed"), None),
+            // Someone else touched this claim first (reserved it, or
+            // deallocated it themselves) — not this pod's problem to retry;
+            // the next scheduling attempt sees whatever they left behind.
+            Err(RawPatchError::Conflict) => (Status::unschedulable(NAME, "still not schedulable"), None),
+            Err(RawPatchError::Other(status)) => (status, None),
         }
-        (Status::unschedulable(NAME, "deallocation of ResourceClaim completed"), None)
     }
 }
 
@@ -873,46 +923,79 @@ impl DynamicResources {
         }
     }
 
+    /// A JSON merge patch replaces `status.reservedFor` wholesale, not
+    /// element-wise — so a read-modify-write with no concurrency check would
+    /// let two pods sharing one claim (the exact scenario
+    /// `ClaimPlan::Reserved`'s `AddReservation`-equivalent case exists for)
+    /// silently clobber each other's reservation if their PreBinds overlap.
+    /// Retried up to `MAX_CONFLICT_RETRIES` times on a real optimistic-lock
+    /// conflict (409), re-reading and rebuilding `reserved_for` fresh each
+    /// time — the same shape any correct read-modify-write against the
+    /// Kubernetes API needs, matching the resource-claim controller's own
+    /// concurrency posture for this same status subresource.
+    const MAX_CONFLICT_RETRIES: u32 = 5;
+
     async fn commit_claim(&self, pod: &PodInfo, node: &str, assumed: &AssumedClaim) -> Result<(), Status> {
         let (namespace, name) = assumed
             .claim_key
             .split_once('/')
             .ok_or_else(|| Status::error(NAME, format!("malformed claim key {:?}", assumed.claim_key)))?;
 
-        let current = raw_get_claim(&self.client, namespace, name).await?;
+        for attempt in 0..Self::MAX_CONFLICT_RETRIES {
+            let current = raw_get_claim(&self.client, namespace, name).await?;
+            let resource_version = current.metadata.resource_version.clone();
 
-        let mut reserved_for =
-            current.status.as_ref().and_then(|s| s.reserved_for.clone()).unwrap_or_default();
-        let already_reserved =
-            reserved_for.iter().any(|r| r.resource == "pods" && r.name == pod.name && r.uid == pod.uid);
-        if !already_reserved {
-            reserved_for.push(crate::cache::dra::RawConsumerReference {
-                api_group: None,
-                resource: "pods".to_string(),
-                name: pod.name.clone(),
-                uid: pod.uid.clone(),
-            });
-        }
-
-        let allocation = match current.status.as_ref().and_then(|s| s.allocation.clone()) {
-            // Already allocated (by us or another scheduler instance that
-            // raced us) — only the reservation needed adding.
-            Some(existing) => existing,
-            None => crate::cache::dra::RawAllocationResult {
-                devices: Some(crate::cache::dra::RawDeviceAllocationResult {
-                    results: Some(assumed.new_devices.clone()),
-                }),
-                node_selector: Some(single_node_selector(node)),
-            },
-        };
-
-        let body = serde_json::json!({
-            "status": {
-                "allocation": allocation,
-                "reservedFor": reserved_for,
+            let mut reserved_for =
+                current.status.as_ref().and_then(|s| s.reserved_for.clone()).unwrap_or_default();
+            let already_reserved =
+                reserved_for.iter().any(|r| r.resource == "pods" && r.name == pod.name && r.uid == pod.uid);
+            if !already_reserved {
+                reserved_for.push(crate::cache::dra::RawConsumerReference {
+                    api_group: None,
+                    resource: "pods".to_string(),
+                    name: pod.name.clone(),
+                    uid: pod.uid.clone(),
+                });
             }
-        });
-        raw_patch_claim_status(&self.client, namespace, name, body).await
+
+            let allocation = match current.status.as_ref().and_then(|s| s.allocation.clone()) {
+                // Already allocated (by us or another scheduler instance that
+                // raced us) — only the reservation needed adding.
+                Some(existing) => existing,
+                None => crate::cache::dra::RawAllocationResult {
+                    devices: Some(crate::cache::dra::RawDeviceAllocationResult {
+                        results: Some(assumed.new_devices.clone()),
+                    }),
+                    node_selector: Some(single_node_selector(node)),
+                },
+            };
+
+            // Including resourceVersion in a merge-patch body is what makes
+            // the apiserver enforce it as an optimistic-lock precondition —
+            // it isn't implied by the patch type alone.
+            let body = serde_json::json!({
+                "metadata": { "resourceVersion": resource_version },
+                "status": {
+                    "allocation": allocation,
+                    "reservedFor": reserved_for,
+                }
+            });
+            match raw_patch_claim_status(&self.client, namespace, name, body).await {
+                Ok(()) => return Ok(()),
+                Err(RawPatchError::Conflict) => {
+                    tracing::debug!(
+                        claim = %assumed.claim_key, attempt,
+                        "resourceclaim status patch lost a race, retrying with a fresh read"
+                    );
+                    continue;
+                }
+                Err(RawPatchError::Other(status)) => return Err(status),
+            }
+        }
+        Err(Status::error(
+            NAME,
+            format!("resourceclaim {:?} status patch kept losing the race after {} attempts", assumed.claim_key, Self::MAX_CONFLICT_RETRIES),
+        ))
     }
 }
 
@@ -943,14 +1026,24 @@ async fn raw_get_claim(client: &kube::Client, namespace: &str, name: &str) -> Re
         .map_err(|e| Status::error(NAME, format!("reading resourceclaim {name:?}: {e}")))
 }
 
+/// `raw_patch_claim_status`'s failure modes, split so `commit_claim` can
+/// retry a lost optimistic-lock race instead of surfacing it as a hard
+/// scheduling error.
+enum RawPatchError {
+    /// The apiserver rejected the write because `resourceVersion` no longer
+    /// matched (HTTP 409) — someone else wrote this claim first.
+    Conflict,
+    Other(Status),
+}
+
 async fn raw_patch_claim_status(
     client: &kube::Client,
     namespace: &str,
     name: &str,
     body: serde_json::Value,
-) -> Result<(), Status> {
+) -> Result<(), RawPatchError> {
     let bytes = serde_json::to_vec(&body)
-        .map_err(|e| Status::error(NAME, format!("encoding resourceclaim status patch: {e}")))?;
+        .map_err(|e| RawPatchError::Other(Status::error(NAME, format!("encoding resourceclaim status patch: {e}"))))?;
     let req = http::Request::builder()
         .method("PATCH")
         .uri(format!(
@@ -958,12 +1051,14 @@ async fn raw_patch_claim_status(
         ))
         .header("Content-Type", "application/merge-patch+json")
         .body(bytes)
-        .map_err(|e| Status::error(NAME, format!("building resourceclaim status PATCH: {e}")))?;
-    client
-        .request::<serde_json::Value>(req)
-        .await
-        .map(|_| ())
-        .map_err(|e| Status::error(NAME, format!("patching resourceclaim {name:?} status: {e}")))
+        .map_err(|e| RawPatchError::Other(Status::error(NAME, format!("building resourceclaim status PATCH: {e}"))))?;
+    client.request::<serde_json::Value>(req).await.map(|_| ()).map_err(|e| {
+        if matches!(&e, kube::Error::Api(s) if s.code == 409) {
+            RawPatchError::Conflict
+        } else {
+            RawPatchError::Other(Status::error(NAME, format!("patching resourceclaim {name:?} status: {e}")))
+        }
+    })
 }
 
 #[async_trait::async_trait]

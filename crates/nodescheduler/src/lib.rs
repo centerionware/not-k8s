@@ -280,13 +280,18 @@ async fn scheduling_loop(
                 let reserved = cycle::run_reserve(&registry, &mut state, &pod, &node);
                 if !reserved.is_success() {
                     tracing::info!(pod = %pod.key(), %node, status = %reserved, "reserve rejected");
-                    queue.done(&pod.uid);
                     let plugins = if reserved.plugin.is_empty() {
                         Vec::new()
                     } else {
                         vec![reserved.plugin]
                     };
+                    // Park first: add_unschedulable replays the events
+                    // recorded against this pod's in-flight marker, and
+                    // done() deletes that marker — calling it first would
+                    // silently drop everything that arrived mid-cycle.
+                    let uid = pod.uid.clone();
                     queue.add_unschedulable(pod, plugins, Vec::new());
+                    queue.done(&uid);
                     continue;
                 }
 
@@ -359,7 +364,6 @@ async fn scheduling_loop(
                 // the one thing an operator needs was invisible without a
                 // restart at a different log level.
                 tracing::info!(pod = %pod.key(), %reason, ?nominated_node, "unschedulable");
-                queue.done(&pod.uid);
 
                 // Tell the cluster why, off the scheduling loop. Without this
                 // the pod sits Pending with an empty Events section and no
@@ -381,11 +385,17 @@ async fn scheduling_loop(
                     .await;
                 });
 
+                // Park first: add_unschedulable replays the events recorded
+                // against this pod's in-flight marker, and done() deletes
+                // that marker — calling it first would silently drop
+                // everything that arrived mid-cycle, leaving the pod to wait
+                // for the next matching event (or the 5-minute safety net).
+                let uid = pod.uid.clone();
                 queue.add_unschedulable(pod, unschedulable_plugins, pending_plugins);
+                queue.done(&uid);
             }
             cycle::CycleOutcome::Error { reason } => {
                 tracing::warn!(pod = %pod.key(), %reason, "scheduling cycle failed");
-                queue.done(&pod.uid);
                 // Reported too: a plugin malfunction leaves the pod just as
                 // Pending as a genuine rejection does, and the user is owed
                 // the same explanation either way.
@@ -397,7 +407,14 @@ async fn scheduling_loop(
                     report::report_unschedulable(&client, &reported, &reason_text, None, &profile)
                         .await;
                 });
-                queue.add_unschedulable(pod, Vec::new(), Vec::new());
+                // No plugin to name, so straight to backoff, not through
+                // add_unschedulable's event-hint matching — see
+                // requeue_after_failure's own doc comment for why an empty
+                // plugin list there would strand this pod on the 5-minute
+                // safety net instead of the real retry.
+                let uid = pod.uid.clone();
+                queue.requeue_after_failure(pod);
+                queue.done(&uid);
             }
         }
     }

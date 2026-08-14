@@ -138,20 +138,19 @@ jobs:
         # entirely — build-and-test already built and uploaded this exact
         # binary once above; every shard just installs it.
         #
-        # SCHEDULER is deliberately NOT set here. nodescheduler is phase 1
-        # (docs/SCHEDULER.md) — no VolumeBinding, no DynamicResources, no
-        # PodTopologySpread, no InterPodAffinity, no preemption — so enabling
-        # it for the full suite would make a phase-1 component the gate for
-        # phase-4/5 tests: a WaitForFirstConsumer PVC never gets provisioned
-        # without the VolumeBinding plugin writing selected-node, and a
-        # ResourceClaim is never allocated without DynamicResources writing
-        # status.allocation. Those failures would be correct and unactionable.
-        #
-        # The release gate therefore tests what a release actually ships by
-        # default: k3s's own scheduler. cases/scheduler.sh self-skips, and its
-        # coverage comes from a targeted dispatch instead —
+        # SCHEDULER is deliberately NOT set here. All five phases
+        # (docs/SCHEDULER.md) are implemented now — this is no longer a
+        # "phase 1 only" gap — but the release gate still tests what a
+        # release actually ships *by default*: k3s's own bundled scheduler,
+        # since SCHEDULER is opt-in at deploy time
+        # (bootstrap-source.sh/bootstrap-release.sh), not the default. A
+        # full unfiltered run with SCHEDULER=nodescheduler has also turned up
+        # real, still-open failures outside cases/scheduler.sh itself (CSI
+        # attach timing, cpu-manager) that need to be understood before this
+        # could gate a release rather than the default scheduler.
+        # cases/scheduler.sh self-skips here, and its own coverage comes from
+        # a targeted dispatch instead —
         # `gh workflow run e2e.yml -f scheduler=nodescheduler -f only=scheduler`.
-        # Turn this on here once phases 4 and 5 land.
         env:
           NOTK8S_NODELET_PREBUILT: ${{ github.workspace }}/dist-bin/nodelet
           NOTK8S_NODEPROXY_PREBUILT: ${{ github.workspace }}/dist-bin/nodeproxy

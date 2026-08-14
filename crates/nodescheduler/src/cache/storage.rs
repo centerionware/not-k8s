@@ -47,6 +47,18 @@ pub struct PvInfo {
     /// non-CSI (legacy in-tree) source — those never count against a CSI
     /// driver's per-node limit.
     pub csi_driver: Option<String>,
+    /// `status.phase`. A static-PV match (`volume_binding.rs`) only
+    /// considers a non-pre-bound PV usable when this is `"Available"` — a
+    /// `Released`/`Failed`/`Pending` PV binding successfully would either
+    /// never actually complete or hand a pod storage the PV controller
+    /// considers unfit for reuse.
+    pub phase: String,
+    /// `spec.volumeMode`, defaulting to `"Filesystem"` when unset — the same
+    /// default upstream's API defaulting applies. A static-PV match must
+    /// require this to equal the PVC's own requested mode; binding a `Block`
+    /// PV to a `Filesystem` claim (or the reverse) fails at mount time, not
+    /// at match time, so nothing before `PreBind` would ever catch it.
+    pub volume_mode: String,
 }
 
 impl PvInfo {
@@ -68,6 +80,8 @@ impl PvInfo {
             node_affinity: spec.node_affinity.and_then(|na| na.required).map(Box::new),
             labels: pv.metadata.labels.clone().unwrap_or_default(),
             csi_driver: spec.csi.map(|c| c.driver),
+            phase: pv.status.as_ref().and_then(|s| s.phase.clone()).unwrap_or_default(),
+            volume_mode: spec.volume_mode.unwrap_or_else(|| "Filesystem".to_string()),
         }
     }
 }
@@ -86,6 +100,10 @@ pub struct PvcInfo {
     pub selector: Option<LabelSelector>,
     /// `status.phase == "Bound"`.
     pub bound: bool,
+    /// `spec.volumeMode`, defaulting to `"Filesystem"` when unset — see
+    /// `PvInfo::volume_mode`'s doc comment for why a static match must
+    /// require this to equal the candidate PV's own mode.
+    pub volume_mode: String,
 }
 
 impl PvcInfo {
@@ -116,6 +134,7 @@ impl PvcInfo {
             requested_bytes,
             selector: spec.selector,
             bound,
+            volume_mode: spec.volume_mode.unwrap_or_else(|| "Filesystem".to_string()),
         }
     }
 }

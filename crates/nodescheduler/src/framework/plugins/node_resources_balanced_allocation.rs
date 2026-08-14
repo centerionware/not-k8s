@@ -56,10 +56,12 @@ impl PreScorePlugin for NodeResourcesBalancedAllocation {
 /// `(1 - spread) * 100`, where spread is measured as upstream measures it.
 fn balance_score(fractions: &[f64]) -> i64 {
     if fractions.len() < 2 {
-        // Nothing to balance against. Upstream scores this 0 rather than
-        // full marks: with one resource the plugin has no opinion, and
-        // awarding 100 would silently add a constant to every node.
-        return 0;
+        // Nothing to balance against. Checked directly against upstream's
+        // real balanced_allocation.go: `std` (spread) starts at `0.0` and
+        // is only assigned inside the `len == 2` / `len > 2` branches, so
+        // fewer than two fractions leaves it at zero — `(1 - 0) * 100`,
+        // full marks, not a plugin-has-no-opinion zero.
+        return MAX_NODE_SCORE;
     }
 
     let spread = if fractions.len() == 2 {
@@ -153,11 +155,12 @@ mod tests {
     }
 
     #[test]
-    fn a_single_resource_has_no_opinion() {
-        // Awarding full marks would add a constant to every node and silently
-        // dilute every other plugin.
-        assert_eq!(balance_score(&[0.5]), 0);
-        assert_eq!(balance_score(&[]), 0);
+    fn fewer_than_two_fractions_gets_full_marks() {
+        // Matches upstream exactly: `std` never leaves its zero default
+        // without a second fraction to compare against, so the score
+        // formula `(1 - std) * 100` comes out to full marks, not zero.
+        assert_eq!(balance_score(&[0.5]), 100);
+        assert_eq!(balance_score(&[]), 100);
     }
 
     #[test]

@@ -166,7 +166,10 @@ pub fn handle_outcome(
         BindOutcome::Failed { reason } => {
             tracing::warn!(pod = %pod.key(), %reason, "binding cycle failed; requeueing");
             release(&pod, assumed, cache);
-            queue.add_unschedulable(pod, Vec::new(), Vec::new());
+            // No plugin to name, so straight to backoff — see
+            // requeue_after_failure's own doc comment for why
+            // add_unschedulable's event-hint matching would strand this pod.
+            queue.requeue_after_failure(pod);
 
             // The capacity this pod had assumed is free again. Nothing about
             // any other pod's rejection changed, so no ordinary event will

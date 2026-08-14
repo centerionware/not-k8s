@@ -305,6 +305,15 @@ test_scheduler_respects_a_taint_and_its_toleration() {
     delete_pod_if_exists "$tolerating"
 
     kubectl taint node "$node" example.com/sched-test=yes:NoSchedule --overwrite >/dev/null
+    # The taint must come off on every exit, including a failed assertion —
+    # `die` aborts the function immediately, and a NoSchedule taint left on
+    # the cluster's only node would fail every test that runs after this
+    # one, turning one failure into a cascade of unrelated ones.
+    # EXIT, not RETURN: `die` (used below) calls a hard `exit`, which never
+    # triggers a RETURN trap — only EXIT fires on that path. Each test
+    # already runs in its own subshell (see harness.sh), so this only tears
+    # down that subshell's trap, not the whole suite's.
+    trap 'kubectl taint node "'"$node"'" example.com/sched-test- >/dev/null 2>&1 || true' EXIT
 
     apply_manifest <<EOF
 apiVersion: v1
@@ -333,15 +342,14 @@ spec:
     command: ["sh", "-c", "sleep 300"]
 EOF
 
-    if ! wait_until 60 "$tolerating to be bound to a node" _pod_is_bound "$tolerating"; then
-        kubectl taint node "$node" example.com/sched-test- >/dev/null 2>&1 || true
-        die "the tolerating pod was never scheduled onto the tainted node"
-    fi
+    wait_until 60 "$tolerating to be bound to a node" _pod_is_bound "$tolerating" \
+        || die "the tolerating pod was never scheduled onto the tainted node"
     assert_eq "$(pod_field "$tainted" '{.spec.nodeName}')" "" \
         "the pod without a toleration must not be placed on the tainted node"
 
     # Removing the taint must place the other one, via the
-    # Node/UPDATE_NODE_TAINT subscription.
+    # Node/UPDATE_NODE_TAINT subscription. The trap above will try the same
+    # untaint again on return, which is a harmless no-op by then.
     kubectl taint node "$node" example.com/sched-test- >/dev/null 2>&1 || true
 
     local start=$SECONDS
@@ -1090,7 +1098,7 @@ EOF
 
     delete_pod_and_pvc "$name" "$claim"
 }
-register_test test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen
+register_test test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen csi_dra
 
 test_scheduler_enforces_read_write_once_pod_exclusivity() {
     _require_nodescheduler
@@ -1167,7 +1175,7 @@ EOF
 
     delete_pod_and_pvc "$second" "$claim"
 }
-register_test test_scheduler_enforces_read_write_once_pod_exclusivity
+register_test test_scheduler_enforces_read_write_once_pod_exclusivity csi_dra
 
 # ── Phase 5: HTTP extenders ─────────────────────────────────────────────
 #

@@ -181,7 +181,12 @@ impl NodeToStatus {
     pub fn summary(&self, total_nodes: usize) -> String {
         let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
         for (_, s) in &self.per_node {
-            for r in &s.reasons {
+            // A distinct set, not the raw reasons list: a plugin reporting
+            // two reasons for the same node must still count that node
+            // once, or the rendered total can claim more rejected nodes
+            // than the cluster has.
+            let distinct: std::collections::BTreeSet<&String> = s.reasons.iter().collect();
+            for r in distinct {
                 *counts.entry(r.clone()).or_default() += 1;
             }
         }
@@ -190,6 +195,9 @@ impl NodeToStatus {
             .map(|(reason, n)| format!("{n} {reason}"))
             .collect::<Vec<_>>()
             .join(", ");
+        if detail.is_empty() {
+            return format!("0/{total_nodes} nodes are available");
+        }
         format!("0/{total_nodes} nodes are available: {detail}")
     }
 }

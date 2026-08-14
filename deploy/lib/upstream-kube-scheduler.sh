@@ -138,6 +138,21 @@ start_upstream_kube_scheduler() {
         return 1
     fi
 
+    # k3s schedules from inside its own process (apiserver + scheduler +
+    # controller-manager all one binary) unless started with
+    # --disable-scheduler, so an "idle" nodescheduler tells us nothing about
+    # whether k3s's own bundled scheduler is quietly still active. The flag
+    # lives directly in the unit's baked-in ExecStart= (confirmed against a
+    # real deployment: setup-control-plane.sh's INSTALL_K3S_EXEC becomes
+    # literal `ExecStart=... '--disable-scheduler' \` lines, not a separate
+    # config file) — `systemctl cat` is what reads that back.
+    if command -v systemctl >/dev/null 2>&1 && systemctl cat k3s.service >/dev/null 2>&1; then
+        if ! systemctl cat k3s.service 2>/dev/null | grep -q -- '--disable-scheduler'; then
+            echo "k3s's own bundled scheduler is not disabled (--disable-scheduler absent from k3s.service's ExecStart) — restart k3s with SCHEDULER=nodescheduler (or otherwise pass --disable-scheduler) before starting this rig, or both will bind the same pods." >&2
+            return 1
+        fi
+    fi
+
     install_upstream_kube_scheduler || return 1
     write_scheduler_config
     write_scheduler_service

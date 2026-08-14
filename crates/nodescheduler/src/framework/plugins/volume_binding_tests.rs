@@ -244,6 +244,7 @@ fn matching_pv(name: &str, requested_bytes: i64) -> PvInfo {
         name: name.to_string(),
         access_modes: vec!["ReadWriteOnce".to_string()],
         capacity_bytes: requested_bytes,
+        phase: "Available".to_string(),
         ..Default::default()
     }
 }
@@ -292,6 +293,42 @@ fn a_static_pv_too_small_is_not_a_candidate() {
     // No StorageClass either, so falling through lands on the same
     // "unbound immediate" rejection the no-static-match path always does.
     assert!(status.reasons[0].contains("unbound immediate"));
+}
+
+#[test]
+fn a_released_static_pv_is_not_a_candidate() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    let mut pv = matching_pv("pv-1", 10);
+    pv.phase = "Released".to_string();
+    cache.upsert_pv("pv-1".to_string(), pv);
+    cache.upsert_pvc("ns/claim".to_string(), pvc_wanting("ns", "claim", 10));
+    let snapshot = cache.snapshot();
+    let mut state = CycleState::default();
+    let (status, _) = pre_filter_impl(&mut state, &pod_with_pvc("ns", "claim"), &snapshot, &no_excluded());
+    assert!(
+        status.reasons[0].contains("unbound immediate"),
+        "a Released PV never actually completes a bind and must not be offered as a candidate"
+    );
+}
+
+#[test]
+fn a_static_pv_with_a_mismatched_volume_mode_is_not_a_candidate() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    let mut pv = matching_pv("pv-1", 10);
+    pv.volume_mode = "Block".to_string();
+    cache.upsert_pv("pv-1".to_string(), pv);
+    let mut pvc = pvc_wanting("ns", "claim", 10);
+    pvc.volume_mode = "Filesystem".to_string();
+    cache.upsert_pvc("ns/claim".to_string(), pvc);
+    let snapshot = cache.snapshot();
+    let mut state = CycleState::default();
+    let (status, _) = pre_filter_impl(&mut state, &pod_with_pvc("ns", "claim"), &snapshot, &no_excluded());
+    assert!(
+        status.reasons[0].contains("unbound immediate"),
+        "binding a Block PV to a Filesystem claim fails at mount time, not match time — must not be a candidate"
+    );
 }
 
 #[test]

@@ -231,7 +231,7 @@ fn the_least_important_pod_is_taken_first() {
     let fits = cpu_fits(&node, &p);
     let victims = select_victims_on_node(&p, &node, &mut budgets, fits).expect("candidate");
 
-    assert_eq!(victims.pods, vec!["minor".to_string()]);
+    assert_eq!(victims.pods, vec!["default/minor".to_string()]);
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn a_pdb_protected_pod_is_spared_when_another_will_do() {
 
     assert_eq!(
         victims.pods,
-        vec!["expendable".to_string()],
+        vec!["default/expendable".to_string()],
         "the pod under an exhausted PDB should be the one spared"
     );
     assert_eq!(victims.pdb_violations, 0);

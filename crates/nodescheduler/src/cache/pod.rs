@@ -56,15 +56,22 @@ pub struct Resources {
 
 impl Resources {
     /// Element-wise sum, used to accumulate a node's committed total.
+    /// Saturating, not `+=`: a legal-but-absurd quantity like `cpu: "1E"`
+    /// (accepted by the apiserver) parses to a value near `i64::MAX`, and
+    /// plain addition on that panics in debug and wraps in release — a
+    /// wrapped total goes negative, making the node look emptier than
+    /// empty, the exact failure `sub`'s own clamp below exists to prevent.
     pub fn add(&mut self, other: &Resources) {
-        self.milli_cpu += other.milli_cpu;
-        self.memory += other.memory;
-        self.ephemeral_storage += other.ephemeral_storage;
+        self.milli_cpu = self.milli_cpu.saturating_add(other.milli_cpu);
+        self.memory = self.memory.saturating_add(other.memory);
+        self.ephemeral_storage = self.ephemeral_storage.saturating_add(other.ephemeral_storage);
         for (k, v) in &other.hugepages {
-            *self.hugepages.entry(k.clone()).or_default() += v;
+            let e = self.hugepages.entry(k.clone()).or_default();
+            *e = e.saturating_add(*v);
         }
         for (k, v) in &other.extended {
-            *self.extended.entry(k.clone()).or_default() += v;
+            let e = self.extended.entry(k.clone()).or_default();
+            *e = e.saturating_add(*v);
         }
     }
 
@@ -544,8 +551,12 @@ impl PodInfo {
             scheduling_gates: spec.scheduling_gates.clone().unwrap_or_default(),
             host_ports,
             requests: pod_requests(pod),
+            // The same container set `images` was built from — init
+            // containers contribute image entries too, and ImageLocality's
+            // cap scales with this count, so counting only spec.containers
+            // let init-container images carry excess weight.
+            container_count: images.len(),
             images,
-            container_count: spec.containers.len(),
             pvc_names: spec
                 .volumes
                 .iter()

@@ -200,6 +200,18 @@ fn static_matches(pvc: &crate::cache::storage::PvcInfo, pv: &crate::cache::stora
     if claimed_by_someone_else {
         return false;
     }
+    // A PV already pre-bound to this exact PVC (claim_ref names it) is
+    // usable regardless of phase — that's the whole "pre-bound" case. A PV
+    // with no claimant yet must be Available: Released/Failed/Pending would
+    // either never actually complete a bind or hand the pod storage the PV
+    // controller itself no longer considers fit for reuse.
+    let pre_bound_to_us = pv.claim_ref.as_ref().is_some_and(|(ns, name)| ns == &pvc.namespace && name == &pvc.name);
+    if !pre_bound_to_us && pv.phase != "Available" {
+        return false;
+    }
+    if pv.volume_mode != pvc.volume_mode {
+        return false;
+    }
     if pv.storage_class_name != pvc.storage_class_name.as_deref().unwrap_or("") {
         return false;
     }

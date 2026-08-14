@@ -965,7 +965,7 @@ fresh arrival: it re-projected with `queued_at = now` and called
 so a pod parked in `unschedulable` could sit in both containers at once.
 With `report.rs` in place that becomes a spin:
 
-```
+```text
 cycle fails -> report patches the pod's status to say why
             -> apiserver emits a pod update
             -> add() pushes it back to active, skipping backoff
@@ -1011,7 +1011,7 @@ projection and the entire scheduling cycle — correctly rejected it.
 **Found**: by making the e2e assertion print the two numbers the fit check
 is actually made from, instead of reasoning about them for a third time:
 
-```
+```text
 pod requests:     {"cpu":"10k"}
 node allocatable: {"cpu":"4", ...}
 ```

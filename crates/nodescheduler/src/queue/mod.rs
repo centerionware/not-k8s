@@ -393,6 +393,26 @@ impl SchedulingQueue {
         );
     }
 
+    /// For a cycle that failed for a reason no plugin can explain — a bind
+    /// RPC error, an internal plugin bug — straight to the backoff timer,
+    /// not through `add_unschedulable`'s event-hint matching. With no
+    /// plugin names to record, `HintRegistry::decide` returns `Skip` for
+    /// every event, including the one that actually freed whatever this
+    /// pod needs (`AssignedPod` delete) — `add_unschedulable` would strand
+    /// it until the 5-minute safety net instead of the real retry. A
+    /// timer-based requeue needs no plugin cooperation to fire.
+    pub fn requeue_after_failure(&self, pod: Arc<PodInfo>) {
+        // Same attempts accounting `add_unschedulable` documents: without
+        // it every requeue prices as a first attempt and `backoff_duration`
+        // never grows past its 1s floor.
+        let pod = {
+            let mut p = (*pod).clone();
+            p.attempts = p.attempts.saturating_add(1);
+            Arc::new(p)
+        };
+        self.push_backoff(pod);
+    }
+
     fn push_backoff(&self, pod: Arc<PodInfo>) {
         {
             let mut b = self.backoff.lock().unwrap();

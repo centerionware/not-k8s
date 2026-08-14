@@ -32,6 +32,7 @@
 use crate::cache::{NodeInfo, PodInfo};
 use crate::framework::status::Status;
 use crate::framework::{CycleState, Plugin, PreScorePlugin, ScorePlugin, MAX_NODE_SCORE};
+use std::collections::HashMap;
 
 pub const NAME: &str = "ImageLocality";
 
@@ -40,8 +41,16 @@ const MIN_THRESHOLD: i64 = 23 * 1024 * 1024;
 /// Per-container cap, so one huge image cannot dominate the whole score.
 const MAX_CONTAINER_THRESHOLD: i64 = 1000 * 1024 * 1024;
 
-/// Total node count, captured once per cycle for the spread ratio.
-struct TotalNodes(i64);
+/// Captured once per cycle for the spread ratio. `NodeInfo::images`'
+/// `ImageState::num_nodes` is always `1` (a per-node projection has no way
+/// to know the cluster-wide count on its own) — `image_node_counts` is the
+/// real cluster-wide count, computed here from the actual feasible node set
+/// `PreScore` is handed, the same one `Snapshot::nodes_with_image` would
+/// answer for the whole cluster.
+struct PreScoreState {
+    total_nodes: i64,
+    image_node_counts: HashMap<String, i64>,
+}
 
 pub struct ImageLocality;
 
@@ -54,23 +63,34 @@ impl Plugin for ImageLocality {
 
 impl PreScorePlugin for ImageLocality {
     fn pre_score(&self, state: &mut CycleState, _pod: &PodInfo, nodes: &[&NodeInfo]) -> Status {
-        state.write(NAME, TotalNodes(nodes.len() as i64));
+        let mut image_node_counts: HashMap<String, i64> = HashMap::new();
+        for node in nodes {
+            for image in node.images.keys() {
+                *image_node_counts.entry(image.clone()).or_default() += 1;
+            }
+        }
+        state.write(NAME, PreScoreState { total_nodes: nodes.len() as i64, image_node_counts });
         Status::success()
     }
 }
 
 impl ScorePlugin for ImageLocality {
     fn score(&self, state: &CycleState, pod: &PodInfo, node: &NodeInfo) -> Result<i64, Status> {
-        let total_nodes = state.read::<TotalNodes>(NAME).map(|t| t.0).unwrap_or(1).max(1);
+        let pre = state.read::<PreScoreState>(NAME);
+        let total_nodes = pre.map(|p| p.total_nodes).unwrap_or(1).max(1);
 
         let mut sum = 0i64;
         for image in &pod.images {
             let Some(present) = node.images.get(image) else {
                 continue;
             };
-            // num_nodes is how widely cached the image is; see the header for
-            // why a rare image is worth *less*, not more.
-            let spread = present.num_nodes.clamp(1, total_nodes);
+            // How widely cached the image is, cluster-wide — see the header
+            // for why a rare image is worth *less*, not more.
+            let spread = pre
+                .and_then(|p| p.image_node_counts.get(image))
+                .copied()
+                .unwrap_or(1)
+                .clamp(1, total_nodes);
             sum += present.size_bytes * spread / total_nodes;
         }
 
@@ -107,13 +127,11 @@ mod tests {
 
     const MB: i64 = 1024 * 1024;
 
-    fn node_holding(name: &str, images: &[(&str, i64, i64)]) -> NodeInfo {
+    fn node_holding(name: &str, images: &[(&str, i64)]) -> NodeInfo {
         let mut n = node(name);
         n.images = images
             .iter()
-            .map(|(img, size, nodes)| {
-                (img.to_string(), ImageState { size_bytes: *size, num_nodes: *nodes })
-            })
+            .map(|(img, size)| (img.to_string(), ImageState { size_bytes: *size, num_nodes: 1 }))
             .collect();
         n
     }
@@ -125,19 +143,21 @@ mod tests {
         p
     }
 
-    fn state_with(total_nodes: usize) -> CycleState {
+    /// Runs the real `PreScore` over `nodes` — the cluster-wide count each
+    /// test wants (`image_node_counts`) comes from how many of `nodes`
+    /// actually hold the image, not a hand-set fixture field.
+    fn state_after_prescore(nodes: &[&NodeInfo]) -> CycleState {
         let mut s = CycleState::default();
-        s.write(NAME, TotalNodes(total_nodes as i64));
+        ImageLocality.pre_score(&mut s, &pod("p"), nodes);
         s
     }
 
     #[test]
     fn a_node_holding_the_image_beats_one_that_does_not() {
         let p = pod_using(&["app:v1"]);
-        let state = state_with(10);
-
-        let has = node_holding("has", &[("app:v1", 500 * MB, 10)]);
+        let has = node_holding("has", &[("app:v1", 500 * MB)]);
         let lacks = node("lacks");
+        let state = state_after_prescore(&[&has, &lacks]);
 
         let with = ImageLocality.score(&state, &p, &has).unwrap();
         let without = ImageLocality.score(&state, &p, &lacks).unwrap();
@@ -148,15 +168,25 @@ mod tests {
     #[test]
     fn a_widely_cached_image_counts_for_more_than_a_rare_one() {
         // THE property of this plugin. A rare image scoring higher is the
-        // node-heating bug the spread ratio exists to prevent.
+        // node-heating bug the spread ratio exists to prevent. Two separate
+        // ten-node clusters: "app:v1" is on all ten in one, on just one node
+        // in the other.
         let p = pod_using(&["app:v1"]);
-        let state = state_with(10);
 
-        let common = node_holding("common", &[("app:v1", 900 * MB, 10)]);
-        let rare = node_holding("rare", &[("app:v1", 900 * MB, 1)]);
+        let common = node_holding("common", &[("app:v1", 900 * MB)]);
+        let common_others: Vec<NodeInfo> = (1..10).map(|i| node_holding(&format!("c{i}"), &[("app:v1", 900 * MB)])).collect();
+        let mut common_cluster: Vec<&NodeInfo> = vec![&common];
+        common_cluster.extend(common_others.iter());
+        let common_state = state_after_prescore(&common_cluster);
 
-        let common_score = ImageLocality.score(&state, &p, &common).unwrap();
-        let rare_score = ImageLocality.score(&state, &p, &rare).unwrap();
+        let rare = node_holding("rare", &[("app:v1", 900 * MB)]);
+        let rare_others: Vec<NodeInfo> = (1..10).map(|i| node(&format!("r{i}"))).collect();
+        let mut rare_cluster: Vec<&NodeInfo> = vec![&rare];
+        rare_cluster.extend(rare_others.iter());
+        let rare_state = state_after_prescore(&rare_cluster);
+
+        let common_score = ImageLocality.score(&common_state, &p, &common).unwrap();
+        let rare_score = ImageLocality.score(&rare_state, &p, &rare).unwrap();
         assert!(
             common_score > rare_score,
             "a widely cached image ({common_score}) must beat a rare one ({rare_score})"
@@ -168,17 +198,19 @@ mod tests {
         // Below 23MB the pull is fast enough that placement should be decided
         // on other grounds.
         let p = pod_using(&["tiny:v1"]);
-        let n = node_holding("n", &[("tiny:v1", 5 * MB, 1)]);
+        let n = node_holding("n", &[("tiny:v1", 5 * MB)]);
+        let state = state_after_prescore(&[&n]);
 
-        assert_eq!(ImageLocality.score(&state_with(1), &p, &n).unwrap(), 0);
+        assert_eq!(ImageLocality.score(&state, &p, &n).unwrap(), 0);
     }
 
     #[test]
     fn an_enormous_image_is_capped_at_the_maximum() {
         let p = pod_using(&["huge:v1"]);
-        let n = node_holding("n", &[("huge:v1", 50_000 * MB, 1)]);
+        let n = node_holding("n", &[("huge:v1", 50_000 * MB)]);
+        let state = state_after_prescore(&[&n]);
 
-        assert_eq!(ImageLocality.score(&state_with(1), &p, &n).unwrap(), MAX_NODE_SCORE);
+        assert_eq!(ImageLocality.score(&state, &p, &n).unwrap(), MAX_NODE_SCORE);
     }
 
     #[test]
@@ -194,10 +226,9 @@ mod tests {
     #[test]
     fn several_cached_images_accumulate() {
         let p = pod_using(&["a:v1", "b:v1"]);
-        let state = state_with(1);
-
-        let both = node_holding("both", &[("a:v1", 400 * MB, 1), ("b:v1", 400 * MB, 1)]);
-        let one = node_holding("one", &[("a:v1", 400 * MB, 1)]);
+        let both = node_holding("both", &[("a:v1", 400 * MB), ("b:v1", 400 * MB)]);
+        let one = node_holding("one", &[("a:v1", 400 * MB)]);
+        let state = state_after_prescore(&[&both, &one]);
 
         assert!(
             ImageLocality.score(&state, &p, &both).unwrap()
@@ -210,19 +241,25 @@ mod tests {
         // Defensive: a total of zero nodes is impossible in a real cycle, but
         // a panic in a scorer takes the whole scheduler down.
         let p = pod_using(&["app:v1"]);
-        let n = node_holding("n", &[("app:v1", 500 * MB, 1)]);
+        let n = node_holding("n", &[("app:v1", 500 * MB)]);
 
         let score = ImageLocality.score(&CycleState::default(), &p, &n).unwrap();
         assert!((0..=MAX_NODE_SCORE).contains(&score));
     }
 
     #[test]
-    fn a_node_claiming_more_copies_than_the_cluster_has_is_clamped() {
-        // Stale image state must not produce a score above the maximum.
+    fn a_count_higher_than_the_cluster_size_is_clamped() {
+        // Defensive: an inconsistent PreScoreState (more nodes-with-image
+        // than nodes total) must not produce a score above the maximum.
         let p = pod_using(&["app:v1"]);
-        let n = node_holding("n", &[("app:v1", 900 * MB, 99)]);
+        let n = node_holding("n", &[("app:v1", 900 * MB)]);
+        let mut state = CycleState::default();
+        state.write(
+            NAME,
+            PreScoreState { total_nodes: 3, image_node_counts: HashMap::from([("app:v1".to_string(), 99)]) },
+        );
 
-        let score = ImageLocality.score(&state_with(3), &p, &n).unwrap();
+        let score = ImageLocality.score(&state, &p, &n).unwrap();
         assert!((0..=MAX_NODE_SCORE).contains(&score), "score {score} out of range");
     }
 
@@ -233,7 +270,22 @@ mod tests {
         let b = node("b");
         ImageLocality.pre_score(&mut state, &pod("p"), &[&a, &b]);
 
-        assert_eq!(state.read::<TotalNodes>(NAME).map(|t| t.0), Some(2));
+        assert_eq!(state.read::<PreScoreState>(NAME).map(|s| s.total_nodes), Some(2));
+    }
+
+    #[test]
+    fn prescore_counts_how_many_nodes_actually_hold_each_image() {
+        let a = node_holding("a", &[("app:v1", 500 * MB)]);
+        let b = node_holding("b", &[("app:v1", 500 * MB)]);
+        let c = node("c");
+        let mut state = CycleState::default();
+        ImageLocality.pre_score(&mut state, &pod("p"), &[&a, &b, &c]);
+
+        assert_eq!(
+            state.read::<PreScoreState>(NAME).and_then(|s| s.image_node_counts.get("app:v1")).copied(),
+            Some(2),
+            "two of the three nodes actually hold the image"
+        );
     }
 
     #[test]

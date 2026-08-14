@@ -61,7 +61,8 @@ nodescheduler_restart_with_env() {
     sudo systemctl daemon-reload
     sudo systemctl reset-failed nodescheduler.service 2>/dev/null || true
     sudo systemctl restart nodescheduler.service
-    _nodescheduler_wait_leading "nodescheduler re-acquired the leader lease after restart with env override ($*)" "$before"
+    _nodescheduler_wait_leading "nodescheduler re-acquired the leader lease after restart with env override ($*)" "$before" \
+        || die "nodescheduler never re-acquired the leader lease after the env override ($*) — check: journalctl -u nodescheduler -n 50"
 }
 
 nodescheduler_restore_env() {
@@ -72,7 +73,8 @@ nodescheduler_restore_env() {
     sudo systemctl daemon-reload
     sudo systemctl reset-failed nodescheduler.service 2>/dev/null || true
     sudo systemctl restart nodescheduler.service
-    _nodescheduler_wait_leading "nodescheduler re-acquired the leader lease (env override removed)" "$before"
+    _nodescheduler_wait_leading "nodescheduler re-acquired the leader lease (env override removed)" "$before" \
+        || die "nodescheduler never re-acquired the leader lease after removing the env override — check: journalctl -u nodescheduler -n 50"
 }
 
 export -f nodescheduler_restart_supported nodescheduler_restart_with_env \

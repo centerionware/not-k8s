@@ -33,10 +33,12 @@ use std::sync::Arc;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ImageState {
     pub size_bytes: i64,
-    /// How many nodes in the cluster hold this image. `ImageLocality` scales
-    /// an image's value by this ratio deliberately: preferring an image that
-    /// exists on only one node concentrates load onto it (upstream calls this
-    /// the "node heating" problem), so a widely-present image is worth more.
+    /// Always `1` here — a single node's own projection has no way to know
+    /// the cluster-wide count. `image_locality.rs`'s `pre_score` computes
+    /// the real cluster-wide count itself (from the feasible node set
+    /// `PreScore` is handed) rather than reading this field; kept for the
+    /// shape symmetry with upstream's own per-node `ImageStateSummary` and
+    /// because test fixtures still construct it directly.
     pub num_nodes: i64,
 }
 

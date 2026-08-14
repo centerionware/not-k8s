@@ -40,7 +40,15 @@ if command -v k3s &>/dev/null; then
     echo "==> k3s binary already present: $(k3s --version)"
 else
     echo "==> Installing k3s via official installer..."
-    curl -sfL https://get.k3s.io | sh -s - "" # args come from INSTALL_K3S_EXEC below
+    # SKIP_START, not just an empty exec string: the installer's default
+    # behavior is to enable *and start* the systemd unit immediately once
+    # the binary lands, and with SCHEDULER=nodescheduler that would be a
+    # real window where k3s's own bundled scheduler runs undisabled —
+    # exactly the double-binding race this whole SCHEDULER_ARG dance exists
+    # to prevent. The real (re)configure-and-start happens below, once
+    # INSTALL_K3S_EXEC (with --disable-scheduler already in it, if wanted)
+    # is set — args come from there, not from this call.
+    INSTALL_K3S_SKIP_START=true curl -sfL https://get.k3s.io | sh -s - ""
 fi
 
 # ── Configure and (re)start k3s with agent disabled ─────────────────────────

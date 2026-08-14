@@ -116,6 +116,26 @@ fn an_unbound_pvc_has_nothing_to_check_yet() {
 }
 
 #[test]
+fn a_multi_zone_pv_label_is_membership_not_equality() {
+    // An in-tree zonal PV can name several zones joined by `__` — exact
+    // string equality would reject every node for it.
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", Some("us-east-1b")));
+    cache.upsert_pv("pv-1".to_string(), zoned_pv("pv-1", "us-east-1a__us-east-1b"));
+    cache.upsert_pvc("ns/claim".to_string(), bound_pvc("ns", "claim", "pv-1"));
+    let snapshot = cache.snapshot();
+
+    let mut p = pod("p");
+    p.namespace = "ns".to_string();
+    p.pvc_names = vec!["claim".to_string()];
+
+    let mut state = CycleState::default();
+    VolumeZone.pre_filter(&mut state, &p, &snapshot);
+    let n = snapshot.node("n1").unwrap().as_ref().clone();
+    assert!(VolumeZone.filter(&state, &p, &n).is_success(), "us-east-1b is one of the PV's member zones");
+}
+
+#[test]
 fn it_wakes_on_pvc_and_pv_changes() {
     let events = VolumeZone.events_to_register();
     let pvc_updated = ClusterEvent::new(EventResource::PersistentVolumeClaim, ActionType::UPDATE);

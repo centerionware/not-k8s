@@ -29,6 +29,12 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
 pub const NAME: &str = "DefaultBinder";
 
+/// `kube` 4.0 sets no default read/write timeout on its own — a stalled
+/// request here would hang `bind_one`/`handle_outcome` forever, leaving the
+/// pod's Reserve assumption never released and the node looking permanently
+/// short on capacity to every later cycle.
+const BIND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub struct DefaultBinder {
     client: kube::Client,
 }
@@ -103,9 +109,13 @@ impl BindPlugin for DefaultBinder {
         // not the Binding — so this deserializes into the untyped value and
         // ignores it. Asking for `Binding` back would fail on every
         // successful bind.
-        match self.client.request::<serde_json::Value>(req).await {
-            Ok(_) => Status::success(),
-            Err(e) => Status::error(NAME, format!("binding {} to {node}: {e}", pod.key())),
+        match tokio::time::timeout(BIND_TIMEOUT, self.client.request::<serde_json::Value>(req)).await {
+            Ok(Ok(_)) => Status::success(),
+            Ok(Err(e)) => Status::error(NAME, format!("binding {} to {node}: {e}", pod.key())),
+            Err(_) => Status::error(
+                NAME,
+                format!("binding {} to {node} did not respond within {}s", pod.key(), BIND_TIMEOUT.as_secs()),
+            ),
         }
     }
 }

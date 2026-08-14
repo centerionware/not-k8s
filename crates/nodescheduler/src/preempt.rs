@@ -273,7 +273,11 @@ where
     }
 
     Some(Victims {
-        pods: victims.iter().map(|p| p.name.clone()).collect(),
+        // Namespaced key, not bare name — two pods on the same node can
+        // legitimately share a name across namespaces, and a bare name
+        // would let both callers in cycle.rs match the wrong one when they
+        // filter `node.pods` back down to this set.
+        pods: victims.iter().map(|p| p.key()).collect(),
         pdb_violations,
     })
 }
