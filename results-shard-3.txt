@@ -1,22 +1,138 @@
-commit: 49e3e748164ec7e22c791978af4e485a19a3a517
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31779115615
-timestamp (UTC): 2026-08-14T07:19:30Z
+commit: cbe698290392660ba50de09e5856f5e24f237566
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31779874505
+timestamp (UTC): 2026-08-14T07:47:45Z
 shard: 3/5
-exit code: 0
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786691919
+==> Test namespace: not-k8s-e2e-1786692653
 ==> 216 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 41 test(s) selected
-▶ test_scheduler_places_an_ordinary_pod
-  ✔ PASS (7s)
-▶ test_scheduler_respects_a_taint_and_its_toleration
+▶ test_combined_binary_rejects_an_unknown_component
+    (skip: no combined binary here (split layout))
+  ○ SKIP (0s)
+▶ test_credential_provider_config_unset_by_default
+  ✔ PASS (1s)
+▶ test_datastore_enforces_compare_and_swap
+  ✔ PASS (0s)
+▶ test_datastore_expires_a_lease_and_its_keys
+  ✔ PASS (1s)
+▶ test_apiserver_crud_round_trips_through_nodestore
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13692/environ: Permission denied
+Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
+  ✔ PASS (6s)
+▶ test_a_follower_forwards_writes_to_the_leader
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_the_cluster_tolerates_a_slow_link
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_plugin_registry_watches_for_device_plugins_too
+  ✔ PASS (0s)
+▶ test_custom_dns_config_reaches_resolv_conf
+  ✔ PASS (3s)
+▶ test_eviction_manual_procedure
+    (skip: triggering real eviction safely needs either an artificially-low pressure threshold or actually exhausting a resource — neither is something this suite does to a live node automatically. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES set just above current MemAvailable (forces MemoryPressure=True without real exhaustion), (3) apply a BestEffort pod and a Guaranteed pod, (4) within NODELET_EVICTION_CHECK_SECS (default 10s) confirm the BestEffort pod gets phase Failed/reason Evicted and is deleted, while the Guaranteed pod is untouched, (5) restore the normal threshold and restart nodelet.)
+  ○ SKIP (0s)
+▶ test_pod_exceeding_an_empty_dir_size_limit_is_evicted
+  ✔ PASS (69s)
+▶ test_basic_pod_runs
+  ✔ PASS (32s)
+▶ test_crashing_container_restarts_and_increments_restart_count
+  ✔ PASS (34s)
+▶ test_exited_container_reports_terminated_state_with_exit_code
+  ✔ PASS (5s)
+▶ test_pod_status_reports_qos_class
   ✔ PASS (2s)
+▶ test_node_reports_hugepages_capacity_when_reserved
+  ✔ PASS (1s)
+▶ test_pod_resources_socket_is_created_on_a_cri_node
+  ✔ PASS (0s)
+▶ test_startup_probe_gates_liveness_and_readiness
+  ✔ PASS (36s)
+▶ test_metrics_resource_returns_real_pod_usage
+  ✔ PASS (33s)
+▶ test_no_swap_default_disables_swap_via_cgroup
+  ✔ PASS (32s)
+▶ test_besteffort_pod_gets_no_cgroup_limit
+  ✔ PASS (32s)
+▶ test_scheduler_places_an_ordinary_pod
+  ✔ PASS (32s)
+▶ test_scheduler_respects_a_taint_and_its_toleration
+  ✔ PASS (3s)
 ▶ test_scheduler_honours_pod_affinity
   ✔ PASS (30s)
 ▶ test_scheduler_schedules_pods_that_get_default_spread_constraints
   ✔ PASS (0s)
+▶ test_container_status_reports_resolved_user
+==> FATAL: timed out after 90s waiting for: container-status-user Running
+  ✘ FAIL (91s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 14 07:36:21 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:36:21.466335Z  INFO torn down pod=not-k8s-e2e-1786692653/besteffort
+    Aug 14 07:36:22 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:36:22.545026Z  INFO CreateContainer succeeded container=c container_id=a513032e90e77ae1c9c97d79df80e69ae6a6d22133811722d1d22c6c9182d23d
+    Aug 14 07:36:22 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:36:22.639863Z  INFO torn down pod=not-k8s-e2e-1786692653/besteffort
+    Aug 14 07:36:24 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:36:24.373366Z  INFO node status pushed
+    Aug 14 07:36:53 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:36:53.376703Z  INFO torn down pod=not-k8s-e2e-1786692653/sched-basic
+    Aug 14 07:36:53 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:36:53.475584Z  INFO CreateContainer succeeded container=c container_id=5bfd493a60ae1c4dfa9cf8fb9058c0ab983db39288eca5adbff41d2a2acfaa70
+    Aug 14 07:36:53 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:36:53.611195Z  INFO CreateContainer succeeded container=c container_id=65927be4fe2ef991a362f512ae6f2a77e8a666ca04ff4b30293742fd68028566
+    Aug 14 07:37:23 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:37:23.831633Z  INFO torn down pod=not-k8s-e2e-1786692653/sched-tainted
+    Aug 14 07:37:24 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:37:24.419836Z  INFO node status pushed
+    Aug 14 07:37:54 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:37:54.049378Z  INFO torn down pod=not-k8s-e2e-1786692653/sched-tolerating
+    Aug 14 07:37:54 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:37:54.155332Z  INFO CreateContainer succeeded container=c container_id=7495dd7d97fc2b1743940d8749a115b2c553e16766e2d8f7451b8a889047b03f
+    Aug 14 07:37:54 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:37:54.201875Z  INFO torn down pod=not-k8s-e2e-1786692653/sched-basic
+    Aug 14 07:37:54 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:37:54.297236Z  INFO CreateContainer succeeded container=c container_id=7b9baa233ee799dda608f6d23ce66915d06f809c339ccac16ba6dc06889486d6
+    Aug 14 07:38:24 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:38:24.469620Z  INFO node status pushed
+    Aug 14 07:38:24 runnervmvrwv9 run-nodelet.sh[15670]: 2026-08-14T07:38:24.487799Z  INFO torn down pod=not-k8s-e2e-1786692653/sched-affin-follower
+▶ test_proc_mount_default_masks_proc_kcore
+  ✔ PASS (90s)
+▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
+==> WARNING: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership, got '3000 5000' — this runtime may not implement Merge's image-group-membership resolution (a newer-than-usual runc feature); not failing outright since nodelet itself only passes the policy through to CRI unchanged
+  ✔ PASS (33s)
+▶ test_clusterip_is_reachable_from_inside_a_pod
+  ✔ PASS (65s)
+▶ test_session_affinity_pins_a_client_to_one_backend
+  ✔ PASS (64s)
+▶ test_kubectl_logs_returns_real_output
+  ✔ PASS (61s)
+▶ test_configmap_volume_updates_live_without_pod_restart
+Warning: resource configmaps/cm-live-update-cm is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
+  ✔ PASS (33s)
+▶ test_host_aliases_are_written_to_etc_hosts
+  ✔ PASS (32s)
+▶ test_fsgroup_chowns_materialized_volumes
+  ✔ PASS (32s)
+▶ test_recursive_read_only_still_mounts_read_only_normally
+  ✔ PASS (31s)
+▶ test_host_path_directory_or_create_creates_a_missing_directory
+  ✔ PASS (32s)
+▶ test_config_file_sets_a_value_env_did_not_override
+  ✔ PASS (2s)
+▶ test_image_gc_removes_unreferenced_images_above_the_watermark
+  ✔ PASS (68s)
+▶ test_log_rotation_creates_a_rotated_file
+==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786692653_log-rotation_45f8a01c-9b6c-4b89-b7f1-39135ebf08eb (log_rotate_interval, default 10s)...
+  ✔ PASS (12s)
+▶ test_client_certificate_authentication_works
+........+...+.+.....+......+...+...+............+..........+..+.............+...+.....+.......+..+......+....+.........+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+......+...+.....+......+.+........+.+.........+.........+.....+.......+..................+.....+..........+..+.+..+............+................+.........+...+......+.........+.....+...+....+...+.....+...+...............+...+.+...+...+..+.+.................+...+.+...+..+......+....+.........+..............+............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+........+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*......+.+.................+.+...........................+..+.+.....................+........+......+.+...+..+....+.....+.........+...+....+.....+......+...+..........+..+...+......+.+..+.......+.....+.............+..+.+.....+...+....+...+...+.....+.......+....................+....+......+...+..+....+...+..+...+................+.....+....+..+......+....+...........+.......+...+.........+.........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+......+.........+.......+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...............+...+..+.+...........+.+...+.....+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+.......+..+...+.+..+.......+......+......+.....+.+.........+......+..+...+..........+..+...+.............+..............+.+..+....+...+........+......................+............+.....+....+.....+.+...+...+..+.....................+.........+......................+...+........+...+.+...+............+......+...+..+.........+.........+.......+...............+.....+.........+......+....+..............+....+.....+.+...........+....+..+...+.+.....+...+...+.........+.+..............+.....................+...+.......+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+......+........+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+....+...+...+......+...........+...+.+......+.....+.........+.+...+.........+..+....+...........+...+..................+.........+....+.................+...+.......+........+.+...+..................+..+.+..+.......+.....+...+.......+........+...+.+.....+...+......+...................+..+...............+....+..+.........+...+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+Certificate request self-signature ok
+subject=CN = alice, O = system:masters
+.+.+......+...+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+...........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+..+...+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.+..+..........+..+.+.........+......+.....+............+...+....+.....+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+.........+....+..+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+.+...............+......+......+..+...+...+......+.........+....+......+..+.........+....+..+...+.+.........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+  ✔ PASS (2s)
+▶ test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host
+    (skip: this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case; a multi-node host needs the manual cross-provider check below instead)
+  ○ SKIP (0s)
 
 ════════════════════════════════════════
-Results: 4 passed, 0 failed, 0 skipped
+Results: 35 passed, 1 failed, 5 skipped
+Failed:
+  - test_container_status_reports_resolved_user
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786691919...
+==> Cleaning up test namespace not-k8s-e2e-1786692653...
