@@ -1,21 +1,198 @@
-commit: 49e3e748164ec7e22c791978af4e485a19a3a517
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31779115615
-timestamp (UTC): 2026-08-14T07:21:52Z
+commit: cbe698290392660ba50de09e5856f5e24f237566
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31779874505
+timestamp (UTC): 2026-08-14T07:52:04Z
 shard: 4/5
-exit code: 0
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786691945
+==> Test namespace: not-k8s-e2e-1786692675
 ==> 216 test(s) registered total (before sharding); running now...
 ==> Shard 4/5: 41 test(s) selected
+▶ test_installed_component_binaries_are_runnable_whatever_the_layout
+  ✔ PASS (0s)
+▶ test_datastore_creates_a_key_only_if_absent
+  ✔ PASS (0s)
+▶ test_datastore_survives_a_restart_with_its_data
+  ✔ PASS (0s)
+▶ test_apiserver_watch_delivers_through_nodestore
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13564/environ: Permission denied
+  ✔ PASS (9s)
+▶ test_the_cluster_keeps_serving_when_a_follower_dies
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_a_partitioned_leader_steps_down_and_the_majority_elects_another
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_device_plugin_advertises_capacity_and_allocates_into_a_container
+==> installing grpcio/grpcio-tools for the fake device plugin...
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
+  ✔ PASS (103s)
+▶ test_spec_hostname_overrides_the_container_hostname
+  ✔ PASS (3s)
+▶ test_eviction_priority_tiebreak_manual_procedure
+    (skip: proving priority-based tiebreaking (round 26 — pick_eviction_candidate() ranks by spec.priority within a QoS class before falling back to usage) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with different PriorityClasses (e.g. a low-priority one and a high-priority one, or set spec.priority directly), force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the LOWER-priority pod is evicted first even if the higher-priority pod is using more memory — proof priority wins the tiebreak before usage does, matching real kubelet's rankMemoryPressure ordering. The pure ranking logic itself (priority beats usage, QoS class still outranks priority) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end.)
+  ○ SKIP (0s)
+▶ test_pod_teardown_actually_removes_the_sandbox
+  ✔ PASS (65s)
+▶ test_graceful_node_shutdown_manual_note
+    (skip: graceful node shutdown needs a real systemd-logind PrepareForShutdown signal, which only happens on an actual host shutdown/reboot — not something this suite triggers automatically. Manual spot-check: set NODELET_SHUTDOWN_GRACE_PERIOD_SECS (and optionally NODELET_SHUTDOWN_GRACE_PERIOD_CRITICAL_SECS) on nodelet, run 'loginctl list-inhibitors' and confirm nodelet holds a 'shutdown'/'delay' entry, apply a few test pods, then 'systemctl poweroff' (or 'reboot') the node and watch nodelet's logs for 'terminating pods' before the box actually goes down — non-critical pods (no system-node-critical/system-cluster-critical priorityClassName) should get preStop + termination before critical ones, all within NODELET_SHUTDOWN_GRACE_PERIOD_SECS total.)
+  ○ SKIP (0s)
+▶ test_init_containers_run_before_app_container
+  ✔ PASS (7s)
+▶ test_crash_loop_backoff_throttles_immediate_restarts
+  ✔ PASS (52s)
+▶ test_lifecycle_stop_signal_is_honored_by_the_runtime
+    (skip: no /var/lib/nodelet/pods/74570eb1-9dd0-4f9d-8a82-d16936603279/volumes/shared/signal.txt appeared after pod deletion — the runtime may not honor CRI's ContainerConfig.stop_signal (sent plain SIGTERM instead of the configured SIGUSR1, so the trap never fired); check runtime/cri/container_create.rs's stop_signal wiring if this is unexpected on a runtime version known to support it)
+  ○ SKIP (93s)
+▶ test_pod_condition_reports_observed_generation
+  ✔ PASS (3s)
+▶ test_pressure_conditions_are_present_and_normally_false
+  ✔ PASS (1s)
+▶ test_pod_resources_grpc_query_returns_real_data
+  ✔ PASS (30s)
+▶ test_startup_probe_failure_past_threshold_restarts_the_container
+  ✔ PASS (63s)
+▶ test_metrics_cadvisor_returns_real_container_usage
+  ✔ PASS (33s)
+▶ test_besteffort_pod_gets_the_certain_death_oom_score
+  ✔ PASS (32s)
+▶ test_scheduler_leaves_a_gated_pod_alone
+  ✔ PASS (11s)
 ▶ test_scheduler_wakes_a_pending_pod_on_a_real_event
-  ✔ PASS (45s)
+==> FATAL: took 77s to reschedule after capacity was freed. That is the 5-minute unschedulable-timeout safety net doing the work, not an event — some plugin's events_to_register() is incomplete. See crates/nodescheduler/src/queue/hints.rs.
+  ✘ FAIL (86s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 14 07:39:07 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:39:07.161056Z  INFO torn down pod=not-k8s-e2e-1786692675/startup-restart
+    Aug 14 07:39:39 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:39:39.409185Z  INFO torn down pod=not-k8s-e2e-1786692675/metrics-cadvisor-check
+    Aug 14 07:39:39 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:39:39.513269Z  INFO CreateContainer succeeded container=app container_id=b17b3211e5eeac6e44b6346962f3d2ae1fc2880f7eedb15d72dac4e00196f2d8
+    Aug 14 07:39:39 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:39:39.594974Z  INFO torn down pod=not-k8s-e2e-1786692675/metrics-cadvisor-check
+    Aug 14 07:39:44 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:39:44.923057Z  INFO node status pushed
+    Aug 14 07:40:11 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:40:11.484998Z  INFO torn down pod=not-k8s-e2e-1786692675/oom-score-besteffort
+    Aug 14 07:40:12 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:40:12.576122Z  INFO CreateContainer succeeded container=c container_id=7e51cb82e02385067a0bf2e4275ded4f9fcf31e49c20a1a96920a829570daaa1
+    Aug 14 07:40:42 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:40:42.724564Z  INFO torn down pod=not-k8s-e2e-1786692675/sched-gated
+    Aug 14 07:40:42 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:40:42.834757Z  INFO CreateContainer succeeded container=c container_id=3be585b1181a4e15b90e26524a2a9733fc55479cd90aefcd2ecb336703559276
+    Aug 14 07:40:44 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:40:44.969726Z  INFO node status pushed
+    Aug 14 07:41:12 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:41:12.982434Z  INFO torn down pod=not-k8s-e2e-1786692675/sched-blocker
+    Aug 14 07:41:13 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:41:13.002138Z  INFO torn down pod=not-k8s-e2e-1786692675/oom-score-besteffort
+    Aug 14 07:41:13 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:41:13.013505Z  INFO torn down pod=not-k8s-e2e-1786692675/sched-gated
+    Aug 14 07:41:13 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:41:13.021855Z  INFO torn down pod=not-k8s-e2e-1786692675/sched-blocker
+    Aug 14 07:41:17 runnervmzvulz run-nodelet.sh[15550]: 2026-08-14T07:41:17.094041Z  INFO CreateContainer succeeded container=c container_id=0c5582d7aa722d27f044ca2101e743f4e5e90582ba23a138c61bad3ed39b17bd
 ▶ test_scheduler_honours_topology_spread
   ✔ PASS (11s)
 ▶ test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen
     (skip: PVC never bound after a node was chosen (phase=Pending) — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS_WAIT)
   ○ SKIP (99s)
+▶ test_container_status_reports_recursive_read_only
+  ✔ PASS (3s)
+▶ test_proc_mount_unmasked_leaves_proc_kcore_readable
+==> WARNING: expected /proc/kcore to be readable (non-zero bytes) under procMount: Unmasked, got 0 -- check proc_mount_paths()'s Unmasked branch in runtime/cri/resources.rs; not failing outright since this depends on the CRI runtime actually honoring an explicitly-empty masked_paths the same way it honors a populated one
+  ✔ PASS (32s)
+▶ test_containers_get_isolated_pid_namespaces_by_default
+  ✔ PASS (32s)
+▶ test_clusterip_service_routes_to_its_backend_pod
+  ✔ PASS (62s)
+▶ test_a_pod_reaching_its_own_service_gets_hairpin_masquerade
+  ✔ PASS (33s)
+▶ test_headless_service_programs_no_rules_and_does_not_break_others
+  ✔ PASS (33s)
+▶ test_kubectl_logs_follow_streams_new_output
+  ✔ PASS (34s)
+▶ test_downward_api_volume_writes_pod_metadata
+  ✔ PASS (32s)
+▶ test_host_aliases_still_work_under_host_users_false
+  ✔ PASS (33s)
+▶ test_fsgroup_never_applies_to_hostpath_volumes
+  ✔ PASS (34s)
+▶ test_recursive_read_only_if_possible_falls_back_without_erroring
+  ✔ PASS (32s)
+▶ test_host_path_directory_type_rejects_a_nonexistent_path
+  ✔ PASS (32s)
+▶ test_config_file_precedence_a_real_env_var_still_wins
+  ✔ PASS (2s)
+▶ test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull
+==> generating htpasswd auth for the local test registry...
+Unable to find image 'httpd:2.4-alpine' locally
+2.4-alpine: Pulling from library/httpd
+55afa1ecc21d: Already exists
+f0c9ed0cf49e: Pulling fs layer
+e5ad846ecbb8: Pulling fs layer
+4f4fb700ef54: Pulling fs layer
+71af8d887193: Pulling fs layer
+5e8b95221646: Pulling fs layer
+ec6419fed67b: Pulling fs layer
+5e8b95221646: Waiting
+ec6419fed67b: Waiting
+71af8d887193: Waiting
+4f4fb700ef54: Verifying Checksum
+4f4fb700ef54: Download complete
+f0c9ed0cf49e: Download complete
+e5ad846ecbb8: Verifying Checksum
+e5ad846ecbb8: Download complete
+f0c9ed0cf49e: Pull complete
+e5ad846ecbb8: Pull complete
+4f4fb700ef54: Pull complete
+ec6419fed67b: Download complete
+71af8d887193: Verifying Checksum
+71af8d887193: Download complete
+5e8b95221646: Verifying Checksum
+5e8b95221646: Download complete
+71af8d887193: Pull complete
+5e8b95221646: Pull complete
+ec6419fed67b: Pull complete
+Digest: sha256:1b766f17b84026429b7cb243317b142921b24432336e798bc881c43f45ed9567
+Status: Downloaded newer image for httpd:2.4-alpine
+==> starting a local auth-required registry:2 on port 5001...
+Unable to find image 'registry:2' locally
+2: Pulling from library/registry
+44cf07d57ee4: Pulling fs layer
+bbbdd6c6894b: Pulling fs layer
+8e82f80af0de: Pulling fs layer
+3493bf46cdec: Pulling fs layer
+6d464ea18732: Pulling fs layer
+3493bf46cdec: Waiting
+6d464ea18732: Waiting
+bbbdd6c6894b: Verifying Checksum
+bbbdd6c6894b: Download complete
+44cf07d57ee4: Verifying Checksum
+44cf07d57ee4: Download complete
+8e82f80af0de: Verifying Checksum
+8e82f80af0de: Download complete
+3493bf46cdec: Verifying Checksum
+3493bf46cdec: Download complete
+6d464ea18732: Verifying Checksum
+6d464ea18732: Download complete
+44cf07d57ee4: Pull complete
+bbbdd6c6894b: Pull complete
+8e82f80af0de: Pull complete
+3493bf46cdec: Pull complete
+6d464ea18732: Pull complete
+Digest: sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+Status: Downloaded newer image for registry:2
+==> pointing containerd at localhost:5001 as an insecure (http) registry...
+==> pushing alpine:3.20 into the local registry as localhost:5001/cred-provider-check:1...
+WARNING! Using --password via the CLI is insecure. Use --password-stdin.
+
+WARNING! Your credentials are stored unencrypted in '/home/runner/.docker/config.json'.
+Configure a credential helper to remove this warning. See
+https://docs.docker.com/go/credential-store/
+
+==> writing the fake credential-provider binary and config...
+  ✔ PASS (41s)
+▶ test_memory_manager_pins_guaranteed_containers_to_a_numa_node
+  ✔ PASS (33s)
+▶ test_limited_swap_gives_burstable_pods_proportional_swap
+  ✔ PASS (66s)
+▶ test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host
+    (skip: this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case (align() alone should already satisfy it, spread() never needs to trigger))
+  ○ SKIP (0s)
 
 ════════════════════════════════════════
-Results: 2 passed, 0 failed, 1 skipped
+Results: 33 passed, 1 failed, 7 skipped
+Failed:
+  - test_scheduler_wakes_a_pending_pod_on_a_real_event
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786691945...
+==> Cleaning up test namespace not-k8s-e2e-1786692675...
