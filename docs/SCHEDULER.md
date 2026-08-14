@@ -271,15 +271,35 @@ rejected, not yet reached scheduling" reasoning `SchedulingGates` uses.
 `PreBind` writes `status.allocation` + `status.reservedFor` in one step (DRA
 has no external process to poll for, unlike `VolumeBinding`'s PVC binding).
 
-Deliberate, documented gaps, each rejected explicitly (`Unresolvable`) rather
-than mishandled: `firstAvailable` subrequests (alpha in 1.33), `adminAccess`,
-`allocationMode: All`, cross-request `constraints`, and a `ResourceSlice`
-using `nodeSelector`/per-device node selection instead of a plain
-`nodeName`/`allNodes`. The CEL environment itself also diverges from
-upstream in one way: device capacity is exposed as a plain `f64`, not
-upstream's own `apiservercel` `Quantity` type, so numeric comparisons work
-and anything leaning on Quantity-specific semantics does not — see the
-module header for the full accounting.
+`firstAvailable` subrequests, `adminAccess`, `allocationMode: All`,
+cross-request `constraints` (`matchAttribute`), and a `ResourceSlice` using
+`nodeSelector`/per-device node selection are all ✅ implemented too, each
+checked directly against upstream's real allocator
+(`k8s.io/dynamic-resource-allocation/structured/allocator.go`) rather than
+assumed from the API docs — see `dynamic_resources.rs`'s module header for
+the one real algorithmic divergence (`allocate_on_node` is a single greedy
+forward pass; upstream's is a full backtracking search) and the two real
+bugs that source-reading caught (the `v1.NodeSelector`-not-`LabelSelector`
+type on `ResourceSlice.nodeSelector`, and `ClaimPlan::Nothing` never
+re-checking an existing allocation's topology on a node that already held
+the reservation).
+
+`PostFilter` is ✅ implemented too: a claim already allocated to a topology
+no node satisfies, with nothing else still reserving it, gets deallocated so
+the next attempt can pick differently — checked against upstream's real
+`DynamicResources.PostFilter`. This needed `PostFilterPlugin` to become
+`async` (zero existing implementors at the time, so free to widen).
+
+The CEL environment itself still diverges from upstream in one way: device
+capacity (and the `quantity(str)` function's return) is a plain `f64`, not
+upstream's own arbitrary-precision `apiservercel` `Quantity` — `quantity.rs`
+implements the same named methods
+(`isGreaterThan`/`isLessThan`/`compareTo`/`add`/`sub`/`sign`/`isInteger`/
+`asInteger`/`asApproximateFloat`) against that float, since `cel-interpreter`'s
+`Value` is a closed enum with no opaque-type variant to add a real `Quantity`
+without forking it. Every real selector expression evaluates correctly under
+this; the gap is precision only, for magnitudes no real device capacity gets
+near. See `dynamic_resources.rs`'s module header for the full accounting.
 
 DRA needs the raw-request escape hatch: `resource.k8s.io/v1` does not exist in
 the pinned `k8s-openapi` v1_33 schema (only `v1alpha3`/`v1beta1`/`v1beta2`), so

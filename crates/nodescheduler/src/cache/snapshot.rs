@@ -170,17 +170,25 @@ impl Snapshot {
         self.device_classes.get(name)
     }
 
-    /// Every `ResourceSlice` that could supply a device to `node_name` —
-    /// its own node-local slices, plus every `allNodes: true` slice
-    /// (network-attached devices reachable from anywhere). Slices using a
-    /// `nodeSelector` or per-device node selection are not resolved — see
-    /// `dra.rs`'s module header — so they never appear here for any node.
+    /// Every `ResourceSlice` that could supply a device to `node`: its own
+    /// node-local slices, every `allNodes: true` slice, every
+    /// `nodeSelector`-scoped slice this node's labels satisfy, and every
+    /// `perDeviceNodeSelection: true` slice unconditionally — the latter
+    /// defers node applicability to each individual device, which
+    /// `dynamic_resources.rs`'s `candidates_for_node` resolves once it has
+    /// the device in hand (see that function's doc comment).
     pub fn resource_slices_for_node<'a>(
         &'a self,
-        node_name: &'a str,
+        node: &'a NodeInfo,
     ) -> impl Iterator<Item = &'a RawResourceSlice> + 'a {
         self.resource_slices.values().filter(move |s| {
-            s.spec.node_name.as_deref() == Some(node_name) || s.spec.all_nodes == Some(true)
+            s.spec.node_name.as_deref() == Some(node.name.as_str())
+                || s.spec.all_nodes == Some(true)
+                || s.spec.per_device_node_selection == Some(true)
+                || s.spec
+                    .node_selector
+                    .as_ref()
+                    .is_some_and(|sel| crate::framework::plugins::node_affinity::matches_node_selector(sel, node))
         })
     }
 

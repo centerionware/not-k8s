@@ -63,6 +63,7 @@ pub mod node_unschedulable;
 pub mod node_volume_limits;
 pub mod pod_topology_spread;
 pub mod priority_sort;
+pub mod quantity;
 pub mod scheduling_gates;
 pub mod selector;
 pub mod taint_toleration;
@@ -160,7 +161,12 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profi
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
             Box::new(dra.clone()),
         ],
-        post_filter: Vec::new(),
+        // Runs before `Scheduler::preempt`'s fallback (see
+        // `PostFilterPlugin`'s own doc comment): freeing a claim this pod
+        // already owns but can't use anywhere is strictly cheaper than
+        // evicting another pod, and upstream orders its own registered
+        // plugins the same way.
+        post_filter: vec![Box::new(dra.clone())],
         pre_score: vec![
             Box::new(taint_toleration::TaintToleration),
             Box::new(node_affinity::NodeAffinity::default()),
