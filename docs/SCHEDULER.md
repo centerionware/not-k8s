@@ -324,8 +324,10 @@ translation beyond wrapping it in an env var. `schedule_one` runs configured
 extenders' Filter sequentially right after plugin Filter (narrowing the same
 way upstream's `findNodesThatPassExtenders` does — a later extender only
 sees nodes an earlier one already accepted) and Prioritize right after plugin
-Score (added unscaled into the already-weighted plugin totals, exactly as
-upstream does). `managedResources` is honored: an extender naming specific
+Score (rescaled from the extender's own `[0, 10]` range onto the plugins'
+`[0, 100]` one — `score * weight * 10`, matching upstream's real combining
+formula in `schedule_one.go`'s `prioritizeNodes` — then added into the
+already-weighted plugin totals). `managedResources` is honored: an extender naming specific
 extended resources is only consulted for a pod requesting at least one of
 them. An `ignorable` extender that errors is logged and skipped rather than
 failing the cycle.

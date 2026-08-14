@@ -39,6 +39,12 @@
 //! mount would not find it here.
 
 use crate::cache::{NodeInfo, PodInfo};
+use crate::framework::MAX_NODE_SCORE;
+
+/// Upstream's `extenderv1.MaxExtenderPriority` — an extender's own score
+/// scale, `[0, 10]`, distinct from a plugin's `[0, MAX_NODE_SCORE]` one. See
+/// `Extender::prioritize`'s doc comment for how the two get reconciled.
+const MAX_EXTENDER_PRIORITY: i64 = 10;
 use k8s_openapi::api::core::v1::{Node, NodeSpec, NodeStatus, Pod, PodSpec};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -309,9 +315,14 @@ impl Extender {
         } else if let Some(list) = result.nodes {
             list.items.into_iter().filter_map(|n| n.metadata.name).collect()
         } else {
-            // Neither field set: upstream's own convention for "everything
-            // passed, nothing was filtered out".
-            nodes.iter().map(|n| n.name.clone()).collect()
+            // Neither field set: verified against upstream's real
+            // HTTPExtender.Filter (pkg/scheduler/extender.go) — `nodeResult`
+            // there stays its zero value (nil/empty) in this case, so an
+            // extender that reports failures without also echoing back
+            // which nodes passed is read as "none of them did", not "all of
+            // them did". Silently defaulting to "everyone passed" here
+            // would make a `FailedNodes`-only response a no-op.
+            Vec::new()
         };
 
         Ok(Some(FilterOutcome {
@@ -322,10 +333,12 @@ impl Extender {
     }
 
     /// Ask this extender to score `nodes`. `None` means not configured for
-    /// Prioritize. Scores are the extender's own raw values — upstream adds
-    /// `score * weight` directly into the combined total without rescaling
-    /// them onto `[0, MAX_NODE_SCORE]` the way plugin scores are, so neither
-    /// does this.
+    /// Prioritize. Verified against upstream's real combining formula
+    /// (`pkg/scheduler/schedule_one.go`'s `prioritizeNodes`):
+    /// `score * weight * (MaxNodeScore / MaxExtenderPriority)`, i.e.
+    /// `score * weight * 10` — an extender's own `[0, 10]` scale is
+    /// rescaled onto the plugins' `[0, 100]` one before being added into
+    /// the combined total, it is not added in unscaled.
     pub async fn prioritize(
         &self,
         pod: &PodInfo,
@@ -344,7 +357,12 @@ impl Extender {
         };
 
         let result: Vec<HostPriority> = self.post(verb, &args).await?;
-        Ok(Some(result.into_iter().map(|h| (h.host, h.score * self.config.weight)).collect()))
+        Ok(Some(
+            result
+                .into_iter()
+                .map(|h| (h.host, h.score * self.config.weight * (MAX_NODE_SCORE / MAX_EXTENDER_PRIORITY)))
+                .collect(),
+        ))
     }
 
     async fn post<T: serde::de::DeserializeOwned>(&self, verb: &str, args: &ExtenderArgs) -> anyhow::Result<T> {
