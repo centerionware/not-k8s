@@ -1,30 +1,32 @@
-commit: f5b1e67521a89a8990fb102d4d699382110fe0e5
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31841944028
-timestamp (UTC): 2026-08-14T21:35:33Z
+commit: fde7650a75e17db5e160c28d85f257da0db2416a
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31844984431
+timestamp (UTC): 2026-08-14T22:19:11Z
 shard: 1/5
-exit code: 0
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786742694
-==> 198 test(s) registered total (before sharding); running now...
-==> Shard 1/5: 44 test(s) selected
+==> Test namespace: not-k8s-e2e-1786745241
+==> 218 test(s) registered total (before sharding); running now...
+==> Shard 1/5: 48 test(s) selected
 ▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
-  ✔ PASS (34s)
+  ✔ PASS (36s)
 ▶ test_dynamic_csi_registration_actually_registered_the_driver
   ✔ PASS (0s)
 ▶ test_csi_ephemeral_inline_volume_is_mounted
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_node_reports_volumes_in_use_for_a_csi_volume
-  ✔ PASS (80s)
+  ✔ PASS (64s)
 ▶ test_plugin_registry_watches_for_dra_drivers_too
   ✔ PASS (0s)
 ▶ test_dra_claim_is_allocated_and_reserved_for_the_pod
   ✔ PASS (3s)
+▶ test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen
+  ✔ PASS (44s)
 ▶ test_tls_bootstrap_issues_a_real_client_certificate
   ✔ PASS (5s)
 ▶ test_node_allocatable_cgroup_exists_and_is_capped
   ✔ PASS (0s)
 ▶ test_datastore_round_trips_a_key_over_grpc
-  ✔ PASS (1s)
+  ✔ PASS (0s)
 ▶ test_datastore_replays_missed_events_to_a_late_watcher
   ✔ PASS (10s)
 ▶ test_datastore_refuses_a_malformed_cluster_spec
@@ -44,105 +46,110 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (137s)
+  ✔ PASS (153s)
 ▶ test_kubectl_debug_adds_and_starts_an_ephemeral_container
-  ✔ PASS (5s)
+  ✔ PASS (3s)
 ▶ test_eviction_soft_grace_period_manual_procedure
     (skip: proving the soft-threshold grace period (round 101 — a pod isn't evicted the instant a looser *soft* threshold is crossed, only once it's stayed continuously crossed for NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS) needs artificial pressure sustained across multiple ticks, harder to orchestrate reliably here than the base eviction procedure above. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_SOFT_THRESHOLD_BYTES set just above current MemAvailable (so MemoryPressure's soft signal trips immediately) but NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES (the hard one) left at its normal, much-lower default, and NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS set to something short like 20, (3) apply a BestEffort pod, (4) confirm it is NOT evicted before the grace period elapses but IS evicted (phase Failed/reason Evicted) once NODELET_EVICTION_CHECK_SECS ticks have accumulated past NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS of continuous soft pressure, (5) restore normal thresholds and restart nodelet. The pure decision logic itself (eviction::pressure_action_due()) is already covered by cargo test's eviction_tests/pressure_action_due.rs — this only proves the live wiring end to end.)
   ○ SKIP (0s)
 ▶ test_prestop_hook_runs_before_termination
   ✔ PASS (19s)
 ▶ test_native_sidecar_container_restarts_on_crash
-  ✔ PASS (5s)
+  ✔ PASS (4s)
 ▶ test_restart_policy_never_exit_zero_is_succeeded
-  ✔ PASS (2s)
-▶ test_container_status_container_id_has_a_runtime_scheme_prefix
   ✔ PASS (3s)
+▶ test_container_status_container_id_has_a_runtime_scheme_prefix
+  ✔ PASS (2s)
 ▶ test_image_pull_policy_never_fails_when_image_is_absent
   ✔ PASS (42s)
 ▶ test_host_network_pod_needs_no_explicit_port_mapping
-  ✔ PASS (2s)
-▶ test_node_status_reports_runtime_handlers
-  ✔ PASS (1s)
-▶ test_liveness_probe_failure_restarts_the_container
-  ✔ PASS (39s)
-▶ test_grpc_probe_gates_readiness_against_a_real_grpc_server
-  ✔ PASS (9s)
-▶ test_memory_limit_is_enforced_via_cgroup
   ✔ PASS (3s)
+▶ test_node_status_reports_runtime_handlers
+  ✔ PASS (0s)
+▶ test_liveness_probe_failure_restarts_the_container
+  ✔ PASS (40s)
+▶ test_grpc_probe_gates_readiness_against_a_real_grpc_server
+  ✔ PASS (13s)
+▶ test_memory_limit_is_enforced_via_cgroup
+  ✔ PASS (2s)
 ▶ test_env_resource_field_ref_reports_the_containers_own_limits
   ✔ PASS (3s)
-▶ test_read_only_root_filesystem_is_enforced
-  ✔ PASS (3s)
-▶ test_host_users_false_volume_still_reads_and_writes_normally
+▶ test_scheduler_honours_a_node_selector_that_matches
+  ✔ PASS (1s)
+▶ test_scheduler_holds_the_leader_lease
+  ✔ PASS (8s)
+▶ test_scheduler_does_not_preempt_when_policy_forbids_it
+  ✔ PASS (48s)
+▶ test_container_status_reports_resolved_user
   ✔ PASS (2s)
-▶ test_host_pid_sees_host_processes
+▶ test_proc_mount_default_masks_proc_kcore
   ✔ PASS (3s)
-▶ test_service_with_no_endpoints_does_not_wedge_the_ruleset
-table inet not_k8s_svc {
-	chain prerouting {
-		type nat hook prerouting priority dstnat; policy accept;
-		ip daddr 10.43.228.19 tcp dport 8080 dnat ip to 10.42.0.7:8080
-		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.2:53
-		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.2:53
-		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.2:9153
-		ip daddr 10.43.162.250 tcp dport 80 dnat ip to 10.42.0.27:8080
-		ip daddr 10.43.230.68 tcp dport 80 dnat ip to 10.42.0.27:8080
-		ip daddr 10.43.72.117 tcp dport 10000 dnat ip to 10.42.0.4:10000
-		fib daddr type local tcp dport 30968 dnat ip to 10.42.0.4:10000
-		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.1.46:6443
-	}
-
-	chain output {
-		type nat hook output priority dstnat; policy accept;
-		ip daddr 10.43.228.19 tcp dport 8080 dnat ip to 10.42.0.7:8080
-		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.2:53
-		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.2:53
-		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.2:9153
-		ip daddr 10.43.162.250 tcp dport 80 dnat ip to 10.42.0.27:8080
-		ip daddr 10.43.230.68 tcp dport 80 dnat ip to 10.42.0.27:8080
-		ip daddr 10.43.72.117 tcp dport 10000 dnat ip to 10.42.0.4:10000
-		fib daddr type local tcp dport 30968 dnat ip to 10.42.0.4:10000
-		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.1.46:6443
-	}
-
-	chain postrouting {
-		type nat hook postrouting priority srcnat; policy accept;
-		ct status dnat masquerade
-	}
-}
+▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
+==> WARNING: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership, got '3000 5000' — this runtime may not implement Merge's image-group-membership resolution (a newer-than-usual runc feature); not failing outright since nodelet itself only passes the policy through to CRI unchanged
   ✔ PASS (3s)
-▶ test_losing_every_backend_removes_the_dnat_rule
-  ✔ PASS (33s)
-▶ test_kubectl_attach_streams_the_containers_stdout
-==> WARNING: kubectl attach didn't show streamed output within 20s (may still be buffering)
-  ✔ PASS (43s)
-▶ test_topology_manager_cross_provider_alignment_manual_note
-    (skip: proving CPU-and-device alignment (not just non-rejection) needs either real multi-socket/multi-NUMA hardware or a device plugin reporting TopologyInfo pointing at a specific NUMA node — not something this suite can set up. Manual spot-check on real multi-NUMA hardware: deploy a device plugin whose devices report differing NUMA affinity, request both an exclusive CPU and one of those devices in the same Guaranteed pod, then compare the container's cpuset.cpus (see cpu_manager.sh for how to find it) against which NUMA node the allocated device actually sits on — they should be the same node. Also try NODELET_TOPOLOGY_MANAGER_POLICY=single-numa-node with a deliberately unsatisfiable combination (e.g. requesting more exclusive CPUs than any single node has) and confirm the pod stays Pending with a 'Topology Manager: no single NUMA node can satisfy' error logged, rather than starting misaligned.)
-  ○ SKIP (0s)
-▶ test_sub_path_expr_expands_a_downward_api_env_var
-  ✔ PASS (3s)
-▶ test_empty_dir_medium_memory_is_backed_by_tmpfs
+▶ test_clusterip_is_reachable_from_inside_a_pod
+  ✔ PASS (6s)
+▶ test_session_affinity_pins_a_client_to_one_backend
+  ✔ PASS (5s)
+▶ test_kubectl_logs_returns_real_output
   ✔ PASS (2s)
-▶ test_mount_propagation_host_to_container_still_mounts_normally
+▶ test_a_slow_terminating_pod_does_not_stall_another_pods_creation
+  ✔ PASS (10s)
+▶ test_configmap_and_secret_volumes_are_materialized
   ✔ PASS (3s)
-▶ test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too
+▶ test_service_account_token_projected_volume_mints_a_real_token
+  ✔ PASS (3s)
+▶ test_image_volume_source_mounts_a_read_only_image
+  ✔ PASS (2s)
+▶ test_mount_propagation_private_default_does_not_see_a_new_host_mount
+  ✔ PASS (8s)
+▶ test_host_path_directory_mounts_the_real_host_directory
   ✔ PASS (2s)
 ▶ test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
-  ✔ PASS (4s)
+==> FATAL: timed out after 90s waiting for: cpu-manager-check-b Running
+  ✘ FAIL (95s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: ========================================
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.072583Z  INFO starting nodelet node=runnervmzvulz runtime=Cri cpu=4 memory_bytes=16765378560 max_pods=110
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.074070Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.076633Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.076856Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-0cb5e7ad-7110-4cef-a2f0-5b8760a66523-reg.sock error=connecting to plugin registration socket
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: Caused by:
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]:     0: transport error
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]:     1: Connection refused (os error 111)
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]:     2: Connection refused (os error 111)
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.079452Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.101046Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-1849cfc2-c6da-4445-be73-0295ad9461e8.sock plugin_type=DRAPlugin
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.102610Z  INFO node registered and Ready node=runnervmzvulz
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.102927Z  INFO pod controller watching pods bound to this node node=runnervmzvulz
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.102991Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
+    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.103374Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
 ▶ test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down
 Warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.
-  ✔ PASS (17s)
+  ✔ PASS (16s)
 ▶ test_a_pending_pod_recovers_after_the_node_failure_is_fixed
 ==> stopping containerd so every sandbox creation fails...
 ==> starting containerd again — nothing touches the Pod, so only nodelet's own retry can recover it...
-  ✔ PASS (36s)
-▶ test_static_pod_creates_a_mirror_pod
-  ✔ PASS (72s)
-▶ test_the_node_still_reconciles_pods_after_an_apiserver_restart
-  ✔ PASS (6s)
+  ✔ PASS (38s)
+▶ test_client_certificate_authentication_works
+.......+.........+.....+......+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+...+..+.......+..+...+......+.+.....+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+.+.....+...+................+...+...........+.......+.........+.....+.+..................+......+..........................+.........+...............+......+....+.........+..+...+....+...........+......+.+...+..+...+.+...+..+.+..............+.+........+......+..................+.....................+.+........+.+.....+.........+...+..........+..+.......+...+...............+...+..+.+.........+......+..+.......+......+..+.......+...+..+......+.+........+...+.........+.............+...............+..+..........+.....+....+..+....+...........+...+.+........+.+......+.....+.+.....+...............+.........+.+...+.....+....+......+......+...+..+...+.+.................+....+......+...+.....+......+....+..+...+....+..+...............+.........+..........+..............+..................+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.........................+....+...+...+..+.+..............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+.+......+..+.+.....+.+...+..+....+.....+......+.........+......+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+.........+.+.....+......+.......+.....+.......+........+...+.......+........+...+..........+...........+.+........+.......+.........+.........+..+...+......+.+............+........+....+...+.....+...+....+.....+....+...........+..........+........+......+.+.........+..........................+...+.+............+..+......+.+...+..+.+..+............+................+..+...+.........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+.......+...+..+................+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+.+...+..+.........+.+..+......+....+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+....+...+..+..........+.........+.................+.............+......+......+..+...+....+.....+....+.....+......................+............+..+....+..+..........+..+...+............+...+....+...........+...+.+.........+...........+...+.......+...+...........+....+......+.....+......+.+..............................+........+.........+.+.....+.+......+..+.+..............+...+.......+......+..+.......+..+.+.....+....+...+....................+......+.+...+..+.+..+.+.................+...+.......+..+......+......+.........+.........+..................+....+...+.....+.....................+.+......+..+...+.........+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.....................+.+..+.+......+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*......+.........+........+...+.+...+..+................+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+....+...+......+.........+..+..........+........+.+.....+.+...........+....+......+.....+.......+......+......+.....+...+......+....+.....+......+....+...+..+.+.................+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+Certificate request self-signature ok
+subject=CN = alice, O = system:masters
+.+..+.+..+.+.....+.........+...+...+.+...........+...+.+.........+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+........+.+.....+.......+............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....................+.........+...........+....+.......................+.......+........+......+.......+...+..+.......+......+.....+.+........+.+.........+..+.+........+.+.........+........................+.....+..................+.......+...+.........+........+..........+.....+...+...+.+......+...+..+...+............+....+...+.....+.....................+.+...+...+...+...........+.+............+..+...+............+......+..........+...+..+.......+..+...+......+.+.........+.....+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+...+..........+......+.....+....+...+...+......+.....+.........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...........+..+.........+.+........+........................+.+.........+.....+......+..........+.....+.+......+...+......+......+..+.+......+...........+.........+.+...+.....+....+.....+...+.............+.....+....+.....+..........+..+.........+.......+...+.....+......+.............+...........+.......+..............+...+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+  ✔ PASS (2s)
 
 ════════════════════════════════════════
-Results: 39 passed, 0 failed, 5 skipped
+Results: 43 passed, 1 failed, 4 skipped
+Failed:
+  - test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786742694...
+==> Cleaning up test namespace not-k8s-e2e-1786745241...
