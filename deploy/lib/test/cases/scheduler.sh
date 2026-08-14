@@ -466,7 +466,11 @@ event subscription reschedules in a second or two; 300 would be the \
 unschedulable-timeout safety net rescuing it. Either way some plugin's \
 events_to_register() is incomplete — see crates/nodescheduler/src/queue/hints.rs."
 
-    delete_pod_if_exists "$waiter"
+    # $waiter itself claims ~60% of allocatable — wait for it to actually
+    # be gone before returning, or the next test inherits a node that
+    # looks emptier than it is (see delete_pod_and_wait_gone's own
+    # comment).
+    delete_pod_and_wait_gone "$waiter"
 }
 register_test test_scheduler_wakes_a_pending_pod_on_a_real_event
 
@@ -803,7 +807,12 @@ YAML
     [[ "$elapsed" -lt 120 ]] \
         || die "took ${elapsed}s to preempt — too slow to be the event path"
 
-    delete_pod_if_exists "$high"
+    # $high itself claims ~60% of allocatable — wait for it to actually be
+    # gone, not just for the API to accept the delete, or the next test
+    # inherits a node that looks emptier than it is (see
+    # delete_pod_and_wait_gone's own comment; found live in CI as
+    # cpu_manager's exclusive-core test timing out right after this one).
+    delete_pod_and_wait_gone "$high"
     kubectl delete priorityclass sched-test-low sched-test-high --ignore-not-found >/dev/null 2>&1 || true
 }
 register_test test_scheduler_preempts_a_lower_priority_pod
@@ -880,7 +889,12 @@ YAML
     assert_true pod_exists "$low"
 
     delete_pod_if_exists "$high"
-    delete_pod_if_exists "$low"
+    # $low itself claims ~60% of allocatable and is actually Running —
+    # wait for it to actually be gone, not just for the API to accept the
+    # delete, or the next test inherits a node that looks emptier than it
+    # is (see delete_pod_and_wait_gone's own comment; found live in CI as
+    # cpu_manager's exclusive-core test timing out right after this one).
+    delete_pod_and_wait_gone "$low"
     kubectl delete priorityclass sched-test-low sched-test-never --ignore-not-found >/dev/null 2>&1 || true
 }
 register_test test_scheduler_does_not_preempt_when_policy_forbids_it
