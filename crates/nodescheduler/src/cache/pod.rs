@@ -575,8 +575,8 @@ impl PodInfo {
                 .status
                 .as_ref()
                 .and_then(|s| s.resource_claim_statuses.as_ref())
-                .iter()
-                .flatten()
+                .into_iter()
+                .flat_map(|v| v.iter())
                 .map(|s| (s.name.clone(), s.resource_claim_name.clone()))
                 .collect(),
             owner_references: meta
