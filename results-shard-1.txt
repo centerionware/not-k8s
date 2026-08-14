@@ -1,18 +1,18 @@
-commit: fde7650a75e17db5e160c28d85f257da0db2416a
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31844984431
-timestamp (UTC): 2026-08-14T22:19:11Z
+commit: 7d7841262f8add936bda8f9ec4dbf5d1af30dc86
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31850508538
+timestamp (UTC): 2026-08-14T23:46:53Z
 shard: 1/5
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786745241
+==> Test namespace: not-k8s-e2e-1786750503
 ==> 218 test(s) registered total (before sharding); running now...
 ==> Shard 1/5: 48 test(s) selected
 ▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
-  ✔ PASS (36s)
+  ✔ PASS (35s)
 ▶ test_dynamic_csi_registration_actually_registered_the_driver
   ✔ PASS (0s)
 ▶ test_csi_ephemeral_inline_volume_is_mounted
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_node_reports_volumes_in_use_for_a_csi_volume
   ✔ PASS (64s)
 ▶ test_plugin_registry_watches_for_dra_drivers_too
@@ -20,9 +20,9 @@ exit code: 1
 ▶ test_dra_claim_is_allocated_and_reserved_for_the_pod
   ✔ PASS (3s)
 ▶ test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen
-  ✔ PASS (44s)
+  ✔ PASS (46s)
 ▶ test_tls_bootstrap_issues_a_real_client_certificate
-  ✔ PASS (5s)
+  ✔ PASS (6s)
 ▶ test_node_allocatable_cgroup_exists_and_is_capped
   ✔ PASS (0s)
 ▶ test_datastore_round_trips_a_key_over_grpc
@@ -46,32 +46,32 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (153s)
+  ✔ PASS (151s)
 ▶ test_kubectl_debug_adds_and_starts_an_ephemeral_container
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 ▶ test_eviction_soft_grace_period_manual_procedure
     (skip: proving the soft-threshold grace period (round 101 — a pod isn't evicted the instant a looser *soft* threshold is crossed, only once it's stayed continuously crossed for NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS) needs artificial pressure sustained across multiple ticks, harder to orchestrate reliably here than the base eviction procedure above. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_SOFT_THRESHOLD_BYTES set just above current MemAvailable (so MemoryPressure's soft signal trips immediately) but NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES (the hard one) left at its normal, much-lower default, and NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS set to something short like 20, (3) apply a BestEffort pod, (4) confirm it is NOT evicted before the grace period elapses but IS evicted (phase Failed/reason Evicted) once NODELET_EVICTION_CHECK_SECS ticks have accumulated past NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS of continuous soft pressure, (5) restore normal thresholds and restart nodelet. The pure decision logic itself (eviction::pressure_action_due()) is already covered by cargo test's eviction_tests/pressure_action_due.rs — this only proves the live wiring end to end.)
   ○ SKIP (0s)
 ▶ test_prestop_hook_runs_before_termination
   ✔ PASS (19s)
 ▶ test_native_sidecar_container_restarts_on_crash
-  ✔ PASS (4s)
+  ✔ PASS (5s)
 ▶ test_restart_policy_never_exit_zero_is_succeeded
   ✔ PASS (3s)
 ▶ test_container_status_container_id_has_a_runtime_scheme_prefix
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_image_pull_policy_never_fails_when_image_is_absent
-  ✔ PASS (42s)
+  ✔ PASS (40s)
 ▶ test_host_network_pod_needs_no_explicit_port_mapping
   ✔ PASS (3s)
 ▶ test_node_status_reports_runtime_handlers
   ✔ PASS (0s)
 ▶ test_liveness_probe_failure_restarts_the_container
-  ✔ PASS (40s)
+  ✔ PASS (41s)
 ▶ test_grpc_probe_gates_readiness_against_a_real_grpc_server
-  ✔ PASS (13s)
+  ✔ PASS (9s)
 ▶ test_memory_limit_is_enforced_via_cgroup
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_env_resource_field_ref_reports_the_containers_own_limits
   ✔ PASS (3s)
 ▶ test_scheduler_honours_a_node_selector_that_matches
@@ -79,71 +79,71 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_scheduler_holds_the_leader_lease
   ✔ PASS (8s)
 ▶ test_scheduler_does_not_preempt_when_policy_forbids_it
-  ✔ PASS (48s)
+  ✔ PASS (47s)
 ▶ test_container_status_reports_resolved_user
-  ✔ PASS (2s)
-▶ test_proc_mount_default_masks_proc_kcore
   ✔ PASS (3s)
+▶ test_proc_mount_default_masks_proc_kcore
+  ✔ PASS (2s)
 ▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
 ==> WARNING: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership, got '3000 5000' — this runtime may not implement Merge's image-group-membership resolution (a newer-than-usual runc feature); not failing outright since nodelet itself only passes the policy through to CRI unchanged
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_clusterip_is_reachable_from_inside_a_pod
   ✔ PASS (6s)
 ▶ test_session_affinity_pins_a_client_to_one_backend
-  ✔ PASS (5s)
+  ✔ PASS (6s)
 ▶ test_kubectl_logs_returns_real_output
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_a_slow_terminating_pod_does_not_stall_another_pods_creation
   ✔ PASS (10s)
 ▶ test_configmap_and_secret_volumes_are_materialized
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 ▶ test_service_account_token_projected_volume_mints_a_real_token
   ✔ PASS (3s)
 ▶ test_image_volume_source_mounts_a_read_only_image
   ✔ PASS (2s)
 ▶ test_mount_propagation_private_default_does_not_see_a_new_host_mount
-  ✔ PASS (8s)
+  ✔ PASS (9s)
 ▶ test_host_path_directory_mounts_the_real_host_directory
   ✔ PASS (2s)
 ▶ test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
 ==> FATAL: timed out after 90s waiting for: cpu-manager-check-b Running
-  ✘ FAIL (95s, exit 1)
+  ✘ FAIL (94s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: ========================================
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.072583Z  INFO starting nodelet node=runnervmzvulz runtime=Cri cpu=4 memory_bytes=16765378560 max_pods=110
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.074070Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.076633Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.076856Z  WARN plugin registry: registration attempt failed path=/var/lib/nodelet/plugins_registry/gpu.example.com-0cb5e7ad-7110-4cef-a2f0-5b8760a66523-reg.sock error=connecting to plugin registration socket
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: Caused by:
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]:     0: transport error
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]:     1: Connection refused (os error 111)
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]:     2: Connection refused (os error 111)
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.079452Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.101046Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-1849cfc2-c6da-4445-be73-0295ad9461e8.sock plugin_type=DRAPlugin
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.102610Z  INFO node registered and Ready node=runnervmzvulz
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.102927Z  INFO pod controller watching pods bound to this node node=runnervmzvulz
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.102991Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 14 22:18:14 runnervmzvulz run-nodelet.sh[38110]: 2026-08-14T22:18:14.103374Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]:   Node name:   runnervmzvulz
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]:   Runtime:     cri
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]:   KUBECONFIG:  /etc/rancher/k3s/k3s.yaml
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]:   RUST_LOG:    info
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]:   CRI endpoint:  unix:///run/containerd/containerd.sock
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]: ========================================
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]: 2026-08-14T23:45:57.599302Z  INFO starting nodelet node=runnervmzvulz runtime=Cri cpu=4 memory_bytes=16766414848 max_pods=110
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]: 2026-08-14T23:45:57.601351Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]: 2026-08-14T23:45:57.604711Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]: 2026-08-14T23:45:57.607884Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]: 2026-08-14T23:45:57.642906Z  INFO node registered and Ready node=runnervmzvulz
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]: 2026-08-14T23:45:57.643379Z  INFO pod controller watching pods bound to this node node=runnervmzvulz
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]: 2026-08-14T23:45:57.644687Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]: 2026-08-14T23:45:57.645161Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
+    Aug 14 23:45:57 runnervmzvulz run-nodelet.sh[38194]: 2026-08-14T23:45:57.673022Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-d8b79a43-1fcd-4eb8-b535-8cc2cb3d992e.sock plugin_type=DRAPlugin
 ▶ test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down
 Warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.
-  ✔ PASS (16s)
+  ✔ PASS (14s)
 ▶ test_a_pending_pod_recovers_after_the_node_failure_is_fixed
 ==> stopping containerd so every sandbox creation fails...
 ==> starting containerd again — nothing touches the Pod, so only nodelet's own retry can recover it...
-  ✔ PASS (38s)
+  ✔ PASS (37s)
 ▶ test_client_certificate_authentication_works
-.......+.........+.....+......+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+...+..+.......+..+...+......+.+.....+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+.+.....+...+................+...+...........+.......+.........+.....+.+..................+......+..........................+.........+...............+......+....+.........+..+...+....+...........+......+.+...+..+...+.+...+..+.+..............+.+........+......+..................+.....................+.+........+.+.....+.........+...+..........+..+.......+...+...............+...+..+.+.........+......+..+.......+......+..+.......+...+..+......+.+........+...+.........+.............+...............+..+..........+.....+....+..+....+...........+...+.+........+.+......+.....+.+.....+...............+.........+.+...+.....+....+......+......+...+..+...+.+.................+....+......+...+.....+......+....+..+...+....+..+...............+.........+..........+..............+..................+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-.........................+....+...+...+..+.+..............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+.+......+..+.+.....+.+...+..+....+.....+......+.........+......+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+.........+.+.....+......+.......+.....+.......+........+...+.......+........+...+..........+...........+.+........+.......+.........+.........+..+...+......+.+............+........+....+...+.....+...+....+.....+....+...........+..........+........+......+.+.........+..........................+...+.+............+..+......+.+...+..+.+..+............+................+..+...+.........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+..+......+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...........+..................+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+.....+...+...+.+..............+.......+.........+...+..+..........+......+..+......+.......+..+.......+.....+..........+...+..+................+...+............+...+.................+..........+.....+.......+..+...+............+.+............+...........+....+...+........+....+..+...+...+....+..............+.+..............+....+..+....+...........+...+.+..+.........+.+.....+....+.....+....+.....................+...+............+......+..+......+....+...+..+......+..........+.....+....+..+.+.....+...+.+.........+.....+....+.....+.+...........+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+..........+...............+..+.+.....+............+.+..+...+.......+..+...+...+.+...+......+...........+....+.....+....+..+.+.........+...........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+...........+....+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+...+..........+.....+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 -----
-.......+...+..+................+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+.+...+..+.........+.+..+......+....+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+....+...+..+..........+.........+.................+.............+......+......+..+...+....+.....+....+.....+......................+............+..+....+..+..........+..+...+............+...+....+...........+...+.+.........+...........+...+.......+...+...........+....+......+.....+......+.+..............................+........+.........+.+.....+.+......+..+.+..............+...+.......+......+..+.......+..+.+.....+....+...+....................+......+.+...+..+.+..+.+.................+...+.......+..+......+......+.........+.........+..................+....+...+.....+.....................+.+......+..+...+.........+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-.....................+.+..+.+......+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*......+.........+........+...+.+...+..+................+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+....+...+......+.........+..+..........+........+.+.....+.+...........+....+......+.....+.......+......+......+.....+...+......+....+.....+......+....+...+..+.+.................+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.....+.........+...+.....+.+..+...................+...+...+..+.+...........+......+....+........+...+....+...+......+..+...+....+..+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+.......+...+...........+.+.....+...+.+.....+.+.....+.+............+......+.........+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.........+.....+.......+...+..+............................+..+.+......+...+......+......+.........+..+...+....+...+.....+.......+..+.+........................+........+.+..+....+...+...+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.........+........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+....+.....+.+......+.....+.........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+....+.........+..+....+.....+.+..+......+.........+......+.+.....+.........+.+.....+....+..+.......+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 -----
 Certificate request self-signature ok
 subject=CN = alice, O = system:masters
-.+..+.+..+.+.....+.........+...+...+.+...........+...+.+.........+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+........+.+.....+.......+............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....................+.........+...........+....+.......................+.......+........+......+.......+...+..+.......+......+.....+.+........+.+.........+..+.+........+.+.........+........................+.....+..................+.......+...+.........+........+..........+.....+...+...+.+......+...+..+...+............+....+...+.....+.....................+.+...+...+...+...........+.+............+..+...+............+......+..........+...+..+.......+..+...+......+.+.........+.....+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+...+..........+......+.....+....+...+...+......+.....+.........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...........+..+.........+.+........+........................+.+.........+.....+......+..........+.....+.+......+...+......+......+..+.+......+...........+.........+.+...+.....+....+.....+...+.............+.....+....+.....+..........+..+.........+.......+...+.....+......+.............+...........+.......+..............+...+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+............+.+.........+........+...+....+...+..+......+.+...+..+.+.................+.+..+....+.....+......+....+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+......+.....+...+......+.+........+.......+...........+....+......+.....+..........+..+...+.........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.......+.+..............+....+..+.........+.........+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+.......+..+.......+...+.....+......+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*......+......+..+......+......+......+....+...........+...+.......+...+.....+......+.+..............+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 -----
   ✔ PASS (2s)
 
@@ -152,4 +152,4 @@ Results: 43 passed, 1 failed, 4 skipped
 Failed:
   - test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786745241...
+==> Cleaning up test namespace not-k8s-e2e-1786750503...
