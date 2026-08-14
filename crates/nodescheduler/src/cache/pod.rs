@@ -420,6 +420,14 @@ pub struct PodInfo {
     /// When this pod entered the queue. Preserved across requeues — see the
     /// module header.
     pub queued_at: k8s_openapi::jiff::Timestamp,
+    /// `status.startTime` — `None` for a pod that has never actually run yet
+    /// (still Pending, or just assumed/bound with no kubelet report back
+    /// yet). Used for preemption's equal-priority tiebreak
+    /// (`preempt.rs`'s `more_important`) instead of `queued_at`: upstream's
+    /// own `MoreImportantPod` compares real start time, not queue entry —
+    /// a pod that has been *running* longer has more accumulated state to
+    /// lose, which is a different thing from having been *waiting* longer.
+    pub start_time: Option<k8s_openapi::jiff::Timestamp>,
     /// How many scheduling cycles this pod has already burned, for backoff.
     pub attempts: u32,
     /// Set by preemption; the node this pod has been promised.
@@ -601,6 +609,7 @@ impl PodInfo {
                 })
                 .collect(),
             queued_at,
+            start_time: pod.status.as_ref().and_then(|s| s.start_time.clone()).map(|t| t.0),
             attempts: 0,
             nominated_node_name: pod
                 .status

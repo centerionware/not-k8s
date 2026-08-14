@@ -104,7 +104,18 @@ pub fn offset_and_num_candidates(num_potential: i32, rng: &mut Rng) -> (i32, i32
 pub fn more_important(a: &PodInfo, b: &PodInfo) -> std::cmp::Ordering {
     b.priority
         .cmp(&a.priority)
-        .then_with(|| a.queued_at.cmp(&b.queued_at))
+        .then_with(|| pod_start_time(a).cmp(&pod_start_time(b)))
+}
+
+/// Upstream's `GetPodStartTime`: `status.startTime` if the pod has actually
+/// started, else "now" — a not-yet-started pod is treated as the youngest
+/// possible, so it never wins a tiebreak against one that's already running.
+/// `queued_at` (queue entry time) is deliberately not used here: it survives
+/// requeues and would make a pod that's been failing to schedule for a while
+/// look "older" than a pod that's actually been running for a while, which
+/// is backwards for the "less accumulated state to lose" rationale above.
+pub(crate) fn pod_start_time(p: &PodInfo) -> k8s_openapi::jiff::Timestamp {
+    p.start_time.unwrap_or_else(k8s_openapi::jiff::Timestamp::now)
 }
 
 /// Whether removing this pod would breach a PodDisruptionBudget.
