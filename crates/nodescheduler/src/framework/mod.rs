@@ -226,9 +226,16 @@ pub trait FilterPlugin: Plugin {
     fn filter(&self, state: &CycleState, pod: &PodInfo, node: &NodeInfo) -> Status;
 }
 
-/// Runs only when zero nodes were feasible. This is where preemption lives.
+/// Runs only when zero nodes were feasible, before `Scheduler::preempt`'s
+/// fallback (driven from `lib.rs`'s `scheduling_loop`, once `schedule_one`
+/// itself returns `Unschedulable` — see `cycle.rs`'s "Preemption" section
+/// header for why that one direct call isn't a `PostFilterPlugin`). `async`
+/// because the one real implementor (`DynamicResources`) needs a network
+/// round trip to deallocate a stuck claim — no implementor existed when this
+/// was still synchronous, so widening it cost nothing.
+#[async_trait::async_trait]
 pub trait PostFilterPlugin: Plugin {
-    fn post_filter(
+    async fn post_filter(
         &self,
         state: &mut CycleState,
         pod: &PodInfo,

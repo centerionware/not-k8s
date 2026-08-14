@@ -186,7 +186,7 @@ impl Resources {
 ///
 /// `E` is ambiguous on purpose in the spec: `1E` is one exa, `1E3` is one
 /// thousand. They are told apart by whether digits follow.
-fn parse_quantity_f64(s: &str) -> Option<f64> {
+pub(crate) fn parse_quantity_f64(s: &str) -> Option<f64> {
     let s = s.trim();
     if s.is_empty() {
         return None;

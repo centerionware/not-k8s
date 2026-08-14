@@ -357,7 +357,7 @@ impl Scheduler {
             // ── PostFilter (preemption) ─────────────────────────────────
             for plugin in &registry.post_filter {
                 let (status, nominated) =
-                    plugin.post_filter(&mut state, pod, snapshot, &node_statuses);
+                    plugin.post_filter(&mut state, pod, snapshot, &node_statuses).await;
                 if status.is_success() || nominated.is_some() {
                     return (
                         CycleOutcome::Unschedulable {

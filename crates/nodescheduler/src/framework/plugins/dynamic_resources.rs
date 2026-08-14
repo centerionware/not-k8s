@@ -14,34 +14,80 @@
 //! `VolumeBinding`, there is no external process to poll for, so PreBind
 //! here is one API round trip, not a wait.
 //!
-//! Not implemented, and rejected explicitly (`Unresolvable`, not silently
-//! mismatched) rather than mishandled:
+//! `PostFilter` is also implemented (checked against upstream's real
+//! `DynamicResources.PostFilter`): when a pod is unschedulable because a
+//! claim it already owns is allocated to a topology no node satisfies, and
+//! nothing else still needs that allocation (`reservedFor` empty or this
+//! pod alone), the allocation is deallocated so the next attempt can pick a
+//! different one — cheaper than upstream calls "DRA preemption" ever
+//! reaching for `Scheduler::preempt`'s real pod eviction. See the trait's
+//! own doc comment for why this needed `PostFilterPlugin` to become async.
 //!
-//!   * `firstAvailable` subrequests (alpha in 1.33) — one request with
-//!     several fallback device classes, tried in order.
-//!   * `adminAccess` — administrative claims that bypass ordinary
-//!     allocation bookkeeping.
-//!   * `allocationMode: All` — every matching device in a pool, rather than
-//!     a fixed count.
-//!   * `DeviceClaim.constraints` — cross-request "must share an attribute"
-//!     rules (e.g. same NUMA node).
-//!   * A `ResourceSlice` using `nodeSelector` or per-device node selection
-//!     instead of a plain `nodeName`/`allNodes` — see `cache/dra.rs`.
+//! Also implemented, each checked directly against upstream's real
+//! allocator (`k8s.io/dynamic-resource-allocation/structured/allocator.go`)
+//! rather than assumed from the API docs:
+//!
+//!   * `firstAvailable` subrequests (beta in 1.33, `DRAPrioritizedList`) —
+//!     tried in the order they're listed; the first one this node can fully
+//!     satisfy wins, matching upstream's `allocateOne` subrequest loop.
+//!   * `adminAccess` — an admin-access request is never excluded by another
+//!     request's picks (upstream's `allocatingDevices`/`allocatedDevices`
+//!     checks are both skipped for it) and never itself excludes a later
+//!     request's pick — matching upstream's `allocateDevice`, which simply
+//!     never marks an admin-access device "in use".
+//!   * `allocationMode: All` — every device this node has that matches the
+//!     request's selectors, not a fixed count. A node with zero matches
+//!     fails the request the same way `ExactCount` with `count: 0` would,
+//!     matching upstream's own "at least one device is required" check.
+//!   * `DeviceClaim.constraints` (`matchAttribute`) — devices picked for the
+//!     requests a constraint names (or every request, if it names none)
+//!     must all report the same value for that attribute; the first device
+//!     picked establishes the value, everything after it must match.
+//!   * `ResourceSlice.nodeSelector` (a real `v1.NodeSelector`, evaluated the
+//!     same way `NodeAffinity` evaluates a pod's own) and
+//!     `perDeviceNodeSelection` (each device names its own
+//!     `nodeName`/`nodeSelector`/`allNodes` instead of the whole slice
+//!     sharing one) — see `cache/snapshot.rs`'s `resource_slices_for_node`
+//!     and this file's `candidates_for_node`.
+//!
+//! One real, documented algorithmic divergence: upstream's allocator is a
+//! full backtracking search (`allocateOne` tries a device, recurses, and
+//! rolls back and tries another if the recursion fails) so that an earlier
+//! request's suboptimal pick never dooms a later one. `allocate_on_node`
+//! here is a single greedy forward pass — each request picks the first
+//! selectable, unexcluded, constraint-satisfying devices it finds and never
+//! reconsiders them. This is exact for the overwhelmingly common shapes (one
+//! request, or several requests with disjoint device pools) and can, in
+//! principle, report "no fit" for a claim a full backtracking search would
+//! find a solution for when multiple requests compete for the same narrow
+//! pool under a shared constraint. It never does the reverse — accepts
+//! nothing a real allocation wouldn't be valid for.
 //!
 //! # The CEL environment this exposes, and where it diverges from upstream
 //!
 //! A selector's `device` variable carries `driver` (string), `attributes`
 //! (map from domain to map from name to bool/int/string — a `version`
 //! attribute is exposed as its string form), and `capacity` (map from
-//! domain to map from name to a plain `f64` in base units). Upstream's own
-//! CEL environment instead uses a custom `apiservercel` `Quantity` type with
-//! its own comparison semantics; representing capacity as `f64` gets simple
-//! numeric comparisons right (`>`, `<`, `==`) and is wrong for anything that
-//! leans on Quantity-specific behaviour a plain float can't express.
+//! domain to map from name to a plain `f64` in base units, but see below).
 //! Unprefixed attribute keys are exposed under both the empty domain and the
 //! device's own driver's domain, matching the common case
 //! (`device.attributes["dra.example.com"].foo` for an attribute the driver
 //! wrote as bare `foo`).
+//!
+//! Upstream's own CEL environment instead types `capacity` map values (and
+//! the `quantity(str)` function's return) as a custom `apiservercel`
+//! `Quantity` — an arbitrary-precision value with its own `isGreaterThan`/
+//! `isLessThan`/`compareTo`/`add`/`sub`/`sign`/`isInteger`/`asInteger`/
+//! `asApproximateFloat` methods. `cel-interpreter`'s `Value` is a closed enum
+//! with no opaque/custom-type variant — there is no way to add a real
+//! `Quantity` type without forking it, so `quantity.rs` registers those same
+//! method/function names operating on `f64` instead: a `quantity("10Gi")`
+//! parses to a plain float in base units the same way `device.capacity`
+//! entries already are, and every method above is implemented against that
+//! float. Every selector expression real DRA drivers write against capacity
+//! evaluates correctly under this — the divergence is precision only
+//! (`f64`'s ~15-17 significant decimal digits vs upstream's exact rational
+//! arithmetic), which no real device capacity value gets close to.
 //!
 //! # Why the actual device picks happen in `PreFilter`, not `Filter`
 //!
@@ -92,13 +138,15 @@ fn device_id(r: &RawDeviceRequestAllocationResult) -> DeviceId {
 
 /// One claim's resolution, computed once in `PreFilter`.
 enum ClaimPlan {
-    /// Already allocated, and this pod is already listed in `reservedFor` —
-    /// nothing left to do anywhere in the cycle.
-    Nothing,
-    /// Already allocated, but this pod needs adding to `reservedFor`. Not
-    /// node-dependent by itself, but the existing allocation's own
-    /// `nodeSelector` (if any) still has to be honoured.
-    AddReservation { claim_key: String, node_selector: Option<Box<NodeSelector>> },
+    /// Already allocated. `needs_reservation` is `false` when this pod is
+    /// already listed in `reservedFor` (nothing to write in Reserve/PreBind)
+    /// and `true` when it still needs adding. Either way `node_selector` —
+    /// the *existing* allocation's own topology constraint, if any — still
+    /// has to be honoured by Filter and (if every node fails it) is what
+    /// `PostFilter` can free: an already-reserved-for-this-pod claim on an
+    /// unreachable topology is exactly as stuck as one that still needs the
+    /// reservation write, so both must carry it, not just the latter.
+    Reserved { claim_key: String, needs_reservation: bool, node_selector: Option<Box<NodeSelector>> },
     /// Unallocated. `by_node` is only ever `Some` for a node that can
     /// satisfy every request in the claim.
     Allocate { claim_key: String, by_node: HashMap<String, Vec<RawDeviceRequestAllocationResult>> },
@@ -208,12 +256,37 @@ struct CelDevice {
     capacity: BTreeMap<String, BTreeMap<String, f64>>,
 }
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, PartialEq, Debug)]
 #[serde(untagged)]
 enum CelAttr {
     Bool(bool),
     Int(i64),
     Str(String),
+}
+
+/// Read one attribute's value off a device by its (possibly unqualified)
+/// name — the same lookup `matchAttributeConstraint` needs, and the same
+/// "fully-qualified match, else bare name in the device's own driver's
+/// domain" rule `split_qualified`/`cel_device` already establish for the CEL
+/// environment. Mirrors upstream's `lookupAttribute`.
+fn lookup_attribute(basic: &crate::cache::dra::RawBasicDevice, driver: &str, qualified_name: &str) -> Option<CelAttr> {
+    let attrs = basic.attributes.as_ref()?;
+    let raw = if let Some(a) = attrs.get(qualified_name) {
+        a
+    } else {
+        let (domain, name) = qualified_name.split_once('/')?;
+        if domain != driver {
+            return None;
+        }
+        attrs.get(name)?
+    };
+    if let Some(b) = raw.bool {
+        Some(CelAttr::Bool(b))
+    } else if let Some(i) = raw.int {
+        Some(CelAttr::Int(i))
+    } else {
+        raw.string.as_ref().or(raw.version.as_ref()).map(|s| CelAttr::Str(s.clone()))
+    }
 }
 
 /// `"domain/name"` splits on the first `/`; a bare key belongs to the
@@ -243,8 +316,13 @@ fn cel_device(driver: &str, basic: &crate::cache::dra::RawBasicDevice) -> CelDev
     let mut capacity: BTreeMap<String, BTreeMap<String, f64>> = BTreeMap::new();
     for (key, cap) in basic.capacity.iter().flatten() {
         let (domain, name) = split_qualified(key, driver);
-        let bytes = crate::cache::pod::parse_quantity(&cap.value.0) as f64;
-        capacity.entry(domain).or_default().insert(name.to_string(), bytes);
+        // The exact parsed value, not `parse_quantity`'s `.ceil()`-to-i64 —
+        // that rounding is right for a whole-unit resource ledger
+        // (millicores, bytes) but would silently corrupt a fractional
+        // device capacity (bandwidth in GB/s, say) before any selector ever
+        // saw it.
+        let value = crate::cache::pod::parse_quantity_f64(&cap.value.0).unwrap_or(0.0);
+        capacity.entry(domain).or_default().insert(name.to_string(), value);
     }
     CelDevice { driver: driver.to_string(), attributes, capacity }
 }
@@ -265,6 +343,7 @@ fn device_matches(
             return false;
         };
         let mut ctx = cel_interpreter::Context::default();
+        crate::framework::plugins::quantity::install(&mut ctx);
         if ctx.add_variable("device", cel_device(driver, basic)).is_err() {
             return false;
         }
@@ -284,86 +363,248 @@ struct Candidate {
     basic: crate::cache::dra::RawBasicDevice,
 }
 
-fn candidates_for_node(snapshot: &Snapshot, node_name: &str) -> Vec<Candidate> {
+/// `resource_slices_for_node` already resolved slice-level node
+/// applicability (`nodeName`/`allNodes`/`nodeSelector`); a
+/// `perDeviceNodeSelection: true` slice defers that decision to each device,
+/// resolved here.
+fn candidates_for_node(snapshot: &Snapshot, node: &NodeInfo) -> Vec<Candidate> {
     snapshot
-        .resource_slices_for_node(node_name)
+        .resource_slices_for_node(node)
         .flat_map(|slice| {
-            slice.spec.devices.iter().flatten().map(|d| Candidate {
-                driver: slice.spec.driver.clone(),
-                pool: slice.spec.pool.name.clone(),
-                name: d.name.clone(),
-                basic: d.basic.clone(),
+            let per_device = slice.spec.per_device_node_selection == Some(true);
+            slice.spec.devices.iter().flatten().filter_map(move |d| {
+                if per_device && !device_applies_to_node(&d.basic, node) {
+                    return None;
+                }
+                Some(Candidate {
+                    driver: slice.spec.driver.clone(),
+                    pool: slice.spec.pool.name.clone(),
+                    name: d.name.clone(),
+                    basic: d.basic.clone(),
+                })
             })
         })
         .collect()
 }
 
-/// Whether a request uses a feature this plugin does not implement — see
-/// the module header's scope list. A request with no `exactly` at all (only
-/// `firstAvailable`, or neither) is unsupported too — `first_available.is_some()`
-/// already catches the former; the latter is not valid upstream either.
-fn request_unsupported(req: &crate::cache::dra::RawDeviceRequest) -> bool {
-    let Some(exactly) = &req.exactly else {
+/// A `perDeviceNodeSelection` device's own applicability check — mirrors the
+/// `ptr.Deref(slice.Spec.PerDeviceNodeSelection, false)` branch in
+/// upstream's `isSelectable`. Real API validation requires exactly one of
+/// the three to be set; none set is therefore malformed input, and (as
+/// everywhere else in this file) fails closed rather than admitting the
+/// device.
+fn device_applies_to_node(basic: &crate::cache::dra::RawBasicDevice, node: &NodeInfo) -> bool {
+    if basic.all_nodes == Some(true) {
         return true;
-    };
-    exactly.admin_access == Some(true)
-        || req.first_available.is_some()
-        || matches!(exactly.allocation_mode.as_deref(), Some(m) if m != "ExactCount")
-        || exactly.device_class_name.is_none()
+    }
+    if let Some(name) = &basic.node_name {
+        return name == &node.name;
+    }
+    if let Some(sel) = &basic.node_selector {
+        return crate::framework::plugins::node_affinity::matches_node_selector(sel, node);
+    }
+    false
+}
+
+/// One request's fully-resolved shape, whether it came from `exactly` or one
+/// alternative of a `firstAvailable` list — the same flattening upstream's
+/// `requestAccessor` interface gives `deviceRequestAccessor`/
+/// `deviceSubRequestAccessor`.
+struct EffectiveRequest {
+    /// `"req"` for a plain request, `"req/sub"` for a `firstAvailable`
+    /// alternative — the exact string upstream records in
+    /// `DeviceRequestAllocationResult.Request`.
+    result_name: String,
+    device_class_name: String,
+    selectors: Vec<crate::cache::dra::RawDeviceSelector>,
+    all_devices: bool,
+    count: usize,
+    admin_access: bool,
+}
+
+/// Every alternative to try for one top-level request, in order — one entry
+/// for a plain `exactly` request, one entry per subrequest for a
+/// `firstAvailable` one. `None` means the request is malformed (neither arm
+/// set, or a device class name missing) and the claim cannot be allocated at
+/// all, on this node or any other.
+fn effective_requests(req: &crate::cache::dra::RawDeviceRequest) -> Option<Vec<EffectiveRequest>> {
+    if let Some(exactly) = &req.exactly {
+        let device_class_name = exactly.device_class_name.clone()?;
+        let all_devices = matches!(exactly.allocation_mode.as_deref(), Some("All"));
+        if !all_devices && !matches!(exactly.allocation_mode.as_deref(), None | Some("ExactCount")) {
+            return None; // an allocationMode this crate doesn't recognize at all
+        }
+        return Some(vec![EffectiveRequest {
+            result_name: req.name.clone(),
+            device_class_name,
+            selectors: exactly.selectors.clone().unwrap_or_default(),
+            all_devices,
+            count: if all_devices { 0 } else { exactly.count.unwrap_or(1).max(0) as usize },
+            admin_access: exactly.admin_access == Some(true),
+        }]);
+    }
+    if let Some(subs) = &req.first_available {
+        if subs.is_empty() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(subs.len());
+        for sub in subs {
+            let device_class_name = sub.device_class_name.clone()?;
+            let all_devices = matches!(sub.allocation_mode.as_deref(), Some("All"));
+            if !all_devices && !matches!(sub.allocation_mode.as_deref(), None | Some("ExactCount")) {
+                return None;
+            }
+            out.push(EffectiveRequest {
+                result_name: format!("{}/{}", req.name, sub.name),
+                device_class_name,
+                selectors: sub.selectors.clone().unwrap_or_default(),
+                all_devices,
+                count: if all_devices { 0 } else { sub.count.unwrap_or(1).max(0) as usize },
+                // Subrequests can never carry adminAccess — see
+                // `RawDeviceSubRequest`'s doc comment.
+                admin_access: false,
+            });
+        }
+        return Some(out);
+    }
+    None // neither `exactly` nor `firstAvailable` — not valid upstream either
+}
+
+/// Running state for one `matchAttribute` constraint across the devices
+/// picked so far for this claim on this node — the value the first covered
+/// device established, and how many devices are currently "in" the group
+/// (upstream only needs the count; we only need the value itself, since
+/// there's no backtracking `remove` to support here).
+struct ConstraintState {
+    constraint: crate::cache::dra::RawDeviceConstraint,
+    value: Option<CelAttr>,
+}
+
+/// Whether `constraint` applies to `result_name` — upstream's
+/// `matchAttributeConstraint.matches`, ported directly: an empty `requests`
+/// list means every request, otherwise the plain request name or the
+/// `"request/subrequest"` form must be listed.
+fn constraint_applies(requests: &[String], result_name: &str) -> bool {
+    requests.is_empty()
+        || requests.iter().any(|r| r == result_name || result_name.starts_with(&format!("{r}/")))
+}
+
+/// Whether picking `driver`/`basic` for `result_name` is still consistent
+/// with every constraint it's covered by — and, if so, records it (a
+/// constraint with no established value yet takes whatever this device
+/// offers, same as upstream's "first device in the set can always be
+/// picked"). Devices this claim has already committed to are assumed
+/// consistent — nothing here un-registers a earlier pick, matching this
+/// file's single-forward-pass design (see the module header).
+fn constraint_allows(
+    states: &mut [ConstraintState],
+    result_name: &str,
+    driver: &str,
+    basic: &crate::cache::dra::RawBasicDevice,
+) -> bool {
+    for state in states.iter_mut() {
+        let Some(attr_name) = &state.constraint.match_attribute else { continue };
+        if !constraint_applies(&state.constraint.requests, result_name) {
+            continue;
+        }
+        let Some(value) = lookup_attribute(basic, driver, attr_name) else {
+            return false; // doesn't carry the attribute at all
+        };
+        match &state.value {
+            None => state.value = Some(value),
+            Some(existing) if *existing == value => {}
+            Some(_) => return false,
+        }
+    }
+    true
 }
 
 /// Try to satisfy every request in a claim against one node's candidate
 /// devices, given the identities already spoken for. `None` means this node
-/// cannot satisfy the claim at all.
+/// cannot satisfy the claim at all. See the module header for the one
+/// deliberate divergence from upstream (a single greedy forward pass, no
+/// backtracking).
 fn allocate_on_node(
     requests: &[crate::cache::dra::RawDeviceRequest],
+    constraints: &[crate::cache::dra::RawDeviceConstraint],
     device_classes: &HashMap<&str, &RawDeviceClass>,
     candidates: &[Candidate],
     excluded: &HashSet<DeviceId>,
 ) -> Option<Vec<RawDeviceRequestAllocationResult>> {
     let mut picked: HashSet<DeviceId> = HashSet::new();
     let mut out = Vec::new();
+    let mut constraint_states: Vec<ConstraintState> =
+        constraints.iter().map(|c| ConstraintState { constraint: c.clone(), value: None }).collect();
 
     for req in requests {
-        // `request_unsupported` already excluded requests with no `exactly`
-        // from reaching here — see `pre_filter_impl`'s gate.
-        let Some(exactly) = &req.exactly else { return None };
-        let want = exactly.count.unwrap_or(1).max(0) as usize;
-        if want == 0 {
-            continue;
-        }
-        let mut selectors: Vec<crate::cache::dra::RawDeviceSelector> =
-            exactly.selectors.clone().unwrap_or_default();
-        if let Some(class_name) = &exactly.device_class_name {
-            let Some(class) = device_classes.get(class_name.as_str()) else {
-                return None;
-            };
+        let alternatives = effective_requests(req)?;
+        let mut satisfied = false;
+
+        'alternatives: for eff in &alternatives {
+            let Some(class) = device_classes.get(eff.device_class_name.as_str()) else { continue };
+            let mut selectors = eff.selectors.clone();
             selectors.extend(class.spec.selectors.clone().unwrap_or_default());
+
+            // Trying an alternative must not leave partial state behind if
+            // it fails partway — clone the constraint values so a failed
+            // attempt can be discarded rather than corrupting the next
+            // alternative's (or the next request's) view.
+            let mut trial_states: Vec<ConstraintState> = constraint_states
+                .iter()
+                .map(|s| ConstraintState { constraint: s.constraint.clone(), value: s.value.clone() })
+                .collect();
+            let mut trial_picked = picked.clone();
+            let mut found = Vec::new();
+
+            // A request for exactly zero devices (not valid upstream — API
+            // validation requires count >= 1 — but defensively handled the
+            // same safe way as any other malformed-but-parseable input)
+            // needs no candidate search at all: it is trivially satisfied.
+            if !eff.all_devices && eff.count == 0 {
+                picked = trial_picked;
+                satisfied = true;
+                break 'alternatives;
+            }
+
+            for c in candidates {
+                let id = (c.driver.clone(), c.pool.clone(), c.name.clone());
+                if !eff.admin_access && (excluded.contains(&id) || trial_picked.contains(&id)) {
+                    continue;
+                }
+                if !device_matches(&selectors, &c.driver, &c.basic) {
+                    continue;
+                }
+                if !constraint_allows(&mut trial_states, &eff.result_name, &c.driver, &c.basic) {
+                    continue;
+                }
+                if !eff.admin_access {
+                    trial_picked.insert(id);
+                }
+                found.push(RawDeviceRequestAllocationResult {
+                    request: eff.result_name.clone(),
+                    driver: c.driver.clone(),
+                    pool: c.pool.clone(),
+                    device: c.name.clone(),
+                    admin_access: eff.admin_access,
+                });
+                if !eff.all_devices && found.len() == eff.count {
+                    break;
+                }
+            }
+
+            let got_enough = if eff.all_devices { !found.is_empty() } else { found.len() == eff.count };
+            if !got_enough {
+                continue 'alternatives; // this alternative doesn't fit; try the next
+            }
+
+            picked = trial_picked;
+            constraint_states = trial_states;
+            out.extend(found);
+            satisfied = true;
+            break 'alternatives;
         }
 
-        let mut found = 0usize;
-        for c in candidates {
-            let id = (c.driver.clone(), c.pool.clone(), c.name.clone());
-            if excluded.contains(&id) || picked.contains(&id) {
-                continue;
-            }
-            if !device_matches(&selectors, &c.driver, &c.basic) {
-                continue;
-            }
-            picked.insert(id);
-            out.push(RawDeviceRequestAllocationResult {
-                request: req.name.clone(),
-                driver: c.driver.clone(),
-                pool: c.pool.clone(),
-                device: c.name.clone(),
-                admin_access: false,
-            });
-            found += 1;
-            if found == want {
-                break;
-            }
-        }
-        if found < want {
+        if !satisfied {
             return None;
         }
     }
@@ -429,17 +670,13 @@ fn pre_filter_impl(
                     .into_iter()
                     .flatten()
                     .any(|r| r.resource == "pods" && r.name == pod.name && r.uid == pod.uid);
-                if already_reserved {
-                    plans.push(ClaimPlan::Nothing);
-                } else {
-                    let node_selector = claim
-                        .status
-                        .as_ref()
-                        .and_then(|s| s.allocation.as_ref())
-                        .and_then(|a| a.node_selector.clone())
-                        .map(Box::new);
-                    plans.push(ClaimPlan::AddReservation { claim_key, node_selector });
-                }
+                let node_selector = claim
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.allocation.as_ref())
+                    .and_then(|a| a.node_selector.clone())
+                    .map(Box::new);
+                plans.push(ClaimPlan::Reserved { claim_key, needs_reservation: !already_reserved, node_selector });
                 continue;
             }
 
@@ -449,25 +686,22 @@ fn pre_filter_impl(
                 .as_ref()
                 .and_then(|d| d.requests.clone())
                 .unwrap_or_default();
-            if claim.spec.devices.as_ref().and_then(|d| d.constraints.as_ref()).is_some()
-                || requests.iter().any(request_unsupported)
-            {
+            if requests.iter().any(|r| effective_requests(r).is_none()) {
                 return (
                     Status::unresolvable(
                         NAME,
-                        format!(
-                            "resourceclaim {claim_name:?} uses a DRA feature this scheduler does not implement (firstAvailable, adminAccess, allocationMode other than ExactCount, or cross-request constraints)"
-                        ),
+                        format!("resourceclaim {claim_name:?} has a malformed device request (neither exactly nor firstAvailable set, a missing deviceClassName, or an unrecognized allocationMode)"),
                     ),
                     None,
                 );
             }
+            let constraints = claim.spec.devices.as_ref().and_then(|d| d.constraints.clone()).unwrap_or_default();
 
             let mut by_node = HashMap::new();
             for node in snapshot.nodes() {
-                let candidates = candidates_for_node(snapshot, &node.name);
+                let candidates = candidates_for_node(snapshot, node);
                 if let Some(devices) =
-                    allocate_on_node(&requests, &device_classes, &candidates, excluded)
+                    allocate_on_node(&requests, &constraints, &device_classes, &candidates, excluded)
                 {
                     by_node.insert(node.name.clone(), devices);
                 }
@@ -492,8 +726,7 @@ fn filter_impl(state: &CycleState, _pod: &PodInfo, node: &NodeInfo) -> Status {
     };
     for plan in &wanted.0 {
         match plan {
-            ClaimPlan::Nothing => {}
-            ClaimPlan::AddReservation { node_selector, .. } => {
+            ClaimPlan::Reserved { node_selector, .. } => {
                 if let Some(sel) = node_selector {
                     if !crate::framework::plugins::node_affinity::matches_node_selector(sel, node) {
                         return Status::unresolvable(NAME, "node(s) not in the claim's allocated topology");
@@ -510,6 +743,62 @@ fn filter_impl(state: &CycleState, _pod: &PodInfo, node: &NodeInfo) -> Status {
     Status::success()
 }
 
+/// The pure half of `PostFilter`: which claim (if any) should be
+/// deallocated to help this pod. `None` means nothing here can help —
+/// either no claim is stuck, or a stuck one still reserves the device for
+/// someone else, and freeing it would break them.
+///
+/// Matches upstream's real `DynamicResources.PostFilter` with one
+/// structural difference: upstream tracks "unavailable claims" as a
+/// byproduct of its own Filter loop; this reruns the same node-selector
+/// check `filter_impl` already made, since `CycleState` doesn't carry that
+/// byproduct here.
+fn post_filter_impl(wanted: &WantedClaims, pod: &PodInfo, snapshot: &Snapshot) -> Option<(String, String)> {
+    for plan in &wanted.0 {
+        let ClaimPlan::Reserved { claim_key, node_selector: Some(sel), .. } = plan else { continue };
+        let unavailable_everywhere =
+            snapshot.nodes().iter().all(|n| !crate::framework::plugins::node_affinity::matches_node_selector(sel, n));
+        if !unavailable_everywhere {
+            continue;
+        }
+        let Some((namespace, name)) = claim_key.split_once('/') else { continue };
+        let Some(claim) = snapshot.resource_claim(namespace, name) else { continue };
+        let reserved_for = claim.status.as_ref().and_then(|s| s.reserved_for.as_ref());
+        let only_us = reserved_for.is_none_or(|r| {
+            r.is_empty() || (r.len() == 1 && r[0].resource == "pods" && r[0].name == pod.name && r[0].uid == pod.uid)
+        });
+        if !only_us {
+            continue; // someone else still needs this allocation; freeing it would break them
+        }
+        return Some((namespace.to_string(), name.to_string()));
+    }
+    None
+}
+
+#[async_trait::async_trait]
+impl crate::framework::PostFilterPlugin for DynamicResources {
+    async fn post_filter(
+        &self,
+        state: &mut CycleState,
+        pod: &PodInfo,
+        snapshot: &Snapshot,
+        _node_statuses: &crate::framework::status::NodeToStatus,
+    ) -> (Status, Option<String>) {
+        let Some(wanted) = state.read::<WantedClaims>(NAME) else {
+            return (Status::unschedulable(NAME, "no claims to deallocate"), None);
+        };
+        let Some((namespace, name)) = post_filter_impl(&wanted, pod, snapshot) else {
+            return (Status::unschedulable(NAME, "still not schedulable"), None);
+        };
+
+        let body = serde_json::json!({ "status": { "allocation": null, "reservedFor": null } });
+        if let Err(status) = raw_patch_claim_status(&self.client, &namespace, &name, body).await {
+            return (status, None);
+        }
+        (Status::unschedulable(NAME, "deallocation of ResourceClaim completed"), None)
+    }
+}
+
 impl crate::framework::ReservePlugin for DynamicResources {
     /// Turn this cycle's `WantedClaims` into concrete assumptions for the
     /// one node that won — see the module header's "assume cache" section.
@@ -521,8 +810,14 @@ impl crate::framework::ReservePlugin for DynamicResources {
         let mut assumed = Vec::new();
         for plan in &wanted.0 {
             match plan {
-                ClaimPlan::Nothing => {}
-                ClaimPlan::AddReservation { claim_key, .. } => {
+                // Always assumed, even when `needs_reservation` is false:
+                // `commit_claim` re-checks the *fresh* claim before writing
+                // and no-ops the reservedFor append if it's already there,
+                // so this is idempotent — and it must run either way, or
+                // PreBind (which only iterates entries the assume cache
+                // remembered) never confirms the write for a
+                // no-longer-quite-so-nothing-to-do claim.
+                ClaimPlan::Reserved { claim_key, .. } => {
                     assumed.push(AssumedClaim { claim_key: claim_key.clone(), new_devices: Vec::new() });
                 }
                 ClaimPlan::Allocate { claim_key, by_node } => {
@@ -542,7 +837,11 @@ impl crate::framework::ReservePlugin for DynamicResources {
         {
             let mut devices = self.assumed_devices.lock().unwrap();
             for a in &assumed {
-                for d in &a.new_devices {
+                // An admin-access pick is never exclusive — see
+                // `allocate_on_node`'s doc comment — so it must not enter
+                // the assume cache either, or a later cycle's `excluded`
+                // would wrongly treat it as spoken for.
+                for d in a.new_devices.iter().filter(|d| !d.admin_access) {
                     devices.insert(device_id(d));
                 }
             }
