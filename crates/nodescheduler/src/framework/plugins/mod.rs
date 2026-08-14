@@ -50,6 +50,7 @@
 //!   `hugepages` and `extended` maps of resource-name → quantity.
 
 pub mod default_binder;
+pub mod dynamic_resources;
 pub mod image_locality;
 pub mod inter_pod_affinity;
 pub mod node_affinity;
@@ -111,13 +112,22 @@ pub(crate) fn default_normalize_score(reverse: bool, scores: &mut [i64]) {
 /// means a profile dumped from either scheduler compares equal.
 ///
 /// `client` is used by [`default_binder::DefaultBinder`] (writes the
-/// Binding) and [`volume_binding::VolumeBinding`] (annotates and polls a
-/// PVC in `PreBind`) — the only two plugins in this directory that perform
-/// I/O; everything else here is a pure function of the snapshot.
+/// Binding), [`volume_binding::VolumeBinding`] (annotates and polls a PVC in
+/// `PreBind`), and [`dynamic_resources::DynamicResources`] (writes a
+/// ResourceClaim's allocation and reservation in `PreBind`) — the only three
+/// plugins in this directory that perform I/O; everything else here is a
+/// pure function of the snapshot.
 pub fn default_registry(client: kube::Client, cfg: &crate::config::Config) -> Registry {
+    // One instance, cloned into every vec it belongs to — see
+    // `DynamicResources`'s own doc comment on why its assume cache must be
+    // shared rather than reconstructed per extension point.
+    let dra = dynamic_resources::DynamicResources::new(client.clone());
     Registry {
         profile_name: "default-scheduler".to_string(),
-        pre_enqueue: vec![Box::new(scheduling_gates::SchedulingGates)],
+        pre_enqueue: vec![
+            Box::new(scheduling_gates::SchedulingGates),
+            Box::new(dra.clone()),
+        ],
         queue_sort: Some(Box::new(priority_sort::PrioritySort)),
         pre_filter: vec![
             Box::new(node_ports::NodePorts),
@@ -130,6 +140,7 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config) -> Re
                 defaulting: cfg.topology_defaulting,
             }),
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
+            Box::new(dra.clone()),
         ],
         filter: vec![
             Box::new(node_unschedulable::NodeUnschedulable),
@@ -146,6 +157,7 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config) -> Re
                 defaulting: cfg.topology_defaulting,
             }),
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
+            Box::new(dra.clone()),
         ],
         post_filter: Vec::new(),
         pre_score: vec![
@@ -174,11 +186,14 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config) -> Re
             }),
             Box::new(inter_pod_affinity::InterPodAffinity::default()),
         ],
-        reserve: Vec::new(),
+        reserve: vec![Box::new(dra.clone())],
         permit: Vec::new(),
-        pre_bind: vec![Box::new(volume_binding::VolumeBinding::new(client.clone(), cfg.volume_bind_timeout))],
+        pre_bind: vec![
+            Box::new(volume_binding::VolumeBinding::new(client.clone(), cfg.volume_bind_timeout)),
+            Box::new(dra.clone()),
+        ],
         bind: vec![Box::new(default_binder::DefaultBinder::new(client))],
-        post_bind: Vec::new(),
+        post_bind: vec![Box::new(dra)],
     }
 }
 

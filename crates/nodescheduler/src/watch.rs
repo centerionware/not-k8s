@@ -188,6 +188,9 @@ type Sc = k8s_openapi::api::storage::v1::StorageClass;
 type CsiNode = k8s_openapi::api::storage::v1::CSINode;
 type CsiDriver = k8s_openapi::api::storage::v1::CSIDriver;
 type CsiStorageCapacity = k8s_openapi::api::storage::v1::CSIStorageCapacity;
+type ResourceClaim = crate::cache::dra::RawResourceClaim;
+type DeviceClass = crate::cache::dra::RawDeviceClass;
+type ResourceSlice = crate::cache::dra::RawResourceSlice;
 
 fn watch_namespaces(client: &Client) -> BoxStream<'static, watcher::Result<Event<Ns>>> {
     watcher(Api::<Ns>::all(client.clone()), watcher::Config::default()).boxed()
@@ -265,6 +268,55 @@ fn watch_csi_storage_capacities(
     client: &Client,
 ) -> BoxStream<'static, watcher::Result<Event<CsiStorageCapacity>>> {
     watcher(Api::<CsiStorageCapacity>::all(client.clone()), watcher::Config::default()).boxed()
+}
+
+/// Phase 5's three DRA watches. Unconditional too, for the same reason as
+/// Phase 4's storage watches — `DynamicResources` is itself an unconditional
+/// default-profile plugin, so there is no "off" mode to gate these behind.
+fn watch_resource_claims(client: &Client) -> BoxStream<'static, watcher::Result<Event<ResourceClaim>>> {
+    watcher(Api::<ResourceClaim>::all(client.clone()), watcher::Config::default()).boxed()
+}
+fn watch_device_classes(client: &Client) -> BoxStream<'static, watcher::Result<Event<DeviceClass>>> {
+    watcher(Api::<DeviceClass>::all(client.clone()), watcher::Config::default()).boxed()
+}
+fn watch_resource_slices(client: &Client) -> BoxStream<'static, watcher::Result<Event<ResourceSlice>>> {
+    watcher(Api::<ResourceSlice>::all(client.clone()), watcher::Config::default()).boxed()
+}
+
+fn handle_resource_claim_event(ev: Event<ResourceClaim>, targets: &WatchTargets) {
+    let mut cache = targets.cache.lock().unwrap();
+    match ev {
+        Event::Init | Event::InitDone => {}
+        Event::InitApply(c) | Event::Apply(c) => {
+            let key = c.key();
+            cache.upsert_resource_claim(key, c);
+        }
+        Event::Delete(c) => cache.remove_resource_claim(&c.key()),
+    }
+}
+
+fn handle_device_class_event(ev: Event<DeviceClass>, targets: &WatchTargets) {
+    let mut cache = targets.cache.lock().unwrap();
+    match ev {
+        Event::Init | Event::InitDone => {}
+        Event::InitApply(c) | Event::Apply(c) => {
+            let name = c.metadata.name.clone().unwrap_or_default();
+            cache.upsert_device_class(name, c);
+        }
+        Event::Delete(c) => cache.remove_device_class(&c.metadata.name.clone().unwrap_or_default()),
+    }
+}
+
+fn handle_resource_slice_event(ev: Event<ResourceSlice>, targets: &WatchTargets) {
+    let mut cache = targets.cache.lock().unwrap();
+    match ev {
+        Event::Init | Event::InitDone => {}
+        Event::InitApply(s) | Event::Apply(s) => {
+            let name = s.metadata.name.clone().unwrap_or_default();
+            cache.upsert_resource_slice(name, s);
+        }
+        Event::Delete(s) => cache.remove_resource_slice(&s.metadata.name.clone().unwrap_or_default()),
+    }
 }
 
 fn handle_pv_event(ev: Event<Pv>, targets: &WatchTargets) {
@@ -486,6 +538,9 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
     let mut csi_drivers = watch_csi_drivers(&client);
     let mut csi_storage_capacities = watch_csi_storage_capacities(&client);
     let mut csc_mirror: HashMap<String, CsiStorageCapacity> = HashMap::new();
+    let mut resource_claims = watch_resource_claims(&client);
+    let mut device_classes = watch_device_classes(&client);
+    let mut resource_slices = watch_resource_slices(&client);
     // Counted per stream: one watch can be failing while the other is fine.
     let mut node_failures: u32 = 0;
     let mut pod_failures: u32 = 0;
@@ -500,6 +555,9 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
     let mut csi_node_failures: u32 = 0;
     let mut csi_driver_failures: u32 = 0;
     let mut csc_failures: u32 = 0;
+    let mut claim_failures: u32 = 0;
+    let mut device_class_failures: u32 = 0;
+    let mut slice_failures: u32 = 0;
 
     loop {
         tokio::select! {
@@ -641,6 +699,27 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
                     csi_storage_capacities = watch_csi_storage_capacities(&client);
                 } else if let Some(Ok(ev)) = event {
                     handle_csi_storage_capacity_event(ev, &mut csc_mirror, &targets);
+                }
+            },
+            event = resource_claims.next() => {
+                if workload_stream_hiccup(&event, "resourceclaim", &mut claim_failures).await {
+                    resource_claims = watch_resource_claims(&client);
+                } else if let Some(Ok(ev)) = event {
+                    handle_resource_claim_event(ev, &targets);
+                }
+            },
+            event = device_classes.next() => {
+                if workload_stream_hiccup(&event, "deviceclass", &mut device_class_failures).await {
+                    device_classes = watch_device_classes(&client);
+                } else if let Some(Ok(ev)) = event {
+                    handle_device_class_event(ev, &targets);
+                }
+            },
+            event = resource_slices.next() => {
+                if workload_stream_hiccup(&event, "resourceslice", &mut slice_failures).await {
+                    resource_slices = watch_resource_slices(&client);
+                } else if let Some(Ok(ev)) = event {
+                    handle_resource_slice_event(ev, &targets);
                 }
             },
             event = pdbs.next() => match event {

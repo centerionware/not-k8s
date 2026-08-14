@@ -150,9 +150,15 @@ DefaultPreemption                        NodeResourcesBalancedAllocation (1)
 ImageLocality (1)                        DefaultBinder
 ```
 
-Plus `DynamicResources` when DRA is enabled, inserted **immediately before
-DefaultPreemption** — deliberately, so that freeing an idle `ResourceClaim`
-is tried before evicting a pod that is doing useful work.
+Plus `DynamicResources`, upstream's own `DRAAdminAccess`-independent default
+— here it is unconditional, since this project has no separate feature-gate
+mechanism to make it optional. Upstream inserts it **immediately before
+DefaultPreemption**, deliberately, so that freeing an idle `ResourceClaim` is
+tried before evicting a pod doing useful work — this crate's preemption
+(`preempt.rs`) is not DRA-aware, so that specific ordering guarantee is not
+implemented; a device shortage is retried on the ordinary requeue path
+(`AssignedPod` delete) rather than ever triggering a claim-freeing dry run.
+See `dynamic_resources.rs`'s module header for the rest of Phase 5's scope.
 
 ### Where the docs are wrong
 
@@ -249,14 +255,42 @@ gap is real but narrow. See `volume_binding.rs`'s module header for the full
 accounting — this is the next piece of Phase 4 to close, not a stopping
 point.
 
-**Phase 5 — DRA, profiles, extenders.** `DynamicResources`, multi-profile
-`schedulerName` dispatch, and HTTP extenders.
+**Phase 5 — DRA, profiles, extenders.**
+
+`DynamicResources` (DRA) is ✅ implemented, real CEL and all: a claim's
+`spec.devices.requests[]` — `deviceClassName` + `count`
+(`allocationMode: ExactCount`, the default) — is evaluated against real
+`ResourceSlice` device inventory using an actual CEL interpreter
+(`cel-interpreter`, a new dependency scoped to exactly this — see
+`framework/plugins/dynamic_resources.rs`'s module header for why a
+pattern-matched subset of CEL wasn't good enough and the environment this
+exposes to a selector). A claim already allocated and reused by a second pod
+is handled — only `reservedFor` needs updating. `PreEnqueue` holds a pod
+whose template-based claim hasn't been generated yet, the same "not yet
+rejected, not yet reached scheduling" reasoning `SchedulingGates` uses.
+`PreBind` writes `status.allocation` + `status.reservedFor` in one step (DRA
+has no external process to poll for, unlike `VolumeBinding`'s PVC binding).
+
+Deliberate, documented gaps, each rejected explicitly (`Unresolvable`) rather
+than mishandled: `firstAvailable` subrequests (alpha in 1.33), `adminAccess`,
+`allocationMode: All`, cross-request `constraints`, and a `ResourceSlice`
+using `nodeSelector`/per-device node selection instead of a plain
+`nodeName`/`allNodes`. The CEL environment itself also diverges from
+upstream in one way: device capacity is exposed as a plain `f64`, not
+upstream's own `apiservercel` `Quantity` type, so numeric comparisons work
+and anything leaning on Quantity-specific semantics does not — see the
+module header for the full accounting.
 
 DRA needs the raw-request escape hatch: `resource.k8s.io/v1` does not exist in
 the pinned `k8s-openapi` v1_33 schema (only `v1alpha3`/`v1beta1`/`v1beta2`), so
-`ResourceClaim` access goes through a hand-written struct and
-`client.request()`, exactly as `crates/nodelet/src/runtime/cri/claims.rs`
-already does. Do not bump the schema pin; see CLAUDE.md.
+`ResourceClaim`/`DeviceClass`/`ResourceSlice` access goes through hand-written
+structs (`cache/dra.rs`) rather than typed `kube-openapi` generated ones —
+same pattern `crates/nodelet/src/runtime/cri/claims.rs` uses on the node
+side, extended here to also *write*, and to be watchable: each struct
+implements `k8s_openapi::Resource`/`Metadata` by hand so `kube::Api`/
+`kube::runtime::watcher` work on it exactly like any generated type, via
+`kube-core`'s existing blanket impl. Do not bump the schema pin; see
+CLAUDE.md.
 
 The DRA contract with `nodelet` is worth stating explicitly because the two
 halves live in different components: the scheduler writes
@@ -265,6 +299,19 @@ halves live in different components: the scheduler writes
 scheduler must never write an allocation for a node it is not about to bind to,
 and must roll it back on bind failure — otherwise nodelet sees a claim
 allocated to a node that never received the pod, and the device leaks.
+
+Multi-profile `schedulerName` dispatch (several profiles sharing one
+process's queue) and HTTP extenders are not implemented. Multi-profile is
+narrower than it sounds against this project specifically: a second
+`spec.schedulerName` is already fully served today by running a second
+`nodescheduler` **process** with its own `NODESCHEDULER_PROFILE_NAME` — the
+Phase 1 routing rule (`PodRoute::Ignore` for a pod naming a different
+profile) already makes that safe and is what
+`test_scheduler_ignores_pods_for_another_scheduler` proves. What's missing is
+only upstream's single-*process* multi-profile mode, which shares one queue
+and `QueueSort` plugin across several `Registry`s — a real capability, but a
+rarer deployment shape than the one this project already covers, and the
+next piece to close rather than a silent gap.
 
 ## Informers: start only what a plugin asked for
 
