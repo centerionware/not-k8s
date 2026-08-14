@@ -1,128 +1,14 @@
 commit: c58da4a7e3d814bc2ee6d9d0bc236bb4e63ba366
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31837508114
-timestamp (UTC): 2026-08-14T20:40:10Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31839133038
+timestamp (UTC): 2026-08-14T20:48:51Z
 shard: 2/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786739251
+==> Test namespace: not-k8s-e2e-1786740530
 ==> 217 test(s) registered total (before sharding); running now...
 ==> Shard 2/5: 48 test(s) selected
-▶ test_plugin_registry_directory_exists
-  ✔ PASS (0s)
-▶ test_pod_mounts_a_persistent_volume_claim
-==> WARNING: Node.status.volumesInUse has no kubernetes.io/csi/ entry while a CSI volume is mounted — check mounted_csi_volumes()/csi_unique_volume_name() wiring in runtime/cri.rs and node.rs (round 34; not failing the test outright since the exact naming scheme is unvalidated against a real attach/detach controller)
-  ✔ PASS (35s)
-▶ test_pod_uses_a_raw_block_volume
-  ✔ PASS (34s)
-▶ test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
-==> WARNING: old VolumeAttachment for pvc-9c0ee70d-31c7-419c-8cae-3269c6a13496 didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
-==> WARNING: [diag] pod2 right after Running: NAME                     READY   STATUS    RESTARTS   AGE   IP           NODE            NOMINATED NODE   READINESS GATES
-fsgroup-policy-check-2   1/1     Running   0          3s    10.42.0.11   runnervmzvulz   <none>           <none>
-==> WARNING: [diag] default-ns pods (CSI driver state): NAME                   READY   STATUS    RESTARTS   AGE     IP          NODE            NOMINATED NODE   READINESS GATES
-csi-hostpath-socat-0   1/1     Running   0          3m49s   10.42.0.5   runnervmzvulz   <none>           <none>
-csi-hostpathplugin-0   7/7     Running   0          3m50s   10.42.0.4   runnervmzvulz   <none>           <none>
-smoke-test             1/1     Running   0          4m32s   10.42.0.3   runnervmzvulz   <none>           <none>
-  ✔ PASS (160s)
-▶ test_resource_api_group_is_enabled
-  ✔ PASS (0s)
-▶ test_pod_mounts_a_generic_ephemeral_volume
-  ✔ PASS (32s)
-▶ test_scheduler_enforces_read_write_once_pod_exclusivity
-  ✔ PASS (75s)
-▶ test_combined_binary_contains_every_component
-    (skip: no combined binary here (split layout — build with --layout=combined or --layout=both))
-  ○ SKIP (0s)
-▶ test_pod_cgroup_reflects_its_qos_class
-  ✔ PASS (2s)
-▶ test_datastore_lists_a_prefix_in_key_order
-  ✔ PASS (1s)
-▶ test_datastore_refuses_a_read_below_the_compaction_point
-  ✔ PASS (0s)
-▶ test_a_real_apiserver_starts_and_serves_against_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13564/environ: Permission denied
-  ✔ PASS (5s)
-▶ test_cluster_replicates_a_write_to_every_member
-    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
-  ○ SKIP (0s)
-▶ test_a_restarted_member_catches_up_on_what_it_missed
-    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
-  ○ SKIP (0s)
-▶ test_upgrade_a_dead_member_leaves_nothing_listening_behind_it
-    (skip: needs root to create network namespaces — this needs real network namespaces)
-  ○ SKIP (0s)
-▶ test_allocated_resources_status_absent_without_device_resources
-  ✔ PASS (3s)
-▶ test_pod_exceeding_its_active_deadline_is_terminated
-  ✔ PASS (40s)
-▶ test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
-  ✔ PASS (40s)
-▶ test_unreferenced_image_is_not_removed_below_the_watermark
-==>     waiting through at least one NODELET_GC_INTERVAL_SECS cycle (default 300s) to confirm busybox:1.36.1 survives it...
-  ✔ PASS (96s)
-▶ test_termination_grace_period_is_honored_not_instant
-  ✔ PASS (11s)
-▶ test_init_container_failure_blocks_app_container_under_restart_policy_never
-  ✔ PASS (3s)
-▶ test_restart_policy_never_exit_nonzero_is_failed
-  ✔ PASS (3s)
-▶ test_pod_status_reports_host_ips_plural
-  ✔ PASS (2s)
-▶ test_image_pull_policy_if_not_present_skips_the_registry_round_trip
-  ✔ PASS (37s)
-▶ test_node_is_ready_with_capacity_advertised
-  ✔ PASS (1s)
-▶ test_node_status_images_reflects_a_real_pulled_image
-  ✔ PASS (2s)
-▶ test_liveness_probes_own_grace_period_overrides_the_pods
-  ✔ PASS (14s)
-▶ test_grpc_probe_leaves_pod_not_ready_against_the_wrong_port
-  ✔ PASS (17s)
-▶ test_hugepages_limit_is_enforced_via_cgroup
-    (skip: no /sys/fs/cgroup/hugetlb.2MB.limit_in_bytes in the container — this node's cgroup v2 hierarchy may not have the hugetlb controller enabled)
-  ○ SKIP (22s)
-▶ test_cpu_limit_is_enforced_via_cgroup
-  ✔ PASS (3s)
-▶ test_runtime_class_handler_is_honored
-  ✔ PASS (3s)
-▶ test_scheduler_rejects_a_pod_that_does_not_fit
-  ✔ PASS (11s)
-▶ test_scheduler_honours_pod_anti_affinity
-  ✔ PASS (51s)
-▶ test_scheduler_resolves_a_namespace_selector_against_real_labels
-  ✔ PASS (11s)
-▶ test_container_status_reports_recursive_read_only
-  ✔ PASS (3s)
-▶ test_proc_mount_unmasked_leaves_proc_kcore_readable
-==> WARNING: expected /proc/kcore to be readable (non-zero bytes) under procMount: Unmasked, got 0 -- check proc_mount_paths()'s Unmasked branch in runtime/cri/resources.rs; not failing outright since this depends on the CRI runtime actually honoring an explicitly-empty masked_paths the same way it honors a populated one
-  ✔ PASS (3s)
-▶ test_containers_get_isolated_pid_namespaces_by_default
-  ✔ PASS (3s)
-▶ test_clusterip_service_routes_to_its_backend_pod
-  ✔ PASS (3s)
-▶ test_a_pod_reaching_its_own_service_gets_hairpin_masquerade
-  ✔ PASS (3s)
-▶ test_headless_service_programs_no_rules_and_does_not_break_others
-  ✔ PASS (4s)
-▶ test_kubectl_logs_follow_streams_new_output
-  ✔ PASS (4s)
-▶ test_configmap_volume_updates_live_without_pod_restart
-Warning: resource configmaps/cm-live-update-cm is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
-  ✔ PASS (4s)
-▶ test_host_aliases_are_written_to_etc_hosts
-  ✔ PASS (3s)
-▶ test_fsgroup_chowns_materialized_volumes
-  ✔ PASS (2s)
-▶ test_recursive_read_only_still_mounts_read_only_normally
-  ✔ PASS (3s)
-▶ test_host_path_directory_or_create_creates_a_missing_directory
-  ✔ PASS (3s)
-▶ test_cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container
-  ✔ PASS (6s)
-▶ test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host
-    (skip: this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case; a multi-node host needs the manual cross-provider check below instead)
-  ○ SKIP (0s)
 
 ════════════════════════════════════════
-Results: 42 passed, 0 failed, 6 skipped
+Results: 0 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786739251...
+==> Cleaning up test namespace not-k8s-e2e-1786740530...
