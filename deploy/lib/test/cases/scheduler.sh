@@ -432,17 +432,39 @@ EOF
     # five-minute unschedulable timeout rescues it. So the assertion is on
     # LATENCY, not on eventual success: a correct implementation is a second
     # or two, a broken one is 300.
+    #
+    # Measured from the pod's *actual disappearance*, not from the delete
+    # request. Those are not the same moment and the gap is not the
+    # scheduler's: `kubectl delete` only sets a deletionTimestamp, and the
+    # capacity stays spent until nodelet finishes tearing the pod down and
+    # issues the final delete — exactly as upstream kube-scheduler only drops
+    # a pod from its cache on the real delete event, never on the timestamp.
+    #
+    # This distinction is not hypothetical. Timing from the request instead
+    # blamed the scheduler for a 77s reschedule that was really 71s of
+    # nodelet teardown followed by a 4s reschedule, and the failure message
+    # asserted a cause ("the 5-minute safety net") that the number itself
+    # contradicts — 77 is neither ~2 nor ~300. Splitting the two windows
+    # means each failure names the component that actually owns it.
     local start=$SECONDS
     delete_pod_if_exists "$blocker"
 
+    wait_until 120 "$blocker to actually be gone from the apiserver" \
+        bash -c "! kubectl get pod '$blocker' -n '$TEST_NAMESPACE' >/dev/null 2>&1" \
+        || die "the blocking pod never actually left the apiserver — that is a node-agent teardown problem, not a scheduling one; check nodelet's logs for 'torn down $blocker'"
+    local freed=$SECONDS
+    local teardown_s=$((freed - start))
+
     wait_until 120 "$waiter to be bound to a node" _pod_is_bound "$waiter" \
         || die "freeing the CPU never got the waiting pod scheduled at all"
-    local elapsed=$((SECONDS - start))
+    local elapsed=$((SECONDS - freed))
 
     [[ "$elapsed" -lt 60 ]] || die \
-        "took ${elapsed}s to reschedule after capacity was freed. That is the \
-5-minute unschedulable-timeout safety net doing the work, not an event — some \
-plugin's events_to_register() is incomplete. See crates/nodescheduler/src/queue/hints.rs."
+        "took ${elapsed}s to schedule after the blocker actually disappeared \
+(its teardown itself took ${teardown_s}s, which is not counted here). A correct \
+event subscription reschedules in a second or two; 300 would be the \
+unschedulable-timeout safety net rescuing it. Either way some plugin's \
+events_to_register() is incomplete — see crates/nodescheduler/src/queue/hints.rs."
 
     delete_pod_if_exists "$waiter"
 }
