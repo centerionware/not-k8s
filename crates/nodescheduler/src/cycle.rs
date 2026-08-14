@@ -194,12 +194,27 @@ pub enum CycleOutcome {
     Error { reason: String },
 }
 
-/// Everything a cycle needs that is not the pod.
+/// Everything a cycle needs that is not the pod, minus the plugin registry.
 ///
-/// The registry is shared rather than owned because the binding cycle needs
-/// it too, on its own task, concurrently with the next scheduling cycle.
+/// The registry is *not* a field here, deliberately — see the module's
+/// "Multiple profiles, one Scheduler" section below. Everything that genuinely
+/// is per-cycle-but-cluster-wide state (the round-robin sweep position, and
+/// which nodes are already promised to a pending preemption) lives here
+/// instead, shared across every profile's cycles because they all compete for
+/// the same nodes.
+///
+/// # Multiple profiles, one `Scheduler`
+///
+/// A cluster can run several `spec.schedulerName` profiles out of one
+/// process, sharing one queue and one `QueueSort` — see `docs/SCHEDULER.md`'s
+/// "Phase 5" and `lib.rs`'s `schedule_forever`. What must **not** be shared
+/// per profile is `next_start_node_index`/`nominator`: two profiles placing
+/// pods onto the same nodes have to see one consistent sweep position and one
+/// consistent set of preemption promises, or they double-book exactly the way
+/// two pods within one profile would. So `Scheduler` holds no `Registry` at
+/// all; every method below takes the calling cycle's `&Registry` as an
+/// explicit parameter, resolved by the caller from `pod.scheduler_name`.
 pub struct Scheduler {
-    pub registry: Arc<Registry>,
     pub percentage_of_nodes_to_score: i32,
     /// Rotates across cycles; see [`advance_start_index`].
     pub next_start_node_index: usize,
@@ -208,16 +223,16 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn new(registry: Arc<Registry>, percentage_of_nodes_to_score: i32) -> Self {
+    pub fn new(percentage_of_nodes_to_score: i32) -> Self {
         Self {
-            registry,
             percentage_of_nodes_to_score,
             next_start_node_index: 0,
             nominator: Default::default(),
         }
     }
 
-    /// Run one full scheduling cycle for one pod.
+    /// Run one full scheduling cycle for one pod, against `registry` — the
+    /// profile this pod's `spec.schedulerName` resolved to.
     ///
     /// Returns the [`CycleState`] alongside the outcome: PreFilter and Reserve
     /// wrote into it, and the binding cycle needs exactly that state to run
@@ -226,6 +241,7 @@ impl Scheduler {
     /// claimed something would leak it on every failed bind.
     pub fn schedule_one(
         &mut self,
+        registry: &Registry,
         pod: &PodInfo,
         snapshot: &Snapshot,
         rng: &mut Rng,
@@ -247,7 +263,7 @@ impl Scheduler {
 
         // ── PreFilter ───────────────────────────────────────────────────
         let mut restricted: Option<Vec<String>> = None;
-        for plugin in &self.registry.pre_filter {
+        for plugin in &registry.pre_filter {
             let (status, nodes) = plugin.pre_filter(&mut state, pod, snapshot);
             match status.code {
                 Code::Success | Code::Skip => {}
@@ -288,14 +304,14 @@ impl Scheduler {
 
         // ── Filter ──────────────────────────────────────────────────────
         let (feasible, node_statuses, processed) =
-            self.find_feasible_nodes(&mut state, pod, snapshot, restricted.as_deref());
+            self.find_feasible_nodes(registry, &mut state, pod, snapshot, restricted.as_deref());
 
         self.next_start_node_index =
             advance_start_index(self.next_start_node_index, processed, snapshot.num_nodes());
 
         if feasible.is_empty() {
             // ── PostFilter (preemption) ─────────────────────────────────
-            for plugin in &self.registry.post_filter {
+            for plugin in &registry.post_filter {
                 let (status, nominated) =
                     plugin.post_filter(&mut state, pod, snapshot, &node_statuses);
                 if status.is_success() || nominated.is_some() {
@@ -325,13 +341,13 @@ impl Scheduler {
 
         // A single candidate needs no scoring — and with no Score plugins at
         // all, scoring cannot distinguish anything anyway.
-        if feasible.len() == 1 || self.registry.score.is_empty() {
+        if feasible.len() == 1 || registry.score.is_empty() {
             return (CycleOutcome::Scheduled { node: feasible[0].name.clone() }, state);
         }
 
         // ── PreScore / Score / Normalize ────────────────────────────────
         let refs: Vec<&NodeInfo> = feasible.iter().map(|n| n.as_ref()).collect();
-        for plugin in &self.registry.pre_score {
+        for plugin in &registry.pre_score {
             let status = plugin.pre_score(&mut state, pod, &refs);
             if status.code == Code::Error {
                 return (CycleOutcome::Error { reason: status.to_string() }, state);
@@ -341,7 +357,7 @@ impl Scheduler {
         let mut totals: Vec<(String, i64)> =
             feasible.iter().map(|n| (n.name.clone(), 0i64)).collect();
 
-        for plugin in &self.registry.score {
+        for plugin in &registry.score {
             if state.score_skipped(plugin.name()) {
                 continue;
             }
@@ -384,6 +400,7 @@ impl Scheduler {
     /// found.
     fn find_feasible_nodes(
         &self,
+        registry: &Registry,
         state: &mut CycleState,
         pod: &PodInfo,
         snapshot: &Snapshot,
@@ -391,7 +408,7 @@ impl Scheduler {
     ) -> (Vec<Arc<NodeInfo>>, NodeToStatus, usize) {
         let all = snapshot.nodes();
         let num_all = all.len();
-        let wanted = if self.registry.score.is_empty() {
+        let wanted = if registry.score.is_empty() {
             // With nothing to compare on, the first feasible node is as good
             // as the best one, so stop at one.
             1
@@ -429,7 +446,7 @@ impl Scheduler {
                 .into_iter()
                 .filter(|n| n.priority >= pod.priority && n.uid != pod.uid)
                 .collect();
-            for plugin in &self.registry.pre_filter {
+            for plugin in &registry.pre_filter {
                 if let Some(ext) = plugin.extensions() {
                     for nominee in &nominees {
                         ext.add_pod(state, pod, nominee, node);
@@ -438,7 +455,7 @@ impl Scheduler {
             }
 
             let mut rejected = None;
-            for plugin in &self.registry.filter {
+            for plugin in &registry.filter {
                 if state.filter_skipped(plugin.name()) {
                     continue;
                 }
@@ -456,7 +473,7 @@ impl Scheduler {
             // symmetry requirement as preemption's dry runs — an asymmetric
             // add/remove pair would leak this node's nominees into every
             // later node's answer.
-            for plugin in &self.registry.pre_filter {
+            for plugin in &registry.pre_filter {
                 if let Some(ext) = plugin.extensions() {
                     for nominee in &nominees {
                         ext.remove_pod(state, pod, nominee, node);
@@ -539,6 +556,7 @@ impl Scheduler {
     /// than not.
     pub fn preempt(
         &self,
+        registry: &Registry,
         pod: &PodInfo,
         snapshot: &Snapshot,
         node_statuses: &NodeToStatus,
@@ -584,13 +602,13 @@ impl Scheduler {
             // cheap to redo and sharing one across nodes would leak one
             // node's hypothetical removals into the next node's answer.
             let mut state = CycleState::default();
-            for plugin in &self.registry.pre_filter {
+            for plugin in &registry.pre_filter {
                 plugin.pre_filter(&mut state, pod, snapshot);
             }
 
             let mut budgets = budgets.to_vec();
             let victims = select_victims_on_node(pod, node, &mut budgets, |removed| {
-                self.fits_without(&mut state, pod, node, removed)
+                self.fits_without(registry, &mut state, pod, node, removed)
             });
 
             if let Some(victims) = victims {
@@ -639,12 +657,13 @@ impl Scheduler {
     /// than only its own, which is why they are tested in pairs.
     fn fits_without(
         &self,
+        registry: &Registry,
         state: &mut CycleState,
         pod: &PodInfo,
         node: &NodeInfo,
         removed: &[&PodInfo],
     ) -> bool {
-        for plugin in &self.registry.pre_filter {
+        for plugin in &registry.pre_filter {
             if let Some(ext) = plugin.extensions() {
                 for victim in removed {
                     ext.remove_pod(state, pod, victim, node);
@@ -652,7 +671,7 @@ impl Scheduler {
             }
         }
 
-        let fits = self.registry.filter.iter().all(|plugin| {
+        let fits = registry.filter.iter().all(|plugin| {
             if state.filter_skipped(plugin.name()) {
                 return true;
             }
@@ -660,7 +679,7 @@ impl Scheduler {
             status.is_success() || status.is_skip()
         });
 
-        for plugin in &self.registry.pre_filter {
+        for plugin in &registry.pre_filter {
             if let Some(ext) = plugin.extensions() {
                 for victim in removed {
                     ext.add_pod(state, pod, victim, node);

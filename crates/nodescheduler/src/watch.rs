@@ -126,14 +126,19 @@ pub enum PodRoute {
     Ignore,
 }
 
-pub fn route_pod(pod: &PodInfo, profile_name: &str) -> PodRoute {
+/// `profile_names` is every `spec.schedulerName` this *process* answers for
+/// — see `lib.rs`'s `schedule_forever` and `docs/SCHEDULER.md`'s "Phase 5".
+/// A pod naming any one of them is ours; upstream's own multi-profile mode
+/// makes exactly this same choice per pod, and a single-profile deployment
+/// is just the case where this list has one entry.
+pub fn route_pod(pod: &PodInfo, profile_names: &[String]) -> PodRoute {
     if pod.node_name.is_some() {
         // Assigned pods go to the cache regardless of scheduler name: their
         // resources are consumed whoever placed them, and a node's free
         // capacity is not a per-profile question.
         return PodRoute::Cache;
     }
-    if pod.scheduler_name == profile_name {
+    if profile_names.iter().any(|p| p == &pod.scheduler_name) {
         PodRoute::Queue
     } else {
         PodRoute::Ignore
@@ -144,7 +149,7 @@ pub fn route_pod(pod: &PodInfo, profile_name: &str) -> PodRoute {
 pub struct WatchTargets {
     pub cache: Arc<Mutex<Cache>>,
     pub queue: Arc<SchedulingQueue>,
-    pub profile_name: String,
+    pub profile_names: Vec<String>,
     /// PodDisruptionBudgets, mirrored for preemption.
     ///
     /// Started only when preemption is enabled, per the rule that an informer
@@ -831,7 +836,7 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, targets: &WatchTargets)
             let previous = mirror.pods.insert(key.clone(), pod.clone());
             let info = Arc::new(PodInfo::from_pod(&pod, k8s_openapi::jiff::Timestamp::now()));
 
-            match route_pod(&info, &targets.profile_name) {
+            match route_pod(&info, &targets.profile_names) {
                 PodRoute::Cache => {
                     // It may have been queued before it was placed — by us, or
                     // by another scheduler that got there first.
@@ -898,7 +903,7 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, targets: &WatchTargets)
                     tracing::info!(
                         pod = %info.key(),
                         scheduler_name = %info.scheduler_name,
-                        profile = %targets.profile_name,
+                        profiles = ?targets.profile_names,
                         "ignoring a pod owned by another scheduler"
                     );
                 }
@@ -944,9 +949,16 @@ mod tests {
         }
     }
 
+    fn profiles(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn an_unassigned_pod_for_this_profile_goes_to_the_queue() {
-        assert_eq!(route_pod(&pod(None, "default-scheduler"), "default-scheduler"), PodRoute::Queue);
+        assert_eq!(
+            route_pod(&pod(None, "default-scheduler"), &profiles(&["default-scheduler"])),
+            PodRoute::Queue
+        );
     }
 
     #[test]
@@ -954,14 +966,17 @@ mod tests {
         // Feeding assigned pods into the queue makes the scheduler try to
         // re-place every running pod in the cluster.
         assert_eq!(
-            route_pod(&pod(Some("worker-1"), "default-scheduler"), "default-scheduler"),
+            route_pod(&pod(Some("worker-1"), "default-scheduler"), &profiles(&["default-scheduler"])),
             PodRoute::Cache
         );
     }
 
     #[test]
     fn an_unassigned_pod_for_another_profile_is_ignored() {
-        assert_eq!(route_pod(&pod(None, "batch-scheduler"), "default-scheduler"), PodRoute::Ignore);
+        assert_eq!(
+            route_pod(&pod(None, "batch-scheduler"), &profiles(&["default-scheduler"])),
+            PodRoute::Ignore
+        );
     }
 
     #[test]
@@ -970,9 +985,19 @@ mod tests {
         // a per-profile question. Ignoring it would make every node look
         // emptier than it is.
         assert_eq!(
-            route_pod(&pod(Some("worker-1"), "batch-scheduler"), "default-scheduler"),
+            route_pod(&pod(Some("worker-1"), "batch-scheduler"), &profiles(&["default-scheduler"])),
             PodRoute::Cache
         );
+    }
+
+    #[test]
+    fn an_unassigned_pod_is_queued_if_it_names_any_profile_this_instance_serves() {
+        // Multi-profile: one process, several spec.schedulerNames sharing one
+        // queue — see lib.rs's schedule_forever.
+        let both = profiles(&["default-scheduler", "batch-scheduler"]);
+        assert_eq!(route_pod(&pod(None, "default-scheduler"), &both), PodRoute::Queue);
+        assert_eq!(route_pod(&pod(None, "batch-scheduler"), &both), PodRoute::Queue);
+        assert_eq!(route_pod(&pod(None, "someone-elses-scheduler"), &both), PodRoute::Ignore);
     }
 
     #[test]
@@ -1039,6 +1064,6 @@ mod tests {
         // this pod would be committed to a node named "".
         let mut p = pod(None, "default-scheduler");
         p.node_name = None;
-        assert_eq!(route_pod(&p, "default-scheduler"), PodRoute::Queue);
+        assert_eq!(route_pod(&p, &profiles(&["default-scheduler"])), PodRoute::Queue);
     }
 }

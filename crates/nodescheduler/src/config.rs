@@ -67,8 +67,17 @@ pub enum ScoringStrategyKind {
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// The `spec.schedulerName` this instance answers for.
+    /// The primary `spec.schedulerName` this instance answers for — always
+    /// `profile_names[0]`. Kept as its own field for logs, the leader lease's
+    /// default holder identity, and because every profile in `profile_names`
+    /// shares one `QueueSort`/`PreEnqueue` chain (see `lib.rs`'s
+    /// `schedule_forever`), which has to be attributed to *one* profile name.
     pub profile_name: String,
+    /// Every `spec.schedulerName` this instance answers for, sharing one
+    /// queue and one watch layer — upstream's multi-profile mode. Parsed from
+    /// a comma-separated `NODESCHEDULER_PROFILE_NAME`; a single name (the
+    /// common case) is just a one-element list.
+    pub profile_names: Vec<String>,
     pub parallelism: usize,
     pub percentage_of_nodes_to_score: i32,
     pub pod_initial_backoff: Duration,
@@ -95,6 +104,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             profile_name: defaults::PROFILE_NAME.to_string(),
+            profile_names: vec![defaults::PROFILE_NAME.to_string()],
             parallelism: defaults::PARALLELISM,
             percentage_of_nodes_to_score: defaults::PERCENTAGE_OF_NODES_TO_SCORE,
             pod_initial_backoff: Duration::from_secs(defaults::POD_INITIAL_BACKOFF_SECONDS),
@@ -147,12 +157,50 @@ fn secs_env(name: &str, default: Duration) -> Result<Duration> {
     Ok(Duration::from_secs(parse_env::<u64>(name, default.as_secs())?))
 }
 
+/// `NODESCHEDULER_PROFILE_NAME` as upstream's multi-profile mode understands
+/// it: a comma-separated list of `spec.schedulerName`s this instance answers
+/// for, all sharing one queue. A single name (no comma) is the common case
+/// and yields a one-element list, unchanged from before this existed.
+///
+/// Rejects what it cannot make sense of by name rather than silently
+/// dropping it: an empty entry (`"a,,b"` or a trailing comma) would either
+/// panic later reading `profile_names[0]` or silently register a profile
+/// named `""` that no real pod's `schedulerName` can ever match; a duplicate
+/// would build two `Registry`s for the same name and make `HashMap`
+/// insertion order — not configuration — decide which one actually serves
+/// it.
+fn parse_profile_names(raw: &str) -> Result<Vec<String>> {
+    let names: Vec<String> = raw.split(',').map(|s| s.trim().to_string()).collect();
+    if names.iter().any(|n| n.is_empty()) {
+        bail!(
+            "NODESCHEDULER_PROFILE_NAME='{raw}' contains an empty entry — check for a stray \
+             comma (a trailing one, or two in a row)."
+        );
+    }
+    let mut seen = std::collections::HashSet::new();
+    for n in &names {
+        if !seen.insert(n) {
+            bail!(
+                "NODESCHEDULER_PROFILE_NAME='{raw}' names {n:?} more than once — each profile \
+                 needs a distinct spec.schedulerName."
+            );
+        }
+    }
+    Ok(names)
+}
+
 impl Config {
     pub fn from_env() -> Result<Self> {
         let d = Config::default();
 
+        let profile_names = match var("NODESCHEDULER_PROFILE_NAME") {
+            None => d.profile_names,
+            Some(raw) => parse_profile_names(&raw)?,
+        };
+
         let cfg = Config {
-            profile_name: var("NODESCHEDULER_PROFILE_NAME").unwrap_or(d.profile_name),
+            profile_name: profile_names[0].clone(),
+            profile_names,
             parallelism: parse_env("NODESCHEDULER_PARALLELISM", d.parallelism)
                 .context("NODESCHEDULER_PARALLELISM must be a positive integer")?,
             percentage_of_nodes_to_score: parse_env(
@@ -270,7 +318,7 @@ impl Config {
 
     fn log_summary(&self) {
         tracing::info!(
-            profile = %self.profile_name,
+            profiles = ?self.profile_names,
             parallelism = self.parallelism,
             percentage_of_nodes_to_score = self.percentage_of_nodes_to_score,
             leader_elect = self.leader_elect,
@@ -432,6 +480,49 @@ mod tests {
             Config::from_env().unwrap()
         });
         assert_eq!(c.profile_name, "batch-scheduler");
+        assert_eq!(c.profile_names, vec!["batch-scheduler".to_string()]);
+    }
+
+    #[test]
+    fn a_comma_separated_profile_name_lists_every_profile_and_names_the_first_primary() {
+        let c = with_env(
+            &[("NODESCHEDULER_PROFILE_NAME", "default-scheduler,batch-scheduler")],
+            || Config::from_env().unwrap(),
+        );
+        assert_eq!(c.profile_name, "default-scheduler");
+        assert_eq!(
+            c.profile_names,
+            vec!["default-scheduler".to_string(), "batch-scheduler".to_string()]
+        );
+    }
+
+    #[test]
+    fn whitespace_around_a_comma_separated_profile_name_is_trimmed() {
+        let c = with_env(
+            &[("NODESCHEDULER_PROFILE_NAME", " default-scheduler , batch-scheduler ")],
+            || Config::from_env().unwrap(),
+        );
+        assert_eq!(
+            c.profile_names,
+            vec!["default-scheduler".to_string(), "batch-scheduler".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_trailing_comma_in_profile_name_is_refused_rather_than_silently_dropped() {
+        let err = with_env(&[("NODESCHEDULER_PROFILE_NAME", "default-scheduler,")], || {
+            Config::from_env().unwrap_err().to_string()
+        });
+        assert!(err.contains("empty entry"), "{err}");
+    }
+
+    #[test]
+    fn a_duplicate_profile_name_is_refused() {
+        let err = with_env(
+            &[("NODESCHEDULER_PROFILE_NAME", "batch-scheduler,batch-scheduler")],
+            || Config::from_env().unwrap_err().to_string(),
+        );
+        assert!(err.contains("more than once"), "{err}");
     }
 
     #[test]

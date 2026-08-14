@@ -14,10 +14,11 @@
 //! this project exists not to have.
 //!
 //! Phase 1 is everything that needs no informer beyond Pod and Node; later
-//! phases (topology, preemption, storage) added their own plugins and
-//! informers on top without touching Phase 1's shape. `DynamicResources`
-//! (DRA) and multi-profile dispatch are the one piece still missing — see
-//! docs/SCHEDULER.md's "Phase 5".
+//! phases (topology, preemption, storage, DRA) added their own plugins and
+//! informers on top without touching Phase 1's shape. Multi-profile dispatch
+//! (`lib.rs`'s `schedule_forever` calls this once per
+//! `NODESCHEDULER_PROFILE_NAME` entry) means the `Registry` this builds is
+//! not necessarily *the* profile — see docs/SCHEDULER.md's "Phase 5".
 //!
 //! # Two rules every file in this directory obeys
 //!
@@ -117,13 +118,13 @@ pub(crate) fn default_normalize_score(reverse: bool, scores: &mut [i64]) {
 /// ResourceClaim's allocation and reservation in `PreBind`) — the only three
 /// plugins in this directory that perform I/O; everything else here is a
 /// pure function of the snapshot.
-pub fn default_registry(client: kube::Client, cfg: &crate::config::Config) -> Registry {
+pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profile_name: &str) -> Registry {
     // One instance, cloned into every vec it belongs to — see
     // `DynamicResources`'s own doc comment on why its assume cache must be
     // shared rather than reconstructed per extension point.
     let dra = dynamic_resources::DynamicResources::new(client.clone());
     Registry {
-        profile_name: "default-scheduler".to_string(),
+        profile_name: profile_name.to_string(),
         pre_enqueue: vec![
             Box::new(scheduling_gates::SchedulingGates),
             Box::new(dra.clone()),
