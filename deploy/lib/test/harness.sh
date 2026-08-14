@@ -111,7 +111,14 @@ _reorder_env_reconfiguring_tests_last() {
         # stop|start as well as restart: a test that deliberately takes
         # containerd down for a while (cases/retry_backoff.sh) disrupts every
         # concurrent pod on this node just as much as one that restarts it.
-        if declare -f "$name" 2>/dev/null | grep -qE 'nodelet_restart_with_env|nodeproxy_(restart|restore)_|sudo (systemctl (restart|stop|start) containerd|swapon|mkswap)'; then
+        #
+        # k3s belongs here for the same reason and more so: restarting the
+        # control plane takes the apiserver away from every other test at
+        # once, and the node agent needs a moment afterwards to re-establish
+        # its watches (cases/watch_recovery.sh, which is the test that does
+        # this deliberately). Left in place, it would look exactly like a
+        # flaky unrelated test rather than a disruption someone chose.
+        if declare -f "$name" 2>/dev/null | grep -qE 'nodelet_restart_with_env|nodeproxy_(restart|restore)_|sudo (systemctl (restart|stop|start) (containerd|k3s)|swapon|mkswap)'; then
             deferred+=("$name")
         else
             normal+=("$name")
