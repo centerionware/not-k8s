@@ -1,10 +1,10 @@
-commit: 6e5e6d2e43374b6e53b297b1049a508701e3d1cf
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31840368383
-timestamp (UTC): 2026-08-14T21:13:47Z
+commit: f5b1e67521a89a8990fb102d4d699382110fe0e5
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31841944028
+timestamp (UTC): 2026-08-14T21:35:04Z
 shard: 2/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786741426
+==> Test namespace: not-k8s-e2e-1786742700
 ==> 198 test(s) registered total (before sharding); running now...
 ==> Shard 2/5: 43 test(s) selected
 ▶ test_plugin_registry_directory_exists
@@ -15,29 +15,29 @@ exit code: 0
 ▶ test_pod_uses_a_raw_block_volume
   ✔ PASS (34s)
 ▶ test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
-==> WARNING: old VolumeAttachment for pvc-5664fef1-a74d-49c7-bdd3-2e793e4d83ea didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
+==> WARNING: old VolumeAttachment for pvc-f9e6b22a-fa58-4dc6-a2bd-3fb8b88685db didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
 ==> WARNING: [diag] pod2 right after Running: NAME                     READY   STATUS    RESTARTS   AGE   IP           NODE            NOMINATED NODE   READINESS GATES
 fsgroup-policy-check-2   1/1     Running   0          3s    10.42.0.11   runnervmzvulz   <none>           <none>
 ==> WARNING: [diag] default-ns pods (CSI driver state): NAME                   READY   STATUS    RESTARTS   AGE     IP          NODE            NOMINATED NODE   READINESS GATES
-csi-hostpath-socat-0   1/1     Running   0          3m47s   10.42.0.4   runnervmzvulz   <none>           <none>
-csi-hostpathplugin-0   7/7     Running   0          3m47s   10.42.0.5   runnervmzvulz   <none>           <none>
-smoke-test             1/1     Running   0          4m13s   10.42.0.3   runnervmzvulz   <none>           <none>
+csi-hostpath-socat-0   1/1     Running   0          3m48s   10.42.0.5   runnervmzvulz   <none>           <none>
+csi-hostpathplugin-0   7/7     Running   0          3m48s   10.42.0.4   runnervmzvulz   <none>           <none>
+smoke-test             1/1     Running   0          4m14s   10.42.0.3   runnervmzvulz   <none>           <none>
   ✔ PASS (160s)
 ▶ test_resource_api_group_is_enabled
   ✔ PASS (0s)
 ▶ test_pod_mounts_a_generic_ephemeral_volume
-  ✔ PASS (32s)
+  ✔ PASS (33s)
 ▶ test_combined_binary_contains_every_component
     (skip: no combined binary here (split layout — build with --layout=combined or --layout=both))
   ○ SKIP (0s)
 ▶ test_pod_cgroup_reflects_its_qos_class
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_datastore_lists_a_prefix_in_key_order
-  ✔ PASS (0s)
-▶ test_datastore_refuses_a_read_below_the_compaction_point
   ✔ PASS (1s)
+▶ test_datastore_refuses_a_read_below_the_compaction_point
+  ✔ PASS (0s)
 ▶ test_a_real_apiserver_starts_and_serves_against_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11843/environ: Permission denied
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11875/environ: Permission denied
   ✔ PASS (5s)
 ▶ test_cluster_replicates_a_write_to_every_member
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
@@ -51,14 +51,14 @@ smoke-test             1/1     Running   0          4m13s   10.42.0.3   runnervm
 ▶ test_allocated_resources_status_absent_without_device_resources
   ✔ PASS (3s)
 ▶ test_pod_exceeding_its_active_deadline_is_terminated
-  ✔ PASS (32s)
+  ✔ PASS (42s)
 ▶ test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
-  ✔ PASS (40s)
+  ✔ PASS (38s)
 ▶ test_unreferenced_image_is_not_removed_below_the_watermark
 ==>     waiting through at least one NODELET_GC_INTERVAL_SECS cycle (default 300s) to confirm busybox:1.36.1 survives it...
-  ✔ PASS (99s)
+  ✔ PASS (96s)
 ▶ test_termination_grace_period_is_honored_not_instant
-  ✔ PASS (11s)
+  ✔ PASS (9s)
 ▶ test_init_container_failure_blocks_app_container_under_restart_policy_never
   ✔ PASS (3s)
 ▶ test_restart_policy_never_exit_nonzero_is_failed
@@ -87,9 +87,9 @@ smoke-test             1/1     Running   0          4m13s   10.42.0.3   runnervm
 ▶ test_host_users_volume_ownership_translation_is_correct
   ✔ PASS (3s)
 ▶ test_sysctls_are_applied_to_the_sandbox
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_nodeproxy_runs_as_its_own_service_separate_from_nodelet
-  ✔ PASS (1s)
+  ✔ PASS (0s)
 ▶ test_deleting_a_service_removes_its_rules
   ✔ PASS (3s)
 ▶ test_stats_summary_returns_real_pod_usage
@@ -113,4 +113,4 @@ smoke-test             1/1     Running   0          4m13s   10.42.0.3   runnervm
 ════════════════════════════════════════
 Results: 37 passed, 0 failed, 6 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786741426...
+==> Cleaning up test namespace not-k8s-e2e-1786742700...
