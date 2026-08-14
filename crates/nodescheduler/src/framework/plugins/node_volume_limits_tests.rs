@@ -41,6 +41,11 @@ fn pod_with_pvc(name: &str, uid: &str, pvc: &str) -> Arc<PodInfo> {
     p.uid = uid.to_string();
     p.namespace = "ns".to_string();
     p.pvc_names = vec![pvc.to_string()];
+    // Both call sites place this on "n1" — without a node_name, Cache::add_pod
+    // silently drops the pod rather than committing it anywhere (see its own
+    // doc comment), which would make the node's attached-volume count 0 no
+    // matter what the test set up.
+    p.node_name = Some("n1".to_string());
     Arc::new(p)
 }
 

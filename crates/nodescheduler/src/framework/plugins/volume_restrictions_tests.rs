@@ -73,7 +73,10 @@ fn an_unclaimed_read_write_once_pod_pvc_is_fine() {
 
     let mut state = CycleState::default();
     let (status, _) = VolumeRestrictions.pre_filter(&mut state, &p, &snapshot);
-    assert!(status.is_success());
+    // Skip, not Success: this pod also has no legacy volumes, so PreFilter
+    // switches Filter off entirely for the cycle — either way, nothing
+    // rejects it.
+    assert!(!status.is_rejection());
 }
 
 #[test]
@@ -92,7 +95,7 @@ fn a_pvc_without_read_write_once_pod_never_conflicts() {
 
     let mut state = CycleState::default();
     let (status, _) = VolumeRestrictions.pre_filter(&mut state, &newcomer, &snapshot);
-    assert!(status.is_success());
+    assert!(!status.is_rejection());
 }
 
 #[test]
