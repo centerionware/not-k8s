@@ -288,24 +288,28 @@ fn candidates_for_node(snapshot: &Snapshot, node_name: &str) -> Vec<Candidate> {
     snapshot
         .resource_slices_for_node(node_name)
         .flat_map(|slice| {
-            slice.spec.devices.iter().flatten().filter_map(|d| {
-                d.basic.as_ref().map(|basic| Candidate {
-                    driver: slice.spec.driver.clone(),
-                    pool: slice.spec.pool.name.clone(),
-                    name: d.name.clone(),
-                    basic: basic.clone(),
-                })
+            slice.spec.devices.iter().flatten().map(|d| Candidate {
+                driver: slice.spec.driver.clone(),
+                pool: slice.spec.pool.name.clone(),
+                name: d.name.clone(),
+                basic: d.basic.clone(),
             })
         })
         .collect()
 }
 
 /// Whether a request uses a feature this plugin does not implement — see
-/// the module header's scope list.
+/// the module header's scope list. A request with no `exactly` at all (only
+/// `firstAvailable`, or neither) is unsupported too — `first_available.is_some()`
+/// already catches the former; the latter is not valid upstream either.
 fn request_unsupported(req: &crate::cache::dra::RawDeviceRequest) -> bool {
-    req.admin_access == Some(true)
+    let Some(exactly) = &req.exactly else {
+        return true;
+    };
+    exactly.admin_access == Some(true)
         || req.first_available.is_some()
-        || matches!(req.allocation_mode.as_deref(), Some(m) if m != "ExactCount")
+        || matches!(exactly.allocation_mode.as_deref(), Some(m) if m != "ExactCount")
+        || exactly.device_class_name.is_none()
 }
 
 /// Try to satisfy every request in a claim against one node's candidate
@@ -321,13 +325,16 @@ fn allocate_on_node(
     let mut out = Vec::new();
 
     for req in requests {
-        let want = req.count.unwrap_or(1).max(0) as usize;
+        // `request_unsupported` already excluded requests with no `exactly`
+        // from reaching here — see `pre_filter_impl`'s gate.
+        let Some(exactly) = &req.exactly else { return None };
+        let want = exactly.count.unwrap_or(1).max(0) as usize;
         if want == 0 {
             continue;
         }
         let mut selectors: Vec<crate::cache::dra::RawDeviceSelector> =
-            req.selectors.clone().unwrap_or_default();
-        if let Some(class_name) = &req.device_class_name {
+            exactly.selectors.clone().unwrap_or_default();
+        if let Some(class_name) = &exactly.device_class_name {
             let Some(class) = device_classes.get(class_name.as_str()) else {
                 return None;
             };
@@ -444,7 +451,6 @@ fn pre_filter_impl(
                 .unwrap_or_default();
             if claim.spec.devices.as_ref().and_then(|d| d.constraints.as_ref()).is_some()
                 || requests.iter().any(request_unsupported)
-                || requests.iter().any(|r| r.device_class_name.is_none())
             {
                 return (
                     Status::unresolvable(

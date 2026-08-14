@@ -33,11 +33,13 @@ fn unbound_claim(namespace: &str, name: &str, class: &str, count: i64) -> RawRes
             devices: Some(crate::cache::dra::RawDeviceClaim {
                 requests: Some(vec![RawDeviceRequest {
                     name: "req".to_string(),
-                    device_class_name: Some(class.to_string()),
-                    selectors: None,
-                    allocation_mode: None,
-                    count: Some(count),
-                    admin_access: None,
+                    exactly: Some(crate::cache::dra::RawExactDeviceRequest {
+                        device_class_name: Some(class.to_string()),
+                        selectors: None,
+                        allocation_mode: None,
+                        count: Some(count),
+                        admin_access: None,
+                    }),
                     first_available: None,
                 }]),
                 constraints: None,
@@ -61,7 +63,7 @@ fn slice_with_devices(driver: &str, node: &str, device_names: &[&str]) -> RawRes
                     .iter()
                     .map(|n| RawDevice {
                         name: n.to_string(),
-                        basic: Some(RawBasicDevice { attributes: None, capacity: None }),
+                        basic: RawBasicDevice { attributes: None, capacity: None },
                     })
                     .collect(),
             ),
@@ -189,21 +191,23 @@ fn a_device_attribute_selector_filters_correctly() {
     if let Some(devices) = &mut slice.spec.devices {
         let mut attrs = std::collections::BTreeMap::new();
         attrs.insert("size".to_string(), RawDeviceAttribute { bool: None, int: None, string: Some("big".to_string()), version: None });
-        devices[0].basic = Some(RawBasicDevice { attributes: Some(attrs), capacity: None });
+        devices[0].basic = RawBasicDevice { attributes: Some(attrs), capacity: None };
         let mut attrs2 = std::collections::BTreeMap::new();
         attrs2.insert("size".to_string(), RawDeviceAttribute { bool: None, int: None, string: Some("small".to_string()), version: None });
-        devices[1].basic = Some(RawBasicDevice { attributes: Some(attrs2), capacity: None });
+        devices[1].basic = RawBasicDevice { attributes: Some(attrs2), capacity: None };
     }
     cache.upsert_resource_slice("s1".to_string(), slice);
 
     let mut claim = unbound_claim("ns", "claim", "gpu.example.com", 1);
     if let Some(devices) = &mut claim.spec.devices {
         if let Some(requests) = &mut devices.requests {
-            requests[0].selectors = Some(vec![RawDeviceSelector {
-                cel: Some(RawCelSelector {
-                    expression: "device.attributes[\"gpu.example.com\"].size == \"big\"".to_string(),
-                }),
-            }]);
+            if let Some(exactly) = &mut requests[0].exactly {
+                exactly.selectors = Some(vec![RawDeviceSelector {
+                    cel: Some(RawCelSelector {
+                        expression: "device.attributes[\"gpu.example.com\"].size == \"big\"".to_string(),
+                    }),
+                }]);
+            }
         }
     }
     cache.upsert_resource_claim("ns/claim".to_string(), claim);
@@ -248,7 +252,9 @@ fn a_claim_using_admin_access_is_rejected_as_unimplemented() {
     let mut claim = unbound_claim("ns", "claim", "gpu.example.com", 1);
     if let Some(devices) = &mut claim.spec.devices {
         if let Some(requests) = &mut devices.requests {
-            requests[0].admin_access = Some(true);
+            if let Some(exactly) = &mut requests[0].exactly {
+                exactly.admin_access = Some(true);
+            }
         }
     }
     cache.upsert_resource_claim("ns/claim".to_string(), claim);

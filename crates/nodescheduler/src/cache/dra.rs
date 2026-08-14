@@ -79,20 +79,37 @@ pub struct RawDeviceClaim {
     pub constraints: Option<serde_json::Value>,
 }
 
+/// The stable `v1` API's real shape, confirmed against a live cluster
+/// (`kubectl explain resourceclaim.spec.devices.requests`) rather than
+/// assumed from `v1beta1`: the per-request fields this crate cares about are
+/// not flat on `DeviceRequest` — they live under `exactly`, alongside
+/// `firstAvailable` as the other arm of a "one of" the real API added on the
+/// way to GA. Getting this nesting wrong doesn't fail to compile or even to
+/// deserialize (serde silently defaults an absent `Option` field to `None`)
+/// — it silently treats every real claim as using a DRA feature this crate
+/// doesn't implement, which is why this is called out here rather than left
+/// to look like an obvious flat struct.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RawDeviceRequest {
     pub name: String,
+    pub exactly: Option<RawExactDeviceRequest>,
+    /// Alpha/beta in v1.33+ (a prioritised list of alternative requests, each
+    /// potentially naming a different device class). Not evaluated — a
+    /// request naming this is unschedulable rather than silently allocated
+    /// against one arbitrary alternative.
+    pub first_available: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RawExactDeviceRequest {
     pub device_class_name: Option<String>,
     pub selectors: Option<Vec<RawDeviceSelector>>,
     pub allocation_mode: Option<String>,
     pub count: Option<i64>,
     #[serde(default)]
     pub admin_access: Option<bool>,
-    /// Alpha in v1.33 (subrequests with per-alternative device classes).
-    /// Not evaluated — a request naming this is unschedulable rather than
-    /// silently allocated against one arbitrary alternative.
-    pub first_available: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -238,10 +255,18 @@ pub struct RawResourcePool {
     pub resource_slice_count: Option<i64>,
 }
 
+/// The stable `v1` API's real shape, confirmed live the same way
+/// `RawDeviceRequest`'s doc comment describes: `attributes`/`capacity` are
+/// flat on `Device` (`kubectl explain resourceslice.spec.devices`), not
+/// nested under a `basic` object the way `v1beta1` had it. `#[serde(flatten)]`
+/// reads them off the same JSON object `name` is on while keeping
+/// `RawBasicDevice` as a reusable payload type for the rest of this file
+/// (CEL device-matching only ever needs attributes+capacity, not `name`).
 #[derive(Deserialize, Clone, Debug)]
 pub struct RawDevice {
     pub name: String,
-    pub basic: Option<RawBasicDevice>,
+    #[serde(flatten)]
+    pub basic: RawBasicDevice,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
