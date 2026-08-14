@@ -58,7 +58,12 @@ test_a_slow_terminating_pod_does_not_stall_another_pods_creation() {
     # Start the clock before the delete so the measurement covers the whole
     # window in which the node is supposed to still be responsive.
     local started_s=$SECONDS
-    kctl delete pod "$blocker" --grace-period="$grace" --wait=false >/dev/null 2>&1 || true
+    # No `|| true` here, deliberately. If this delete never lands, no
+    # teardown starts, the victim comes up promptly, and the test passes
+    # while having exercised nothing at all — the one failure mode a timing
+    # assertion cannot tell apart from success on its own.
+    kctl delete pod "$blocker" --grace-period="$grace" --wait=false >/dev/null 2>&1 \
+        || die "could not delete $blocker — without its teardown running there is nothing for this test to measure, so passing here would be meaningless"
 
     # Give the delete's watch event time to actually reach nodelet and enter
     # teardown. Without this the victim could be created before the stall

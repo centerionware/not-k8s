@@ -73,6 +73,27 @@ pub struct PodController {
     torn_down: Arc<Mutex<HashSet<String>>>,
 }
 
+/// Releases a pod's `torn_down` entry when its teardown task ends.
+///
+/// A `Drop` impl rather than a call at the end of the task body, because the
+/// task has several exit paths (including an early return on `remove_pod`
+/// failure) and every one of them must release. Getting that wrong in either
+/// direction is silent: leak the entry and this pod can never be torn down
+/// again, release it early and the duplicate-event guard it exists to
+/// provide is not actually held for the window that needs it.
+struct TeardownGuard {
+    torn_down: Arc<Mutex<HashSet<String>>>,
+    uid: Option<String>,
+}
+
+impl Drop for TeardownGuard {
+    fn drop(&mut self) {
+        if let Some(uid) = self.uid.as_deref() {
+            self.torn_down.lock().unwrap().remove(uid);
+        }
+    }
+}
+
 /// First retry delay, and the ceiling the backoff settles at.
 ///
 /// The ceiling is what makes retrying-until-fixed affordable: a permanently
@@ -80,6 +101,18 @@ pub struct PodController {
 /// failing schedules nothing at all. See `PodController::schedule_retry`.
 const RETRY_FIRST_DELAY: Duration = Duration::from_secs(5);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(300);
+
+/// How many times a teardown retries `remove_pod` before giving up and
+/// leaving it to the next event.
+///
+/// Bounded, unlike `schedule_retry`'s open-ended loop, and the asymmetry is
+/// deliberate: that one retries a pod that is *supposed to be running*, so
+/// giving up would strand a workload. This one retries a pod that is already
+/// gone from the apiserver — the cost of stopping is a warn and some leftover
+/// containers that the next event or a restart will collect, whereas retrying
+/// forever would pin a task per undead pod for the process's whole lifetime.
+/// Six attempts spans roughly five minutes on the shared backoff curve.
+const TEARDOWN_MAX_ATTEMPTS: u32 = 6;
 
 /// Double the delay, up to the ceiling.
 ///
@@ -301,13 +334,13 @@ impl PodController {
         match ev {
             Event::Apply(pod) | Event::InitApply(pod) => self.reconcile(pod).await,
             Event::Delete(pod) => {
-                // The real, final removal — always run teardown() here
-                // (idempotent-safe: everything it does already tolerates
-                // "target already gone" with a warn, not a hard failure),
-                // then forget the UID: the object genuinely left the
-                // apiserver, so there's nothing left to guard against
-                // re-tearing-down.
-                self.spawn_teardown(pod, true);
+                // The real, final removal. Everything teardown does already
+                // tolerates "target already gone" with a warn rather than a
+                // hard failure, so this stays safe when the deletion_timestamp
+                // branch below has already run one — and spawn_teardown's own
+                // UID guard means the common case (both events for one pod)
+                // does not start a second concurrent teardown at all.
+                self.spawn_teardown(pod);
             }
             Event::Init | Event::InitDone => {}
         }
@@ -339,12 +372,7 @@ impl PodController {
             // something normal to dedupe against — fall through to a
             // real teardown() every time rather than risk collapsing
             // unrelated events into one shared "" key.
-            if let Some(uid) = pod.metadata.uid.clone() {
-                if !self.torn_down.lock().unwrap().insert(uid) {
-                    return; // already handled this pod's teardown
-                }
-            }
-            self.spawn_teardown(pod, false);
+            self.spawn_teardown(pod);
             return;
         }
 
@@ -533,17 +561,78 @@ impl PodController {
     /// nothing to await, and doing it here rather than on the detached task
     /// means a container cannot be restarted by its own liveness probe
     /// during the grace period it is meanwhile being asked to stop for.
-    fn spawn_teardown(&self, pod: Pod, forget_uid: bool) {
+    /// # One teardown per pod at a time
+    ///
+    /// Both callers can fire for the same pod: `reconcile()` sees the
+    /// `deletionTimestamp`, and `Event::Delete` arrives when the object
+    /// finally leaves the apiserver. Serialized inline that was merely
+    /// wasteful; concurrently it would mean two overlapping `remove_pod()`
+    /// calls racing each other's CSI unmounts. The UID guard lives here, in
+    /// the one place that starts the work, rather than in one of the two
+    /// call sites — and the entry is cleared by the task itself, on every
+    /// exit path including the early `remove_pod` failure, so a failed
+    /// teardown can be retried by the next event rather than being
+    /// permanently suppressed.
+    fn spawn_teardown(&self, pod: Pod) {
         let Some((ns, name)) = key_parts(&pod) else { return };
+
+        // No UID is a real apiserver-watch anomaly, not something normal to
+        // dedupe against — fall through to a real teardown rather than
+        // collapsing unrelated events onto one shared "" key.
+        let uid = pod.metadata.uid.clone();
+        if let Some(uid) = uid.clone() {
+            if !self.torn_down.lock().unwrap().insert(uid) {
+                return; // a teardown for this pod is already in flight
+            }
+        }
+
         self.stop_probe_supervisor(&ns, &name);
 
         let runtime = self.runtime.clone();
         let client = self.client.clone();
         let torn_down = self.torn_down.clone();
         tokio::spawn(async move {
-            if let Err(e) = runtime.remove_pod(&pod).await {
-                warn!(pod = %format!("{ns}/{name}"), error = ?e, "remove_pod failed");
-                return;
+            // Released only once the work is actually over, whatever the
+            // outcome. Releasing at spawn time would re-open the guard for
+            // the whole grace period — precisely the window in which the
+            // duplicate events arrive — and never releasing it would leak
+            // the entry and block every future retry for this pod.
+            let _guard = TeardownGuard { torn_down, uid };
+
+            // Retried, for the same reason ensure_pod() is (schedule_retry,
+            // and docs/E2E_FINDINGS.md #19): this controller is watch-driven
+            // with no resync, so a teardown that fails against a transient
+            // runtime error — containerd restarting, a CSI socket briefly
+            // gone — has nothing that would ever come back to it. The Pod
+            // object is already deleted as far as the apiserver is
+            // concerned, so no further watch event is coming; without a
+            // retry here the pod stays Terminating forever and its
+            // containers keep running.
+            //
+            // Bounded rather than endless, and the guard is deliberately
+            // still held across the whole loop: a teardown genuinely is in
+            // flight, and a duplicate event must not start a second one
+            // beside it. When the attempts are exhausted the guard drops,
+            // which is what lets a later event try again from scratch.
+            let mut attempt: u32 = 0;
+            let mut delay = RETRY_FIRST_DELAY;
+            loop {
+                attempt += 1;
+                match runtime.remove_pod(&pod).await {
+                    Ok(()) => break,
+                    Err(e) if attempt >= TEARDOWN_MAX_ATTEMPTS => {
+                        warn!(
+                            pod = %format!("{ns}/{name}"), error = ?e, attempt,
+                            "remove_pod still failing after the last attempt — giving up;                              the next watch event for this pod will start over"
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(pod = %format!("{ns}/{name}"), error = ?e, attempt, "remove_pod failed; retrying");
+                        tokio::time::sleep(delay).await;
+                        delay = next_retry_delay(delay);
+                    }
+                }
             }
             info!(pod = %format!("{ns}/{name}"), "torn down");
 
@@ -553,16 +642,6 @@ impl PodController {
                 Ok(_) => {}
                 Err(kube::Error::Api(e)) if e.code == 404 => {}
                 Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "final delete of pod object failed"),
-            }
-
-            // Only after the teardown has actually finished. Dropping the
-            // UID at spawn time would re-open the dedupe window for the
-            // whole duration of the grace period — exactly when the
-            // redundant events arrive.
-            if forget_uid {
-                if let Some(uid) = pod.metadata.uid.as_deref() {
-                    torn_down.lock().unwrap().remove(uid);
-                }
             }
         });
     }
