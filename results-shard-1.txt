@@ -1,10 +1,10 @@
-commit: 0f5728f8f5744af2e8bb55148d15ddc4e90307e4
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31778442661
-timestamp (UTC): 2026-08-14T07:09:58Z
+commit: 49e3e748164ec7e22c791978af4e485a19a3a517
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31779115615
+timestamp (UTC): 2026-08-14T07:20:50Z
 shard: 1/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786691344
+==> Test namespace: not-k8s-e2e-1786691972
 ==> 216 test(s) registered total (before sharding); running now...
 ==> Shard 1/5: 47 test(s) selected
 ▶ test_plugin_registry_watches_for_dra_drivers_too
@@ -18,30 +18,9 @@ exit code: 1
 ▶ test_scheduler_does_not_preempt_when_policy_forbids_it
   ✔ PASS (22s)
 ▶ test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection
-==> FATAL: assertion failed: the FailedScheduling event must carry the extender's own rejection reason — '' does not contain 'no-gpu-quota-fake-extender'
-  ✘ FAIL (17s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 14 07:08:43 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:08:43.118089Z  INFO CreateContainer succeeded container=csi-provisioner container_id=8dd85dbc5f9eb696d2318c027304f58293c08fb7189945cb4172b7afc448d001
-    Aug 14 07:08:44 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:08:44.613459Z  INFO CreateContainer succeeded container=csi-resizer container_id=6da576cd007c25292db53e299a6cc0e56a43e31b0f1d689a80e666d12f9d18ca
-    Aug 14 07:08:45 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:08:45.989094Z  INFO CreateContainer succeeded container=csi-snapshotter container_id=5702abe0058297e268f3df46499c35b0a0188f0dc381e763dfc7df29b798fc93
-    Aug 14 07:08:48 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:08:48.299303Z  INFO CreateContainer succeeded container=coredns container_id=bcff2acff1c4f8e4345379dbf0ec6e8a0c8bdd9b6145500bd9198e488ab2920d
-    Aug 14 07:08:48 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:08:48.477060Z  INFO CreateContainer succeeded container=socat container_id=48c6b7ef0a8bf3d4845e0922a69289d2a3d16a28d88a1345f76c27aa04c3c947
-    Aug 14 07:08:53 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:08:53.069182Z  INFO node status pushed
-    Aug 14 07:08:57 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:08:57.872997Z  INFO CreateContainer succeeded container=plugin container_id=1bf6ea8736c073451b8a965775146e5834b68ed3293c03fb5d10627705b395b3
-    Aug 14 07:08:59 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:08:59.488859Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-fqk6n
-    Aug 14 07:08:59 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:08:59.627805Z  INFO CreateContainer succeeded container=plugin container_id=43ba0036523053ed04426f75d8855781b22dc4044e153bb6565dc0c27f005ea1
-    Aug 14 07:08:59 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:08:59.819807Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-fqk6n
-    Aug 14 07:09:02 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:09:02.975568Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-290751cb-16d4-432e-9497-99403ca23781.sock plugin_type=DRAPlugin
-    Aug 14 07:09:07 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:09:07.267111Z  INFO CreateContainer succeeded container=app container_id=df832b0561c0f55b70b363336de2238ba38a7f1812c29cb0506ab43cf76cb778
-    Aug 14 07:09:38 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:09:38.528603Z  INFO torn down pod=not-k8s-e2e-1786691344/dra-claim-check
-    Aug 14 07:09:39 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:09:39.921753Z  INFO CreateContainer succeeded container=c container_id=253e9d96b3ff56ce0baa08b4ce0742d22b4a16bbecb910774602789147bc9168
-    Aug 14 07:09:53 runnervmvrwv9 run-nodelet.sh[15724]: 2026-08-14T07:09:53.115367Z  INFO node status pushed
+  ✔ PASS (44s)
 
 ════════════════════════════════════════
-Results: 5 passed, 1 failed, 0 skipped
-Failed:
-  - test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection
+Results: 6 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786691344...
+==> Cleaning up test namespace not-k8s-e2e-1786691972...
