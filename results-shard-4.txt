@@ -1,10 +1,10 @@
-commit: 6e5e6d2e43374b6e53b297b1049a508701e3d1cf
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31840368383
-timestamp (UTC): 2026-08-14T21:10:07Z
+commit: f5b1e67521a89a8990fb102d4d699382110fe0e5
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31841944028
+timestamp (UTC): 2026-08-14T21:31:05Z
 shard: 4/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786741407
+==> Test namespace: not-k8s-e2e-1786742670
 ==> 198 test(s) registered total (before sharding); running now...
 ==> Shard 4/5: 37 test(s) selected
 ▶ test_installed_component_binaries_are_runnable_whatever_the_layout
@@ -14,8 +14,8 @@ exit code: 0
 ▶ test_datastore_survives_a_restart_with_its_data
   ✔ PASS (0s)
 ▶ test_apiserver_watch_delivers_through_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11972/environ: Permission denied
-  ✔ PASS (8s)
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11833/environ: Permission denied
+  ✔ PASS (9s)
 ▶ test_the_cluster_keeps_serving_when_a_follower_dies
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
@@ -28,14 +28,14 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (108s)
+  ✔ PASS (106s)
 ▶ test_spec_hostname_overrides_the_container_hostname
   ✔ PASS (3s)
 ▶ test_eviction_priority_tiebreak_manual_procedure
     (skip: proving priority-based tiebreaking (round 26 — pick_eviction_candidate() ranks by spec.priority within a QoS class before falling back to usage) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with different PriorityClasses (e.g. a low-priority one and a high-priority one, or set spec.priority directly), force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the LOWER-priority pod is evicted first even if the higher-priority pod is using more memory — proof priority wins the tiebreak before usage does, matching real kubelet's rankMemoryPressure ordering. The pure ranking logic itself (priority beats usage, QoS class still outranks priority) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end.)
   ○ SKIP (0s)
 ▶ test_pod_teardown_actually_removes_the_sandbox
-  ✔ PASS (38s)
+  ✔ PASS (36s)
 ▶ test_graceful_node_shutdown_manual_note
     (skip: graceful node shutdown needs a real systemd-logind PrepareForShutdown signal, which only happens on an actual host shutdown/reboot — not something this suite triggers automatically. Manual spot-check: set NODELET_SHUTDOWN_GRACE_PERIOD_SECS (and optionally NODELET_SHUTDOWN_GRACE_PERIOD_CRITICAL_SECS) on nodelet, run 'loginctl list-inhibitors' and confirm nodelet holds a 'shutdown'/'delay' entry, apply a few test pods, then 'systemctl poweroff' (or 'reboot') the node and watch nodelet's logs for 'terminating pods' before the box actually goes down — non-critical pods (no system-node-critical/system-cluster-critical priorityClassName) should get preStop + termination before critical ones, all within NODELET_SHUTDOWN_GRACE_PERIOD_SECS total.)
   ○ SKIP (0s)
@@ -44,12 +44,12 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_crash_loop_backoff_throttles_immediate_restarts
   ✔ PASS (23s)
 ▶ test_lifecycle_stop_signal_is_honored_by_the_runtime
-    (skip: no /var/lib/nodelet/pods/4b8de963-94fa-4e66-8855-7f9d9dd8eca1/volumes/shared/signal.txt appeared after pod deletion — the runtime may not honor CRI's ContainerConfig.stop_signal (sent plain SIGTERM instead of the configured SIGUSR1, so the trap never fired); check runtime/cri/container_create.rs's stop_signal wiring if this is unexpected on a runtime version known to support it)
+    (skip: no /var/lib/nodelet/pods/89d74e4a-645b-4bb7-ad53-d5d4f28183ea/volumes/shared/signal.txt appeared after pod deletion — the runtime may not honor CRI's ContainerConfig.stop_signal (sent plain SIGTERM instead of the configured SIGUSR1, so the trap never fired); check runtime/cri/container_create.rs's stop_signal wiring if this is unexpected on a runtime version known to support it)
   ○ SKIP (93s)
 ▶ test_pod_condition_reports_observed_generation
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_pressure_conditions_are_present_and_normally_false
-  ✔ PASS (0s)
+  ✔ PASS (1s)
 ▶ test_pod_resources_grpc_query_returns_real_data
   ✔ PASS (3s)
 ▶ test_startup_probe_failure_past_threshold_restarts_the_container
@@ -72,20 +72,20 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_headless_service_programs_no_rules_and_does_not_break_others
   ✔ PASS (4s)
 ▶ test_kubectl_logs_follow_streams_new_output
-  ✔ PASS (5s)
+  ✔ PASS (4s)
 ▶ test_configmap_volume_updates_live_without_pod_restart
 Warning: resource configmaps/cm-live-update-cm is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 ▶ test_host_aliases_are_written_to_etc_hosts
   ✔ PASS (3s)
 ▶ test_fsgroup_chowns_materialized_volumes
   ✔ PASS (3s)
 ▶ test_recursive_read_only_still_mounts_read_only_normally
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_host_path_directory_or_create_creates_a_missing_directory
   ✔ PASS (3s)
 ▶ test_config_file_precedence_a_real_env_var_still_wins
-  ✔ PASS (1s)
+  ✔ PASS (2s)
 ▶ test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull
 ==> generating htpasswd auth for the local test registry...
 Unable to find image 'httpd:2.4-alpine' locally
@@ -104,17 +104,16 @@ ec6419fed67b: Waiting
 4f4fb700ef54: Download complete
 e5ad846ecbb8: Verifying Checksum
 e5ad846ecbb8: Download complete
-f0c9ed0cf49e: Verifying Checksum
 f0c9ed0cf49e: Download complete
-f0c9ed0cf49e: Pull complete
-e5ad846ecbb8: Pull complete
-4f4fb700ef54: Pull complete
 ec6419fed67b: Verifying Checksum
 ec6419fed67b: Download complete
+f0c9ed0cf49e: Pull complete
 5e8b95221646: Verifying Checksum
 5e8b95221646: Download complete
+e5ad846ecbb8: Pull complete
 71af8d887193: Verifying Checksum
 71af8d887193: Download complete
+4f4fb700ef54: Pull complete
 71af8d887193: Pull complete
 5e8b95221646: Pull complete
 ec6419fed67b: Pull complete
@@ -136,10 +135,11 @@ bbbdd6c6894b: Download complete
 44cf07d57ee4: Download complete
 8e82f80af0de: Verifying Checksum
 8e82f80af0de: Download complete
-44cf07d57ee4: Pull complete
+3493bf46cdec: Verifying Checksum
 3493bf46cdec: Download complete
 6d464ea18732: Verifying Checksum
 6d464ea18732: Download complete
+44cf07d57ee4: Pull complete
 bbbdd6c6894b: Pull complete
 8e82f80af0de: Pull complete
 3493bf46cdec: Pull complete
@@ -155,16 +155,16 @@ Configure a credential helper to remove this warning. See
 https://docs.docker.com/go/credential-store/
 
 ==> writing the fake credential-provider binary and config...
-  ✔ PASS (13s)
+  ✔ PASS (10s)
 ▶ test_memory_manager_pins_guaranteed_containers_to_a_numa_node
-  ✔ PASS (5s)
+  ✔ PASS (4s)
 ▶ test_limited_swap_gives_burstable_pods_proportional_swap
   ✔ PASS (7s)
 ▶ test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host
     (skip: this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case; a multi-node host needs the manual cross-provider check below instead)
-  ○ SKIP (0s)
+  ○ SKIP (1s)
 
 ════════════════════════════════════════
 Results: 31 passed, 0 failed, 6 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786741407...
+==> Cleaning up test namespace not-k8s-e2e-1786742670...
