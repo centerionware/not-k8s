@@ -66,12 +66,27 @@ test_the_node_still_reconciles_pods_after_an_apiserver_restart() {
     # node agent can only ever learn about it through a watch that
     # reconnected. A wedged watch means it stays Pending until something
     # restarts nodelet.
+    #
+    # Pinned with an explicit nodeName (same shape cases/retry_backoff.sh
+    # uses) for two reasons. The default deployment has one node and this
+    # would pass anyway, but a multi-node cluster is the stated target — and
+    # there an unpinned pod could be placed on some other node, run
+    # perfectly, and report success without the recovered watch under test
+    # having done anything at all. Pinning also takes the scheduler out of
+    # the measurement entirely: a pre-bound pod needs no scheduling
+    # decision, so "still Pending" can only mean the node agent never saw
+    # it, which is exactly the claim being made.
+    local node
+    node="$(node_name)"
+    assert_not_empty "$node" "no node to pin the probe pod to"
+
     apply_manifest <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
   name: $name
 spec:
+  nodeName: $node
   containers:
     - name: app
       image: $TEST_IMAGE
@@ -79,14 +94,10 @@ spec:
 EOF
 
     if ! try_wait_until 120 pod_is_phase "$name" Running; then
-        local node_name phase
-        node_name="$(pod_field "$name" '{.spec.nodeName}')"
+        local phase
         phase="$(pod_field "$name" '{.status.phase}')"
         delete_pod_if_exists "$name"
-        if [[ -n "$node_name" ]]; then
-            die "pod was bound to '$node_name' but never left phase '$phase' after an apiserver restart — the scheduler did its half, so the node agent's pod watch did not recover. Check nodelet's log for a burst of watch errors around the restart and then silence: journalctl -u nodelet"
-        fi
-        die "pod never reached Running after an apiserver restart and was never even bound (phase '$phase') — that is a scheduling or control-plane failure rather than the node-agent watch recovery this test is about"
+        die "pod pinned to '$node' never left phase '$phase' after an apiserver restart. It was bound before it was ever created, so nothing was waiting on a scheduling decision — the node agent's pod watch did not come back. Check nodelet's log for a burst of watch errors around the restart followed by silence: journalctl -u nodelet"
     fi
 
     delete_pod_if_exists "$name"
