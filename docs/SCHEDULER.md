@@ -106,7 +106,7 @@ Semantics, ordering and translation are separated the way `nodestore` separates
 `store.rs` / `consensus.rs` / `server/`. A behavioural decision made in
 `watch.rs` is almost always in the wrong place.
 
-```
+```text
 crates/nodescheduler/src/
   lib.rs              run(): config, client, leader election, wiring
   config.rs           NODESCHEDULER_* env + KubeSchedulerConfiguration, profiles
@@ -138,7 +138,7 @@ crates/nodescheduler/src/
 Taken from `pkg/scheduler/apis/config/v1/default_plugins.go`, expressed as
 MultiPoint upstream. Score weights in parentheses.
 
-```
+```text
 SchedulingGates                          NodeResourcesFit (1)
 PrioritySort                             VolumeRestrictions
 NodeUnschedulable                        NodeVolumeLimits
@@ -188,7 +188,7 @@ filtering, and mixing the two changes bin-packing subtly.
 full gate (branch → test → build.yml → e2e → merge) and leaves a cluster that
 works, just with less of the surface covered.
 
-**Phase 1 — a scheduler that schedules.** Framework traits, the projection
+**Phase 1 — a scheduler that schedules.** ✅ Implemented. Framework traits, the projection
 cache and generation-based snapshot, the event-driven queue with the full
 `ActionType` bit decomposition, leader election, `DefaultBinder`, and the
 plugins that need no extra informers: `PrioritySort`, `SchedulingGates`,

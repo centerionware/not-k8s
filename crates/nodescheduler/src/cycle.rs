@@ -303,9 +303,17 @@ impl Scheduler {
             }
         }
 
+        // Computed before Filter, not just before scoring: `find_feasible_nodes`
+        // itself needs to know whether an extender can still turn one more
+        // feasible node into a meaningful choice, or its own "nothing to
+        // score, stop at one" short-circuit (`registry.score.is_empty()`)
+        // would strand an extender-only prioritizer at a single candidate
+        // before it ever got a say.
+        let any_prioritizer = extenders.iter().any(|e| e.config.prioritize_verb.is_some());
+
         // ── Filter ──────────────────────────────────────────────────────
         let (feasible, node_statuses, processed) =
-            self.find_feasible_nodes(registry, &mut state, pod, snapshot, restricted.as_deref());
+            self.find_feasible_nodes(registry, &mut state, pod, snapshot, restricted.as_deref(), any_prioritizer);
 
         self.next_start_node_index =
             advance_start_index(self.next_start_node_index, processed, snapshot.num_nodes());
@@ -386,8 +394,9 @@ impl Scheduler {
         // A single candidate needs no scoring, extenders included — there is
         // nothing left to distinguish it from. With more than one candidate,
         // scoring can still matter even with zero Score *plugins* if an
-        // extender configures `prioritizeVerb`.
-        let any_prioritizer = extenders.iter().any(|e| e.config.prioritize_verb.is_some());
+        // extender configures `prioritizeVerb` — `any_prioritizer` above is
+        // exactly what let `find_feasible_nodes` collect more than one
+        // candidate in the first place.
         if feasible.len() == 1 || (registry.score.is_empty() && !any_prioritizer) {
             return (CycleOutcome::Scheduled { node: feasible[0].name.clone() }, state);
         }
@@ -487,12 +496,17 @@ impl Scheduler {
         pod: &PodInfo,
         snapshot: &Snapshot,
         restricted: Option<&[String]>,
+        any_prioritizer: bool,
     ) -> (Vec<Arc<NodeInfo>>, NodeToStatus, usize) {
         let all = snapshot.nodes();
         let num_all = all.len();
-        let wanted = if registry.score.is_empty() {
+        let wanted = if registry.score.is_empty() && !any_prioritizer {
             // With nothing to compare on, the first feasible node is as good
-            // as the best one, so stop at one.
+            // as the best one, so stop at one. An extender's own
+            // `prioritizeVerb` counts as "something to compare on" even when
+            // no built-in Score plugin is registered — otherwise the sweep
+            // would strand a profile with an extender-only prioritizer at a
+            // single candidate before the extender ever got a say.
             1
         } else {
             num_feasible_nodes_to_find(self.percentage_of_nodes_to_score, num_all as i32)
@@ -697,7 +711,7 @@ impl Scheduler {
                 let victim_pods: Vec<&PodInfo> = node
                     .pods
                     .iter()
-                    .filter(|p| victims.pods.contains(&p.name))
+                    .filter(|p| victims.pods.contains(&p.key()))
                     .map(|p| p.as_ref())
                     .collect();
                 let highest = victim_pods.iter().map(|p| p.priority).max().unwrap_or(0);
@@ -722,7 +736,7 @@ impl Scheduler {
             victims: node
                 .pods
                 .iter()
-                .filter(|p| best.victims.pods.contains(&p.name))
+                .filter(|p| best.victims.pods.contains(&p.key()))
                 .map(|p| p.key())
                 .collect(),
         })

@@ -296,7 +296,11 @@ fn a_node_without_the_topology_label_is_rejected_by_a_hard_constraint() {
     let p = incoming(constraint(1, true));
     let (plugin, state, _) = prefiltered(&p, &snap);
 
-    assert!(!plugin.filter(&state, &p, node(&snap, "bare")).is_success());
+    let status = plugin.filter(&state, &p, node(&snap, "bare"));
+    assert!(!status.is_success());
+    // Matches upstream exactly: eviction cannot add a label to a node, so a
+    // node missing the topology key is never a preemption candidate.
+    assert!(!status.code.is_resolvable_by_preemption());
 }
 
 #[test]

@@ -296,10 +296,11 @@ pub fn pod_action_types(old: &Pod, new: &Pod) -> ActionType {
 fn pod_requests_decreased(old: &Pod, new: &Pod) -> bool {
     let old_r = pod_request_totals(old);
     let new_r = pod_request_totals(new);
-    new_r.iter().any(|(k, new_v)| {
-        old_r
-            .get(k)
-            .is_some_and(|old_v| quantity_millis(new_v) < quantity_millis(old_v))
+    // A key the new spec dropped entirely is a decrease too — from whatever
+    // it was to zero — the same as a key whose value shrank.
+    old_r.iter().any(|(k, old_v)| match new_r.get(k) {
+        Some(new_v) => quantity_millis(new_v) < quantity_millis(old_v),
+        None => true,
     })
 }
 
@@ -337,7 +338,10 @@ fn quantity_millis(q: &str) -> i64 {
         _ if q.ends_with("Gi") => (&q[..q.len() - 2], 1024 * 1024 * 1024),
         _ => (q, 1),
     };
-    num.parse::<f64>().map(|n| (n * mult as f64) as i64 * 1000).unwrap_or(0)
+    // Multiply by 1000 *before* truncating to i64 — casting first zeroed out
+    // any fractional-core value (0.5 -> 0, 1.5 -> 1000), so a scale-down
+    // like 0.9 -> 0.5 compared 0 < 0 and was never detected.
+    num.parse::<f64>().map(|n| (n * mult as f64 * 1000.0) as i64).unwrap_or(0)
 }
 
 /// Did anything a scheduler could plausibly care about change, beyond the

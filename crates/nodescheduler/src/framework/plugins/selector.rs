@@ -62,10 +62,9 @@ pub fn matches_selector(selector: Option<&LabelSelector>, labels: &BTreeMap<Stri
 /// are absent the term means the pod's *own* namespace. An empty
 /// `namespaceSelector` (`{}`) means every namespace.
 ///
-/// `namespaceSelector` needs Namespace objects to evaluate, which this
-/// scheduler does not watch yet (it would be the only reason to). Terms using
-/// it are therefore reported here rather than silently treated as "own
-/// namespace", which would quietly under-match and disable the rule.
+/// A `namespaceSelector` with real requirements is carried as
+/// [`NamespaceScope::Selected`] and resolved against the namespace labels
+/// the scheduler's own Namespace watch supplies — see `namespace_in_scope`.
 #[derive(Debug, PartialEq)]
 pub enum NamespaceScope {
     /// Only the incoming pod's own namespace.

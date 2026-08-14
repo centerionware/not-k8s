@@ -421,7 +421,10 @@ impl FilterPlugin for PodTopologySpread {
                 continue;
             }
             let Some(value) = node.labels.get(&c.topology_key) else {
-                return Status::unschedulable(
+                // Unresolvable, matching upstream exactly: eviction cannot
+                // add a label to a node, so a node missing the topology key
+                // is never a preemption candidate for this rejection.
+                return Status::unresolvable(
                     NAME,
                     format!("node(s) didn't have label {}", c.topology_key),
                 );
