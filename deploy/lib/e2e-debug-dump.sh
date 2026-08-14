@@ -64,6 +64,29 @@ echo "── k3s.service ──"
 sudo systemctl status k3s.service --no-pager -l 2>&1 || echo "(k3s.service not found/not running)"
 
 echo ""
+# k3s bundles kube-controller-manager (AttachDetachController et al) into
+# the same process/journal as everything else it stripped down to — there
+# is no separate unit to target. A stuck CSI attach (VolumeAttachment never
+# created, or created but never Attached) is invisible without this: the
+# nodelet/nodescheduler dumps above only show the two ends of that pipe,
+# never the controller in the middle. Grepped rather than dumped whole
+# because k3s's own log is dominated by apiserver audit/watch chatter —
+# unfiltered this would bury the one subsystem actually worth reading here
+# under everything else running in the same process.
+echo "── k3s.service logs: attach/detach + volume events (last 400 lines, filtered) ──"
+sudo journalctl -u k3s.service --no-pager -n 400 2>&1 \
+    | grep -iE "attachdetach|VolumeAttachment|persistentvolume|reconciler" \
+    || echo "(no matching lines in the last 400 — either nothing ran, or it's further back than this tail reaches)"
+
+echo ""
+echo "── volumeattachments (every namespace is cluster-scoped) ──"
+kubectl get volumeattachments.storage.k8s.io -o wide 2>&1 || echo "(none / apiserver unreachable)"
+
+echo ""
+echo "── recent events, every namespace (last 60, by time) ──"
+kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -60
+
+echo ""
 echo "── containerd.service ──"
 sudo systemctl status containerd.service --no-pager -l 2>&1 || echo "(containerd.service not found/not running)"
 
