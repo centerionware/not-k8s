@@ -1,10 +1,10 @@
-commit: fde7650a75e17db5e160c28d85f257da0db2416a
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31844984431
-timestamp (UTC): 2026-08-14T22:15:17Z
+commit: 7d7841262f8add936bda8f9ec4dbf5d1af30dc86
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31850508538
+timestamp (UTC): 2026-08-14T23:40:41Z
 shard: 5/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786745260
+==> Test namespace: not-k8s-e2e-1786750469
 ==> 218 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 40 test(s) selected
 ▶ test_a_failing_component_says_why_before_it_exits
@@ -12,12 +12,12 @@ exit code: 1
 ▶ test_datastore_serves_the_etcd_status_rpc
   ✔ PASS (0s)
 ▶ test_datastore_streams_watch_events_as_they_happen
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_datastore_refuses_a_cluster_it_cannot_be_part_of
   ✔ PASS (0s)
 ▶ test_apiserver_state_survives_a_datastore_restart
 /home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13622/environ: Permission denied
-  ✔ PASS (10s)
+  ✔ PASS (8s)
 ▶ test_the_cluster_survives_the_leader_being_killed
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
@@ -30,7 +30,7 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (150s)
+  ✔ PASS (152s)
 ▶ test_set_hostname_as_fqdn_reports_the_full_fqdn
   ✔ PASS (3s)
 ▶ test_eviction_exceeds_requests_tiebreak_manual_procedure
@@ -39,19 +39,19 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed
   ✔ PASS (37s)
 ▶ test_poststart_hook_runs_after_container_start
-  ✔ PASS (2s)
-▶ test_native_sidecar_container_starts_before_app_container_and_keeps_running
   ✔ PASS (3s)
+▶ test_native_sidecar_container_starts_before_app_container_and_keeps_running
+  ✔ PASS (2s)
 ▶ test_crash_loop_backoff_reports_waiting_reason_and_last_state
   ✔ PASS (3s)
 ▶ test_termination_message_path_is_read_back_into_container_status
   ✔ PASS (3s)
 ▶ test_container_status_reports_a_real_image_id
-  ✔ PASS (2s)
-▶ test_host_port_publishes_the_container_on_the_nodes_own_ip
   ✔ PASS (3s)
+▶ test_host_port_publishes_the_container_on_the_nodes_own_ip
+  ✔ PASS (2s)
 ▶ test_node_reports_a_real_kernel_and_os_image
-  ✔ PASS (0s)
+  ✔ PASS (1s)
 ▶ test_readiness_probe_gates_ready_condition
   ✔ PASS (7s)
 ▶ test_http_get_readiness_probe_against_a_real_server
@@ -59,34 +59,15 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set
   ✔ PASS (5s)
 ▶ test_in_place_resize_updates_memory_limit_without_restarting
-  ✔ PASS (4s)
+  ✔ PASS (3s)
 ▶ test_guaranteed_pod_gets_the_protected_oom_score
   ✔ PASS (3s)
 ▶ test_scheduler_honours_a_node_selector_that_matches_nothing
-  ✔ PASS (10s)
+  ✔ PASS (11s)
 ▶ test_scheduler_ignores_pods_for_another_scheduler
-  ✔ PASS (13s)
+  ✔ PASS (12s)
 ▶ test_scheduler_preempts_a_lower_priority_pod
-==> FATAL: timed out after 120s waiting for: sched-preempt-high to be bound to a node
-  ✘ FAIL (122s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 14 22:12:05 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:12:05.130038Z  INFO torn down pod=not-k8s-e2e-1786745260/readiness-gate-check
-    Aug 14 22:12:06 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:12:06.537741Z  INFO CreateContainer succeeded container=c container_id=de1809a7affd4556893a241ab55b491bf1c7f4f09f486953640765f6bbf37607
-    Aug 14 22:12:06 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:12:06.579503Z  INFO torn down pod=not-k8s-e2e-1786745260/readiness-gate-check
-    Aug 14 22:12:06 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:12:06.631384Z  INFO torn down pod=not-k8s-e2e-1786745260/readiness-gate-check
-    Aug 14 22:12:08 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:12:08.772846Z  INFO torn down pod=not-k8s-e2e-1786745260/resize-check
-    Aug 14 22:12:08 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:12:08.806080Z  INFO torn down pod=not-k8s-e2e-1786745260/native-sidecar
-    Aug 14 22:12:08 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:12:08.818240Z  INFO torn down pod=not-k8s-e2e-1786745260/resize-check
-    Aug 14 22:12:08 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:12:08.819696Z  INFO torn down pod=not-k8s-e2e-1786745260/native-sidecar
-    Aug 14 22:12:11 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:12:11.535329Z  INFO torn down pod=not-k8s-e2e-1786745260/oom-score-guaranteed
-    Aug 14 22:12:11 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:12:11.551434Z  WARN failed to write pod status pod=not-k8s-e2e-1786745260/oom-score-guaranteed error=ApiError: pods "oom-score-guaranteed" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"oom-score-guaranteed\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "oom-score-guaranteed", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 14 22:12:11 runnervmzvulz run-nodelet.sh[15396]: Caused by:
-    Aug 14 22:12:11 runnervmzvulz run-nodelet.sh[15396]:     pods "oom-score-guaranteed" not found: NotFound
-    Aug 14 22:12:11 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:12:11.554131Z  INFO torn down pod=not-k8s-e2e-1786745260/oom-score-guaranteed
-    Aug 14 22:12:48 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:12:48.139622Z  INFO node status pushed
-    Aug 14 22:13:48 runnervmzvulz run-nodelet.sh[15396]: 2026-08-14T22:13:48.180608Z  INFO node status pushed
+  ✔ PASS (37s)
 ▶ test_without_read_only_root_filesystem_writes_succeed
   ✔ PASS (3s)
 ▶ test_host_users_volume_ownership_translation_is_correct
@@ -113,13 +94,11 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_recursive_read_only_if_possible_tracks_the_runtime_handlers_own_capability
   ✔ PASS (3s)
 ▶ test_config_dir_merges_files_in_filename_order
-  ✔ PASS (1s)
+  ✔ PASS (2s)
 ▶ test_scheduler_schedules_a_pod_an_http_extender_approves
-  ✔ PASS (35s)
+  ✔ PASS (34s)
 
 ════════════════════════════════════════
-Results: 35 passed, 1 failed, 4 skipped
-Failed:
-  - test_scheduler_preempts_a_lower_priority_pod
+Results: 36 passed, 0 failed, 4 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786745260...
+==> Cleaning up test namespace not-k8s-e2e-1786750469...
