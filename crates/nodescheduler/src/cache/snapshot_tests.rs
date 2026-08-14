@@ -330,3 +330,75 @@ fn workload_selectors_do_not_cross_namespaces() {
     assert!(snap.matching_workload_selectors("default", &label_map(&[("app", "web")])).is_empty());
     assert_eq!(snap.matching_workload_selectors("other", &label_map(&[("app", "web")])).len(), 1);
 }
+
+// ── Phase 4: storage objects ──────────────────────────────────────────────
+
+#[test]
+fn a_pv_upsert_is_visible_in_the_next_snapshot_and_gone_after_removal() {
+    let mut cache = Cache::new();
+    cache.upsert_pv("pv-1".to_string(), crate::cache::PvInfo { name: "pv-1".to_string(), ..Default::default() });
+    let mut snap = Snapshot::default();
+    cache.update_snapshot(&mut snap);
+    assert!(snap.pv("pv-1").is_some());
+
+    cache.remove_pv("pv-1");
+    cache.update_snapshot(&mut snap);
+    assert!(snap.pv("pv-1").is_none());
+}
+
+#[test]
+fn a_pvc_and_storage_class_upsert_round_trip_through_the_snapshot() {
+    let mut cache = Cache::new();
+    cache.upsert_pvc(
+        "ns/claim".to_string(),
+        crate::cache::PvcInfo { namespace: "ns".to_string(), name: "claim".to_string(), ..Default::default() },
+    );
+    cache.upsert_storage_class(
+        "standard".to_string(),
+        crate::cache::StorageClassInfo { name: "standard".to_string(), ..Default::default() },
+    );
+    let mut snap = Snapshot::default();
+    cache.update_snapshot(&mut snap);
+
+    assert!(snap.pvc("ns", "claim").is_some());
+    assert!(snap.storage_class("standard").is_some());
+}
+
+#[test]
+fn a_storage_only_mutation_still_refreshes_the_snapshot_with_no_node_changes() {
+    // The same trap namespaces/workload selectors already guard against: a
+    // mutation that touches no node must not be dropped by the "nothing
+    // changed" early return, or storage data goes stale forever.
+    let mut cache = Cache::new();
+    let mut snap = cache.snapshot();
+    cache.upsert_storage_class(
+        "standard".to_string(),
+        crate::cache::StorageClassInfo { name: "standard".to_string(), ..Default::default() },
+    );
+    cache.update_snapshot(&mut snap);
+    assert!(snap.storage_class("standard").is_some());
+}
+
+#[test]
+fn pods_using_a_pvc_are_found_across_every_node() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&node("n1"));
+    cache.upsert_node(&node("n2"));
+    let mut a = (*pod_on("a", "n1", 100)).clone();
+    a.namespace = "ns".to_string();
+    a.pvc_names = vec!["data".to_string()];
+    let mut b = (*pod_on("b", "n2", 100)).clone();
+    b.namespace = "ns".to_string();
+    b.pvc_names = vec!["data".to_string()];
+    let mut unrelated = (*pod_on("c", "n1", 100)).clone();
+    unrelated.namespace = "ns".to_string();
+    cache.add_pod(Arc::new(a));
+    cache.add_pod(Arc::new(b));
+    cache.add_pod(Arc::new(unrelated));
+
+    let snap = cache.snapshot();
+    let users: Vec<&str> = snap.pods_using_pvc("ns", "data").map(|p| p.uid.as_str()).collect();
+    assert_eq!(users.len(), 2, "both nodes' pods must be found, not just the local one");
+    assert!(users.contains(&"a"));
+    assert!(users.contains(&"b"));
+}

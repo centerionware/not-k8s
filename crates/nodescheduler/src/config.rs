@@ -36,6 +36,9 @@ mod defaults {
     pub const RETRY_PERIOD_SECONDS: u64 = 2;
     pub const LEASE_NAME: &str = "kube-scheduler";
     pub const LEASE_NAMESPACE: &str = "kube-system";
+    /// `VolumeBinding`'s `bindTimeoutSeconds` — how long `PreBind` polls a
+    /// PVC for `Bound` before giving up. Upstream's default.
+    pub const VOLUME_BIND_TIMEOUT_SECONDS: u64 = 600;
 }
 
 /// How `PodTopologySpread` behaves for pods that declare no constraints.
@@ -85,6 +88,7 @@ pub struct Config {
 
     pub topology_defaulting: TopologyDefaulting,
     pub scoring_strategy: ScoringStrategyKind,
+    pub volume_bind_timeout: Duration,
 }
 
 impl Default for Config {
@@ -105,6 +109,7 @@ impl Default for Config {
             holder_identity: default_holder_identity(),
             topology_defaulting: TopologyDefaulting::SystemDefaulting,
             scoring_strategy: ScoringStrategyKind::LeastAllocated,
+            volume_bind_timeout: Duration::from_secs(defaults::VOLUME_BIND_TIMEOUT_SECONDS),
         }
     }
 }
@@ -203,6 +208,10 @@ impl Config {
                      'RequestedToCapacityRatio')."
                 ),
             },
+            volume_bind_timeout: secs_env(
+                "NODESCHEDULER_VOLUME_BIND_TIMEOUT_SECONDS",
+                d.volume_bind_timeout,
+            )?,
         };
 
         cfg.validate()?;

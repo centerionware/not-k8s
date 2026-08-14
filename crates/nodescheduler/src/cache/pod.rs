@@ -306,6 +306,61 @@ impl HostPort {
     }
 }
 
+/// One of the five in-tree volume sources `VolumeRestrictions` still checks
+/// for cross-pod conflicts on the same node.
+///
+/// Every in-tree cloud volume plugin except these five was removed outright
+/// (see docs/SCHEDULER.md, "Where the docs are wrong" — that removal is what
+/// took `EBSLimits`/`GCEPDLimits`/`AzureDiskLimits` out of the default filter
+/// list). These five volume *source* fields are still real, still validated
+/// by the apiserver, and a cluster running two pods that reference the same
+/// underlying disk on the same node is still a real double-attach outside
+/// upstream's control — so the check stays, even though it will rarely fire
+/// on an all-CSI cluster.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LegacyVolumeId {
+    GcePersistentDisk { pd_name: String, read_only: bool },
+    AwsElasticBlockStore { volume_id: String, read_only: bool },
+    Iscsi { target_portal: String, iqn: String, lun: i32 },
+    Rbd { monitors: Vec<String>, image: String, pool: String },
+    Cinder { volume_id: String },
+}
+
+impl LegacyVolumeId {
+    /// Whether two claims on these identities can coexist on one node.
+    ///
+    /// GCE PD and AWS EBS both allow two *read-only* attachments of the same
+    /// disk to coexist — that is the one upstream nuance here, matching
+    /// `gcePersistentDiskConflicts`/`awsElasticBlockStoreConflicts`. Every
+    /// other kind conflicts unconditionally on identity: iSCSI targets, RBD
+    /// images and Cinder volumes have no shared-read mode in these checks.
+    pub fn conflicts_with(&self, other: &LegacyVolumeId) -> bool {
+        match (self, other) {
+            (
+                LegacyVolumeId::GcePersistentDisk { pd_name: a, read_only: ro_a },
+                LegacyVolumeId::GcePersistentDisk { pd_name: b, read_only: ro_b },
+            ) => a == b && !(*ro_a && *ro_b),
+            (
+                LegacyVolumeId::AwsElasticBlockStore { volume_id: a, read_only: ro_a },
+                LegacyVolumeId::AwsElasticBlockStore { volume_id: b, read_only: ro_b },
+            ) => a == b && !(*ro_a && *ro_b),
+            (
+                LegacyVolumeId::Iscsi { target_portal: tp_a, iqn: iqn_a, lun: lun_a },
+                LegacyVolumeId::Iscsi { target_portal: tp_b, iqn: iqn_b, lun: lun_b },
+            ) => tp_a == tp_b && iqn_a == iqn_b && lun_a == lun_b,
+            (
+                LegacyVolumeId::Rbd { monitors: m_a, image: i_a, pool: p_a },
+                LegacyVolumeId::Rbd { monitors: m_b, image: i_b, pool: p_b },
+            ) => m_a == m_b && i_a == i_b && p_a == p_b,
+            (
+                LegacyVolumeId::Cinder { volume_id: a },
+                LegacyVolumeId::Cinder { volume_id: b },
+            ) => a == b,
+            _ => false,
+        }
+    }
+}
+
 /// The scheduler's view of a pod.
 #[derive(Clone, Debug, Default)]
 pub struct PodInfo {
@@ -334,6 +389,14 @@ pub struct PodInfo {
     pub container_count: usize,
     /// PVC names this pod mounts, for the phase-4 volume plugins.
     pub pvc_names: Vec<String>,
+    /// The five in-tree volume sources `VolumeRestrictions` still checks for
+    /// conflicts — see [`LegacyVolumeId`].
+    pub legacy_volumes: Vec<LegacyVolumeId>,
+    /// Driver names of this pod's ephemeral inline CSI volumes (`spec.volumes[].csi`,
+    /// not a PVC). `NodeVolumeLimits` counts these against the same per-driver
+    /// per-node ceiling as PVC-backed volumes — a driver has no way to tell
+    /// the two apart once attached.
+    pub csi_ephemeral_drivers: Vec<String>,
     /// `spec.resourceClaims`, for DRA.
     pub resource_claim_names: Vec<String>,
     pub owner_references: Vec<OwnerRef>,
@@ -453,6 +516,13 @@ impl PodInfo {
                     v.persistent_volume_claim.as_ref().map(|p| p.claim_name.clone())
                 })
                 .collect(),
+            legacy_volumes: spec.volumes.iter().flatten().filter_map(legacy_volume_id).collect(),
+            csi_ephemeral_drivers: spec
+                .volumes
+                .iter()
+                .flatten()
+                .filter_map(|v| v.csi.as_ref().map(|c| c.driver.clone()))
+                .collect(),
             resource_claim_names: spec
                 .resource_claims
                 .iter()
@@ -477,6 +547,43 @@ impl PodInfo {
                 .and_then(|s| s.nominated_node_name.clone()),
         }
     }
+}
+
+/// Pull a [`LegacyVolumeId`] out of a pod's volume source, if it is one of
+/// the five kinds `VolumeRestrictions` still checks. Every other volume type
+/// — including every CSI volume, which is what this project's own reference
+/// deploys use — projects to `None`.
+fn legacy_volume_id(v: &k8s_openapi::api::core::v1::Volume) -> Option<LegacyVolumeId> {
+    if let Some(gce) = &v.gce_persistent_disk {
+        return Some(LegacyVolumeId::GcePersistentDisk {
+            pd_name: gce.pd_name.clone(),
+            read_only: gce.read_only.unwrap_or(false),
+        });
+    }
+    if let Some(ebs) = &v.aws_elastic_block_store {
+        return Some(LegacyVolumeId::AwsElasticBlockStore {
+            volume_id: ebs.volume_id.clone(),
+            read_only: ebs.read_only.unwrap_or(false),
+        });
+    }
+    if let Some(iscsi) = &v.iscsi {
+        return Some(LegacyVolumeId::Iscsi {
+            target_portal: iscsi.target_portal.clone(),
+            iqn: iscsi.iqn.clone(),
+            lun: iscsi.lun,
+        });
+    }
+    if let Some(rbd) = &v.rbd {
+        return Some(LegacyVolumeId::Rbd {
+            monitors: rbd.monitors.clone(),
+            image: rbd.image.clone(),
+            pool: rbd.pool.clone().unwrap_or_else(|| "rbd".to_string()),
+        });
+    }
+    if let Some(cinder) = &v.cinder {
+        return Some(LegacyVolumeId::Cinder { volume_id: cinder.volume_id.clone() });
+    }
+    None
 }
 
 /// A pod's effective resource request.

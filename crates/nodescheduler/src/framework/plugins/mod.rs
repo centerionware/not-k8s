@@ -13,11 +13,11 @@
 //! than upstream would, forever, which is precisely the class of divergence
 //! this project exists not to have.
 //!
-//! Phase 1 is everything that needs no informer beyond Pod and Node. The
-//! plugins named in the upstream list but absent from this module
-//! (`VolumeBinding`, `PodTopologySpread`, `InterPodAffinity`,
-//! `DefaultPreemption`, …) are later phases; their absence changes placement
-//! quality, never correctness of what is here.
+//! Phase 1 is everything that needs no informer beyond Pod and Node; later
+//! phases (topology, preemption, storage) added their own plugins and
+//! informers on top without touching Phase 1's shape. `DynamicResources`
+//! (DRA) and multi-profile dispatch are the one piece still missing — see
+//! docs/SCHEDULER.md's "Phase 5".
 //!
 //! # Two rules every file in this directory obeys
 //!
@@ -58,11 +58,15 @@ pub mod node_ports;
 pub mod node_resources_balanced_allocation;
 pub mod node_resources_fit;
 pub mod node_unschedulable;
+pub mod node_volume_limits;
 pub mod pod_topology_spread;
 pub mod priority_sort;
 pub mod scheduling_gates;
 pub mod selector;
 pub mod taint_toleration;
+pub mod volume_binding;
+pub mod volume_restrictions;
+pub mod volume_zone;
 
 use super::{MAX_NODE_SCORE, Registry};
 
@@ -106,8 +110,10 @@ pub(crate) fn default_normalize_score(reverse: bool, scores: &mut [i64]) {
 /// — but it is a measurable one on a large cluster, and matching upstream
 /// means a profile dumped from either scheduler compares equal.
 ///
-/// `client` is used by exactly one plugin, [`default_binder::DefaultBinder`];
-/// it is the only plugin in this directory that performs I/O.
+/// `client` is used by [`default_binder::DefaultBinder`] (writes the
+/// Binding) and [`volume_binding::VolumeBinding`] (annotates and polls a
+/// PVC in `PreBind`) — the only two plugins in this directory that perform
+/// I/O; everything else here is a pure function of the snapshot.
 pub fn default_registry(client: kube::Client, cfg: &crate::config::Config) -> Registry {
     Registry {
         profile_name: "default-scheduler".to_string(),
@@ -116,6 +122,10 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config) -> Re
         pre_filter: vec![
             Box::new(node_ports::NodePorts),
             Box::new(node_resources_fit::NodeResourcesFit::default()),
+            Box::new(volume_restrictions::VolumeRestrictions),
+            Box::new(node_volume_limits::NodeVolumeLimits),
+            Box::new(volume_binding::VolumeBinding::new(client.clone(), cfg.volume_bind_timeout)),
+            Box::new(volume_zone::VolumeZone),
             Box::new(pod_topology_spread::PodTopologySpread {
                 defaulting: cfg.topology_defaulting,
             }),
@@ -128,6 +138,10 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config) -> Re
             Box::new(node_affinity::NodeAffinity::default()),
             Box::new(node_ports::NodePorts),
             Box::new(node_resources_fit::NodeResourcesFit::default()),
+            Box::new(volume_restrictions::VolumeRestrictions),
+            Box::new(node_volume_limits::NodeVolumeLimits),
+            Box::new(volume_binding::VolumeBinding::new(client.clone(), cfg.volume_bind_timeout)),
+            Box::new(volume_zone::VolumeZone),
             Box::new(pod_topology_spread::PodTopologySpread {
                 defaulting: cfg.topology_defaulting,
             }),
@@ -162,7 +176,7 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config) -> Re
         ],
         reserve: Vec::new(),
         permit: Vec::new(),
-        pre_bind: Vec::new(),
+        pre_bind: vec![Box::new(volume_binding::VolumeBinding::new(client.clone(), cfg.volume_bind_timeout))],
         bind: vec![Box::new(default_binder::DefaultBinder::new(client))],
         post_bind: Vec::new(),
     }
