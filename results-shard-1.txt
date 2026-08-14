@@ -1,23 +1,7 @@
-commit: 6647b8549b51eb4a4e8f17040a4524626a03b55c
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31830276990
-timestamp (UTC): 2026-08-14T18:55:42Z
+commit: c05032648397fcc73f4838b4a8e966acc154eb75
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31831074840
+timestamp (UTC): 2026-08-14T18:57:48Z
 shard: 1/5
-exit code: 0
+exit code: unknown
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786733611
-==> 216 test(s) registered total (before sharding); running now...
-==> Shard 1/5: 48 test(s) selected
-▶ test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen
-    (skip: PVC never bound after a node was chosen (phase=Bound) — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS_WAIT)
-  ○ SKIP (99s)
-▶ test_scheduler_honours_a_node_selector_that_matches
-  ✔ PASS (1s)
-▶ test_scheduler_holds_the_leader_lease
-  ✔ PASS (8s)
-▶ test_scheduler_does_not_preempt_when_policy_forbids_it
-  ✔ PASS (22s)
-
-════════════════════════════════════════
-Results: 3 passed, 0 failed, 1 skipped
-════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786733611...
+(no results captured — the run failed before test-e2e.sh could produce output)
