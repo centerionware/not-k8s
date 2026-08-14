@@ -1296,7 +1296,17 @@ EOF
     sleep 10
     assert_eq "$(pod_field "$pod" '{.spec.nodeName}')" "" \
         "a pod the extender rejects on every node must never be scheduled"
-    assert_contains "$(kctl get events --field-selector involvedObject.name="$pod" -o jsonpath='{.items[*].message}' 2>/dev/null)" \
+    # Found live in CI: the FailedScheduling event write is one more async
+    # step past the HTTP round trip to the extender itself (pod created ->
+    # cycle runs -> extender POST -> reject -> event write), and under a
+    # loaded shared runner a flat 10s sleep isn't always enough for all of
+    # that plus the event becoming queryable — a plain assert_contains right
+    # after would flake with an empty string, not a wrong one. Retrying
+    # gives it real headroom without slowing down the common on-time case.
+    try_wait_until 30 bash -c "kctl get events --field-selector involvedObject.name=$pod -o jsonpath='{.items[*].message}' 2>/dev/null | grep -q no-gpu-quota-fake-extender"
+    local event_message
+    event_message="$(kctl get events --field-selector involvedObject.name="$pod" -o jsonpath='{.items[*].message}' 2>/dev/null)"
+    assert_contains "$event_message" \
         "no-gpu-quota-fake-extender" "the FailedScheduling event must carry the extender's own rejection reason"
     assert_contains "$(cat "$FEXT_LOG")" "/filter pod=$pod" \
         "the extender must actually have been called with this pod"
