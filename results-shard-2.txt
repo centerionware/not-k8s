@@ -1,116 +1,14 @@
-commit: 41ee7b7e6211173e632efff8a318b3ad6a3a004d
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31833523109
-timestamp (UTC): 2026-08-14T19:45:18Z
+commit: a2978a354bbc58c410de614117ddb0555fc115d3
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31835456134
+timestamp (UTC): 2026-08-14T20:00:14Z
 shard: 2/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786736114
+==> Test namespace: not-k8s-e2e-1786737614
 ==> 197 test(s) registered total (before sharding); running now...
 ==> Shard 2/5: 43 test(s) selected
-▶ test_plugin_registry_directory_exists
-  ✔ PASS (1s)
-▶ test_pod_mounts_a_persistent_volume_claim
-==> WARNING: Node.status.volumesInUse has no kubernetes.io/csi/ entry while a CSI volume is mounted — check mounted_csi_volumes()/csi_unique_volume_name() wiring in runtime/cri.rs and node.rs (round 34; not failing the test outright since the exact naming scheme is unvalidated against a real attach/detach controller)
-  ✔ PASS (35s)
-▶ test_pod_uses_a_raw_block_volume
-  ✔ PASS (34s)
-▶ test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
-==> WARNING: old VolumeAttachment for pvc-4544ee88-1b5a-4e85-ab83-dbd2ff0eb03a didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate
-==> WARNING: [diag] pod2 right after Running: NAME                     READY   STATUS    RESTARTS   AGE   IP           NODE            NOMINATED NODE   READINESS GATES
-fsgroup-policy-check-2   1/1     Running   0          3s    10.42.0.11   runnervmzvulz   <none>           <none>
-==> WARNING: [diag] default-ns pods (CSI driver state): NAME                   READY   STATUS    RESTARTS   AGE     IP          NODE            NOMINATED NODE   READINESS GATES
-csi-hostpath-socat-0   1/1     Running   0          3m44s   10.42.0.4   runnervmzvulz   <none>           <none>
-csi-hostpathplugin-0   7/7     Running   0          3m44s   10.42.0.5   runnervmzvulz   <none>           <none>
-smoke-test             1/1     Running   0          4m12s   10.42.0.3   runnervmzvulz   <none>           <none>
-  ✔ PASS (160s)
-▶ test_resource_api_group_is_enabled
-  ✔ PASS (0s)
-▶ test_pod_mounts_a_generic_ephemeral_volume
-  ✔ PASS (33s)
-▶ test_combined_binary_contains_every_component
-    (skip: no combined binary here (split layout — build with --layout=combined or --layout=both))
-  ○ SKIP (0s)
-▶ test_pod_cgroup_reflects_its_qos_class
-  ✔ PASS (2s)
-▶ test_datastore_lists_a_prefix_in_key_order
-  ✔ PASS (1s)
-▶ test_datastore_refuses_a_read_below_the_compaction_point
-  ✔ PASS (0s)
-▶ test_a_real_apiserver_starts_and_serves_against_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11963/environ: Permission denied
-  ✔ PASS (5s)
-▶ test_cluster_replicates_a_write_to_every_member
-    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
-  ○ SKIP (0s)
-▶ test_a_restarted_member_catches_up_on_what_it_missed
-    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
-  ○ SKIP (0s)
-▶ test_upgrade_a_dead_member_leaves_nothing_listening_behind_it
-    (skip: needs root to create network namespaces — this needs real network namespaces)
-  ○ SKIP (0s)
-▶ test_allocated_resources_status_absent_without_device_resources
-  ✔ PASS (3s)
-▶ test_pod_exceeding_its_active_deadline_is_terminated
-  ✔ PASS (34s)
-▶ test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
-  ✔ PASS (40s)
-▶ test_unreferenced_image_is_not_removed_below_the_watermark
-==>     waiting through at least one NODELET_GC_INTERVAL_SECS cycle (default 300s) to confirm busybox:1.36.1 survives it...
-  ✔ PASS (99s)
-▶ test_termination_grace_period_is_honored_not_instant
-  ✔ PASS (12s)
-▶ test_init_container_failure_blocks_app_container_under_restart_policy_never
-  ✔ PASS (2s)
-▶ test_restart_policy_never_exit_nonzero_is_failed
-  ✔ PASS (3s)
-▶ test_pod_status_reports_host_ips_plural
-  ✔ PASS (3s)
-▶ test_image_pull_policy_if_not_present_skips_the_registry_round_trip
-  ✔ PASS (36s)
-▶ test_node_is_ready_with_capacity_advertised
-  ✔ PASS (1s)
-▶ test_node_status_images_reflects_a_real_pulled_image
-  ✔ PASS (3s)
-▶ test_liveness_probes_own_grace_period_overrides_the_pods
-  ✔ PASS (13s)
-▶ test_grpc_probe_leaves_pod_not_ready_against_the_wrong_port
-  ✔ PASS (15s)
-▶ test_hugepages_limit_is_enforced_via_cgroup
-    (skip: no /sys/fs/cgroup/hugetlb.2MB.limit_in_bytes in the container — this node's cgroup v2 hierarchy may not have the hugetlb controller enabled)
-  ○ SKIP (23s)
-▶ test_cpu_limit_is_enforced_via_cgroup
-  ✔ PASS (3s)
-▶ test_runtime_class_handler_is_honored
-  ✔ PASS (3s)
-▶ test_without_read_only_root_filesystem_writes_succeed
-  ✔ PASS (3s)
-▶ test_host_users_volume_ownership_translation_is_correct
-  ✔ PASS (3s)
-▶ test_sysctls_are_applied_to_the_sandbox
-  ✔ PASS (3s)
-▶ test_nodeproxy_runs_as_its_own_service_separate_from_nodelet
-  ✔ PASS (0s)
-▶ test_deleting_a_service_removes_its_rules
-  ✔ PASS (3s)
-▶ test_stats_summary_returns_real_pod_usage
-  ✔ PASS (3s)
-▶ test_kubectl_port_forward_reaches_a_real_container_port
-  ✔ PASS (7s)
-▶ test_topology_manager_restricted_spread_manual_note
-    (skip: proving restricted policy's spread() fallback (round 20 — each provider placed on its own best NUMA node independently when no single node satisfies everyone) needs real multi-NUMA hardware where a CPU request and a device/memory request can only individually be satisfied on *different* nodes. Manual spot-check: with NODELET_TOPOLOGY_MANAGER_POLICY=restricted, create a Guaranteed pod whose exclusive-CPU request only fits node 0's remaining capacity and whose device-plugin/memory request only fits node 1's — the pod should reach Running (unlike single-numa-node, which would reject it) with nodelet logging 'no single NUMA node satisfies every request together; spreading each across its own best node'; the container's cpuset.cpus should land on node 0's CPUs and cpuset.mems (if a memory request was involved) on node 1.)
-  ○ SKIP (0s)
-▶ test_projected_volume_merges_configmap_and_downward_api
-  ✔ PASS (3s)
-▶ test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs
-  ✔ PASS (3s)
-▶ test_mount_propagation_host_to_container_sees_a_new_host_mount
-  ✔ PASS (3s)
-▶ test_recursive_read_only_if_possible_tracks_the_runtime_handlers_own_capability
-  ✔ PASS (3s)
-▶ test_cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container
-  ✔ PASS (6s)
 
 ════════════════════════════════════════
-Results: 37 passed, 0 failed, 6 skipped
+Results: 0 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786736114...
+==> Cleaning up test namespace not-k8s-e2e-1786737614...
