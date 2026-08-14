@@ -854,3 +854,168 @@ YAML
     kubectl delete priorityclass sched-test-low sched-test-never --ignore-not-found >/dev/null 2>&1 || true
 }
 register_test test_scheduler_does_not_preempt_when_policy_forbids_it
+
+# ── namespaceSelector on a pod affinity term ────────────────────────────
+#
+# This one is here because the previous behaviour passed every affinity test
+# in this file. Terms using namespaceSelector used to match *every* namespace,
+# for want of a Namespace watch — over-matching only refuses a placement,
+# which is the safer of two wrong answers, and it is still wrong. The pair of
+# assertions below is what tells the two apart: fail-open blocks in both
+# directions, so only the second one can catch it.
+
+_ns_selector_ns="sched-nsel-other"
+
+_delete_nsel_namespace() {
+    kubectl delete namespace "$_ns_selector_ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+}
+
+test_scheduler_resolves_a_namespace_selector_against_real_labels() {
+    _require_nodescheduler
+    local blocked="sched-nsel-blocked" allowed="sched-nsel-allowed"
+    delete_pod_if_exists "$blocked"
+    delete_pod_if_exists "$allowed"
+    _delete_nsel_namespace
+    # A namespace pending deletion cannot be recreated, so wait it out rather
+    # than racing it.
+    try_wait_until 60 bash -c "! kubectl get namespace $_ns_selector_ns >/dev/null 2>&1" \
+        || warn "namespace $_ns_selector_ns still terminating; the create below may fail"
+
+    kubectl create namespace "$_ns_selector_ns" >/dev/null 2>&1 || true
+    kubectl label namespace "$_ns_selector_ns" sched-nsel=other --overwrite >/dev/null 2>&1 \
+        || die "could not label the helper namespace"
+
+    kubectl apply -n "$_ns_selector_ns" -f - >/dev/null <<YAML || die "could not create the blocker pod"
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sched-nsel-blocker
+  labels:
+    sched-test: nsel
+spec:
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+YAML
+    try_wait_until 90 bash -c \
+        "[ -n \"\$(kubectl get pod sched-nsel-blocker -n $_ns_selector_ns -o jsonpath='{.spec.nodeName}' 2>/dev/null)\" ]" \
+        || die "the blocker pod in $_ns_selector_ns was never scheduled"
+
+    # Selector matches the blocker's namespace: the anti-affinity applies, and
+    # on a single node there is nowhere left.
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $blocked
+spec:
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            sched-test: nsel
+        namespaceSelector:
+          matchLabels:
+            sched-nsel: other
+        topologyKey: kubernetes.io/hostname
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+YAML
+    sleep 10
+    assert_eq "$(pod_field "$blocked" '{.spec.nodeName}')" "" \
+        "a namespaceSelector that matches the blocker's namespace must apply the term"
+
+    # Same term, a selector no namespace satisfies. The old fail-open path
+    # blocked this too, which is what makes it the discriminating case.
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $allowed
+spec:
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            sched-test: nsel
+        namespaceSelector:
+          matchLabels:
+            sched-nsel: no-namespace-has-this
+        topologyKey: kubernetes.io/hostname
+  containers:
+  - name: c
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 300"]
+YAML
+    wait_until 60 "$allowed to be bound to a node" _pod_is_bound "$allowed" \
+        || die "a namespaceSelector matching no namespace must not apply the term — this is the fail-open regression"
+
+    delete_pod_if_exists "$blocked"
+    delete_pod_if_exists "$allowed"
+    _delete_nsel_namespace
+}
+register_test test_scheduler_resolves_a_namespace_selector_against_real_labels
+
+# ── PodTopologySpread's system default constraints ──────────────────────
+#
+# Deliberately a smoke test, and worth saying why rather than dressing it up.
+# Both defaults are ScheduleAnyway, so they move scores and never feasibility
+# — on a single-node cluster there is no second node for a score to prefer,
+# and nothing about the *placement* can distinguish them from their absence.
+# The score arithmetic and the ANDed selector derivation are covered by unit
+# tests, which can build a three-zone cluster; what only a live cluster can
+# check is that the Service/ReplicaSet watches feeding them exist, stay up,
+# and do not wedge scheduling for the pods they now apply to.
+test_scheduler_schedules_pods_that_get_default_spread_constraints() {
+    _require_nodescheduler
+    local name="sched-defspread"
+    kctl delete deployment "$name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    kctl delete service "$name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+
+    # Selected by both a Service and a ReplicaSet, so the derived selector is
+    # the intersection of two — the case that has an extra way to go wrong.
+    apply_manifest <<YAML
+apiVersion: v1
+kind: Service
+metadata:
+  name: $name
+spec:
+  selector:
+    app: $name
+  ports:
+  - port: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: $name
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: $name
+  template:
+    metadata:
+      labels:
+        app: $name
+        tier: front
+    spec:
+      containers:
+      - name: c
+        image: busybox:1.36
+        command: ["sh", "-c", "sleep 300"]
+YAML
+
+    try_wait_until 120 bash -c \
+        "[ \"\$(kubectl get pods -n \$TEST_NAMESPACE -l app=$name -o jsonpath='{.items[*].spec.nodeName}' | wc -w)\" -eq 2 ]" \
+        || die "pods owned by a Service and a ReplicaSet were not both scheduled — the default spread constraints derived from those watches must not block anything"
+
+    kctl delete deployment "$name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    kctl delete service "$name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+}
+register_test test_scheduler_schedules_pods_that_get_default_spread_constraints

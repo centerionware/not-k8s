@@ -192,19 +192,23 @@ is where the footprint claim gets measured.
 `InterPodAffinity`, both with the `AddPod`/`RemovePod` extensions preemption
 depends on.
 
-Two deliberate gaps, both narrower than they sound:
+Both of this phase's parity gaps are now closed, and it is worth recording
+what they were, because each had a plausible argument for leaving it:
 
-  * **System default constraints** are not applied. They need the
-    Service/ReplicaSet/ReplicationController/StatefulSet listers, whose only
+  * **System default constraints** are applied. They need the
+    Service/ReplicaSet/ReplicationController/StatefulSet watches, whose only
     consumer is that feature, and because they are `ScheduleAnyway` their
-    absence changes **scores and never feasibility** — no pod is placed that
-    upstream would refuse, none refused that upstream would place.
-    `NODESCHEDULER_TOPOLOGY_DEFAULTING` selects the behaviour.
-  * **`namespaceSelector`** on a pod affinity term needs a Namespace watch
-    this scheduler does not run. Such terms fail *open* (`selector.rs`'s
-    `NeedsNamespaceLister`): over-matching can only refuse a placement, while
-    under-matching would silently disable a rule the author wrote and
-    co-locate pods meant to be kept apart.
+    absence changed **scores and never feasibility** — no pod was placed that
+    upstream would refuse, none refused that upstream would place. That made
+    them cheap to skip and still meant every pod declaring no constraints of
+    its own scored differently from upstream. The selector is derived from the
+    workloads that *select* the pod, ANDed, per upstream's `DefaultSelector`;
+    a pod no workload selects gets no default constraints at all.
+  * **`namespaceSelector`** on a pod affinity term is resolved against real
+    Namespace labels. It used to fail *open* — over-matching can only refuse a
+    placement, while under-matching silently disables a rule the author wrote
+    and co-locates pods meant to be kept apart. That is the right ranking of
+    two wrong answers rather than the right answer.
 
 **Phase 3 — preemption.** ✅ Implemented. The PDB watch, `NominatedNodeName`,
 nominated-pod injection during Filter, victim selection with reprieve, and the
@@ -253,12 +257,17 @@ not nine.
 One deliberate knob beyond parity: `PodTopologySpread`'s *default constraints*
 are the sole consumer of the Service, ReplicationController, ReplicaSet and
 StatefulSet informers, and because they are `ScheduleAnyway` they affect
-**scoring only, never feasibility**. Parity keeps them (`defaultingType:
-SystemDefaulting` is the upstream default, and it does populate those
-constraints). `NODESCHEDULER_TOPOLOGY_DEFAULTING=None` turns them off and drops
-four informers, at the cost of slightly different scores on pods that declare no
-constraints of their own. That is a documented, opt-in divergence — off by
-default, because the default has to be parity.
+**scoring only, never feasibility**. Parity keeps them, and is the default
+(`defaultingType: SystemDefaulting` is upstream's default too).
+`NODESCHEDULER_TOPOLOGY_DEFAULTING=None` turns them off and genuinely drops
+those four watches — `watch.rs` starts a `stream::pending()` in their place
+rather than starting a watch whose events are ignored — at the cost of slightly
+different scores on pods that declare no constraints of their own. That is a
+documented, opt-in divergence, off by default, because the default has to be
+parity.
+
+The Namespace watch has no such knob: `namespaceSelector` is unconditional, so
+it is unconditional too. One watch of small, rarely-changing objects.
 
 ## Correctness details most likely to be got wrong
 

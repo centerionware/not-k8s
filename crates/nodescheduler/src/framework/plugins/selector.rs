@@ -66,7 +66,7 @@ pub fn matches_selector(selector: Option<&LabelSelector>, labels: &BTreeMap<Stri
 /// scheduler does not watch yet (it would be the only reason to). Terms using
 /// it are therefore reported here rather than silently treated as "own
 /// namespace", which would quietly under-match and disable the rule.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum NamespaceScope {
     /// Only the incoming pod's own namespace.
     OwnOnly,
