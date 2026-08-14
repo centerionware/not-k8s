@@ -1241,6 +1241,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+# allow_reuse_address: without it, a back-to-back test run reusing this
+# same fixed port (see FEXT_PORT) can hit the previous run's socket still
+# sitting in TIME_WAIT, and TCPServer's bind() raises "Address already in
+# use" and the process exits before ever listening — the caller's own
+# wait_until then times out with no obvious reason why.
+socketserver.TCPServer.allow_reuse_address = True
 with socketserver.TCPServer(("127.0.0.1", port), Handler) as httpd:
     httpd.serve_forever()
 PYEOF
