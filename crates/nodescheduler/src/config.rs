@@ -98,6 +98,11 @@ pub struct Config {
     pub topology_defaulting: TopologyDefaulting,
     pub scoring_strategy: ScoringStrategyKind,
     pub volume_bind_timeout: Duration,
+    /// HTTP extenders — see `extender.rs`. Empty unless
+    /// `NODESCHEDULER_EXTENDERS_JSON` is set; this crate's own default
+    /// profile places pods with zero extenders configured, upstream's
+    /// default too.
+    pub extenders: Vec<crate::extender::ExtenderConfig>,
 }
 
 impl Default for Config {
@@ -120,6 +125,7 @@ impl Default for Config {
             topology_defaulting: TopologyDefaulting::SystemDefaulting,
             scoring_strategy: ScoringStrategyKind::LeastAllocated,
             volume_bind_timeout: Duration::from_secs(defaults::VOLUME_BIND_TIMEOUT_SECONDS),
+            extenders: Vec::new(),
         }
     }
 }
@@ -260,6 +266,10 @@ impl Config {
                 "NODESCHEDULER_VOLUME_BIND_TIMEOUT_SECONDS",
                 d.volume_bind_timeout,
             )?,
+            extenders: match var("NODESCHEDULER_EXTENDERS_JSON") {
+                None => d.extenders,
+                Some(raw) => crate::extender::parse_extenders(&raw)?,
+            },
         };
 
         cfg.validate()?;
@@ -319,6 +329,7 @@ impl Config {
     fn log_summary(&self) {
         tracing::info!(
             profiles = ?self.profile_names,
+            extenders = self.extenders.len(),
             parallelism = self.parallelism,
             percentage_of_nodes_to_score = self.percentage_of_nodes_to_score,
             leader_elect = self.leader_elect,

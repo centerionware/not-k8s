@@ -315,7 +315,30 @@ preemption's nomination promises have to stay consistent across profiles
 that place pods onto the same nodes, and every method that needs a plugin
 set now takes it as an explicit parameter instead.
 
-HTTP extenders are not implemented.
+**HTTP extenders are ✅ implemented** (`extender.rs`), configured via
+`NODESCHEDULER_EXTENDERS_JSON` — a JSON array using upstream
+`KubeSchedulerConfiguration` extender field names (`urlPrefix`, `filterVerb`,
+`prioritizeVerb`, `weight`, `nodeCacheCapable`, `ignorable`,
+`managedResources`), so an operator's existing extender config needs no
+translation beyond wrapping it in an env var. `schedule_one` runs configured
+extenders' Filter sequentially right after plugin Filter (narrowing the same
+way upstream's `findNodesThatPassExtenders` does — a later extender only
+sees nodes an earlier one already accepted) and Prioritize right after plugin
+Score (added unscaled into the already-weighted plugin totals, exactly as
+upstream does). `managedResources` is honored: an extender naming specific
+extended resources is only consulted for a pod requesting at least one of
+them. An `ignorable` extender that errors is logged and skipped rather than
+failing the cycle.
+
+Two things are refused outright at config-parse time, by name, rather than
+silently ignored: `bindVerb` (an extender-driven Bind never runs here —
+`DefaultBinder` always binds) and `preemptVerb` (the separate
+extender-preemption interface — ordinary preemption proceeds without
+consulting it). `tlsConfig` is refused the same way; a custom CA/client cert
+would silently not apply. `enableHTTPS` doesn't exist as a separate field at
+all — `urlPrefix` is expected to already carry its scheme (`"https://…"`) the
+way every other URL this project's env vars accept does, making a standalone
+HTTPS toggle redundant rather than missing.
 
 ## Informers: start only what a plugin asked for
 

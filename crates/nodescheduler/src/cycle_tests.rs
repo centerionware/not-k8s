@@ -278,14 +278,14 @@ fn pod_wanting_milli_cpu(milli: i64) -> PodInfo {
     }
 }
 
-#[test]
-fn a_pod_larger_than_the_node_is_not_scheduled() {
+#[tokio::test]
+async fn a_pod_larger_than_the_node_is_not_scheduled() {
     // The exact e2e case: 10000 cores against a 4-core node.
     let (mut sched, registry, snapshot) = fit_scheduler("4");
     let pod = pod_wanting_milli_cpu(10_000 * 1000);
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&registry, &pod, &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &[], &pod, &snapshot, &mut rng).await;
 
     match outcome {
         CycleOutcome::Unschedulable { reason, unschedulable_plugins, .. } => {
@@ -305,15 +305,15 @@ fn a_pod_larger_than_the_node_is_not_scheduled() {
     }
 }
 
-#[test]
-fn a_pod_that_fits_is_scheduled() {
+#[tokio::test]
+async fn a_pod_that_fits_is_scheduled() {
     // The other half: proving the rejection above is not simply "rejects
     // everything", which would pass the test above for the wrong reason.
     let (mut sched, registry, snapshot) = fit_scheduler("4");
     let pod = pod_wanting_milli_cpu(500);
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&registry, &pod, &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &[], &pod, &snapshot, &mut rng).await;
 
     match outcome {
         CycleOutcome::Scheduled { node } => assert_eq!(node, "worker"),
@@ -324,38 +324,38 @@ fn a_pod_that_fits_is_scheduled() {
     }
 }
 
-#[test]
-fn a_pod_exactly_filling_the_node_still_fits() {
+#[tokio::test]
+async fn a_pod_exactly_filling_the_node_still_fits() {
     let (mut sched, registry, snapshot) = fit_scheduler("4");
     let pod = pod_wanting_milli_cpu(4000);
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&registry, &pod, &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &[], &pod, &snapshot, &mut rng).await;
     assert!(matches!(outcome, CycleOutcome::Scheduled { .. }));
 }
 
-#[test]
-fn one_millicore_over_capacity_does_not_fit() {
+#[tokio::test]
+async fn one_millicore_over_capacity_does_not_fit() {
     // The boundary, stated explicitly: > allocatable, not >=.
     let (mut sched, registry, snapshot) = fit_scheduler("4");
     let pod = pod_wanting_milli_cpu(4001);
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&registry, &pod, &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &[], &pod, &snapshot, &mut rng).await;
     assert!(
         matches!(outcome, CycleOutcome::Unschedulable { .. }),
         "4001m must not fit a 4-core node"
     );
 }
 
-#[test]
-fn an_empty_cluster_reports_no_nodes_rather_than_scheduling_nowhere() {
+#[tokio::test]
+async fn an_empty_cluster_reports_no_nodes_rather_than_scheduling_nowhere() {
     let registry = Registry::default();
     let mut sched = Scheduler::new(0);
     let snapshot = crate::cache::Snapshot::default();
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&registry, &pod_wanting_milli_cpu(1), &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &[], &pod_wanting_milli_cpu(1), &snapshot, &mut rng).await;
     match outcome {
         CycleOutcome::Unschedulable { reason, .. } => {
             assert!(reason.contains("no nodes"), "got: {reason}")
@@ -416,14 +416,14 @@ fn a_real_pod_object_asking_for_10000_cores_is_projected_as_10000_cores() {
     );
 }
 
-#[test]
-fn a_real_pod_object_larger_than_the_node_is_not_scheduled() {
+#[tokio::test]
+async fn a_real_pod_object_larger_than_the_node_is_not_scheduled() {
     // The live e2e case, end to end: API object -> projection -> cycle.
     let (mut sched, registry, snapshot) = fit_scheduler("4");
     let pod = PodInfo::from_pod(&api_pod_requesting("10000"), Default::default());
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&registry, &pod, &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &[], &pod, &snapshot, &mut rng).await;
 
     match outcome {
         CycleOutcome::Unschedulable { reason, .. } => {
@@ -436,13 +436,13 @@ fn a_real_pod_object_larger_than_the_node_is_not_scheduled() {
     }
 }
 
-#[test]
-fn a_real_pod_object_that_fits_is_scheduled() {
+#[tokio::test]
+async fn a_real_pod_object_that_fits_is_scheduled() {
     let (mut sched, registry, snapshot) = fit_scheduler("4");
     let pod = PodInfo::from_pod(&api_pod_requesting("500m"), Default::default());
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&registry, &pod, &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &[], &pod, &snapshot, &mut rng).await;
     assert!(
         matches!(outcome, CycleOutcome::Scheduled { .. }),
         "500m must fit a 4-core node"
