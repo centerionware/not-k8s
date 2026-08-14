@@ -239,9 +239,10 @@ impl Scheduler {
     /// PreBind and — on failure — to unwind the right reservations. Dropping
     /// it here instead would make `unreserve` a no-op, and a plugin that had
     /// claimed something would leak it on every failed bind.
-    pub fn schedule_one(
+    pub async fn schedule_one(
         &mut self,
         registry: &Registry,
+        extenders: &[crate::extender::Extender],
         pod: &PodInfo,
         snapshot: &Snapshot,
         rng: &mut Rng,
@@ -309,6 +310,49 @@ impl Scheduler {
         self.next_start_node_index =
             advance_start_index(self.next_start_node_index, processed, snapshot.num_nodes());
 
+        // ── HTTP extenders' Filter ──────────────────────────────────────
+        //
+        // Run in configured order, each one narrowing what the last left —
+        // upstream's own `findNodesThatPassExtenders` does the same
+        // sequential narrowing rather than intersecting independent calls,
+        // so a later extender only ever sees nodes every earlier one already
+        // accepted. A node an extender rejects becomes `Unschedulable` (its
+        // own reason recorded, same as a plugin's); one on the *unresolvable*
+        // list is excluded from preemption candidacy the same way a plugin's
+        // `UnschedulableAndUnresolvable` verdict is. An `ignorable` extender
+        // that errors is logged and skipped rather than failing the whole
+        // cycle — that is the entire meaning of the flag.
+        let mut feasible = feasible;
+        let mut node_statuses = node_statuses;
+        for extender in extenders {
+            if feasible.is_empty() {
+                break;
+            }
+            if !extender.config.applies_to(pod) {
+                continue; // managedResources set, and pod requests none of them
+            }
+            let refs: Vec<&NodeInfo> = feasible.iter().map(|n| n.as_ref()).collect();
+            match extender.filter(pod, &refs).await {
+                Ok(Some(outcome)) => {
+                    for (node, reason) in &outcome.failed {
+                        node_statuses.record(node.clone(), Status::unschedulable("HTTPExtender", reason.clone()));
+                    }
+                    for (node, reason) in &outcome.failed_unresolvable {
+                        node_statuses.record(node.clone(), Status::unresolvable("HTTPExtender", reason.clone()));
+                    }
+                    feasible.retain(|n| outcome.passed.contains(&n.name));
+                }
+                Ok(None) => {} // this extender has no filterVerb configured
+                Err(e) => {
+                    if extender.config.ignorable {
+                        tracing::warn!(extender = %extender.config.url_prefix, error = %e, "ignorable extender filter call failed; continuing without it");
+                    } else {
+                        return (CycleOutcome::Error { reason: e.to_string() }, state);
+                    }
+                }
+            }
+        }
+
         if feasible.is_empty() {
             // ── PostFilter (preemption) ─────────────────────────────────
             for plugin in &registry.post_filter {
@@ -339,9 +383,12 @@ impl Scheduler {
             );
         }
 
-        // A single candidate needs no scoring — and with no Score plugins at
-        // all, scoring cannot distinguish anything anyway.
-        if feasible.len() == 1 || registry.score.is_empty() {
+        // A single candidate needs no scoring, extenders included — there is
+        // nothing left to distinguish it from. With more than one candidate,
+        // scoring can still matter even with zero Score *plugins* if an
+        // extender configures `prioritizeVerb`.
+        let any_prioritizer = extenders.iter().any(|e| e.config.prioritize_verb.is_some());
+        if feasible.len() == 1 || (registry.score.is_empty() && !any_prioritizer) {
             return (CycleOutcome::Scheduled { node: feasible[0].name.clone() }, state);
         }
 
@@ -379,6 +426,39 @@ impl Scheduler {
                 // Clamp before weighting: a plugin whose normalize is wrong
                 // must not be able to swamp every other plugin's contribution.
                 total.1 += (*score).clamp(0, MAX_NODE_SCORE) * weight;
+            }
+        }
+
+        // ── HTTP extenders' Prioritize ──────────────────────────────────
+        //
+        // Added directly into the already-normalized-and-weighted plugin
+        // totals, unscaled — upstream does the same: an extender's own score
+        // times its own configured `weight`, with no rescaling onto
+        // `[0, MAX_NODE_SCORE]` the way a plugin's raw score is. An
+        // `ignorable` extender that errors here is skipped, not fatal — the
+        // pod still gets placed using whatever scores plugins and any other
+        // extenders already produced.
+        let refs: Vec<&NodeInfo> = feasible.iter().map(|n| n.as_ref()).collect();
+        for extender in extenders {
+            if !extender.config.applies_to(pod) {
+                continue; // managedResources set, and pod requests none of them
+            }
+            match extender.prioritize(pod, &refs).await {
+                Ok(Some(scores)) => {
+                    for (host, score) in scores {
+                        if let Some(total) = totals.iter_mut().find(|(n, _)| *n == host) {
+                            total.1 += score;
+                        }
+                    }
+                }
+                Ok(None) => {} // this extender has no prioritizeVerb configured
+                Err(e) => {
+                    if extender.config.ignorable {
+                        tracing::warn!(extender = %extender.config.url_prefix, error = %e, "ignorable extender prioritize call failed; continuing without it");
+                    } else {
+                        return (CycleOutcome::Error { reason: e.to_string() }, state);
+                    }
+                }
             }
         }
 

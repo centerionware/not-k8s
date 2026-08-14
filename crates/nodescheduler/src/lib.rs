@@ -34,6 +34,7 @@ pub mod config;
 pub mod cycle;
 pub mod election;
 pub mod events;
+pub mod extender;
 pub mod framework;
 pub mod preempt;
 pub mod queue;
@@ -108,6 +109,18 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
         .expect("profile_name is always the first entry of profile_names")
         .clone();
 
+    // HTTP extenders — see extender.rs. Built once (each holds its own
+    // reqwest::Client) and shared read-only across every scheduling cycle,
+    // the same way `registries` is.
+    let extenders: Arc<Vec<extender::Extender>> = Arc::new(
+        cfg.extenders
+            .iter()
+            .cloned()
+            .map(extender::Extender::new)
+            .collect::<anyhow::Result<Vec<_>>>()
+            .context("building HTTP clients for configured extenders")?,
+    );
+
     // Only the resources some enabled plugin actually subscribed to get a
     // watch, unioned across every profile. On a cluster with no
     // PersistentVolumes that is Pod and Node and nothing else — Phase 4/5
@@ -168,7 +181,7 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
     // lapse, which is the recovery path the whole design already assumes.
     let result = tokio::select! {
         r = scheduling_loop(
-            registries, queue, cache, assumed, budgets, client.clone(), cfg,
+            registries, extenders, queue, cache, assumed, budgets, client.clone(), cfg,
         ) => r,
         r = &mut watches => match r {
             Ok(Ok(())) => Err(anyhow::anyhow!("the watch layer stopped on its own")),
@@ -217,6 +230,7 @@ async fn run_safety_net(queue: Arc<queue::SchedulingQueue>, max_wait: std::time:
 /// comment.
 async fn scheduling_loop(
     registries: HashMap<String, Arc<framework::Registry>>,
+    extenders: Arc<Vec<extender::Extender>>,
     queue: Arc<queue::SchedulingQueue>,
     cache: Arc<Mutex<cache::Cache>>,
     assumed: Arc<Mutex<cache::AssumedPods>>,
@@ -255,7 +269,8 @@ async fn scheduling_loop(
         // Seeded here, outside the cycle — the cycle itself reads no clock.
         let mut rng = cycle::Rng::from_clock();
 
-        let (outcome, mut state) = scheduler.schedule_one(&registry, &pod, &snapshot, &mut rng);
+        let (outcome, mut state) =
+            scheduler.schedule_one(&registry, &extenders, &pod, &snapshot, &mut rng).await;
 
         match outcome {
             cycle::CycleOutcome::Scheduled { node } => {

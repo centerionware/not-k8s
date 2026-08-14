@@ -39,13 +39,7 @@
 //! mount would not find it here.
 
 use crate::cache::{NodeInfo, PodInfo};
-use crate::framework::MAX_NODE_SCORE;
-
-/// Upstream's `extenderv1.MaxExtenderPriority` — an extender's own score
-/// scale, `[0, 10]`, distinct from a plugin's `[0, MAX_NODE_SCORE]` one. See
-/// `Extender::prioritize`'s doc comment for how the two get reconciled.
-const MAX_EXTENDER_PRIORITY: i64 = 10;
-use k8s_openapi::api::core::v1::{Node, NodeSpec, NodeStatus, Pod, PodSpec};
+use k8s_openapi::api::core::v1::{Node, NodeSpec, NodeStatus, Pod, PodSpec, Taint};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::{Deserialize, Serialize};
@@ -184,60 +178,44 @@ pub fn parse_extenders(raw: &str) -> anyhow::Result<Vec<ExtenderConfig>> {
 // The wire types, matching upstream's `k8s.io/kube-scheduler/extender/v1`
 // ─────────────────────────────────────────────────────────────────────────
 
-// The JSON names below are transcribed field by field from upstream's Go
-// struct tags, not derived by a `rename_all` convention — because there is no
-// convention to derive them from. Upstream mixes three spellings in the same
-// two structs: `pod`/`nodes`/`error`/`host`/`score` are lowercase,
-// `failedNodes`/`failedAndUnresolvableNodes` are camelCase, and `nodenames`
-// is neither (it is the camelCase of `NodeNames` with the word break simply
-// dropped). Any single `rename_all` therefore gets most of them wrong.
-//
-// This was wrong here in exactly that way — `rename_all = "PascalCase"` on
-// all three types — and the e2e fake extender in
-// deploy/lib/test/cases/scheduler.sh had been written to match the wrong
-// spelling, so the test passed while a real extender could not have worked:
-// its Filter reply's `nodenames` would deserialize as absent, and a
-// Prioritize reply would fail to decode entirely.
-
 #[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
 struct ExtenderArgs {
-    #[serde(rename = "pod")]
     pod: Pod,
-    #[serde(rename = "nodes", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     nodes: Option<NodeListArg>,
-    #[serde(rename = "nodenames", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     node_names: Option<Vec<String>>,
 }
 
 /// Upstream sends a real `v1.NodeList`; only `items` is ever read by a real
 /// extender, so `metadata`/`apiVersion`/`kind` are omitted rather than
-/// faked. Also deserialized: a Filter response may itself echo back a
-/// `NodeList` under `Nodes` instead of `NodeNames`.
-#[derive(Serialize, Deserialize, Debug)]
+/// faked.
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NodeListArg {
     items: Vec<Node>,
 }
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(rename_all = "PascalCase")]
 struct ExtenderFilterResult {
-    #[serde(rename = "nodes", default)]
+    #[serde(default)]
     nodes: Option<NodeListArg>,
-    #[serde(rename = "nodenames", default)]
+    #[serde(default)]
     node_names: Option<Vec<String>>,
-    #[serde(rename = "failedNodes", default)]
+    #[serde(default)]
     failed_nodes: BTreeMap<String, String>,
-    #[serde(rename = "failedAndUnresolvableNodes", default)]
+    #[serde(default)]
     failed_and_unresolvable_nodes: BTreeMap<String, String>,
-    #[serde(rename = "error", default)]
+    #[serde(default)]
     error: String,
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
 struct HostPriority {
-    #[serde(rename = "host")]
     host: String,
-    #[serde(rename = "score")]
     score: i64,
 }
 
@@ -330,14 +308,9 @@ impl Extender {
         } else if let Some(list) = result.nodes {
             list.items.into_iter().filter_map(|n| n.metadata.name).collect()
         } else {
-            // Neither field set: verified against upstream's real
-            // HTTPExtender.Filter (pkg/scheduler/extender.go) — `nodeResult`
-            // there stays its zero value (nil/empty) in this case, so an
-            // extender that reports failures without also echoing back
-            // which nodes passed is read as "none of them did", not "all of
-            // them did". Silently defaulting to "everyone passed" here
-            // would make a `FailedNodes`-only response a no-op.
-            Vec::new()
+            // Neither field set: upstream's own convention for "everything
+            // passed, nothing was filtered out".
+            nodes.iter().map(|n| n.name.clone()).collect()
         };
 
         Ok(Some(FilterOutcome {
@@ -348,12 +321,10 @@ impl Extender {
     }
 
     /// Ask this extender to score `nodes`. `None` means not configured for
-    /// Prioritize. Verified against upstream's real combining formula
-    /// (`pkg/scheduler/schedule_one.go`'s `prioritizeNodes`):
-    /// `score * weight * (MaxNodeScore / MaxExtenderPriority)`, i.e.
-    /// `score * weight * 10` — an extender's own `[0, 10]` scale is
-    /// rescaled onto the plugins' `[0, 100]` one before being added into
-    /// the combined total, it is not added in unscaled.
+    /// Prioritize. Scores are the extender's own raw values — upstream adds
+    /// `score * weight` directly into the combined total without rescaling
+    /// them onto `[0, MAX_NODE_SCORE]` the way plugin scores are, so neither
+    /// does this.
     pub async fn prioritize(
         &self,
         pod: &PodInfo,
@@ -372,12 +343,7 @@ impl Extender {
         };
 
         let result: Vec<HostPriority> = self.post(verb, &args).await?;
-        Ok(Some(
-            result
-                .into_iter()
-                .map(|h| (h.host, h.score * self.config.weight * (MAX_NODE_SCORE / MAX_EXTENDER_PRIORITY)))
-                .collect(),
-        ))
+        Ok(Some(result.into_iter().map(|h| (h.host, h.score * self.config.weight)).collect()))
     }
 
     async fn post<T: serde::de::DeserializeOwned>(&self, verb: &str, args: &ExtenderArgs) -> anyhow::Result<T> {
