@@ -218,6 +218,12 @@ echo "==> Starting k3s with INSTALL_K3S_EXEC:"
 echo "    $INSTALL_K3S_EXEC"
 echo ""
 
+# Recorded before the (re)start so the controller-manager wait below can
+# tell "this process's own leader-election renewal" apart from a stale
+# lease left over from whatever was running before — see that wait's own
+# comment for why the distinction matters.
+RESTART_STARTED_EPOCH="$(date -u +%s)"
+
 # If k3s was already installed, we still need to ensure the service is running
 # with the correct flags.  The installer script handles both fresh install and
 # reconfiguration when INSTALL_K3S_EXEC is set.
@@ -242,6 +248,61 @@ until k3s kubectl --kubeconfig="$KUBECONFIG" get --raw /readyz &>/dev/null; do
 done
 
 echo "==> apiserver is ready (waited ${WAITED}s)."
+echo ""
+
+# ── Wait for THIS restart's controller-manager to actually be up ───────────
+#
+# /readyz only proves the apiserver is answering — it says nothing about
+# kube-controller-manager, which k3s bundles into the same process/binary
+# but which has its own separate startup: leader election against the
+# kube-system/kube-controller-manager Lease, then relisting every
+# Node/Pod/PV to rebuild its in-memory caches (AttachDetachController's
+# actual-state-of-world among them) from scratch. This script gets called
+# TWICE per deployment (see enable_kubelet_certificate_authority_trust()'s
+# doc comment in lib/control-plane.sh) — every call after the first
+# restarts an already-running controller-manager, throwing its caches away.
+#
+# Found live: with nothing here waiting on that, a second restart landing
+# close to when CSI/DRA setup and tests start let a fresh
+# AttachDetachController's request to update a still-registering node's
+# status fail with "nodeName ... does not exist" (its cache genuinely
+# didn't have the node yet) — and no VolumeAttachment was ever created for
+# the rest of the run, so every attach-required PVC test timed out. The
+# apiserver itself was ready the whole time; this is a distinct, narrower
+# readiness that /readyz cannot see.
+#
+# The Lease's renewTime is the only externally-visible signal that the
+# *current* controller-manager process (not a stale lease from whatever
+# was running seconds ago) has actually started and won its own election —
+# comparing against $RESTART_STARTED_EPOCH is what makes this "this
+# restart's controller-manager", not just "a controller-manager, at some
+# point". Best-effort: an unreachable/missing Lease (RBAC, k3s version
+# skew) warns and moves on rather than blocking every deployment on a
+# healthz check nothing else here depends on.
+echo "==> Waiting for this restart's kube-controller-manager to win leader election..."
+MAX_WAIT=60
+WAITED=0
+CM_READY=0
+while (( WAITED < MAX_WAIT )); do
+    RENEW_TIME="$(k3s kubectl --kubeconfig="$KUBECONFIG" get lease kube-controller-manager -n kube-system \
+        -o jsonpath='{.spec.renewTime}' 2>/dev/null || true)"
+    if [[ -n "$RENEW_TIME" ]]; then
+        RENEW_EPOCH="$(date -u -d "$RENEW_TIME" +%s 2>/dev/null || true)"
+        if [[ -n "$RENEW_EPOCH" ]] && (( RENEW_EPOCH >= RESTART_STARTED_EPOCH )); then
+            CM_READY=1
+            break
+        fi
+    fi
+    sleep 2
+    WAITED=$((WAITED + 2))
+    echo "    ... waited ${WAITED}s"
+done
+
+if (( CM_READY == 1 )); then
+    echo "==> kube-controller-manager is up and leading (waited ${WAITED}s)."
+else
+    echo "WARNING: kube-controller-manager's Lease was not renewed by this restart within ${MAX_WAIT}s — proceeding anyway, but AttachDetachController (and other controllers) may still be relisting. Check: journalctl -u k3s" >&2
+fi
 echo ""
 
 # ── Print kubeconfig info ────────────────────────────────────────────────────
