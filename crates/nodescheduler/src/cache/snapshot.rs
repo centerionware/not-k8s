@@ -32,6 +32,7 @@
 //! even before `PodTopologySpread` scores anything — which is what stops a
 //! cluster whose node names sort by rack from packing one rack first.
 
+use super::dra::{RawDeviceClass, RawResourceClaim, RawResourceSlice};
 use super::node::NodeInfo;
 use super::pod::PodInfo;
 use super::storage::{CsiDriverInfo, CsiNodeInfo, PvInfo, PvcInfo, StorageCapacityInfo, StorageClassInfo};
@@ -80,6 +81,15 @@ pub struct Snapshot {
     /// Keyed by driver name.
     pub csi_drivers: Arc<HashMap<String, CsiDriverInfo>>,
     pub storage_capacities: Arc<Vec<StorageCapacityInfo>>,
+
+    /// Phase 5's DRA objects, copied wholesale for the same reason as
+    /// Phase 4's storage objects — see `storage.rs`'s module header.
+    /// Keyed `namespace/name`.
+    pub resource_claims: Arc<HashMap<String, RawResourceClaim>>,
+    /// Keyed by class name.
+    pub device_classes: Arc<HashMap<String, RawDeviceClass>>,
+    /// Keyed by slice object name.
+    pub resource_slices: Arc<HashMap<String, RawResourceSlice>>,
 }
 
 /// One workload's selector, for deriving a pod's default spread constraints.
@@ -152,6 +162,28 @@ impl Snapshot {
         self.csi_drivers.get(name)
     }
 
+    pub fn resource_claim(&self, namespace: &str, name: &str) -> Option<&RawResourceClaim> {
+        self.resource_claims.get(&format!("{namespace}/{name}"))
+    }
+
+    pub fn device_class(&self, name: &str) -> Option<&RawDeviceClass> {
+        self.device_classes.get(name)
+    }
+
+    /// Every `ResourceSlice` that could supply a device to `node_name` —
+    /// its own node-local slices, plus every `allNodes: true` slice
+    /// (network-attached devices reachable from anywhere). Slices using a
+    /// `nodeSelector` or per-device node selection are not resolved — see
+    /// `dra.rs`'s module header — so they never appear here for any node.
+    pub fn resource_slices_for_node<'a>(
+        &'a self,
+        node_name: &'a str,
+    ) -> impl Iterator<Item = &'a RawResourceSlice> + 'a {
+        self.resource_slices.values().filter(move |s| {
+            s.spec.node_name.as_deref() == Some(node_name) || s.spec.all_nodes == Some(true)
+        })
+    }
+
     /// Every pod, cluster-wide, that references this PVC — for
     /// `ReadWriteOncePod`, which is a cluster-wide exclusivity rule, not a
     /// per-node one. Walking every node's pod list here rather than
@@ -200,6 +232,10 @@ pub struct Cache {
     csi_nodes: Arc<HashMap<String, CsiNodeInfo>>,
     csi_drivers: Arc<HashMap<String, CsiDriverInfo>>,
     storage_capacities: Arc<Vec<StorageCapacityInfo>>,
+
+    resource_claims: Arc<HashMap<String, RawResourceClaim>>,
+    device_classes: Arc<HashMap<String, RawDeviceClass>>,
+    resource_slices: Arc<HashMap<String, RawResourceSlice>>,
 }
 
 impl Cache {
@@ -379,6 +415,36 @@ impl Cache {
         self.generation += 1;
     }
 
+    pub fn upsert_resource_claim(&mut self, key: String, claim: RawResourceClaim) {
+        Arc::make_mut(&mut self.resource_claims).insert(key, claim);
+        self.generation += 1;
+    }
+
+    pub fn remove_resource_claim(&mut self, key: &str) {
+        Arc::make_mut(&mut self.resource_claims).remove(key);
+        self.generation += 1;
+    }
+
+    pub fn upsert_device_class(&mut self, name: String, class: RawDeviceClass) {
+        Arc::make_mut(&mut self.device_classes).insert(name, class);
+        self.generation += 1;
+    }
+
+    pub fn remove_device_class(&mut self, name: &str) {
+        Arc::make_mut(&mut self.device_classes).remove(name);
+        self.generation += 1;
+    }
+
+    pub fn upsert_resource_slice(&mut self, name: String, slice: RawResourceSlice) {
+        Arc::make_mut(&mut self.resource_slices).insert(name, slice);
+        self.generation += 1;
+    }
+
+    pub fn remove_resource_slice(&mut self, name: &str) {
+        Arc::make_mut(&mut self.resource_slices).remove(name);
+        self.generation += 1;
+    }
+
     /// Which node a pod is committed to, if any.
     pub fn pod_node(&self, uid: &str) -> Option<&str> {
         self.pod_locations.get(uid).map(String::as_str)
@@ -436,6 +502,9 @@ impl Cache {
         snapshot.csi_nodes = self.csi_nodes.clone();
         snapshot.csi_drivers = self.csi_drivers.clone();
         snapshot.storage_capacities = self.storage_capacities.clone();
+        snapshot.resource_claims = self.resource_claims.clone();
+        snapshot.device_classes = self.device_classes.clone();
+        snapshot.resource_slices = self.resource_slices.clone();
         snapshot.nodes = zone_round_robin(&snapshot.by_name);
         snapshot.nodes_with_pods_with_affinity = snapshot
             .nodes

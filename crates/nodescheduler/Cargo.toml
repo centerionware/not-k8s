@@ -25,6 +25,17 @@ path = "src/lib.rs"
 # schema, so ResourceClaim access goes through a raw request into a
 # hand-written struct — the same escape hatch nodelet's runtime/cri/claims.rs
 # already uses, for the same reason (see CLAUDE.md on the v1_33 pin).
+#
+# `cel-interpreter` is the second and deliberately the only other addition,
+# scoped to exactly one job: DRA's `DeviceSelector.cel.expression` is a real
+# CEL expression (`device.driver == "..."`, attribute/capacity comparisons),
+# and evaluating it for real — rather than pattern-matching a handful of
+# expression shapes by string, which breaks the moment a real DeviceClass
+# writes anything this crate's author didn't anticipate — needs an actual CEL
+# implementation. See `framework/plugins/dynamic_resources.rs`'s module
+# header for the environment this crate exposes to a selector and the one
+# real gap against upstream's own custom `apiservercel` extensions (capacity
+# comparisons are plain float64, not upstream's dedicated Quantity type).
 [dependencies]
 tokio = { workspace = true }
 kube = { workspace = true }
@@ -38,3 +49,4 @@ futures = { workspace = true }
 rustls = { workspace = true }
 async-trait = { workspace = true }
 http = "1"
+cel-interpreter = "0.10"

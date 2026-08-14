@@ -397,8 +397,18 @@ pub struct PodInfo {
     /// per-node ceiling as PVC-backed volumes — a driver has no way to tell
     /// the two apart once attached.
     pub csi_ephemeral_drivers: Vec<String>,
-    /// `spec.resourceClaims`, for DRA.
-    pub resource_claim_names: Vec<String>,
+    /// `spec.resourceClaims`, for DRA — one entry per pod-claim, naming
+    /// either an already-existing `ResourceClaim` or a template to generate
+    /// one from.
+    pub resource_claims: Vec<PodClaimRef>,
+    /// `status.resourceClaimStatuses`, keyed by the pod-claim's own `name`
+    /// (matching `resource_claims[].name`) — the *generated* `ResourceClaim`
+    /// object name once the resource-claim controller has created one for a
+    /// template-based entry. `None` means "no claim needed" (upstream writes
+    /// this to say a template-based entry was intentionally skipped, not
+    /// merely "not yet"); a `name` present in `resource_claims` but absent
+    /// from this map means "not yet — still waiting on the controller".
+    pub resource_claim_statuses: BTreeMap<String, Option<String>>,
     pub owner_references: Vec<OwnerRef>,
     /// When this pod entered the queue. Preserved across requeues — see the
     /// module header.
@@ -415,6 +425,34 @@ pub struct PodInfo {
 pub struct PreferredTerm {
     pub weight: i32,
     pub selector: k8s_openapi::api::core::v1::NodeSelectorTerm,
+}
+
+/// One `spec.resourceClaims[]` entry — a pod-local claim name, and how to
+/// find the real object: either directly, or via a template that still
+/// needs `resource_claim_statuses` to resolve.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PodClaimRef {
+    pub name: String,
+    pub resource_claim_name: Option<String>,
+    pub resource_claim_template_name: Option<String>,
+}
+
+impl PodClaimRef {
+    /// The real `ResourceClaim` object name to fetch — direct is a pure
+    /// pass-through; template-based needs the generated name the
+    /// resource-claim controller recorded in `status.resourceClaimStatuses`
+    /// (keyed by this pod-claim's own `name`, not the template's).
+    /// `None` if that hasn't happened yet. Mirrors
+    /// `crates/nodelet/src/runtime/cri/claims.rs`'s
+    /// `resource_claim_object_name()` exactly — not shared code (the two
+    /// components share none, per CLAUDE.md), the same small pure function
+    /// independently re-derived twice because both genuinely need it.
+    pub fn object_name(&self, statuses: &BTreeMap<String, Option<String>>) -> Option<String> {
+        if let Some(name) = &self.resource_claim_name {
+            return Some(name.clone());
+        }
+        statuses.get(&self.name).cloned().flatten()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -523,11 +561,23 @@ impl PodInfo {
                 .flatten()
                 .filter_map(|v| v.csi.as_ref().map(|c| c.driver.clone()))
                 .collect(),
-            resource_claim_names: spec
+            resource_claims: spec
                 .resource_claims
                 .iter()
                 .flatten()
-                .map(|c| c.name.clone())
+                .map(|c| PodClaimRef {
+                    name: c.name.clone(),
+                    resource_claim_name: c.resource_claim_name.clone(),
+                    resource_claim_template_name: c.resource_claim_template_name.clone(),
+                })
+                .collect(),
+            resource_claim_statuses: pod
+                .status
+                .as_ref()
+                .and_then(|s| s.resource_claim_statuses.as_ref())
+                .iter()
+                .flatten()
+                .map(|s| (s.name.clone(), s.resource_claim_name.clone()))
                 .collect(),
             owner_references: meta
                 .owner_references

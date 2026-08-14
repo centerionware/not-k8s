@@ -26,7 +26,7 @@
 //! instead of being generated, so `watch.rs` can watch them exactly the way
 //! it watches every other resource, with no special case.
 
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use k8s_openapi::{ClusterResourceScope, NamespaceResourceScope};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -72,77 +72,27 @@ pub struct RawResourceClaimSpec {
 #[derive(Deserialize, Default, Clone, Debug)]
 pub struct RawDeviceClaim {
     pub requests: Option<Vec<RawDeviceRequest>>,
-    /// Cross-request "must share an attribute" rules — evaluated in
-    /// `dynamic_resources.rs`'s `allocate_on_node` as devices are picked, the
-    /// same "first device in the group sets the value, later ones must
-    /// match" rule upstream's `matchAttributeConstraint` uses (see that
-    /// file's module header for the one real divergence: a single greedy
-    /// pass, not upstream's full backtracking search).
-    pub constraints: Option<Vec<RawDeviceConstraint>>,
+    /// Cross-request "must share an attribute" rules. Not evaluated — see
+    /// this module's header and `dynamic_resources.rs`'s scope note. A claim
+    /// using this is allocated as if it were absent, which is a real,
+    /// documented narrowing rather than a silent one.
+    pub constraints: Option<serde_json::Value>,
 }
 
-#[derive(Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct RawDeviceConstraint {
-    /// The only constraint kind the real API defines as of 1.33 — a fully
-    /// qualified (or class-domain-relative) attribute name every selected
-    /// device covered by this constraint must share the same value of.
-    pub match_attribute: Option<String>,
-    /// Which requests (by name, or `"request/subrequest"` for a
-    /// `firstAvailable` pick) this constraint applies to. Empty/absent means
-    /// every request in the claim.
-    #[serde(default)]
-    pub requests: Vec<String>,
-}
-
-/// The stable `v1` API's real shape, confirmed against a live cluster
-/// (`kubectl explain resourceclaim.spec.devices.requests`) rather than
-/// assumed from `v1beta1`: the per-request fields this crate cares about are
-/// not flat on `DeviceRequest` — they live under `exactly`, alongside
-/// `firstAvailable` as the other arm of a "one of" the real API added on the
-/// way to GA. Getting this nesting wrong doesn't fail to compile or even to
-/// deserialize (serde silently defaults an absent `Option` field to `None`)
-/// — it silently treats every real claim as using a DRA feature this crate
-/// doesn't implement, which is why this is called out here rather than left
-/// to look like an obvious flat struct.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RawDeviceRequest {
     pub name: String,
-    pub exactly: Option<RawExactDeviceRequest>,
-    /// Beta in 1.33 (`DRAPrioritizedList`): a prioritised list of alternative
-    /// requests, each potentially naming a different device class, tried in
-    /// order — the first one `allocate_on_node` can fully satisfy wins, same
-    /// as upstream's own `allocateOne` subrequest loop.
-    #[serde(default)]
-    pub first_available: Option<Vec<RawDeviceSubRequest>>,
-}
-
-/// One alternative inside a `firstAvailable` list. Deliberately its own type
-/// rather than reusing `RawExactDeviceRequest`: a subrequest has no
-/// `adminAccess` field at all in the real API (upstream's own
-/// `deviceSubRequestAccessor.adminAccess()` is hardcoded `false` — see
-/// `allocator.go`), so giving it one here would silently accept a field the
-/// apiserver itself never lets a subrequest set.
-#[derive(Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct RawDeviceSubRequest {
-    pub name: String,
-    pub device_class_name: Option<String>,
-    pub selectors: Option<Vec<RawDeviceSelector>>,
-    pub allocation_mode: Option<String>,
-    pub count: Option<i64>,
-}
-
-#[derive(Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct RawExactDeviceRequest {
     pub device_class_name: Option<String>,
     pub selectors: Option<Vec<RawDeviceSelector>>,
     pub allocation_mode: Option<String>,
     pub count: Option<i64>,
     #[serde(default)]
     pub admin_access: Option<bool>,
+    /// Alpha in v1.33 (subrequests with per-alternative device classes).
+    /// Not evaluated — a request naming this is unschedulable rather than
+    /// silently allocated against one arbitrary alternative.
+    pub first_available: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -273,22 +223,10 @@ pub struct RawResourceSliceSpec {
     pub pool: RawResourcePool,
     pub node_name: Option<String>,
     pub all_nodes: Option<bool>,
-    /// A real `v1.NodeSelector` (matchExpressions/matchFields terms), *not*
-    /// a `metav1.LabelSelector` — confirmed against the real Go type
-    /// (`ResourceSliceSpec.NodeSelector *v1.NodeSelector`). Getting this
-    /// wrong doesn't fail to compile (both deserialize from similar-looking
-    /// JSON) — it silently treats every real `matchExpressions` term as a
-    /// `LabelSelectorRequirement` instead of a `NodeSelectorRequirement`,
-    /// which happen to share JSON shape for `key`/`operator`/`values` but
-    /// mean different things once evaluated. Exactly one of `node_name`,
-    /// `node_selector`, `all_nodes`, `per_device_node_selection` is set —
-    /// see `snapshot.rs`'s `resource_slices_for_node`.
-    pub node_selector: Option<k8s_openapi::api::core::v1::NodeSelector>,
-    /// When set, node applicability is decided per device (each device's own
-    /// `node_name`/`node_selector`/`all_nodes`) instead of once for the
-    /// whole slice — see `RawBasicDevice`'s fields and
-    /// `dynamic_resources.rs`'s `candidates_for_node`.
-    pub per_device_node_selection: Option<bool>,
+    /// Alpha/beta topology-selection modes this crate does not resolve — a
+    /// slice using either is treated as having no devices available on any
+    /// node, rather than guessed at.
+    pub node_selector: Option<LabelSelector>,
     pub devices: Option<Vec<RawDevice>>,
 }
 
@@ -300,32 +238,16 @@ pub struct RawResourcePool {
     pub resource_slice_count: Option<i64>,
 }
 
-/// The stable `v1` API's real shape, confirmed live the same way
-/// `RawDeviceRequest`'s doc comment describes: `attributes`/`capacity` are
-/// flat on `Device` (`kubectl explain resourceslice.spec.devices`), not
-/// nested under a `basic` object the way `v1beta1` had it. `#[serde(flatten)]`
-/// reads them off the same JSON object `name` is on while keeping
-/// `RawBasicDevice` as a reusable payload type for the rest of this file
-/// (CEL device-matching only ever needs attributes+capacity, not `name`).
 #[derive(Deserialize, Clone, Debug)]
 pub struct RawDevice {
     pub name: String,
-    #[serde(flatten)]
-    pub basic: RawBasicDevice,
+    pub basic: Option<RawBasicDevice>,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
 pub struct RawBasicDevice {
     pub attributes: Option<BTreeMap<String, RawDeviceAttribute>>,
     pub capacity: Option<BTreeMap<String, RawDeviceCapacity>>,
-    /// Only meaningful (and only ever set) when the owning slice's
-    /// `perDeviceNodeSelection` is true — see `RawResourceSliceSpec`'s field
-    /// and `candidates_for_node` in `dynamic_resources.rs`. At most one of
-    /// these three is set, same "exactly one of" shape the slice level has.
-    pub node_name: Option<String>,
-    pub node_selector: Option<k8s_openapi::api::core::v1::NodeSelector>,
-    pub all_nodes: Option<bool>,
 }
 
 #[derive(Deserialize, Clone, Debug)]

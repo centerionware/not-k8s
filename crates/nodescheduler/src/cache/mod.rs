@@ -16,15 +16,19 @@
 //! decisions live in `framework/plugins/` and `cycle.rs`.
 
 pub mod assume;
+pub mod dra;
 pub mod node;
 pub mod pod;
 pub mod snapshot;
 pub mod storage;
 
 pub use assume::{Assumed, AssumedPods};
+pub use dra::{
+    RawDeviceClass, RawDeviceRequestAllocationResult, RawResourceClaim, RawResourceSlice,
+};
 pub use node::{ImageState, NodeInfo};
 pub use pod::{
-    HostPort, LegacyVolumeId, OwnerRef, PodInfo, PreferredTerm, Resources,
+    HostPort, LegacyVolumeId, OwnerRef, PodClaimRef, PodInfo, PreferredTerm, Resources,
     DEFAULT_MEMORY_REQUEST, DEFAULT_MILLI_CPU_REQUEST,
 };
 pub use snapshot::{Cache, Snapshot, WorkloadSelector};
