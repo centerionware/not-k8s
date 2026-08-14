@@ -39,7 +39,7 @@
 //! mount would not find it here.
 
 use crate::cache::{NodeInfo, PodInfo};
-use k8s_openapi::api::core::v1::{Node, NodeSpec, NodeStatus, Pod, PodSpec, Taint};
+use k8s_openapi::api::core::v1::{Node, NodeSpec, NodeStatus, Pod, PodSpec};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::{Deserialize, Serialize};
@@ -190,8 +190,9 @@ struct ExtenderArgs {
 
 /// Upstream sends a real `v1.NodeList`; only `items` is ever read by a real
 /// extender, so `metadata`/`apiVersion`/`kind` are omitted rather than
-/// faked.
-#[derive(Serialize)]
+/// faked. Also deserialized: a Filter response may itself echo back a
+/// `NodeList` under `Nodes` instead of `NodeNames`.
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct NodeListArg {
     items: Vec<Node>,
