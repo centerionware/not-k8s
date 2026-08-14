@@ -137,6 +137,15 @@ pub async fn run() -> Result<()> {
 
     // The pod control loop. watcher() self-heals on watch errors; we only loop if
     // the stream fully terminates.
+    //
+    // "Self-heals on watch errors" is true of a watch that was *interrupted*
+    // and misleading about one that cannot **start**: there, every poll fails
+    // immediately and forever, and this loop would never see the stream
+    // terminate because it never does. That is not a hypothetical — taken
+    // literally, this comment is what left the watches in pods.rs unpaced
+    // until they were measured busy-looping at 128 requests a second against
+    // a restarting apiserver. The pacing for that case lives on the streams
+    // themselves (pods.rs's WatchBackoffPolicy), not here.
     let mut controller = pods::PodController::new(client, runtime, cfg.node_name.clone());
     loop {
         if let Err(e) = controller.run().await {

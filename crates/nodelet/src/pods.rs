@@ -20,6 +20,7 @@ use k8s_openapi::api::core::v1::{
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
+use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client};
@@ -91,6 +92,86 @@ impl Drop for TeardownGuard {
         if let Some(uid) = self.uid.as_deref() {
             self.torn_down.lock().unwrap().remove(uid);
         }
+    }
+}
+
+/// Pacing for a watch that cannot **start**.
+///
+/// `kube::runtime::watcher` self-heals across an *interrupted* stream — it
+/// re-lists and carries on, which is what `app.rs` used to describe as
+/// "watcher() self-heals on watch errors". That is true and it is not the
+/// whole story: it does nothing at all to pace a watch whose *start* fails.
+/// With the apiserver down, every poll returns `WatchStartFailed`
+/// immediately, so a `select!` arm that merely logs the error and polls
+/// again is a busy-loop against a server that is already struggling.
+///
+/// Measured, not theorised. In the window where `setup-control-plane.sh`
+/// restarts k3s (it runs twice — the second pass adds the kubelet CA),
+/// nodelet's three bare watchers produced **128 log lines in one second and
+/// 90 in the next**, each one a real HTTP request aimed at an apiserver in
+/// the middle of starting up. The node then sat with no pod reconciliation
+/// at all, and the only outward symptom was pods staying Pending — which
+/// reads as a scheduling problem, not a watch one, and was misdiagnosed as
+/// exactly that.
+///
+/// `crates/nodescheduler` hit this first and fixed it there; the same
+/// mistake was still here. The curve is deliberately duplicated rather than
+/// shared: these crates share no code by design (see CLAUDE.md), and this is
+/// twenty lines.
+///
+/// Applied via `WatchStreamExt::backoff` at construction rather than a
+/// `sleep` in the `select!` arm, and that distinction matters: a `sleep`
+/// inside a chosen arm runs to completion before any other branch is
+/// polled, so pacing one watch that way would stall the pod watch, the
+/// runtime event channel and the probe channel along with it. A
+/// `StreamBackoff`-wrapped stream just reports `Poll::Pending` while it
+/// waits, which costs the `select!` nothing.
+#[derive(Default)]
+struct WatchBackoffPolicy {
+    consecutive_failures: u32,
+}
+
+/// First pause after a watch fails to start, doubling to [`WATCH_MAX_BACKOFF`].
+const WATCH_INITIAL_BACKOFF: Duration = Duration::from_millis(500);
+
+/// Ceiling. Low deliberately: the whole point is that the node is agreeing
+/// to be briefly useless, so it must start reconciling again within seconds
+/// of the apiserver returning. `kube`'s own `DefaultBackoff` caps an order of
+/// magnitude higher, which sounds politer and is worse here — nodescheduler
+/// measured a real apiserver restart taking ~72s to recover from on a 30s
+/// ceiling, because the doubling reached it while the server was still down
+/// and then slept through most of its return. Retrying every 5s during an
+/// outage costs nothing; not reconciling pods for a minute after it ends
+/// costs the cluster.
+const WATCH_MAX_BACKOFF: Duration = Duration::from_secs(5);
+
+/// How long to wait after `n` consecutive failures.
+///
+/// Pure and separate so the curve is testable without an apiserver to break.
+fn watch_backoff(consecutive_failures: u32) -> Duration {
+    if consecutive_failures == 0 {
+        return Duration::ZERO;
+    }
+    let doubled = WATCH_INITIAL_BACKOFF
+        .checked_mul(1u32 << (consecutive_failures - 1).min(16))
+        .unwrap_or(WATCH_MAX_BACKOFF);
+    doubled.min(WATCH_MAX_BACKOFF)
+}
+
+impl Iterator for WatchBackoffPolicy {
+    type Item = Duration;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        Some(watch_backoff(self.consecutive_failures))
+    }
+}
+
+impl Backoff for WatchBackoffPolicy {
+    /// Any successful event resets the curve, so a flaky-but-working watch
+    /// never accumulates delay.
+    fn reset(&mut self) {
+        self.consecutive_failures = 0;
     }
 }
 
@@ -209,14 +290,18 @@ impl PodController {
         let api: Api<Pod> = Api::all(self.client.clone());
         let wc = watcher::Config::default()
             .fields(&format!("spec.nodeName={}", self.node_name));
-        let mut stream = watcher(api, wc).boxed();
+        // .backoff() on every one of these — see WatchBackoffPolicy's own
+        // doc comment for what happens without it.
+        let mut stream = watcher(api, wc).backoff(WatchBackoffPolicy::default()).boxed();
         // ConfigMaps/Secrets have no node-scoping fieldSelector (they aren't
         // bound to a node), so these watches are cluster-wide. That's fine:
         // they're rare-write objects and we only react to edges, never poll.
         let cm_api: Api<ConfigMap> = Api::all(self.client.clone());
-        let mut cm_stream = watcher(cm_api, watcher::Config::default()).boxed();
+        let mut cm_stream =
+            watcher(cm_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
         let sec_api: Api<Secret> = Api::all(self.client.clone());
-        let mut sec_stream = watcher(sec_api, watcher::Config::default()).boxed();
+        let mut sec_stream =
+            watcher(sec_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
         // Move the receivers into locals so reconcile methods can borrow `&self`.
         let mut events = self.events.take();
         let mut probe_events = self.probe_events_rx.take();
@@ -1246,3 +1331,6 @@ mod tests_container_user;
 #[cfg(test)]
 #[path = "pods_tests/retry_backoff.rs"]
 mod tests_retry_backoff;
+#[cfg(test)]
+#[path = "pods_tests/watch_backoff.rs"]
+mod tests_watch_backoff;
