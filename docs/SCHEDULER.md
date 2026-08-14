@@ -154,11 +154,15 @@ Plus `DynamicResources`, upstream's own `DRAAdminAccess`-independent default
 — here it is unconditional, since this project has no separate feature-gate
 mechanism to make it optional. Upstream inserts it **immediately before
 DefaultPreemption**, deliberately, so that freeing an idle `ResourceClaim` is
-tried before evicting a pod doing useful work — this crate's preemption
-(`preempt.rs`) is not DRA-aware, so that specific ordering guarantee is not
-implemented; a device shortage is retried on the ordinary requeue path
-(`AssignedPod` delete) rather than ever triggering a claim-freeing dry run.
-See `dynamic_resources.rs`'s module header for the rest of Phase 5's scope.
+tried before evicting a pod doing useful work. That ordering is real here
+too: `DynamicResources` is the only `PostFilterPlugin` registered
+(`post_filter: vec![Box::new(dra.clone())]`), and `Scheduler::preempt`'s own
+fallback is driven separately from `lib.rs`'s `scheduling_loop`, only after
+`schedule_one` itself returns `Unschedulable` — so a claim-freeing dry run
+always gets tried before eviction ever does, with no explicit ordering code
+needed to guarantee it. See `dynamic_resources.rs`'s module header (its
+`PostFilter` section) for what the dry run actually does, and the rest of
+Phase 5's scope.
 
 ### Where the docs are wrong
 
