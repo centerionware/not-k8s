@@ -184,13 +184,28 @@ pub fn parse_extenders(raw: &str) -> anyhow::Result<Vec<ExtenderConfig>> {
 // The wire types, matching upstream's `k8s.io/kube-scheduler/extender/v1`
 // ─────────────────────────────────────────────────────────────────────────
 
+// The JSON names below are transcribed field by field from upstream's Go
+// struct tags, not derived by a `rename_all` convention — because there is no
+// convention to derive them from. Upstream mixes three spellings in the same
+// two structs: `pod`/`nodes`/`error`/`host`/`score` are lowercase,
+// `failedNodes`/`failedAndUnresolvableNodes` are camelCase, and `nodenames`
+// is neither (it is the camelCase of `NodeNames` with the word break simply
+// dropped). Any single `rename_all` therefore gets most of them wrong.
+//
+// This was wrong here in exactly that way — `rename_all = "PascalCase"` on
+// all three types — and the e2e fake extender in
+// deploy/lib/test/cases/scheduler.sh had been written to match the wrong
+// spelling, so the test passed while a real extender could not have worked:
+// its Filter reply's `nodenames` would deserialize as absent, and a
+// Prioritize reply would fail to decode entirely.
+
 #[derive(Serialize)]
-#[serde(rename_all = "PascalCase")]
 struct ExtenderArgs {
+    #[serde(rename = "pod")]
     pod: Pod,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "nodes", skip_serializing_if = "Option::is_none")]
     nodes: Option<NodeListArg>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "nodenames", skip_serializing_if = "Option::is_none")]
     node_names: Option<Vec<String>>,
 }
 
@@ -205,24 +220,24 @@ struct NodeListArg {
 }
 
 #[derive(Deserialize, Debug, Default)]
-#[serde(rename_all = "PascalCase")]
 struct ExtenderFilterResult {
-    #[serde(default)]
+    #[serde(rename = "nodes", default)]
     nodes: Option<NodeListArg>,
-    #[serde(default)]
+    #[serde(rename = "nodenames", default)]
     node_names: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(rename = "failedNodes", default)]
     failed_nodes: BTreeMap<String, String>,
-    #[serde(default)]
+    #[serde(rename = "failedAndUnresolvableNodes", default)]
     failed_and_unresolvable_nodes: BTreeMap<String, String>,
-    #[serde(default)]
+    #[serde(rename = "error", default)]
     error: String,
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
 struct HostPriority {
+    #[serde(rename = "host")]
     host: String,
+    #[serde(rename = "score")]
     score: i64,
 }
 

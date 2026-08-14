@@ -1202,8 +1202,8 @@ _fake_extender_setup() { # sets FEXT_* globals; skips if python3 is missing
 
     cat > "$FEXT_WORK/fake_extender.py" <<'PYEOF'
 # Fake HTTP extender for e2e testing — speaks the real
-# k8s.io/kube-scheduler/extender/v1 wire format (PascalCase, no envelope)
-# against whatever verdict the control file (argv[2]) currently holds,
+# k8s.io/kube-scheduler/extender/v1 wire format against whatever verdict the
+# control file (argv[2]) currently holds,
 # polled fresh on every request so a test can flip behaviour mid-run with
 # no restart: "accept" passes every node back via NodeNames (the same
 # explicit-list shape a real extender uses, not the "neither field set"
@@ -1211,6 +1211,14 @@ _fake_extender_setup() { # sets FEXT_* globals; skips if python3 is missing
 # that reason and deliberately omits NodeNames/Nodes, exercising the "an
 # extender that never echoes back a survivor is read as nobody passing"
 # case a real extender.go was checked against.
+#
+# The field names below are upstream's own JSON struct tags, transcribed
+# individually: `pod`, `nodes`, `nodenames`, `failedNodes`, `error`. They are
+# deliberately NOT a single naming convention, because upstream's are not
+# either. This file previously used PascalCase throughout and so did
+# extender.rs, which meant the two agreed with each other and neither agreed
+# with Kubernetes — the test passed against a protocol no real extender
+# speaks. Writing the real spelling here is what makes this test evidence.
 import sys, json, http.server, socketserver
 
 port, control_file, log_file = int(sys.argv[1]), sys.argv[2], sys.argv[3]
@@ -1222,8 +1230,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         args = json.loads(self.rfile.read(length))
-        pod_name = (args.get("Pod") or {}).get("metadata", {}).get("name", "")
-        node_items = ((args.get("Nodes") or {}).get("items")) or []
+        pod_name = (args.get("pod") or {}).get("metadata", {}).get("name", "")
+        node_items = ((args.get("nodes") or {}).get("items")) or []
+        node_items = node_items or [{"metadata": {"name": n}} for n in (args.get("nodenames") or [])]
         node_names = [n.get("metadata", {}).get("name", "") for n in node_items]
         with open(log_file, "a") as f:
             f.write(f"{self.path} pod={pod_name} nodes={','.join(node_names)}\n")
@@ -1236,11 +1245,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path.endswith("/filter"):
             if verdict.startswith("reject:"):
                 reason = verdict[len("reject:"):]
-                result = {"FailedNodes": {n: reason for n in node_names}}
+                result = {"failedNodes": {n: reason for n in node_names}}
             else:
-                result = {"NodeNames": node_names}
+                result = {"nodenames": node_names}
         else:
-            result = {"Error": f"fake extender has no verb {self.path}"}
+            result = {"error": f"fake extender has no verb {self.path}"}
 
         payload = json.dumps(result).encode()
         self.send_response(200)
