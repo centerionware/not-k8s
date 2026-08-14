@@ -1,20 +1,14 @@
-commit: c58da4a7e3d814bc2ee6d9d0bc236bb4e63ba366
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31839133038
-timestamp (UTC): 2026-08-14T20:50:08Z
+commit: 6e5e6d2e43374b6e53b297b1049a508701e3d1cf
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31840362402
+timestamp (UTC): 2026-08-14T21:03:20Z
 shard: 1/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786740512
-==> 217 test(s) registered total (before sharding); running now...
-==> Shard 1/5: 48 test(s) selected
-▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
-  ✔ PASS (35s)
-▶ test_csi_ephemeral_inline_volume_is_mounted
-  ✔ PASS (3s)
-▶ test_node_reports_volumes_in_use_for_a_csi_volume
-  ✔ PASS (58s)
+==> Test namespace: not-k8s-e2e-1786741400
+==> 198 test(s) registered total (before sharding); running now...
+==> Shard 1/5: 44 test(s) selected
 
 ════════════════════════════════════════
-Results: 3 passed, 0 failed, 0 skipped
+Results: 0 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786740512...
+==> Cleaning up test namespace not-k8s-e2e-1786741400...
