@@ -50,6 +50,18 @@
 //! is the same lesson as `SchedulingQueue::update`: a retry path with no
 //! pacing is a busy-loop, and both of this component's busy-loops were
 //! introduced by code that looked obviously correct in isolation.
+//!
+//! That backoff is applied **per stream**, via `.backoff(WatchBackoffPolicy)`
+//! at construction (`kube_runtime`'s `WatchStreamExt`), not as a
+//! `tokio::time::sleep` in the `select!` loop below. The first version did
+//! exactly that — slept inline in whichever match arm handled the failing
+//! watch — and it compiled, passed review, and was wrong: `select!` runs the
+//! chosen arm's future to completion before polling again, so a sleep in one
+//! arm blocks every *other* watch in the same loop for its duration. With
+//! ~18 watches sharing one `select!`, one flaky stream backing off for 5s
+//! stalled pod/node processing for 5s too. A `.backoff()`-wrapped stream
+//! instead reports `Poll::Pending` while it's backing off, which costs
+//! `select!` nothing — it just moves on to whichever other branch is ready.
 
 use crate::cache::{Cache, PodInfo};
 use crate::config::Config;
@@ -58,6 +70,7 @@ use crate::framework::ChangedObject;
 use crate::queue::SchedulingQueue;
 use futures::{stream::BoxStream, StreamExt};
 use k8s_openapi::api::core::v1::{Node, Pod};
+use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client, ResourceExt};
@@ -109,6 +122,38 @@ fn watch_backoff(consecutive_failures: u32) -> std::time::Duration {
         .checked_mul(1u32 << (consecutive_failures - 1).min(16))
         .unwrap_or(WATCH_MAX_BACKOFF);
     doubled.min(WATCH_MAX_BACKOFF)
+}
+
+/// This crate's tuned backoff curve (`watch_backoff`, above), reimplemented
+/// as a `kube_runtime` [`Backoff`] so each watch stream paces its own
+/// retries from inside its own `poll_next` — via [`WatchStreamExt::backoff`]
+/// at construction — instead of via a `tokio::time::sleep` in one arm of the
+/// shared `select!` loop.
+///
+/// That distinction is the whole point: a `sleep().await` inside a `select!`
+/// arm runs to completion once that arm is chosen, which blocks every other
+/// watch in the same `select!` for its entire duration — one stream backing
+/// off for 5s starves the other ~17. A `StreamBackoff`-wrapped stream instead
+/// returns `Poll::Pending` while backing off, which lets `select!` move on to
+/// poll every other ready branch immediately.
+#[derive(Default)]
+struct WatchBackoffPolicy {
+    consecutive_failures: u32,
+}
+
+impl Iterator for WatchBackoffPolicy {
+    type Item = std::time::Duration;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        Some(watch_backoff(self.consecutive_failures))
+    }
+}
+
+impl Backoff for WatchBackoffPolicy {
+    fn reset(&mut self) {
+        self.consecutive_failures = 0;
+    }
 }
 
 /// Whether a pod is this profile's business, and which half of the split it
@@ -173,12 +218,12 @@ struct Mirror {
 
 fn watch_nodes(client: &Client) -> BoxStream<'static, watcher::Result<Event<Node>>> {
     let api: Api<Node> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).boxed()
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 fn watch_pods(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pod>>> {
     let api: Api<Pod> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).boxed()
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 type Pdb = k8s_openapi::api::policy::v1::PodDisruptionBudget;
@@ -198,7 +243,7 @@ type DeviceClass = crate::cache::dra::RawDeviceClass;
 type ResourceSlice = crate::cache::dra::RawResourceSlice;
 
 fn watch_namespaces(client: &Client) -> BoxStream<'static, watcher::Result<Event<Ns>>> {
-    watcher(Api::<Ns>::all(client.clone()), watcher::Config::default()).boxed()
+    watcher(Api::<Ns>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 /// The four workload watches exist only to derive `PodTopologySpread`'s
 /// system default constraints, so `TopologyDefaulting::None` must actually
@@ -222,7 +267,7 @@ where
     if !enabled {
         return futures::stream::pending().boxed();
     }
-    watcher(Api::<K>::all(client.clone()), watcher::Config::default()).boxed()
+    watcher(Api::<K>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 /// A Service's selector, as a LabelSelector.
@@ -245,7 +290,7 @@ fn service_selector(svc: &Svc) -> Option<k8s_openapi::apimachinery::pkg::apis::m
 
 fn watch_pdbs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pdb>>> {
     let api: Api<Pdb> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).boxed()
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 /// Phase 4's six storage watches. Unconditional, the same as the pod/node/PDB
@@ -255,37 +300,37 @@ fn watch_pdbs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pdb>>
 /// nothing; see docs/SCHEDULER.md's "Informers" section for the up-to-date
 /// accounting.
 fn watch_pvs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pv>>> {
-    watcher(Api::<Pv>::all(client.clone()), watcher::Config::default()).boxed()
+    watcher(Api::<Pv>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_pvcs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pvc>>> {
-    watcher(Api::<Pvc>::all(client.clone()), watcher::Config::default()).boxed()
+    watcher(Api::<Pvc>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_storage_classes(client: &Client) -> BoxStream<'static, watcher::Result<Event<Sc>>> {
-    watcher(Api::<Sc>::all(client.clone()), watcher::Config::default()).boxed()
+    watcher(Api::<Sc>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_csi_nodes(client: &Client) -> BoxStream<'static, watcher::Result<Event<CsiNode>>> {
-    watcher(Api::<CsiNode>::all(client.clone()), watcher::Config::default()).boxed()
+    watcher(Api::<CsiNode>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_csi_drivers(client: &Client) -> BoxStream<'static, watcher::Result<Event<CsiDriver>>> {
-    watcher(Api::<CsiDriver>::all(client.clone()), watcher::Config::default()).boxed()
+    watcher(Api::<CsiDriver>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_csi_storage_capacities(
     client: &Client,
 ) -> BoxStream<'static, watcher::Result<Event<CsiStorageCapacity>>> {
-    watcher(Api::<CsiStorageCapacity>::all(client.clone()), watcher::Config::default()).boxed()
+    watcher(Api::<CsiStorageCapacity>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 /// Phase 5's three DRA watches. Unconditional too, for the same reason as
 /// Phase 4's storage watches — `DynamicResources` is itself an unconditional
 /// default-profile plugin, so there is no "off" mode to gate these behind.
 fn watch_resource_claims(client: &Client) -> BoxStream<'static, watcher::Result<Event<ResourceClaim>>> {
-    watcher(Api::<ResourceClaim>::all(client.clone()), watcher::Config::default()).boxed()
+    watcher(Api::<ResourceClaim>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_device_classes(client: &Client) -> BoxStream<'static, watcher::Result<Event<DeviceClass>>> {
-    watcher(Api::<DeviceClass>::all(client.clone()), watcher::Config::default()).boxed()
+    watcher(Api::<DeviceClass>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_resource_slices(client: &Client) -> BoxStream<'static, watcher::Result<Event<ResourceSlice>>> {
-    watcher(Api::<ResourceSlice>::all(client.clone()), watcher::Config::default()).boxed()
+    watcher(Api::<ResourceSlice>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 fn handle_resource_claim_event(ev: Event<ResourceClaim>, targets: &WatchTargets) {
@@ -489,15 +534,17 @@ async fn workload_stream_hiccup<K>(
             false
         }
         Some(Err(e)) => {
+            // No sleep here: the stream itself is `.backoff(...)`-wrapped
+            // (see `WatchBackoffPolicy`), so it already paces its own retries
+            // from inside `poll_next` without blocking any other arm of the
+            // shared `select!` loop. This just counts and logs.
             *failures = failures.saturating_add(1);
-            let pause = watch_backoff(*failures);
             if should_log_failure(*failures) {
                 tracing::warn!(
                     error = ?e, consecutive = *failures, watch = what,
                     "workload watch error; retrying with backoff"
                 );
             }
-            tokio::time::sleep(pause).await;
             false
         }
         None => {
@@ -578,15 +625,15 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
                     handle_node_event(ev, &mut mirror, &targets);
                 }
                 Some(Err(e)) => {
+                    // No sleep: `nodes` is `.backoff(...)`-wrapped and paces
+                    // its own retries — see `WatchBackoffPolicy`.
                     node_failures = node_failures.saturating_add(1);
-                    let pause = watch_backoff(node_failures);
                     if should_log_failure(node_failures) {
                         tracing::warn!(
                             error = ?e, consecutive = node_failures,
                             "node watch error; retrying with backoff"
                         );
                     }
-                    tokio::time::sleep(pause).await;
                 }
                 None => {
                     tracing::warn!("node watch stream ended; rebuilding");
@@ -607,15 +654,15 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
                     }
                 }
                 Some(Err(e)) => {
+                    // No sleep: `namespaces` is `.backoff(...)`-wrapped and
+                    // paces its own retries — see `WatchBackoffPolicy`.
                     ns_failures = ns_failures.saturating_add(1);
-                    let pause = watch_backoff(ns_failures);
                     if should_log_failure(ns_failures) {
                         tracing::warn!(
                             error = ?e, consecutive = ns_failures,
                             "namespace watch error; retrying with backoff"
                         );
                     }
-                    tokio::time::sleep(pause).await;
                 }
                 // Not ignorable: a `None` arm is instantly ready every time
                 // round, which turns the select! into a spin loop.
@@ -733,15 +780,15 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
                     handle_pdb_event(ev, &mut pdb_mirror, &targets);
                 }
                 Some(Err(e)) => {
+                    // No sleep: `pdbs` is `.backoff(...)`-wrapped and paces
+                    // its own retries — see `WatchBackoffPolicy`.
                     pdb_failures = pdb_failures.saturating_add(1);
-                    let pause = watch_backoff(pdb_failures);
                     if should_log_failure(pdb_failures) {
                         tracing::warn!(
                             error = ?e, consecutive = pdb_failures,
                             "PodDisruptionBudget watch error; retrying with backoff"
                         );
                     }
-                    tokio::time::sleep(pause).await;
                 }
                 None => {
                     tracing::warn!("PodDisruptionBudget watch stream ended; rebuilding");
@@ -758,15 +805,15 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
                     handle_pod_event(ev, &mut mirror, &targets);
                 }
                 Some(Err(e)) => {
+                    // No sleep: `pods` is `.backoff(...)`-wrapped and paces
+                    // its own retries — see `WatchBackoffPolicy`.
                     pod_failures = pod_failures.saturating_add(1);
-                    let pause = watch_backoff(pod_failures);
                     if should_log_failure(pod_failures) {
                         tracing::warn!(
                             error = ?e, consecutive = pod_failures,
                             "pod watch error; retrying with backoff"
                         );
                     }
-                    tokio::time::sleep(pause).await;
                 }
                 None => {
                     tracing::warn!("pod watch stream ended; rebuilding");

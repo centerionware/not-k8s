@@ -194,9 +194,12 @@ pub trait PreFilterPlugin: Plugin {
 
     /// Incremental re-evaluation for preemption's dry runs. `Some` only for
     /// plugins whose PreFilter state depends on which pods are on the node —
-    /// NodeResourcesFit, InterPodAffinity, PodTopologySpread. Preemption is
-    /// wrong without these: it removes victims hypothetically and must see
-    /// the resulting state, not the original.
+    /// NodeResourcesFit, InterPodAffinity, PodTopologySpread,
+    /// VolumeRestrictions (its `ReadWriteOncePod` half only — see that
+    /// plugin's module header for why a Filter-based, preemption-resolvable
+    /// RWOP check needs this). Preemption is wrong without these: it removes
+    /// victims hypothetically and must see the resulting state, not the
+    /// original.
     fn extensions(&self) -> Option<&dyn PreFilterExtensions> {
         None
     }

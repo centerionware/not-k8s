@@ -31,6 +31,16 @@
 //! that makes the natural iteration order spread pods across failure domains
 //! even before `PodTopologySpread` scores anything — which is what stops a
 //! cluster whose node names sort by rack from packing one rack first.
+//!
+//! That round-robin order is itself only recomputed when it actually could
+//! have changed — a node joining/leaving, or an existing node's zone label
+//! changing. A pod binding or unbinding (by far the most common mutation,
+//! and the reason the cache's generation bumps on nearly every cycle) moves
+//! neither, so `update_snapshot` patches that node's entry in place via
+//! `node_positions` instead of paying for a full `zone_round_robin` walk.
+//! Skipping this would quietly undo the whole point of the incremental
+//! design above: the node *contents* would stay O(changed), but the node
+//! *order* would go back to O(cluster size) on nearly every cycle.
 
 use super::dra::{RawDeviceClass, RawResourceClaim, RawResourceSlice};
 use super::node::NodeInfo;
@@ -44,6 +54,12 @@ use std::sync::Arc;
 pub struct Snapshot {
     /// Zone-round-robin order — see the module header.
     nodes: Vec<Arc<NodeInfo>>,
+    /// name -> index into `nodes`, kept in step with it. Lets
+    /// `update_snapshot` patch a changed node's entry in place — without
+    /// recomputing the whole round-robin order — whenever the change didn't
+    /// touch cluster membership or any node's zone. Only trustworthy right
+    /// after `nodes` was itself rebuilt; see `update_snapshot`.
+    node_positions: HashMap<String, usize>,
     by_name: HashMap<String, Arc<NodeInfo>>,
     /// Pre-filtered subsets, so `InterPodAffinity` does not walk every node to
     /// find the few that matter.
@@ -494,6 +510,17 @@ impl Cache {
             return;
         }
 
+        // Whether the round-robin order can only have shifted (a node
+        // joining/leaving, or an existing node's zone changing) — computed
+        // against `snapshot.by_name` *before* this walk's changes are
+        // applied to it, below. See the module header for why this matters.
+        const ZONE_LABEL: &str = "topology.kubernetes.io/zone";
+        let reorder_needed = dropped_any
+            || changed.iter().any(|node| match snapshot.by_name.get(&node.name) {
+                None => true, // newly joined the cluster
+                Some(prev) => prev.labels.get(ZONE_LABEL) != node.labels.get(ZONE_LABEL),
+            });
+
         for node in &changed {
             snapshot.by_name.insert(node.name.clone(), node.clone());
         }
@@ -513,7 +540,24 @@ impl Cache {
         snapshot.resource_claims = self.resource_claims.clone();
         snapshot.device_classes = self.device_classes.clone();
         snapshot.resource_slices = self.resource_slices.clone();
-        snapshot.nodes = zone_round_robin(&snapshot.by_name);
+        if reorder_needed {
+            snapshot.nodes = zone_round_robin(&snapshot.by_name);
+            snapshot.node_positions = snapshot
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.name.clone(), i))
+                .collect();
+        } else {
+            // Membership and every zone assignment are unchanged, so the
+            // order stays valid — just refresh the entries the walk found,
+            // in place, at the positions `node_positions` already knows.
+            for node in &changed {
+                if let Some(&i) = snapshot.node_positions.get(&node.name) {
+                    snapshot.nodes[i] = node.clone();
+                }
+            }
+        }
         snapshot.nodes_with_pods_with_affinity = snapshot
             .nodes
             .iter()

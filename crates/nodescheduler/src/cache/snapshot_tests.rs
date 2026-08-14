@@ -99,6 +99,53 @@ fn a_snapshot_sees_a_pod_committed_after_it_was_taken() {
 }
 
 #[test]
+fn a_pod_only_change_does_not_disturb_the_zone_round_robin_order() {
+    // The fast path (`node_positions`) must land the patched node in exactly
+    // the slot a full `zone_round_robin` rebuild would have put it — a stale
+    // slot silently un-interleaves the zones, which only PodTopologySpread's
+    // scoring would ever notice.
+    let mut cache = Cache::new();
+    cache.upsert_node(&node_in_zone("a1", "zone-a"));
+    cache.upsert_node(&node_in_zone("a2", "zone-a"));
+    cache.upsert_node(&node_in_zone("b1", "zone-b"));
+    let mut snap = cache.snapshot();
+    let order_before: Vec<String> = snap.nodes().iter().map(|n| n.name.clone()).collect();
+
+    // A pod landing on an existing node changes nothing about membership or
+    // zones, so this must take the in-place patch path, not a reorder.
+    cache.add_pod(pod_on("p", "a2", 100));
+    cache.update_snapshot(&mut snap);
+
+    let order_after: Vec<String> = snap.nodes().iter().map(|n| n.name.clone()).collect();
+    assert_eq!(order_before, order_after, "a pod-only change must not reshuffle node order");
+    assert_eq!(snap.node("a2").unwrap().requested.milli_cpu, 100);
+
+    // And the order must still be a real zone round robin — the fast path
+    // must not have simply frozen a stale order incidentally.
+    let fresh = cache.snapshot();
+    let fresh_order: Vec<String> = fresh.nodes().iter().map(|n| n.name.clone()).collect();
+    assert_eq!(order_after, fresh_order);
+}
+
+#[test]
+fn a_node_changing_zone_does_trigger_a_reorder() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&node_in_zone("a1", "zone-a"));
+    cache.upsert_node(&node_in_zone("b1", "zone-b"));
+    let mut snap = cache.snapshot();
+
+    // Move a1 into zone-b — a real membership-shape change from the ordering
+    // walk's point of view, even though the node itself isn't new.
+    cache.upsert_node(&node_in_zone("a1", "zone-b"));
+    cache.update_snapshot(&mut snap);
+
+    let fresh = cache.snapshot();
+    let fresh_order: Vec<String> = fresh.nodes().iter().map(|n| n.name.clone()).collect();
+    let order: Vec<String> = snap.nodes().iter().map(|n| n.name.clone()).collect();
+    assert_eq!(order, fresh_order, "a zone change must be reflected, not skipped by the fast path");
+}
+
+#[test]
 fn a_removed_node_disappears_from_a_refreshed_snapshot() {
     // A deletion leaves nothing behind in the MRU walk, so the walk alone
     // would keep serving a node that no longer exists — and the scheduler

@@ -722,7 +722,7 @@ impl Scheduler {
                     latest_start_of_highest: victim_pods
                         .iter()
                         .filter(|p| p.priority == highest)
-                        .map(|p| p.queued_at)
+                        .map(|p| crate::preempt::pod_start_time(p))
                         .max(),
                     victims,
                 });

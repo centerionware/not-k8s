@@ -227,10 +227,11 @@ impl PreFilterPlugin for InterPodAffinity {
         // mutably while still reading the labels. Refcount bump, not a copy.
         let ns_labels = s.namespace_labels.clone();
 
-        for node in snapshot.nodes() {
-            // Only pods that declared anti-affinity can forbid anything, and
-            // the cache keeps them pre-filtered precisely so this loop is not
-            // over every pod in the cluster.
+        // Only pods that declared anti-affinity can forbid anything, and the
+        // snapshot keeps the *nodes carrying any of them* pre-filtered too —
+        // walking every node in the cluster to find the handful that matter
+        // is exactly the cost this subset exists to avoid.
+        for node in &snapshot.nodes_with_pods_with_required_anti_affinity {
             for existing in &node.pods_with_required_anti_affinity {
                 let terms = required_anti_affinity_of(existing);
                 for term in &terms {
@@ -254,44 +255,57 @@ impl PreFilterPlugin for InterPodAffinity {
                     }
                 }
             }
+        }
 
-            for existing in &node.pods {
-                tally(
-                    &mut s.affinity_counts,
-                    &s.required_affinity,
-                    existing,
-                    node,
-                    &pod.namespace,
-                    &ns_labels,
-                    1,
-                );
-                tally(
-                    &mut s.anti_affinity_counts,
-                    &s.required_anti_affinity,
-                    existing,
-                    node,
-                    &pod.namespace,
-                    &ns_labels,
-                    1,
-                );
-                tally(
-                    &mut s.preferred_affinity_counts,
-                    &preferred_affinity_terms,
-                    existing,
-                    node,
-                    &pod.namespace,
-                    &ns_labels,
-                    1,
-                );
-                tally(
-                    &mut s.preferred_anti_affinity_counts,
-                    &preferred_anti_terms,
-                    existing,
-                    node,
-                    &pod.namespace,
-                    &ns_labels,
-                    1,
-                );
+        // The tally loop below counts *our own* rules against every existing
+        // pod in the cluster, so — unlike the symmetric pass above — no
+        // pre-filtered node subset can stand in for "every node": a pod
+        // matching our term is not tagged as such ahead of time. But a pod
+        // declaring no affinity/anti-affinity terms of its own (the
+        // overwhelming majority) has nothing for that walk to find either
+        // way, so skip it rather than pay for an O(every pod in the cluster)
+        // scan whose every `tally()` call would immediately return on an
+        // empty term list anyway.
+        if s.has_required() || s.has_preferred() {
+            for node in snapshot.nodes() {
+                for existing in &node.pods {
+                    tally(
+                        &mut s.affinity_counts,
+                        &s.required_affinity,
+                        existing,
+                        node,
+                        &pod.namespace,
+                        &ns_labels,
+                        1,
+                    );
+                    tally(
+                        &mut s.anti_affinity_counts,
+                        &s.required_anti_affinity,
+                        existing,
+                        node,
+                        &pod.namespace,
+                        &ns_labels,
+                        1,
+                    );
+                    tally(
+                        &mut s.preferred_affinity_counts,
+                        &preferred_affinity_terms,
+                        existing,
+                        node,
+                        &pod.namespace,
+                        &ns_labels,
+                        1,
+                    );
+                    tally(
+                        &mut s.preferred_anti_affinity_counts,
+                        &preferred_anti_terms,
+                        existing,
+                        node,
+                        &pod.namespace,
+                        &ns_labels,
+                        1,
+                    );
+                }
             }
         }
 
