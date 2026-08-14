@@ -73,18 +73,31 @@ echo ""
 # because k3s's own log is dominated by apiserver audit/watch chatter —
 # unfiltered this would bury the one subsystem actually worth reading here
 # under everything else running in the same process.
-echo "── k3s.service logs: attach/detach + volume events (last 400 lines, filtered) ──"
-sudo journalctl -u k3s.service --no-pager -n 400 2>&1 \
-    | grep -iE "attachdetach|VolumeAttachment|persistentvolume|reconciler" \
-    || echo "(no matching lines in the last 400 — either nothing ran, or it's further back than this tail reaches)"
+echo "── k3s.service logs: attach/detach + volume events (last 800 lines, filtered) ──"
+sudo journalctl -u k3s.service --no-pager -n 800 2>&1 \
+    | grep -iE "attachdetach|volumeattachment|persistentvolume|reconciler|csidriver|csinode|nodeipam|cidr|desiredstateofworld|actualstateofworld|populat" \
+    || echo "(no matching lines in the last 800 — either nothing ran, or it's further back than this tail reaches)"
 
 echo ""
 echo "── volumeattachments (every namespace is cluster-scoped) ──"
 kubectl get volumeattachments.storage.k8s.io -o wide 2>&1 || echo "(none / apiserver unreachable)"
 
 echo ""
-echo "── recent events, every namespace (last 60, by time) ──"
-kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -60
+# CSIDriver/CSINode survive a failing test's own cleanup (it only deletes
+# its Pod/PVC), so unlike the pod-scoped events below these still reflect
+# real state at dump time — worth having verbatim rather than inferred
+# from nodelet's registration-time logs, which only prove registration
+# happened once, not that it's still correct now.
+echo "── csidrivers ──"
+kubectl get csidrivers.storage.k8s.io -o yaml 2>&1 || echo "(none / apiserver unreachable)"
+
+echo ""
+echo "── csinodes ──"
+kubectl get csinodes.storage.k8s.io -o yaml 2>&1 || echo "(none / apiserver unreachable)"
+
+echo ""
+echo "── recent events, every namespace (last 100, by time) ──"
+kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -100
 
 echo ""
 echo "── containerd.service ──"
