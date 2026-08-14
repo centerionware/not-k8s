@@ -300,18 +300,22 @@ scheduler must never write an allocation for a node it is not about to bind to,
 and must roll it back on bind failure — otherwise nodelet sees a claim
 allocated to a node that never received the pod, and the device leaks.
 
-Multi-profile `schedulerName` dispatch (several profiles sharing one
-process's queue) and HTTP extenders are not implemented. Multi-profile is
-narrower than it sounds against this project specifically: a second
-`spec.schedulerName` is already fully served today by running a second
-`nodescheduler` **process** with its own `NODESCHEDULER_PROFILE_NAME` — the
-Phase 1 routing rule (`PodRoute::Ignore` for a pod naming a different
-profile) already makes that safe and is what
-`test_scheduler_ignores_pods_for_another_scheduler` proves. What's missing is
-only upstream's single-*process* multi-profile mode, which shares one queue
-and `QueueSort` plugin across several `Registry`s — a real capability, but a
-rarer deployment shape than the one this project already covers, and the
-next piece to close rather than a silent gap.
+**Multi-profile `schedulerName` dispatch is ✅ implemented.**
+`NODESCHEDULER_PROFILE_NAME` accepts a comma-separated list; every name gets
+its own `Registry` (built from the same `default_registry` blueprint — this
+crate has no per-profile plugin configuration, so there is nothing to
+actually differ between them beyond the name), all sharing one queue, one
+`QueueSort`/`PreEnqueue` chain, and one watch layer. `watch.rs`'s
+`route_pod` queues a pod naming *any* of the configured profiles;
+`lib.rs`'s `scheduling_loop` resolves the right `Registry` per popped pod
+from `pod.scheduler_name` before running its cycle. `cycle.rs`'s `Scheduler`
+deliberately holds no `Registry` of its own — see its module header's
+"Multiple profiles, one `Scheduler`" — because the sweep position and
+preemption's nomination promises have to stay consistent across profiles
+that place pods onto the same nodes, and every method that needs a plugin
+set now takes it as an explicit parameter instead.
+
+HTTP extenders are not implemented.
 
 ## Informers: start only what a plugin asked for
 

@@ -243,13 +243,13 @@ use std::collections::BTreeMap;
 
 /// One node, `cpu` cores and 4Gi, with the real NodeResourcesFit wired into
 /// both PreFilter and Filter exactly as `default_registry` does.
-fn fit_scheduler(cpu_cores: &str) -> (Scheduler, crate::cache::Snapshot) {
-    let registry = Arc::new(Registry {
+fn fit_scheduler(cpu_cores: &str) -> (Scheduler, Registry, crate::cache::Snapshot) {
+    let registry = Registry {
         profile_name: "test".to_string(),
         pre_filter: vec![Box::new(NodeResourcesFit::default())],
         filter: vec![Box::new(NodeResourcesFit::default())],
         ..Default::default()
-    });
+    };
 
     let mut cache = Cache::new();
     cache.upsert_node(&Node {
@@ -265,7 +265,7 @@ fn fit_scheduler(cpu_cores: &str) -> (Scheduler, crate::cache::Snapshot) {
         ..Default::default()
     });
     let snapshot = cache.snapshot();
-    (Scheduler::new(registry, 0), snapshot)
+    (Scheduler::new(0), registry, snapshot)
 }
 
 fn pod_wanting_milli_cpu(milli: i64) -> PodInfo {
@@ -281,11 +281,11 @@ fn pod_wanting_milli_cpu(milli: i64) -> PodInfo {
 #[test]
 fn a_pod_larger_than_the_node_is_not_scheduled() {
     // The exact e2e case: 10000 cores against a 4-core node.
-    let (mut sched, snapshot) = fit_scheduler("4");
+    let (mut sched, registry, snapshot) = fit_scheduler("4");
     let pod = pod_wanting_milli_cpu(10_000 * 1000);
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&pod, &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &pod, &snapshot, &mut rng);
 
     match outcome {
         CycleOutcome::Unschedulable { reason, unschedulable_plugins, .. } => {
@@ -309,11 +309,11 @@ fn a_pod_larger_than_the_node_is_not_scheduled() {
 fn a_pod_that_fits_is_scheduled() {
     // The other half: proving the rejection above is not simply "rejects
     // everything", which would pass the test above for the wrong reason.
-    let (mut sched, snapshot) = fit_scheduler("4");
+    let (mut sched, registry, snapshot) = fit_scheduler("4");
     let pod = pod_wanting_milli_cpu(500);
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&pod, &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &pod, &snapshot, &mut rng);
 
     match outcome {
         CycleOutcome::Scheduled { node } => assert_eq!(node, "worker"),
@@ -326,22 +326,22 @@ fn a_pod_that_fits_is_scheduled() {
 
 #[test]
 fn a_pod_exactly_filling_the_node_still_fits() {
-    let (mut sched, snapshot) = fit_scheduler("4");
+    let (mut sched, registry, snapshot) = fit_scheduler("4");
     let pod = pod_wanting_milli_cpu(4000);
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&pod, &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &pod, &snapshot, &mut rng);
     assert!(matches!(outcome, CycleOutcome::Scheduled { .. }));
 }
 
 #[test]
 fn one_millicore_over_capacity_does_not_fit() {
     // The boundary, stated explicitly: > allocatable, not >=.
-    let (mut sched, snapshot) = fit_scheduler("4");
+    let (mut sched, registry, snapshot) = fit_scheduler("4");
     let pod = pod_wanting_milli_cpu(4001);
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&pod, &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &pod, &snapshot, &mut rng);
     assert!(
         matches!(outcome, CycleOutcome::Unschedulable { .. }),
         "4001m must not fit a 4-core node"
@@ -350,12 +350,12 @@ fn one_millicore_over_capacity_does_not_fit() {
 
 #[test]
 fn an_empty_cluster_reports_no_nodes_rather_than_scheduling_nowhere() {
-    let registry = Arc::new(Registry::default());
-    let mut sched = Scheduler::new(registry, 0);
+    let registry = Registry::default();
+    let mut sched = Scheduler::new(0);
     let snapshot = crate::cache::Snapshot::default();
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&pod_wanting_milli_cpu(1), &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &pod_wanting_milli_cpu(1), &snapshot, &mut rng);
     match outcome {
         CycleOutcome::Unschedulable { reason, .. } => {
             assert!(reason.contains("no nodes"), "got: {reason}")
@@ -419,11 +419,11 @@ fn a_real_pod_object_asking_for_10000_cores_is_projected_as_10000_cores() {
 #[test]
 fn a_real_pod_object_larger_than_the_node_is_not_scheduled() {
     // The live e2e case, end to end: API object -> projection -> cycle.
-    let (mut sched, snapshot) = fit_scheduler("4");
+    let (mut sched, registry, snapshot) = fit_scheduler("4");
     let pod = PodInfo::from_pod(&api_pod_requesting("10000"), Default::default());
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&pod, &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &pod, &snapshot, &mut rng);
 
     match outcome {
         CycleOutcome::Unschedulable { reason, .. } => {
@@ -438,11 +438,11 @@ fn a_real_pod_object_larger_than_the_node_is_not_scheduled() {
 
 #[test]
 fn a_real_pod_object_that_fits_is_scheduled() {
-    let (mut sched, snapshot) = fit_scheduler("4");
+    let (mut sched, registry, snapshot) = fit_scheduler("4");
     let pod = PodInfo::from_pod(&api_pod_requesting("500m"), Default::default());
     let mut rng = Rng::new(1);
 
-    let (outcome, _) = sched.schedule_one(&pod, &snapshot, &mut rng);
+    let (outcome, _) = sched.schedule_one(&registry, &pod, &snapshot, &mut rng);
     assert!(
         matches!(outcome, CycleOutcome::Scheduled { .. }),
         "500m must fit a 4-core node"
@@ -454,7 +454,7 @@ fn a_node_object_advertising_four_cores_is_projected_as_4000_millicores() {
     // The other half of the same arithmetic. If allocatable were read in
     // whole cores while requests were in millicores, every node would look
     // 1000x smaller than it is and nothing would ever schedule.
-    let (_, snapshot) = fit_scheduler("4");
+    let (_, _, snapshot) = fit_scheduler("4");
     let node = snapshot.node("worker").expect("the node is in the snapshot");
     assert_eq!(node.allocatable.milli_cpu, 4000);
     assert_eq!(node.allocatable_pods, 110);

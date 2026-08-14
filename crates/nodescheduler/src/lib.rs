@@ -25,6 +25,7 @@
 //! two seconds. That is the entire idle cost of a non-leader.
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub mod binder;
@@ -74,27 +75,58 @@ pub async fn run() -> Result<()> {
 }
 
 /// The leader's work: watch, and place pods until stopped.
+///
+/// # One `Registry` per profile, one queue, one watch layer
+///
+/// A pod's `spec.schedulerName` picks which of `cfg.profile_names` answers
+/// for it — see `cycle.rs`'s "Multiple profiles, one `Scheduler`" and
+/// `watch.rs`'s `route_pod`. Every profile here is built from the same
+/// `default_registry` blueprint (this crate has no per-profile plugin
+/// configuration mechanism, so there is nothing to actually differ between
+/// them beyond the name), which is also what makes sharing one `QueueSort`
+/// and one `PreEnqueue` chain across all of them correct: they are
+/// byte-for-byte the same plugin set, just answering to different names.
 async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<()> {
     // Shared, because the binding cycle runs on its own task and needs the
     // same plugin set the scheduling cycle used.
-    let registry = Arc::new(framework::plugins::default_registry(client.clone(), cfg));
+    let registries: HashMap<String, Arc<framework::Registry>> = cfg
+        .profile_names
+        .iter()
+        .map(|name| {
+            (
+                name.clone(),
+                Arc::new(framework::plugins::default_registry(client.clone(), cfg, name)),
+            )
+        })
+        .collect();
+    // `cfg.profile_name` is always `profile_names[0]` (see config.rs), so
+    // this is infallible — asserted rather than silently defaulted, because a
+    // missing primary here means the queue's ordering has no plugin behind it
+    // at all.
+    let primary = registries
+        .get(&cfg.profile_name)
+        .expect("profile_name is always the first entry of profile_names")
+        .clone();
 
     // Only the resources some enabled plugin actually subscribed to get a
-    // watch. On a cluster with no PersistentVolumes that is Pod and Node and
-    // nothing else.
-    tracing::info!(
-        profile = %cfg.profile_name,
-        resources = ?registry.subscribed_resources(),
-        "starting scheduler"
-    );
+    // watch, unioned across every profile. On a cluster with no
+    // PersistentVolumes that is Pod and Node and nothing else — Phase 4/5
+    // notwithstanding, see docs/SCHEDULER.md's "Informers" section.
+    let mut resources: Vec<events::EventResource> =
+        registries.values().flat_map(|r| r.subscribed_resources()).collect();
+    resources.sort_unstable();
+    resources.dedup();
+    tracing::info!(profiles = ?cfg.profile_names, ?resources, "starting scheduler");
 
     let mut hints = queue::hints::HintRegistry::new();
-    register_plugin_events(&registry, &mut hints);
+    for registry in registries.values() {
+        register_plugin_events(registry, &mut hints);
+    }
 
     let queue = Arc::new(queue::SchedulingQueue::new(
         hints,
-        queue_sort_fn(registry.clone()),
-        pre_enqueue_fn(registry.clone()),
+        queue_sort_fn(primary.clone()),
+        pre_enqueue_fn(primary),
         queue::backoff::BackoffQueue::new(cfg.pod_initial_backoff, cfg.pod_max_backoff),
         cfg.max_in_unschedulable,
     ));
@@ -105,7 +137,7 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
     let watch_targets = watch::WatchTargets {
         cache: cache.clone(),
         queue: queue.clone(),
-        profile_name: cfg.profile_name.clone(),
+        profile_names: cfg.profile_names.clone(),
         budgets: budgets.clone(),
     };
 
@@ -136,7 +168,7 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
     // lapse, which is the recovery path the whole design already assumes.
     let result = tokio::select! {
         r = scheduling_loop(
-            registry, queue, cache, assumed, budgets, client.clone(), cfg,
+            registries, queue, cache, assumed, budgets, client.clone(), cfg,
         ) => r,
         r = &mut watches => match r {
             Ok(Ok(())) => Err(anyhow::anyhow!("the watch layer stopped on its own")),
@@ -178,8 +210,13 @@ async fn run_safety_net(queue: Arc<queue::SchedulingQueue>, max_wait: std::time:
 
 /// Pop, place, bind. One pod at a time through the cycle; binding cycles run
 /// concurrently on their own tasks.
+///
+/// `registries` is keyed by `spec.schedulerName`; every pod the queue hands
+/// back has already been routed to one of these keys by `watch.rs`'s
+/// `route_pod`, so the lookup below is infallible in practice — see its own
+/// comment.
 async fn scheduling_loop(
-    registry: Arc<framework::Registry>,
+    registries: HashMap<String, Arc<framework::Registry>>,
     queue: Arc<queue::SchedulingQueue>,
     cache: Arc<Mutex<cache::Cache>>,
     assumed: Arc<Mutex<cache::AssumedPods>>,
@@ -187,12 +224,30 @@ async fn scheduling_loop(
     client: kube::Client,
     cfg: &config::Config,
 ) -> Result<()> {
-    let mut scheduler =
-        cycle::Scheduler::new(registry.clone(), cfg.percentage_of_nodes_to_score);
+    let mut scheduler = cycle::Scheduler::new(cfg.percentage_of_nodes_to_score);
     let mut snapshot = cache::Snapshot::default();
 
     loop {
         let pod = queue.pop().await;
+
+        // Resolved fresh per pod rather than assumed constant: which profile
+        // a pod belongs to is a property of the pod, not of the loop.
+        let registry = match registries.get(&pod.scheduler_name) {
+            Some(r) => r.clone(),
+            // Structurally shouldn't happen — `route_pod` only ever queues a
+            // pod whose `scheduler_name` is one of `registries`' keys — but a
+            // config reload racing a queued pod is not worth crashing the
+            // whole process over. Same posture `binder.rs`'s error path takes:
+            // requeue and let the next cycle sort it out.
+            None => {
+                tracing::warn!(
+                    pod = %pod.key(), scheduler_name = %pod.scheduler_name,
+                    "pod queued for a profile this instance no longer serves"
+                );
+                queue.done(&pod.uid);
+                continue;
+            }
+        };
 
         // Refresh before the cycle, so the whole cycle sees one stable view.
         cache.lock().unwrap().update_snapshot(&mut snapshot);
@@ -200,7 +255,7 @@ async fn scheduling_loop(
         // Seeded here, outside the cycle — the cycle itself reads no clock.
         let mut rng = cycle::Rng::from_clock();
 
-        let (outcome, mut state) = scheduler.schedule_one(&pod, &snapshot, &mut rng);
+        let (outcome, mut state) = scheduler.schedule_one(&registry, &pod, &snapshot, &mut rng);
 
         match outcome {
             cycle::CycleOutcome::Scheduled { node } => {
@@ -255,6 +310,7 @@ async fn scheduling_loop(
                 if nominated_node.is_none() {
                     let pdbs = budgets.lock().unwrap().clone();
                     let outcome = scheduler.preempt(
+                        &registry,
                         &pod,
                         &snapshot,
                         &node_statuses,
@@ -296,7 +352,7 @@ async fn scheduling_loop(
                 // from "the scheduler is not running" — see report.rs.
                 let client = client.clone();
                 let reported = pod.clone();
-                let profile = cfg.profile_name.clone();
+                let profile = pod.scheduler_name.clone();
                 let reason_text = reason.clone();
                 let nominated = nominated_node.clone();
                 tokio::spawn(async move {
@@ -320,7 +376,7 @@ async fn scheduling_loop(
                 // the same explanation either way.
                 let client = client.clone();
                 let reported = pod.clone();
-                let profile = cfg.profile_name.clone();
+                let profile = pod.scheduler_name.clone();
                 let reason_text = reason.clone();
                 tokio::spawn(async move {
                     report::report_unschedulable(&client, &reported, &reason_text, None, &profile)
