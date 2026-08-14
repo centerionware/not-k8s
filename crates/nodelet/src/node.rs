@@ -263,12 +263,37 @@ fn node_labels(cfg: &Config) -> BTreeMap<String, String> {
     labels
 }
 
+/// `volumes.kubernetes.io/controller-managed-attach-detach`.
+///
+/// Real kubelet writes this on its own Node whenever
+/// `--enable-controller-attach-detach` is true, which is the default and is
+/// the only mode nodelet implements: nodelet mounts volumes and expects
+/// something else to have attached them.
+///
+/// It is not documentation. `kube-controller-manager`'s
+/// AttachDetachController adds a node to its desired state of world *only*
+/// if this annotation is present (`addNodeToDswp`), and a pod whose node is
+/// not in that set is skipped entirely. Without it the controller quietly
+/// does nothing at all: no VolumeAttachment is ever created for any pod on
+/// this node, and every attach-required CSI volume hangs forever with
+/// nodelet correctly reporting "driver requires attach but no matching
+/// VolumeAttachment exists yet" — which reads as an external-attacher
+/// problem and is in fact this missing string.
+const CONTROLLER_MANAGED_ATTACH_DETACH: &str = "volumes.kubernetes.io/controller-managed-attach-detach";
+
+fn node_annotations() -> BTreeMap<String, String> {
+    let mut annotations = BTreeMap::new();
+    annotations.insert(CONTROLLER_MANAGED_ATTACH_DETACH.to_string(), "true".to_string());
+    annotations
+}
+
 /// Build the Node object (metadata + spec). Status is applied separately.
 fn build_node(cfg: &Config) -> Node {
     Node {
         metadata: ObjectMeta {
             name: Some(cfg.node_name.clone()),
             labels: Some(node_labels(cfg)),
+            annotations: Some(node_annotations()),
             ..Default::default()
         },
         // Deliberately no provider_id — but that alone doesn't avoid the

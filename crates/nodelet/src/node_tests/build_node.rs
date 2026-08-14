@@ -97,3 +97,23 @@ fn labels_are_attached() {
     let labels = n.metadata.labels.unwrap();
     assert_eq!(labels.get("kubernetes.io/hostname"), Some(&"debian".to_string()));
 }
+
+#[test]
+fn the_controller_managed_attach_detach_annotation_is_set() {
+    // Not cosmetic, and not optional. kube-controller-manager's
+    // AttachDetachController only manages nodes carrying this annotation, so
+    // without it no VolumeAttachment is ever created for any pod on this
+    // node and every attach-required CSI volume hangs indefinitely. Found
+    // live: two CSI e2e tests failed this way, on main, with k3s's own
+    // scheduler — the pod sat Pending while nodelet logged "driver requires
+    // attach but no matching VolumeAttachment exists yet", which points at
+    // the external-attacher and is really this.
+    let n = build_node(&cfg());
+    let annotations = n.metadata.annotations.expect("build_node must set annotations");
+    assert_eq!(
+        annotations.get("volumes.kubernetes.io/controller-managed-attach-detach"),
+        Some(&"true".to_string()),
+        "nodelet always expects the controller to attach; real kubelet writes this whenever \
+         --enable-controller-attach-detach is on, which is its default"
+    );
+}
