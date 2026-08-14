@@ -1,125 +1,16 @@
-commit: 6647b8549b51eb4a4e8f17040a4524626a03b55c
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31833526372
-timestamp (UTC): 2026-08-14T19:50:18Z
+commit: a2978a354bbc58c410de614117ddb0555fc115d3
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31835456134
+timestamp (UTC): 2026-08-14T20:00:18Z
 shard: 3/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786736138
-==> 216 test(s) registered total (before sharding); running now...
-==> Shard 3/5: 40 test(s) selected
-▶ test_combined_binary_rejects_an_unknown_component
-    (skip: no combined binary here (split layout))
-  ○ SKIP (0s)
-▶ test_credential_provider_config_unset_by_default
-  ✔ PASS (1s)
-▶ test_datastore_enforces_compare_and_swap
-  ✔ PASS (0s)
-▶ test_datastore_expires_a_lease_and_its_keys
-  ✔ PASS (1s)
-▶ test_apiserver_crud_round_trips_through_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13509/environ: Permission denied
-Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
-  ✔ PASS (7s)
-▶ test_a_follower_forwards_writes_to_the_leader
-    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
-  ○ SKIP (0s)
-▶ test_the_cluster_tolerates_a_slow_link
-    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
-  ○ SKIP (0s)
-▶ test_plugin_registry_watches_for_device_plugins_too
-  ✔ PASS (0s)
-▶ test_custom_dns_config_reaches_resolv_conf
-  ✔ PASS (3s)
-▶ test_eviction_manual_procedure
-    (skip: triggering real eviction safely needs either an artificially-low pressure threshold or actually exhausting a resource — neither is something this suite does to a live node automatically. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES set just above current MemAvailable (forces MemoryPressure=True without real exhaustion), (3) apply a BestEffort pod and a Guaranteed pod, (4) within NODELET_EVICTION_CHECK_SECS (default 10s) confirm the BestEffort pod gets phase Failed/reason Evicted and is deleted, while the Guaranteed pod is untouched, (5) restore the normal threshold and restart nodelet.)
-  ○ SKIP (0s)
-▶ test_pod_exceeding_an_empty_dir_size_limit_is_evicted
-  ✔ PASS (69s)
-▶ test_basic_pod_runs
-  ✔ PASS (32s)
-▶ test_crashing_container_restarts_and_increments_restart_count
-  ✔ PASS (34s)
-▶ test_exited_container_reports_terminated_state_with_exit_code
-  ✔ PASS (5s)
-▶ test_pod_status_reports_qos_class
-  ✔ PASS (3s)
-▶ test_node_reports_hugepages_capacity_when_reserved
-  ✔ PASS (0s)
-▶ test_pod_resources_socket_is_created_on_a_cri_node
-  ✔ PASS (0s)
-▶ test_startup_probe_gates_liveness_and_readiness
-  ✔ PASS (37s)
-▶ test_metrics_resource_returns_real_pod_usage
-  ✔ PASS (32s)
-▶ test_no_swap_default_disables_swap_via_cgroup
-  ✔ PASS (33s)
-▶ test_besteffort_pod_gets_no_cgroup_limit
-  ✔ PASS (32s)
-▶ test_scheduler_places_an_ordinary_pod
-  ✔ PASS (32s)
-▶ test_scheduler_respects_a_taint_and_its_toleration
-  ✔ PASS (3s)
-▶ test_scheduler_honours_pod_affinity
-  ✔ PASS (30s)
-▶ test_scheduler_schedules_pods_that_get_default_spread_constraints
-  ✔ PASS (0s)
-▶ test_run_as_user_is_applied
-==> FATAL: timed out after 90s waiting for: run-as-user Running
-  ✘ FAIL (91s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 14 19:40:48 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:40:48.175011Z  INFO node status pushed
-    Aug 14 19:40:57 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:40:57.147124Z  INFO torn down pod=not-k8s-e2e-1786736138/besteffort
-    Aug 14 19:40:57 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:40:57.879880Z  INFO CreateContainer succeeded container=c container_id=0e35c2c97f0cae907f7d95e943fc3d06eeb1d79bdaa1f647149185fa0f97f0cc
-    Aug 14 19:40:57 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:40:57.949076Z  INFO torn down pod=not-k8s-e2e-1786736138/besteffort
-    Aug 14 19:41:29 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:41:29.091171Z  INFO torn down pod=not-k8s-e2e-1786736138/sched-basic
-    Aug 14 19:41:29 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:41:29.189649Z  INFO CreateContainer succeeded container=c container_id=3c8b8da47322ba2be960410508845913b13d7f9507b0f2d98dadc1990f7da2e2
-    Aug 14 19:41:29 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:41:29.319170Z  INFO CreateContainer succeeded container=c container_id=4589f210d26aad529d3527357f86217f43ccc99f057b21cd46b9878b613bff30
-    Aug 14 19:41:48 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:41:48.222751Z  INFO node status pushed
-    Aug 14 19:41:59 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:41:59.449349Z  INFO torn down pod=not-k8s-e2e-1786736138/sched-tainted
-    Aug 14 19:42:29 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:42:29.551459Z  INFO torn down pod=not-k8s-e2e-1786736138/sched-tolerating
-    Aug 14 19:42:29 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:42:29.656920Z  INFO CreateContainer succeeded container=c container_id=28f85230a537632aa21c4f9f66e12feea3035dceabe039c7f85495fac025c366
-    Aug 14 19:42:29 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:42:29.722859Z  INFO torn down pod=not-k8s-e2e-1786736138/sched-basic
-    Aug 14 19:42:29 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:42:29.865720Z  INFO CreateContainer succeeded container=c container_id=e45a7c04ec3e8ecf9d02b6dd681e17fb3052a07bfc38c3f3fb5a00eeca95c562
-    Aug 14 19:42:48 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:42:48.266772Z  INFO node status pushed
-    Aug 14 19:43:00 runnervmzvulz run-nodelet.sh[15309]: 2026-08-14T19:43:00.001153Z  INFO torn down pod=not-k8s-e2e-1786736138/sched-affin-follower
-▶ test_host_users_false_gets_a_real_user_namespace
-  ✔ PASS (88s)
-▶ test_share_process_namespace_puts_every_container_in_one_pid_namespace
-  ✔ PASS (32s)
-▶ test_nodeport_service_is_reachable_on_the_node_ip
-  ✔ PASS (3s)
-▶ test_multiple_backends_actually_share_traffic
-  (distribution: a=23 b=17 of 40)
-  (kernel has nft_numgen — expecting the native map form)
-  ✔ PASS (36s)
-▶ test_kubectl_exec_runs_a_command_and_returns_its_output
-  ✔ PASS (61s)
-▶ test_topology_manager_cross_provider_alignment_manual_note
-    (skip: proving CPU-and-device alignment (not just non-rejection) needs either real multi-socket/multi-NUMA hardware or a device plugin reporting TopologyInfo pointing at a specific NUMA node — not something this suite can set up. Manual spot-check on real multi-NUMA hardware: deploy a device plugin whose devices report differing NUMA affinity, request both an exclusive CPU and one of those devices in the same Guaranteed pod, then compare the container's cpuset.cpus (see cpu_manager.sh for how to find it) against which NUMA node the allocated device actually sits on — they should be the same node. Also try NODELET_TOPOLOGY_MANAGER_POLICY=single-numa-node with a deliberately unsatisfiable combination (e.g. requesting more exclusive CPUs than any single node has) and confirm the pod stays Pending with a 'Topology Manager: no single NUMA node can satisfy' error logged, rather than starting misaligned.)
-  ○ SKIP (0s)
-▶ test_sub_path_expr_expands_a_downward_api_env_var
-  ✔ PASS (32s)
-▶ test_empty_dir_medium_memory_is_backed_by_tmpfs
-  ✔ PASS (32s)
-▶ test_mount_propagation_host_to_container_still_mounts_normally
-  ✔ PASS (32s)
-▶ test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too
-  ✔ PASS (32s)
-▶ test_config_file_sets_a_value_env_did_not_override
-  ✔ PASS (2s)
-▶ test_image_gc_removes_unreferenced_images_above_the_watermark
-  ✔ PASS (39s)
-▶ test_log_rotation_creates_a_rotated_file
-==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786736138_log-rotation_1871a570-65d6-4628-894d-6d3b21b4188c (log_rotate_interval, default 10s)...
-  ✔ PASS (12s)
-▶ test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart
-  ✔ PASS (32s)
+==> Test namespace: not-k8s-e2e-1786737597
+==> 197 test(s) registered total (before sharding); running now...
+==> Shard 3/5: 37 test(s) selected
+▶ test_a_slow_terminating_pod_does_not_stall_another_pods_creation
+  ✔ PASS (10s)
 
 ════════════════════════════════════════
-Results: 34 passed, 1 failed, 5 skipped
-Failed:
-  - test_run_as_user_is_applied
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786736138...
+==> Cleaning up test namespace not-k8s-e2e-1786737597...
