@@ -1,103 +1,14 @@
-commit: 6647b8549b51eb4a4e8f17040a4524626a03b55c
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31833526372
-timestamp (UTC): 2026-08-14T19:52:19Z
+commit: a2978a354bbc58c410de614117ddb0555fc115d3
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31835456134
+timestamp (UTC): 2026-08-14T20:00:06Z
 shard: 5/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786736166
-==> 216 test(s) registered total (before sharding); running now...
-==> Shard 5/5: 40 test(s) selected
-▶ test_a_failing_component_says_why_before_it_exits
-  ✔ PASS (0s)
-▶ test_datastore_serves_the_etcd_status_rpc
-  ✔ PASS (0s)
-▶ test_datastore_streams_watch_events_as_they_happen
-  ✔ PASS (2s)
-▶ test_datastore_refuses_a_cluster_it_cannot_be_part_of
-  ✔ PASS (0s)
-▶ test_apiserver_state_survives_a_datastore_restart
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13507/environ: Permission denied
-  ✔ PASS (9s)
-▶ test_the_cluster_survives_the_leader_being_killed
-    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
-  ○ SKIP (0s)
-▶ test_upgrade_a_populated_single_member_into_a_one_member_cluster
-    (skip: needs root to create network namespaces — this needs real network namespaces)
-  ○ SKIP (0s)
-▶ test_device_plugin_health_transition_updates_allocated_resources_status
-==> installing grpcio/grpcio-tools for the fake device plugin...
-WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
-==> generating gRPC stubs from the vendored proto files...
-==> starting the fake device plugin (resource=fake.example.com/testdevice)...
-==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (152s)
-▶ test_set_hostname_as_fqdn_reports_the_full_fqdn
-  ✔ PASS (3s)
-▶ test_eviction_exceeds_requests_tiebreak_manual_procedure
-    (skip: proving the exceeds-requests comparator step (round 99 — pick_eviction_candidate() ranks a pod whose usage exceeds its own memory request ahead of one that doesn't, within a QoS class, before even priority) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with the SAME spec.priority, one whose container actually consumes more memory than it requested (e.g. requests: {memory: 16Mi} but the process allocates 100Mi) and one that stays within its request, force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the pod exceeding its own request is evicted first even if the other pod's absolute usage is higher — proof the exceeds-requests step is real, not just a documented no-op. The pure ranking logic itself (exceeds_memory_requests(), and that it now sits ahead of priority in eviction_rank()) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end.)
-  ○ SKIP (0s)
-▶ test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed
-  ✔ PASS (66s)
-▶ test_poststart_hook_runs_after_container_start
-  ✔ PASS (3s)
-▶ test_native_sidecar_container_starts_before_app_container_and_keeps_running
-  ✔ PASS (32s)
-▶ test_crash_loop_backoff_reports_waiting_reason_and_last_state
-  ✔ PASS (61s)
-▶ test_termination_message_path_is_read_back_into_container_status
-  ✔ PASS (3s)
-▶ test_container_status_reports_a_real_image_id
-  ✔ PASS (3s)
-▶ test_host_port_publishes_the_container_on_the_nodes_own_ip
-  ✔ PASS (32s)
-▶ test_node_reports_a_real_kernel_and_os_image
-  ✔ PASS (0s)
-▶ test_readiness_probe_gates_ready_condition
-  ✔ PASS (37s)
-▶ test_http_get_readiness_probe_against_a_real_server
-  ✔ PASS (34s)
-▶ test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set
-  ✔ PASS (35s)
-▶ test_in_place_resize_updates_memory_limit_without_restarting
-  ✔ PASS (33s)
-▶ test_guaranteed_pod_gets_the_protected_oom_score
-  ✔ PASS (32s)
-▶ test_scheduler_honours_a_node_selector_that_matches_nothing
-  ✔ PASS (10s)
-▶ test_scheduler_ignores_pods_for_another_scheduler
-  ✔ PASS (13s)
-▶ test_scheduler_preempts_a_lower_priority_pod
-  ✔ PASS (41s)
-▶ test_without_read_only_root_filesystem_writes_succeed
-  ✔ PASS (32s)
-▶ test_host_users_volume_ownership_translation_is_correct
-  ✔ PASS (33s)
-▶ test_sysctls_are_applied_to_the_sandbox
-  ✔ PASS (32s)
-▶ test_nodeproxy_runs_as_its_own_service_separate_from_nodelet
-  ✔ PASS (0s)
-▶ test_deleting_a_service_removes_its_rules
-  ✔ PASS (32s)
-▶ test_stats_summary_returns_real_pod_usage
-  ✔ PASS (33s)
-▶ test_kubectl_port_forward_reaches_a_real_container_port
-  ✔ PASS (36s)
-▶ test_configmap_and_secret_volumes_are_materialized
-  ✔ PASS (33s)
-▶ test_service_account_token_projected_volume_mints_a_real_token
-  ✔ PASS (32s)
-▶ test_image_volume_source_mounts_a_read_only_image
-  ✔ PASS (32s)
-▶ test_mount_propagation_private_default_does_not_see_a_new_host_mount
-  ✔ PASS (37s)
-▶ test_host_path_directory_mounts_the_real_host_directory
-  ✔ PASS (3s)
-▶ test_config_dir_merges_files_in_filename_order
-  ✔ PASS (1s)
-▶ test_scheduler_schedules_a_pod_an_http_extender_approves
-  ✔ PASS (35s)
+==> Test namespace: not-k8s-e2e-1786737596
+==> 197 test(s) registered total (before sharding); running now...
+==> Shard 5/5: 37 test(s) selected
 
 ════════════════════════════════════════
-Results: 37 passed, 0 failed, 3 skipped
+Results: 0 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786736166...
+==> Cleaning up test namespace not-k8s-e2e-1786737596...
