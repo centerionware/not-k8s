@@ -216,6 +216,69 @@ struct Mirror {
     pods: HashMap<String, Pod>,
 }
 
+/// Makes a relist authoritative for a collection that is otherwise updated
+/// incrementally.
+///
+/// The watcher's vocabulary is `Init`, one `InitApply` per live object, then
+/// `InitDone` — and the contract is that anything the cache held before
+/// `Init` which did *not* arrive as an `InitApply` no longer exists. A
+/// handler that treats `InitApply` as just another upsert and ignores
+/// `Init`/`InitDone` therefore never learns about a deletion that happened
+/// while the watch was disconnected: the object is gone from the cluster and
+/// stays in the cache forever. `VolumeBinding` selecting a PersistentVolume
+/// that was deleted an hour ago is the sharp end of that.
+///
+/// The obvious fix — clear the cache on `Init` — is worse than the bug. The
+/// relist is not instantaneous, and for the whole of it the scheduler would
+/// see no PVs, no StorageClasses, no CSIDrivers, and would reject pods that
+/// are perfectly schedulable. So this instead keeps serving the old contents
+/// throughout and sweeps once, at `InitDone`, which is the first moment the
+/// set of survivors is actually known.
+///
+/// Keys are tracked here rather than read back out of the cache because the
+/// cache holds several collections a single watch does not own; this way the
+/// sweep can only ever remove keys this watch itself inserted.
+#[derive(Default)]
+struct RelistSweep {
+    /// Every key this watch has put in the cache and not removed.
+    known: std::collections::HashSet<String>,
+    /// Keys seen since the current `Init`. Empty when not relisting.
+    seen: std::collections::HashSet<String>,
+    relisting: bool,
+}
+
+impl RelistSweep {
+    fn begin(&mut self) {
+        self.seen.clear();
+        self.relisting = true;
+    }
+
+    fn observe(&mut self, key: &str) {
+        self.known.insert(key.to_string());
+        if self.relisting {
+            self.seen.insert(key.to_string());
+        }
+    }
+
+    fn forget(&mut self, key: &str) {
+        self.known.remove(key);
+        self.seen.remove(key);
+    }
+
+    /// The keys that were in the cache before the relist and did not come
+    /// back — i.e. deleted while this watch was not connected. Caller removes
+    /// each from the cache with the same accessor it uses for `Delete`.
+    fn finish(&mut self) -> Vec<String> {
+        self.relisting = false;
+        let gone: Vec<String> = self.known.difference(&self.seen).cloned().collect();
+        for key in &gone {
+            self.known.remove(key);
+        }
+        self.seen.clear();
+        gone
+    }
+}
+
 fn watch_nodes(client: &Client) -> BoxStream<'static, watcher::Result<Event<Node>>> {
     let api: Api<Node> = Api::all(client.clone());
     watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
@@ -333,103 +396,182 @@ fn watch_resource_slices(client: &Client) -> BoxStream<'static, watcher::Result<
     watcher(Api::<ResourceSlice>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
-fn handle_resource_claim_event(ev: Event<ResourceClaim>, targets: &WatchTargets) {
+fn handle_resource_claim_event(ev: Event<ResourceClaim>, sweep: &mut RelistSweep, targets: &WatchTargets) {
     let mut cache = targets.cache.lock().unwrap();
     match ev {
-        Event::Init | Event::InitDone => {}
+        Event::Init => sweep.begin(),
+        Event::InitDone => {
+            for key in sweep.finish() {
+                cache.remove_resource_claim(&key);
+            }
+        }
         Event::InitApply(c) | Event::Apply(c) => {
             let key = c.key();
+            sweep.observe(&key);
             cache.upsert_resource_claim(key, c);
         }
-        Event::Delete(c) => cache.remove_resource_claim(&c.key()),
+        Event::Delete(c) => {
+            let key = c.key();
+            sweep.forget(&key);
+            cache.remove_resource_claim(&key);
+        }
     }
 }
 
-fn handle_device_class_event(ev: Event<DeviceClass>, targets: &WatchTargets) {
+fn handle_device_class_event(ev: Event<DeviceClass>, sweep: &mut RelistSweep, targets: &WatchTargets) {
     let mut cache = targets.cache.lock().unwrap();
     match ev {
-        Event::Init | Event::InitDone => {}
+        Event::Init => sweep.begin(),
+        Event::InitDone => {
+            for key in sweep.finish() {
+                cache.remove_device_class(&key);
+            }
+        }
         Event::InitApply(c) | Event::Apply(c) => {
             let name = c.metadata.name.clone().unwrap_or_default();
+            sweep.observe(&name);
             cache.upsert_device_class(name, c);
         }
-        Event::Delete(c) => cache.remove_device_class(&c.metadata.name.clone().unwrap_or_default()),
+        Event::Delete(c) => {
+            let name = c.metadata.name.clone().unwrap_or_default();
+            sweep.forget(&name);
+            cache.remove_device_class(&name);
+        }
     }
 }
 
-fn handle_resource_slice_event(ev: Event<ResourceSlice>, targets: &WatchTargets) {
+fn handle_resource_slice_event(ev: Event<ResourceSlice>, sweep: &mut RelistSweep, targets: &WatchTargets) {
     let mut cache = targets.cache.lock().unwrap();
     match ev {
-        Event::Init | Event::InitDone => {}
+        Event::Init => sweep.begin(),
+        Event::InitDone => {
+            for key in sweep.finish() {
+                cache.remove_resource_slice(&key);
+            }
+        }
         Event::InitApply(s) | Event::Apply(s) => {
             let name = s.metadata.name.clone().unwrap_or_default();
+            sweep.observe(&name);
             cache.upsert_resource_slice(name, s);
         }
-        Event::Delete(s) => cache.remove_resource_slice(&s.metadata.name.clone().unwrap_or_default()),
+        Event::Delete(s) => {
+            let name = s.metadata.name.clone().unwrap_or_default();
+            sweep.forget(&name);
+            cache.remove_resource_slice(&name);
+        }
     }
 }
 
-fn handle_pv_event(ev: Event<Pv>, targets: &WatchTargets) {
+fn handle_pv_event(ev: Event<Pv>, sweep: &mut RelistSweep, targets: &WatchTargets) {
     let mut cache = targets.cache.lock().unwrap();
     match ev {
-        Event::Init | Event::InitDone => {}
+        Event::Init => sweep.begin(),
+        Event::InitDone => {
+            for key in sweep.finish() {
+                cache.remove_pv(&key);
+            }
+        }
         Event::InitApply(pv) | Event::Apply(pv) => {
             let name = pv.metadata.name.clone().unwrap_or_default();
+            sweep.observe(&name);
             cache.upsert_pv(name, crate::cache::PvInfo::from_api(&pv));
         }
-        Event::Delete(pv) => cache.remove_pv(&pv.metadata.name.clone().unwrap_or_default()),
+        Event::Delete(pv) => {
+            let name = pv.metadata.name.clone().unwrap_or_default();
+            sweep.forget(&name);
+            cache.remove_pv(&name);
+        }
     }
 }
 
-fn handle_pvc_event(ev: Event<Pvc>, targets: &WatchTargets) {
+fn handle_pvc_event(ev: Event<Pvc>, sweep: &mut RelistSweep, targets: &WatchTargets) {
     let mut cache = targets.cache.lock().unwrap();
     match ev {
-        Event::Init | Event::InitDone => {}
+        Event::Init => sweep.begin(),
+        Event::InitDone => {
+            for key in sweep.finish() {
+                cache.remove_pvc(&key);
+            }
+        }
         Event::InitApply(pvc) | Event::Apply(pvc) => {
             let info = crate::cache::PvcInfo::from_api(&pvc);
-            cache.upsert_pvc(info.key(), info);
+            let key = info.key();
+            sweep.observe(&key);
+            cache.upsert_pvc(key, info);
         }
         Event::Delete(pvc) => {
             let ns = pvc.metadata.namespace.clone().unwrap_or_default();
             let name = pvc.metadata.name.clone().unwrap_or_default();
-            cache.remove_pvc(&format!("{ns}/{name}"));
+            let key = format!("{ns}/{name}");
+            sweep.forget(&key);
+            cache.remove_pvc(&key);
         }
     }
 }
 
-fn handle_storage_class_event(ev: Event<Sc>, targets: &WatchTargets) {
+fn handle_storage_class_event(ev: Event<Sc>, sweep: &mut RelistSweep, targets: &WatchTargets) {
     let mut cache = targets.cache.lock().unwrap();
     match ev {
-        Event::Init | Event::InitDone => {}
+        Event::Init => sweep.begin(),
+        Event::InitDone => {
+            for key in sweep.finish() {
+                cache.remove_storage_class(&key);
+            }
+        }
         Event::InitApply(sc) | Event::Apply(sc) => {
             let name = sc.metadata.name.clone().unwrap_or_default();
+            sweep.observe(&name);
             cache.upsert_storage_class(name, crate::cache::StorageClassInfo::from_api(&sc));
         }
-        Event::Delete(sc) => cache.remove_storage_class(&sc.metadata.name.clone().unwrap_or_default()),
+        Event::Delete(sc) => {
+            let name = sc.metadata.name.clone().unwrap_or_default();
+            sweep.forget(&name);
+            cache.remove_storage_class(&name);
+        }
     }
 }
 
-fn handle_csi_node_event(ev: Event<CsiNode>, targets: &WatchTargets) {
+fn handle_csi_node_event(ev: Event<CsiNode>, sweep: &mut RelistSweep, targets: &WatchTargets) {
     let mut cache = targets.cache.lock().unwrap();
     match ev {
-        Event::Init | Event::InitDone => {}
+        Event::Init => sweep.begin(),
+        Event::InitDone => {
+            for key in sweep.finish() {
+                cache.remove_csi_node(&key);
+            }
+        }
         Event::InitApply(n) | Event::Apply(n) => {
             let name = n.metadata.name.clone().unwrap_or_default();
+            sweep.observe(&name);
             cache.upsert_csi_node(name, crate::cache::CsiNodeInfo::from_api(&n));
         }
-        Event::Delete(n) => cache.remove_csi_node(&n.metadata.name.clone().unwrap_or_default()),
+        Event::Delete(n) => {
+            let name = n.metadata.name.clone().unwrap_or_default();
+            sweep.forget(&name);
+            cache.remove_csi_node(&name);
+        }
     }
 }
 
-fn handle_csi_driver_event(ev: Event<CsiDriver>, targets: &WatchTargets) {
+fn handle_csi_driver_event(ev: Event<CsiDriver>, sweep: &mut RelistSweep, targets: &WatchTargets) {
     let mut cache = targets.cache.lock().unwrap();
     match ev {
-        Event::Init | Event::InitDone => {}
+        Event::Init => sweep.begin(),
+        Event::InitDone => {
+            for key in sweep.finish() {
+                cache.remove_csi_driver(&key);
+            }
+        }
         Event::InitApply(d) | Event::Apply(d) => {
             let name = d.metadata.name.clone().unwrap_or_default();
+            sweep.observe(&name);
             cache.upsert_csi_driver(name, crate::cache::CsiDriverInfo::from_api(&d));
         }
-        Event::Delete(d) => cache.remove_csi_driver(&d.metadata.name.clone().unwrap_or_default()),
+        Event::Delete(d) => {
+            let name = d.metadata.name.clone().unwrap_or_default();
+            sweep.forget(&name);
+            cache.remove_csi_driver(&name);
+        }
     }
 }
 
@@ -590,6 +732,16 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
     let mut csi_drivers = watch_csi_drivers(&client);
     let mut csi_storage_capacities = watch_csi_storage_capacities(&client);
     let mut csc_mirror: HashMap<String, CsiStorageCapacity> = HashMap::new();
+    // One per watch: a relist is per stream, so sharing a sweep between two
+    // of them would let one watch's InitDone delete the other's objects.
+    let mut pv_sweep = RelistSweep::default();
+    let mut pvc_sweep = RelistSweep::default();
+    let mut sc_sweep = RelistSweep::default();
+    let mut csi_node_sweep = RelistSweep::default();
+    let mut csi_driver_sweep = RelistSweep::default();
+    let mut claim_sweep = RelistSweep::default();
+    let mut device_class_sweep = RelistSweep::default();
+    let mut slice_sweep = RelistSweep::default();
     let mut resource_claims = watch_resource_claims(&client);
     let mut device_classes = watch_device_classes(&client);
     let mut resource_slices = watch_resource_slices(&client);
@@ -715,35 +867,35 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
                 if workload_stream_hiccup(&event, "persistentvolume", &mut pv_failures).await {
                     pvs = watch_pvs(&client);
                 } else if let Some(Ok(ev)) = event {
-                    handle_pv_event(ev, &targets);
+                    handle_pv_event(ev, &mut pv_sweep, &targets);
                 }
             },
             event = pvcs.next() => {
                 if workload_stream_hiccup(&event, "persistentvolumeclaim", &mut pvc_failures).await {
                     pvcs = watch_pvcs(&client);
                 } else if let Some(Ok(ev)) = event {
-                    handle_pvc_event(ev, &targets);
+                    handle_pvc_event(ev, &mut pvc_sweep, &targets);
                 }
             },
             event = storage_classes.next() => {
                 if workload_stream_hiccup(&event, "storageclass", &mut sc_failures).await {
                     storage_classes = watch_storage_classes(&client);
                 } else if let Some(Ok(ev)) = event {
-                    handle_storage_class_event(ev, &targets);
+                    handle_storage_class_event(ev, &mut sc_sweep, &targets);
                 }
             },
             event = csi_nodes.next() => {
                 if workload_stream_hiccup(&event, "csinode", &mut csi_node_failures).await {
                     csi_nodes = watch_csi_nodes(&client);
                 } else if let Some(Ok(ev)) = event {
-                    handle_csi_node_event(ev, &targets);
+                    handle_csi_node_event(ev, &mut csi_node_sweep, &targets);
                 }
             },
             event = csi_drivers.next() => {
                 if workload_stream_hiccup(&event, "csidriver", &mut csi_driver_failures).await {
                     csi_drivers = watch_csi_drivers(&client);
                 } else if let Some(Ok(ev)) = event {
-                    handle_csi_driver_event(ev, &targets);
+                    handle_csi_driver_event(ev, &mut csi_driver_sweep, &targets);
                 }
             },
             event = csi_storage_capacities.next() => {
@@ -757,21 +909,21 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
                 if workload_stream_hiccup(&event, "resourceclaim", &mut claim_failures).await {
                     resource_claims = watch_resource_claims(&client);
                 } else if let Some(Ok(ev)) = event {
-                    handle_resource_claim_event(ev, &targets);
+                    handle_resource_claim_event(ev, &mut claim_sweep, &targets);
                 }
             },
             event = device_classes.next() => {
                 if workload_stream_hiccup(&event, "deviceclass", &mut device_class_failures).await {
                     device_classes = watch_device_classes(&client);
                 } else if let Some(Ok(ev)) = event {
-                    handle_device_class_event(ev, &targets);
+                    handle_device_class_event(ev, &mut device_class_sweep, &targets);
                 }
             },
             event = resource_slices.next() => {
                 if workload_stream_hiccup(&event, "resourceslice", &mut slice_failures).await {
                     resource_slices = watch_resource_slices(&client);
                 } else if let Some(Ok(ev)) = event {
-                    handle_resource_slice_event(ev, &targets);
+                    handle_resource_slice_event(ev, &mut slice_sweep, &targets);
                 }
             },
             event = pdbs.next() => match event {
@@ -1112,5 +1264,69 @@ mod tests {
         let mut p = pod(None, "default-scheduler");
         p.node_name = None;
         assert_eq!(route_pod(&p, &profiles(&["default-scheduler"])), PodRoute::Queue);
+    }
+
+    // ── RelistSweep ──────────────────────────────────────────────────────
+    //
+    // The bug these guard is invisible in any single event: it only appears
+    // across a disconnect, where the delete that happened while the watch was
+    // down is a message that is never delivered at all.
+
+    #[test]
+    fn an_object_deleted_during_the_disconnect_is_swept_at_init_done() {
+        let mut sweep = RelistSweep::default();
+
+        // First list: two objects.
+        sweep.begin();
+        sweep.observe("pv-a");
+        sweep.observe("pv-b");
+        assert!(sweep.finish().is_empty(), "nothing was there before, so nothing can be stale");
+
+        // The watch drops. pv-b is deleted while it is down. The relist
+        // therefore only carries pv-a.
+        sweep.begin();
+        sweep.observe("pv-a");
+        assert_eq!(sweep.finish(), vec!["pv-b".to_string()]);
+    }
+
+    #[test]
+    fn a_relist_that_returns_everything_sweeps_nothing() {
+        let mut sweep = RelistSweep::default();
+        sweep.begin();
+        sweep.observe("sc-1");
+        sweep.finish();
+
+        sweep.begin();
+        sweep.observe("sc-1");
+        assert!(sweep.finish().is_empty(), "an unchanged relist must not delete the cache out from under the scheduler");
+    }
+
+    #[test]
+    fn an_ordinary_delete_between_relists_is_not_reported_again() {
+        let mut sweep = RelistSweep::default();
+        sweep.begin();
+        sweep.observe("csidriver-x");
+        sweep.finish();
+
+        // Delivered normally while connected — already removed from the cache.
+        sweep.forget("csidriver-x");
+
+        sweep.begin();
+        assert!(
+            sweep.finish().is_empty(),
+            "sweeping a key the Delete arm already handled would be a redundant second remove"
+        );
+    }
+
+    #[test]
+    fn objects_added_while_connected_are_tracked_for_the_next_relist() {
+        let mut sweep = RelistSweep::default();
+        // No Init at all yet — an Apply on a live stream still has to be
+        // remembered, or the first relist would not know it existed.
+        sweep.observe("pvc-late");
+
+        sweep.begin();
+        // It did not come back.
+        assert_eq!(sweep.finish(), vec!["pvc-late".to_string()]);
     }
 }

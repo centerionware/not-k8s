@@ -48,7 +48,14 @@ else
     # to prevent. The real (re)configure-and-start happens below, once
     # INSTALL_K3S_EXEC (with --disable-scheduler already in it, if wanted)
     # is set — args come from there, not from this call.
-    INSTALL_K3S_SKIP_START=true curl -sfL https://get.k3s.io | sh -s - ""
+    #
+    # The assignment has to sit on `sh`, not on `curl`. A `VAR=x cmd` prefix
+    # scopes the variable to *that* command only, so `INSTALL_K3S_SKIP_START=true
+    # curl ... | sh` sets it for curl — which ignores it — and the installer
+    # on the other side of the pipe never sees it at all. Confirmed live in
+    # CI: the run still logged "[INFO] systemd: Starting k3s" from this
+    # install, i.e. the window this flag exists to close was wide open.
+    curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true sh -s - ""
 fi
 
 # ── Configure and (re)start k3s with agent disabled ─────────────────────────

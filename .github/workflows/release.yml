@@ -143,11 +143,20 @@ jobs:
         # "phase 1 only" gap — but the release gate still tests what a
         # release actually ships *by default*: k3s's own bundled scheduler,
         # since SCHEDULER is opt-in at deploy time
-        # (bootstrap-source.sh/bootstrap-release.sh), not the default. A
-        # full unfiltered run with SCHEDULER=nodescheduler has also turned up
-        # real, still-open failures outside cases/scheduler.sh itself (CSI
-        # attach timing, cpu-manager) that need to be understood before this
-        # could gate a release rather than the default scheduler.
+        # (bootstrap-source.sh/bootstrap-release.sh), not the default.
+        #
+        # An earlier version of this comment claimed a SCHEDULER=nodescheduler
+        # run had turned up "still-open failures outside cases/scheduler.sh
+        # (CSI attach timing, cpu-manager)". That attribution was wrong, and
+        # measuring it settled the question: the same two CSI tests
+        # (test_pod_with_an_attach_required_pvc_waits_for_volumeattachment and
+        # test_node_reports_volumes_in_use_for_a_csi_volume) fail identically
+        # on main with k3s's own scheduler placing the pods, and cpu-manager
+        # passes in both. They are a nodelet gap — the Node carries no
+        # volumes.kubernetes.io/controller-managed-attach-detach annotation, so
+        # kube-controller-manager's AttachDetachController never adds it to its
+        # desired state of world and no VolumeAttachment is ever created — and
+        # they are tracked separately from this component.
         # cases/scheduler.sh self-skips here, and its own coverage comes from
         # a targeted dispatch instead —
         # `gh workflow run e2e.yml -f scheduler=nodescheduler -f only=scheduler`.
