@@ -152,6 +152,7 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
         queue: queue.clone(),
         profile_names: cfg.profile_names.clone(),
         budgets: budgets.clone(),
+        assumed: assumed.clone(),
     };
 
     let mut watches = {

@@ -201,6 +201,12 @@ pub struct WatchTargets {
     /// exists because something asked for it. A cluster that never preempts
     /// pays nothing for this watch.
     pub budgets: Arc<Mutex<Vec<crate::preempt::PdbState>>>,
+    /// This scheduling loop's own optimistic reservations — see
+    /// `cache/assume.rs`. The pod watch clears a pod's entry here the moment
+    /// the informer delivers the real bound object, which is what
+    /// `AssumedPods::confirmed`'s doc comment already promised but nothing
+    /// used to call.
+    pub assumed: Arc<Mutex<crate::cache::AssumedPods>>,
 }
 
 /// Mirrors of the last version of each object, so updates can be diffed.
@@ -742,6 +748,8 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
     let mut claim_sweep = RelistSweep::default();
     let mut device_class_sweep = RelistSweep::default();
     let mut slice_sweep = RelistSweep::default();
+    let mut node_sweep = RelistSweep::default();
+    let mut pod_sweep = RelistSweep::default();
     let mut resource_claims = watch_resource_claims(&client);
     let mut device_classes = watch_device_classes(&client);
     let mut resource_slices = watch_resource_slices(&client);
@@ -774,7 +782,7 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
                         );
                     }
                     node_failures = 0;
-                    handle_node_event(ev, &mut mirror, &targets);
+                    handle_node_event(ev, &mut mirror, &mut node_sweep, &targets);
                 }
                 Some(Err(e)) => {
                     // No sleep: `nodes` is `.backoff(...)`-wrapped and paces
@@ -954,7 +962,7 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
                         tracing::info!(after_failures = pod_failures, "pod watch recovered");
                     }
                     pod_failures = 0;
-                    handle_pod_event(ev, &mut mirror, &targets);
+                    handle_pod_event(ev, &mut mirror, &mut pod_sweep, &targets);
                 }
                 Some(Err(e)) => {
                     // No sleep: `pods` is `.backoff(...)`-wrapped and paces
@@ -977,20 +985,40 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
     }
 }
 
-fn handle_node_event(ev: Event<Node>, mirror: &mut Mirror, targets: &WatchTargets) {
+/// Drop a node the same way whether it left via a real `Delete` or was
+/// missing from a relist — see `RelistSweep`'s doc comment for why both
+/// paths must agree.
+fn remove_node(name: &str, mirror: &mut Mirror, targets: &WatchTargets) {
+    mirror.nodes.remove(name);
+    targets.cache.lock().unwrap().remove_node(name);
+    // Deliberately no event: a node going away frees nothing and makes
+    // no pending pod schedulable. Waking every parked pod to have them
+    // all fail again is exactly the thundering herd this design avoids.
+}
+
+fn handle_node_event(ev: Event<Node>, mirror: &mut Mirror, sweep: &mut RelistSweep, targets: &WatchTargets) {
     match ev {
-        // A relist started. Drop the mirror so stale objects cannot produce
-        // phantom diffs against whatever arrives next.
-        Event::Init => mirror.nodes.clear(),
-        // Logged at info, and deliberately: a relist is rare on a healthy
-        // cluster, and its absence is the difference between "the watch died"
-        // and "the watch is alive but delivering nothing" — a distinction a
-        // live run could not be made to answer without it.
+        // A relist started. Keep serving the mirror's current contents
+        // throughout — see `RelistSweep`'s doc comment — rather than
+        // clearing it and having the scheduler see no nodes at all for
+        // however long the relist takes.
+        Event::Init => sweep.begin(),
+        // The first moment the set of survivors is actually known: anything
+        // this watch had before `Init` that did not come back as an
+        // `InitApply` was deleted while disconnected and stays cached
+        // forever otherwise — the exact bug `cache/node.rs`'s own doc
+        // comment describes as a node that "looks fuller than it is",
+        // except nodes have no later resync to self-correct it.
         Event::InitDone => {
-            tracing::info!(nodes = mirror.nodes.len(), "node watch (re)listed")
+            let gone = sweep.finish();
+            for name in &gone {
+                remove_node(name, mirror, targets);
+            }
+            tracing::info!(nodes = mirror.nodes.len(), swept = gone.len(), "node watch (re)listed")
         }
         Event::InitApply(node) | Event::Apply(node) => {
             let name = node.name_any();
+            sweep.observe(&name);
             let previous = mirror.nodes.insert(name.clone(), node.clone());
 
             targets.cache.lock().unwrap().upsert_node(&node);
@@ -1015,23 +1043,64 @@ fn handle_node_event(ev: Event<Node>, mirror: &mut Mirror, targets: &WatchTarget
         }
         Event::Delete(node) => {
             let name = node.name_any();
-            mirror.nodes.remove(&name);
-            targets.cache.lock().unwrap().remove_node(&name);
-            // Deliberately no event: a node going away frees nothing and makes
-            // no pending pod schedulable. Waking every parked pod to have them
-            // all fail again is exactly the thundering herd this design avoids.
+            sweep.forget(&name);
+            remove_node(&name, mirror, targets);
         }
     }
 }
 
-fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, targets: &WatchTargets) {
+/// Drop a pod the same way whether it left via a real `Delete` or was
+/// missing from a relist — see `RelistSweep`'s doc comment for why both
+/// paths must agree.
+fn remove_pod(pod: Pod, targets: &WatchTargets) {
+    let info = PodInfo::from_pod(&pod, k8s_openapi::jiff::Timestamp::now());
+
+    targets.queue.remove(&info.uid);
+    // Whatever this scheduler had reserved for it is moot now — a pod
+    // deleted between being assumed and the informer confirming it must not
+    // keep looking like committed capacity forever. Idempotent: a pod this
+    // instance never assumed is simply not in the map.
+    targets.assumed.lock().unwrap().forget(&info.uid);
+
+    if info.node_name.is_some() {
+        targets.cache.lock().unwrap().remove_pod(&info.uid);
+        // This one genuinely frees capacity, so it is worth waking
+        // pods for — it is the single most common reason a pending pod
+        // becomes schedulable.
+        targets.queue.move_all_to_active_or_backoff(
+            ClusterEvent::new(EventResource::AssignedPod, ActionType::DELETE),
+            Some(ChangedObject::Pod(Box::new(pod))),
+            None,
+        );
+    }
+}
+
+fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, sweep: &mut RelistSweep, targets: &WatchTargets) {
     match ev {
-        Event::Init => mirror.pods.clear(),
+        // A relist started. Keep serving the mirror's current contents
+        // throughout — see `RelistSweep`'s doc comment — rather than
+        // clearing it and having the scheduler see no pods at all (every
+        // node looking totally empty) for however long the relist takes.
+        Event::Init => sweep.begin(),
+        // The first moment the set of survivors is actually known: a pod
+        // deleted while this watch was disconnected never produced a
+        // `Delete` event, so without this sweep its resources stayed
+        // committed to its node forever — `cache/node.rs`'s own doc comment
+        // describes exactly this as a node that "looks fuller than it is",
+        // pessimistic and normally self-correcting on the next resync. Pods
+        // had no such resync until now.
         Event::InitDone => {
-            tracing::info!(pods = mirror.pods.len(), "pod watch (re)listed")
+            let gone = sweep.finish();
+            for key in &gone {
+                if let Some(pod) = mirror.pods.remove(key) {
+                    remove_pod(pod, targets);
+                }
+            }
+            tracing::info!(pods = mirror.pods.len(), swept = gone.len(), "pod watch (re)listed")
         }
         Event::InitApply(pod) | Event::Apply(pod) => {
             let key = pod_key(&pod);
+            sweep.observe(&key);
             let previous = mirror.pods.insert(key.clone(), pod.clone());
             let info = Arc::new(PodInfo::from_pod(&pod, k8s_openapi::jiff::Timestamp::now()));
 
@@ -1040,6 +1109,13 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, targets: &WatchTargets)
                     // It may have been queued before it was placed — by us, or
                     // by another scheduler that got there first.
                     targets.queue.remove(&info.uid);
+                    // The informer delivering the real bound object is what
+                    // `cache/assume.rs`'s doc comment calls "superseded by
+                    // fact" — this is that moment. A pod this instance never
+                    // assumed (placed by another profile, or one that was
+                    // already bound when the relist picked it up) simply
+                    // isn't in the map, so `confirmed` is a no-op for it.
+                    targets.assumed.lock().unwrap().confirmed(&info.uid);
                     targets.cache.lock().unwrap().add_pod(info);
 
                     // An assigned pod changing can free capacity (it shrank)
@@ -1110,22 +1186,9 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, targets: &WatchTargets)
         }
         Event::Delete(pod) => {
             let key = pod_key(&pod);
+            sweep.forget(&key);
             mirror.pods.remove(&key);
-            let info = PodInfo::from_pod(&pod, k8s_openapi::jiff::Timestamp::now());
-
-            targets.queue.remove(&info.uid);
-
-            if info.node_name.is_some() {
-                targets.cache.lock().unwrap().remove_pod(&info.uid);
-                // This one genuinely frees capacity, so it is worth waking
-                // pods for — it is the single most common reason a pending pod
-                // becomes schedulable.
-                targets.queue.move_all_to_active_or_backoff(
-                    ClusterEvent::new(EventResource::AssignedPod, ActionType::DELETE),
-                    Some(ChangedObject::Pod(Box::new(pod))),
-                    None,
-                );
-            }
+            remove_pod(pod, targets);
         }
     }
 }
@@ -1328,5 +1391,172 @@ mod tests {
         sweep.begin();
         // It did not come back.
         assert_eq!(sweep.finish(), vec!["pvc-late".to_string()]);
+    }
+
+    // ── handle_pod_event / handle_node_event, end to end ────────────────
+    //
+    // Everything above proves `RelistSweep` itself is correct; these prove it
+    // is actually wired into the two handlers that used to skip it — the gap
+    // that let a pod or node deleted mid-disconnect stay committed to a
+    // node's capacity forever.
+
+    fn api_pod(uid: &str, node_name: Option<&str>) -> Pod {
+        use k8s_openapi::api::core::v1::{PodSpec, ResourceRequirements};
+        use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        use std::collections::BTreeMap;
+
+        Pod {
+            metadata: ObjectMeta {
+                name: Some(uid.to_string()),
+                namespace: Some("default".to_string()),
+                uid: Some(uid.to_string()),
+                ..Default::default()
+            },
+            spec: Some(PodSpec {
+                node_name: node_name.map(String::from),
+                scheduler_name: Some("default-scheduler".to_string()),
+                containers: vec![k8s_openapi::api::core::v1::Container {
+                    name: "c".to_string(),
+                    resources: Some(ResourceRequirements {
+                        requests: Some(BTreeMap::from([(
+                            "cpu".to_string(),
+                            Quantity("1".to_string()),
+                        )])),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn api_node(name: &str) -> Node {
+        use k8s_openapi::api::core::v1::NodeStatus;
+        use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        use std::collections::BTreeMap;
+
+        Node {
+            metadata: ObjectMeta { name: Some(name.to_string()), ..Default::default() },
+            status: Some(NodeStatus {
+                allocatable: Some(BTreeMap::from([("cpu".to_string(), Quantity("4".to_string()))])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn test_targets() -> WatchTargets {
+        let mut hints = crate::queue::hints::HintRegistry::new();
+        hints.register(
+            "Fit",
+            vec![crate::framework::ClusterEventWithHint::always(ClusterEvent::new(
+                EventResource::Node,
+                ActionType::ADD,
+            ))],
+        );
+        let queue = Arc::new(SchedulingQueue::new(
+            hints,
+            Arc::new(|a: &PodInfo, b: &PodInfo| a.queued_at < b.queued_at),
+            Arc::new(|_: &PodInfo| crate::framework::status::Status::success()),
+            crate::queue::backoff::BackoffQueue::new(
+                crate::queue::backoff::DEFAULT_POD_INITIAL_BACKOFF,
+                crate::queue::backoff::DEFAULT_POD_MAX_BACKOFF,
+            ),
+            crate::queue::DEFAULT_MAX_IN_UNSCHEDULABLE,
+        ));
+        WatchTargets {
+            cache: Arc::new(Mutex::new(Cache::new())),
+            queue,
+            profile_names: vec!["default-scheduler".to_string()],
+            budgets: Arc::new(Mutex::new(Vec::new())),
+            assumed: Arc::new(Mutex::new(crate::cache::AssumedPods::new())),
+        }
+    }
+
+    #[test]
+    fn a_pod_deleted_during_a_watch_disconnect_is_swept_from_the_cache() {
+        let targets = test_targets();
+        targets.cache.lock().unwrap().upsert_node(&api_node("n1"));
+        let mut mirror = Mirror::default();
+        let mut sweep = RelistSweep::default();
+
+        // First relist: one pod, bound to n1, is live.
+        handle_pod_event(Event::Init, &mut mirror, &mut sweep, &targets);
+        handle_pod_event(Event::InitApply(api_pod("p1", Some("n1"))), &mut mirror, &mut sweep, &targets);
+        handle_pod_event(Event::InitDone, &mut mirror, &mut sweep, &targets);
+        assert_eq!(targets.cache.lock().unwrap().pod_node("p1"), Some("n1"));
+
+        // The watch drops. p1 is deleted server-side while it is down, so the
+        // next relist carries nothing — no `Delete` event is ever sent for it.
+        handle_pod_event(Event::Init, &mut mirror, &mut sweep, &targets);
+        handle_pod_event(Event::InitDone, &mut mirror, &mut sweep, &targets);
+
+        assert_eq!(
+            targets.cache.lock().unwrap().pod_node("p1"),
+            None,
+            "a pod deleted mid-disconnect must not keep occupying its node's capacity forever"
+        );
+    }
+
+    #[test]
+    fn a_node_deleted_during_a_watch_disconnect_is_swept_from_the_cache() {
+        let targets = test_targets();
+        let mut mirror = Mirror::default();
+        let mut sweep = RelistSweep::default();
+
+        handle_node_event(Event::Init, &mut mirror, &mut sweep, &targets);
+        handle_node_event(Event::InitApply(api_node("n1")), &mut mirror, &mut sweep, &targets);
+        handle_node_event(Event::InitDone, &mut mirror, &mut sweep, &targets);
+        assert_eq!(targets.cache.lock().unwrap().num_nodes(), 1);
+
+        handle_node_event(Event::Init, &mut mirror, &mut sweep, &targets);
+        handle_node_event(Event::InitDone, &mut mirror, &mut sweep, &targets);
+
+        assert_eq!(
+            targets.cache.lock().unwrap().num_nodes(),
+            0,
+            "a node deleted mid-disconnect must not stay cached forever"
+        );
+    }
+
+    #[test]
+    fn the_informer_confirming_a_bound_pod_releases_the_assumed_reservation() {
+        let targets = test_targets();
+        targets.cache.lock().unwrap().upsert_node(&api_node("n1"));
+        let mut mirror = Mirror::default();
+        let mut sweep = RelistSweep::default();
+
+        // The scheduling loop assumed this pod before binding — see lib.rs's
+        // `Scheduled` arm.
+        targets.assumed.lock().unwrap().assume(&pod(Some("n1"), "default-scheduler"), "n1");
+        assert!(targets.assumed.lock().unwrap().is_assumed("u"));
+
+        // The informer now delivers the real bound object.
+        handle_pod_event(Event::Apply(api_pod("u", Some("n1"))), &mut mirror, &mut sweep, &targets);
+
+        assert!(
+            !targets.assumed.lock().unwrap().is_assumed("u"),
+            "the assumption must be superseded by the confirmed pod, not held forever"
+        );
+    }
+
+    #[test]
+    fn a_pod_deleted_before_confirmation_also_releases_the_assumed_reservation() {
+        let targets = test_targets();
+        let mut mirror = Mirror::default();
+        let mut sweep = RelistSweep::default();
+
+        targets.assumed.lock().unwrap().assume(&pod(Some("n1"), "default-scheduler"), "n1");
+
+        handle_pod_event(Event::Delete(api_pod("u", Some("n1"))), &mut mirror, &mut sweep, &targets);
+
+        assert!(
+            !targets.assumed.lock().unwrap().is_assumed("u"),
+            "a pod deleted between being assumed and being confirmed must not stay reserved forever"
+        );
     }
 }
