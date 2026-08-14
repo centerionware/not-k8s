@@ -1,41 +1,41 @@
-commit: cff9e2379ca185446682b8ebbe3cdd64499c2211
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31791893621
-timestamp (UTC): 2026-08-14T10:30:55Z
+commit: 1d1b52322d190f301a00752c355d22730c3ae994
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31792935468
+timestamp (UTC): 2026-08-14T10:46:03Z
 shard: 1/5
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786703294
+==> Test namespace: not-k8s-e2e-1786704201
 ==> 216 test(s) registered total (before sharding); running now...
 ==> Shard 1/5: 48 test(s) selected
 ▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
 ==> FATAL: pod never reached Running — check nodelet's logs for 'driver requires attach but no matching VolumeAttachment exists yet' (external-attacher not running) or 'VolumeAttachment found but not yet attached' (attach still in progress)
-  ✘ FAIL (120s, exit 1)
+  ✘ FAIL (122s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 14 10:30:01 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:01.892931Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-28bc6f20-e5a4-4b99-adda-5445c2c1c033 driver=hostpath.csi.k8s.io
-    Aug 14 10:30:01 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:01.913757Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-28bc6f20-e5a4-4b99-adda-5445c2c1c033 driver=hostpath.csi.k8s.io
-    Aug 14 10:30:03 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:03.225398Z  INFO node status pushed
-    Aug 14 10:30:06 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:06.730565Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-28bc6f20-e5a4-4b99-adda-5445c2c1c033 driver=hostpath.csi.k8s.io
-    Aug 14 10:30:06 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:06.793898Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-28bc6f20-e5a4-4b99-adda-5445c2c1c033 driver=hostpath.csi.k8s.io
-    Aug 14 10:30:06 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:06.927499Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-28bc6f20-e5a4-4b99-adda-5445c2c1c033 driver=hostpath.csi.k8s.io
-    Aug 14 10:30:06 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:06.953752Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-28bc6f20-e5a4-4b99-adda-5445c2c1c033 driver=hostpath.csi.k8s.io
-    Aug 14 10:30:11 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:11.761629Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-28bc6f20-e5a4-4b99-adda-5445c2c1c033 driver=hostpath.csi.k8s.io
-    Aug 14 10:30:11 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:11.824900Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-28bc6f20-e5a4-4b99-adda-5445c2c1c033 driver=hostpath.csi.k8s.io
-    Aug 14 10:30:11 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:11.965640Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-28bc6f20-e5a4-4b99-adda-5445c2c1c033 driver=hostpath.csi.k8s.io
-    Aug 14 10:30:11 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:11.986090Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-28bc6f20-e5a4-4b99-adda-5445c2c1c033 driver=hostpath.csi.k8s.io
-    Aug 14 10:30:15 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:15.508536Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-28bc6f20-e5a4-4b99-adda-5445c2c1c033 driver=hostpath.csi.k8s.io
-    Aug 14 10:30:15 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:15.508710Z  INFO torn down pod=not-k8s-e2e-1786703294/csi-attach-check
-    Aug 14 10:30:15 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:15.610288Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-28bc6f20-e5a4-4b99-adda-5445c2c1c033 driver=hostpath.csi.k8s.io
-    Aug 14 10:30:15 runnervmzvulz run-nodelet.sh[16288]: 2026-08-14T10:30:15.610461Z  INFO torn down pod=not-k8s-e2e-1786703294/csi-attach-check
+    Aug 14 10:45:23 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:23.941229Z  WARN still waiting for a CSI volume attach after 24 retries — giving up; pod stays Pending until the next real watch event pod=not-k8s-e2e-1786704201/csi-attach-check
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.017349Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-6f007570-0958-4253-9886-3d6c20695518 driver=hostpath.csi.k8s.io
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.029819Z  WARN still waiting for a CSI volume attach after 24 retries — giving up; pod stays Pending until the next real watch event pod=not-k8s-e2e-1786704201/csi-attach-check
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.126121Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-6f007570-0958-4253-9886-3d6c20695518 driver=hostpath.csi.k8s.io
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.138553Z  WARN still waiting for a CSI volume attach after 24 retries — giving up; pod stays Pending until the next real watch event pod=not-k8s-e2e-1786704201/csi-attach-check
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.231084Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-6f007570-0958-4253-9886-3d6c20695518 driver=hostpath.csi.k8s.io
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.243520Z  WARN still waiting for a CSI volume attach after 24 retries — giving up; pod stays Pending until the next real watch event pod=not-k8s-e2e-1786704201/csi-attach-check
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.352779Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-6f007570-0958-4253-9886-3d6c20695518 driver=hostpath.csi.k8s.io
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.366882Z  WARN still waiting for a CSI volume attach after 24 retries — giving up; pod stays Pending until the next real watch event pod=not-k8s-e2e-1786704201/csi-attach-check
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.403034Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-6f007570-0958-4253-9886-3d6c20695518 driver=hostpath.csi.k8s.io
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.416176Z  WARN still waiting for a CSI volume attach after 24 retries — giving up; pod stays Pending until the next real watch event pod=not-k8s-e2e-1786704201/csi-attach-check
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.719512Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-6f007570-0958-4253-9886-3d6c20695518 driver=hostpath.csi.k8s.io
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.719638Z  INFO torn down pod=not-k8s-e2e-1786704201/csi-attach-check
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.820269Z  WARN driver requires attach but no matching VolumeAttachment exists yet (external-attacher hasn't created it); will retry next reconcile claim=csi-attach-check-claim volume=pvc-6f007570-0958-4253-9886-3d6c20695518 driver=hostpath.csi.k8s.io
+    Aug 14 10:45:24 runnervmvrwv9 run-nodelet.sh[15671]: 2026-08-14T10:45:24.820446Z  INFO torn down pod=not-k8s-e2e-1786704201/csi-attach-check
 ▶ test_container_status_reports_resolved_user
   ✔ PASS (3s)
 ▶ test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
-  ✔ PASS (34s)
+  ✔ PASS (33s)
 
 ════════════════════════════════════════
 Results: 2 passed, 1 failed, 0 skipped
 Failed:
   - test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786703294...
+==> Cleaning up test namespace not-k8s-e2e-1786704201...
