@@ -1,25 +1,25 @@
-commit: a2978a354bbc58c410de614117ddb0555fc115d3
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31836104049
-timestamp (UTC): 2026-08-14T20:11:31Z
+commit: c58da4a7e3d814bc2ee6d9d0bc236bb4e63ba366
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31837508114
+timestamp (UTC): 2026-08-14T20:29:39Z
 shard: 3/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786738087
-==> 197 test(s) registered total (before sharding); running now...
-==> Shard 3/5: 37 test(s) selected
+==> Test namespace: not-k8s-e2e-1786739188
+==> 217 test(s) registered total (before sharding); running now...
+==> Shard 3/5: 41 test(s) selected
 ▶ test_combined_binary_rejects_an_unknown_component
     (skip: no combined binary here (split layout))
   ○ SKIP (0s)
 ▶ test_credential_provider_config_unset_by_default
   ✔ PASS (0s)
 ▶ test_datastore_enforces_compare_and_swap
-  ✔ PASS (0s)
+  ✔ PASS (1s)
 ▶ test_datastore_expires_a_lease_and_its_keys
   ✔ PASS (1s)
 ▶ test_apiserver_crud_round_trips_through_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11844/environ: Permission denied
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13405/environ: Permission denied
 Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
-  ✔ PASS (7s)
+  ✔ PASS (5s)
 ▶ test_a_follower_forwards_writes_to_the_leader
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
@@ -27,81 +27,80 @@ Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-app
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
 ▶ test_plugin_registry_watches_for_device_plugins_too
-  ✔ PASS (1s)
+  ✔ PASS (0s)
 ▶ test_custom_dns_config_reaches_resolv_conf
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_eviction_manual_procedure
     (skip: triggering real eviction safely needs either an artificially-low pressure threshold or actually exhausting a resource — neither is something this suite does to a live node automatically. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES set just above current MemAvailable (forces MemoryPressure=True without real exhaustion), (3) apply a BestEffort pod and a Guaranteed pod, (4) within NODELET_EVICTION_CHECK_SECS (default 10s) confirm the BestEffort pod gets phase Failed/reason Evicted and is deleted, while the Guaranteed pod is untouched, (5) restore the normal threshold and restart nodelet.)
   ○ SKIP (0s)
 ▶ test_pod_exceeding_an_empty_dir_size_limit_is_evicted
-  ✔ PASS (41s)
+  ✔ PASS (38s)
 ▶ test_basic_pod_runs
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_crashing_container_restarts_and_increments_restart_count
-  ✔ PASS (5s)
+  ✔ PASS (4s)
 ▶ test_exited_container_reports_terminated_state_with_exit_code
   ✔ PASS (3s)
 ▶ test_pod_status_reports_qos_class
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_node_reports_hugepages_capacity_when_reserved
-  ✔ PASS (0s)
+  ✔ PASS (1s)
 ▶ test_pod_resources_socket_is_created_on_a_cri_node
   ✔ PASS (0s)
 ▶ test_startup_probe_gates_liveness_and_readiness
   ✔ PASS (7s)
 ▶ test_metrics_resource_returns_real_pod_usage
-  ✔ PASS (5s)
+  ✔ PASS (3s)
 ▶ test_no_swap_default_disables_swap_via_cgroup
   ✔ PASS (3s)
 ▶ test_besteffort_pod_gets_no_cgroup_limit
   ✔ PASS (2s)
-▶ test_container_status_reports_resolved_user
+▶ test_scheduler_places_an_ordinary_pod
+  ✔ PASS (5s)
+▶ test_scheduler_respects_a_taint_and_its_toleration
   ✔ PASS (3s)
-▶ test_proc_mount_default_masks_proc_kcore
+▶ test_scheduler_honours_pod_affinity
+  ✔ PASS (17s)
+▶ test_scheduler_schedules_pods_that_get_default_spread_constraints
+  ✔ PASS (1s)
+▶ test_run_as_user_is_applied
   ✔ PASS (3s)
-▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
-==> WARNING: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership, got '3000 5000' — this runtime may not implement Merge's image-group-membership resolution (a newer-than-usual runc feature); not failing outright since nodelet itself only passes the policy through to CRI unchanged
+▶ test_host_users_false_gets_a_real_user_namespace
+  ✔ PASS (3s)
+▶ test_share_process_namespace_puts_every_container_in_one_pid_namespace
+  ✔ PASS (3s)
+▶ test_nodeport_service_is_reachable_on_the_node_ip
+  ✔ PASS (3s)
+▶ test_multiple_backends_actually_share_traffic
+  (distribution: a=16 b=24 of 40)
+  (kernel has nft_numgen — expecting the native map form)
+  ✔ PASS (5s)
+▶ test_kubectl_exec_runs_a_command_and_returns_its_output
+  ✔ PASS (3s)
+▶ test_downward_api_volume_writes_pod_metadata
+  ✔ PASS (3s)
+▶ test_host_aliases_still_work_under_host_users_false
   ✔ PASS (2s)
-▶ test_clusterip_is_reachable_from_inside_a_pod
-  ✔ PASS (6s)
-▶ test_session_affinity_pins_a_client_to_one_backend
-  ✔ PASS (6s)
-▶ test_kubectl_logs_returns_real_output
-  ✔ PASS (3s)
-▶ test_a_slow_terminating_pod_does_not_stall_another_pods_creation
-  ✔ PASS (10s)
-▶ test_configmap_and_secret_volumes_are_materialized
-  ✔ PASS (3s)
-▶ test_service_account_token_projected_volume_mints_a_real_token
-  ✔ PASS (3s)
-▶ test_image_volume_source_mounts_a_read_only_image
-  ✔ PASS (3s)
-▶ test_mount_propagation_private_default_does_not_see_a_new_host_mount
-  ✔ PASS (8s)
-▶ test_host_path_directory_mounts_the_real_host_directory
-  ✔ PASS (3s)
+▶ test_fsgroup_never_applies_to_hostpath_volumes
+  ✔ PASS (5s)
+▶ test_recursive_read_only_if_possible_falls_back_without_erroring
+  ✔ PASS (5s)
+▶ test_host_path_directory_type_rejects_a_nonexistent_path
+  ✔ PASS (2s)
 ▶ test_config_file_sets_a_value_env_did_not_override
   ✔ PASS (1s)
 ▶ test_image_gc_removes_unreferenced_images_above_the_watermark
-  ✔ PASS (42s)
+  ✔ PASS (35s)
 ▶ test_log_rotation_creates_a_rotated_file
-==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786738087_log-rotation_7cc513b4-b42e-4ea7-8387-cb443cbd72d5 (log_rotate_interval, default 10s)...
+==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786739188_log-rotation_973c3f86-1b55-4089-bed5-3eec9f01394b (log_rotate_interval, default 10s)...
   ✔ PASS (12s)
-▶ test_client_certificate_authentication_works
-.............+....+......+...+..+.......+..+.+..+..................+............+.+..+.........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+...+.+.........+..+.........+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.........+.........+.+...+.....+.......+...+...+...+.....+.+........+.+...........+......+...+......+.+...+.....+......+.+............+...........+.+.........+..+....+......+..+.......+.....+...+...+....+.....+...+.......+...........+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-.......+..+...+.......+..+...+.+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+...+....+.................+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*........+..+.........+...................+............+..+.+.....+......+...+......+.+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
------
-.+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+..+...+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+..+......................+......+..+....+........+.+......+...+...+..............+..................+......+.+.....+.........+....+.....+...+....+..............+.......+.....+............+............+.+.........+......+.........+.....+.+...+..+.........+.+...+......+.....+.............+.....+.+.....+.........+.............+...+..+....+...+..+...+..................+.........+.+..+.+.........+.....+......+.........+...+...+......+.+..............+.+...+..+...............+...+............+...................+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-....+......+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+...+.....+.......+.....+.+..+...+....+...+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
------
-Certificate request self-signature ok
-subject=CN = alice, O = system:masters
-..+......+.......+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*........+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+....+..+.+..+...............+..........+.....+................+.........+.....+.+...........+...+.+..+.......+.....+............+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-.....+..........+..+....+.....+......+...+.......+.....+....+......+...+............+............+...+..+......+......+.+.....+.........+...+...+.......+........+....+......+..+...+...+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+.....+..........+.........+..+...+...+....+...+........+.......+......+...........+.........+..........+......+...+......+..............+.+....................+.......+.....+...............+.......+.....+.......+.........+.....+....+.....+.............+...............+.....+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
------
-  ✔ PASS (2s)
+▶ test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart
+  ✔ PASS (3s)
+▶ test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host
+    (skip: this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case (align() alone should already satisfy it, spread() never needs to trigger))
+  ○ SKIP (1s)
 
 ════════════════════════════════════════
-Results: 33 passed, 0 failed, 4 skipped
+Results: 36 passed, 0 failed, 5 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786738087...
+==> Cleaning up test namespace not-k8s-e2e-1786739188...
