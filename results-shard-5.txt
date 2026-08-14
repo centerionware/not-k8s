@@ -1,23 +1,23 @@
 commit: 0f5728f8f5744af2e8bb55148d15ddc4e90307e4
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31778072354
-timestamp (UTC): 2026-08-14T07:01:24Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31778442661
+timestamp (UTC): 2026-08-14T07:10:38Z
 shard: 5/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786690874
+==> Test namespace: not-k8s-e2e-1786691279
 ==> 216 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 40 test(s) selected
 ▶ test_scheduler_honours_a_node_selector_that_matches_nothing
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (10s)
 ▶ test_scheduler_ignores_pods_for_another_scheduler
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (13s)
 ▶ test_scheduler_preempts_a_lower_priority_pod
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (34s)
+▶ test_scheduler_enforces_read_write_once_pod_exclusivity
+    (skip: ReadWriteOncePod PVC never bound — driver for TEST_CSI_STORAGE_CLASS may not support that access mode)
+  ○ SKIP (92s)
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 3 skipped
+Results: 3 passed, 0 failed, 1 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786690874...
+==> Cleaning up test namespace not-k8s-e2e-1786691279...
