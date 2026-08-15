@@ -153,7 +153,7 @@ fn owner_reference(rs: &ReplicaSet) -> OwnerReference {
 }
 
 fn build_pod(rs: &ReplicaSet, name: &str) -> Option<Pod> {
-    let template = rs.spec.template.clone()?;
+    let template = rs.spec.as_ref()?.template.clone()?;
     let labels = template.metadata.as_ref().and_then(|m| m.labels.clone());
     let annotations = template.metadata.as_ref().and_then(|m| m.annotations.clone());
     Some(Pod {
@@ -183,7 +183,7 @@ async fn reconcile_replica_set(client: &Client, namespace: &str, name: &str, pod
         }
     };
     let Some(rs_uid) = rs.uid() else { return };
-    let desired = rs.spec.replicas.unwrap_or(1);
+    let desired = rs.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
 
     let owned: Vec<&Pod> = pod_cache
         .values()
