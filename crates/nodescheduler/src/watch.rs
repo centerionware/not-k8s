@@ -207,6 +207,15 @@ pub struct WatchTargets {
     /// `AssumedPods::confirmed`'s doc comment already promised but nothing
     /// used to call.
     pub assumed: Arc<Mutex<crate::cache::AssumedPods>>,
+    /// Nodes promised to a preempting pod — see `preempt.rs::Nominator`.
+    /// Shared with `cycle::Scheduler` (not owned here) so a pod deleted
+    /// while it still holds a nomination — cancelled by its owner before
+    /// ever actually binding — doesn't leave that nomination's request
+    /// permanently inflating every future filter() on the node it targeted.
+    /// The scheduling loop itself clears the far more common case (the
+    /// nominee actually gets placed) right where it calls `cache.add_pod` —
+    /// see that call site's own comment for why both are needed.
+    pub nominator: Arc<Mutex<crate::preempt::Nominator>>,
 }
 
 /// Mirrors of the last version of each object, so updates can be diffed.
@@ -1061,6 +1070,13 @@ fn remove_pod(pod: Pod, targets: &WatchTargets) {
     // keep looking like committed capacity forever. Idempotent: a pod this
     // instance never assumed is simply not in the map.
     targets.assumed.lock().unwrap().forget(&info.uid);
+    // Same idempotent cleanup for a nomination — a pod that preempted
+    // victims and was then deleted before ever actually binding (the user
+    // removed it, or it lost a race) would otherwise hold its node hostage
+    // forever: `Nominator::nominated_on` has no TTL and nothing else ever
+    // called `remove` for a pod that never reached the scheduled-pod branch
+    // in lib.rs's scheduling loop.
+    targets.nominator.lock().unwrap().remove(&info.uid);
 
     if info.node_name.is_some() {
         targets.cache.lock().unwrap().remove_pod(&info.uid);
@@ -1474,6 +1490,7 @@ mod tests {
             profile_names: vec!["default-scheduler".to_string()],
             budgets: Arc::new(Mutex::new(Vec::new())),
             assumed: Arc::new(Mutex::new(crate::cache::AssumedPods::new())),
+            nominator: Arc::new(Mutex::new(crate::preempt::Nominator::default())),
         }
     }
 
