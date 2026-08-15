@@ -92,9 +92,17 @@ delete_pod_if_exists() { # delete_pod_if_exists <name>
 # mid-teardown. Use this instead of a bare delete_pod_if_exists for any
 # pod whose request is a meaningful fraction of the node's capacity.
 delete_pod_and_wait_gone() { # delete_pod_and_wait_gone <name> [timeout=90]
+    # try_wait_until, not wait_until: found live via CodeRabbit review on
+    # this exact function — wait_until calls die() on timeout rather than
+    # returning a failure status, so the `|| warn` below was unreachable
+    # dead code. A pod that genuinely never left the apiserver in time
+    # would have hard-exited the whole e2e run right here instead of
+    # warning and letting the caller's own test finish normally, which is
+    # a far worse failure mode than the one this function's own docstring
+    # above describes it as guarding against.
     local name="$1" timeout="${2:-90}"
     kctl delete pod "$name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
-    wait_until "$timeout" "$name to actually be gone from the apiserver" pod_gone "$name" \
+    try_wait_until "$timeout" pod_gone "$name" \
         || warn "$name never left the apiserver within ${timeout}s — the next test may see stale capacity"
 }
 
