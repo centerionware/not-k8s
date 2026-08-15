@@ -46,65 +46,136 @@ here cannot be eliminated, only made efficient** — the honest goal is not
 its one irreducible timer (leader-election renewal), generalized to
 everything in this crate that has the same shape.
 
-### The mechanism: one shared deadline heap, not N tickers
+### The mechanism: a CPU-budgeted governor over a wheel + a heap
 
-`nodescheduler`'s backoff queue already proved the pattern this crate
-reuses at larger scale (`SCHEDULER.md`'s table, `flushBackoffQCompleted`
-row): *"A binary heap ordered by expiry plus one `tokio::time::sleep_until`
-rearmed on push. Same semantics, zero idle wakeups."* `nodecontroller`
-commits to exactly one instance of that primitive, shared across every
-controller that needs deadline detection, rather than each controller
-running its own `tokio::time::interval`:
+`nodescheduler`'s backoff queue already proved the base pattern this
+crate builds on (`SCHEDULER.md`'s table, `flushBackoffQCompleted` row):
+*"A binary heap ordered by expiry plus one `tokio::time::sleep_until`
+rearmed on push. Same semantics, zero idle wakeups."* That bounds wakeup
+*count* — but not wakeup *cost*, and not the cost of a heap operation
+under high churn. Two things this crate adds on top, because unlike the
+scheduler's single backoff queue, this component's polling surface scales
+with cluster/workload size and is rescheduled constantly (every node's
+heartbeat renewal pushes its own expiry check forward, cluster-wide, once
+per `node-monitor-period`):
 
-- Every deadline any controller needs to notice — a node's next
-  heartbeat-expiry check, a Job's TTL, a CSR's cleanup age, an HPA's next
-  metrics poll — is a `(Instant, ControllerId, Key)` entry pushed into one
-  min-heap.
-- Exactly one task owns the heap and sleeps until the *single* nearest
-  deadline (`sleep_until`, rearmed each time the heap's head changes),
-  then dispatches to the owning controller's reconcile function and pops.
-- **Cost is O(1) amortized per tick, not O(active controllers) or O(N
-  objects) per tick** — idle cost is one sleeping task, not fourteen. This
-  is the concrete, falsifiable version of "polling can't be avoided, but
-  it can be made efficient": the number of *wakeups* stays proportional to
-  the number of deadlines that actually elapse, never to how often you'd
-  naively re-check.
-- A controller registers a deadline once (on relevant watch events —
-  e.g. a fresh node heartbeat pushes its next expiry check forward) and
-  the heap does the rest; no controller owns its own clock.
+**1. A hashed timing wheel for anything whose count scales with the
+cluster**, in place of a heap for those specific cases. A `BinaryHeap` is
+O(log n) insert/remove and pointer-chases on every sift — real cost once
+n is "one entry per node" (or per terminated Pod, or per CSR) and those
+entries reschedule constantly. The standard structure for exactly this
+shape — many timers, high reschedule rate, bounded horizon — is a
+**hashed timing wheel**: a fixed-size ring buffer of slots (a plain
+array), each slot holding the entries due in that time bucket
+(index/slab-linked, not a heap), with a cursor that advances one slot per
+tick. Insert/cancel/reschedule is O(1) (compute the target slot, splice
+in/out); tick advance is O(1) plus O(entries in that one slot); the array
+is contiguous and cache-friendly where a heap's sift is pointer-chasing.
+This is the same structure behind Linux kernel timers, Netty's
+`HashedWheelTimer`, and Kafka's purgatory — not a novel invention here.
+Horizon is sized to the longest relevant deadline in that wheel (node
+grace period, upstream default 40s, plus margin); nothing in this crate
+has a multi-hour deadline, so a small overflow heap for anything beyond
+the horizon (the standard hierarchical-wheel escape hatch) is enough.
+**A plain heap stays the right choice** for low-cardinality, one-entry-
+per-object cases with no reschedule churn — CronJob schedules, HPA sync,
+PDB/quota resync, ttl-after-finished, the GC safety-net relist. This is a
+deliberate two-tier choice, not "wheel everywhere" — see the table below
+for which structure each group actually uses.
+
+**2. A hard CPU-time budget per tick, enforced by the same governor that
+owns both structures.** Bounding wakeup count alone still allows a
+thundering-herd burst (a control-plane restart re-arming every node's
+check at once; a healed network partition un-tainting hundreds of nodes
+in the same tick) to spike a core to 100% draining a large batch of
+simultaneously-due entries in one pass. The fix is the same one real-time
+game loops use for "more work became due this frame than the frame
+budget allows": a **fixed tick period** (default 100ms) with a **CPU-time
+budget per tick**, default target **0.3–1% of one core**
+(`NODECONTROLLER_CPU_BUDGET_PERCENT`). Each tick drains due entries from
+the wheel/heap while cumulative measured processing time stays under
+budget; anything left over when the budget is hit waits for the next
+tick rather than blocking the loop — bounded added latency under a
+burst, in exchange for a hard CPU ceiling, which is the right trade for a
+background daemon (unlike a renderer, where a missed frame is directly
+user-visible — that distinction is *why* this transfers only partially:
+see below). Both the wheel and the heap feed this one governor; it is
+what actually caps the cost of processing what's due, not just how often
+the process wakes up.
+
+**What deliberately does not transfer from game-loop design**: spin-wait
+hybrid timing for sub-millisecond frame-lock precision. That technique
+exists in game/audio engines because visual/audio smoothness is the
+literal product; nothing here has a perceptual deadline, and spin-waiting
+would itself burn the CPU budget this mechanism exists to protect.
+`sleep_until`'s ordinary precision (sub-ms to low-ms, whatever tokio's
+own timer wheel gives for free) is already enough — noted explicitly so
+a future contributor doesn't "improve" this into a spin-loop.
+
+**3. Jitter on insert, so correlated deadlines don't bunch up in the
+first place.** The budget governor caps the *cost* of a burst once it
+happens; the cheaper fix is not creating the burst at all. Node
+heartbeats are correlated by construction (every node renews on the same
+period), so their expiry checks naturally land in near-identical wheel
+slots; a batch of Pods created together (a Deployment scale-up) inherits
+the same TTL and would later expire together too. On insert, add small
+random jitter — a few percent of the deadline's own interval, the same
+reason upstream jitters kubelet's own sync loop — so correlated entries
+fan out across nearby slots instead of stacking into one. This is what
+keeps *steady-state* load flat over time rather than sawtoothing every
+`node-monitor-period`; the tick budget from (2) is then only the backstop
+for the bursts jitter can't fully absorb (a genuine mass event, not
+routine correlated renewal).
+
+Implementation: `crates/nodecontroller/src/wheel.rs` (the timing wheel —
+insert/cancel/advance as plain functions over a struct, no I/O, pure and
+unit-tested standalone, same discipline `SCHEDULER.md` enforces for the
+scheduling cycle) and `crates/nodecontroller/src/pacing.rs` (the tick/
+budget governor that owns both the wheel and the low-cardinality heap and
+drains them under the CPU budget). Falsifiable, not just asserted: once
+Group A (node-lifecycle, the first real wheel consumer) lands, extend
+`deploy/measure.sh`'s per-second CPU sampling (already used for the
+nodelet-vs-kubelet profiling system) to nodecontroller, checked both at
+idle and under a synthetic thundering-herd e2e case — stop several
+nodes' kubelets at once so their heartbeat expiries land in the same
+tick, confirm CPU stays pinned near the configured budget instead of
+spiking, and confirm the resulting taints still land within one tick
+period of budget-driven delay rather than being unboundedly late.
 
 ### Which groups actually need this, and which don't
 
-Most of the crate is genuinely event-only and gets nothing from the heap
-at all — naming this explicitly is part of the discipline, so a future
-change doesn't reach for a timer out of habit:
+Most of the crate is genuinely event-only and gets nothing from either
+structure — naming this explicitly is part of the discipline, so a
+future change doesn't reach for a timer out of habit. "Mechanism" below
+picks wheel vs. heap per the cardinality rule in the section above:
 
 | Group | Polling need | Irreducible? | Mechanism |
 |---|---|---|---|
-| A: node-lifecycle (heartbeat→taint) | Yes — silence detection | Yes | heap: recheck at `lastHeartbeat + gracePeriod` |
+| A: node-lifecycle (heartbeat→taint) | Yes — silence detection | Yes | **wheel** (one entry per Node, rescheduled every heartbeat): recheck at `lastHeartbeat + gracePeriod`, jittered |
 | A: node-ipam | No | — | pure event (Node created/podCIDR empty) |
 | B: service routing | No | — | pure event (Service/Pod/EndpointSlice watch) |
 | C: identity/namespace | No | — | pure event |
 | D: garbage-collector | Mostly no | Partially — safety-net relist | heap, long period (upstream: 30min), insurance against a missed/dropped watch event, not routine |
 | D: resourcequota | Mostly no | Partially — usage resync | heap, coalesced, not per-quota-object |
-| D: podgc | Yes — "has this terminated Pod aged out" | Yes | heap |
+| D: podgc | Yes — "has this terminated Pod aged out" | Yes | **wheel** (one entry per terminated Pod) |
 | E: workload controllers (RS/Deploy/DS/STS) | No | — | pure event |
-| F: job/cronjob | Partially — CronJob's schedule itself is time-driven | Yes, for CronJob only | heap: one entry per CronJob, next fire time |
+| F: job/cronjob | Partially — CronJob's schedule itself is time-driven | Yes, for CronJob only | heap: one entry per CronJob, next fire time (low cardinality, no reschedule churn) |
 | F: ttl-after-finished | Yes | Yes | heap |
 | G: attach-detach | Small — upstream's own reconciler loop is time-boxed (short period) as a consistency check against the runtime's actual state, not a discovery mechanism | Partially | heap, short period, mirrors upstream's own `reconcilerSyncLoopPeriod` |
 | G: pv/pvc-protection, expansion, binder | No | — | pure event |
 | H: DRA-adjacent | No | — | pure event |
 | I: CSR signing/approving | No | — | pure event |
-| I: CSR cleaner | Yes — age-based | Yes | heap |
+| I: CSR cleaner | Yes — age-based | Yes | **wheel** (one entry per CSR) |
 | J: HPA | Yes — external metrics API is pull-only by construction, no push source exists | Yes, fully | heap: one entry per HPA, `syncPeriod` (upstream default 15s) |
 | J: disruption (PDB) | Small — status recompute resync | Partially | heap, coalesced |
 
-The heap-driven entries above are the *entire* polling surface of this
-component — if a future controller implementation reaches for
-`tokio::time::interval` outside this mechanism, that is the same kind of
-regression `SCHEDULER.md` flags for its own timers: "if it ever fires,
-that's a bug report, not a routine event" applies here too, just to a
-different, larger set of cases where it's honestly expected to fire.
+The wheel/heap entries above are the *entire* polling surface of this
+component, all drained through the one CPU-budgeted governor — if a
+future controller implementation reaches for `tokio::time::interval`
+outside this mechanism, that is the same kind of regression
+`SCHEDULER.md` flags for its own timers: "if it ever fires, that's a bug
+report, not a routine event" applies here too, just to a different,
+larger set of cases where it's honestly expected to fire.
 
 ## A. Node lifecycle — Tier 0
 
