@@ -32,5 +32,6 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 futures = { workspace = true }
+rustls = { workspace = true }
 rand = "0.8"
 node-leaderelection = { path = "../node-leaderelection" }

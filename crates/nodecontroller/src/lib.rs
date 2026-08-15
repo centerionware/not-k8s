@@ -23,7 +23,28 @@ pub mod wheel;
 
 use anyhow::{Context, Result};
 
+/// Install rustls' default `CryptoProvider`, unless something already did.
+///
+/// rustls 0.23 stopped silently picking one, and `kube::Client::try_default()`
+/// panics rather than erroring without it — confirmed live in CI (e2e.yml
+/// run 31875853444): `nodecontroller.service` crash-looped on exactly this
+/// panic, since this crate was the one place that copy-pasting
+/// `nodescheduler`'s/`nodeproxy`'s/`nodelet`'s own `install_crypto_provider()`
+/// got missed. `install_default()` itself errors on a second call, which a
+/// standalone binary can treat as impossible but the combined `notk8s`
+/// binary cannot (every component's `run()` could be reached in-process) —
+/// hence the check rather than an `expect()` alone.
+fn install_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("installing default rustls CryptoProvider (no other provider was installed a moment ago)");
+    }
+}
+
 pub async fn run() -> Result<()> {
+    install_crypto_provider();
+
     let cfg = config::Config::from_env()?;
     let client = kube::Client::try_default().await.context("building apiserver client")?;
 
