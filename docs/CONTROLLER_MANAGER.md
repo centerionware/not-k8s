@@ -224,7 +224,14 @@ fan-out) — the plan's suggested first PR.
 ## C. Identity & namespace bootstrap — Tier 0
 
 - `serviceaccount-controller`: ensures every namespace has a `default`
-  ServiceAccount.
+  ServiceAccount. **Confirmed live, the hard way**: `bootstrap-source.sh`'s
+  own demo-pod smoke test fails to apply — consistently, not flakily —
+  under `CONTROLLER_MANAGER=nodecontroller` (CI, `e2e.yml`), because
+  without this controller a fresh namespace's `default` ServiceAccount
+  never exists, and the apiserver's `ServiceAccount` admission plugin
+  (loaded by default — confirmed in the same run's own log) rejects any
+  pod that doesn't name one explicitly. This is the first real, felt
+  consequence of Group C not existing yet, not a hypothetical.
 - `namespace-controller`: finalizer-driven namespace deletion (purges
   every namespaced object before the Namespace itself goes away).
 - `root-ca-cert-publisher-controller`: writes the `kube-root-ca.crt`

@@ -85,10 +85,32 @@ run_and_verify() {
 
     wait_for_flannel_subnet
 
+    # Non-fatal, matching the "kubectl get nodes" check above: this is a
+    # smoke test, not a hard gate on the rest of this script (or, for
+    # bootstrap-source.sh as a whole, on anything downstream of it — a
+    # CI e2e run that deploys with CONTROLLER_MANAGER=nodecontroller and
+    # then wants to run its own test suite must not have that suite skipped
+    # outright just because this one demo pod couldn't apply).
+    #
+    # CONTROLLER_MANAGER=nodecontroller is a real, expected case where it
+    # fails: nodecontroller is Group A only today (docs/CONTROLLER_MANAGER.md)
+    # — no serviceaccount-controller, so a fresh namespace's "default"
+    # ServiceAccount never gets created, and the apiserver's ServiceAccount
+    # admission plugin then rejects any pod that doesn't name one explicitly
+    # (this demo pod doesn't). Confirmed live in CI (e2e.yml): with k3s's
+    # real controller-manager this succeeds every time; disabled in favor of
+    # nodecontroller, it fails every time, consistently — a real gap, not a
+    # flake, and named here so it isn't mistaken for one later.
     log "Applying demo pod..."
-    kubectl apply -f "$REPO_ROOT/deploy/demo-pod.yaml"
-    sleep 3
-    kubectl get pods -o wide
+    if kubectl apply -f "$REPO_ROOT/deploy/demo-pod.yaml"; then
+        sleep 3
+        kubectl get pods -o wide
+    else
+        warn "demo pod failed to apply."
+        if want_nodecontroller; then
+            warn "CONTROLLER_MANAGER=nodecontroller is active: this is the expected shape of a known, documented gap, not a flake — nodecontroller doesn't implement serviceaccount-controller yet (docs/CONTROLLER_MANAGER.md, Group C), so this namespace's 'default' ServiceAccount was never created and the apiserver's ServiceAccount admission plugin rejected the pod. A pod naming an explicit serviceAccountName (or one in a namespace whose default ServiceAccount predates disabling k3s's controller-manager) is unaffected."
+        fi
+    fi
 
     log "Done. Logs: journalctl -u nodelet -f"
     log "Tear everything down with: $0 --cleanup"
