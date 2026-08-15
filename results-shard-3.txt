@@ -1,16 +1,16 @@
 commit: f52fd3f1c683d926bd9b33ed05ed6425bd31ed7e
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31880325578
-timestamp (UTC): 2026-08-15T10:53:27Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31880765209
+timestamp (UTC): 2026-08-15T11:03:38Z
 shard: 3/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786791164
+==> Test namespace: not-k8s-e2e-1786791780
 ==> 220 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 41 test(s) selected
 ▶ test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers
-  ✔ PASS (42s)
+  ✔ PASS (38s)
 
 ════════════════════════════════════════
 Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786791164...
+==> Cleaning up test namespace not-k8s-e2e-1786791780...
