@@ -1,16 +1,7 @@
 commit: 0ca1df5f4dc617565b6351f6a1da714f006fb5bc
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31855469835
-timestamp (UTC): 2026-08-15T01:09:32Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31857795187
+timestamp (UTC): 2026-08-15T01:55:30Z
 shard: 1/5
-exit code: 0
+exit code: unknown
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786756167
-==> 218 test(s) registered total (before sharding); running now...
-==> Shard 1/5: 48 test(s) selected
-▶ test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
-  ✔ PASS (5s)
-
-════════════════════════════════════════
-Results: 1 passed, 0 failed, 0 skipped
-════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786756167...
+(no results captured — the run failed before test-e2e.sh could produce output)
