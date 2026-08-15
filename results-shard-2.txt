@@ -1,10 +1,10 @@
 commit: 979b61f57f3a77d01938e35df077173974adf0ef
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31860239697
-timestamp (UTC): 2026-08-15T02:59:12Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31860236465
+timestamp (UTC): 2026-08-15T02:59:21Z
 shard: 2/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786762605
+==> Test namespace: not-k8s-e2e-1786762614
 ==> 218 test(s) registered total (before sharding); running now...
 ==> Shard 2/5: 48 test(s) selected
 ▶ test_scheduler_enforces_read_write_once_pod_exclusivity
@@ -21,4 +21,4 @@ exit code: 0
 ════════════════════════════════════════
 Results: 5 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786762605...
+==> Cleaning up test namespace not-k8s-e2e-1786762614...
