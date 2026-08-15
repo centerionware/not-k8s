@@ -1,7 +1,201 @@
 commit: 36bf6eb5b991f07edcf1f75a7624b575d166728d
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31864355740
-timestamp (UTC): 2026-08-15T04:25:35Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31864384717
+timestamp (UTC): 2026-08-15T04:41:19Z
 shard: 4/5
-exit code: unknown
+exit code: 0
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+==> Test namespace: not-k8s-e2e-1786768229
+==> 218 test(s) registered total (before sharding); running now...
+==> Shard 4/5: 41 test(s) selected
+▶ test_installed_component_binaries_are_runnable_whatever_the_layout
+  ✔ PASS (0s)
+▶ test_datastore_creates_a_key_only_if_absent
+  ✔ PASS (0s)
+▶ test_datastore_survives_a_restart_with_its_data
+  ✔ PASS (0s)
+▶ test_apiserver_watch_delivers_through_nodestore
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13436/environ: Permission denied
+  ✔ PASS (8s)
+▶ test_the_cluster_keeps_serving_when_a_follower_dies
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_a_partitioned_leader_steps_down_and_the_majority_elects_another
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_device_plugin_advertises_capacity_and_allocates_into_a_container
+==> installing grpcio/grpcio-tools for the fake device plugin...
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
+  ✔ PASS (103s)
+▶ test_spec_hostname_overrides_the_container_hostname
+  ✔ PASS (3s)
+▶ test_eviction_priority_tiebreak_manual_procedure
+    (skip: proving priority-based tiebreaking (round 26 — pick_eviction_candidate() ranks by spec.priority within a QoS class before falling back to usage) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with different PriorityClasses (e.g. a low-priority one and a high-priority one, or set spec.priority directly), force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the LOWER-priority pod is evicted first even if the higher-priority pod is using more memory — proof priority wins the tiebreak before usage does, matching real kubelet's rankMemoryPressure ordering. The pure ranking logic itself (priority beats usage, QoS class still outranks priority) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end.)
+  ○ SKIP (0s)
+▶ test_pod_teardown_actually_removes_the_sandbox
+  ✔ PASS (34s)
+▶ test_graceful_node_shutdown_manual_note
+    (skip: graceful node shutdown needs a real systemd-logind PrepareForShutdown signal, which only happens on an actual host shutdown/reboot — not something this suite triggers automatically. Manual spot-check: set NODELET_SHUTDOWN_GRACE_PERIOD_SECS (and optionally NODELET_SHUTDOWN_GRACE_PERIOD_CRITICAL_SECS) on nodelet, run 'loginctl list-inhibitors' and confirm nodelet holds a 'shutdown'/'delay' entry, apply a few test pods, then 'systemctl poweroff' (or 'reboot') the node and watch nodelet's logs for 'terminating pods' before the box actually goes down — non-critical pods (no system-node-critical/system-cluster-critical priorityClassName) should get preStop + termination before critical ones, all within NODELET_SHUTDOWN_GRACE_PERIOD_SECS total.)
+  ○ SKIP (0s)
+▶ test_init_containers_run_before_app_container
+  ✔ PASS (7s)
+▶ test_crash_loop_backoff_throttles_immediate_restarts
+  ✔ PASS (22s)
+▶ test_lifecycle_stop_signal_is_honored_by_the_runtime
+    (skip: no /var/lib/nodelet/pods/4a56a732-9f31-42c1-a5d1-e9aa956a3d26/volumes/shared/signal.txt appeared after pod deletion — the runtime may not honor CRI's ContainerConfig.stop_signal (sent plain SIGTERM instead of the configured SIGUSR1, so the trap never fired); check runtime/cri/container_create.rs's stop_signal wiring if this is unexpected on a runtime version known to support it)
+  ○ SKIP (93s)
+▶ test_pod_condition_reports_observed_generation
+  ✔ PASS (3s)
+▶ test_pressure_conditions_are_present_and_normally_false
+  ✔ PASS (0s)
+▶ test_pod_resources_grpc_query_returns_real_data
+  ✔ PASS (3s)
+▶ test_startup_probe_failure_past_threshold_restarts_the_container
+  ✔ PASS (34s)
+▶ test_metrics_cadvisor_returns_real_container_usage
+  ✔ PASS (2s)
+▶ test_besteffort_pod_gets_the_certain_death_oom_score
+  ✔ PASS (3s)
+▶ test_scheduler_leaves_a_gated_pod_alone
+  ✔ PASS (11s)
+▶ test_scheduler_wakes_a_pending_pod_on_a_real_event
+  ✔ PASS (71s)
+▶ test_scheduler_honours_topology_spread
+  ✔ PASS (11s)
+▶ test_read_only_root_filesystem_is_enforced
+  ✔ PASS (2s)
+▶ test_host_users_false_volume_still_reads_and_writes_normally
+  ✔ PASS (3s)
+▶ test_host_pid_sees_host_processes
+  ✔ PASS (2s)
+▶ test_service_with_no_endpoints_does_not_wedge_the_ruleset
+table inet not_k8s_svc {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		ip daddr 10.43.30.97 tcp dport 80 dnat ip to 10.42.0.22:8080
+		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.230:6443
+		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.2:53
+		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.2:53
+		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.2:9153
+		ip daddr 10.43.254.229 tcp dport 80 dnat ip to 10.42.0.22:8080
+	}
+
+	chain output {
+		type nat hook output priority dstnat; policy accept;
+		ip daddr 10.43.30.97 tcp dport 80 dnat ip to 10.42.0.22:8080
+		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.230:6443
+		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.2:53
+		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.2:53
+		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.2:9153
+		ip daddr 10.43.254.229 tcp dport 80 dnat ip to 10.42.0.22:8080
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		ct status dnat masquerade
+	}
+}
+  ✔ PASS (4s)
+▶ test_losing_every_backend_removes_the_dnat_rule
+  ✔ PASS (33s)
+▶ test_kubectl_attach_streams_the_containers_stdout
+==> WARNING: kubectl attach didn't show streamed output within 20s (may still be buffering)
+  ✔ PASS (43s)
+▶ test_topology_manager_cross_provider_alignment_manual_note
+    (skip: proving CPU-and-device alignment (not just non-rejection) needs either real multi-socket/multi-NUMA hardware or a device plugin reporting TopologyInfo pointing at a specific NUMA node — not something this suite can set up. Manual spot-check on real multi-NUMA hardware: deploy a device plugin whose devices report differing NUMA affinity, request both an exclusive CPU and one of those devices in the same Guaranteed pod, then compare the container's cpuset.cpus (see cpu_manager.sh for how to find it) against which NUMA node the allocated device actually sits on — they should be the same node. Also try NODELET_TOPOLOGY_MANAGER_POLICY=single-numa-node with a deliberately unsatisfiable combination (e.g. requesting more exclusive CPUs than any single node has) and confirm the pod stays Pending with a 'Topology Manager: no single NUMA node can satisfy' error logged, rather than starting misaligned.)
+  ○ SKIP (0s)
+▶ test_sub_path_expr_expands_a_downward_api_env_var
+  ✔ PASS (2s)
+▶ test_empty_dir_medium_memory_is_backed_by_tmpfs
+  ✔ PASS (3s)
+▶ test_mount_propagation_host_to_container_still_mounts_normally
+  ✔ PASS (2s)
+▶ test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too
+  ✔ PASS (3s)
+▶ test_config_file_precedence_a_real_env_var_still_wins
+  ✔ PASS (1s)
+▶ test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull
+==> generating htpasswd auth for the local test registry...
+Unable to find image 'httpd:2.4-alpine' locally
+2.4-alpine: Pulling from library/httpd
+55afa1ecc21d: Already exists
+f0c9ed0cf49e: Pulling fs layer
+e5ad846ecbb8: Pulling fs layer
+4f4fb700ef54: Pulling fs layer
+71af8d887193: Pulling fs layer
+5e8b95221646: Pulling fs layer
+ec6419fed67b: Pulling fs layer
+71af8d887193: Waiting
+ec6419fed67b: Waiting
+e5ad846ecbb8: Verifying Checksum
+e5ad846ecbb8: Download complete
+4f4fb700ef54: Verifying Checksum
+4f4fb700ef54: Download complete
+f0c9ed0cf49e: Verifying Checksum
+f0c9ed0cf49e: Download complete
+f0c9ed0cf49e: Pull complete
+e5ad846ecbb8: Pull complete
+4f4fb700ef54: Pull complete
+71af8d887193: Verifying Checksum
+71af8d887193: Download complete
+5e8b95221646: Verifying Checksum
+5e8b95221646: Download complete
+71af8d887193: Pull complete
+5e8b95221646: Pull complete
+ec6419fed67b: Pull complete
+Digest: sha256:1b766f17b84026429b7cb243317b142921b24432336e798bc881c43f45ed9567
+Status: Downloaded newer image for httpd:2.4-alpine
+==> starting a local auth-required registry:2 on port 5001...
+Unable to find image 'registry:2' locally
+2: Pulling from library/registry
+44cf07d57ee4: Pulling fs layer
+bbbdd6c6894b: Pulling fs layer
+8e82f80af0de: Pulling fs layer
+3493bf46cdec: Pulling fs layer
+6d464ea18732: Pulling fs layer
+3493bf46cdec: Waiting
+6d464ea18732: Waiting
+44cf07d57ee4: Verifying Checksum
+44cf07d57ee4: Download complete
+bbbdd6c6894b: Verifying Checksum
+bbbdd6c6894b: Download complete
+8e82f80af0de: Verifying Checksum
+8e82f80af0de: Download complete
+44cf07d57ee4: Pull complete
+3493bf46cdec: Verifying Checksum
+3493bf46cdec: Download complete
+6d464ea18732: Verifying Checksum
+6d464ea18732: Download complete
+bbbdd6c6894b: Pull complete
+8e82f80af0de: Pull complete
+3493bf46cdec: Pull complete
+6d464ea18732: Pull complete
+Digest: sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+Status: Downloaded newer image for registry:2
+==> pointing containerd at localhost:5001 as an insecure (http) registry...
+==> pushing alpine:3.20 into the local registry as localhost:5001/cred-provider-check:1...
+WARNING! Using --password via the CLI is insecure. Use --password-stdin.
+
+WARNING! Your credentials are stored unencrypted in '/home/runner/.docker/config.json'.
+Configure a credential helper to remove this warning. See
+https://docs.docker.com/go/credential-store/
+
+==> writing the fake credential-provider binary and config...
+  ✔ PASS (13s)
+▶ test_memory_manager_pins_guaranteed_containers_to_a_numa_node
+  ✔ PASS (4s)
+▶ test_limited_swap_gives_burstable_pods_proportional_swap
+  ✔ PASS (6s)
+▶ test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection
+  ✔ PASS (43s)
+▶ test_static_pod_creates_a_mirror_pod
+  ✔ PASS (71s)
+▶ test_the_node_still_reconciles_pods_after_an_apiserver_restart
+  ✔ PASS (6s)
+
+════════════════════════════════════════
+Results: 35 passed, 0 failed, 6 skipped
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786768229...
