@@ -232,6 +232,20 @@ async fn reconcile_service(client: &Client, namespace: &str, name: &str, pod_cac
         },
     };
 
+    // TEMPORARY diagnostic — chasing a real, reproducible failure where
+    // the EndpointSlice never carries the matching Pod's address; narrow
+    // back down once the cause is confirmed from a live run (see
+    // node_lifecycle.rs's own diagnostic-logging precedent, which found
+    // two real bugs this same way).
+    tracing::info!(
+        namespace = %namespace,
+        service = %name,
+        pod_cache_size = pod_cache.len(),
+        matching_pods = matching.len(),
+        endpoints = slice.endpoints.len(),
+        "reconciling EndpointSlice"
+    );
+
     // Server-side apply: idempotent create-or-update, no read-modify-write
     // race with a concurrent reconcile of the same Service (the same
     // pattern nodelet's own node registration uses).
@@ -240,6 +254,8 @@ async fn reconcile_service(client: &Client, namespace: &str, name: &str, pod_cac
         .await
     {
         tracing::warn!(namespace = %namespace, service = %name, error = ?e, "failed to apply EndpointSlice");
+    } else {
+        tracing::info!(namespace = %namespace, service = %name, "applied EndpointSlice");
     }
 }
 
