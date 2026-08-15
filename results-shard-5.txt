@@ -1,10 +1,10 @@
-commit: 292e07bb8ddd5bc1658f1d46f3cadf2c9d4a2095
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31852737018
-timestamp (UTC): 2026-08-15T00:21:49Z
+commit: 62a28db4611fba30e10afce2ca904ac4f7681079
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31853369015
+timestamp (UTC): 2026-08-15T00:33:02Z
 shard: 5/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786752900
+==> Test namespace: not-k8s-e2e-1786753618
 ==> 218 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 40 test(s) selected
 ▶ test_a_failing_component_says_why_before_it_exits
@@ -16,21 +16,21 @@ exit code: 0
 ▶ test_datastore_refuses_a_cluster_it_cannot_be_part_of
   ✔ PASS (0s)
 ▶ test_apiserver_state_survives_a_datastore_restart
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13560/environ: Permission denied
-  ✔ PASS (8s)
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13510/environ: Permission denied
+  ✔ PASS (9s)
 ▶ test_the_cluster_survives_the_leader_being_killed
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
 ▶ test_upgrade_a_populated_single_member_into_a_one_member_cluster
     (skip: needs root to create network namespaces — this needs real network namespaces)
-  ○ SKIP (0s)
+  ○ SKIP (1s)
 ▶ test_device_plugin_health_transition_updates_allocated_resources_status
 ==> installing grpcio/grpcio-tools for the fake device plugin...
 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (159s)
+  ✔ PASS (157s)
 ▶ test_set_hostname_as_fqdn_reports_the_full_fqdn
   ✔ PASS (3s)
 ▶ test_eviction_exceeds_requests_tiebreak_manual_procedure
@@ -43,9 +43,9 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_native_sidecar_container_starts_before_app_container_and_keeps_running
   ✔ PASS (3s)
 ▶ test_crash_loop_backoff_reports_waiting_reason_and_last_state
-  ✔ PASS (2s)
-▶ test_termination_message_path_is_read_back_into_container_status
   ✔ PASS (3s)
+▶ test_termination_message_path_is_read_back_into_container_status
+  ✔ PASS (2s)
 ▶ test_container_status_reports_a_real_image_id
   ✔ PASS (3s)
 ▶ test_host_port_publishes_the_container_on_the_nodes_own_ip
@@ -57,17 +57,17 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_http_get_readiness_probe_against_a_real_server
   ✔ PASS (3s)
 ▶ test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set
-  ✔ PASS (5s)
+  ✔ PASS (6s)
 ▶ test_in_place_resize_updates_memory_limit_without_restarting
-  ✔ PASS (4s)
+  ✔ PASS (3s)
 ▶ test_guaranteed_pod_gets_the_protected_oom_score
   ✔ PASS (3s)
 ▶ test_scheduler_honours_a_node_selector_that_matches_nothing
-  ✔ PASS (10s)
+  ✔ PASS (11s)
 ▶ test_scheduler_ignores_pods_for_another_scheduler
-  ✔ PASS (13s)
+  ✔ PASS (12s)
 ▶ test_scheduler_preempts_a_lower_priority_pod
-  ✔ PASS (68s)
+  ✔ PASS (37s)
 ▶ test_without_read_only_root_filesystem_writes_succeed
   ✔ PASS (3s)
 ▶ test_host_users_volume_ownership_translation_is_correct
@@ -79,7 +79,7 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_deleting_a_service_removes_its_rules
   ✔ PASS (3s)
 ▶ test_stats_summary_returns_real_pod_usage
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 ▶ test_kubectl_port_forward_reaches_a_real_container_port
   ✔ PASS (7s)
 ▶ test_topology_manager_restricted_spread_manual_note
@@ -88,17 +88,17 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_projected_volume_merges_configmap_and_downward_api
   ✔ PASS (3s)
 ▶ test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_mount_propagation_host_to_container_sees_a_new_host_mount
   ✔ PASS (3s)
 ▶ test_recursive_read_only_if_possible_tracks_the_runtime_handlers_own_capability
   ✔ PASS (3s)
 ▶ test_config_dir_merges_files_in_filename_order
-  ✔ PASS (1s)
+  ✔ PASS (2s)
 ▶ test_scheduler_schedules_a_pod_an_http_extender_approves
-  ✔ PASS (33s)
+  ✔ PASS (18s)
 
 ════════════════════════════════════════
 Results: 36 passed, 0 failed, 4 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786752900...
+==> Cleaning up test namespace not-k8s-e2e-1786753618...
