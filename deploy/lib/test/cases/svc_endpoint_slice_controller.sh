@@ -20,7 +20,15 @@ _require_nodecontroller_es() {
 }
 
 endpointslice_addresses() { # endpointslice_addresses <slice-name>
-    kctl get endpointslice "$1" -o jsonpath='{.endpoints[*].addresses[0]}' 2>/dev/null || true
+    # Index-based, not a [*] wildcard chained into a further index — this
+    # test's own real bug, found live in CI: kubectl's jsonpath silently
+    # returns nothing for {.endpoints[*].addresses[0]} (a wildcard
+    # followed by an index on each result), which made this test time out
+    # for 60s on every run despite nodecontroller's own diagnostic logs
+    # (endpoint_slice.rs) proving it had applied the correct EndpointSlice
+    # — with the right address — within half a second every single time.
+    # There's exactly one endpoint expected here, so index 0 directly.
+    kctl get endpointslice "$1" -o jsonpath='{.endpoints[0].addresses[0]}' 2>/dev/null || true
 }
 
 test_endpointslice_is_produced_for_a_selected_pod() {

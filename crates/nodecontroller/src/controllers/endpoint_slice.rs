@@ -232,12 +232,16 @@ async fn reconcile_service(client: &Client, namespace: &str, name: &str, pod_cac
         },
     };
 
-    // TEMPORARY diagnostic — chasing a real, reproducible failure where
-    // the EndpointSlice never carries the matching Pod's address; narrow
-    // back down once the cause is confirmed from a live run (see
-    // node_lifecycle.rs's own diagnostic-logging precedent, which found
-    // two real bugs this same way).
-    tracing::info!(
+    // `debug`, not `info`: unlike node_lifecycle.rs's taint log (which only
+    // fires on a real state *change*), this fires on every reconcile —
+    // every Pod/Service event in the whole cluster — so `info` would be
+    // real noise in a live deployment. Kept rather than removed: this
+    // exact log (pod cache size, matching-pod count, endpoint count) is
+    // what found this file's own real bug (a test jsonpath expression,
+    // not this controller — see svc_endpoint_slice_controller.sh's fix)
+    // by proving the controller was already applying the right
+    // EndpointSlice within half a second, every time.
+    tracing::debug!(
         namespace = %namespace,
         service = %name,
         pod_cache_size = pod_cache.len(),
@@ -255,7 +259,7 @@ async fn reconcile_service(client: &Client, namespace: &str, name: &str, pod_cac
     {
         tracing::warn!(namespace = %namespace, service = %name, error = ?e, "failed to apply EndpointSlice");
     } else {
-        tracing::info!(namespace = %namespace, service = %name, "applied EndpointSlice");
+        tracing::debug!(namespace = %namespace, service = %name, "applied EndpointSlice");
     }
 }
 
