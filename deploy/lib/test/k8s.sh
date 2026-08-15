@@ -76,6 +76,28 @@ delete_pod_if_exists() { # delete_pod_if_exists <name>
     kctl delete pod "$1" --ignore-not-found --wait=false >/dev/null 2>&1 || true
 }
 
+# delete_pod_and_wait_gone <name> [timeout=90] — the same class of race
+# delete_pod_and_pvc exists to close, for any test whose final cleanup pod
+# is heavy enough (a large CPU/memory request) that the next test can
+# collide with it. `delete_pod_if_exists`'s `--wait=false` returns as soon
+# as the API accepts the delete — the pod's resources stay committed on the
+# node until nodelet actually finishes tearing it down, which for a plain
+# `sh -c "sleep N"` container is the full terminationGracePeriodSeconds (the
+# shell doesn't forward SIGTERM to its child, so the default 30s grace
+# period is not a worst case, it is the normal one). A caller that returns
+# right after the API-accepted delete hands the next test a node that looks
+# emptier than it is — found live in CI as cpu_manager's two-pod pinning
+# test timing out waiting for a Guaranteed pod that should have fit easily,
+# because the *previous* test's own ~60%-of-allocatable pod was still
+# mid-teardown. Use this instead of a bare delete_pod_if_exists for any
+# pod whose request is a meaningful fraction of the node's capacity.
+delete_pod_and_wait_gone() { # delete_pod_and_wait_gone <name> [timeout=90]
+    local name="$1" timeout="${2:-90}"
+    kctl delete pod "$name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    wait_until "$timeout" "$name to actually be gone from the apiserver" pod_gone "$name" \
+        || warn "$name never left the apiserver within ${timeout}s — the next test may see stale capacity"
+}
+
 # delete_pod_and_pvc <pod-name> <pvc-name> [pod-gone-timeout=90] — the CSI
 # test cleanup pattern, done right. Round 124 (found live in CI, full-suite
 # runs only): deleting the pod with --wait=false and then IMMEDIATELY
