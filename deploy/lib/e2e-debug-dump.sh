@@ -51,7 +51,7 @@ echo ""
 # this — the dump tailed nodelet and said nothing about what decided the
 # placement.
 echo "── nodescheduler.service ──"
-sudo systemctl status nodescheduler.service --no-pager -l 2>&1 || echo "(nodescheduler.service not found/not running — k3s's own scheduler is placing pods)"
+sudo systemctl status nodescheduler.service --no-pager -l 2>&1 || echo "(nodescheduler.service not found/not running — if SCHEDULER=nodescheduler this deployment passed --disable-scheduler to k3s too, so pods are placed by neither and stay Pending, not by k3s's own scheduler)"
 echo ""
 echo "── nodescheduler.service logs (last 200 lines) ──"
 sudo journalctl -u nodescheduler.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
