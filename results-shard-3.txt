@@ -1,37 +1,16 @@
-commit: 93b0929a1020efc77ebd9de29f3ee58a353db1d1
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31910955899
-timestamp (UTC): 2026-08-15T22:08:29Z
+commit: 9e6dc01737df6d407abb0db09e01d721ea6fcc3d
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31911486080
+timestamp (UTC): 2026-08-15T22:20:01Z
 shard: 3/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786831614
+==> Test namespace: not-k8s-e2e-1786832303
 ==> 224 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 42 test(s) selected
 ▶ test_deployment_creates_replicaset_and_rolls_update
-==> FATAL: timed out after 60s waiting for: deployment dep-test creates a ReplicaSet
-  ✘ FAIL (90s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.210527Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.292070Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.389727Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.491751Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.590532Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.727726Z  INFO torn down pod=not-k8s-e2e-1786831614/dep-test-ff2c020e9d2d5982-l2q6z-vxl58
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.747979Z  INFO torn down pod=not-k8s-e2e-1786831614/dep-test-ff2c020e9d2d5982-l2q6z-w2wdr
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.799887Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.871526Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.920625Z  INFO torn down pod=not-k8s-e2e-1786831614/dep-test-ff2c020e9d2d5982-l2q6z-vxl58
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.925526Z  INFO torn down pod=not-k8s-e2e-1786831614/dep-test-ff2c020e9d2d5982-l2q6z-w2wdr
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.927620Z  INFO torn down pod=not-k8s-e2e-1786831614/dep-test-ff2c020e9d2d5982-l2q6z-vxl58
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.935786Z  INFO torn down pod=not-k8s-e2e-1786831614/dep-test-ff2c020e9d2d5982-l2q6z-w2wdr
-    Aug 15 22:08:26 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:26.989562Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 15 22:08:27 runnervmzvulz run-nodelet.sh[15344]: 2026-08-15T22:08:27.080753Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+  ✔ PASS (96s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
-Failed:
-  - test_deployment_creates_replicaset_and_rolls_update
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786831614...
+==> Cleaning up test namespace not-k8s-e2e-1786832303...
