@@ -11,3 +11,4 @@ pub mod node_lifecycle;
 pub mod replica_set;
 pub mod resource_quota;
 pub mod service_account;
+pub mod stateful_set;

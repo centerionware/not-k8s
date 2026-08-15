@@ -6,17 +6,17 @@
 //! reference docs page) and the polling architecture (`wheel.rs` +
 //! `pacing.rs`) this crate is built around. Group A (node lifecycle),
 //! Group B (service routing, `endpointslice-controller`), the object-count
-//! slice of Group D (`resourcequota-controller`), and the
-//! `replicaset-controller`/`deployment-controller`/`daemonset-controller`
-//! slice of Group E are implemented, plus the minimum slice of Group C
-//! (`serviceaccount-controller` only) needed to unblock testing Group A at
-//! all — see `controllers/service_account.rs`'s, `controllers/resource_quota.rs`'s,
-//! `controllers/replica_set.rs`'s, `controllers/deployment.rs`'s, and
-//! `controllers/daemon_set.rs`'s own module docs for why each is scoped
-//! the way it is. See `docs/CONTROLLER_MANAGER.md`'s "Delivery order" for
-//! what's next (garbage-collector-controller is deliberately deferred
-//! until more of Group E exists — see Group D's own doc for why;
-//! statefulset-controller is next).
+//! slice of Group D (`resourcequota-controller`), and all four workload
+//! controllers of Group E (`replicaset-controller`/`deployment-controller`/
+//! `daemonset-controller`/`statefulset-controller`) are implemented, plus
+//! the minimum slice of Group C (`serviceaccount-controller` only) needed
+//! to unblock testing Group A at all — see `controllers/service_account.rs`'s,
+//! `controllers/resource_quota.rs`'s, and each `controllers/*.rs` workload
+//! file's own module doc for why each is scoped the way it is. See
+//! `docs/CONTROLLER_MANAGER.md`'s "Delivery order" for what's next: Group
+//! E is now complete, so garbage-collector-controller (Group D, deferred
+//! until it had something real to clean up — see that file's own doc) is
+//! next, then Group F (batch controllers).
 //!
 //! Single leader-election lease (`kube-system/kube-controller-manager`,
 //! matching upstream's own name — see `config.rs`) covers the whole
@@ -71,6 +71,7 @@ pub async fn run() -> Result<()> {
             controllers::replica_set::run(client.clone(), &cfg),
             controllers::deployment::run(client.clone(), &cfg),
             controllers::daemon_set::run(client.clone(), &cfg),
+            controllers::stateful_set::run(client.clone(), &cfg),
         )?;
         Ok(())
     })

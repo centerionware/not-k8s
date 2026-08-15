@@ -288,7 +288,7 @@ fan-out) — the plan's suggested first PR.
 - `podgc-controller` (**2**): reclaims terminated Pods past
   `--terminated-pod-gc-threshold`. Not implemented.
 
-## E. Workload controllers — Tier 1 — **replicaset-controller, deployment-controller, daemonset-controller implemented**
+## E. Workload controllers — Tier 1 — **all four implemented (replicaset, deployment, daemonset, statefulset)**
 
 - `replicaset-controller` (`crates/nodecontroller/src/controllers/replica_set.rs`,
   **implemented**): ensures a ReplicaSet's `spec.replicas` Pods exist,
@@ -331,9 +331,23 @@ fan-out) — the plan's suggested first PR.
   per-reconcile `maxUnavailable` delete-then-create budget (no `maxSurge`
   create-before-delete, no `OnDelete` strategy); no `ControllerRevision`
   history.
-- `statefulset-controller`: not implemented. What most users mean by "the
-  controller manager" alongside ReplicaSet, Deployment, and DaemonSet.
-  This project's next real slice of Group E.
+- `statefulset-controller` (`crates/nodecontroller/src/controllers/stateful_set.rs`,
+  **implemented**): stable-identity Pods (`{name}-0`, `{name}-1`, ...)
+  created/deleted/updated directly, no ReplicaSet involved. Real, named
+  simplifications (see that file's own module doc): `podManagementPolicy:
+  OrderedReady` (the default) and `Parallel` are both implemented;
+  rolling update is always sequential one-ordinal-at-a-time (the alpha
+  `MaxUnavailableStatefulSet` feature gate's `maxUnavailable` field isn't
+  honored, `partition` is); `volumeClaimTemplates` PVCs are created (never
+  deleted — matches upstream's *default* `Retain` policy, but the
+  `Delete` retention policy is unimplemented so a StatefulSet that asks
+  for it won't get it); no PVC-bound readiness gate (Pod creation doesn't
+  wait for `Bound`, since PV binding itself is Group G, not implemented);
+  no `ControllerRevision` history/rollback.
+
+Group E is now feature-complete at this project's documented scope: all
+four workload controllers real users mean by "the controller manager"
+are implemented and e2e-verified.
 
 ## F. Batch controllers — Tier 1 / 2
 
