@@ -32,6 +32,11 @@ on:
         default: none
         type: choice
         options: [none, nodescheduler]
+      debug_scheduler_log:
+        description: 'Set RUST_LOG=nodescheduler=debug on the deployed nodescheduler service, for chasing a live flake whose only lead is a reason string with no numbers behind it (node_resources_fit.rs is the case this exists for). Off by default — this is chattier than the normal info level and only useful when actively diagnosing something.'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -139,6 +144,11 @@ jobs:
           NOTK8S_BUILD_LAYOUT: ${{ inputs.layout || 'split' }}
           DATASTORE: nodestore
           SCHEDULER: ${{ inputs.scheduler || 'none' }}
+          # Picked up by nodescheduler-service.sh's env forwarding — only
+          # written into the installed unit when non-empty, so leaving
+          # debug_scheduler_log off reproduces exactly today's behaviour
+          # (run-nodescheduler.sh's own RUST_LOG=info default applies).
+          RUST_LOG: ${{ inputs.debug_scheduler_log && 'nodescheduler=debug' || '' }}
         run: sudo -E ./deploy/bootstrap-source.sh --with-cri
 
       - name: Install misc e2e prerequisites (hugepages, grpcurl)

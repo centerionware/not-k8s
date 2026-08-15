@@ -41,6 +41,15 @@ install_nodescheduler_service() {
 nodescheduler_env_lines() { # $1 = "shell" (export VAR=value) or "systemd" (Environment=VAR=value)
     local style="$1" out="" name value
     out+="$(nodescheduler_env_line "$style" KUBECONFIG "$KUBECONFIG")"$'\n'
+    # Forwarded only if the bootstrap's own shell set it — a systemd service
+    # gets no shell environment of its own, so without this the operator has
+    # no way to raise verbosity short of hand-editing the installed unit
+    # (run-nodescheduler.sh's own `${RUST_LOG:-info}` default still applies
+    # when unset here). e2e.yml's `debug_scheduler_log` input is the
+    # dispatch-time knob that sets this for chasing a live flake.
+    if [[ -n "${RUST_LOG:-}" ]]; then
+        out+="$(nodescheduler_env_line "$style" RUST_LOG "$RUST_LOG")"$'\n'
+    fi
     # Everything else the operator set. `compgen -v` rather than `env`, so
     # this sees shell variables the bootstrap set as well as exported ones.
     for name in $(compgen -v | grep '^NODESCHEDULER_' | sort); do
