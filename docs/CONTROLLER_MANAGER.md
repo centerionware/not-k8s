@@ -288,7 +288,7 @@ fan-out) — the plan's suggested first PR.
 - `podgc-controller` (**2**): reclaims terminated Pods past
   `--terminated-pod-gc-threshold`. Not implemented.
 
-## E. Workload controllers — Tier 1 — **replicaset-controller implemented**
+## E. Workload controllers — Tier 1 — **replicaset-controller, deployment-controller implemented**
 
 - `replicaset-controller` (`crates/nodecontroller/src/controllers/replica_set.rs`,
   **implemented**): ensures a ReplicaSet's `spec.replicas` Pods exist,
@@ -303,13 +303,25 @@ fan-out) — the plan's suggested first PR.
   `readyReplicas` (`minReadySeconds` isn't tracked), and — same as every
   other object this crate creates before `garbage-collector-controller`
   exists — a deleted ReplicaSet's Pods aren't cleaned up automatically yet.
-- `deployment-controller`, `daemonset-controller`, `statefulset-controller`:
-  not implemented. What most users mean by "the controller manager"
-  alongside ReplicaSet. `deployment-controller` in particular needs real
-  rolling-update math (surge/unavailable accounting, revision history,
-  proportional scaling across old and new ReplicaSets simultaneously) —
-  substantially more than a ReplicaSet-shaped reconcile loop, and this
-  project's next real slice of Group E once ReplicaSet is verified live.
+- `deployment-controller` (`crates/nodecontroller/src/controllers/deployment.rs`,
+  **implemented**): manages ReplicaSets, not Pods directly — one owned
+  ReplicaSet per distinct Pod template ("revision", identified by a
+  `pod-template-hash` label), rolling-update surge/unavailable budgets (or
+  `Recreate`) to shift replica counts from old revisions to the new one,
+  `revisionHistoryLimit`-bounded cleanup of fully-drained old ReplicaSets.
+  Real, named simplifications (see that file's own module doc for the
+  full reasoning): its own internally-consistent template hash rather than
+  upstream's specific FNV algorithm (nothing compares the two); no
+  hash-collision-count retry; old-ReplicaSet scale-down always drains
+  oldest-first rather than upstream's "most unhealthy first"; `Recreate`
+  waits on ReplicaSet `status.replicas` reaching 0, not real per-Pod
+  termination; no rollback, no revision-history annotations, no
+  `DeploymentCondition`/`Progressing` tracking — `status.replicas`/
+  `updatedReplicas`/`readyReplicas`/`availableReplicas` are kept current,
+  the human-readable condition list is not populated.
+- `daemonset-controller`, `statefulset-controller`: not implemented. What
+  most users mean by "the controller manager" alongside ReplicaSet and
+  Deployment. This project's next real slice of Group E.
 
 ## F. Batch controllers — Tier 1 / 2
 

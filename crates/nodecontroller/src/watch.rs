@@ -17,7 +17,7 @@
 
 use futures::stream::BoxStream;
 use futures::StreamExt;
-use k8s_openapi::api::apps::v1::ReplicaSet;
+use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::api::core::v1::{Namespace, Node, Pod, ResourceQuota, Service};
 use kube::runtime::utils::{Backoff, WatchStreamExt};
@@ -98,6 +98,11 @@ pub fn watch_resource_quotas(client: &Client) -> BoxStream<'static, watcher::Res
 
 pub fn watch_replica_sets(client: &Client) -> BoxStream<'static, watcher::Result<Event<ReplicaSet>>> {
     let api: Api<ReplicaSet> = Api::all(client.clone());
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+}
+
+pub fn watch_deployments(client: &Client) -> BoxStream<'static, watcher::Result<Event<Deployment>>> {
+    let api: Api<Deployment> = Api::all(client.clone());
     watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
