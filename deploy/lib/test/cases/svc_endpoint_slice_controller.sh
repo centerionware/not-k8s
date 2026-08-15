@@ -30,6 +30,14 @@ endpointslice_addresses() { # endpointslice_addresses <slice-name>
     # There's exactly one endpoint expected here, so index 0 directly.
     kctl get endpointslice "$1" -o jsonpath='{.endpoints[0].addresses[0]}' 2>/dev/null || true
 }
+# Called from inside `bash -c "..."` (wait_until's checks run in a genuinely
+# separate subshell) — without this export it's simply undefined there,
+# which is *also* a real bug this test had: the failed lookup's empty output
+# still let the `[[ ... ]]` comparison run to a (false) conclusion instead of
+# erroring loudly, so it looked identical to "the address just isn't there
+# yet" for the test's entire 60s budget. Same fix cases/log_rotation.sh's
+# own `_log_rotation_check` already established for this exact shape.
+export -f endpointslice_addresses
 
 test_endpointslice_is_produced_for_a_selected_pod() {
     _require_nodecontroller_es
