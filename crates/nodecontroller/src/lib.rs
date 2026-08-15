@@ -5,13 +5,14 @@
 //! upstream's `NewControllerDescriptors()` as source of truth, not the
 //! reference docs page) and the polling architecture (`wheel.rs` +
 //! `pacing.rs`) this crate is built around. Group A (node lifecycle),
-//! Group B (service routing, `endpointslice-controller`), and the
-//! object-count slice of Group D (`resourcequota-controller`) are
-//! implemented, plus the minimum slice of Group C
-//! (`serviceaccount-controller` only) needed to unblock testing Group A at
-//! all — see `controllers/service_account.rs`'s and
-//! `controllers/resource_quota.rs`'s own module docs for why each is
-//! scoped the way it is. See `docs/CONTROLLER_MANAGER.md`'s "Delivery
+//! Group B (service routing, `endpointslice-controller`), the object-count
+//! slice of Group D (`resourcequota-controller`), and the first slice of
+//! Group E (`replicaset-controller`) are implemented, plus the minimum
+//! slice of Group C (`serviceaccount-controller` only) needed to unblock
+//! testing Group A at all — see `controllers/service_account.rs`'s,
+//! `controllers/resource_quota.rs`'s, and `controllers/replica_set.rs`'s
+//! own module docs for why each is scoped the way it is. See
+//! `docs/CONTROLLER_MANAGER.md`'s "Delivery
 //! order" for what's next (garbage-collector-controller is deliberately
 //! deferred until Group E exists — see Group D's own doc for why).
 //!
@@ -65,6 +66,7 @@ pub async fn run() -> Result<()> {
             controllers::service_account::run(client.clone(), &cfg),
             controllers::endpoint_slice::run(client.clone(), &cfg),
             controllers::resource_quota::run(client.clone(), &cfg),
+            controllers::replica_set::run(client.clone(), &cfg),
         )?;
         Ok(())
     })

@@ -288,15 +288,28 @@ fan-out) — the plan's suggested first PR.
 - `podgc-controller` (**2**): reclaims terminated Pods past
   `--terminated-pod-gc-threshold`. Not implemented.
 
-## E. Workload controllers — Tier 1
+## E. Workload controllers — Tier 1 — **replicaset-controller implemented**
 
-`replicaset-controller`, `deployment-controller`, `daemonset-controller`,
-`statefulset-controller`. What most users mean by "the controller
-manager." Each is a straightforward `Reconciler` instantiation over the
-shared harness (see main plan) — the design risk here is proving the
-harness abstraction pulls its weight across four fairly different
-reconcile shapes (rolling update math differs completely between
-Deployment/DaemonSet/StatefulSet), not any one of them individually.
+- `replicaset-controller` (`crates/nodecontroller/src/controllers/replica_set.rs`,
+  **implemented**): ensures a ReplicaSet's `spec.replicas` Pods exist,
+  matching its selector and pod template. The foundation the rest of this
+  group is built on — `deployment-controller` manages ReplicaSets, not
+  Pods directly, so nothing else here can produce a real Pod without this
+  landing first. Real simplifications, all named in that file's own
+  module doc rather than silently dropped: no adoption of pre-existing
+  unowned Pods (only manages Pods it created itself), a simplified
+  scale-down ranking (not-Ready first, then by name — not upstream's full
+  multi-criteria ranking), `status.availableReplicas` mirrors
+  `readyReplicas` (`minReadySeconds` isn't tracked), and — same as every
+  other object this crate creates before `garbage-collector-controller`
+  exists — a deleted ReplicaSet's Pods aren't cleaned up automatically yet.
+- `deployment-controller`, `daemonset-controller`, `statefulset-controller`:
+  not implemented. What most users mean by "the controller manager"
+  alongside ReplicaSet. `deployment-controller` in particular needs real
+  rolling-update math (surge/unavailable accounting, revision history,
+  proportional scaling across old and new ReplicaSets simultaneously) —
+  substantially more than a ReplicaSet-shaped reconcile loop, and this
+  project's next real slice of Group E once ReplicaSet is verified live.
 
 ## F. Batch controllers — Tier 1 / 2
 
