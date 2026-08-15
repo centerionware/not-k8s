@@ -139,7 +139,7 @@ fn wall_to_instant(target_wall: Timestamp, now_wall: Timestamp, now_instant: Ins
     }
 }
 
-async fn reconcile(api: &Api<Node>, node_name: &str, ready_status: Option<&str>, lease_stale: bool) {
+async fn reconcile(api: &Api<Node>, node_name: &str, ready_status: Option<&str>, lease_stale: bool, source: &str) {
     let desired = desired_taint(ready_status, lease_stale);
     let node = match api.get_opt(node_name).await {
         Ok(Some(n)) => n,
@@ -154,7 +154,20 @@ async fn reconcile(api: &Api<Node>, node_name: &str, ready_status: Option<&str>,
         return; // already correct — no patch, no log noise on every tick
     }
     let new_taints = apply_desired_taint(&existing, desired);
-    tracing::info!(node = %node_name, ?desired, "updating node-lifecycle taint");
+    // TEMPORARY diagnostic fields (source/ready_status/lease_stale/
+    // existing-taint-count) — chasing a real, reproducible bug where the
+    // taint flips back to None seconds after being set correctly; narrow
+    // this back down to the original two fields once the cause is
+    // confirmed from a live run.
+    tracing::info!(
+        node = %node_name,
+        ?desired,
+        source,
+        ready_status = ?ready_status,
+        lease_stale,
+        existing_taints = existing.len(),
+        "updating node-lifecycle taint"
+    );
     let patch = serde_json::json!({ "spec": { "taints": new_taints } });
     if let Err(e) = api
         .patch(node_name, &kube::api::PatchParams::default(), &kube::api::Patch::Merge(&patch))
@@ -209,7 +222,7 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                         let status = ready_condition_status(&node);
                         let stale = is_stale(&cache, &name, cfg.node_monitor_grace_period);
                         cache.entry(name.clone()).or_insert(NodeLiveness { ready_status: None, last_renew: None }).ready_status = status.clone();
-                        reconcile(&node_api, &name, status.as_deref(), stale).await;
+                        reconcile(&node_api, &name, status.as_deref(), stale, "node-handler").await;
                     }
                     Some(Ok(Event::Delete(node))) => {
                         let name = node.name_any();
@@ -264,7 +277,7 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                         // relist of a stale one now correctly computes
                         // stale=true and leaves the taint alone.
                         let lease_stale = is_stale(&cache, &name, cfg.node_monitor_grace_period);
-                        reconcile(&node_api, &name, status.as_deref(), lease_stale).await;
+                        reconcile(&node_api, &name, status.as_deref(), lease_stale, "lease-handler").await;
                     }
                     Some(Ok(Event::Delete(_) | Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "lease watch error in node-lifecycle-controller"),
@@ -280,7 +293,7 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                 for name in &due {
                     let start = Instant::now();
                     let status = cache.get(name).and_then(|s| s.ready_status.clone());
-                    reconcile(&node_api, name, status.as_deref(), true).await;
+                    reconcile(&node_api, name, status.as_deref(), true, "wheel-tick").await;
                     costs.push(start.elapsed());
                     names.push(name.clone());
                 }
