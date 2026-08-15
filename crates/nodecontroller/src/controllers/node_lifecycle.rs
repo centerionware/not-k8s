@@ -224,7 +224,7 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(node))) | Some(Ok(Event::InitApply(node))) => {
                         let name = node.name_any();
                         let status = ready_condition_status(&node);
-                        let stale = is_stale(&cache, &name, cfg.node_monitor_grace_period);
+                        let stale = is_stale(&cache, &name, cfg.node_monitor_grace_period, cfg.jitter_fraction);
                         cache.entry(name.clone()).or_insert(NodeLiveness { ready_status: None, last_renew: None }).ready_status = status.clone();
                         reconcile(&node_api, &name, status.as_deref(), stale, "node-handler").await;
                     }
@@ -280,7 +280,7 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                         // computes stale=false here exactly as before; a
                         // relist of a stale one now correctly computes
                         // stale=true and leaves the taint alone.
-                        let lease_stale = is_stale(&cache, &name, cfg.node_monitor_grace_period);
+                        let lease_stale = is_stale(&cache, &name, cfg.node_monitor_grace_period, cfg.jitter_fraction);
                         reconcile(&node_api, &name, status.as_deref(), lease_stale, "lease-handler").await;
                     }
                     Some(Ok(Event::Delete(_) | Event::Init | Event::InitDone)) => {}
@@ -309,18 +309,34 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
 }
 
 /// Pure: has `last_renew` gone stale as of `now`? Split out from `is_stale`
-/// below so the actual staleness arithmetic — the thing that was wrong —
-/// is testable without a live clock, the same discipline `wheel.rs`'s
-/// `advance()` and `nodescheduler::cycle` both use.
-fn renewal_is_stale(last_renew: Option<Timestamp>, now: Timestamp, grace_period: Duration) -> bool {
+/// below so the actual staleness arithmetic — the thing that was wrong,
+/// twice — is testable without a live clock, the same discipline
+/// `wheel.rs`'s `advance()` and `nodescheduler::cycle` both use.
+///
+/// `jitter_fraction` **must** match the wheel's own — this is the second
+/// real bug found live in CI on the same test, after the relist one: the
+/// wheel fires on a *jittered* deadline (as early as
+/// `grace_period * (1 - jitter_fraction)`, see `pacing::Governor`'s own
+/// insert), but this function was comparing against the full, unjittered
+/// `grace_period`. In the ~jitter-fraction-wide window between those two
+/// thresholds, the wheel had already (correctly, by its own schedule)
+/// fired and set the taint — and the very next reconcile (triggered by
+/// that same patch landing back through the Node watch) used this
+/// function, disagreed, and reverted it. Using the same jittered
+/// threshold here closes the gap: this can never return `false` for a
+/// renewal the wheel has already legitimately treated as due.
+fn renewal_is_stale(last_renew: Option<Timestamp>, now: Timestamp, grace_period: Duration, jitter_fraction: f64) -> bool {
     match last_renew {
         None => false, // never seen a Lease for this Node yet — not our call to make
-        Some(renew) => now.duration_since(renew).as_secs_f64() >= grace_period.as_secs_f64(),
+        Some(renew) => {
+            let threshold = grace_period.mul_f64((1.0 - jitter_fraction).max(0.0));
+            now.duration_since(renew).as_secs_f64() >= threshold.as_secs_f64()
+        }
     }
 }
 
-fn is_stale(cache: &HashMap<String, NodeLiveness>, name: &str, grace_period: Duration) -> bool {
-    renewal_is_stale(cache.get(name).and_then(|s| s.last_renew), Timestamp::now(), grace_period)
+fn is_stale(cache: &HashMap<String, NodeLiveness>, name: &str, grace_period: Duration, jitter_fraction: f64) -> bool {
+    renewal_is_stale(cache.get(name).and_then(|s| s.last_renew), Timestamp::now(), grace_period, jitter_fraction)
 }
 
 #[cfg(test)]
@@ -333,17 +349,17 @@ mod tests {
 
     #[test]
     fn a_lease_never_seen_is_not_stale() {
-        assert!(!renewal_is_stale(None, t(1000), Duration::from_secs(40)));
+        assert!(!renewal_is_stale(None, t(1000), Duration::from_secs(40), 0.0));
     }
 
     #[test]
     fn a_recent_renewal_is_not_stale() {
-        assert!(!renewal_is_stale(Some(t(970)), t(1000), Duration::from_secs(40)));
+        assert!(!renewal_is_stale(Some(t(970)), t(1000), Duration::from_secs(40), 0.0));
     }
 
     #[test]
     fn a_renewal_older_than_the_grace_period_is_stale() {
-        assert!(renewal_is_stale(Some(t(900)), t(1000), Duration::from_secs(40)));
+        assert!(renewal_is_stale(Some(t(900)), t(1000), Duration::from_secs(40), 0.0));
     }
 
     /// The regression this bug fix exists for. Found live in CI
@@ -358,7 +374,31 @@ mod tests {
     /// wheel had just correctly set.
     #[test]
     fn a_relisted_but_unchanged_stale_renewal_is_still_stale() {
-        assert!(renewal_is_stale(Some(t(900)), t(1000), Duration::from_secs(40)));
+        assert!(renewal_is_stale(Some(t(900)), t(1000), Duration::from_secs(40), 0.0));
+    }
+
+    /// The second regression, found live in CI the same way, immediately
+    /// after the first fix landed: the wheel fires on a *jittered*
+    /// deadline (as early as `grace_period * (1 - jitter_fraction)`), but
+    /// this function was comparing against the full, unjittered
+    /// grace_period. In the gap between those two thresholds — real for a
+    /// few seconds around every single staleness detection, not a rare
+    /// edge case — the wheel had already, correctly, fired and set the
+    /// taint, and the very next reconcile (from the Node watch event that
+    /// patch itself generated) called this function, got `false`, and
+    /// reverted it: `node_lifecycle_controller.sh`'s taint test timed out
+    /// a second time even after the relist fix, because this was still
+    /// wrong. Grace period 40s, 5% jitter: the wheel may fire as early as
+    /// 38s, so a renewal 39s old — stale by the wheel's own earliest
+    /// possible schedule — must already read as stale here too.
+    #[test]
+    fn a_renewal_within_the_wheels_own_jitter_window_is_already_stale() {
+        assert!(renewal_is_stale(Some(t(1000)), t(1039), Duration::from_secs(40), 0.05));
+    }
+
+    #[test]
+    fn a_renewal_before_even_the_jittered_earliest_deadline_is_not_stale() {
+        assert!(!renewal_is_stale(Some(t(1000)), t(1030), Duration::from_secs(40), 0.05));
     }
 
     fn taint(key: &str, effect: &str) -> Taint {
