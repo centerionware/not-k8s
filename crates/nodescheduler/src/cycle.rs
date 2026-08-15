@@ -251,7 +251,21 @@ impl Scheduler {
             return (
                 CycleOutcome::Unschedulable {
                     reason: "no nodes available to schedule pods".to_string(),
-                    unschedulable_plugins: Vec::new(),
+                    // Not an empty list: an empty `unschedulable_plugins`
+                    // tells the queue no registered hint applies, so
+                    // nothing ever re-wakes this pod except the blind
+                    // backoff timer — found live in CI as
+                    // test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection
+                    // flaking whenever its pod's very first cycle lands in
+                    // the empty-cache window right after a scheduler
+                    // restart: the pod got parked with no event
+                    // subscription at all and never got a second cycle to
+                    // actually reach the extender. `NodeResourcesFit` is
+                    // unconditionally present in every profile and its own
+                    // `events_to_register()` already reacts to `Node ADD`
+                    // — reusing it here is exactly the event that resolves
+                    // "there were no nodes".
+                    unschedulable_plugins: vec![crate::framework::plugins::node_resources_fit::NAME],
                     pending_plugins: Vec::new(),
                     nominated_node: None,
                     node_statuses: NodeToStatus::default(),
