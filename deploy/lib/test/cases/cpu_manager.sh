@@ -10,6 +10,29 @@
 # relying on an externally pre-configured nodelet + a TEST_CPU_MANAGER_STATIC
 # hint that nothing in CI ever set.
 
+# Round found live in CI, with RUST_LOG=nodescheduler=debug (e2e.yml's
+# debug_scheduler_log input) actually turned on: check-b's own "Insufficient
+# cpu" rejections carried real committed/requested/allocatable numbers this
+# time, not just the reason string, and they didn't add up to a capacity
+# problem — committed=3510/allocatable=4000 while `kubectl describe node`
+# and the real pod list agreed only ~1110m was actually in use. The 2400m
+# difference is exactly the previous test's own pod
+# (test_scheduler_does_not_preempt_when_policy_forbids_it's $low, 60% of
+# allocatable) — genuinely deleted well before this test starts (that test's
+# own delete_pod_and_wait_gone confirms it via a real `kubectl get`, and
+# nodescheduler's pod watch shows no reconnect/relist in this whole window,
+# ruling out the exact bug #19 fixed) — but its resources stayed committed
+# in nodescheduler's cache for up to several minutes after being confirmed
+# gone via the API. Whatever the real mechanism (nodestore's watch/commit
+# path under the concurrent write load of a dozen other tests running in
+# the same window is the leading suspect, unconfirmed), it's a genuine
+# propagation delay, not a leak — it always did clear on its own, just far
+# slower than this test's original 90s budget assumed. 240s is generous
+# headroom over the worst delay observed (~3.5min); this is a documented
+# mitigation for a real, still-open timing issue, not a root-cause fix —
+# see this comment if it starts happening again even at this budget.
+CPU_MANAGER_PIN_TIMEOUT_SECS="${CPU_MANAGER_PIN_TIMEOUT_SECS:-240}"
+
 test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     if ! nodelet_restart_supported; then skip_test "needs systemd to restart nodelet with NODELET_CPU_MANAGER_POLICY=static"; fi
@@ -37,8 +60,8 @@ spec:
         limits: { cpu: "1", memory: "64Mi" }
 EOF
     done
-    wait_until 90 "$name_a Running" pod_is_phase "$name_a" Running
-    wait_until 90 "$name_b Running" pod_is_phase "$name_b" Running
+    wait_until "$CPU_MANAGER_PIN_TIMEOUT_SECS" "$name_a Running" pod_is_phase "$name_a" Running
+    wait_until "$CPU_MANAGER_PIN_TIMEOUT_SECS" "$name_b Running" pod_is_phase "$name_b" Running
 
     local cid_a cid_b path_a path_b cpuset_a cpuset_b
     cid_a="$(kctl get pod "$name_a" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#.*://##')"
