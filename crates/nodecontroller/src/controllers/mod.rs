@@ -6,4 +6,5 @@
 pub mod endpoint_slice;
 pub mod node_ipam;
 pub mod node_lifecycle;
+pub mod resource_quota;
 pub mod service_account;

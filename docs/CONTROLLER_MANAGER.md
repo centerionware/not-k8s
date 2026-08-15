@@ -253,16 +253,40 @@ fan-out) — the plan's suggested first PR.
 - `clusterrole-aggregation-controller`: merges `aggregationRule`-selected
   ClusterRoles (the mechanism `view`/`edit`/`admin` are built from).
 
-## D. Garbage collection & quota — Tier 0 / 2
+## D. Garbage collection & quota — Tier 0 / 2 — **resourcequota-controller implemented** (object-count only)
 
-- `garbage-collector-controller` (**0**): owner-reference cascade
-  deletion. Without it `kubectl delete deployment` orphans ReplicaSets
-  and Pods forever — this is arguably the single most-felt gap if
-  skipped, since it's invisible until the first `kubectl delete` of
-  anything with children.
-- `resourcequota-controller` (**2**): enforces `ResourceQuota` objects.
+- `garbage-collector-controller` (**0**) — **deliberately deferred, not
+  skipped by oversight**: owner-reference cascade deletion. Without it
+  `kubectl delete deployment` orphans ReplicaSets and Pods forever — this
+  is arguably the single most-felt gap if skipped long-term, since it's
+  invisible until the first `kubectl delete` of anything with children.
+  Two real reasons it isn't this session's next slice: (1) **it has little
+  value yet** — Group E (workload controllers) isn't implemented, and
+  nothing today creates the owner chains (Deployment→ReplicaSet→Pod) this
+  controller exists to clean up; the one owner-ref relationship this crate
+  itself creates (EndpointSlice→Service, Group B) already deletes
+  explicitly rather than waiting on GC. (2) **a real implementation is
+  generic across every resource kind** — upstream's is one of the most
+  complex controllers in kube-controller-manager for exactly that reason
+  (dynamic/unstructured clients, a live dependency graph, three deletion
+  propagation policies). Building it properly is its own dedicated pass,
+  best done once Group E gives it something real to do — not a small
+  extension of an existing file. Revisit right after Group E lands.
+- `resourcequota-controller` (`crates/nodecontroller/src/controllers/resource_quota.rs`,
+  **implemented, object-count quotas only**): keeps `ResourceQuota.status.used`
+  current for `pods` and `services` counts. Worth stating precisely: the
+  *enforcement* half of ResourceQuota (rejecting an over-quota create) is
+  the apiserver's own `ResourceQuota` admission plugin, not
+  kube-controller-manager's job at all — that already works today,
+  unmodified, regardless of which controller-manager runs. This
+  controller only maintains the status a human reads. Compute-resource
+  quotas (`requests.cpu`, `limits.memory`, ...) need real `Quantity`
+  arithmetic — `k8s_openapi`'s `Quantity` is a bare string newtype with no
+  arithmetic at all — and are deferred as genuinely separate work, not a
+  gap in this file. Every unsupported `spec.hard` key is left out of
+  `status.used` entirely rather than guessed at.
 - `podgc-controller` (**2**): reclaims terminated Pods past
-  `--terminated-pod-gc-threshold`.
+  `--terminated-pod-gc-threshold`. Not implemented.
 
 ## E. Workload controllers — Tier 1
 

@@ -18,7 +18,7 @@
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use k8s_openapi::api::coordination::v1::Lease;
-use k8s_openapi::api::core::v1::{Namespace, Node, Pod, Service};
+use k8s_openapi::api::core::v1::{Namespace, Node, Pod, ResourceQuota, Service};
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -87,6 +87,11 @@ pub fn watch_services(client: &Client) -> BoxStream<'static, watcher::Result<Eve
 
 pub fn watch_pods(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pod>>> {
     let api: Api<Pod> = Api::all(client.clone());
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+}
+
+pub fn watch_resource_quotas(client: &Client) -> BoxStream<'static, watcher::Result<Event<ResourceQuota>>> {
+    let api: Api<ResourceQuota> = Api::all(client.clone());
     watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
