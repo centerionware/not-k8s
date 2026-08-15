@@ -22,16 +22,16 @@ mkdir -p "$INSTALL_DIR"
 
 TARBALL="$(mktemp)"
 trap 'rm -f "$TARBALL"' EXIT
-echo "==> Fetching https://github.com/centerionware/not-k8s/releases/latest/download/deploy.tar.gz..." >&2
+echo "==> Fetching https://github.com/centerionware/not-k8s/releases/download/v0.5.0/deploy.tar.gz..." >&2
 if command -v curl &>/dev/null; then
-    curl -fsSL "https://github.com/centerionware/not-k8s/releases/latest/download/deploy.tar.gz" -o "$TARBALL"
+    curl -fsSL "https://github.com/centerionware/not-k8s/releases/download/v0.5.0/deploy.tar.gz" -o "$TARBALL"
 elif command -v wget &>/dev/null; then
-    wget -q -O "$TARBALL" "https://github.com/centerionware/not-k8s/releases/latest/download/deploy.tar.gz"
+    wget -q -O "$TARBALL" "https://github.com/centerionware/not-k8s/releases/download/v0.5.0/deploy.tar.gz"
 else
-    echo "not-k8s installer: need curl or wget to fetch https://github.com/centerionware/not-k8s/releases/latest/download/deploy.tar.gz" >&2
+    echo "not-k8s installer: need curl or wget to fetch https://github.com/centerionware/not-k8s/releases/download/v0.5.0/deploy.tar.gz" >&2
     exit 1
 fi
 tar xzf "$TARBALL" -C "$INSTALL_DIR"
 
-
+set -- "--tag=v0.5.0" "$@"
 exec "$INSTALL_DIR/deploy/bootstrap-release.sh" "$@"
