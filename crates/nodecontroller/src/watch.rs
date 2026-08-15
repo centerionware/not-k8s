@@ -18,7 +18,7 @@
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use k8s_openapi::api::coordination::v1::Lease;
-use k8s_openapi::api::core::v1::Node;
+use k8s_openapi::api::core::v1::{Namespace, Node};
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -72,6 +72,11 @@ pub fn watch_nodes(client: &Client) -> BoxStream<'static, watcher::Result<Event<
 
 pub fn watch_node_leases(client: &Client) -> BoxStream<'static, watcher::Result<Event<Lease>>> {
     let api: Api<Lease> = Api::namespaced(client.clone(), NODE_LEASE_NAMESPACE);
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+}
+
+pub fn watch_namespaces(client: &Client) -> BoxStream<'static, watcher::Result<Event<Namespace>>> {
+    let api: Api<Namespace> = Api::all(client.clone());
     watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 

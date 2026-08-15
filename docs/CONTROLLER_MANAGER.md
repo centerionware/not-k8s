@@ -221,17 +221,21 @@ fan-out) — the plan's suggested first PR.
   bundled copy is disabled. This is the one group where a regression is
   instantly, cluster-wide visible.
 
-## C. Identity & namespace bootstrap — Tier 0
+## C. Identity & namespace bootstrap — Tier 0 — **serviceaccount-controller implemented** (minimum slice)
 
-- `serviceaccount-controller`: ensures every namespace has a `default`
-  ServiceAccount. **Confirmed live, the hard way**: `bootstrap-source.sh`'s
-  own demo-pod smoke test fails to apply — consistently, not flakily —
-  under `CONTROLLER_MANAGER=nodecontroller` (CI, `e2e.yml`), because
-  without this controller a fresh namespace's `default` ServiceAccount
-  never exists, and the apiserver's `ServiceAccount` admission plugin
-  (loaded by default — confirmed in the same run's own log) rejects any
-  pod that doesn't name one explicitly. This is the first real, felt
-  consequence of Group C not existing yet, not a hypothetical.
+- `serviceaccount-controller` (`crates/nodecontroller/src/controllers/service_account.rs`):
+  ensures every namespace has a `default` ServiceAccount. **Landed earlier
+  than the rest of Group C, and not by plan** — confirmed live, the hard
+  way, twice: `bootstrap-source.sh`'s own demo-pod smoke test, and
+  separately `deploy/lib/test/harness.sh`'s own namespace-setup preflight,
+  both failed hard under `CONTROLLER_MANAGER=nodecontroller` (CI,
+  `e2e.yml`), because without this controller a fresh namespace's
+  `default` ServiceAccount never exists, and the apiserver's
+  `ServiceAccount` admission plugin (loaded by default — confirmed in the
+  same run's own log) rejects any pod that doesn't name one explicitly.
+  Without this piece, Group A was un-testable, not just incomplete — so
+  this one controller (pure event, watch Namespace, create-if-missing) was
+  pulled forward. The rest of Group C below is still not implemented.
 - `namespace-controller`: finalizer-driven namespace deletion (purges
   every namespaced object before the Namespace itself goes away).
 - `root-ca-cert-publisher-controller`: writes the `kube-root-ca.crt`

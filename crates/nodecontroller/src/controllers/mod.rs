@@ -5,3 +5,4 @@
 
 pub mod node_ipam;
 pub mod node_lifecycle;
+pub mod service_account;
