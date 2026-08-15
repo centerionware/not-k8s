@@ -245,11 +245,26 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                         let entry = cache.entry(name.clone()).or_insert(NodeLiveness { ready_status: None, last_renew: None });
                         entry.last_renew = renew;
                         let status = entry.ready_status.clone();
-                        // A fresh renewal just proved liveness — reconcile
-                        // immediately rather than waiting for the next Node
-                        // event, so a recovered Node's Unreachable taint
-                        // clears promptly instead of lingering.
-                        reconcile(&node_api, &name, status.as_deref(), false).await;
+                        // Recompute staleness from the renewTime this event
+                        // actually carried — do NOT assume "false" just
+                        // because an Apply event arrived. Found live in CI:
+                        // a watch relist (a real, ordinary occurrence —
+                        // "too old resource version" is exactly what
+                        // triggers one) redelivers an InitApply for the
+                        // *same, still-stale* Lease with no new renewal in
+                        // it, and treating that arrival itself as proof of
+                        // liveness cleared an Unreachable taint the wheel
+                        // had *just* correctly set a moment earlier — a
+                        // real bug, not a flake, confirmed by the taint
+                        // flipping Unreachable→None one second after every
+                        // relist, node_lifecycle_controller.sh's own test
+                        // catching it via a 90s timeout with the taint
+                        // never staying put. A genuinely fresh renewal
+                        // computes stale=false here exactly as before; a
+                        // relist of a stale one now correctly computes
+                        // stale=true and leaves the taint alone.
+                        let lease_stale = is_stale(&cache, &name, cfg.node_monitor_grace_period);
+                        reconcile(&node_api, &name, status.as_deref(), lease_stale).await;
                     }
                     Some(Ok(Event::Delete(_) | Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "lease watch error in node-lifecycle-controller"),
@@ -276,19 +291,58 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
     }
 }
 
-fn is_stale(cache: &HashMap<String, NodeLiveness>, name: &str, grace_period: Duration) -> bool {
-    match cache.get(name).and_then(|s| s.last_renew) {
+/// Pure: has `last_renew` gone stale as of `now`? Split out from `is_stale`
+/// below so the actual staleness arithmetic — the thing that was wrong —
+/// is testable without a live clock, the same discipline `wheel.rs`'s
+/// `advance()` and `nodescheduler::cycle` both use.
+fn renewal_is_stale(last_renew: Option<Timestamp>, now: Timestamp, grace_period: Duration) -> bool {
+    match last_renew {
         None => false, // never seen a Lease for this Node yet — not our call to make
-        Some(renew) => {
-            let elapsed = Timestamp::now().duration_since(renew).as_secs_f64();
-            elapsed >= grace_period.as_secs_f64()
-        }
+        Some(renew) => now.duration_since(renew).as_secs_f64() >= grace_period.as_secs_f64(),
     }
+}
+
+fn is_stale(cache: &HashMap<String, NodeLiveness>, name: &str, grace_period: Duration) -> bool {
+    renewal_is_stale(cache.get(name).and_then(|s| s.last_renew), Timestamp::now(), grace_period)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn t(secs: i64) -> Timestamp {
+        Timestamp::from_second(secs).unwrap()
+    }
+
+    #[test]
+    fn a_lease_never_seen_is_not_stale() {
+        assert!(!renewal_is_stale(None, t(1000), Duration::from_secs(40)));
+    }
+
+    #[test]
+    fn a_recent_renewal_is_not_stale() {
+        assert!(!renewal_is_stale(Some(t(970)), t(1000), Duration::from_secs(40)));
+    }
+
+    #[test]
+    fn a_renewal_older_than_the_grace_period_is_stale() {
+        assert!(renewal_is_stale(Some(t(900)), t(1000), Duration::from_secs(40)));
+    }
+
+    /// The regression this bug fix exists for. Found live in CI
+    /// (node_lifecycle_controller.sh): a relist redelivers the *same,
+    /// unchanged, still-stale* Lease as a fresh `Apply` event — an
+    /// ordinary occurrence, not exceptional (a watcher relisting after
+    /// "too old resource version" is expected behaviour). Recomputing
+    /// staleness from the renewal time the event actually carries, rather
+    /// than assuming an Apply event means "fresh", must say stale here —
+    /// this is the exact call that was wrongly hardcoded to `false` at the
+    /// Lease-handler call site, which cleared an Unreachable taint the
+    /// wheel had just correctly set.
+    #[test]
+    fn a_relisted_but_unchanged_stale_renewal_is_still_stale() {
+        assert!(renewal_is_stale(Some(t(900)), t(1000), Duration::from_secs(40)));
+    }
 
     fn taint(key: &str, effect: &str) -> Taint {
         Taint { key: key.to_string(), effect: effect.to_string(), value: None, time_added: None }
