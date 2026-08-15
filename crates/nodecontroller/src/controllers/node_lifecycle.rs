@@ -154,11 +154,15 @@ async fn reconcile(api: &Api<Node>, node_name: &str, ready_status: Option<&str>,
         return; // already correct — no patch, no log noise on every tick
     }
     let new_taints = apply_desired_taint(&existing, desired);
-    // TEMPORARY diagnostic fields (source/ready_status/lease_stale/
-    // existing-taint-count) — chasing a real, reproducible bug where the
-    // taint flips back to None seconds after being set correctly; narrow
-    // this back down to the original two fields once the cause is
-    // confirmed from a live run.
+    // `source` names which of the three call sites (node-handler, lease-
+    // handler, wheel-tick) made this decision, and `ready_status`/
+    // `lease_stale` are its actual inputs — added chasing a real bug
+    // (a watch relist redelivering a stale Lease was briefly, wrongly,
+    // read as a fresh renewal — fixed in the lease-handler by recomputing
+    // staleness instead of assuming it) and kept: every taint *change* is
+    // rare enough that this costs nothing at INFO level, and having the
+    // decision's own inputs on the line that changed the taint is
+    // genuinely the fastest way to read the next one of these, live.
     tracing::info!(
         node = %node_name,
         ?desired,
