@@ -60,14 +60,14 @@
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
-use k8s_openapi::api::apps::v1::{Deployment, DeploymentStatus, ReplicaSet, ReplicaSetSpec, ReplicaSetStatus};
-use k8s_openapi::api::core::v1::{Pod, PodTemplateSpec};
+use k8s_openapi::api::apps::v1::{Deployment, DeploymentStatus, ReplicaSet, ReplicaSetSpec};
+use k8s_openapi::api::core::v1::PodTemplateSpec;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 pub const POD_TEMPLATE_HASH_LABEL: &str = "pod-template-hash";
 
@@ -292,7 +292,7 @@ async fn reconcile_deployment(client: &Client, namespace: &str, name: &str, rs_c
                 scale_replica_set(&rs_api, &rs.name_any(), 0).await;
             }
         }
-        let old_settled = old.iter().all(|rs| rs.status.as_ref().and_then(|s| s.replicas).unwrap_or(0) == 0);
+        let old_settled = old.iter().all(|rs| rs.status.as_ref().map(|s| s.replicas).unwrap_or(0) == 0);
         let target = if old_settled { desired } else { 0 };
         if rs_replicas(new_rs) != target {
             scale_replica_set(&rs_api, &new_rs.name_any(), target).await;
@@ -322,7 +322,7 @@ async fn reconcile_deployment(client: &Client, namespace: &str, name: &str, rs_c
     // doc: no owner-reference cascade delete here yet).
     let limit = spec.revision_history_limit.unwrap_or(10).max(0) as usize;
     let mut drained: Vec<&&ReplicaSet> =
-        old.iter().filter(|rs| rs_replicas(rs) == 0 && rs.status.as_ref().and_then(|s| s.replicas).unwrap_or(0) == 0).collect();
+        old.iter().filter(|rs| rs_replicas(rs) == 0 && rs.status.as_ref().map(|s| s.replicas).unwrap_or(0) == 0).collect();
     drained.sort_by_key(|rs| rs.metadata.creation_timestamp.clone().map(|t| t.0));
     if drained.len() > limit {
         for rs in &drained[..drained.len() - limit] {
@@ -332,8 +332,8 @@ async fn reconcile_deployment(client: &Client, namespace: &str, name: &str, rs_c
         }
     }
 
-    let total_replicas: i32 = owned.iter().map(|rs| rs.status.as_ref().and_then(|s| s.replicas).unwrap_or(0)).sum();
-    let updated_replicas = new_rs.status.as_ref().and_then(|s| s.replicas).unwrap_or(0);
+    let total_replicas: i32 = owned.iter().map(|rs| rs.status.as_ref().map(|s| s.replicas).unwrap_or(0)).sum();
+    let updated_replicas = new_rs.status.as_ref().map(|s| s.replicas).unwrap_or(0);
     let ready_replicas: i32 = owned.iter().map(|rs| rs_ready(rs)).sum();
     let available_replicas: i32 = owned.iter().map(|rs| rs_available(rs)).sum();
     let status = DeploymentStatus {
@@ -419,6 +419,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn resolves_absolute_int() {
