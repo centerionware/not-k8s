@@ -400,6 +400,13 @@ jobs:
           cargo build -p nodestore $TARGET_FLAG
           # shellcheck disable=SC2086
           cargo build --release -p nodestore $TARGET_FLAG
+          # nodescheduler: no features either — it is a pure apiserver
+          # watch/reconcile loop like nodestore, no CRI dependency (matches
+          # build-and-test's own build of it above).
+          # shellcheck disable=SC2086
+          cargo build -p nodescheduler $TARGET_FLAG
+          # shellcheck disable=SC2086
+          cargo build --release -p nodescheduler $TARGET_FLAG
           # notk8s: the combined single-binary layout — every component in
           # one executable, sharing one copy of the dependency tree they
           # have in common instead of one copy each (~12MB vs ~17MB for the
