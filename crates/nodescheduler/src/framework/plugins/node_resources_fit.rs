@@ -192,9 +192,30 @@ impl FilterPlugin for NodeResourcesFit {
             // different failure from one it has run out of, and the message
             // is the only thing an operator sees.
             if allocatable == 0 {
+                tracing::debug!(
+                    node = %node.name, resource = %name,
+                    "rejecting: node advertises no allocatable capacity for this resource at all"
+                );
                 return Status::unschedulable(NAME, format!("Insufficient {name}"));
             }
             if used + want > allocatable {
+                // At debug rather than info: this fires on every rejected
+                // pod on a busy cluster, same volume class as the
+                // unschedulable log line itself. But without the actual
+                // numbers, "Insufficient cpu" alone is unfalsifiable against
+                // a live cluster's own `kubectl describe node` — found live
+                // in CI chasing a flake where this plugin rejected a pod
+                // for want of ~1000m while every other view of the cluster
+                // (Allocated resources, the real pod list) showed under
+                // 1200m committed against 4000m allocatable. Whether that
+                // was a real transient shortfall or a cache-accounting bug
+                // was unanswerable after the fact with only the reason
+                // string to go on — this is what the next occurrence needs.
+                tracing::debug!(
+                    node = %node.name, resource = %name,
+                    committed = used, requested = want, allocatable,
+                    "rejecting: committed + requested exceeds allocatable"
+                );
                 return Status::unschedulable(NAME, format!("Insufficient {name}"));
             }
         }
