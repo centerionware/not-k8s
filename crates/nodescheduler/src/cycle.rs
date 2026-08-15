@@ -56,7 +56,7 @@
 use crate::cache::{NodeInfo, PodInfo, Snapshot};
 use crate::framework::status::{Code, NodeToStatus, Status};
 use crate::framework::{CycleState, Registry, MAX_NODE_SCORE};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Below this many nodes, always consider all of them: the saving is not worth
 /// the risk of missing a good placement on a small cluster.
@@ -219,15 +219,23 @@ pub struct Scheduler {
     /// Rotates across cycles; see [`advance_start_index`].
     pub next_start_node_index: usize,
     /// Pods that have preempted and are waiting for their victims to drain.
-    pub nominator: crate::preempt::Nominator,
+    ///
+    /// Shared (not owned outright) with `watch::WatchTargets` — a pod
+    /// deleted before it ever reaches this cycle's own "scheduled" branch
+    /// (see `lib.rs`) needs its nomination cleared from the same map the
+    /// watch task can reach, or it leaks: `Nominator` has no TTL and a
+    /// filter treats every nominee on a node as permanently there (see
+    /// `find_feasible_nodes`'s nominees loop below) until something calls
+    /// `remove`.
+    pub nominator: Arc<Mutex<crate::preempt::Nominator>>,
 }
 
 impl Scheduler {
-    pub fn new(percentage_of_nodes_to_score: i32) -> Self {
+    pub fn new(percentage_of_nodes_to_score: i32, nominator: Arc<Mutex<crate::preempt::Nominator>>) -> Self {
         Self {
             percentage_of_nodes_to_score,
             next_start_node_index: 0,
-            nominator: Default::default(),
+            nominator,
         }
     }
 
@@ -552,6 +560,8 @@ impl Scheduler {
             // itself be preemptable.
             let nominees: Vec<Arc<PodInfo>> = self
                 .nominator
+                .lock()
+                .unwrap()
                 .nominated_on(&node.name)
                 .into_iter()
                 .filter(|n| n.priority >= pod.priority && n.uid != pod.uid)
@@ -680,8 +690,14 @@ impl Scheduler {
 
         // A nomination still draining means room is already being made; a
         // second attempt would evict a second set of pods for it.
-        let nominated = self.nominator.nominated_node(&pod.uid);
+        let nominated = self
+            .nominator
+            .lock()
+            .unwrap()
+            .nominated_node(&pod.uid)
+            .map(str::to_string);
         let draining = nominated
+            .as_deref()
             .and_then(|n| snapshot.node(n))
             .map(|n| n.pods.iter().any(|p| p.priority < pod.priority))
             .unwrap_or(false);

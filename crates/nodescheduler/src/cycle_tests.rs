@@ -265,7 +265,7 @@ fn fit_scheduler(cpu_cores: &str) -> (Scheduler, Registry, crate::cache::Snapsho
         ..Default::default()
     });
     let snapshot = cache.snapshot();
-    (Scheduler::new(0), registry, snapshot)
+    (Scheduler::new(0, Arc::new(Mutex::new(crate::preempt::Nominator::default()))), registry, snapshot)
 }
 
 fn pod_wanting_milli_cpu(milli: i64) -> PodInfo {
@@ -351,7 +351,7 @@ async fn one_millicore_over_capacity_does_not_fit() {
 #[tokio::test]
 async fn an_empty_cluster_reports_no_nodes_rather_than_scheduling_nowhere() {
     let registry = Registry::default();
-    let mut sched = Scheduler::new(0);
+    let mut sched = Scheduler::new(0, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
     let snapshot = crate::cache::Snapshot::default();
     let mut rng = Rng::new(1);
 
