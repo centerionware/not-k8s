@@ -1,8 +1,14 @@
-commit: 4666835f81fa77e16483814d6483ed9b3e887711
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31877312314
-timestamp (UTC): 2026-08-15T09:41:08Z
+commit: 47233bd0e5ae1389483fabe63dc6320acc0021af
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31878094681
+timestamp (UTC): 2026-08-15T09:59:38Z
 shard: 4/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786786834
-==> FATAL: the 'default' ServiceAccount never appeared in not-k8s-e2e-1786786834 after 30s — every pod create in this run would be rejected with a Forbidden error that reads as a scheduling failure, so failing now names the real cause instead of burning the whole suite on misleading secondary failures
+==> Test namespace: not-k8s-e2e-1786787977
+==> 220 test(s) registered total (before sharding); running now...
+==> Shard 4/5: 41 test(s) selected
+
+════════════════════════════════════════
+Results: 0 passed, 0 failed, 0 skipped
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786787977...
