@@ -98,10 +98,34 @@ MEASURE_COMPONENTS=(
     "nodeapiserver|nodeapiserver|nodeapiserver|the API server, replacing kube-apiserver"
     "nodescheduler|nodescheduler|nodescheduler|the scheduler, replacing kube-scheduler"
     # The upstream components this project replaces, run as real standalone
-    # processes by deploy/lib/upstream-kubelet.sh and
-    # deploy/lib/upstream-kube-proxy.sh. Present only on the upstream leg of a
-    # comparison, absent on ours — which is what lets one table measure both
-    # legs without being told which leg it is on.
+    # processes by deploy/lib/upstream-kubelet.sh,
+    # deploy/lib/upstream-kube-proxy.sh, deploy/lib/upstream-kube-scheduler.sh,
+    # deploy/lib/upstream-kube-apiserver.sh and
+    # deploy/lib/upstream-kube-controller-manager.sh. Present only on the
+    # upstream leg of a comparison, absent on ours — which is what lets one
+    # table measure both legs without being told which leg it is on.
+    #
+    # kube-apiserver/kube-controller-manager are a special case among these
+    # five: when both are running standalone, k3s itself is stopped
+    # entirely (see upstream-kube-apiserver.sh's own header — two apiservers
+    # cannot both write to the same datastore), so the k3s row above is
+    # correctly absent rather than double-counting a remainder that no
+    # longer exists.
+    #
+    # kube-apiserver's row comes before kubelet's, deliberately, and not
+    # alphabetically: find_pid() tries an exact executable-name match
+    # (pgrep -x) before falling back to a full-cmdline substring search
+    # (pgrep -f), and rows run in table order. kube-apiserver's own flags
+    # (--kubelet-client-certificate, --kubelet-certificate-authority, ...)
+    # contain the literal substring "kubelet" — confirmed live: with
+    # kubelet's row first, its -f fallback matched kube-apiserver's PID
+    # before kube-apiserver's own -x match ever got a turn, so
+    # kube-apiserver was reported absent and "kubelet" silently measured
+    # the apiserver instead. Giving kube-apiserver's exact match first claim
+    # on its own PID (CLAIMED_PIDS) makes kubelet's later fallback search
+    # correctly find nothing when no standalone kubelet is actually running.
+    "kube-apiserver|kube-apiserver|kube-apiserver|upstream kube-apiserver, the API server nodeapiserver will replace"
+    "kube-controller-manager|kube-controller-manager|kube-controller-manager|upstream kube-controller-manager (node lifecycle, ServiceAccount/CSR controllers) — nothing in not-k8s replaces this yet"
     "kubelet|kubelet|kubelet|upstream kubelet, the node agent nodelet replaces"
     "kube-proxy|kube-proxy|kube-proxy|upstream kube-proxy, the Service routing nodeproxy replaces"
     # Not ours, and measured precisely because they are not.
