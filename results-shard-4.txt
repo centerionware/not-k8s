@@ -1,43 +1,22 @@
-commit: 292e07bb8ddd5bc1658f1d46f3cadf2c9d4a2095
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31852230926
-timestamp (UTC): 2026-08-15T00:08:03Z
+commit: 62a28db4611fba30e10afce2ca904ac4f7681079
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31852890961
+timestamp (UTC): 2026-08-15T00:19:57Z
 shard: 4/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786752338
+==> Test namespace: not-k8s-e2e-1786753086
 ==> 218 test(s) registered total (before sharding); running now...
 ==> Shard 4/5: 41 test(s) selected
 ▶ test_scheduler_leaves_a_gated_pod_alone
   ✔ PASS (11s)
 ▶ test_scheduler_wakes_a_pending_pod_on_a_real_event
-  ✔ PASS (76s)
+  ✔ PASS (43s)
 ▶ test_scheduler_honours_topology_spread
   ✔ PASS (11s)
 ▶ test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection
-==> FATAL: assertion failed: the FailedScheduling event must carry the extender's own rejection reason — 'no nodes available to schedule pods' does not contain 'no-gpu-quota-fake-extender'
-  ✘ FAIL (43s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 15 00:06:29 runnervmzvulz run-nodelet.sh[15330]: 2026-08-15T00:06:29.551834Z  INFO torn down pod=not-k8s-e2e-1786752338/sched-blocker
-    Aug 15 00:06:33 runnervmzvulz run-nodelet.sh[15330]: 2026-08-15T00:06:33.655010Z  INFO CreateContainer succeeded container=c container_id=26032956c1023fca5951d0e5e4b146d32562af68dd875fc38fd5966a6736db56
-    Aug 15 00:06:51 runnervmzvulz run-nodelet.sh[15330]: 2026-08-15T00:06:51.599022Z  INFO node status pushed
-    Aug 15 00:07:05 runnervmzvulz run-nodelet.sh[15330]: 2026-08-15T00:07:05.404570Z  INFO torn down pod=not-k8s-e2e-1786752338/sched-waiter
-    Aug 15 00:07:05 runnervmzvulz run-nodelet.sh[15330]: 2026-08-15T00:07:05.419179Z  WARN failed to write pod status pod=not-k8s-e2e-1786752338/sched-waiter error=ApiError: pods "sched-waiter" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"sched-waiter\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "sched-waiter", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 15 00:07:05 runnervmzvulz run-nodelet.sh[15330]: Caused by:
-    Aug 15 00:07:05 runnervmzvulz run-nodelet.sh[15330]:     pods "sched-waiter" not found: NotFound
-    Aug 15 00:07:05 runnervmzvulz run-nodelet.sh[15330]: 2026-08-15T00:07:05.422345Z  INFO torn down pod=not-k8s-e2e-1786752338/sched-waiter
-    Aug 15 00:07:07 runnervmzvulz run-nodelet.sh[15330]: 2026-08-15T00:07:07.253756Z  INFO CreateContainer succeeded container=c container_id=e4d4cf2c5dff66915ff078726fdb6abcdadd927a56f3a247318df87f5a9130e7
-    Aug 15 00:07:47 runnervmzvulz run-nodelet.sh[15330]: 2026-08-15T00:07:47.781642Z  INFO torn down pod=not-k8s-e2e-1786752338/sched-spread-a
-    Aug 15 00:07:47 runnervmzvulz run-nodelet.sh[15330]: 2026-08-15T00:07:47.795405Z  WARN failed to write pod status pod=not-k8s-e2e-1786752338/sched-spread-a error=ApiError: pods "sched-spread-a" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"sched-spread-a\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "sched-spread-a", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 15 00:07:47 runnervmzvulz run-nodelet.sh[15330]: Caused by:
-    Aug 15 00:07:47 runnervmzvulz run-nodelet.sh[15330]:     pods "sched-spread-a" not found: NotFound
-    Aug 15 00:07:47 runnervmzvulz run-nodelet.sh[15330]: 2026-08-15T00:07:47.797671Z  INFO torn down pod=not-k8s-e2e-1786752338/sched-spread-a
-    Aug 15 00:07:51 runnervmzvulz run-nodelet.sh[15330]: 2026-08-15T00:07:51.643731Z  INFO node status pushed
+  ✔ PASS (45s)
 
 ════════════════════════════════════════
-Results: 3 passed, 1 failed, 0 skipped
-Failed:
-  - test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection
+Results: 4 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786752338...
+==> Cleaning up test namespace not-k8s-e2e-1786753086...
