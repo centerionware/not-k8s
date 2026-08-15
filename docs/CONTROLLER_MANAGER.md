@@ -288,7 +288,7 @@ fan-out) — the plan's suggested first PR.
 - `podgc-controller` (**2**): reclaims terminated Pods past
   `--terminated-pod-gc-threshold`. Not implemented.
 
-## E. Workload controllers — Tier 1 — **replicaset-controller, deployment-controller implemented**
+## E. Workload controllers — Tier 1 — **replicaset-controller, deployment-controller, daemonset-controller implemented**
 
 - `replicaset-controller` (`crates/nodecontroller/src/controllers/replica_set.rs`,
   **implemented**): ensures a ReplicaSet's `spec.replicas` Pods exist,
@@ -319,9 +319,21 @@ fan-out) — the plan's suggested first PR.
   `DeploymentCondition`/`Progressing` tracking — `status.replicas`/
   `updatedReplicas`/`readyReplicas`/`availableReplicas` are kept current,
   the human-readable condition list is not populated.
-- `daemonset-controller`, `statefulset-controller`: not implemented. What
-  most users mean by "the controller manager" alongside ReplicaSet and
-  Deployment. This project's next real slice of Group E.
+- `daemonset-controller` (`crates/nodecontroller/src/controllers/daemon_set.rs`,
+  **implemented**): places one Pod per eligible Node directly (`spec.nodeName`
+  set at creation, bypassing `nodescheduler` — the same scheduler-bypass
+  upstream's own DaemonSet controller uses), no ReplicaSet involved. Real,
+  named simplifications (see that file's own module doc): node eligibility
+  is nodeSelector + taint/toleration only (no node/pod affinity
+  evaluation); no implicit built-in-taint tolerations (a DaemonSet's own
+  template must name every taint it needs to tolerate, same as it would
+  need to against upstream in practice); rolling update is a flat
+  per-reconcile `maxUnavailable` delete-then-create budget (no `maxSurge`
+  create-before-delete, no `OnDelete` strategy); no `ControllerRevision`
+  history.
+- `statefulset-controller`: not implemented. What most users mean by "the
+  controller manager" alongside ReplicaSet, Deployment, and DaemonSet.
+  This project's next real slice of Group E.
 
 ## F. Batch controllers — Tier 1 / 2
 

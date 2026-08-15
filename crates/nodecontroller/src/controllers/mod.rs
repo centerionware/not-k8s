@@ -3,6 +3,7 @@
 //! each future group is its own module here, its own PR, per the plan's
 //! delivery order (A, then B/C, then D, then E/F, then G, then H/I/J).
 
+pub mod daemon_set;
 pub mod deployment;
 pub mod endpoint_slice;
 pub mod node_ipam;

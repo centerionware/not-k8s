@@ -7,16 +7,16 @@
 //! `pacing.rs`) this crate is built around. Group A (node lifecycle),
 //! Group B (service routing, `endpointslice-controller`), the object-count
 //! slice of Group D (`resourcequota-controller`), and the
-//! `replicaset-controller`/`deployment-controller` slice of Group E are
-//! implemented, plus the minimum slice of Group C
+//! `replicaset-controller`/`deployment-controller`/`daemonset-controller`
+//! slice of Group E are implemented, plus the minimum slice of Group C
 //! (`serviceaccount-controller` only) needed to unblock testing Group A at
 //! all — see `controllers/service_account.rs`'s, `controllers/resource_quota.rs`'s,
-//! `controllers/replica_set.rs`'s, and `controllers/deployment.rs`'s own
-//! module docs for why each is scoped the way it is. See
-//! `docs/CONTROLLER_MANAGER.md`'s "Delivery
-//! order" for what's next (garbage-collector-controller is deliberately
-//! deferred until more of Group E exists — see Group D's own doc for why;
-//! daemonset-controller/statefulset-controller are next).
+//! `controllers/replica_set.rs`'s, `controllers/deployment.rs`'s, and
+//! `controllers/daemon_set.rs`'s own module docs for why each is scoped
+//! the way it is. See `docs/CONTROLLER_MANAGER.md`'s "Delivery order" for
+//! what's next (garbage-collector-controller is deliberately deferred
+//! until more of Group E exists — see Group D's own doc for why;
+//! statefulset-controller is next).
 //!
 //! Single leader-election lease (`kube-system/kube-controller-manager`,
 //! matching upstream's own name — see `config.rs`) covers the whole
@@ -70,6 +70,7 @@ pub async fn run() -> Result<()> {
             controllers::resource_quota::run(client.clone(), &cfg),
             controllers::replica_set::run(client.clone(), &cfg),
             controllers::deployment::run(client.clone(), &cfg),
+            controllers::daemon_set::run(client.clone(), &cfg),
         )?;
         Ok(())
     })
