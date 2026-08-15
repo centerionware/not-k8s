@@ -1,7 +1,17 @@
 commit: c537305626d5a61515b2cf9ac8f02edc5678fcb4
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31876561427
-timestamp (UTC): 2026-08-15T09:21:51Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31877007361
+timestamp (UTC): 2026-08-15T09:30:59Z
 shard: 3/5
-exit code: unknown
+exit code: 0
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+==> Test namespace: not-k8s-e2e-1786786259
+==> 220 test(s) registered total (before sharding); running now...
+==> Shard 3/5: 41 test(s) selected
+▶ test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers
+    (skip: nodecontroller isn't running here — deploy with --controller-manager=nodecontroller (which also disables k3s's own controller manager) to exercise these)
+  ○ SKIP (0s)
+
+════════════════════════════════════════
+Results: 0 passed, 0 failed, 1 skipped
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786786259...
