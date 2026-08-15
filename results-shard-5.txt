@@ -1,14 +1,14 @@
-commit: 24efbdb3669edba667b6cae891e2e777a224aab4
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31896693965
-timestamp (UTC): 2026-08-15T16:59:03Z
+commit: 546913659571ee5e4a6fcc90b21badeedcfccb49
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31898071975
+timestamp (UTC): 2026-08-15T17:28:57Z
 shard: 5/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786813142
+==> Test namespace: not-k8s-e2e-1786814936
 ==> 222 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 41 test(s) selected
 
 ════════════════════════════════════════
 Results: 0 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786813142...
+==> Cleaning up test namespace not-k8s-e2e-1786814936...
