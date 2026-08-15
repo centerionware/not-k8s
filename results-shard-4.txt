@@ -1,39 +1,18 @@
-commit: 27d59996ecd8e4ef89f9e5e8764a681612592865
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31894957678
-timestamp (UTC): 2026-08-15T16:23:27Z
+commit: 80989249327467657eb466bd878fddb2bd831fd9
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31895625577
+timestamp (UTC): 2026-08-15T16:36:46Z
 shard: 4/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786810881
+==> Test namespace: not-k8s-e2e-1786811734
 ==> 222 test(s) registered total (before sharding); running now...
 ==> Shard 4/5: 41 test(s) selected
 ▶ test_resourcequota_used_pods_tracks_actual_pod_count
-  ✔ PASS (33s)
+  ✔ PASS (32s)
 ▶ test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers
-==> FATAL: timed out after 90s waiting for: node runnervmzvulz tainted unreachable after its heartbeat Lease went stale
-  ✘ FAIL (91s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]:   Node name:   runnervmzvulz
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]:   Runtime:     cri
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]:   KUBECONFIG:  /etc/rancher/k3s/k3s.yaml
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]:   RUST_LOG:    info
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]:   CRI endpoint:  unix:///run/containerd/containerd.sock
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]: ========================================
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]: 2026-08-15T16:23:25.748121Z  INFO starting nodelet node=runnervmzvulz runtime=Cri cpu=4 memory_bytes=16765374464 max_pods=110
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]: 2026-08-15T16:23:25.749675Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]: 2026-08-15T16:23:25.752875Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]: 2026-08-15T16:23:25.780755Z  INFO node registered and Ready node=runnervmzvulz
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]: 2026-08-15T16:23:25.781234Z  INFO pod controller watching pods bound to this node node=runnervmzvulz
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]: 2026-08-15T16:23:25.782388Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]: 2026-08-15T16:23:25.786228Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]: 2026-08-15T16:23:25.822046Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 15 16:23:25 runnervmzvulz run-nodelet.sh[18912]: 2026-08-15T16:23:25.853647Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+  ✔ PASS (39s)
 
 ════════════════════════════════════════
-Results: 1 passed, 1 failed, 0 skipped
-Failed:
-  - test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers
+Results: 2 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786810881...
+==> Cleaning up test namespace not-k8s-e2e-1786811734...
