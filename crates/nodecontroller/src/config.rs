@@ -10,7 +10,7 @@
 //! different range than the rest of the cluster expects is not a
 //! replacement for it.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use std::time::Duration;
 
 mod defaults {

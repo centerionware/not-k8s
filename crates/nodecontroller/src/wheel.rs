@@ -74,13 +74,20 @@ impl<K: Eq + Hash + Clone> TimingWheel<K> {
         self.tick * self.slot_count as u32
     }
 
+    /// Which tick number `deadline` belongs to, ceiling-divided so a
+    /// deadline exactly on a tick boundary fires *at* that boundary rather
+    /// than one early, and clamped to `last_advanced_tick + 1` — never
+    /// `last_advanced_tick` itself, which `advance()` never sweeps again
+    /// (it only ever advances *past* the last-swept index). Found live by
+    /// this file's own tests: a deadline of `now` computed via plain floor
+    /// division landed in the slot `advance()` had already passed,
+    /// stranding it there until the wheel came full circle a revolution
+    /// later instead of firing on the very next tick.
     fn tick_index_for(&self, deadline: Instant) -> u64 {
         let elapsed = deadline.saturating_duration_since(self.start);
-        let idx = elapsed.as_nanos() / self.tick.as_nanos().max(1);
-        // Anything already due (idx behind the cursor) goes in the current
-        // slot, to be swept on the very next advance() — never silently
-        // dropped or scheduled a full revolution late.
-        (idx as u64).max(self.last_advanced_tick)
+        let tick_ns = self.tick.as_nanos().max(1);
+        let idx = elapsed.as_nanos().div_ceil(tick_ns) as u64;
+        idx.max(self.last_advanced_tick + 1)
     }
 
     /// Insert `key`, due at `deadline`. Idempotent on `key`: inserting an
@@ -89,7 +96,10 @@ impl<K: Eq + Hash + Clone> TimingWheel<K> {
     /// heartbeat, cluster-wide, once per `node-monitor-period`.
     pub fn insert(&mut self, key: K, deadline: Instant) -> Result<(), InsertError> {
         let tick_index = self.tick_index_for(deadline);
-        if tick_index - self.last_advanced_tick >= self.slot_count {
+        // tick_index is always > last_advanced_tick (tick_index_for's own
+        // clamp guarantees it), so a distance of exactly slot_count is a
+        // full revolution out and still fits — `>`, not `>=`.
+        if tick_index - self.last_advanced_tick > self.slot_count {
             return Err(InsertError::BeyondHorizon);
         }
         self.cancel(&key);

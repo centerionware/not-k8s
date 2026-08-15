@@ -33,7 +33,6 @@
 use crate::pacing::Governor;
 use anyhow::{Context, Result};
 use futures::StreamExt;
-use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::api::core::v1::{Node, Taint};
 use k8s_openapi::jiff::Timestamp;
 use kube::runtime::watcher::Event;
