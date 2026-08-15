@@ -37,6 +37,12 @@ on:
         required: false
         default: false
         type: boolean
+      controller_manager:
+        description: 'Which controller manager does node lifecycle/podCIDR/GC: none (k3s bundled kube-controller-manager, the shipped default) or nodecontroller (ours, which also passes --disable-controller-manager to k3s). Only cases/node_lifecycle_controller.sh needs ours, and it self-skips without it. Leave as none for a full-suite run — nodecontroller is Group A only (docs/CONTROLLER_MANAGER.md): no workload controllers, no GC, no ServiceAccount/namespace bootstrapping yet, so turning it on for the full suite would make an incomplete component the gate for tests that need those.'
+        required: false
+        default: none
+        type: choice
+        options: [none, nodecontroller]
 
 permissions:
   contents: write
@@ -182,6 +188,10 @@ jobs:
           NOTK8S_BUILD_LAYOUT: ${{ inputs.layout || 'split' }}
           DATASTORE: nodestore
           SCHEDULER: ${{ inputs.scheduler || 'none' }}
+          # Same two-halves-of-one-switch pairing as SCHEDULER, same
+          # "leave off for a full-suite run" reasoning — see this input's
+          # own description above.
+          CONTROLLER_MANAGER: ${{ inputs.controller_manager || 'none' }}
           # Picked up by nodescheduler-service.sh's env forwarding — only
           # written into the installed unit when non-empty, so leaving
           # debug_scheduler_log off reproduces exactly today's behaviour
