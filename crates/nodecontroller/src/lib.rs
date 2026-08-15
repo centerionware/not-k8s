@@ -4,12 +4,13 @@
 //! Read `docs/CONTROLLER_MANAGER.md` first: it's the scope (every group,
 //! upstream's `NewControllerDescriptors()` as source of truth, not the
 //! reference docs page) and the polling architecture (`wheel.rs` +
-//! `pacing.rs`) this crate is built around. Group A (node lifecycle) is
-//! implemented, plus the minimum slice of Group C
-//! (`serviceaccount-controller` only) needed to unblock testing Group A at
-//! all — see `controllers/service_account.rs`'s own module doc for why that
-//! one piece of C landed early. See `docs/CONTROLLER_MANAGER.md`'s
-//! "Delivery order" for what's next.
+//! `pacing.rs`) this crate is built around. Group A (node lifecycle) and
+//! Group B (service routing, `endpointslice-controller`) are implemented,
+//! plus the minimum slice of Group C (`serviceaccount-controller` only)
+//! needed to unblock testing Group A at all — see
+//! `controllers/service_account.rs`'s own module doc for why that one piece
+//! of C landed early. See `docs/CONTROLLER_MANAGER.md`'s "Delivery order"
+//! for what's next.
 //!
 //! Single leader-election lease (`kube-system/kube-controller-manager`,
 //! matching upstream's own name — see `config.rs`) covers the whole
@@ -59,6 +60,7 @@ pub async fn run() -> Result<()> {
             controllers::node_ipam::run(client.clone(), &cfg),
             controllers::node_lifecycle::run(client.clone(), &cfg),
             controllers::service_account::run(client.clone(), &cfg),
+            controllers::endpoint_slice::run(client.clone(), &cfg),
         )?;
         Ok(())
     })

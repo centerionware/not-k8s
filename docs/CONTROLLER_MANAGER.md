@@ -212,14 +212,23 @@ one-switch pairing `--scheduler=nodescheduler` already established).
 Smallest blast radius of any group (no owner-ref graph, no cross-object
 fan-out) — the plan's suggested first PR.
 
-## B. Service routing — Tier 0
+## B. Service routing — Tier 0 — **endpointslice-controller implemented**
 
-- `endpoints-controller` (legacy `Endpoints`) + `endpointslice-controller`
-  + `endpointslice-mirroring-controller`: watches Service + Pod, produces
-  EndpointSlices. `nodeproxy`'s `svc.rs` only *consumes* EndpointSlices —
-  without this group, Services stop routing entirely the moment k3s's
-  bundled copy is disabled. This is the one group where a regression is
-  instantly, cluster-wide visible.
+- `endpointslice-controller` (`crates/nodecontroller/src/controllers/endpoint_slice.rs`):
+  watches Service + Pod, produces `discovery.k8s.io/v1` EndpointSlices.
+  `nodeproxy`'s `svc.rs` only *consumes* EndpointSlices — without this,
+  Services stop routing entirely the moment k3s's bundled copy is
+  disabled, the one group where a regression is instantly, cluster-wide
+  visible. One EndpointSlice per Service (not upstream's size-limited,
+  multi-slice-per-Service scheme — additive if ever needed at real scale),
+  server-side-applied so repeated reconciles are idempotent. **Not
+  implemented**: `endpoints-controller` (the legacy `v1.Endpoints`
+  object — nothing in this project reads it) and
+  `endpointslice-mirroring-controller` (mirrors a hand-written `Endpoints`
+  object — a niche path). Both named explicitly in that file's own module
+  doc. Owner-reference cascade delete also isn't relied on yet (Group D's
+  `garbage-collector-controller` doesn't exist) — a Service delete
+  explicitly deletes its own EndpointSlice instead.
 
 ## C. Identity & namespace bootstrap — Tier 0 — **serviceaccount-controller implemented** (minimum slice)
 
