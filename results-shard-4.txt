@@ -1,20 +1,20 @@
-commit: 292e07bb8ddd5bc1658f1d46f3cadf2c9d4a2095
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31852737018
-timestamp (UTC): 2026-08-15T00:27:00Z
+commit: 62a28db4611fba30e10afce2ca904ac4f7681079
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31853369015
+timestamp (UTC): 2026-08-15T00:38:32Z
 shard: 4/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786752907
+==> Test namespace: not-k8s-e2e-1786753630
 ==> 218 test(s) registered total (before sharding); running now...
 ==> Shard 4/5: 41 test(s) selected
 ▶ test_installed_component_binaries_are_runnable_whatever_the_layout
-  ✔ PASS (1s)
-▶ test_datastore_creates_a_key_only_if_absent
   ✔ PASS (0s)
+▶ test_datastore_creates_a_key_only_if_absent
+  ✔ PASS (1s)
 ▶ test_datastore_survives_a_restart_with_its_data
   ✔ PASS (0s)
 ▶ test_apiserver_watch_delivers_through_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13609/environ: Permission denied
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13632/environ: Permission denied
   ✔ PASS (9s)
 ▶ test_the_cluster_keeps_serving_when_a_follower_dies
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
@@ -28,14 +28,14 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (155s)
+  ✔ PASS (156s)
 ▶ test_spec_hostname_overrides_the_container_hostname
   ✔ PASS (2s)
 ▶ test_eviction_priority_tiebreak_manual_procedure
     (skip: proving priority-based tiebreaking (round 26 — pick_eviction_candidate() ranks by spec.priority within a QoS class before falling back to usage) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with different PriorityClasses (e.g. a low-priority one and a high-priority one, or set spec.priority directly), force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the LOWER-priority pod is evicted first even if the higher-priority pod is using more memory — proof priority wins the tiebreak before usage does, matching real kubelet's rankMemoryPressure ordering. The pure ranking logic itself (priority beats usage, QoS class still outranks priority) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end.)
   ○ SKIP (0s)
 ▶ test_pod_teardown_actually_removes_the_sandbox
-  ✔ PASS (37s)
+  ✔ PASS (36s)
 ▶ test_graceful_node_shutdown_manual_note
     (skip: graceful node shutdown needs a real systemd-logind PrepareForShutdown signal, which only happens on an actual host shutdown/reboot — not something this suite triggers automatically. Manual spot-check: set NODELET_SHUTDOWN_GRACE_PERIOD_SECS (and optionally NODELET_SHUTDOWN_GRACE_PERIOD_CRITICAL_SECS) on nodelet, run 'loginctl list-inhibitors' and confirm nodelet holds a 'shutdown'/'delay' entry, apply a few test pods, then 'systemctl poweroff' (or 'reboot') the node and watch nodelet's logs for 'terminating pods' before the box actually goes down — non-critical pods (no system-node-critical/system-cluster-critical priorityClassName) should get preStop + termination before critical ones, all within NODELET_SHUTDOWN_GRACE_PERIOD_SECS total.)
   ○ SKIP (0s)
@@ -44,12 +44,12 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_crash_loop_backoff_throttles_immediate_restarts
   ✔ PASS (23s)
 ▶ test_lifecycle_stop_signal_is_honored_by_the_runtime
-    (skip: no /var/lib/nodelet/pods/136a4c35-591c-4999-930e-5401fa2f8d29/volumes/shared/signal.txt appeared after pod deletion — the runtime may not honor CRI's ContainerConfig.stop_signal (sent plain SIGTERM instead of the configured SIGUSR1, so the trap never fired); check runtime/cri/container_create.rs's stop_signal wiring if this is unexpected on a runtime version known to support it)
+    (skip: no /var/lib/nodelet/pods/22309548-5643-4995-aac8-6390764b6be8/volumes/shared/signal.txt appeared after pod deletion — the runtime may not honor CRI's ContainerConfig.stop_signal (sent plain SIGTERM instead of the configured SIGUSR1, so the trap never fired); check runtime/cri/container_create.rs's stop_signal wiring if this is unexpected on a runtime version known to support it)
   ○ SKIP (93s)
 ▶ test_pod_condition_reports_observed_generation
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_pressure_conditions_are_present_and_normally_false
-  ✔ PASS (1s)
+  ✔ PASS (0s)
 ▶ test_pod_resources_grpc_query_returns_real_data
   ✔ PASS (3s)
 ▶ test_startup_probe_failure_past_threshold_restarts_the_container
@@ -61,7 +61,7 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_scheduler_leaves_a_gated_pod_alone
   ✔ PASS (11s)
 ▶ test_scheduler_wakes_a_pending_pod_on_a_real_event
-  ✔ PASS (72s)
+  ✔ PASS (41s)
 ▶ test_scheduler_honours_topology_spread
   ✔ PASS (11s)
 ▶ test_read_only_root_filesystem_is_enforced
@@ -74,22 +74,22 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 table inet not_k8s_svc {
 	chain prerouting {
 		type nat hook prerouting priority dstnat; policy accept;
-		ip daddr 10.43.217.111 tcp dport 80 dnat ip to 10.42.0.22:8080
-		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.243:6443
-		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.9:53
-		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.9:53
-		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.9:9153
-		ip daddr 10.43.109.144 tcp dport 80 dnat ip to 10.42.0.22:8080
+		ip daddr 10.43.103.27 tcp dport 80 dnat ip to 10.42.0.22:8080
+		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.221:6443
+		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.2:53
+		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.2:53
+		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.2:9153
+		ip daddr 10.43.50.20 tcp dport 80 dnat ip to 10.42.0.22:8080
 	}
 
 	chain output {
 		type nat hook output priority dstnat; policy accept;
-		ip daddr 10.43.217.111 tcp dport 80 dnat ip to 10.42.0.22:8080
-		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.243:6443
-		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.9:53
-		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.9:53
-		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.9:9153
-		ip daddr 10.43.109.144 tcp dport 80 dnat ip to 10.42.0.22:8080
+		ip daddr 10.43.103.27 tcp dport 80 dnat ip to 10.42.0.22:8080
+		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.221:6443
+		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.2:53
+		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.2:53
+		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.2:9153
+		ip daddr 10.43.50.20 tcp dport 80 dnat ip to 10.42.0.22:8080
 	}
 
 	chain postrouting {
@@ -130,12 +130,12 @@ ec6419fed67b: Pulling fs layer
 71af8d887193: Waiting
 5e8b95221646: Waiting
 ec6419fed67b: Waiting
-4f4fb700ef54: Verifying Checksum
-4f4fb700ef54: Download complete
-f0c9ed0cf49e: Verifying Checksum
-f0c9ed0cf49e: Download complete
 e5ad846ecbb8: Verifying Checksum
 e5ad846ecbb8: Download complete
+f0c9ed0cf49e: Verifying Checksum
+f0c9ed0cf49e: Download complete
+4f4fb700ef54: Verifying Checksum
+4f4fb700ef54: Download complete
 f0c9ed0cf49e: Pull complete
 e5ad846ecbb8: Pull complete
 4f4fb700ef54: Pull complete
@@ -160,18 +160,17 @@ bbbdd6c6894b: Pulling fs layer
 6d464ea18732: Pulling fs layer
 3493bf46cdec: Waiting
 6d464ea18732: Waiting
-bbbdd6c6894b: Verifying Checksum
-bbbdd6c6894b: Download complete
 44cf07d57ee4: Verifying Checksum
 44cf07d57ee4: Download complete
+bbbdd6c6894b: Verifying Checksum
+bbbdd6c6894b: Download complete
 8e82f80af0de: Verifying Checksum
 8e82f80af0de: Download complete
 44cf07d57ee4: Pull complete
-3493bf46cdec: Verifying Checksum
 3493bf46cdec: Download complete
-bbbdd6c6894b: Pull complete
 6d464ea18732: Verifying Checksum
 6d464ea18732: Download complete
+bbbdd6c6894b: Pull complete
 8e82f80af0de: Pull complete
 3493bf46cdec: Pull complete
 6d464ea18732: Pull complete
@@ -201,4 +200,4 @@ https://docs.docker.com/go/credential-store/
 ════════════════════════════════════════
 Results: 35 passed, 0 failed, 6 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786752907...
+==> Cleaning up test namespace not-k8s-e2e-1786753630...
