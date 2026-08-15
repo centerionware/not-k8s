@@ -1,14 +1,16 @@
-commit: c6b8f410eb0d5a8325a5a678e567a01f0d48c96c
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31894224702
-timestamp (UTC): 2026-08-15T16:05:45Z
+commit: 27d59996ecd8e4ef89f9e5e8764a681612592865
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31894957678
+timestamp (UTC): 2026-08-15T16:21:30Z
 shard: 3/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786809944
-==> 221 test(s) registered total (before sharding); running now...
-==> Shard 3/5: 41 test(s) selected
+==> Test namespace: not-k8s-e2e-1786810889
+==> 222 test(s) registered total (before sharding); running now...
+==> Shard 3/5: 42 test(s) selected
+▶ test_node_gets_a_pod_cidr_allocated
+  ✔ PASS (0s)
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 0 skipped
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786809944...
+==> Cleaning up test namespace not-k8s-e2e-1786810889...
