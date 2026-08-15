@@ -193,7 +193,15 @@ fn build_new_replica_set(d: &Deployment, hash: &str, replicas: i32) -> Option<Re
     };
     Some(ReplicaSet {
         metadata: ObjectMeta {
-            generate_name: Some(format!("{}-{}-", d.name_any(), hash)),
+            // Deterministic, not `generateName`: the create race below
+            // (two overlapping reconciles both finding no cached RS for
+            // this hash yet, e.g. right after the watch cache hasn't
+            // caught up) must collide on the *same* name and hit 409, not
+            // silently create two independent ReplicaSets for one
+            // revision — that's exactly the runaway-Pod bug this comment
+            // replaced (confirmed live in CI: dozens of Pods across two
+            // `generateName`d ReplicaSets for the same template).
+            name: Some(format!("{}-{}", d.name_any(), hash)),
             namespace: d.namespace(),
             labels: Some(labels),
             owner_references: Some(vec![owner_reference(d)]),
@@ -270,6 +278,22 @@ async fn reconcile_deployment(client: &Client, namespace: &str, name: &str, rs_c
                 Ok(created) => {
                     new_rs_owned = created;
                     &new_rs_owned
+                }
+                // A concurrent reconcile (this one racing itself, or the
+                // watch cache not having caught up yet) already created
+                // the same deterministically-named RS — fetch the real
+                // object rather than erroring the whole reconcile away.
+                Err(kube::Error::Api(ref status)) if status.is_already_exists() => {
+                    match rs_api.get(&new.name_any()).await {
+                        Ok(existing) => {
+                            new_rs_owned = existing;
+                            &new_rs_owned
+                        }
+                        Err(e) => {
+                            tracing::warn!(namespace = %namespace, deployment = %name, error = ?e, "failed to fetch already-existing new ReplicaSet for deployment-controller");
+                            return;
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(namespace = %namespace, deployment = %name, error = ?e, "failed to create new ReplicaSet for deployment-controller");
