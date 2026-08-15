@@ -146,6 +146,10 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
     let cache = Arc::new(Mutex::new(cache::Cache::new()));
     let assumed = Arc::new(Mutex::new(cache::AssumedPods::new()));
     let budgets = Arc::new(Mutex::new(Vec::new()));
+    // Shared with `cycle::Scheduler` — see its own field comment and
+    // `watch.rs`'s `remove_pod` for why both sides need the same map rather
+    // than each keeping their own.
+    let nominator = Arc::new(Mutex::new(preempt::Nominator::default()));
 
     let watch_targets = watch::WatchTargets {
         cache: cache.clone(),
@@ -153,6 +157,7 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
         profile_names: cfg.profile_names.clone(),
         budgets: budgets.clone(),
         assumed: assumed.clone(),
+        nominator: nominator.clone(),
     };
 
     let mut watches = {
@@ -182,7 +187,7 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
     // lapse, which is the recovery path the whole design already assumes.
     let result = tokio::select! {
         r = scheduling_loop(
-            registries, extenders, queue, cache, assumed, budgets, client.clone(), cfg,
+            registries, extenders, queue, cache, assumed, budgets, nominator, client.clone(), cfg,
         ) => r,
         r = &mut watches => match r {
             Ok(Ok(())) => Err(anyhow::anyhow!("the watch layer stopped on its own")),
@@ -236,10 +241,11 @@ async fn scheduling_loop(
     cache: Arc<Mutex<cache::Cache>>,
     assumed: Arc<Mutex<cache::AssumedPods>>,
     budgets: Arc<Mutex<Vec<preempt::PdbState>>>,
+    nominator: Arc<Mutex<preempt::Nominator>>,
     client: kube::Client,
     cfg: &config::Config,
 ) -> Result<()> {
-    let mut scheduler = cycle::Scheduler::new(cfg.percentage_of_nodes_to_score);
+    let mut scheduler = cycle::Scheduler::new(cfg.percentage_of_nodes_to_score, nominator);
     let mut snapshot = cache::Snapshot::default();
 
     loop {
@@ -300,6 +306,21 @@ async fn scheduling_loop(
                 // as spent before any API call happens.
                 let placed = assumed.lock().unwrap().assume(&pod, &node);
                 cache.lock().unwrap().add_pod(placed);
+                // If this pod got here by preempting, its nomination has now
+                // done its job — the capacity it promised is committed for
+                // real, above, via `cache.add_pod`. Clearing it here is not
+                // optional: `Nominator` has no TTL and nothing else clears a
+                // pod's own entry on the path where it actually gets placed
+                // (only on deletion — see `watch.rs`'s `remove_pod`), so
+                // without this every pod that ever preempted anything leaves
+                // its request permanently double-counted on that node —
+                // once for real via the cache, once forever via
+                // `find_feasible_nodes`'s nominees loop — for as long as the
+                // process runs. Confirmed live: this is the actual root
+                // cause of the cpu_manager flake this diagnostic branch was
+                // built to chase, not staleness in the cache/snapshot
+                // pipeline at all.
+                scheduler.nominator.lock().unwrap().remove(&pod.uid);
                 queue.done(&pod.uid);
 
                 tracing::info!(pod = %pod.key(), %node, "scheduled");
@@ -348,7 +369,7 @@ async fn scheduling_loop(
                         // Record the promise before the evictions start, so
                         // the next pod filtering that node already sees this
                         // one as taking the space — otherwise both claim it.
-                        scheduler.nominator.nominate(pod.clone(), &outcome.nominated_node);
+                        scheduler.nominator.lock().unwrap().nominate(pod.clone(), &outcome.nominated_node);
 
                         let client = client.clone();
                         let preemptor = pod.clone();
