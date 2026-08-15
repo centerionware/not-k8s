@@ -17,6 +17,95 @@ Tier 1 (what most users mean by "controller manager"), **2** = Tier 2
 (rounds out parity), **defer** = explicitly out of scope for this project
 (no cloud provider) or low-value now (legacy token flows).
 
+## The end goal, stated precisely
+
+**Full behavioural parity with every group below — nothing upstream does
+gets silently dropped because it was inconvenient for this project's
+architecture.** But this component's honest engineering problem is
+different in kind from `nodelet`/`nodeproxy`/`nodescheduler`'s, and has to
+be named plainly rather than papered over:
+
+**This project's whole thesis is event-driven, zero-idle-poll design**
+(CLAUDE.md's pitch; `SCHEDULER.md`'s own accounting of kube-scheduler's
+three idle timers, two of which it eliminates outright). That thesis holds
+for kubelet, kube-proxy, and kube-scheduler because almost everything they
+do is *reacting to a state change someone told them about* — a Pod was
+created, a Service's endpoints changed, a Node was labeled. A watch is
+exactly the right primitive for "tell me when X changes."
+
+**kube-controller-manager's core job is disproportionately the opposite
+shape: noticing when something *failed to happen*.** A node that stops
+heartbeating emits no event — silence is the signal, and silence cannot be
+watched. A Job's `ttlSecondsAfterFinished` firing, a finished CSR aging
+out, an HPA's external metric going stale — none of these have a source
+event to subscribe to; the only way to know is to check the clock. This is
+not a solvable-with-more-cleverness gap, it is what these controllers
+*are*: deadline detectors. So unlike the other three components, **polling
+here cannot be eliminated, only made efficient** — the honest goal is not
+"zero timers," it's the same discipline `SCHEDULER.md` already applied to
+its one irreducible timer (leader-election renewal), generalized to
+everything in this crate that has the same shape.
+
+### The mechanism: one shared deadline heap, not N tickers
+
+`nodescheduler`'s backoff queue already proved the pattern this crate
+reuses at larger scale (`SCHEDULER.md`'s table, `flushBackoffQCompleted`
+row): *"A binary heap ordered by expiry plus one `tokio::time::sleep_until`
+rearmed on push. Same semantics, zero idle wakeups."* `nodecontroller`
+commits to exactly one instance of that primitive, shared across every
+controller that needs deadline detection, rather than each controller
+running its own `tokio::time::interval`:
+
+- Every deadline any controller needs to notice — a node's next
+  heartbeat-expiry check, a Job's TTL, a CSR's cleanup age, an HPA's next
+  metrics poll — is a `(Instant, ControllerId, Key)` entry pushed into one
+  min-heap.
+- Exactly one task owns the heap and sleeps until the *single* nearest
+  deadline (`sleep_until`, rearmed each time the heap's head changes),
+  then dispatches to the owning controller's reconcile function and pops.
+- **Cost is O(1) amortized per tick, not O(active controllers) or O(N
+  objects) per tick** — idle cost is one sleeping task, not fourteen. This
+  is the concrete, falsifiable version of "polling can't be avoided, but
+  it can be made efficient": the number of *wakeups* stays proportional to
+  the number of deadlines that actually elapse, never to how often you'd
+  naively re-check.
+- A controller registers a deadline once (on relevant watch events —
+  e.g. a fresh node heartbeat pushes its next expiry check forward) and
+  the heap does the rest; no controller owns its own clock.
+
+### Which groups actually need this, and which don't
+
+Most of the crate is genuinely event-only and gets nothing from the heap
+at all — naming this explicitly is part of the discipline, so a future
+change doesn't reach for a timer out of habit:
+
+| Group | Polling need | Irreducible? | Mechanism |
+|---|---|---|---|
+| A: node-lifecycle (heartbeat→taint) | Yes — silence detection | Yes | heap: recheck at `lastHeartbeat + gracePeriod` |
+| A: node-ipam | No | — | pure event (Node created/podCIDR empty) |
+| B: service routing | No | — | pure event (Service/Pod/EndpointSlice watch) |
+| C: identity/namespace | No | — | pure event |
+| D: garbage-collector | Mostly no | Partially — safety-net relist | heap, long period (upstream: 30min), insurance against a missed/dropped watch event, not routine |
+| D: resourcequota | Mostly no | Partially — usage resync | heap, coalesced, not per-quota-object |
+| D: podgc | Yes — "has this terminated Pod aged out" | Yes | heap |
+| E: workload controllers (RS/Deploy/DS/STS) | No | — | pure event |
+| F: job/cronjob | Partially — CronJob's schedule itself is time-driven | Yes, for CronJob only | heap: one entry per CronJob, next fire time |
+| F: ttl-after-finished | Yes | Yes | heap |
+| G: attach-detach | Small — upstream's own reconciler loop is time-boxed (short period) as a consistency check against the runtime's actual state, not a discovery mechanism | Partially | heap, short period, mirrors upstream's own `reconcilerSyncLoopPeriod` |
+| G: pv/pvc-protection, expansion, binder | No | — | pure event |
+| H: DRA-adjacent | No | — | pure event |
+| I: CSR signing/approving | No | — | pure event |
+| I: CSR cleaner | Yes — age-based | Yes | heap |
+| J: HPA | Yes — external metrics API is pull-only by construction, no push source exists | Yes, fully | heap: one entry per HPA, `syncPeriod` (upstream default 15s) |
+| J: disruption (PDB) | Small — status recompute resync | Partially | heap, coalesced |
+
+The heap-driven entries above are the *entire* polling surface of this
+component — if a future controller implementation reaches for
+`tokio::time::interval` outside this mechanism, that is the same kind of
+regression `SCHEDULER.md` flags for its own timers: "if it ever fires,
+that's a bug report, not a routine event" applies here too, just to a
+different, larger set of cases where it's honestly expected to fire.
+
 ## A. Node lifecycle — Tier 0
 
 - `node-lifecycle-controller`: taints a Node `NotReady`/`unreachable`
