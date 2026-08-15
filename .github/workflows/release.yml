@@ -36,6 +36,9 @@ jobs:
           # nodestore: no features either (deploy/lib/components.sh's row
           # for it has an empty cargo-features field, same as nodeproxy).
           cargo build -p nodestore
+          # nodescheduler: no features either — it is a pure apiserver
+          # client, so there is no cri/mock split to select.
+          cargo build -p nodescheduler
           # The combined single-binary layout (crates/notk8s) links all of
           # the above into one executable. Built here purely so a break in
           # it fails this stage rather than the much later build-release
@@ -59,6 +62,7 @@ jobs:
           path: |
             target/debug/nodelet
             target/debug/nodeproxy
+            target/debug/nodescheduler
           retention-days: 1
       - name: cargo test (both feature sets)
         # Under sudo: some tests (nodeproxy's svc.rs nft_check() ones) open
@@ -77,6 +81,7 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
           sudo -E env "PATH=$PATH" cargo test -p nodeproxy
           sudo -E env "PATH=$PATH" cargo test -p nodestore
+          sudo -E env "PATH=$PATH" cargo test -p nodescheduler
           sudo -E env "PATH=$PATH" cargo test -p notk8s
 
   # ── Stage 2: full e2e suite, real CSI + DRA reference drivers ─────────
@@ -132,6 +137,29 @@ jobs:
         # NOTK8S_NODELET_PREBUILT (nodelet-build.sh) skips rebuilding
         # entirely — build-and-test already built and uploaded this exact
         # binary once above; every shard just installs it.
+        #
+        # SCHEDULER is deliberately NOT set here. All five phases
+        # (docs/SCHEDULER.md) are implemented now — this is no longer a
+        # "phase 1 only" gap — but the release gate still tests what a
+        # release actually ships *by default*: k3s's own bundled scheduler,
+        # since SCHEDULER is opt-in at deploy time
+        # (bootstrap-source.sh/bootstrap-release.sh), not the default.
+        #
+        # An earlier version of this comment claimed a SCHEDULER=nodescheduler
+        # run had turned up "still-open failures outside cases/scheduler.sh
+        # (CSI attach timing, cpu-manager)". That attribution was wrong, and
+        # measuring it settled the question: the same two CSI tests
+        # (test_pod_with_an_attach_required_pvc_waits_for_volumeattachment and
+        # test_node_reports_volumes_in_use_for_a_csi_volume) fail identically
+        # on main with k3s's own scheduler placing the pods, and cpu-manager
+        # passes in both. They are a nodelet gap — the Node carries no
+        # volumes.kubernetes.io/controller-managed-attach-detach annotation, so
+        # kube-controller-manager's AttachDetachController never adds it to its
+        # desired state of world and no VolumeAttachment is ever created — and
+        # they are tracked separately from this component.
+        # cases/scheduler.sh self-skips here, and its own coverage comes from
+        # a targeted dispatch instead —
+        # `gh workflow run e2e.yml -f scheduler=nodescheduler -f only=scheduler`.
         env:
           NOTK8S_NODELET_PREBUILT: ${{ github.workspace }}/dist-bin/nodelet
           NOTK8S_NODEPROXY_PREBUILT: ${{ github.workspace }}/dist-bin/nodeproxy
@@ -173,6 +201,7 @@ jobs:
           TEST_CSI_ATTACH_STORAGE_CLASS: csi-hostpath-sc
           TEST_CSI_INLINE_DRIVER: hostpath.csi.k8s.io
           TEST_CSI_BLOCK_STORAGE_CLASS: csi-hostpath-block-sc
+          TEST_CSI_STORAGE_CLASS_WAIT: csi-hostpath-sc-wait
           NOTK8S_E2E_DEBUG_ON_FAIL: "1"
           NOTK8S_E2E_MAX_FAILURES: "3"
         run: |

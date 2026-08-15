@@ -91,7 +91,7 @@ run_test() {
 
 # _reorder_env_reconfiguring_tests_last — moves every registered test
 # whose own body touches nodelet_restart_with_env / nodeproxy_restart_*
-# / nodeproxy_restore_env
+# / nodeproxy_restore_env / nodescheduler_restart_* / nodescheduler_restore_env
 # (a real systemd restart) or restarts/reconfigures another host-level
 # service (containerd, swap) to the END of TESTS_REGISTERED, preserving relative
 # order within each of the two groups otherwise. Round 123: found live in
@@ -118,7 +118,7 @@ _reorder_env_reconfiguring_tests_last() {
         # its watches (cases/watch_recovery.sh, which is the test that does
         # this deliberately). Left in place, it would look exactly like a
         # flaky unrelated test rather than a disruption someone chose.
-        if declare -f "$name" 2>/dev/null | grep -qE 'nodelet_restart_with_env|nodeproxy_(restart|restore)_|sudo (systemctl (restart|stop|start) (containerd|k3s)|swapon|mkswap)'; then
+        if declare -f "$name" 2>/dev/null | grep -qE 'nodelet_restart_with_env|nodeproxy_(restart|restore)_|nodescheduler_(restart|restore)_|sudo (systemctl (restart|stop|start) (containerd|k3s)|swapon|mkswap)'; then
             deferred+=("$name")
         else
             normal+=("$name")

@@ -37,6 +37,7 @@ NOTK8S_COMPONENTS=(
     "nodelet|nodelet|@cri|want_nodelet|NOTK8S_NODELET_PREBUILT|@cri"
     "nodeproxy|nodeproxy||want_nodeproxy|NOTK8S_NODEPROXY_PREBUILT|"
     "nodestore|nodestore||want_nodestore|NOTK8S_NODESTORE_PREBUILT|protoc"
+    "nodescheduler|nodescheduler||want_nodescheduler|NOTK8S_NODESCHEDULER_PREBUILT|"
 )
 
 # Whether this run wants the node agent. --skip-nodelet is handled by the
@@ -60,6 +61,18 @@ want_nodeproxy() { [[ "${PROXY:-nodeproxy}" != "none" ]]; }
 # default features regardless, so it ships a combined binary containing
 # every component (nodestore included) no matter what any device sets here.
 want_nodestore() { [[ "${DATASTORE:-none}" == "nodestore" ]]; }
+
+# Whether this run wants our scheduler. Defaults OFF for the same reason
+# nodestore does: it is a control-plane component replacing something the
+# stripped k3s control plane still bundles and runs in-process (its own
+# kube-scheduler), so turning ours on is only half the job — the other half
+# is k3s's --disable-scheduler, which setup-control-plane.sh adds when this
+# is set. Two schedulers both binding pods is not a degraded mode, it is a
+# race, so this has to be opted into deliberately rather than defaulted on.
+# Same release-build caveat as nodestore: a release takes the crate's
+# default features and ships a combined binary containing every component
+# regardless of what any device sets here.
+want_nodescheduler() { [[ "${SCHEDULER:-none}" == "nodescheduler" ]]; }
 
 # component_field <row> <1-based index> — pipe-separated field accessor.
 component_field() { echo "$1" | cut -d'|' -f"$2"; }

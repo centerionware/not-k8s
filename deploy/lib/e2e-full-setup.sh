@@ -85,6 +85,19 @@ metadata:
 provisioner: hostpath.csi.k8s.io
 reclaimPolicy: Delete
 volumeBindingMode: Immediate
+---
+# WaitForFirstConsumer, deliberately distinct from the two above: nodescheduler's
+# VolumeBinding plugin only exercises its delayed-binding path (allowedTopologies,
+# CSIStorageCapacity, the PreBind selected-node annotation and poll) against a
+# class in this mode — an Immediate-only harness would leave that whole path
+# untested. See deploy/lib/test/cases/scheduler.sh's WaitForFirstConsumer case.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: csi-hostpath-sc-wait
+provisioner: hostpath.csi.k8s.io
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
 EOF
 
 # ── DRA: kubernetes-sigs/dra-example-driver's own Helm chart ───────────────
@@ -148,6 +161,10 @@ ENV_FILE="${GITHUB_ENV:-$WORK_DIR/e2e-setup.env}"
     echo "TEST_CSI_ATTACH_STORAGE_CLASS=csi-hostpath-sc"
     echo "TEST_CSI_INLINE_DRIVER=hostpath.csi.k8s.io"
     echo "TEST_CSI_BLOCK_STORAGE_CLASS=csi-hostpath-block-sc"
+    # WaitForFirstConsumer — nodescheduler's VolumeBinding.sh case needs a
+    # class in this mode to exercise its delayed-binding path at all; the
+    # three above are all Immediate.
+    echo "TEST_CSI_STORAGE_CLASS_WAIT=csi-hostpath-sc-wait"
 } >> "$ENV_FILE"
 log "wrote e2e env vars to $ENV_FILE"
 

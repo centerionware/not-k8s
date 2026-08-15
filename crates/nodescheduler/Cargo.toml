@@ -1,0 +1,63 @@
+[package]
+name = "nodescheduler"
+description = "kube-scheduler's job: pod placement, done event-driven"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "nodescheduler"
+path = "src/main.rs"
+
+[lib]
+name = "nodescheduler"
+path = "src/lib.rs"
+
+# Deliberately the same minimal dependency set as nodeproxy: tokio, kube,
+# k8s-openapi, rustls and nothing else. A scheduler is a pure apiserver
+# client — it talks to no runtime, no kernel subsystem, and no node-local
+# anything. If a change here wants tonic/prost/zbus, that is the signal
+# something is being put in the wrong component.
+#
+# `http` is the one addition over nodeproxy's list, and only because DRA's
+# `resource.k8s.io/v1` does not exist in the pinned k8s-openapi v1_33
+# schema, so ResourceClaim access goes through a raw request into a
+# hand-written struct — the same escape hatch nodelet's runtime/cri/claims.rs
+# already uses, for the same reason (see CLAUDE.md on the v1_33 pin).
+#
+# `cel-interpreter` is the second addition, scoped to exactly one job: DRA's
+# `DeviceSelector.cel.expression` is a real CEL expression
+# (`device.driver == "..."`, attribute/capacity comparisons), and evaluating
+# it for real — rather than pattern-matching a handful of expression shapes
+# by string, which breaks the moment a real DeviceClass writes anything this
+# crate's author didn't anticipate — needs an actual CEL implementation. See
+# `framework/plugins/dynamic_resources.rs`'s module header for the
+# environment this crate exposes to a selector and the one real gap against
+# upstream's own custom `apiservercel` extensions (capacity comparisons are
+# plain float64, not upstream's dedicated Quantity type).
+#
+# `reqwest` is the third and last, scoped to HTTP extenders (`extender.rs`):
+# the one legitimate reason this component talks to a host that is not the
+# apiserver, by design — an extender is an arbitrary out-of-tree HTTP service
+# an operator points the scheduler at. `kube::Client`'s transport is built
+# around exactly one base URL (the apiserver's) and reusing it for arbitrary
+# extender endpoints would mean re-deriving a general HTTP client from
+# kube-client's internals anyway; `rustls-tls` keeps the same TLS backend
+# this crate already uses everywhere else, and `default-features = false`
+# drops what an extender call never needs (cookies, multipart, native-tls).
+[dependencies]
+tokio = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+rustls = { workspace = true }
+async-trait = { workspace = true }
+http = "1"
+cel-interpreter = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

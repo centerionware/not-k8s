@@ -41,6 +41,22 @@ run_and_verify() {
         stop_service_proxy_nft
     fi
 
+    # nodescheduler, same shape and the same "not wanted means removed"
+    # reasoning as nodeproxy above — a host that gets --scheduler=none after a
+    # previous --scheduler=nodescheduler run would otherwise keep our
+    # scheduler binding pods alongside the k3s one this run just re-enabled,
+    # which is the exact double-binding race the flag exists to prevent.
+    #
+    # Unlike nodeproxy there is no --with-cri condition: placement is a
+    # control-plane decision about which node a pod belongs on, and it is just
+    # as real under the mock runtime as under containerd.
+    if want_nodescheduler; then
+        log "Starting nodescheduler (pod placement; k3s's own kube-scheduler is disabled)..."
+        install_nodescheduler_service
+    else
+        remove_nodescheduler_service
+    fi
+
     log "Waiting for the node to register..."
     for i in $(seq 1 20); do
         if kubectl get nodes --no-headers 2>/dev/null | grep -q .; then

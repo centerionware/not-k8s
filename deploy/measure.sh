@@ -104,6 +104,7 @@ MEASURE_COMPONENTS=(
     # legs without being told which leg it is on.
     "kubelet|kubelet|kubelet|upstream kubelet, the node agent nodelet replaces"
     "kube-proxy|kube-proxy|kube-proxy|upstream kube-proxy, the Service routing nodeproxy replaces"
+    "kube-scheduler|kube-scheduler|kube-scheduler|upstream kube-scheduler, the pod placement nodescheduler replaces"
     # Not ours, and measured precisely because they are not.
     #
     # Stock k3s runs flannel *inside* the k3s process and brings its own

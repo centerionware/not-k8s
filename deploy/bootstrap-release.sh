@@ -157,6 +157,28 @@ if [[ "$WANT_PROXY" -eq 1 ]]; then
     export NOTK8S_NODEPROXY_PREBUILT="$nodeproxy_prebuilt"
 fi
 
+# The mirror image of --proxy=none: nodescheduler is opt-IN, so it is fetched
+# only when asked for. It has to be fetched when asked for, though — the split
+# layout refuses to mix prebuilt and from-source components (see
+# use_prebuilt_binaries in lib/nodelet-build.sh), so a run that enables the
+# scheduler without a binary for it dies rather than quietly building one.
+#
+# Both spellings are checked, because bootstrap-source.sh accepts both: the
+# flag and a pre-set SCHEDULER in the environment are the same setting, and
+# honouring only the flag here would turn the env-var form into that same
+# confusing mixing error.
+WANT_SCHEDULER=0
+[[ "${SCHEDULER:-none}" == "nodescheduler" ]] && WANT_SCHEDULER=1
+for arg in "${PASSTHROUGH_ARGS[@]}"; do
+    [[ "$arg" == "--scheduler=nodescheduler" ]] && WANT_SCHEDULER=1
+    [[ "$arg" == "--scheduler=none" ]] && WANT_SCHEDULER=0
+done
+if [[ "$WANT_SCHEDULER" -eq 1 ]]; then
+    nodescheduler_prebuilt="$(download_release_binary nodescheduler)" \
+        || die "Couldn't download the 'nodescheduler' binary for this release. Drop --scheduler=nodescheduler to leave pod placement to the kube-scheduler k3s runs itself."
+    export NOTK8S_NODESCHEDULER_PREBUILT="$nodescheduler_prebuilt"
+fi
+
 rm -f "$RELEASE_JSON"
 
 log "Handing off to bootstrap-source.sh with NOTK8S_NODELET_PREBUILT=$NOTK8S_NODELET_PREBUILT"
