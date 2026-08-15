@@ -357,8 +357,24 @@ async fn an_empty_cluster_reports_no_nodes_rather_than_scheduling_nowhere() {
 
     let (outcome, _) = sched.schedule_one(&registry, &[], &pod_wanting_milli_cpu(1), &snapshot, &mut rng).await;
     match outcome {
-        CycleOutcome::Unschedulable { reason, .. } => {
-            assert!(reason.contains("no nodes"), "got: {reason}")
+        CycleOutcome::Unschedulable { reason, unschedulable_plugins, .. } => {
+            assert!(reason.contains("no nodes"), "got: {reason}");
+            // Round found live in CI: an empty `unschedulable_plugins` here
+            // means no registered hint matches any future event, so the
+            // pod is only ever retried by the blind backoff timer — not by
+            // the Node ADD event that actually resolves "there were no
+            // nodes". A pod whose very first cycle lands in this window
+            // (e.g. right after a scheduler restart, before the node watch
+            // relist completes) got silently orphaned from event-driven
+            // wakeups. NodeResourcesFit is unconditionally present and its
+            // own `events_to_register()` already reacts to Node ADD, so
+            // referencing it here is what lets add_unschedulable's hint
+            // matching actually retry this pod promptly.
+            assert!(
+                !unschedulable_plugins.is_empty(),
+                "an empty unschedulable_plugins list means nothing ever re-wakes this pod on its own \
+                 — only the blind backoff timer will, minutes later"
+            );
         }
         _ => panic!("an empty cluster must not schedule anything"),
     }
