@@ -57,6 +57,23 @@ run_and_verify() {
         remove_nodescheduler_service
     fi
 
+    # nodecontroller, same shape and the same "not wanted means removed"
+    # reasoning as nodescheduler above — a host that gets
+    # --controller-manager=none after a previous
+    # --controller-manager=nodecontroller run would otherwise keep ours
+    # tainting Nodes/allocating podCIDRs alongside the k3s one this run just
+    # re-enabled, the same double-writer race the flag exists to prevent.
+    #
+    # No --with-cri condition either, for the same reason nodescheduler has
+    # none: node lifecycle/podCIDR/GC are control-plane decisions, not
+    # runtime-dependent ones.
+    if want_nodecontroller; then
+        log "Starting nodecontroller (node lifecycle/podCIDR/GC; k3s's own kube-controller-manager is disabled)..."
+        install_nodecontroller_service
+    else
+        remove_nodecontroller_service
+    fi
+
     log "Waiting for the node to register..."
     for i in $(seq 1 20); do
         if kubectl get nodes --no-headers 2>/dev/null | grep -q .; then

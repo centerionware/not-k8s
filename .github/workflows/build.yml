@@ -106,8 +106,18 @@ jobs:
           else
             echo "crates/nodescheduler not present on this ref — skipping its tests."
           fi
+          if [[ -d crates/node-leaderelection ]]; then
+            sudo -E env "PATH=$PATH" cargo test -p node-leaderelection
+          else
+            echo "crates/node-leaderelection not present on this ref — skipping its tests."
+          fi
+          if [[ -d crates/nodecontroller ]]; then
+            sudo -E env "PATH=$PATH" cargo test -p nodecontroller
+          else
+            echo "crates/nodecontroller not present on this ref — skipping its tests."
+          fi
           # Same guard, same reason: the combined-binary crate postdates
-          # both of the above.
+          # all of the above.
           if [[ -d crates/notk8s ]]; then
             sudo -E env "PATH=$PATH" cargo test -p notk8s
           else
@@ -296,6 +306,14 @@ jobs:
                 cargo build $1 -p nodescheduler $TARGET_FLAG
               else
                 echo "crates/nodescheduler not present on this ref — skipping it."
+              fi
+              # nodecontroller: no features either, same reason as
+              # nodescheduler above — a pure apiserver client. Same guard.
+              if [[ -d crates/nodecontroller ]]; then
+                # shellcheck disable=SC2086
+                cargo build $1 -p nodecontroller $TARGET_FLAG
+              else
+                echo "crates/nodecontroller not present on this ref — skipping it."
               fi
             fi
             # The combined layout: one binary containing every component

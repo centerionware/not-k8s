@@ -38,6 +38,7 @@ NOTK8S_COMPONENTS=(
     "nodeproxy|nodeproxy||want_nodeproxy|NOTK8S_NODEPROXY_PREBUILT|"
     "nodestore|nodestore||want_nodestore|NOTK8S_NODESTORE_PREBUILT|protoc"
     "nodescheduler|nodescheduler||want_nodescheduler|NOTK8S_NODESCHEDULER_PREBUILT|"
+    "nodecontroller|nodecontroller||want_nodecontroller|NOTK8S_NODECONTROLLER_PREBUILT|"
 )
 
 # Whether this run wants the node agent. --skip-nodelet is handled by the
@@ -73,6 +74,16 @@ want_nodestore() { [[ "${DATASTORE:-none}" == "nodestore" ]]; }
 # default features and ships a combined binary containing every component
 # regardless of what any device sets here.
 want_nodescheduler() { [[ "${SCHEDULER:-none}" == "nodescheduler" ]]; }
+
+# Whether this run wants our controller manager. Same defaulting reasoning
+# as nodescheduler/nodestore: it replaces a job the stripped k3s control
+# plane still bundles (its own kube-controller-manager), so turning ours on
+# is only half the job — setup-control-plane.sh adds k3s's own
+# --disable-controller-manager when this is set, the same two-halves-of-one-
+# switch pairing --scheduler=nodescheduler already established. Two active
+# controller managers is a race for every object each of them writes (Node
+# taints, podCIDR, owner-ref GC, ...), not a redundant pair.
+want_nodecontroller() { [[ "${CONTROLLER_MANAGER:-none}" == "nodecontroller" ]]; }
 
 # component_field <row> <1-based index> — pipe-separated field accessor.
 component_field() { echo "$1" | cut -d'|' -f"$2"; }

@@ -60,6 +60,17 @@ echo "── scheduler lease ──"
 kubectl get lease kube-scheduler -n kube-system -o yaml 2>&1 | head -30 || echo "(no scheduler lease)"
 
 echo ""
+# Same reasoning as the nodescheduler dump above — worth it unconditionally.
+echo "── nodecontroller.service ──"
+sudo systemctl status nodecontroller.service --no-pager -l 2>&1 || echo "(nodecontroller.service not found/not running — if CONTROLLER_MANAGER=nodecontroller this deployment passed --disable-controller-manager to k3s too, so node lifecycle/podCIDR/GC are done by neither)"
+echo ""
+echo "── nodecontroller.service logs (last 200 lines) ──"
+sudo journalctl -u nodecontroller.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
+echo ""
+echo "── controller-manager lease ──"
+kubectl get lease kube-controller-manager -n kube-system -o yaml 2>&1 | head -30 || echo "(no controller-manager lease)"
+
+echo ""
 echo "── k3s.service ──"
 sudo systemctl status k3s.service --no-pager -l 2>&1 || echo "(k3s.service not found/not running)"
 

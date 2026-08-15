@@ -179,6 +179,19 @@ if [[ "$WANT_SCHEDULER" -eq 1 ]]; then
     export NOTK8S_NODESCHEDULER_PREBUILT="$nodescheduler_prebuilt"
 fi
 
+# Same opt-IN shape as nodescheduler above, for the same reason.
+WANT_CONTROLLER_MANAGER=0
+[[ "${CONTROLLER_MANAGER:-none}" == "nodecontroller" ]] && WANT_CONTROLLER_MANAGER=1
+for arg in "${PASSTHROUGH_ARGS[@]}"; do
+    [[ "$arg" == "--controller-manager=nodecontroller" ]] && WANT_CONTROLLER_MANAGER=1
+    [[ "$arg" == "--controller-manager=none" ]] && WANT_CONTROLLER_MANAGER=0
+done
+if [[ "$WANT_CONTROLLER_MANAGER" -eq 1 ]]; then
+    nodecontroller_prebuilt="$(download_release_binary nodecontroller)" \
+        || die "Couldn't download the 'nodecontroller' binary for this release. Drop --controller-manager=nodecontroller to leave node lifecycle/podCIDR/GC to the kube-controller-manager k3s runs itself."
+    export NOTK8S_NODECONTROLLER_PREBUILT="$nodecontroller_prebuilt"
+fi
+
 rm -f "$RELEASE_JSON"
 
 log "Handing off to bootstrap-source.sh with NOTK8S_NODELET_PREBUILT=$NOTK8S_NODELET_PREBUILT"

@@ -203,9 +203,30 @@ if [[ "${SCHEDULER:-none}" == "nodescheduler" ]]; then
     echo "    (Until nodescheduler is running, new pods stay Pending. That is expected, not a hang.)"
 fi
 
+# ── Our controller manager instead of k3s's ─────────────────────────────────
+#
+# Same two-halves-of-one-switch pairing as SCHEDULER above:
+# CONTROLLER_MANAGER=nodecontroller means crates/nodecontroller is installed
+# as its own service and does the node-lifecycle-tainting/podCIDR-
+# allocating/GC-ing, so k3s must stop running its own kube-controller-manager
+# in-process. Two active controller managers is a race for every object each
+# writes (Node taints, podCIDR, owner-ref GC), not a redundant pair — the
+# same reasoning SCHEDULER_ARG documents above.
+#
+# Deliberately not defaulted on, for the same reason: with CONTROLLER_MANAGER
+# unset this expands to nothing and the control plane is exactly what every
+# release so far shipped.
+CONTROLLER_MANAGER_ARG=""
+if [[ "${CONTROLLER_MANAGER:-none}" == "nodecontroller" ]]; then
+    CONTROLLER_MANAGER_ARG="--disable-controller-manager"
+    echo "==> CONTROLLER_MANAGER=nodecontroller — disabling k3s's own kube-controller-manager; ours will do node lifecycle/podCIDR/GC."
+    echo "    (Until nodecontroller is running, new Nodes get no podCIDR and stale Nodes get no lifecycle taint. Expected, not a hang.)"
+fi
+
 export INSTALL_K3S_EXEC="server \
     --disable-agent \
     $SCHEDULER_ARG \
+    $CONTROLLER_MANAGER_ARG \
     --disable traefik \
     --disable servicelb \
     --disable local-storage \

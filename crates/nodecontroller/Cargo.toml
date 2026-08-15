@@ -1,0 +1,36 @@
+[package]
+name = "nodecontroller"
+description = "kube-controller-manager's job: node lifecycle, workload controllers, GC, done event-driven where possible"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "nodecontroller"
+path = "src/main.rs"
+
+[lib]
+name = "nodecontroller"
+path = "src/lib.rs"
+
+# Same minimal dependency set as nodescheduler/nodeproxy: this component is a
+# pure apiserver client. No `cri` feature, no tonic/prost/zbus, no dependency
+# on nodeproxy's nftables tree — see CLAUDE.md's crate-isolation rule.
+#
+# `rand` is the one addition over nodescheduler's own list, scoped to exactly
+# one job: jitter on timing-wheel insert (see docs/CONTROLLER_MANAGER.md's
+# "Jitter on insert" section) so correlated deadlines — every Node renews on
+# the same node-monitor-period — don't bunch into the same wheel slot.
+[dependencies]
+tokio = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+rand = "0.8"
+node-leaderelection = { path = "../node-leaderelection" }

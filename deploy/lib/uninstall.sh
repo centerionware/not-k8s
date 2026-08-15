@@ -80,17 +80,19 @@ it keeps DNAT'ing to pods that are gone."
 }
 
 # Stops+removes everything a run started: nodelet, nodeproxy and its nft
-# table, nodescheduler, nodestore, flanneld, and containerd (only the last if
-# this script started it itself rather than using an existing distro-packaged
-# containerd.service).
+# table, nodescheduler, nodecontroller, nodestore, flanneld, and containerd
+# (only the last if this script started it itself rather than using an
+# existing distro-packaged containerd.service).
 stop_running_components() {
     remove_nodelet_service
     remove_nodeproxy_service
     stop_service_proxy_nft
     # Safe to remove unconditionally on a teardown path even though it leaves
-    # a cluster with no scheduler at all: everything that would notice is
-    # being torn down too, and full_cleanup uninstalls k3s shortly after.
+    # a cluster with no scheduler/controller manager at all: everything that
+    # would notice is being torn down too, and full_cleanup uninstalls k3s
+    # shortly after.
     remove_nodescheduler_service
+    remove_nodecontroller_service
     # After the two node components. The apiserver is a client of the
     # datastore and k3s is not torn down until later (full_cleanup's
     # uninstall_k3s), so k3s will log storage errors between here and there.

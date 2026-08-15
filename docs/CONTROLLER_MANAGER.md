@@ -127,16 +127,18 @@ keeps *steady-state* load flat over time rather than sawtoothing every
 for the bursts jitter can't fully absorb (a genuine mass event, not
 routine correlated renewal).
 
-Implementation: `crates/nodecontroller/src/wheel.rs` (the timing wheel —
+Implemented in `crates/nodecontroller/src/wheel.rs` (the timing wheel —
 insert/cancel/advance as plain functions over a struct, no I/O, pure and
 unit-tested standalone, same discipline `SCHEDULER.md` enforces for the
 scheduling cycle) and `crates/nodecontroller/src/pacing.rs` (the tick/
-budget governor that owns both the wheel and the low-cardinality heap and
-drains them under the CPU budget). Falsifiable, not just asserted: once
-Group A (node-lifecycle, the first real wheel consumer) lands, extend
-`deploy/measure.sh`'s per-second CPU sampling (already used for the
-nodelet-vs-kubelet profiling system) to nodecontroller, checked both at
-idle and under a synthetic thundering-herd e2e case — stop several
+budget governor — `Governor<K>` owns one wheel plus a deferred-overflow
+queue; the low-cardinality heap variant for Groups D/F/G/I/J doesn't exist
+yet, since nothing in the implemented Group A needs it — additive when a
+heap-shaped controller actually lands). Falsifiable, not just asserted:
+now that Group A (node-lifecycle, the wheel's first real consumer) has
+landed, extend `deploy/measure.sh`'s per-second CPU sampling (already used
+for the nodelet-vs-kubelet profiling system) to nodecontroller, checked
+both at idle and under a synthetic thundering-herd e2e case — stop several
 nodes' kubelets at once so their heartbeat expiries land in the same
 tick, confirm CPU stays pinned near the configured budget instead of
 spiking, and confirm the resulting taints still land within one tick
@@ -177,18 +179,35 @@ outside this mechanism, that is the same kind of regression
 report, not a routine event" applies here too, just to a different,
 larger set of cases where it's honestly expected to fire.
 
-## A. Node lifecycle — Tier 0
+## A. Node lifecycle — Tier 0 — **implemented** (taints only)
 
-- `node-lifecycle-controller`: taints a Node `NotReady`/`unreachable`
-  after it misses heartbeats past `nodeMonitorGracePeriod` (upstream
-  default 40s), evicts its pods after the eviction timeout. `GAP_CLOSURE.md`
-  explicitly scopes this to kube-controller-manager, not nodelet — nodelet
-  only clears the one taint that is its own job
+- `node-lifecycle-controller` (`crates/nodecontroller/src/controllers/node_lifecycle.rs`):
+  taints a Node `NotReady`/`unreachable` after its heartbeat `Lease`
+  (`kube-node-lease`, watched directly — not the heavier `NodeStatus`) goes
+  stale past `NODECONTROLLER_NODE_MONITOR_GRACE_PERIOD_SECONDS` (default
+  40s, upstream's own default). This is the wheel's first real consumer —
+  one entry per Node, rescheduled on every renewal. **Not yet
+  implemented**: pod eviction off a tainted Node (upstream's own
+  rate-limited, per-zone process — a real design pass of its own, not a
+  silent bolt-on) and flipping `status.conditions` to `Unknown` (a second
+  writer racing nodelet's own status push). Both named explicitly in that
+  file's own module doc, not silently dropped. `GAP_CLOSURE.md` explicitly
+  scopes taint-after-missed-heartbeat to kube-controller-manager, not
+  nodelet — nodelet only clears the one taint that is its own job
   (`node.cloudprovider.kubernetes.io/uninitialized`, `node.rs`).
-- `node-ipam-controller`: allocates `Node.spec.podCIDR(s)` out of
-  `--cluster-cidr`/`--node-cidr-mask-size`. flannel is dead without this —
-  `deploy/lib/cni.sh` already documents the dependency on
-  `spec.podCIDR` being set.
+- `node-ipam-controller` (`crates/nodecontroller/src/controllers/node_ipam.rs`):
+  allocates `Node.spec.podCIDR(s)` out of `NODECONTROLLER_CLUSTER_CIDR`/
+  `NODECONTROLLER_NODE_CIDR_MASK_SIZE` (defaults matching
+  `deploy/setup-control-plane.sh`'s own `10.42.0.0/16`/`/24`). flannel is
+  dead without this — `deploy/lib/cni.sh` already documents the dependency
+  on `spec.podCIDR` being set. IPv4 single-stack only for now, matching
+  this project's current CNI setup — additive, not a rework, to extend to
+  dual-stack later.
+
+e2e coverage: `deploy/lib/test/cases/node_lifecycle_controller.sh`. Opt in
+with `deploy/bootstrap-source.sh --controller-manager=nodecontroller` (also
+passes k3s's own `--disable-controller-manager`, the same two-halves-of-
+one-switch pairing `--scheduler=nodescheduler` already established).
 
 Smallest blast radius of any group (no owner-ref graph, no cross-object
 fan-out) — the plan's suggested first PR.

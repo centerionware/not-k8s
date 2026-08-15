@@ -52,6 +52,7 @@
 #   ./deploy/bootstrap-source.sh --with-cri --lb-method=round-robin
 #   ./deploy/bootstrap-source.sh --with-cri --proxy=none   # no Service proxy: something else (a real kube-proxy, Cilium, ...) owns ClusterIP/NodePort routing on this node
 #   ./deploy/bootstrap-source.sh --with-cri --scheduler=nodescheduler   # our scheduler instead of the kube-scheduler k3s runs in-process
+#   ./deploy/bootstrap-source.sh --with-cri --controller-manager=nodecontroller   # our controller manager instead of the kube-controller-manager k3s runs in-process
 #   ./deploy/bootstrap-source.sh --skip-control-plane
 #   ./deploy/bootstrap-source.sh --with-cri --skip-nodelet   # control plane + containerd/CNI only, nodelet never built/installed/started (round 124: profiling.yml's upstream-kubelet.sh comparison leg wants this exact stack with a different node agent, not nodelet sitting there unused)
 #   ./deploy/bootstrap-source.sh --with-cri --layout=combined  # one multi-call binary (bin/notk8s) instead of one per component
@@ -190,6 +191,7 @@ SKIP_NODELET=0
 PROXY=nodeproxy
 DATASTORE="${DATASTORE:-none}"
 SCHEDULER="${SCHEDULER:-none}"
+CONTROLLER_MANAGER="${CONTROLLER_MANAGER:-none}"
 BUILD_LAYOUT="${NOTK8S_BUILD_LAYOUT:-split}"
 
 for arg in "$@"; do
@@ -207,6 +209,7 @@ for arg in "$@"; do
         --proxy=*) PROXY="${arg#--proxy=}" ;;
         --datastore=*) DATASTORE="${arg#--datastore=}" ;;
         --scheduler=*) SCHEDULER="${arg#--scheduler=}" ;;
+        --controller-manager=*) CONTROLLER_MANAGER="${arg#--controller-manager=}" ;;
         --layout=*) BUILD_LAYOUT="${arg#--layout=}" ;;
         --keep-build-tools) KEEP_BUILD_TOOLS=1 ;;
         -h|--help)
@@ -274,6 +277,15 @@ esac
 # setup-control-plane.sh, which turns k3s's own scheduler off when ours is on.
 export SCHEDULER
 
+case "$CONTROLLER_MANAGER" in
+    none|nodecontroller) ;;
+    *) die "Unknown --controller-manager='$CONTROLLER_MANAGER' (want 'none' — k3s's own bundled kube-controller-manager, the default — or 'nodecontroller')." ;;
+esac
+# Read by lib/components.sh's want_nodecontroller predicate *and* by
+# setup-control-plane.sh, which turns k3s's own controller manager off when
+# ours is on.
+export CONTROLLER_MANAGER
+
 case "$BUILD_LAYOUT" in
     split|combined|both) ;;
     *) die "Unknown --layout='$BUILD_LAYOUT' (want 'split' — one binary per component, 'combined' — one multi-call binary, or 'both'). See deploy/lib/components.sh." ;;
@@ -308,6 +320,7 @@ source "$LIB_DIR/nodelet-service.sh"
 source "$LIB_DIR/nodeproxy-service.sh"
 source "$LIB_DIR/nodestore-service.sh"
 source "$LIB_DIR/nodescheduler-service.sh"
+source "$LIB_DIR/nodecontroller-service.sh"
 source "$LIB_DIR/run.sh"
 source "$LIB_DIR/cleanup.sh"
 source "$LIB_DIR/uninstall.sh"

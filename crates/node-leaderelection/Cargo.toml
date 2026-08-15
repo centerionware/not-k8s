@@ -1,0 +1,23 @@
+[package]
+name = "node-leaderelection"
+description = "Lease-based leader election, shared by any component that must have exactly one active writer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "node_leaderelection"
+path = "src/lib.rs"
+
+# Same minimal footprint as nodescheduler/nodeproxy: a Lease is an ordinary
+# apiserver object, so this crate is a pure apiserver client and nothing
+# else — no runtime, no kernel subsystem, no node-local anything. Anything
+# that would want tonic/prost/zbus here belongs in whichever component
+# needed it, not in this one.
+[dependencies]
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
