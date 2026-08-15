@@ -1,37 +1,16 @@
-commit: ae4e89b73defa1d2fc409ff1b4faa672b2a7423b
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31878915095
-timestamp (UTC): 2026-08-15T10:19:18Z
+commit: f52fd3f1c683d926bd9b33ed05ed6425bd31ed7e
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31879844904
+timestamp (UTC): 2026-08-15T10:42:01Z
 shard: 3/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786789064
+==> Test namespace: not-k8s-e2e-1786790481
 ==> 220 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 41 test(s) selected
 ▶ test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers
-==> FATAL: timed out after 90s waiting for: node runnervmzvulz tainted unreachable after its heartbeat Lease went stale
-  ✘ FAIL (91s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 15 10:19:16 runnervmzvulz run-nodelet.sh[18069]:   Node name:   runnervmzvulz
-    Aug 15 10:19:16 runnervmzvulz run-nodelet.sh[18069]:   Runtime:     cri
-    Aug 15 10:19:16 runnervmzvulz run-nodelet.sh[18069]:   KUBECONFIG:  /etc/rancher/k3s/k3s.yaml
-    Aug 15 10:19:16 runnervmzvulz run-nodelet.sh[18069]:   RUST_LOG:    info
-    Aug 15 10:19:16 runnervmzvulz run-nodelet.sh[18069]:   CRI endpoint:  unix:///run/containerd/containerd.sock
-    Aug 15 10:19:16 runnervmzvulz run-nodelet.sh[18069]: ========================================
-    Aug 15 10:19:16 runnervmzvulz run-nodelet.sh[18069]: 2026-08-15T10:19:16.971227Z  INFO starting nodelet node=runnervmzvulz runtime=Cri cpu=4 memory_bytes=16765378560 max_pods=110
-    Aug 15 10:19:16 runnervmzvulz run-nodelet.sh[18069]: 2026-08-15T10:19:16.972799Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
-    Aug 15 10:19:16 runnervmzvulz run-nodelet.sh[18069]: 2026-08-15T10:19:16.975893Z  INFO plugin registry: watching for CSI driver / device plugin registrations path=/var/lib/nodelet/plugins_registry
-    Aug 15 10:19:17 runnervmzvulz run-nodelet.sh[18069]: 2026-08-15T10:19:17.000758Z  INFO node registered and Ready node=runnervmzvulz
-    Aug 15 10:19:17 runnervmzvulz run-nodelet.sh[18069]: 2026-08-15T10:19:17.001219Z  INFO pod controller watching pods bound to this node node=runnervmzvulz
-    Aug 15 10:19:17 runnervmzvulz run-nodelet.sh[18069]: 2026-08-15T10:19:17.003093Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
-    Aug 15 10:19:17 runnervmzvulz run-nodelet.sh[18069]: 2026-08-15T10:19:17.004076Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
-    Aug 15 10:19:17 runnervmzvulz run-nodelet.sh[18069]: 2026-08-15T10:19:17.024924Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 15 10:19:17 runnervmzvulz run-nodelet.sh[18069]: 2026-08-15T10:19:17.052993Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+  ✔ PASS (39s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
-Failed:
-  - test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786789064...
+==> Cleaning up test namespace not-k8s-e2e-1786790481...
