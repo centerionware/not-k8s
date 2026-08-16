@@ -1,14 +1,74 @@
-commit: a40963b153d823d5aaed23255df5f303dcf491ae
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31922865371
-timestamp (UTC): 2026-08-16T02:57:36Z
+commit: 6ac113cf6effaff5c6ab5b9bda826ba79b7951fd
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31923288802
+timestamp (UTC): 2026-08-16T03:10:33Z
 shard: 4/5
-exit code: 0
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786849055
-==> 232 test(s) registered total (before sharding); running now...
-==> Shard 4/5: 43 test(s) selected
+==> Test namespace: not-k8s-e2e-1786849740
+==> 233 test(s) registered total (before sharding); running now...
+==> Shard 4/5: 44 test(s) selected
+▶ test_diag_pv_binder_state
+=== DIAG: PVC ===
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"diag-claim","namespace":"not-k8s-e2e-1786849740"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"64Mi"}},"storageClassName":"csi-hostpath-sc"}}
+  creationTimestamp: "2026-08-16T03:09:01Z"
+  finalizers:
+  - kubernetes.io/pvc-protection
+  name: diag-claim
+  namespace: not-k8s-e2e-1786849740
+  resourceVersion: "614"
+  uid: 5923a15b-adb1-4b1f-8e7a-5886a3ed3db7
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 64Mi
+  storageClassName: csi-hostpath-sc
+  volumeMode: Filesystem
+status:
+  phase: Pending
+=== DIAG: PVs ===
+No resources found
+apiVersion: v1
+items: []
+kind: List
+metadata:
+  resourceVersion: ""
+=== DIAG: provisioner pods ===
+No resources found
+=== DIAG: provisioner logs ===
+No resources found in default namespace.
+=== DIAG: events ===
+No resources found in not-k8s-e2e-1786849740 namespace.
+==> FATAL: diagnostic dump above — this always fails on purpose
+  ✘ FAIL (90s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 16 03:07:48 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:07:48.728297Z ERROR failed with status 503 Service Unavailable
+    Aug 16 03:07:48 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:07:48.729221Z ERROR failed with status 503 Service Unavailable
+    Aug 16 03:07:48 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:07:48.864037Z ERROR failed with status 503 Service Unavailable
+    Aug 16 03:07:48 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:07:48.864465Z ERROR failed with status 503 Service Unavailable
+    Aug 16 03:07:48 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:07:48.865619Z ERROR failed with status 503 Service Unavailable
+    Aug 16 03:07:49 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:07:49.042532Z ERROR failed with status 503 Service Unavailable
+    Aug 16 03:07:49 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:07:49.043571Z ERROR failed with status 503 Service Unavailable
+    Aug 16 03:07:49 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:07:49.044373Z ERROR failed with status 503 Service Unavailable
+    Aug 16 03:07:49 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:07:49.332169Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 365 (463)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 16 03:07:49 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:07:49.385619Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 365 (463)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 16 03:07:52 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:07:52.994981Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 03:07:53 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:07:53.057961Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 03:08:29 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:08:29.606084Z  INFO node status pushed
+    Aug 16 03:09:29 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:09:29.644274Z  INFO node status pushed
+    Aug 16 03:10:29 runnervmzvulz run-nodelet.sh[14698]: 2026-08-16T03:10:29.683025Z  INFO node status pushed
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 0 skipped
+Results: 0 passed, 1 failed, 0 skipped
+Failed:
+  - test_diag_pv_binder_state
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786849055...
+==> Cleaning up test namespace not-k8s-e2e-1786849740...
