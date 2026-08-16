@@ -11,7 +11,7 @@
 //! Standard 5-field format only (`minute hour day-of-month month
 //! day-of-week`) — no seconds field, no `@hourly`/`@daily`-style macros,
 //! no named months/weekdays (`JAN`, `MON`). Supports `*`, a bare number,
-//! `*/N` and `a-b/N` step syntax, `a-b` ranges, and comma-separated lists —
+//! `*/N`, `N/step`, and `a-b/N` step syntax, `a-b` ranges, and comma-separated lists —
 //! covers the overwhelming majority of real CronJob schedules. Matches
 //! upstream's own "day-of-month OR day-of-week" quirk when both fields are
 //! restricted (not `*`): a real, well-known cron semantic, not a bug.
@@ -39,18 +39,34 @@ fn parse_field(field: &str, min: u32, max: u32) -> Result<(Vec<u32>, bool), Stri
     }
     let mut values = Vec::new();
     for part in field.split(',') {
-        let (range_part, step) = match part.split_once('/') {
-            Some((r, s)) => (r, s.parse::<u32>().map_err(|_| format!("bad step in {part:?}"))?),
-            None => (part, 1),
+        let (range_part, step, explicit_step) = match part.split_once('/') {
+            Some((r, s)) => (
+                r,
+                s.parse::<u32>()
+                    .map_err(|_| format!("bad step in {part:?}"))?,
+                true,
+            ),
+            None => (part, 1, false),
         };
         let (lo, hi) = if range_part == "*" {
             (min, max)
         } else if let Some((a, b)) = range_part.split_once('-') {
-            let a: u32 = a.parse().map_err(|_| format!("bad range start in {part:?}"))?;
-            let b: u32 = b.parse().map_err(|_| format!("bad range end in {part:?}"))?;
+            let a: u32 = a
+                .parse()
+                .map_err(|_| format!("bad range start in {part:?}"))?;
+            let b: u32 = b
+                .parse()
+                .map_err(|_| format!("bad range end in {part:?}"))?;
             (a, b)
+        } else if explicit_step {
+            let v: u32 = range_part
+                .parse()
+                .map_err(|_| format!("bad value {part:?}"))?;
+            (v, max)
         } else {
-            let v: u32 = range_part.parse().map_err(|_| format!("bad value {part:?}"))?;
+            let v: u32 = range_part
+                .parse()
+                .map_err(|_| format!("bad value {part:?}"))?;
             (v, v)
         };
         if lo < min || hi > max || lo > hi {
@@ -71,21 +87,40 @@ impl Schedule {
     pub fn parse(expr: &str) -> Result<Schedule, String> {
         let fields: Vec<&str> = expr.split_whitespace().collect();
         if fields.len() != 5 {
-            return Err(format!("expected 5 fields, got {} in {expr:?}", fields.len()));
+            return Err(format!(
+                "expected 5 fields, got {} in {expr:?}",
+                fields.len()
+            ));
         }
         let (minute, _) = parse_field(fields[0], 0, 59)?;
         let (hour, _) = parse_field(fields[1], 0, 23)?;
         let (day_of_month, dom_restricted) = parse_field(fields[2], 1, 31)?;
         let (month, _) = parse_field(fields[3], 1, 12)?;
         let (day_of_week, dow_restricted) = parse_field(fields[4], 0, 6)?;
-        if minute.is_empty() || hour.is_empty() || day_of_month.is_empty() || month.is_empty() || day_of_week.is_empty() {
+        if minute.is_empty()
+            || hour.is_empty()
+            || day_of_month.is_empty()
+            || month.is_empty()
+            || day_of_week.is_empty()
+        {
             return Err(format!("a field in {expr:?} matched no values"));
         }
-        Ok(Schedule { minute, hour, day_of_month, month, day_of_week, dom_restricted, dow_restricted })
+        Ok(Schedule {
+            minute,
+            hour,
+            day_of_month,
+            month,
+            day_of_week,
+            dom_restricted,
+            dow_restricted,
+        })
     }
 
     fn matches(&self, t: &DateTime<Utc>) -> bool {
-        if !self.minute.contains(&t.minute()) || !self.hour.contains(&t.hour()) || !self.month.contains(&t.month()) {
+        if !self.minute.contains(&t.minute())
+            || !self.hour.contains(&t.hour())
+            || !self.month.contains(&t.month())
+        {
             return false;
         }
         let dom_ok = self.day_of_month.contains(&t.day());
@@ -109,7 +144,16 @@ impl Schedule {
     /// minute after `from`, so a `from` that already matches never returns
     /// itself.
     pub fn next_after(&self, from: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        let start = Utc.with_ymd_and_hms(from.year(), from.month(), from.day(), from.hour(), from.minute(), 0).single()?
+        let start = Utc
+            .with_ymd_and_hms(
+                from.year(),
+                from.month(),
+                from.day(),
+                from.hour(),
+                from.minute(),
+                0,
+            )
+            .single()?
             + Duration::minutes(1);
         let limit = start + Duration::days(366);
         let mut t = start;
@@ -134,27 +178,51 @@ mod tests {
     #[test]
     fn every_minute() {
         let s = Schedule::parse("* * * * *").unwrap();
-        assert_eq!(s.next_after(dt(2026, 1, 1, 0, 0)), Some(dt(2026, 1, 1, 0, 1)));
+        assert_eq!(
+            s.next_after(dt(2026, 1, 1, 0, 0)),
+            Some(dt(2026, 1, 1, 0, 1))
+        );
     }
 
     #[test]
     fn specific_time_next_day() {
         let s = Schedule::parse("30 4 * * *").unwrap();
-        assert_eq!(s.next_after(dt(2026, 1, 1, 5, 0)), Some(dt(2026, 1, 2, 4, 30)));
-        assert_eq!(s.next_after(dt(2026, 1, 1, 4, 0)), Some(dt(2026, 1, 1, 4, 30)));
+        assert_eq!(
+            s.next_after(dt(2026, 1, 1, 5, 0)),
+            Some(dt(2026, 1, 2, 4, 30))
+        );
+        assert_eq!(
+            s.next_after(dt(2026, 1, 1, 4, 0)),
+            Some(dt(2026, 1, 1, 4, 30))
+        );
     }
 
     #[test]
     fn step_syntax() {
         let s = Schedule::parse("*/15 * * * *").unwrap();
-        assert_eq!(s.next_after(dt(2026, 1, 1, 0, 1)), Some(dt(2026, 1, 1, 0, 15)));
+        assert_eq!(
+            s.next_after(dt(2026, 1, 1, 0, 1)),
+            Some(dt(2026, 1, 1, 0, 15))
+        );
+    }
+
+    #[test]
+    fn explicit_start_step_runs_through_the_field_maximum() {
+        let s = Schedule::parse("0 0/6 * * *").unwrap();
+        assert_eq!(
+            s.next_after(dt(2026, 1, 1, 0, 30)),
+            Some(dt(2026, 1, 1, 6, 0))
+        );
     }
 
     #[test]
     fn list_and_range() {
         let s = Schedule::parse("0 9-17 * * 1-5").unwrap();
         // 2026-01-01 is a Thursday (weekday 4).
-        assert_eq!(s.next_after(dt(2026, 1, 1, 8, 59)), Some(dt(2026, 1, 1, 9, 0)));
+        assert_eq!(
+            s.next_after(dt(2026, 1, 1, 8, 59)),
+            Some(dt(2026, 1, 1, 9, 0))
+        );
     }
 
     #[test]
@@ -162,7 +230,10 @@ mod tests {
         // 13th-of-the-month OR Friday, at midnight.
         let s = Schedule::parse("0 0 13 * 5").unwrap();
         // 2026-01-02 is a Friday.
-        assert_eq!(s.next_after(dt(2026, 1, 1, 0, 0)), Some(dt(2026, 1, 2, 0, 0)));
+        assert_eq!(
+            s.next_after(dt(2026, 1, 1, 0, 0)),
+            Some(dt(2026, 1, 2, 0, 0))
+        );
     }
 
     #[test]

@@ -61,25 +61,46 @@
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::{ObjectReference, PersistentVolume, PersistentVolumeClaim, PersistentVolumeStatus};
+use k8s_openapi::api::core::v1::{
+    ObjectReference, PersistentVolume, PersistentVolumeClaim, PersistentVolumeStatus,
+};
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use std::collections::HashMap;
 
 fn is_bound(pvc: &PersistentVolumeClaim) -> bool {
-    pvc.spec.as_ref().and_then(|s| s.volume_name.as_ref()).is_some()
+    pvc.spec
+        .as_ref()
+        .and_then(|s| s.volume_name.as_ref())
+        .is_some()
 }
 
 fn access_modes_satisfy(pv: &PersistentVolume, pvc: &PersistentVolumeClaim) -> bool {
-    let pv_modes = pv.spec.as_ref().and_then(|s| s.access_modes.clone()).unwrap_or_default();
-    let requested = pvc.spec.as_ref().and_then(|s| s.access_modes.clone()).unwrap_or_default();
+    let pv_modes = pv
+        .spec
+        .as_ref()
+        .and_then(|s| s.access_modes.clone())
+        .unwrap_or_default();
+    let requested = pvc
+        .spec
+        .as_ref()
+        .and_then(|s| s.access_modes.clone())
+        .unwrap_or_default();
     requested.iter().all(|m| pv_modes.contains(m))
 }
 
 fn storage_class_matches(pv: &PersistentVolume, pvc: &PersistentVolumeClaim) -> bool {
-    let pv_class = pv.spec.as_ref().and_then(|s| s.storage_class_name.clone()).unwrap_or_default();
-    let pvc_class = pvc.spec.as_ref().and_then(|s| s.storage_class_name.clone()).unwrap_or_default();
+    let pv_class = pv
+        .spec
+        .as_ref()
+        .and_then(|s| s.storage_class_name.clone())
+        .unwrap_or_default();
+    let pvc_class = pvc
+        .spec
+        .as_ref()
+        .and_then(|s| s.storage_class_name.clone())
+        .unwrap_or_default();
     pv_class == pvc_class
 }
 
@@ -87,27 +108,45 @@ fn storage_class_matches(pv: &PersistentVolume, pvc: &PersistentVolumeClaim) -> 
 /// provisioner-prebound PV, or one this controller itself just claimed for
 /// the static path.)
 fn claimed_by(pv: &PersistentVolume, namespace: &str, name: &str) -> bool {
-    pv.spec.as_ref().and_then(|s| s.claim_ref.as_ref()).is_some_and(|r| r.namespace.as_deref() == Some(namespace) && r.name.as_deref() == Some(name))
+    pv.spec
+        .as_ref()
+        .and_then(|s| s.claim_ref.as_ref())
+        .is_some_and(|r| {
+            r.namespace.as_deref() == Some(namespace) && r.name.as_deref() == Some(name)
+        })
 }
 
 fn is_unclaimed(pv: &PersistentVolume) -> bool {
-    pv.spec.as_ref().and_then(|s| s.claim_ref.as_ref()).is_none()
+    pv.spec
+        .as_ref()
+        .and_then(|s| s.claim_ref.as_ref())
+        .is_none()
 }
 
 /// Which PV (by name) `pvc` should bind to, if any — pure decision: prefer
 /// a PV already claim-ref'd to this exact PVC (the provisioner path),
 /// otherwise the first unclaimed PV whose class and access modes satisfy
 /// it (the static path).
-pub fn pv_for_claim<'a>(pvc: &PersistentVolumeClaim, pvs: &'a HashMap<String, PersistentVolume>) -> Option<&'a PersistentVolume> {
+pub fn pv_for_claim<'a>(
+    pvc: &PersistentVolumeClaim,
+    pvs: &'a HashMap<String, PersistentVolume>,
+) -> Option<&'a PersistentVolume> {
     let namespace = pvc.namespace().unwrap_or_default();
     let name = pvc.name_any();
     if let Some(prebound) = pvs.values().find(|pv| claimed_by(pv, &namespace, &name)) {
         return Some(prebound);
     }
-    pvs.values().find(|pv| is_unclaimed(pv) && storage_class_matches(pv, pvc) && access_modes_satisfy(pv, pvc))
+    pvs.values().find(|pv| {
+        is_unclaimed(pv) && storage_class_matches(pv, pvc) && access_modes_satisfy(pv, pvc)
+    })
 }
 
-async fn reconcile_claim(client: &Client, namespace: &str, name: &str, pvs: &HashMap<String, PersistentVolume>) {
+async fn reconcile_claim(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    pvs: &mut HashMap<String, PersistentVolume>,
+) {
     let pvc_api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
     let pv_api: Api<PersistentVolume> = Api::all(client.clone());
 
@@ -122,33 +161,73 @@ async fn reconcile_claim(client: &Client, namespace: &str, name: &str, pvs: &Has
     if is_bound(&pvc) {
         return;
     }
-    let Some(pv) = pv_for_claim(&pvc, pvs) else { return };
+    let Some(pv) = pv_for_claim(&pvc, pvs).cloned() else {
+        return;
+    };
     let pv_name = pv.name_any();
 
-    if is_unclaimed(pv) {
+    if is_unclaimed(&pv) {
         // Static path: claim it first, so a second reconcile racing this
         // one (another PVC also matching this PV) sees it as no longer
         // unclaimed rather than double-claiming it.
-        let claim_ref = ObjectReference { kind: Some("PersistentVolumeClaim".to_string()), namespace: Some(namespace.to_string()), name: Some(name.to_string()), uid: pvc.uid(), ..Default::default() };
-        let patch = serde_json::json!({ "spec": { "claimRef": claim_ref } });
-        if let Err(e) = pv_api.patch(&pv_name, &PatchParams::default(), &Patch::Merge(&patch)).await {
-            tracing::warn!(pv = %pv_name, namespace = %namespace, pvc = %name, error = ?e, "failed to claim PersistentVolume for static binding");
-            return;
+        let claim_ref = ObjectReference {
+            kind: Some("PersistentVolumeClaim".to_string()),
+            namespace: Some(namespace.to_string()),
+            name: Some(name.to_string()),
+            uid: pvc.uid(),
+            ..Default::default()
+        };
+        // Include the resourceVersion read above in the patch. A concurrent
+        // claimant then gets a 409 instead of overwriting the first claim.
+        let patch = serde_json::json!({
+            "metadata": { "resourceVersion": pv.metadata.resource_version.clone() },
+            "spec": { "claimRef": claim_ref }
+        });
+        match pv_api
+            .patch(&pv_name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+        {
+            Ok(updated) => {
+                // The watch is asynchronous; update our local cache now so
+                // another PVC reconciled in this same loop sees the PV as
+                // claimed immediately.
+                pvs.insert(pv_name.clone(), updated);
+            }
+            Err(e) => {
+                tracing::warn!(pv = %pv_name, namespace = %namespace, pvc = %name, error = ?e, "failed to claim PersistentVolume for static binding");
+                return;
+            }
         }
     }
 
     let pvc_patch = serde_json::json!({ "spec": { "volumeName": pv_name } });
-    if let Err(e) = pvc_api.patch(name, &PatchParams::default(), &Patch::Merge(&pvc_patch)).await {
+    if let Err(e) = pvc_api
+        .patch(name, &PatchParams::default(), &Patch::Merge(&pvc_patch))
+        .await
+    {
         tracing::warn!(namespace = %namespace, pvc = %name, pv = %pv_name, error = ?e, "failed to set PersistentVolumeClaim.spec.volumeName");
         return;
     }
     let status_patch = serde_json::json!({ "status": { "phase": "Bound" } });
-    if let Err(e) = pvc_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch)).await {
+    if let Err(e) = pvc_api
+        .patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch))
+        .await
+    {
         tracing::warn!(namespace = %namespace, pvc = %name, error = ?e, "failed to set PersistentVolumeClaim status to Bound");
     }
-    let pv_status = PersistentVolumeStatus { phase: Some("Bound".to_string()), ..pv.status.clone().unwrap_or_default() };
+    let pv_status = PersistentVolumeStatus {
+        phase: Some("Bound".to_string()),
+        ..pv.status.clone().unwrap_or_default()
+    };
     let pv_status_patch = serde_json::json!({ "status": pv_status });
-    if let Err(e) = pv_api.patch_status(&pv_name, &PatchParams::default(), &Patch::Merge(&pv_status_patch)).await {
+    if let Err(e) = pv_api
+        .patch_status(
+            &pv_name,
+            &PatchParams::default(),
+            &Patch::Merge(&pv_status_patch),
+        )
+        .await
+    {
         tracing::warn!(pv = %pv_name, error = ?e, "failed to set PersistentVolume status to Bound");
     }
     tracing::info!(namespace = %namespace, pvc = %name, pv = %pv_name, "persistentvolume-binder-controller bound a PersistentVolumeClaim");
@@ -165,14 +244,24 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let pv_api: Api<PersistentVolume> = Api::all(client.clone());
     let pvc_api: Api<PersistentVolumeClaim> = Api::all(client.clone());
 
-    for v in pv_api.list(&Default::default()).await.context("listing PVs to seed persistentvolume-binder-controller")?.items {
+    for v in pv_api
+        .list(&Default::default())
+        .await
+        .context("listing PVs to seed persistentvolume-binder-controller")?
+        .items
+    {
         pvs.insert(v.name_any(), v);
     }
-    for c in pvc_api.list(&Default::default()).await.context("listing PVCs to seed persistentvolume-binder-controller")?.items {
+    for c in pvc_api
+        .list(&Default::default())
+        .await
+        .context("listing PVCs to seed persistentvolume-binder-controller")?
+        .items
+    {
         let ns = ns_of(&c);
         let name = c.name_any();
         claims.insert((ns.clone(), name.clone()));
-        reconcile_claim(&client, &ns, &name, &pvs).await;
+        reconcile_claim(&client, &ns, &name, &mut pvs).await;
     }
 
     let mut pv_stream = crate::watch::watch_persistent_volumes(&client);
@@ -185,7 +274,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pv))) | Some(Ok(Event::InitApply(pv))) => {
                         pvs.insert(pv.name_any(), pv);
                         for (ns, name) in claims.clone() {
-                            reconcile_claim(&client, &ns, &name, &pvs).await;
+                            reconcile_claim(&client, &ns, &name, &mut pvs).await;
                         }
                     }
                     Some(Ok(Event::Delete(pv))) => { pvs.remove(&pv.name_any()); }
@@ -200,7 +289,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         let ns = ns_of(&pvc);
                         let name = pvc.name_any();
                         claims.insert((ns.clone(), name.clone()));
-                        reconcile_claim(&client, &ns, &name, &pvs).await;
+                        reconcile_claim(&client, &ns, &name, &mut pvs).await;
                     }
                     Some(Ok(Event::Delete(pvc))) => { claims.remove(&(ns_of(&pvc), pvc.name_any())); }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
@@ -220,7 +309,11 @@ mod tests {
 
     fn pvc(name: &str, class: &str, modes: &[&str]) -> PersistentVolumeClaim {
         PersistentVolumeClaim {
-            metadata: ObjectMeta { name: Some(name.to_string()), namespace: Some("default".to_string()), ..Default::default() },
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
             spec: Some(PersistentVolumeClaimSpec {
                 storage_class_name: Some(class.to_string()),
                 access_modes: Some(modes.iter().map(|s| s.to_string()).collect()),
@@ -230,13 +323,25 @@ mod tests {
         }
     }
 
-    fn pv(name: &str, class: &str, modes: &[&str], claim_ref: Option<(&str, &str)>) -> PersistentVolume {
+    fn pv(
+        name: &str,
+        class: &str,
+        modes: &[&str],
+        claim_ref: Option<(&str, &str)>,
+    ) -> PersistentVolume {
         PersistentVolume {
-            metadata: ObjectMeta { name: Some(name.to_string()), ..Default::default() },
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
             spec: Some(PersistentVolumeSpec {
                 storage_class_name: Some(class.to_string()),
                 access_modes: Some(modes.iter().map(|s| s.to_string()).collect()),
-                claim_ref: claim_ref.map(|(ns, n)| ObjectReference { namespace: Some(ns.to_string()), name: Some(n.to_string()), ..Default::default() }),
+                claim_ref: claim_ref.map(|(ns, n)| ObjectReference {
+                    namespace: Some(ns.to_string()),
+                    name: Some(n.to_string()),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
@@ -256,14 +361,22 @@ mod tests {
         let claim = pvc("c1", "slow", &["ReadWriteOnce"]);
         let wrong_class = pv("pv-1", "fast", &["ReadWriteOnce"], None);
         let right = pv("pv-2", "slow", &["ReadWriteOnce"], None);
-        let pvs = HashMap::from([("pv-1".to_string(), wrong_class), ("pv-2".to_string(), right)]);
+        let pvs = HashMap::from([
+            ("pv-1".to_string(), wrong_class),
+            ("pv-2".to_string(), right),
+        ]);
         assert_eq!(pv_for_claim(&claim, &pvs).unwrap().name_any(), "pv-2");
     }
 
     #[test]
     fn a_pv_claimed_by_someone_else_is_never_a_static_candidate() {
         let claim = pvc("c1", "slow", &["ReadWriteOnce"]);
-        let claimed_by_other = pv("pv-1", "slow", &["ReadWriteOnce"], Some(("default", "other")));
+        let claimed_by_other = pv(
+            "pv-1",
+            "slow",
+            &["ReadWriteOnce"],
+            Some(("default", "other")),
+        );
         let pvs = HashMap::from([("pv-1".to_string(), claimed_by_other)]);
         assert!(pv_for_claim(&claim, &pvs).is_none());
     }

@@ -22,6 +22,9 @@
 //! read as if it were always effectively 1). `partition` itself *is*
 //! honored: ordinals below `partition` are left on whatever revision they
 //! already have, the real mechanism a canary/staged rollout depends on.
+//! **`updateStrategy.type: OnDelete` is honored**: template changes never
+//! delete Pods automatically; each Pod is replaced only after the user
+//! deletes it.
 //!
 //! **`volumeClaimTemplates`**: a PVC is created per template per ordinal
 //! (`{claim}-{statefulset}-{ordinal}`) the first time that ordinal is
@@ -51,7 +54,9 @@
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{StatefulSet, StatefulSetStatus};
-use k8s_openapi::api::core::v1::{PersistentVolumeClaim, PersistentVolumeClaimVolumeSource, Pod, Volume};
+use k8s_openapi::api::core::v1::{
+    PersistentVolumeClaim, PersistentVolumeClaimVolumeSource, Pod, Volume,
+};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::runtime::watcher::Event;
@@ -75,13 +80,22 @@ pub fn pod_name(sts_name: &str, ordinal: i32) -> String {
 }
 
 fn ordinal_from_pod_name(sts_name: &str, pod_name: &str) -> Option<i32> {
-    pod_name.strip_prefix(sts_name)?.strip_prefix('-')?.parse().ok()
+    pod_name
+        .strip_prefix(sts_name)?
+        .strip_prefix('-')?
+        .parse()
+        .ok()
 }
 
 /// `OrderedReady`: only the single lowest missing ordinal below `desired`
 /// (nothing to create if any lower ordinal isn't already Ready — wait for
 /// it first). `Parallel`: every missing ordinal at once.
-pub fn ordinals_to_create(desired: i32, existing: &BTreeSet<i32>, ready: &BTreeSet<i32>, parallel: bool) -> Vec<i32> {
+pub fn ordinals_to_create(
+    desired: i32,
+    existing: &BTreeSet<i32>,
+    ready: &BTreeSet<i32>,
+    parallel: bool,
+) -> Vec<i32> {
     let missing: Vec<i32> = (0..desired).filter(|o| !existing.contains(o)).collect();
     if parallel {
         return missing;
@@ -89,7 +103,11 @@ pub fn ordinals_to_create(desired: i32, existing: &BTreeSet<i32>, ready: &BTreeS
     match missing.first() {
         Some(&lowest) => {
             let all_lower_ready = (0..lowest).all(|o| ready.contains(&o));
-            if all_lower_ready { vec![lowest] } else { vec![] }
+            if all_lower_ready {
+                vec![lowest]
+            } else {
+                vec![]
+            }
         }
         None => vec![],
     }
@@ -108,11 +126,20 @@ pub fn ordinals_to_delete(desired: i32, existing: &BTreeSet<i32>, parallel: bool
 /// The single highest out-of-date ordinal in `[partition, desired)` to
 /// replace this reconcile — sequential, one at a time, same reasoning as
 /// `ordinals_to_create`/`ordinals_to_delete`.
-pub fn ordinal_to_update(desired: i32, partition: i32, pod_hashes: &BTreeMap<i32, String>, current_hash: &str) -> Option<i32> {
-    (partition.max(0)..desired).rev().find(|o| pod_hashes.get(o).map(|h| h.as_str()) != Some(current_hash))
+pub fn ordinal_to_update(
+    desired: i32,
+    partition: i32,
+    pod_hashes: &BTreeMap<i32, String>,
+    current_hash: &str,
+) -> Option<i32> {
+    (partition.max(0)..desired)
+        .rev()
+        .find(|o| pod_hashes.get(o).map(|h| h.as_str()) != Some(current_hash))
 }
 
-fn owner_reference(sts: &StatefulSet) -> k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
+fn owner_reference(
+    sts: &StatefulSet,
+) -> k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
     k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
         api_version: "apps/v1".to_string(),
         kind: "StatefulSet".to_string(),
@@ -125,15 +152,29 @@ fn owner_reference(sts: &StatefulSet) -> k8s_openapi::apimachinery::pkg::apis::m
 }
 
 fn owned_by(pod: &Pod, sts_uid: &str) -> bool {
-    pod.metadata.owner_references.as_ref().into_iter().flatten().any(|o| o.controller == Some(true) && o.uid == sts_uid)
+    pod.metadata
+        .owner_references
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .any(|o| o.controller == Some(true) && o.uid == sts_uid)
 }
 
 fn pod_ready(pod: &Pod) -> bool {
-    pod.status.as_ref().and_then(|s| s.conditions.as_ref()).into_iter().flatten().any(|c| c.type_ == "Ready" && c.status == "True")
+    pod.status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .into_iter()
+        .flatten()
+        .any(|c| c.type_ == "Ready" && c.status == "True")
 }
 
 fn pod_hash(pod: &Pod) -> Option<&str> {
-    pod.metadata.labels.as_ref().and_then(|l| l.get(POD_TEMPLATE_HASH_LABEL)).map(|s| s.as_str())
+    pod.metadata
+        .labels
+        .as_ref()
+        .and_then(|l| l.get(POD_TEMPLATE_HASH_LABEL))
+        .map(|s| s.as_str())
 }
 
 /// The generated per-ordinal PVC's own object name — shared by `build_pvc`
@@ -155,7 +196,9 @@ fn build_pod(sts: &StatefulSet, ordinal: i32, hash: &str) -> Option<Pod> {
     // every volumeMount has no corresponding `spec.volumes` entry.
     let sts_name = sts.name_any();
     for template in spec.volume_claim_templates.iter().flatten() {
-        let Some(claim_name) = template.metadata.name.as_ref() else { continue };
+        let Some(claim_name) = template.metadata.name.as_ref() else {
+            continue;
+        };
         pod_spec.volumes.get_or_insert_with(Vec::new).push(Volume {
             name: claim_name.clone(),
             persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
@@ -165,9 +208,18 @@ fn build_pod(sts: &StatefulSet, ordinal: i32, hash: &str) -> Option<Pod> {
             ..Default::default()
         });
     }
-    let mut labels = spec.template.metadata.as_ref().and_then(|m| m.labels.clone()).unwrap_or_default();
+    let mut labels = spec
+        .template
+        .metadata
+        .as_ref()
+        .and_then(|m| m.labels.clone())
+        .unwrap_or_default();
     labels.insert(POD_TEMPLATE_HASH_LABEL.to_string(), hash.to_string());
-    let annotations = spec.template.metadata.as_ref().and_then(|m| m.annotations.clone());
+    let annotations = spec
+        .template
+        .metadata
+        .as_ref()
+        .and_then(|m| m.annotations.clone());
     Some(Pod {
         metadata: ObjectMeta {
             name: Some(pod_name(&sts_name, ordinal)),
@@ -182,7 +234,11 @@ fn build_pod(sts: &StatefulSet, ordinal: i32, hash: &str) -> Option<Pod> {
     })
 }
 
-fn build_pvc(sts: &StatefulSet, template: &PersistentVolumeClaim, ordinal: i32) -> Option<PersistentVolumeClaim> {
+fn build_pvc(
+    sts: &StatefulSet,
+    template: &PersistentVolumeClaim,
+    ordinal: i32,
+) -> Option<PersistentVolumeClaim> {
     let claim_name = template.metadata.name.as_ref()?;
     Some(PersistentVolumeClaim {
         metadata: ObjectMeta {
@@ -199,11 +255,24 @@ fn build_pvc(sts: &StatefulSet, template: &PersistentVolumeClaim, ordinal: i32) 
     })
 }
 
-async fn ensure_pvcs_for_ordinal(client: &Client, namespace: &str, sts: &StatefulSet, ordinal: i32) {
-    let Some(templates) = sts.spec.as_ref().and_then(|s| s.volume_claim_templates.as_ref()) else { return };
+async fn ensure_pvcs_for_ordinal(
+    client: &Client,
+    namespace: &str,
+    sts: &StatefulSet,
+    ordinal: i32,
+) {
+    let Some(templates) = sts
+        .spec
+        .as_ref()
+        .and_then(|s| s.volume_claim_templates.as_ref())
+    else {
+        return;
+    };
     let pvc_api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
     for template in templates {
-        let Some(pvc) = build_pvc(sts, template, ordinal) else { continue };
+        let Some(pvc) = build_pvc(sts, template, ordinal) else {
+            continue;
+        };
         let name = pvc.name_any();
         match pvc_api.get_opt(&name).await {
             Ok(Some(_)) => continue, // already exists — never recreated/deleted by this controller
@@ -221,7 +290,12 @@ async fn ensure_pvcs_for_ordinal(client: &Client, namespace: &str, sts: &Statefu
     }
 }
 
-async fn reconcile_stateful_set(client: &Client, namespace: &str, name: &str, pod_cache: &HashMap<String, Pod>) {
+async fn reconcile_stateful_set(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    pod_cache: &HashMap<String, Pod>,
+) {
     let sts_api: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
     let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
 
@@ -234,23 +308,39 @@ async fn reconcile_stateful_set(client: &Client, namespace: &str, name: &str, po
         }
     };
     let Some(sts_uid) = sts.uid() else { return };
-    let Some(spec) = sts.spec.as_ref() else { return };
+    let Some(spec) = sts.spec.as_ref() else {
+        return;
+    };
     let desired = spec.replicas.unwrap_or(1);
     let hash = compute_template_hash(&spec.template);
     let parallel = spec.pod_management_policy.as_deref() == Some("Parallel");
 
-    let owned: Vec<&Pod> =
-        pod_cache.values().filter(|p| p.namespace().as_deref() == Some(namespace)).filter(|p| owned_by(p, &sts_uid)).collect();
-    let live: Vec<&&Pod> = owned.iter().filter(|p| p.metadata.deletion_timestamp.is_none()).collect();
+    let owned: Vec<&Pod> = pod_cache
+        .values()
+        .filter(|p| p.namespace().as_deref() == Some(namespace))
+        .filter(|p| owned_by(p, &sts_uid))
+        .collect();
 
     let mut by_ordinal: BTreeMap<i32, &Pod> = BTreeMap::new();
-    for p in &live {
+    for p in &owned {
         if let Some(o) = ordinal_from_pod_name(name, &p.name_any()) {
             by_ordinal.insert(o, p);
         }
     }
     let existing: BTreeSet<i32> = by_ordinal.keys().copied().collect();
-    let ready: BTreeSet<i32> = by_ordinal.iter().filter(|(_, p)| pod_ready(p)).map(|(o, _)| *o).collect();
+    let ready: BTreeSet<i32> = by_ordinal
+        .iter()
+        .filter(|(_, p)| p.metadata.deletion_timestamp.is_none() && pod_ready(p))
+        .map(|(o, _)| *o)
+        .collect();
+    // OrderedReady must treat a terminating Pod as still occupying its
+    // ordinal until the Delete event arrives. An Apply event carrying a
+    // deletionTimestamp is emitted before the actual removal.
+    let terminating: BTreeSet<i32> = owned
+        .iter()
+        .filter(|p| p.metadata.deletion_timestamp.is_some())
+        .filter_map(|p| ordinal_from_pod_name(name, &p.name_any()))
+        .collect();
 
     for ordinal in ordinals_to_create(desired, &existing, &ready, parallel) {
         ensure_pvcs_for_ordinal(client, namespace, &sts, ordinal).await;
@@ -261,11 +351,21 @@ async fn reconcile_stateful_set(client: &Client, namespace: &str, name: &str, po
         match pod_api.create(&PostParams::default(), &pod).await {
             Ok(_) => {}
             Err(kube::Error::Api(ref status)) if status.is_already_exists() => {}
-            Err(e) => tracing::warn!(namespace = %namespace, statefulset = %name, ordinal, error = ?e, "failed to create StatefulSet Pod"),
+            Err(e) => {
+                tracing::warn!(namespace = %namespace, statefulset = %name, ordinal, error = ?e, "failed to create StatefulSet Pod")
+            }
         }
     }
 
-    for ordinal in ordinals_to_delete(desired, &existing, parallel) {
+    let ordinals_to_delete_now = if !parallel && !terminating.is_empty() {
+        Vec::new()
+    } else {
+        ordinals_to_delete(desired, &existing, parallel)
+            .into_iter()
+            .filter(|ordinal| !terminating.contains(ordinal))
+            .collect()
+    };
+    for ordinal in ordinals_to_delete_now {
         if let Some(pod) = by_ordinal.get(&ordinal) {
             if let Err(e) = pod_api.delete(&pod.name_any(), &Default::default()).await {
                 tracing::warn!(namespace = %namespace, statefulset = %name, ordinal, error = ?e, "failed to delete excess StatefulSet Pod");
@@ -275,10 +375,24 @@ async fn reconcile_stateful_set(client: &Client, namespace: &str, name: &str, po
 
     // Rolling update — only once every ordinal below `desired` exists, so
     // scale-up and update never race each other in the same reconcile.
-    if existing.len() as i32 >= desired {
-        let partition = spec.update_strategy.as_ref().and_then(|s| s.rolling_update.as_ref()).and_then(|r| r.partition).unwrap_or(0);
-        let pod_hashes: BTreeMap<i32, String> =
-            by_ordinal.iter().filter_map(|(o, p)| pod_hash(p).map(|h| (*o, h.to_string()))).collect();
+    let on_delete = spec
+        .update_strategy
+        .as_ref()
+        .and_then(|s| s.type_.as_deref())
+        == Some("OnDelete");
+    let all_ordinals_present = (0..desired).all(|ordinal| existing.contains(&ordinal));
+    if all_ordinals_present && !on_delete {
+        let partition = spec
+            .update_strategy
+            .as_ref()
+            .and_then(|s| s.rolling_update.as_ref())
+            .and_then(|r| r.partition)
+            .unwrap_or(0);
+        let pod_hashes: BTreeMap<i32, String> = by_ordinal
+            .iter()
+            .filter(|(_, p)| p.metadata.deletion_timestamp.is_none())
+            .filter_map(|(o, p)| pod_hash(p).map(|h| (*o, h.to_string())))
+            .collect();
         if let Some(ordinal) = ordinal_to_update(desired, partition, &pod_hashes, &hash) {
             if let Some(pod) = by_ordinal.get(&ordinal) {
                 if let Err(e) = pod_api.delete(&pod.name_any(), &Default::default()).await {
@@ -289,7 +403,10 @@ async fn reconcile_stateful_set(client: &Client, namespace: &str, name: &str, po
     }
 
     let ready_count = ready.len() as i32;
-    let updated_count = by_ordinal.values().filter(|p| pod_hash(p) == Some(hash.as_str())).count() as i32;
+    let updated_count = by_ordinal
+        .values()
+        .filter(|p| pod_hash(p) == Some(hash.as_str()))
+        .count() as i32;
     let status = StatefulSetStatus {
         replicas: existing.len() as i32,
         ready_replicas: Some(ready_count),
@@ -306,7 +423,10 @@ async fn reconcile_stateful_set(client: &Client, namespace: &str, name: &str, po
     };
     if sts.status.as_ref() != Some(&status) {
         let patch = serde_json::json!({ "status": status });
-        if let Err(e) = sts_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+        if let Err(e) = sts_api
+            .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+        {
             tracing::warn!(namespace = %namespace, statefulset = %name, error = ?e, "failed to patch StatefulSet status");
         }
     }
@@ -318,15 +438,26 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
-    let mut stateful_sets: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let mut stateful_sets: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
 
     let pod_api: Api<Pod> = Api::all(client.clone());
     let sts_api: Api<StatefulSet> = Api::all(client.clone());
 
-    for p in pod_api.list(&Default::default()).await.context("listing Pods to seed statefulset-controller")?.items {
+    for p in pod_api
+        .list(&Default::default())
+        .await
+        .context("listing Pods to seed statefulset-controller")?
+        .items
+    {
         pods.insert(format!("{}/{}", ns_of(&p), p.name_any()), p);
     }
-    for sts in sts_api.list(&Default::default()).await.context("listing StatefulSets to seed statefulset-controller")?.items {
+    for sts in sts_api
+        .list(&Default::default())
+        .await
+        .context("listing StatefulSets to seed statefulset-controller")?
+        .items
+    {
         let ns = ns_of(&sts);
         let name = sts.name_any();
         stateful_sets.insert((ns.clone(), name.clone()));
@@ -394,14 +525,20 @@ mod tests {
     fn ordered_ready_waits_for_lower_ordinals_before_creating_the_next() {
         let existing = BTreeSet::from([0]);
         let ready = BTreeSet::new(); // 0 exists but isn't Ready yet
-        assert_eq!(ordinals_to_create(3, &existing, &ready, false), Vec::<i32>::new());
+        assert_eq!(
+            ordinals_to_create(3, &existing, &ready, false),
+            Vec::<i32>::new()
+        );
     }
 
     #[test]
     fn parallel_creates_every_missing_ordinal_at_once() {
         let existing = BTreeSet::new();
         let ready = BTreeSet::new();
-        assert_eq!(ordinals_to_create(3, &existing, &ready, true), vec![0, 1, 2]);
+        assert_eq!(
+            ordinals_to_create(3, &existing, &ready, true),
+            vec![0, 1, 2]
+        );
     }
 
     #[test]
@@ -424,16 +561,28 @@ mod tests {
 
     #[test]
     fn rolling_update_replaces_highest_ordinal_first() {
-        let hashes = BTreeMap::from([(0, "old".to_string()), (1, "old".to_string()), (2, "old".to_string())]);
+        let hashes = BTreeMap::from([
+            (0, "old".to_string()),
+            (1, "old".to_string()),
+            (2, "old".to_string()),
+        ]);
         assert_eq!(ordinal_to_update(3, 0, &hashes, "new"), Some(2));
     }
 
     #[test]
     fn rolling_update_respects_the_partition() {
-        let hashes = BTreeMap::from([(0, "old".to_string()), (1, "old".to_string()), (2, "old".to_string())]);
+        let hashes = BTreeMap::from([
+            (0, "old".to_string()),
+            (1, "old".to_string()),
+            (2, "old".to_string()),
+        ]);
         // Only ordinal 2 (>= partition 2) may be touched.
         assert_eq!(ordinal_to_update(3, 2, &hashes, "new"), Some(2));
-        let hashes2 = BTreeMap::from([(0, "old".to_string()), (1, "old".to_string()), (2, "new".to_string())]);
+        let hashes2 = BTreeMap::from([
+            (0, "old".to_string()),
+            (1, "old".to_string()),
+            (2, "new".to_string()),
+        ]);
         assert_eq!(ordinal_to_update(3, 2, &hashes2, "new"), None);
     }
 
@@ -448,7 +597,11 @@ mod tests {
         use k8s_openapi::api::apps::v1::StatefulSetSpec;
         use k8s_openapi::api::core::v1::{Container, PodSpec, PodTemplateSpec, VolumeMount};
         StatefulSet {
-            metadata: ObjectMeta { name: Some("web".to_string()), namespace: Some("default".to_string()), ..Default::default() },
+            metadata: ObjectMeta {
+                name: Some("web".to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
             spec: Some(StatefulSetSpec {
                 service_name: Some("web".to_string()),
                 template: PodTemplateSpec {
@@ -467,7 +620,10 @@ mod tests {
                     }),
                 },
                 volume_claim_templates: Some(vec![PersistentVolumeClaim {
-                    metadata: ObjectMeta { name: Some("www".to_string()), ..Default::default() },
+                    metadata: ObjectMeta {
+                        name: Some("www".to_string()),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }]),
                 ..Default::default()
@@ -484,15 +640,30 @@ mod tests {
     fn build_pod_injects_a_volume_for_each_pvc_template_matching_build_pvcs_name() {
         let sts = sts_with_pvc_template();
         let pod = build_pod(&sts, 0, "hash1").expect("build_pod should produce a Pod");
-        let volumes = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()).expect("Pod must have injected volumes");
+        let volumes = pod
+            .spec
+            .as_ref()
+            .and_then(|s| s.volumes.as_ref())
+            .expect("Pod must have injected volumes");
         assert_eq!(volumes.len(), 1);
         let vol = &volumes[0];
         // Volume name matches the volumeMount in the template ("www"), not
         // the generated PVC's own object name.
         assert_eq!(vol.name, "www");
-        let claim = vol.persistent_volume_claim.as_ref().expect("volume must be PVC-backed");
+        let claim = vol
+            .persistent_volume_claim
+            .as_ref()
+            .expect("volume must be PVC-backed");
 
-        let template = sts.spec.as_ref().unwrap().volume_claim_templates.as_ref().unwrap().first().unwrap();
+        let template = sts
+            .spec
+            .as_ref()
+            .unwrap()
+            .volume_claim_templates
+            .as_ref()
+            .unwrap()
+            .first()
+            .unwrap();
         let pvc = build_pvc(&sts, template, 0).expect("build_pvc should produce a PVC");
         // The two must never drift: the volume's claim_name is exactly the
         // PVC object build_pvc actually creates.

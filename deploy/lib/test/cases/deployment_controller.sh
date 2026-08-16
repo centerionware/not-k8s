@@ -11,9 +11,20 @@ _nodecontroller_is_running_dc() {
     pgrep -x nodecontroller >/dev/null 2>&1
 }
 
+_k3s_controller_manager_disabled_dc() {
+    local args=""
+    if command -v systemctl >/dev/null 2>&1; then
+        args="$(systemctl show k3s -p ExecStart --value 2>/dev/null || true)"
+    fi
+    [[ "$args" == *--disable-controller-manager* ]] && return 0
+    ps -eo args= 2>/dev/null | grep -E '[k]3s( server)?' | grep -q -- '--disable-controller-manager'
+}
+
 _require_nodecontroller_dc() {
     _nodecontroller_is_running_dc \
-        || skip_test "nodecontroller isn't running here — deploy with --controller-manager=nodecontroller (which also disables k3s's own controller manager) to exercise these"
+        || skip_test "nodecontroller isn't running here — deploy with --controller-manager=nodecontroller to exercise these"
+    _k3s_controller_manager_disabled_dc \
+        || skip_test "k3s's bundled controller-manager is still enabled; deploy with --controller-manager=nodecontroller so this test exercises nodecontroller"
 }
 
 _dc_owned_pod_count() { # _dc_owned_pod_count <deployment-name>

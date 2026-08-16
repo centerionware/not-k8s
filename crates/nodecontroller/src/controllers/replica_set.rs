@@ -48,7 +48,18 @@ use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use rand::Rng;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::{Duration, Instant};
+
+const CREATION_EXPECTATION_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug)]
+struct PendingCreates {
+    names: HashSet<String>,
+    oldest: Instant,
+}
+
+type Expectations = HashMap<(String, String), PendingCreates>;
 
 /// Does `selector` match `labels`? `matchLabels` (all present, equal) AND
 /// every `matchExpressions` entry (`In`/`NotIn`/`Exists`/`DoesNotExist`).
@@ -58,7 +69,10 @@ use std::collections::{BTreeMap, HashMap};
 /// business.
 pub fn label_selector_matches(selector: &LabelSelector, labels: &BTreeMap<String, String>) -> bool {
     let has_match_labels = selector.match_labels.is_some();
-    let has_match_expressions = selector.match_expressions.as_ref().is_some_and(|e| !e.is_empty());
+    let has_match_expressions = selector
+        .match_expressions
+        .as_ref()
+        .is_some_and(|e| !e.is_empty());
     if !has_match_labels && !has_match_expressions {
         return false;
     }
@@ -70,8 +84,14 @@ pub fn label_selector_matches(selector: &LabelSelector, labels: &BTreeMap<String
     if let Some(exprs) = &selector.match_expressions {
         for e in exprs {
             let satisfied = match e.operator.as_str() {
-                "In" => e.values.as_ref().is_some_and(|vs| labels.get(&e.key).is_some_and(|v| vs.contains(v))),
-                "NotIn" => !e.values.as_ref().is_some_and(|vs| labels.get(&e.key).is_some_and(|v| vs.contains(v))),
+                "In" => e
+                    .values
+                    .as_ref()
+                    .is_some_and(|vs| labels.get(&e.key).is_some_and(|v| vs.contains(v))),
+                "NotIn" => !e
+                    .values
+                    .as_ref()
+                    .is_some_and(|vs| labels.get(&e.key).is_some_and(|v| vs.contains(v))),
                 "Exists" => labels.contains_key(&e.key),
                 "DoesNotExist" => !labels.contains_key(&e.key),
                 _ => false, // an operator we don't recognize fails closed, not open
@@ -110,7 +130,11 @@ pub struct DeletionCandidate {
 /// order a `HashMap` happened to iterate in).
 pub fn pods_to_delete(mut candidates: Vec<DeletionCandidate>, excess: usize) -> Vec<String> {
     candidates.sort_by(|a, b| a.ready.cmp(&b.ready).then_with(|| a.name.cmp(&b.name)));
-    candidates.into_iter().take(excess).map(|c| c.name).collect()
+    candidates
+        .into_iter()
+        .take(excess)
+        .map(|c| c.name)
+        .collect()
 }
 
 fn pod_ready(pod: &Pod) -> bool {
@@ -131,13 +155,39 @@ fn owned_by(pod: &Pod, rs_uid: &str) -> bool {
         .any(|o| o.controller == Some(true) && o.uid == rs_uid)
 }
 
+fn owning_replicaset(pod: &Pod) -> Option<String> {
+    pod.metadata
+        .owner_references
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .find(|o| o.controller == Some(true) && o.kind == "ReplicaSet")
+        .map(|o| o.name.clone())
+}
+
+fn note_pod_event(expectations: &mut Expectations, pod: &Pod) {
+    let Some(rs_name) = owning_replicaset(pod) else {
+        return;
+    };
+    let key = (pod.namespace().unwrap_or_default(), rs_name);
+    let Some(pending) = expectations.get_mut(&key) else {
+        return;
+    };
+    pending.names.remove(&pod.name_any());
+    if pending.names.is_empty() {
+        expectations.remove(&key);
+    }
+}
+
 fn random_suffix() -> String {
     // Same character set upstream's own name generator uses (no vowels,
     // '0'/'1'/'l'/'o' — nothing that reads ambiguously in a terminal),
     // just a plain independent implementation rather than a shared dep.
     const CHARSET: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
     let mut rng = rand::thread_rng();
-    (0..5).map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char).collect()
+    (0..5)
+        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
+        .collect()
 }
 
 fn owner_reference(rs: &ReplicaSet) -> OwnerReference {
@@ -155,7 +205,10 @@ fn owner_reference(rs: &ReplicaSet) -> OwnerReference {
 fn build_pod(rs: &ReplicaSet, name: &str) -> Option<Pod> {
     let template = rs.spec.as_ref()?.template.clone()?;
     let labels = template.metadata.as_ref().and_then(|m| m.labels.clone());
-    let annotations = template.metadata.as_ref().and_then(|m| m.annotations.clone());
+    let annotations = template
+        .metadata
+        .as_ref()
+        .and_then(|m| m.annotations.clone());
     Some(Pod {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
@@ -170,7 +223,13 @@ fn build_pod(rs: &ReplicaSet, name: &str) -> Option<Pod> {
     })
 }
 
-async fn reconcile_replica_set(client: &Client, namespace: &str, name: &str, pod_cache: &HashMap<String, Pod>) {
+async fn reconcile_replica_set(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    pod_cache: &HashMap<String, Pod>,
+    expectations: &mut Expectations,
+) {
     let rs_api: Api<ReplicaSet> = Api::namespaced(client.clone(), namespace);
     let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
 
@@ -190,24 +249,61 @@ async fn reconcile_replica_set(client: &Client, namespace: &str, name: &str, pod
         .filter(|p| p.namespace().as_deref() == Some(namespace))
         .filter(|p| owned_by(p, &rs_uid))
         .collect();
-    let live: Vec<&&Pod> = owned.iter().filter(|p| p.metadata.deletion_timestamp.is_none()).collect();
+    let live: Vec<&&Pod> = owned
+        .iter()
+        .filter(|p| p.metadata.deletion_timestamp.is_none())
+        .collect();
 
-    let to_create = pods_to_create(desired, live.len());
+    let expectation_key = (namespace.to_string(), name.to_string());
+    if expectations
+        .get(&expectation_key)
+        .is_some_and(|pending| pending.oldest.elapsed() >= CREATION_EXPECTATION_TIMEOUT)
+    {
+        expectations.remove(&expectation_key);
+    }
+    let in_flight = expectations
+        .get(&expectation_key)
+        .map(|pending| pending.names.len())
+        .unwrap_or(0);
+    let to_create = pods_to_create(desired, live.len() + in_flight);
     for _ in 0..to_create {
-        let Some(pod_name) = rs.metadata.name.as_ref().map(|n| format!("{n}-{}", random_suffix())) else { break };
+        let Some(pod_name) = rs
+            .metadata
+            .name
+            .as_ref()
+            .map(|n| format!("{n}-{}", random_suffix()))
+        else {
+            break;
+        };
         let Some(pod) = build_pod(&rs, &pod_name) else {
             tracing::warn!(namespace = %namespace, replicaset = %name, "ReplicaSet has no pod template — cannot create Pods");
             break;
         };
-        if let Err(e) = pod_api.create(&PostParams::default(), &pod).await {
-            tracing::warn!(namespace = %namespace, replicaset = %name, pod = %pod_name, error = ?e, "failed to create Pod for ReplicaSet");
+        match pod_api.create(&PostParams::default(), &pod).await {
+            Ok(_) => {
+                let pending = expectations
+                    .entry(expectation_key.clone())
+                    .or_insert_with(|| PendingCreates {
+                        names: HashSet::new(),
+                        oldest: Instant::now(),
+                    });
+                pending.names.insert(pod_name);
+            }
+            Err(e) => {
+                tracing::warn!(namespace = %namespace, replicaset = %name, pod = %pod_name, error = ?e, "failed to create Pod for ReplicaSet");
+            }
         }
     }
 
     let to_delete = pods_to_delete_count(desired, live.len());
     if to_delete > 0 {
-        let candidates: Vec<DeletionCandidate> =
-            live.iter().map(|p| DeletionCandidate { name: p.name_any(), ready: pod_ready(p) }).collect();
+        let candidates: Vec<DeletionCandidate> = live
+            .iter()
+            .map(|p| DeletionCandidate {
+                name: p.name_any(),
+                ready: pod_ready(p),
+            })
+            .collect();
         for pod_name in pods_to_delete(candidates, to_delete) {
             if let Err(e) = pod_api.delete(&pod_name, &Default::default()).await {
                 tracing::warn!(namespace = %namespace, replicaset = %name, pod = %pod_name, error = ?e, "failed to delete excess Pod for ReplicaSet");
@@ -224,7 +320,10 @@ async fn reconcile_replica_set(client: &Client, namespace: &str, name: &str, pod
     };
     if rs.status.as_ref() != Some(&status) {
         let patch = serde_json::json!({ "status": status });
-        if let Err(e) = rs_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+        if let Err(e) = rs_api
+            .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+        {
             tracing::warn!(namespace = %namespace, replicaset = %name, error = ?e, "failed to patch ReplicaSet status");
         }
     }
@@ -236,19 +335,31 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
-    let mut replica_sets: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let mut replica_sets: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    let mut expectations: Expectations = HashMap::new();
 
     let pod_api: Api<Pod> = Api::all(client.clone());
     let rs_api: Api<ReplicaSet> = Api::all(client.clone());
 
-    for p in pod_api.list(&Default::default()).await.context("listing Pods to seed replicaset-controller")?.items {
+    for p in pod_api
+        .list(&Default::default())
+        .await
+        .context("listing Pods to seed replicaset-controller")?
+        .items
+    {
         pods.insert(format!("{}/{}", ns_of(&p), p.name_any()), p);
     }
-    for rs in rs_api.list(&Default::default()).await.context("listing ReplicaSets to seed replicaset-controller")?.items {
+    for rs in rs_api
+        .list(&Default::default())
+        .await
+        .context("listing ReplicaSets to seed replicaset-controller")?
+        .items
+    {
         let ns = ns_of(&rs);
         let name = rs.name_any();
         replica_sets.insert((ns.clone(), name.clone()));
-        reconcile_replica_set(&client, &ns, &name, &pods).await;
+        reconcile_replica_set(&client, &ns, &name, &pods, &mut expectations).await;
     }
 
     let mut pod_stream = crate::watch::watch_pods(&client);
@@ -260,16 +371,18 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 match ev {
                     Some(Ok(Event::Apply(pod))) | Some(Ok(Event::InitApply(pod))) => {
                         let ns = ns_of(&pod);
+                        note_pod_event(&mut expectations, &pod);
                         pods.insert(format!("{ns}/{}", pod.name_any()), pod);
                         for (rs_ns, rs_name) in replica_sets.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_replica_set(&client, rs_ns, rs_name, &pods).await;
+                            reconcile_replica_set(&client, rs_ns, rs_name, &pods, &mut expectations).await;
                         }
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
+                        note_pod_event(&mut expectations, &pod);
                         pods.remove(&format!("{ns}/{}", pod.name_any()));
                         for (rs_ns, rs_name) in replica_sets.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_replica_set(&client, rs_ns, rs_name, &pods).await;
+                            reconcile_replica_set(&client, rs_ns, rs_name, &pods, &mut expectations).await;
                         }
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
@@ -283,10 +396,12 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         let ns = ns_of(&rs);
                         let name = rs.name_any();
                         replica_sets.insert((ns.clone(), name.clone()));
-                        reconcile_replica_set(&client, &ns, &name, &pods).await;
+                        reconcile_replica_set(&client, &ns, &name, &pods, &mut expectations).await;
                     }
                     Some(Ok(Event::Delete(rs))) => {
-                        replica_sets.remove(&(ns_of(&rs), rs.name_any()));
+                        let key = (ns_of(&rs), rs.name_any());
+                        replica_sets.remove(&key);
+                        expectations.remove(&key);
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "replicaset watch error in replicaset-controller"),
@@ -302,43 +417,72 @@ mod tests {
     use super::*;
 
     fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
     fn an_empty_selector_matches_nothing() {
-        assert!(!label_selector_matches(&LabelSelector::default(), &labels(&[("app", "web")])));
+        assert!(!label_selector_matches(
+            &LabelSelector::default(),
+            &labels(&[("app", "web")])
+        ));
     }
 
     #[test]
     fn match_labels_requires_every_pair_present() {
-        let sel = LabelSelector { match_labels: Some(labels(&[("app", "web")])), ..Default::default() };
-        assert!(label_selector_matches(&sel, &labels(&[("app", "web"), ("tier", "fe")])));
+        let sel = LabelSelector {
+            match_labels: Some(labels(&[("app", "web")])),
+            ..Default::default()
+        };
+        assert!(label_selector_matches(
+            &sel,
+            &labels(&[("app", "web"), ("tier", "fe")])
+        ));
         assert!(!label_selector_matches(&sel, &labels(&[("tier", "fe")])));
     }
 
-    fn expr(key: &str, op: &str, values: &[&str]) -> k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelectorRequirement {
+    fn expr(
+        key: &str,
+        op: &str,
+        values: &[&str],
+    ) -> k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelectorRequirement {
         k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelectorRequirement {
             key: key.to_string(),
             operator: op.to_string(),
-            values: if values.is_empty() { None } else { Some(values.iter().map(|s| s.to_string()).collect()) },
+            values: if values.is_empty() {
+                None
+            } else {
+                Some(values.iter().map(|s| s.to_string()).collect())
+            },
         }
     }
 
     #[test]
     fn match_expressions_in_operator() {
-        let sel = LabelSelector { match_expressions: Some(vec![expr("env", "In", &["prod", "staging"])]), ..Default::default() };
+        let sel = LabelSelector {
+            match_expressions: Some(vec![expr("env", "In", &["prod", "staging"])]),
+            ..Default::default()
+        };
         assert!(label_selector_matches(&sel, &labels(&[("env", "prod")])));
         assert!(!label_selector_matches(&sel, &labels(&[("env", "dev")])));
     }
 
     #[test]
     fn match_expressions_exists_and_does_not_exist() {
-        let exists = LabelSelector { match_expressions: Some(vec![expr("canary", "Exists", &[])]), ..Default::default() };
+        let exists = LabelSelector {
+            match_expressions: Some(vec![expr("canary", "Exists", &[])]),
+            ..Default::default()
+        };
         assert!(label_selector_matches(&exists, &labels(&[("canary", "")])));
         assert!(!label_selector_matches(&exists, &labels(&[])));
 
-        let absent = LabelSelector { match_expressions: Some(vec![expr("canary", "DoesNotExist", &[])]), ..Default::default() };
+        let absent = LabelSelector {
+            match_expressions: Some(vec![expr("canary", "DoesNotExist", &[])]),
+            ..Default::default()
+        };
         assert!(!label_selector_matches(&absent, &labels(&[("canary", "")])));
         assert!(label_selector_matches(&absent, &labels(&[])));
     }
@@ -358,17 +502,32 @@ mod tests {
     #[test]
     fn deletion_prefers_not_ready_pods_first() {
         let candidates = vec![
-            DeletionCandidate { name: "ready-a".to_string(), ready: true },
-            DeletionCandidate { name: "not-ready-b".to_string(), ready: false },
+            DeletionCandidate {
+                name: "ready-a".to_string(),
+                ready: true,
+            },
+            DeletionCandidate {
+                name: "not-ready-b".to_string(),
+                ready: false,
+            },
         ];
-        assert_eq!(pods_to_delete(candidates, 1), vec!["not-ready-b".to_string()]);
+        assert_eq!(
+            pods_to_delete(candidates, 1),
+            vec!["not-ready-b".to_string()]
+        );
     }
 
     #[test]
     fn deletion_breaks_ties_by_name_for_determinism() {
         let candidates = vec![
-            DeletionCandidate { name: "z-pod".to_string(), ready: true },
-            DeletionCandidate { name: "a-pod".to_string(), ready: true },
+            DeletionCandidate {
+                name: "z-pod".to_string(),
+                ready: true,
+            },
+            DeletionCandidate {
+                name: "a-pod".to_string(),
+                ready: true,
+            },
         ];
         assert_eq!(pods_to_delete(candidates, 1), vec!["a-pod".to_string()]);
     }
@@ -376,8 +535,14 @@ mod tests {
     #[test]
     fn deletion_never_returns_more_than_asked_for() {
         let candidates = vec![
-            DeletionCandidate { name: "a".to_string(), ready: true },
-            DeletionCandidate { name: "b".to_string(), ready: true },
+            DeletionCandidate {
+                name: "a".to_string(),
+                ready: true,
+            },
+            DeletionCandidate {
+                name: "b".to_string(),
+                ready: true,
+            },
         ];
         assert_eq!(pods_to_delete(candidates, 5).len(), 2);
     }

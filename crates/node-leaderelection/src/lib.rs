@@ -160,7 +160,12 @@ impl LeaderLease {
     async fn try_acquire(&self) -> Result<bool> {
         let now = Timestamp::now();
 
-        match self.api.get_opt(&self.name).await.context("reading the leader-election lease")? {
+        match self
+            .api
+            .get_opt(&self.name)
+            .await
+            .context("reading the leader-election lease")?
+        {
             None => {
                 // First replica in a fresh cluster. A create that loses the
                 // race returns AlreadyExists, which is simply "not us".
@@ -212,7 +217,11 @@ impl LeaderLease {
                 // The optimistic-concurrency write: carrying the
                 // resourceVersion we read is what turns a lost race into a
                 // 409 instead of a silent double-leader.
-                match self.api.replace(&self.name, &PostParams::default(), &lease).await {
+                match self
+                    .api
+                    .replace(&self.name, &PostParams::default(), &lease)
+                    .await
+                {
                     Ok(_) => Ok(true),
                     Err(kube::Error::Api(e)) if e.code == 409 => Ok(false),
                     Err(e) => Err(e).context("acquiring the leader-election lease"),
@@ -282,15 +291,21 @@ impl LeaderLease {
         loop {
             tokio::time::sleep(self.retry_period).await;
 
-            match self.try_acquire().await {
-                Ok(true) => last_success = Instant::now(),
-                Ok(false) => {
+            // A blackholed apiserver must not prevent the deadline check from
+            // running. Treat an attempt that lasts a full retry period as a
+            // failed renewal and continue to the normal deadline decision.
+            match tokio::time::timeout(self.retry_period, self.try_acquire()).await {
+                Ok(Ok(true)) => last_success = Instant::now(),
+                Ok(Ok(false)) => {
                     tracing::warn!(lease = %self.name, "the lease was taken by another instance; stopping");
                     return;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     // Not fatal on its own — the deadline below decides.
                     tracing::warn!(error = %e, "lease renewal failed");
+                }
+                Err(_) => {
+                    tracing::warn!(lease = %self.name, "lease renewal timed out");
                 }
             }
 
@@ -312,7 +327,11 @@ impl LeaderLease {
 /// `work` is only *built* after acquisition — it is a closure, not a future —
 /// so a standby instance holds no watches open and costs a lease poll every
 /// `retry_period` and nothing else.
-pub async fn run_as_leader<F, Fut>(client: kube::Client, cfg: &ElectionConfig, work: F) -> Result<()>
+pub async fn run_as_leader<F, Fut>(
+    client: kube::Client,
+    cfg: &ElectionConfig,
+    work: F,
+) -> Result<()>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
@@ -373,18 +392,42 @@ mod tests {
 
     #[test]
     fn our_own_lease_may_always_be_renewed() {
-        assert!(may_acquire(Some("me"), Some(t(0)), FIFTEEN, t(10_000), "me"));
+        assert!(may_acquire(
+            Some("me"),
+            Some(t(0)),
+            FIFTEEN,
+            t(10_000),
+            "me"
+        ));
     }
 
     #[test]
     fn a_lease_someone_else_is_renewing_may_not_be_taken() {
-        assert!(!may_acquire(Some("other"), Some(t(100)), FIFTEEN, t(105), "me"));
+        assert!(!may_acquire(
+            Some("other"),
+            Some(t(100)),
+            FIFTEEN,
+            t(105),
+            "me"
+        ));
     }
 
     #[test]
     fn a_lease_may_be_taken_only_after_the_full_duration_has_lapsed() {
-        assert!(!may_acquire(Some("other"), Some(t(100)), FIFTEEN, t(115), "me"));
-        assert!(may_acquire(Some("other"), Some(t(100)), FIFTEEN, t(116), "me"));
+        assert!(!may_acquire(
+            Some("other"),
+            Some(t(100)),
+            FIFTEEN,
+            t(115),
+            "me"
+        ));
+        assert!(may_acquire(
+            Some("other"),
+            Some(t(100)),
+            FIFTEEN,
+            t(116),
+            "me"
+        ));
     }
 
     #[test]
@@ -426,14 +469,32 @@ mod tests {
     fn a_lease_whose_holder_is_us_under_a_different_process_is_reclaimable() {
         let mine = "host_100";
         let previous = "host_99";
-        assert!(!may_acquire(Some(previous), Some(t(100)), FIFTEEN, t(105), mine));
-        assert!(may_acquire(Some(previous), Some(t(100)), FIFTEEN, t(200), mine));
+        assert!(!may_acquire(
+            Some(previous),
+            Some(t(100)),
+            FIFTEEN,
+            t(105),
+            mine
+        ));
+        assert!(may_acquire(
+            Some(previous),
+            Some(t(100)),
+            FIFTEEN,
+            t(200),
+            mine
+        ));
     }
 
     #[test]
     fn the_holder_identity_is_what_distinguishes_replicas() {
         let a = test_cfg().holder_identity;
         assert!(may_acquire(Some(&a), Some(t(100)), FIFTEEN, t(101), &a));
-        assert!(!may_acquire(Some(&a), Some(t(100)), FIFTEEN, t(101), "someone-else"));
+        assert!(!may_acquire(
+            Some(&a),
+            Some(t(100)),
+            FIFTEEN,
+            t(101),
+            "someone-else"
+        ));
     }
 }

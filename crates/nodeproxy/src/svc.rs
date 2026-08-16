@@ -7,15 +7,13 @@
 //! no polling), the whole ruleset rebuilt atomically from current state
 //! every time a Service or EndpointSlice changes.
 //!
-//! Both the nft table (`build_ruleset()`) and the xtables/iptables fallback
-//! (`build_statistic_ruleset()`) carry an explicit `ct state
-//! established,related accept` rule, first in their chain, ahead of any
-//! DNAT rule — found live investigating a real TCP-reset bug on long-lived
-//! pod-to-apiserver connections (github.com/centerionware/not-k8s/issues/30
-//! has the full diagnostic trail): rebuilding the whole ruleset on every
-//! event is supposed to leave an already-established connection's conntrack
-//! NAT state untouched, but this rule makes that guarantee explicit instead
-//! of implicit, rather than trying to reduce how often a rebuild happens.
+//! NAT chains are evaluated for the first packet of a flow; subsequent
+//! packets use the conntrack NAT binding and do not need an
+//! `established,related accept` rule in these chains. The whole ruleset is
+//! rebuilt on each Service or EndpointSlice event, so the long-lived-flow
+//! regression is covered by the end-to-end
+//! `nftables_rebuild_established_conns.sh` test, which keeps a real watch
+//! connection open across a burst of replacements.
 //!
 //! This used to run as a task inside `nodelet` itself. It's a separate
 //! process now for the same reason kube-proxy is separate from the kubelet
@@ -181,7 +179,11 @@ pub struct ServiceProxy {
 
 impl ServiceProxy {
     pub fn new(client: Client, ip_family: IpFamily, lb_method: LbMethod) -> Self {
-        Self { client, ip_family, lb_method }
+        Self {
+            client,
+            ip_family,
+            lb_method,
+        }
     }
 
     /// Runs forever. Returns only if `nft` is unusable — an error, not a
@@ -291,7 +293,9 @@ unaffected either way",
     }
 }
 
-fn watch_services(client: &Client) -> futures::stream::BoxStream<'static, watcher::Result<Event<Service>>> {
+fn watch_services(
+    client: &Client,
+) -> futures::stream::BoxStream<'static, watcher::Result<Event<Service>>> {
     let api: Api<Service> = Api::all(client.clone());
     watcher(api, watcher::Config::default()).boxed()
 }
@@ -343,7 +347,11 @@ fn backends_for(
         if slice.address_type != family.address_type() {
             continue;
         }
-        let owner = slice.metadata.labels.as_ref().and_then(|l| l.get(SVC_NAME_LABEL));
+        let owner = slice
+            .metadata
+            .labels
+            .as_ref()
+            .and_then(|l| l.get(SVC_NAME_LABEL));
         if owner.map(String::as_str) != Some(svc_name) {
             continue;
         }
@@ -356,8 +364,16 @@ fn backends_for(
                 (None, None) => true,
                 _ => false,
             })
-            .or_else(|| if eps_ports.len() == 1 { eps_ports.first() } else { None });
-        let Some(ep_port) = matched.and_then(|p| p.port) else { continue };
+            .or_else(|| {
+                if eps_ports.len() == 1 {
+                    eps_ports.first()
+                } else {
+                    None
+                }
+            });
+        let Some(ep_port) = matched.and_then(|p| p.port) else {
+            continue;
+        };
 
         for ep in &slice.endpoints {
             let ready = ep.conditions.as_ref().and_then(|c| c.ready).unwrap_or(true);
@@ -381,17 +397,18 @@ fn backends_for(
 /// would be rejected and take the whole ruleset with it.
 /// The per-Service opt-in that overrides proxy-wide load-balancing policy.
 fn wants_client_ip_affinity(svc: &Service) -> bool {
-    svc.spec.as_ref().and_then(|s| s.session_affinity.as_deref()) == Some("ClientIP")
+    svc.spec
+        .as_ref()
+        .and_then(|s| s.session_affinity.as_deref())
+        == Some("ClientIP")
 }
 
-fn lb_expr(
-    svc: &Service,
-    default_method: LbMethod,
-    family: Family,
-    caps: Caps,
-) -> Option<String> {
-    let method =
-        if wants_client_ip_affinity(svc) { LbMethod::SourceHash } else { default_method };
+fn lb_expr(svc: &Service, default_method: LbMethod, family: Family, caps: Caps) -> Option<String> {
+    let method = if wants_client_ip_affinity(svc) {
+        LbMethod::SourceHash
+    } else {
+        default_method
+    };
     match method {
         LbMethod::Random if caps.numgen => Some("numgen random".to_string()),
         LbMethod::RoundRobin if caps.numgen => Some("numgen inc".to_string()),
@@ -419,7 +436,11 @@ fn lb_expr(
 fn dnat_target(lb: Option<&str>, backends: &[(String, i32)]) -> Option<String> {
     fn bare(b: &(String, i32)) -> String {
         let (ip, port) = b;
-        if ip.contains(':') { format!("[{ip}]:{port}") } else { format!("{ip}:{port}") }
+        if ip.contains(':') {
+            format!("[{ip}]:{port}")
+        } else {
+            format!("{ip}:{port}")
+        }
     }
     match backends.len() {
         0 => None,
@@ -461,8 +482,12 @@ fn build_ruleset(
     let mut output = Vec::new();
 
     for (key, svc) in &state.services {
-        let Some(spec) = svc.spec.as_ref() else { continue };
-        let Some((namespace, name)) = key.split_once('/') else { continue };
+        let Some(spec) = svc.spec.as_ref() else {
+            continue;
+        };
+        let Some((namespace, name)) = key.split_once('/') else {
+            continue;
+        };
 
         let cluster_ips: Vec<&str> = spec
             .cluster_ips
@@ -486,16 +511,29 @@ fn build_ruleset(
                 // Owned by the xtables statistic chain instead — emitting
                 // here too would mean two DNAT rules racing for the same
                 // connection.
-                if caps.delegates_to_statistic(family, backends.len(), wants_client_ip_affinity(svc)) {
+                if caps.delegates_to_statistic(
+                    family,
+                    backends.len(),
+                    wants_client_ip_affinity(svc),
+                ) {
                     continue;
                 }
                 let lb = lb_expr(svc, lb_method, family, caps);
-                let Some(target) = dnat_target(lb.as_deref(), &backends) else { continue };
-                let proto = port.protocol.as_deref().unwrap_or("TCP").to_ascii_lowercase();
+                let Some(target) = dnat_target(lb.as_deref(), &backends) else {
+                    continue;
+                };
+                let proto = port
+                    .protocol
+                    .as_deref()
+                    .unwrap_or("TCP")
+                    .to_ascii_lowercase();
 
                 // ClusterIP: family is already established by `<f> daddr`, no
                 // explicit qualifier needed on `dnat`.
-                let rule = format!("{f} daddr {cluster_ip} {proto} dport {} dnat to {target}", port.port);
+                let rule = format!(
+                    "{f} daddr {cluster_ip} {proto} dport {} dnat to {target}",
+                    port.port
+                );
                 prerouting.push(rule.clone());
                 output.push(rule);
 
@@ -546,25 +584,9 @@ fn build_ruleset(
     script.push_str(&format!(
         "add chain inet {TABLE} postrouting {{ type nat hook postrouting priority srcnat ; policy accept ; }}\n"
     ));
-    // Explicit fast-path for already-tracked connections, first rule in
-    // both NAT chains, ahead of every DNAT rule below — added investigating
-    // github.com/centerionware/not-k8s/issues/30, a real TCP-reset bug on
-    // long-lived pod-to-apiserver connections held open across a table
-    // rebuild (this whole table is rebuilt from scratch on every Service/
-    // EndpointSlice change — see this module's own doc comment). Once a
-    // connection's DNAT decision is in conntrack, the kernel applies it to
-    // every subsequent packet on that flow regardless of whether the
-    // originating rule is still present — that's what's *supposed* to make
-    // a `flush table` + rebuild safe for already-open connections in the
-    // first place, but this makes it explicit and unconditional rather
-    // than relying on that behavior implicitly: an established/related
-    // packet is accepted (i.e. "don't re-run DNAT selection") before it
-    // ever reaches a rule that could, even transiently mid-rebuild, fail to
-    // match it. Standard nftables hardening for exactly this failure mode,
-    // not a not-k8s invention.
-    script.push_str(&format!("add rule inet {TABLE} prerouting ct state established,related accept\n"));
-    script.push_str(&format!("add rule inet {TABLE} output ct state established,related accept\n"));
-    script.push_str(&format!("add rule inet {TABLE} postrouting ct status dnat masquerade\n"));
+    script.push_str(&format!(
+        "add rule inet {TABLE} postrouting ct status dnat masquerade\n"
+    ));
     for r in &prerouting {
         script.push_str(&format!("add rule inet {TABLE} prerouting {r}\n"));
     }
@@ -630,7 +652,13 @@ impl Caps {
     /// All-supported, for tests and for reasoning about a normal kernel.
     #[cfg(test)]
     fn all() -> Self {
-        Self { fib: true, numgen: true, jhash: true, statistic_v4: true, statistic_v6: true }
+        Self {
+            fib: true,
+            numgen: true,
+            jhash: true,
+            statistic_v4: true,
+            statistic_v6: true,
+        }
     }
 
     fn statistic(self, family: Family) -> bool {
@@ -691,7 +719,11 @@ fn ipt_restore(family: Family) -> &'static str {
 }
 
 fn run_ok(cmd: &str, args: &[&str]) -> bool {
-    Command::new(cmd).args(args).output().map(|o| o.status.success()).unwrap_or(false)
+    Command::new(cmd)
+        .args(args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Can this host actually append a statistic-matched DNAT? Probed the same
@@ -709,8 +741,24 @@ fn probe_statistic(family: Family) -> bool {
     let ok = run_ok(
         t,
         &[
-            "-w", "5", "-t", "nat", "-A", chain, "-p", "tcp", "-m", "statistic", "--mode",
-            "random", "--probability", "0.5", "-j", "DNAT", "--to-destination", dest,
+            "-w",
+            "5",
+            "-t",
+            "nat",
+            "-A",
+            chain,
+            "-p",
+            "tcp",
+            "-m",
+            "statistic",
+            "--mode",
+            "random",
+            "--probability",
+            "0.5",
+            "-j",
+            "DNAT",
+            "--to-destination",
+            dest,
         ],
     );
     let _ = run_ok(t, &["-w", "5", "-t", "nat", "-F", chain]);
@@ -779,7 +827,9 @@ fn local_addrs() -> Vec<String> {
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|line| {
-            let mut it = line.split_whitespace().skip_while(|t| *t != "inet" && *t != "inet6");
+            let mut it = line
+                .split_whitespace()
+                .skip_while(|t| *t != "inet" && *t != "inet6");
             let _family = it.next()?;
             let cidr = it.next()?;
             let addr = cidr.split('/').next()?;
@@ -820,8 +870,12 @@ fn build_statistic_ruleset(
 
     let mut rules = Vec::new();
     for (key, svc) in &state.services {
-        let Some(spec) = svc.spec.as_ref() else { continue };
-        let Some((namespace, name)) = key.split_once('/') else { continue };
+        let Some(spec) = svc.spec.as_ref() else {
+            continue;
+        };
+        let Some((namespace, name)) = key.split_once('/') else {
+            continue;
+        };
 
         let cluster_ips: Vec<&str> = spec
             .cluster_ips
@@ -836,15 +890,26 @@ fn build_statistic_ruleset(
             }
             for port in spec.ports.as_deref().unwrap_or(&[]) {
                 let backends = backends_for(namespace, name, port, family, &state.endpoint_slices);
-                if !caps.delegates_to_statistic(family, backends.len(), wants_client_ip_affinity(svc)) {
+                if !caps.delegates_to_statistic(
+                    family,
+                    backends.len(),
+                    wants_client_ip_affinity(svc),
+                ) {
                     continue;
                 }
-                let proto = port.protocol.as_deref().unwrap_or("TCP").to_ascii_lowercase();
+                let proto = port
+                    .protocol
+                    .as_deref()
+                    .unwrap_or("TCP")
+                    .to_ascii_lowercase();
                 let n = backends.len();
 
                 for (i, (ip, bport)) in backends.iter().enumerate() {
-                    let dest =
-                        if ip.contains(':') { format!("[{ip}]:{bport}") } else { format!("{ip}:{bport}") };
+                    let dest = if ip.contains(':') {
+                        format!("[{ip}]:{bport}")
+                    } else {
+                        format!("{ip}:{bport}")
+                    };
                     let sel = if i + 1 == n {
                         // Last one takes whatever reached it.
                         String::new()
@@ -872,24 +937,23 @@ fn build_statistic_ruleset(
     if rules.is_empty() {
         return None;
     }
-    // Same established-connection fast-path as the nft table's own
-    // (`build_ruleset()`'s own comment has the full reasoning) — this
-    // chain is rewritten wholesale on every rebuild exactly like the nft
-    // one is, so it needs the same explicit guarantee that an
-    // already-tracked connection is never re-evaluated against the
-    // `statistic`-matched DNAT rules below, first rule in the chain.
-    let established = format!("-A {IPT_CHAIN} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT");
     // `:CHAIN - [0:0]` replaces this chain's contents; --noflush leaves
     // every other chain in `nat` (flannel's, anyone else's) untouched.
     // Verified directly: two consecutive applies leave two rules, not four.
-    Some(format!("*nat\n:{IPT_CHAIN} - [0:0]\n{established}\n{}\nCOMMIT\n", rules.join("\n")))
+    Some(format!(
+        "*nat\n:{IPT_CHAIN} - [0:0]\n{}\nCOMMIT\n",
+        rules.join("\n")
+    ))
 }
 
 /// Installs the chain and the jumps into it. Idempotent: the jump is only
 /// inserted when absent, so this never accumulates duplicates across the
 /// rebuilds that happen on every Service event.
 fn statistic_chain_exists(family: Family) -> bool {
-    run_ok(ipt(family), &["-w", "5", "-t", "nat", "-L", IPT_CHAIN, "-n"])
+    run_ok(
+        ipt(family),
+        &["-w", "5", "-t", "nat", "-L", IPT_CHAIN, "-n"],
+    )
 }
 
 fn ensure_statistic_chain(family: Family) -> Result<()> {
@@ -904,7 +968,10 @@ fn ensure_statistic_chain(family: Family) -> Result<()> {
     }
     for hook in ["PREROUTING", "OUTPUT"] {
         if !run_ok(t, &["-w", "5", "-t", "nat", "-C", hook, "-j", IPT_CHAIN])
-            && !run_ok(t, &["-w", "5", "-t", "nat", "-I", hook, "1", "-j", IPT_CHAIN])
+            && !run_ok(
+                t,
+                &["-w", "5", "-t", "nat", "-I", hook, "1", "-j", IPT_CHAIN],
+            )
         {
             anyhow::bail!("could not jump from nat {hook} to {IPT_CHAIN} with {t}");
         }
@@ -941,7 +1008,9 @@ fn apply_statistic(family: Family, ruleset: &str) -> Result<()> {
         .expect("piped stdin")
         .write_all(ruleset.as_bytes())
         .context("writing iptables-restore input")?;
-    let out = child.wait_with_output().context("waiting on iptables-restore")?;
+    let out = child
+        .wait_with_output()
+        .context("waiting on iptables-restore")?;
     if !out.status.success() {
         anyhow::bail!(
             "{} failed: {}\n--- ruleset ---\n{ruleset}",
@@ -953,8 +1022,10 @@ fn apply_statistic(family: Family, ruleset: &str) -> Result<()> {
 }
 
 fn check_nft() -> Result<()> {
-    let out =
-        Command::new("nft").args(["list", "tables"]).output().context("nft not found on PATH")?;
+    let out = Command::new("nft")
+        .args(["list", "tables"])
+        .output()
+        .context("nft not found on PATH")?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let detail = stderr.trim();
@@ -987,7 +1058,9 @@ fn apply_nft(ruleset: &str) -> Result<(), String> {
         .expect("piped stdin")
         .write_all(ruleset.as_bytes())
         .map_err(|e| format!("writing nft script: {e}"))?;
-    let out = child.wait_with_output().map_err(|e| format!("waiting on nft: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("waiting on nft: {e}"))?;
     if !out.status.success() {
         return Err(format!(
             "nft -f - failed: {}\n--- ruleset ---\n{ruleset}",
@@ -1015,7 +1088,12 @@ mod tests {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| e.to_string())?;
-        child.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .unwrap();
         let out = child.wait_with_output().map_err(|e| e.to_string())?;
         if out.status.success() {
             Ok(())
@@ -1038,7 +1116,11 @@ mod tests {
     /// `--test` is `iptables-restore`'s own dry-run: parses and validates
     /// without committing, the same job `nft -c` does for the nft path.
     fn ipt_check(ruleset: &str) -> Result<(), String> {
-        if Command::new("iptables-restore").arg("--version").output().is_err() {
+        if Command::new("iptables-restore")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             eprintln!("skipping: iptables-restore not installed");
             return Ok(());
         }
@@ -1049,7 +1131,12 @@ mod tests {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| e.to_string())?;
-        child.stdin.take().unwrap().write_all(ruleset.as_bytes()).unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(ruleset.as_bytes())
+            .unwrap();
         let out = child.wait_with_output().map_err(|e| e.to_string())?;
         if out.status.success() {
             Ok(())
@@ -1086,7 +1173,11 @@ mod tests {
     fn backends(n: usize, v6: bool) -> Vec<(String, i32)> {
         (0..n)
             .map(|i| {
-                let ip = if v6 { format!("fd00:42::{}", i + 5) } else { format!("10.42.0.{}", i + 5) };
+                let ip = if v6 {
+                    format!("fd00:42::{}", i + 5)
+                } else {
+                    format!("10.42.0.{}", i + 5)
+                };
                 (ip, 8080)
             })
             .collect()
@@ -1129,7 +1220,10 @@ mod tests {
     fn session_affinity_forces_source_hash_regardless_of_default() {
         let svc = fake_service(vec!["10.43.0.1"], Some("ClientIP"));
         let caps = Caps::all();
-        assert_eq!(lb_expr(&svc, LbMethod::Random, Family::V4, caps).as_deref(), Some("jhash ip saddr"));
+        assert_eq!(
+            lb_expr(&svc, LbMethod::Random, Family::V4, caps).as_deref(),
+            Some("jhash ip saddr")
+        );
         assert_eq!(
             lb_expr(&svc, LbMethod::RoundRobin, Family::V4, caps).as_deref(),
             Some("jhash ip saddr")
@@ -1141,7 +1235,13 @@ mod tests {
     /// rule takes the entire atomically-applied ruleset with it.
     #[test]
     fn a_kernel_without_numgen_or_jhash_gets_no_selector_at_all() {
-        let none = Caps { fib: true, numgen: false, jhash: false, statistic_v4: false, statistic_v6: false };
+        let none = Caps {
+            fib: true,
+            numgen: false,
+            jhash: false,
+            statistic_v4: false,
+            statistic_v6: false,
+        };
         let plain = fake_service(vec!["10.43.0.1"], None);
         let sticky = fake_service(vec!["10.43.0.1"], Some("ClientIP"));
         for method in [LbMethod::Random, LbMethod::RoundRobin, LbMethod::SourceHash] {
@@ -1155,8 +1255,14 @@ mod tests {
         // Not "no rule": a Service with backends must still route.
         let target = dnat_target(None, &backends(3, false)).expect("must still produce a target");
         assert_eq!(target, "10.42.0.5:8080");
-        assert!(!target.contains("numgen"), "must not emit a selector this kernel lacks");
-        assert!(!target.contains("map"), "must not emit a verdict map this kernel lacks");
+        assert!(
+            !target.contains("numgen"),
+            "must not emit a selector this kernel lacks"
+        );
+        assert!(
+            !target.contains("map"),
+            "must not emit a verdict map this kernel lacks"
+        );
         // Zero backends is still nothing to route to, selector or not.
         assert_eq!(dnat_target(None, &[]), None);
     }
@@ -1165,7 +1271,9 @@ mod tests {
     fn state_with_one_nodeport_service() -> State {
         use k8s_openapi::api::discovery::v1::{Endpoint, EndpointConditions, EndpointPort};
         let mut state = State::default();
-        state.services.insert("n/s".to_string(), fake_service(vec!["10.43.0.1"], None));
+        state
+            .services
+            .insert("n/s".to_string(), fake_service(vec!["10.43.0.1"], None));
         state.endpoint_slices.insert(
             "n/s-abc".to_string(),
             EndpointSlice {
@@ -1178,44 +1286,31 @@ mod tests {
                 address_type: "IPv4".to_string(),
                 endpoints: vec![Endpoint {
                     addresses: vec!["10.42.0.5".to_string()],
-                    conditions: Some(EndpointConditions { ready: Some(true), ..Default::default() }),
+                    conditions: Some(EndpointConditions {
+                        ready: Some(true),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }],
-                ports: Some(vec![EndpointPort { port: Some(8080), ..Default::default() }]),
+                ports: Some(vec![EndpointPort {
+                    port: Some(8080),
+                    ..Default::default()
+                }]),
             },
         );
         state
     }
 
     /// `build_ruleset()`'s real output — not a hand-written stand-in script
-    /// — must itself be valid nftables syntax the kernel accepts, including
-    /// the `ct state established,related accept` fast-path rules added
-    /// investigating github.com/centerionware/not-k8s/issues/30 (skips
+    /// — must itself be valid nftables syntax the kernel accepts (skips
     /// itself without `nft`/CAP_NET_ADMIN, same as `nft_check`'s other
     /// callers).
     #[test]
-    fn established_fast_path_rules_are_present_and_pass_real_nft_syntax_check() {
+    fn generated_nft_rules_pass_real_syntax_check() {
         let state = state_with_one_nodeport_service();
         let rs = build_ruleset(&state, IpFamily::V4, LbMethod::Random, Caps::all(), &[]);
-        assert!(
-            rs.contains("add rule inet not_k8s_svc prerouting ct state established,related accept"),
-            "missing the prerouting fast-path rule:\n{rs}"
-        );
-        assert!(
-            rs.contains("add rule inet not_k8s_svc output ct state established,related accept"),
-            "missing the output fast-path rule:\n{rs}"
-        );
-        // Must come before any DNAT rule — an established-connection packet
-        // has to hit this rule and return before ever reaching a per-Service
-        // rule below it, or the fast path doesn't actually fast-path
-        // anything.
-        let established_pos = rs.find("ct state established,related accept").unwrap();
-        let first_dnat_pos = rs.find(" dnat ").unwrap();
-        assert!(
-            established_pos < first_dnat_pos,
-            "established fast-path rule must precede DNAT rules:\n{rs}"
-        );
-        nft_check(&rs).unwrap_or_else(|e| panic!("build_ruleset() output failed real nft syntax check: {e}"));
+        nft_check(&rs)
+            .unwrap_or_else(|e| panic!("build_ruleset() output failed real nft syntax check: {e}"));
     }
 
     /// The point of the whole fallback: NodePort must keep working on a
@@ -1224,23 +1319,40 @@ mod tests {
     fn nodeport_still_works_without_fib_by_matching_local_addresses() {
         let state = state_with_one_nodeport_service();
         let local = vec!["192.168.1.50".to_string(), "10.0.0.1".to_string()];
-        let no_fib = Caps { fib: false, numgen: true, jhash: true, statistic_v4: false, statistic_v6: false };
+        let no_fib = Caps {
+            fib: false,
+            numgen: true,
+            jhash: true,
+            statistic_v4: false,
+            statistic_v6: false,
+        };
 
         let rs = build_ruleset(&state, IpFamily::V4, LbMethod::Random, no_fib, &local);
 
-        assert!(!rs.contains("fib "), "must not emit fib on a kernel without it:\n{rs}");
+        assert!(
+            !rs.contains("fib "),
+            "must not emit fib on a kernel without it:\n{rs}"
+        );
         // One NodePort rule per local address, in both hooks.
         for addr in &local {
             assert!(
-                rs.contains(&format!("ip daddr {addr} tcp dport 30080 dnat to 10.42.0.5:8080")),
+                rs.contains(&format!(
+                    "ip daddr {addr} tcp dport 30080 dnat to 10.42.0.5:8080"
+                )),
                 "missing NodePort rule for {addr}:\n{rs}"
             );
         }
         // `<f> daddr` establishes the family, so the qualifier fib needed
         // must not appear on these rules.
-        assert!(!rs.contains("dport 30080 dnat ip to"), "qualifier is only for the fib form:\n{rs}");
+        assert!(
+            !rs.contains("dport 30080 dnat ip to"),
+            "qualifier is only for the fib form:\n{rs}"
+        );
         // ClusterIP routing is unaffected by the fallback.
-        assert!(rs.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"), "{rs}");
+        assert!(
+            rs.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"),
+            "{rs}"
+        );
     }
 
     #[test]
@@ -1258,10 +1370,22 @@ mod tests {
     #[test]
     fn losing_nodeport_never_costs_clusterip() {
         let state = state_with_one_nodeport_service();
-        let no_fib = Caps { fib: false, numgen: true, jhash: true, statistic_v4: false, statistic_v6: false };
+        let no_fib = Caps {
+            fib: false,
+            numgen: true,
+            jhash: true,
+            statistic_v4: false,
+            statistic_v6: false,
+        };
         let rs = build_ruleset(&state, IpFamily::V4, LbMethod::Random, no_fib, &[]);
-        assert!(rs.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"), "{rs}");
-        assert!(!rs.contains("30080"), "no local addresses means no NodePort rules:\n{rs}");
+        assert!(
+            rs.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"),
+            "{rs}"
+        );
+        assert!(
+            !rs.contains("30080"),
+            "no local addresses means no NodePort rules:\n{rs}"
+        );
     }
 
     /// A three-backend Service on a kernel with no nft_numgen must be
@@ -1269,7 +1393,13 @@ mod tests {
     /// own 1/(N-i) scheme, with the last rule unconditional.
     #[test]
     fn statistic_fallback_spreads_evenly_and_terminates() {
-        let caps = Caps { fib: false, numgen: false, jhash: false, statistic_v4: true, statistic_v6: true };
+        let caps = Caps {
+            fib: false,
+            numgen: false,
+            jhash: false,
+            statistic_v4: true,
+            statistic_v6: true,
+        };
         let mut state = state_with_one_nodeport_service();
         // Widen the single slice to three ready backends.
         let slice = state.endpoint_slices.get_mut("n/s-abc").unwrap();
@@ -1289,7 +1419,10 @@ mod tests {
         // evenly. A flat 1/N on every rule would drop ~30% off the end.
         assert!(rs.contains("--probability 0.33333333333"), "{rs}");
         assert!(rs.contains("--probability 0.50000000000"), "{rs}");
-        let last = rs.lines().filter(|l| l.contains("10.42.0.7:8080")).collect::<Vec<_>>();
+        let last = rs
+            .lines()
+            .filter(|l| l.contains("10.42.0.7:8080"))
+            .collect::<Vec<_>>();
         assert!(!last.is_empty(), "{rs}");
         assert!(
             last.iter().all(|l| !l.contains("statistic")),
@@ -1299,36 +1432,39 @@ mod tests {
         // match, so no address enumeration and no dependence on nft_fib.
         assert!(rs.contains("-m addrtype --dst-type LOCAL"), "{rs}");
 
-        // Same established-connection fast-path as the nft table (added
-        // investigating github.com/centerionware/not-k8s/issues/30) — this
-        // chain is rewritten wholesale on every rebuild exactly like the
-        // nft one, so it needs the same explicit guarantee, first rule in
-        // the chain (right after the `:CHAIN - [0:0]` header, before any
-        // `statistic`-matched DNAT rule).
-        let established_line = "-A NOTK8S-SVC -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT";
-        assert!(rs.contains(established_line), "missing the established fast-path rule:\n{rs}");
-        let established_pos = rs.find(established_line).unwrap();
-        let first_dnat_pos = rs.find("-j DNAT").unwrap();
-        assert!(
-            established_pos < first_dnat_pos,
-            "established fast-path rule must precede DNAT rules:\n{rs}"
-        );
-        ipt_check(&rs).unwrap_or_else(|e| panic!("build_statistic_ruleset() output failed a real iptables-restore --test: {e}"));
+        ipt_check(&rs).unwrap_or_else(|e| {
+            panic!("build_statistic_ruleset() output failed a real iptables-restore --test: {e}")
+        });
     }
 
     /// And the nft table must NOT also program those Services, or two DNAT
     /// rules race for the same connection.
     #[test]
     fn delegated_services_are_absent_from_the_nft_ruleset() {
-        let caps = Caps { fib: false, numgen: false, jhash: false, statistic_v4: true, statistic_v6: true };
+        let caps = Caps {
+            fib: false,
+            numgen: false,
+            jhash: false,
+            statistic_v4: true,
+            statistic_v6: true,
+        };
         let mut state = state_with_one_nodeport_service();
         let slice = state.endpoint_slices.get_mut("n/s-abc").unwrap();
         let mut ep = slice.endpoints[0].clone();
         ep.addresses = vec!["10.42.0.6".into()];
         slice.endpoints.push(ep);
 
-        let nft = build_ruleset(&state, IpFamily::V4, LbMethod::Random, caps, &["10.0.0.1".into()]);
-        assert!(!nft.contains("10.43.0.1"), "delegated Service must not appear in nft:\n{nft}");
+        let nft = build_ruleset(
+            &state,
+            IpFamily::V4,
+            LbMethod::Random,
+            caps,
+            &["10.0.0.1".into()],
+        );
+        assert!(
+            !nft.contains("10.43.0.1"),
+            "delegated Service must not appear in nft:\n{nft}"
+        );
         assert!(build_statistic_ruleset(&state, IpFamily::V4, caps, Family::V4).is_some());
     }
 
@@ -1336,11 +1472,26 @@ mod tests {
     /// even on a kernel that has the fallback available.
     #[test]
     fn one_backend_never_uses_the_fallback() {
-        let caps = Caps { fib: false, numgen: false, jhash: false, statistic_v4: true, statistic_v6: true };
+        let caps = Caps {
+            fib: false,
+            numgen: false,
+            jhash: false,
+            statistic_v4: true,
+            statistic_v6: true,
+        };
         let state = state_with_one_nodeport_service();
         assert!(build_statistic_ruleset(&state, IpFamily::V4, caps, Family::V4).is_none());
-        let nft = build_ruleset(&state, IpFamily::V4, LbMethod::Random, caps, &["10.0.0.1".into()]);
-        assert!(nft.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"), "{nft}");
+        let nft = build_ruleset(
+            &state,
+            IpFamily::V4,
+            LbMethod::Random,
+            caps,
+            &["10.0.0.1".into()],
+        );
+        assert!(
+            nft.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"),
+            "{nft}"
+        );
     }
 
     /// sessionAffinity must survive the statistic fallback existing. A
@@ -1349,9 +1500,18 @@ mod tests {
     /// connection — that would trade one broken guarantee for another.
     #[test]
     fn sticky_services_are_never_handed_to_the_statistic_chain() {
-        let caps = Caps { fib: false, numgen: false, jhash: false, statistic_v4: true, statistic_v6: true };
+        let caps = Caps {
+            fib: false,
+            numgen: false,
+            jhash: false,
+            statistic_v4: true,
+            statistic_v6: true,
+        };
         let mut state = state_with_one_nodeport_service();
-        state.services.insert("n/s".to_string(), fake_service(vec!["10.43.0.1"], Some("ClientIP")));
+        state.services.insert(
+            "n/s".to_string(),
+            fake_service(vec!["10.43.0.1"], Some("ClientIP")),
+        );
         let slice = state.endpoint_slices.get_mut("n/s-abc").unwrap();
         let mut ep = slice.endpoints[0].clone();
         ep.addresses = vec!["10.42.0.6".into()];
@@ -1363,7 +1523,10 @@ mod tests {
         );
         // It stays in nftables, pinned to exactly one backend.
         let nft = build_ruleset(&state, IpFamily::V4, LbMethod::Random, caps, &[]);
-        assert!(nft.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"), "{nft}");
+        assert!(
+            nft.contains("ip daddr 10.43.0.1 tcp dport 80 dnat to 10.42.0.5:8080"),
+            "{nft}"
+        );
         assert!(!nft.contains("statistic"), "{nft}");
         assert!(!nft.contains("map {"), "{nft}");
     }
@@ -1373,7 +1536,13 @@ mod tests {
     /// chain full of rules for a family this node doesn't serve.
     #[test]
     fn statistic_fallback_ignores_a_family_the_proxy_does_not_serve() {
-        let caps = Caps { fib: false, numgen: false, jhash: false, statistic_v4: true, statistic_v6: true };
+        let caps = Caps {
+            fib: false,
+            numgen: false,
+            jhash: false,
+            statistic_v4: true,
+            statistic_v6: true,
+        };
         let mut state = state_with_one_nodeport_service();
         let slice = state.endpoint_slices.get_mut("n/s-abc").unwrap();
         let mut ep = slice.endpoints[0].clone();
@@ -1393,9 +1562,17 @@ mod tests {
     #[test]
     fn statistic_fallback_brackets_ipv6_destinations() {
         use k8s_openapi::api::discovery::v1::{Endpoint, EndpointConditions, EndpointPort};
-        let caps = Caps { fib: false, numgen: false, jhash: false, statistic_v4: true, statistic_v6: true };
+        let caps = Caps {
+            fib: false,
+            numgen: false,
+            jhash: false,
+            statistic_v4: true,
+            statistic_v6: true,
+        };
         let mut state = State::default();
-        state.services.insert("n/s6".to_string(), fake_service(vec!["fd00::1"], None));
+        state
+            .services
+            .insert("n/s6".to_string(), fake_service(vec!["fd00::1"], None));
         state.endpoint_slices.insert(
             "n/s6-abc".to_string(),
             EndpointSlice {
@@ -1417,7 +1594,10 @@ mod tests {
                         ..Default::default()
                     })
                     .collect(),
-                ports: Some(vec![EndpointPort { port: Some(8080), ..Default::default() }]),
+                ports: Some(vec![EndpointPort {
+                    port: Some(8080),
+                    ..Default::default()
+                }]),
             },
         );
 
@@ -1425,7 +1605,10 @@ mod tests {
             .expect("a dual-stack proxy must emit v6 fallback rules");
         assert!(rs.contains("--to-destination [fd00::5]:8080"), "{rs}");
         assert!(rs.contains("--to-destination [fd00::6]:8080"), "{rs}");
-        assert!(!rs.contains("--to-destination fd00::"), "unbracketed v6 destination:\n{rs}");
+        assert!(
+            !rs.contains("--to-destination fd00::"),
+            "unbracketed v6 destination:\n{rs}"
+        );
         assert!(rs.contains("-d fd00::1"), "{rs}");
     }
 
@@ -1434,5 +1617,4 @@ mod tests {
         assert_eq!(Family::of("10.42.0.5"), Family::V4);
         assert_eq!(Family::of("fd00::5"), Family::V6);
     }
-
 }

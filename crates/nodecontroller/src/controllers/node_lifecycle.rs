@@ -139,7 +139,13 @@ fn wall_to_instant(target_wall: Timestamp, now_wall: Timestamp, now_instant: Ins
     }
 }
 
-async fn reconcile(api: &Api<Node>, node_name: &str, ready_status: Option<&str>, lease_stale: bool, source: &str) {
+async fn reconcile(
+    api: &Api<Node>,
+    node_name: &str,
+    ready_status: Option<&str>,
+    lease_stale: bool,
+    source: &str,
+) {
     let desired = desired_taint(ready_status, lease_stale);
     let node = match api.get_opt(node_name).await {
         Ok(Some(n)) => n,
@@ -149,7 +155,11 @@ async fn reconcile(api: &Api<Node>, node_name: &str, ready_status: Option<&str>,
             return;
         }
     };
-    let existing = node.spec.as_ref().and_then(|s| s.taints.clone()).unwrap_or_default();
+    let existing = node
+        .spec
+        .as_ref()
+        .and_then(|s| s.taints.clone())
+        .unwrap_or_default();
     if current_lifecycle_taint(&existing) == desired {
         return; // already correct — no patch, no log noise on every tick
     }
@@ -174,7 +184,11 @@ async fn reconcile(api: &Api<Node>, node_name: &str, ready_status: Option<&str>,
     );
     let patch = serde_json::json!({ "spec": { "taints": new_taints } });
     if let Err(e) = api
-        .patch(node_name, &kube::api::PatchParams::default(), &kube::api::Patch::Merge(&patch))
+        .patch(
+            node_name,
+            &kube::api::PatchParams::default(),
+            &kube::api::Patch::Merge(&patch),
+        )
         .await
     {
         tracing::warn!(node = %node_name, error = ?e, "failed to patch node-lifecycle taint — will retry on the next event");
@@ -193,7 +207,10 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
     // Horizon: grace period plus one full jitter swing plus a tick of
     // margin, so a maximally-jittered entry is never rejected as
     // BeyondHorizon by the wheel it's being inserted into.
-    let horizon = cfg.node_monitor_grace_period.mul_f64(1.0 + cfg.jitter_fraction) + cfg.tick_period;
+    let horizon = cfg
+        .node_monitor_grace_period
+        .mul_f64(1.0 + cfg.jitter_fraction)
+        + cfg.tick_period;
     let slot_count = (horizon.as_nanos() / cfg.tick_period.as_nanos().max(1)).max(1) as u64 + 1;
     let mut governor: Governor<String> = Governor::new(
         slot_count,
@@ -206,10 +223,19 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
 
     // Seed from whatever's already there, same "the Node objects are the
     // durable record" rule node-ipam's controller uses.
-    let existing = node_api.list(&Default::default()).await.context("listing Nodes to seed node-lifecycle")?;
+    let existing = node_api
+        .list(&Default::default())
+        .await
+        .context("listing Nodes to seed node-lifecycle")?;
     for n in &existing.items {
         let name = n.name_any();
-        cache.insert(name, NodeLiveness { ready_status: ready_condition_status(n), last_renew: None });
+        cache.insert(
+            name,
+            NodeLiveness {
+                ready_status: ready_condition_status(n),
+                last_renew: None,
+            },
+        );
     }
 
     let mut nodes = crate::watch::watch_nodes(&client);
@@ -292,16 +318,27 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                 let now = Instant::now();
                 let due = governor.due_this_tick(now);
                 if due.is_empty() { continue; }
-                let mut costs = Vec::with_capacity(due.len());
-                let mut names = Vec::with_capacity(due.len());
-                for name in &due {
-                    let start = Instant::now();
+                let budget = governor.budget();
+                let tick_started = Instant::now();
+                let mut deferred = Vec::new();
+                for (index, name) in due.iter().enumerate() {
+                    // Decide whether this item fits before doing its network
+                    // reconciliation. The first item is allowed even when it
+                    // costs more than the budget, matching the pure pacing
+                    // partition's progress guarantee; the remaining suffix
+                    // waits for the next tick.
+                    if index > 0 && tick_started.elapsed() >= budget {
+                        deferred.extend(due[index..].iter().cloned());
+                        break;
+                    }
                     let status = cache.get(name).and_then(|s| s.ready_status.clone());
-                    reconcile(&node_api, name, status.as_deref(), true, "wheel-tick").await;
-                    costs.push(start.elapsed());
-                    names.push(name.clone());
+                    // A renewal can have arrived after this key overflowed
+                    // into the deferred queue. Recompute from the cache so a
+                    // stale wheel entry cannot taint a live Node.
+                    if is_stale(&cache, name, cfg.node_monitor_grace_period, cfg.jitter_fraction) {
+                        reconcile(&node_api, name, status.as_deref(), true, "wheel-tick").await;
+                    }
                 }
-                let (_, deferred) = crate::pacing::partition_by_budget(&names, &costs, governor.budget());
                 governor.requeue_overflow(deferred);
             }
         }
@@ -325,7 +362,12 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
 /// function, disagreed, and reverted it. Using the same jittered
 /// threshold here closes the gap: this can never return `false` for a
 /// renewal the wheel has already legitimately treated as due.
-fn renewal_is_stale(last_renew: Option<Timestamp>, now: Timestamp, grace_period: Duration, jitter_fraction: f64) -> bool {
+fn renewal_is_stale(
+    last_renew: Option<Timestamp>,
+    now: Timestamp,
+    grace_period: Duration,
+    jitter_fraction: f64,
+) -> bool {
     match last_renew {
         None => false, // never seen a Lease for this Node yet — not our call to make
         Some(renew) => {
@@ -335,8 +377,18 @@ fn renewal_is_stale(last_renew: Option<Timestamp>, now: Timestamp, grace_period:
     }
 }
 
-fn is_stale(cache: &HashMap<String, NodeLiveness>, name: &str, grace_period: Duration, jitter_fraction: f64) -> bool {
-    renewal_is_stale(cache.get(name).and_then(|s| s.last_renew), Timestamp::now(), grace_period, jitter_fraction)
+fn is_stale(
+    cache: &HashMap<String, NodeLiveness>,
+    name: &str,
+    grace_period: Duration,
+    jitter_fraction: f64,
+) -> bool {
+    renewal_is_stale(
+        cache.get(name).and_then(|s| s.last_renew),
+        Timestamp::now(),
+        grace_period,
+        jitter_fraction,
+    )
 }
 
 #[cfg(test)]
@@ -349,17 +401,32 @@ mod tests {
 
     #[test]
     fn a_lease_never_seen_is_not_stale() {
-        assert!(!renewal_is_stale(None, t(1000), Duration::from_secs(40), 0.0));
+        assert!(!renewal_is_stale(
+            None,
+            t(1000),
+            Duration::from_secs(40),
+            0.0
+        ));
     }
 
     #[test]
     fn a_recent_renewal_is_not_stale() {
-        assert!(!renewal_is_stale(Some(t(970)), t(1000), Duration::from_secs(40), 0.0));
+        assert!(!renewal_is_stale(
+            Some(t(970)),
+            t(1000),
+            Duration::from_secs(40),
+            0.0
+        ));
     }
 
     #[test]
     fn a_renewal_older_than_the_grace_period_is_stale() {
-        assert!(renewal_is_stale(Some(t(900)), t(1000), Duration::from_secs(40), 0.0));
+        assert!(renewal_is_stale(
+            Some(t(900)),
+            t(1000),
+            Duration::from_secs(40),
+            0.0
+        ));
     }
 
     /// The regression this bug fix exists for. Found live in CI
@@ -374,7 +441,12 @@ mod tests {
     /// wheel had just correctly set.
     #[test]
     fn a_relisted_but_unchanged_stale_renewal_is_still_stale() {
-        assert!(renewal_is_stale(Some(t(900)), t(1000), Duration::from_secs(40), 0.0));
+        assert!(renewal_is_stale(
+            Some(t(900)),
+            t(1000),
+            Duration::from_secs(40),
+            0.0
+        ));
     }
 
     /// The second regression, found live in CI the same way, immediately
@@ -393,16 +465,31 @@ mod tests {
     /// possible schedule — must already read as stale here too.
     #[test]
     fn a_renewal_within_the_wheels_own_jitter_window_is_already_stale() {
-        assert!(renewal_is_stale(Some(t(1000)), t(1039), Duration::from_secs(40), 0.05));
+        assert!(renewal_is_stale(
+            Some(t(1000)),
+            t(1039),
+            Duration::from_secs(40),
+            0.05
+        ));
     }
 
     #[test]
     fn a_renewal_before_even_the_jittered_earliest_deadline_is_not_stale() {
-        assert!(!renewal_is_stale(Some(t(1000)), t(1030), Duration::from_secs(40), 0.05));
+        assert!(!renewal_is_stale(
+            Some(t(1000)),
+            t(1030),
+            Duration::from_secs(40),
+            0.05
+        ));
     }
 
     fn taint(key: &str, effect: &str) -> Taint {
-        Taint { key: key.to_string(), effect: effect.to_string(), value: None, time_added: None }
+        Taint {
+            key: key.to_string(),
+            effect: effect.to_string(),
+            value: None,
+            time_added: None,
+        }
     }
 
     #[test]
@@ -412,15 +499,24 @@ mod tests {
 
     #[test]
     fn a_node_reporting_not_ready_gets_the_not_ready_taint() {
-        assert_eq!(desired_taint(Some("False"), false), LifecycleTaint::NotReady);
+        assert_eq!(
+            desired_taint(Some("False"), false),
+            LifecycleTaint::NotReady
+        );
     }
 
     #[test]
     fn a_stale_lease_means_unreachable_regardless_of_self_reported_status() {
         // Even a Node that last said "True" — its own report can't be
         // trusted once it's stopped heartbeating.
-        assert_eq!(desired_taint(Some("True"), true), LifecycleTaint::Unreachable);
-        assert_eq!(desired_taint(Some("False"), true), LifecycleTaint::Unreachable);
+        assert_eq!(
+            desired_taint(Some("True"), true),
+            LifecycleTaint::Unreachable
+        );
+        assert_eq!(
+            desired_taint(Some("False"), true),
+            LifecycleTaint::Unreachable
+        );
         assert_eq!(desired_taint(None, true), LifecycleTaint::Unreachable);
     }
 
@@ -434,8 +530,14 @@ mod tests {
 
     #[test]
     fn current_lifecycle_taint_prefers_unreachable_over_not_ready() {
-        let taints = vec![taint(NOT_READY_TAINT_KEY, NO_EXECUTE), taint(UNREACHABLE_TAINT_KEY, NO_EXECUTE)];
-        assert_eq!(current_lifecycle_taint(&taints), LifecycleTaint::Unreachable);
+        let taints = vec![
+            taint(NOT_READY_TAINT_KEY, NO_EXECUTE),
+            taint(UNREACHABLE_TAINT_KEY, NO_EXECUTE),
+        ];
+        assert_eq!(
+            current_lifecycle_taint(&taints),
+            LifecycleTaint::Unreachable
+        );
     }
 
     #[test]
@@ -463,7 +565,10 @@ mod tests {
 
     #[test]
     fn apply_desired_taint_of_none_clears_both_lifecycle_taints() {
-        let existing = vec![taint(NOT_READY_TAINT_KEY, NO_EXECUTE), taint("keep-me", "NoSchedule")];
+        let existing = vec![
+            taint(NOT_READY_TAINT_KEY, NO_EXECUTE),
+            taint("keep-me", "NoSchedule"),
+        ];
         let got = apply_desired_taint(&existing, LifecycleTaint::None);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].key, "keep-me");

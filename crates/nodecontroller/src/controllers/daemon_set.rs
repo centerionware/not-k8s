@@ -76,7 +76,10 @@ fn compute_template_hash<T: serde::Serialize>(template: &T) -> String {
 /// the same value. An empty selector matches every Node — the DaemonSet
 /// convention (unlike a ReplicaSet/Service selector, where empty means
 /// "matches nothing" — see `replica_set.rs`/`endpoint_slice.rs`).
-pub fn node_selector_matches(selector: &BTreeMap<String, String>, labels: &BTreeMap<String, String>) -> bool {
+pub fn node_selector_matches(
+    selector: &BTreeMap<String, String>,
+    labels: &BTreeMap<String, String>,
+) -> bool {
     selector.iter().all(|(k, v)| labels.get(k) == Some(v))
 }
 
@@ -108,18 +111,23 @@ pub fn taints_tolerated(taints: &[Taint], tolerations: &[Toleration]) -> bool {
         .all(|taint| tolerations.iter().any(|t| toleration_matches(t, taint)))
 }
 
-fn node_eligible(node: &Node, node_selector: &BTreeMap<String, String>, tolerations: &[Toleration]) -> bool {
+fn node_eligible(
+    node: &Node,
+    node_selector: &BTreeMap<String, String>,
+    tolerations: &[Toleration],
+) -> bool {
     if node.metadata.deletion_timestamp.is_some() {
-        return false;
-    }
-    if node.spec.as_ref().and_then(|s| s.unschedulable).unwrap_or(false) {
         return false;
     }
     let labels = node.metadata.labels.clone().unwrap_or_default();
     if !node_selector_matches(node_selector, &labels) {
         return false;
     }
-    let taints = node.spec.as_ref().and_then(|s| s.taints.clone()).unwrap_or_default();
+    let taints = node
+        .spec
+        .as_ref()
+        .and_then(|s| s.taints.clone())
+        .unwrap_or_default();
     taints_tolerated(&taints, tolerations)
 }
 
@@ -146,24 +154,47 @@ fn owner_reference(ds: &DaemonSet) -> OwnerReference {
 }
 
 fn owned_by(pod: &Pod, ds_uid: &str) -> bool {
-    pod.metadata.owner_references.as_ref().into_iter().flatten().any(|o| o.controller == Some(true) && o.uid == ds_uid)
+    pod.metadata
+        .owner_references
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .any(|o| o.controller == Some(true) && o.uid == ds_uid)
 }
 
 fn pod_ready(pod: &Pod) -> bool {
-    pod.status.as_ref().and_then(|s| s.conditions.as_ref()).into_iter().flatten().any(|c| c.type_ == "Ready" && c.status == "True")
+    pod.status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .into_iter()
+        .flatten()
+        .any(|c| c.type_ == "Ready" && c.status == "True")
 }
 
 fn pod_hash(pod: &Pod) -> Option<&str> {
-    pod.metadata.labels.as_ref().and_then(|l| l.get(POD_TEMPLATE_HASH_LABEL)).map(|s| s.as_str())
+    pod.metadata
+        .labels
+        .as_ref()
+        .and_then(|l| l.get(POD_TEMPLATE_HASH_LABEL))
+        .map(|s| s.as_str())
 }
 
 fn build_pod(ds: &DaemonSet, node_name: &str, hash: &str) -> Option<Pod> {
     let spec = ds.spec.as_ref()?;
     let mut pod_spec = spec.template.spec.clone()?;
     pod_spec.node_name = Some(node_name.to_string());
-    let mut labels = spec.template.metadata.as_ref().and_then(|m| m.labels.clone()).unwrap_or_default();
+    let mut labels = spec
+        .template
+        .metadata
+        .as_ref()
+        .and_then(|m| m.labels.clone())
+        .unwrap_or_default();
     labels.insert(POD_TEMPLATE_HASH_LABEL.to_string(), hash.to_string());
-    let annotations = spec.template.metadata.as_ref().and_then(|m| m.annotations.clone());
+    let annotations = spec
+        .template
+        .metadata
+        .as_ref()
+        .and_then(|m| m.annotations.clone());
     Some(Pod {
         metadata: ObjectMeta {
             name: Some(pod_name_for_node(&ds.name_any(), node_name)),
@@ -198,25 +229,45 @@ async fn reconcile_daemon_set(
     };
     let Some(ds_uid) = ds.uid() else { return };
     let Some(spec) = ds.spec.as_ref() else { return };
-    let node_selector = spec.template.spec.as_ref().and_then(|s| s.node_selector.clone()).unwrap_or_default();
-    let tolerations = spec.template.spec.as_ref().and_then(|s| s.tolerations.clone()).unwrap_or_default();
+    let node_selector = spec
+        .template
+        .spec
+        .as_ref()
+        .and_then(|s| s.node_selector.clone())
+        .unwrap_or_default();
+    let tolerations = spec
+        .template
+        .spec
+        .as_ref()
+        .and_then(|s| s.tolerations.clone())
+        .unwrap_or_default();
     let hash = compute_template_hash(&spec.template);
 
-    let eligible_nodes: Vec<&Node> = node_cache.values().filter(|n| node_eligible(n, &node_selector, &tolerations)).collect();
+    let eligible_nodes: Vec<&Node> = node_cache
+        .values()
+        .filter(|n| node_eligible(n, &node_selector, &tolerations))
+        .collect();
 
-    let owned: Vec<&Pod> =
-        pod_cache.values().filter(|p| p.namespace().as_deref() == Some(namespace)).filter(|p| owned_by(p, &ds_uid)).collect();
+    let owned: Vec<&Pod> = pod_cache
+        .values()
+        .filter(|p| p.namespace().as_deref() == Some(namespace))
+        .filter(|p| owned_by(p, &ds_uid))
+        .collect();
 
     // Node -> its daemon Pod, if any (live, non-terminating).
     let mut by_node: HashMap<String, &Pod> = HashMap::new();
-    for p in owned.iter().filter(|p| p.metadata.deletion_timestamp.is_none()) {
+    for p in owned
+        .iter()
+        .filter(|p| p.metadata.deletion_timestamp.is_none())
+    {
         if let Some(node_name) = p.spec.as_ref().and_then(|s| s.node_name.clone()) {
             by_node.insert(node_name, p);
         }
     }
 
     // Misscheduled: a live daemon Pod on a Node that's no longer eligible.
-    let eligible_node_names: std::collections::HashSet<String> = eligible_nodes.iter().map(|n| n.name_any()).collect();
+    let eligible_node_names: std::collections::HashSet<String> =
+        eligible_nodes.iter().map(|n| n.name_any()).collect();
     let mut misscheduled = 0;
     for (node_name, pod) in &by_node {
         if !eligible_node_names.contains(node_name) {
@@ -240,12 +291,17 @@ async fn reconcile_daemon_set(
         match pod_api.create(&PostParams::default(), &pod).await {
             Ok(_) => {}
             Err(kube::Error::Api(ref status)) if status.is_already_exists() => {} // routine cache-lag race, see build_pod's doc
-            Err(e) => tracing::warn!(namespace = %namespace, daemonset = %name, node = %node_name, error = ?e, "failed to create DaemonSet Pod"),
+            Err(e) => {
+                tracing::warn!(namespace = %namespace, daemonset = %name, node = %node_name, error = ?e, "failed to create DaemonSet Pod")
+            }
         }
     }
 
     // Rolling update: replace outdated Pods on eligible Nodes, budget-limited.
-    let rolling = spec.update_strategy.as_ref().and_then(|s| s.rolling_update.as_ref());
+    let rolling = spec
+        .update_strategy
+        .as_ref()
+        .and_then(|s| s.rolling_update.as_ref());
     let desired = eligible_nodes.len() as i32;
     // Upstream's DaemonSet default is the absolute value 1, not a percent —
     // unlike Deployment's maxUnavailable/maxSurge, which both default to a
@@ -254,7 +310,14 @@ async fn reconcile_daemon_set(
         Some(v) => crate::controllers::deployment::resolve_int_or_str(Some(v), desired, false, 0),
         None => 1,
     };
-    let already_unavailable = by_node.values().filter(|p| !pod_ready(p)).count() as i32;
+    // Every eligible Node without a ready DaemonSet Pod is unavailable,
+    // including a Pod created earlier in this reconcile. Ignore Pods on
+    // ineligible Nodes because they are outside this rollout's desired set.
+    let ready_on_eligible = by_node
+        .iter()
+        .filter(|(node, pod)| eligible_node_names.contains(*node) && pod_ready(pod))
+        .count() as i32;
+    let already_unavailable = (desired - ready_on_eligible).max(0);
     let mut budget = (max_unavailable - already_unavailable).max(0);
     let mut outdated: Vec<&&Pod> = by_node
         .iter()
@@ -273,8 +336,14 @@ async fn reconcile_daemon_set(
         budget -= 1;
     }
 
-    let current_scheduled = by_node.iter().filter(|(n, _)| eligible_node_names.contains(*n)).count() as i32;
-    let ready = by_node.iter().filter(|(n, p)| eligible_node_names.contains(*n) && pod_ready(p)).count() as i32;
+    let current_scheduled = by_node
+        .iter()
+        .filter(|(n, _)| eligible_node_names.contains(*n))
+        .count() as i32;
+    let ready = by_node
+        .iter()
+        .filter(|(n, p)| eligible_node_names.contains(*n) && pod_ready(p))
+        .count() as i32;
     let updated = by_node
         .iter()
         .filter(|(n, p)| eligible_node_names.contains(*n) && pod_hash(p) == Some(hash.as_str()))
@@ -292,7 +361,10 @@ async fn reconcile_daemon_set(
     };
     if ds.status.as_ref() != Some(&status) {
         let patch = serde_json::json!({ "status": status });
-        if let Err(e) = ds_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+        if let Err(e) = ds_api
+            .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+        {
             tracing::warn!(namespace = %namespace, daemonset = %name, error = ?e, "failed to patch DaemonSet status");
         }
     }
@@ -305,19 +377,35 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut nodes: HashMap<String, Node> = HashMap::new();
     let mut pods: HashMap<String, Pod> = HashMap::new();
-    let mut daemon_sets: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let mut daemon_sets: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
 
     let node_api: Api<Node> = Api::all(client.clone());
     let pod_api: Api<Pod> = Api::all(client.clone());
     let ds_api: Api<DaemonSet> = Api::all(client.clone());
 
-    for n in node_api.list(&Default::default()).await.context("listing Nodes to seed daemonset-controller")?.items {
+    for n in node_api
+        .list(&Default::default())
+        .await
+        .context("listing Nodes to seed daemonset-controller")?
+        .items
+    {
         nodes.insert(n.name_any(), n);
     }
-    for p in pod_api.list(&Default::default()).await.context("listing Pods to seed daemonset-controller")?.items {
+    for p in pod_api
+        .list(&Default::default())
+        .await
+        .context("listing Pods to seed daemonset-controller")?
+        .items
+    {
         pods.insert(format!("{}/{}", ns_of(&p), p.name_any()), p);
     }
-    for ds in ds_api.list(&Default::default()).await.context("listing DaemonSets to seed daemonset-controller")?.items {
+    for ds in ds_api
+        .list(&Default::default())
+        .await
+        .context("listing DaemonSets to seed daemonset-controller")?
+        .items
+    {
         let ns = ns_of(&ds);
         let name = ds.name_any();
         daemon_sets.insert((ns.clone(), name.clone()));
@@ -395,23 +483,37 @@ mod tests {
     use super::*;
 
     fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
     fn empty_node_selector_matches_every_node() {
-        assert!(node_selector_matches(&BTreeMap::new(), &labels(&[("zone", "a")])));
+        assert!(node_selector_matches(
+            &BTreeMap::new(),
+            &labels(&[("zone", "a")])
+        ));
     }
 
     #[test]
     fn node_selector_requires_every_pair() {
         let sel = labels(&[("zone", "a")]);
-        assert!(node_selector_matches(&sel, &labels(&[("zone", "a"), ("gpu", "true")])));
+        assert!(node_selector_matches(
+            &sel,
+            &labels(&[("zone", "a"), ("gpu", "true")])
+        ));
         assert!(!node_selector_matches(&sel, &labels(&[("zone", "b")])));
     }
 
     fn taint(key: &str, value: &str, effect: &str) -> Taint {
-        Taint { key: key.to_string(), value: Some(value.to_string()), effect: effect.to_string(), time_added: None }
+        Taint {
+            key: key.to_string(),
+            value: Some(value.to_string()),
+            effect: effect.to_string(),
+            time_added: None,
+        }
     }
 
     fn toleration_exists(key: &str, effect: Option<&str>) -> Toleration {
@@ -428,7 +530,10 @@ mod tests {
     fn no_schedule_taint_requires_a_toleration() {
         let taints = vec![taint("dedicated", "gpu", "NoSchedule")];
         assert!(!taints_tolerated(&taints, &[]));
-        assert!(taints_tolerated(&taints, &[toleration_exists("dedicated", None)]));
+        assert!(taints_tolerated(
+            &taints,
+            &[toleration_exists("dedicated", None)]
+        ));
     }
 
     #[test]
@@ -440,12 +545,21 @@ mod tests {
     #[test]
     fn a_toleration_scoped_to_the_wrong_effect_does_not_match() {
         let taints = vec![taint("dedicated", "gpu", "NoExecute")];
-        assert!(!taints_tolerated(&taints, &[toleration_exists("dedicated", Some("NoSchedule"))]));
+        assert!(!taints_tolerated(
+            &taints,
+            &[toleration_exists("dedicated", Some("NoSchedule"))]
+        ));
     }
 
     #[test]
     fn pod_names_for_the_same_node_are_stable_and_distinct_across_nodes() {
-        assert_eq!(pod_name_for_node("ds", "node-a"), pod_name_for_node("ds", "node-a"));
-        assert_ne!(pod_name_for_node("ds", "node-a"), pod_name_for_node("ds", "node-b"));
+        assert_eq!(
+            pod_name_for_node("ds", "node-a"),
+            pod_name_for_node("ds", "node-a")
+        );
+        assert_ne!(
+            pod_name_for_node("ds", "node-a"),
+            pod_name_for_node("ds", "node-b")
+        );
     }
 }

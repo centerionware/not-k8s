@@ -42,11 +42,18 @@ const TICK_PERIOD: StdDuration = StdDuration::from_secs(10);
 /// When a finished Job (with a known finish time) becomes eligible for
 /// deletion — pure arithmetic, the actual "is it past that time" check is
 /// just `now >= this`.
-pub fn deletion_deadline(finished_at: DateTime<Utc>, ttl_seconds_after_finished: i64) -> DateTime<Utc> {
+pub fn deletion_deadline(
+    finished_at: DateTime<Utc>,
+    ttl_seconds_after_finished: i64,
+) -> DateTime<Utc> {
     finished_at + chrono::Duration::seconds(ttl_seconds_after_finished.max(0))
 }
 
-pub fn is_due(finished_at: DateTime<Utc>, ttl_seconds_after_finished: i64, now: DateTime<Utc>) -> bool {
+pub fn is_due(
+    finished_at: DateTime<Utc>,
+    ttl_seconds_after_finished: i64,
+    now: DateTime<Utc>,
+) -> bool {
     now >= deletion_deadline(finished_at, ttl_seconds_after_finished)
 }
 
@@ -56,14 +63,21 @@ pub fn is_due(finished_at: DateTime<Utc>, ttl_seconds_after_finished: i64, now: 
 /// documented as "set on success, and only then").
 fn finished_at(job: &Job) -> Option<DateTime<Utc>> {
     let status = job.status.as_ref()?;
-    let completion = status.completion_time.as_ref().and_then(crate::k8s_time::to_chrono);
+    let completion = status
+        .completion_time
+        .as_ref()
+        .and_then(crate::k8s_time::to_chrono);
     let condition = status
         .conditions
         .as_ref()
         .into_iter()
         .flatten()
         .filter(|c| (c.type_ == "Complete" || c.type_ == "Failed") && c.status == "True")
-        .filter_map(|c| c.last_transition_time.as_ref().and_then(crate::k8s_time::to_chrono))
+        .filter_map(|c| {
+            c.last_transition_time
+                .as_ref()
+                .and_then(crate::k8s_time::to_chrono)
+        })
         .max();
     match (completion, condition) {
         (Some(a), Some(b)) => Some(a.max(b)),
@@ -76,13 +90,20 @@ fn finished_at(job: &Job) -> Option<DateTime<Utc>> {
 async fn sweep(client: &Client, jobs: &HashMap<String, Job>) {
     let now = Utc::now();
     for job in jobs.values() {
-        let Some(ttl) = job.spec.as_ref().and_then(|s| s.ttl_seconds_after_finished) else { continue };
-        let Some(finished) = finished_at(job) else { continue };
+        let Some(ttl) = job.spec.as_ref().and_then(|s| s.ttl_seconds_after_finished) else {
+            continue;
+        };
+        let Some(finished) = finished_at(job) else {
+            continue;
+        };
         if !is_due(finished, ttl as i64, now) {
             continue;
         }
         let namespace = job.namespace().unwrap_or_default();
         let name = job.name_any();
+        if job.metadata.deletion_timestamp.is_some() {
+            continue;
+        }
         let api: Api<Job> = Api::namespaced(client.clone(), &namespace);
         // Explicit Background propagation, not the bare default: confirmed
         // live in CI that leaving propagationPolicy unset here deadlocked
@@ -93,11 +114,23 @@ async fn sweep(client: &Client, jobs: &HashMap<String, Job>) {
         // on its own Pod, which was in turn waiting on the Job's real
         // removal to trigger cascade deletion. Same explicit choice
         // garbage-collector-controller's own deletes already make.
-        let dp = DeleteParams { propagation_policy: Some(kube::api::PropagationPolicy::Background), ..Default::default() };
+        let Some(uid) = job.uid() else { continue };
+        let dp = DeleteParams {
+            propagation_policy: Some(kube::api::PropagationPolicy::Background),
+            preconditions: Some(kube::api::Preconditions {
+                uid: Some(uid),
+                resource_version: None,
+            }),
+            ..Default::default()
+        };
         match api.delete(&name, &dp).await {
-            Ok(_) => tracing::info!(namespace = %namespace, job = %name, "ttl-after-finished-controller deleted a finished Job past its TTL"),
+            Ok(_) => {
+                tracing::info!(namespace = %namespace, job = %name, "ttl-after-finished-controller deleted a finished Job past its TTL")
+            }
             Err(kube::Error::Api(ref e)) if e.is_not_found() => {}
-            Err(e) => tracing::warn!(namespace = %namespace, job = %name, error = ?e, "failed to delete finished Job past its TTL"),
+            Err(e) => {
+                tracing::warn!(namespace = %namespace, job = %name, error = ?e, "failed to delete finished Job past its TTL")
+            }
         }
     }
 }
@@ -109,7 +142,12 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut jobs: HashMap<String, Job> = HashMap::new();
     let job_api: Api<Job> = Api::all(client.clone());
-    for j in job_api.list(&Default::default()).await.context("listing Jobs to seed ttl-after-finished-controller")?.items {
+    for j in job_api
+        .list(&Default::default())
+        .await
+        .context("listing Jobs to seed ttl-after-finished-controller")?
+        .items
+    {
         jobs.insert(format!("{}/{}", ns_of(&j), j.name_any()), j);
     }
 

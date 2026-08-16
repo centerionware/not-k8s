@@ -64,7 +64,7 @@
 
 use anyhow::{Context, Result};
 use futures::stream::{select_all, BoxStream, StreamExt};
-use kube::api::{Api, DeleteParams, DynamicObject, PropagationPolicy};
+use kube::api::{Api, DeleteParams, DynamicObject, Preconditions, PropagationPolicy};
 use kube::discovery::{verbs, Discovery, Scope};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -74,7 +74,10 @@ use std::collections::{HashMap, HashSet};
 const EXCLUDED_GROUPS: &[&str] = &["coordination.k8s.io", "events.k8s.io"];
 const EXCLUDED_KINDS: &[&str] = &["Event"];
 
-fn should_watch(ar: &kube::discovery::ApiResource, caps: &kube::discovery::ApiCapabilities) -> bool {
+fn should_watch(
+    ar: &kube::discovery::ApiResource,
+    caps: &kube::discovery::ApiCapabilities,
+) -> bool {
     caps.scope == Scope::Namespaced
         && caps.supports_operation(verbs::WATCH)
         && caps.supports_operation(verbs::LIST)
@@ -89,6 +92,7 @@ fn gvk_key(ar: &kube::discovery::ApiResource) -> String {
 
 #[derive(Debug, Clone)]
 struct ObjRecord {
+    uid: String,
     gvk_key: String,
     namespace: String,
     name: String,
@@ -96,20 +100,44 @@ struct ObjRecord {
 }
 
 fn owner_uids_of(obj: &DynamicObject) -> Vec<String> {
-    obj.metadata.owner_references.as_ref().into_iter().flatten().filter(|o| !o.uid.is_empty()).map(|o| o.uid.clone()).collect()
+    obj.metadata
+        .owner_references
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .filter(|o| !o.uid.is_empty())
+        .map(|o| o.uid.clone())
+        .collect()
 }
 
 /// Deletes `record`, background-propagated. Silently ignores "already
 /// gone" — the routine outcome of two cascade paths reaching the same
 /// child (e.g. discovered both directly and via a since-vanished owner).
-async fn delete_object(client: &Client, resources: &HashMap<String, kube::discovery::ApiResource>, record: &ObjRecord) {
-    let Some(ar) = resources.get(&record.gvk_key) else { return };
+async fn delete_object(
+    client: &Client,
+    resources: &HashMap<String, kube::discovery::ApiResource>,
+    record: &ObjRecord,
+) {
+    let Some(ar) = resources.get(&record.gvk_key) else {
+        return;
+    };
     let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), &record.namespace, ar);
-    let dp = DeleteParams { propagation_policy: Some(PropagationPolicy::Background), ..Default::default() };
+    let dp = DeleteParams {
+        propagation_policy: Some(PropagationPolicy::Background),
+        preconditions: Some(Preconditions {
+            uid: Some(record.uid.clone()),
+            resource_version: None,
+        }),
+        ..Default::default()
+    };
     match api.delete(&record.name, &dp).await {
-        Ok(_) => tracing::info!(kind = %record.gvk_key, namespace = %record.namespace, name = %record.name, "garbage-collector-controller deleted an orphaned object"),
-        Err(kube::Error::Api(ref status)) if status.is_not_found() => {}
-        Err(e) => tracing::warn!(kind = %record.gvk_key, namespace = %record.namespace, name = %record.name, error = ?e, "garbage-collector-controller failed to delete an orphaned object"),
+        Ok(_) => {
+            tracing::info!(kind = %record.gvk_key, namespace = %record.namespace, name = %record.name, "garbage-collector-controller deleted an orphaned object")
+        }
+        Err(kube::Error::Api(ref status)) if status.is_not_found() || status.code == 409 => {}
+        Err(e) => {
+            tracing::warn!(kind = %record.gvk_key, namespace = %record.namespace, name = %record.name, error = ?e, "garbage-collector-controller failed to delete an orphaned object")
+        }
     }
 }
 
@@ -119,6 +147,8 @@ struct State {
     objects_with_owners: HashMap<String, ObjRecord>,
     children_of: HashMap<String, HashSet<String>>,
     pending_init: HashSet<String>,
+    uid_to_kind: HashMap<String, String>,
+    relist: HashMap<String, HashMap<String, ObjRecord>>,
 }
 
 impl State {
@@ -126,49 +156,130 @@ impl State {
         self.pending_init.is_empty()
     }
 
-    async fn handle_apply(&mut self, client: &Client, kind_key: &str, obj: DynamicObject) {
-        let Some(uid) = obj.uid() else { return };
+    fn store_record(&mut self, record: ObjRecord) {
+        let uid = record.uid.clone();
         self.exists.insert(uid.clone());
-        let owner_uids = owner_uids_of(&obj);
+        self.uid_to_kind.insert(uid.clone(), record.gvk_key.clone());
 
-        if let Some(old) = self.objects_with_owners.get(&uid) {
+        if let Some(old) = self.objects_with_owners.get(&uid).cloned() {
             for old_owner in &old.owner_uids {
-                if !owner_uids.contains(old_owner) {
+                if !record.owner_uids.contains(old_owner) {
                     if let Some(set) = self.children_of.get_mut(old_owner) {
                         set.remove(&uid);
                     }
                 }
             }
         }
-
-        if owner_uids.is_empty() {
+        if record.owner_uids.is_empty() {
             self.objects_with_owners.remove(&uid);
             return;
         }
+        for owner in &record.owner_uids {
+            self.children_of
+                .entry(owner.clone())
+                .or_default()
+                .insert(uid.clone());
+        }
+        self.objects_with_owners.insert(uid, record);
+    }
 
+    async fn handle_apply(
+        &mut self,
+        client: &Client,
+        kind_key: &str,
+        obj: DynamicObject,
+        staged: bool,
+    ) {
+        let Some(uid) = obj.uid() else { return };
+        let owner_uids = owner_uids_of(&obj);
         let record = ObjRecord {
+            uid: uid.clone(),
             gvk_key: kind_key.to_string(),
             namespace: obj.namespace().unwrap_or_default(),
             name: obj.name_any(),
             owner_uids: owner_uids.clone(),
         };
-        for owner in &owner_uids {
-            self.children_of.entry(owner.clone()).or_default().insert(uid.clone());
+        if staged {
+            self.relist
+                .entry(kind_key.to_string())
+                .or_default()
+                .insert(uid, record);
+            return;
         }
+        self.store_record(record.clone());
         let all_dead = self.ready() && owner_uids.iter().all(|o| !self.exists.contains(o));
-        self.objects_with_owners.insert(uid, record.clone());
         if all_dead {
             delete_object(client, &self.resources, &record).await;
+        }
+    }
+
+    fn begin_relist(&mut self, kind_key: &str) {
+        self.pending_init.insert(kind_key.to_string());
+        self.relist.insert(kind_key.to_string(), HashMap::new());
+    }
+
+    async fn finish_relist(&mut self, client: &Client, kind_key: &str) {
+        let snapshot = self.relist.remove(kind_key).unwrap_or_default();
+        let old_uids: Vec<String> = self
+            .uid_to_kind
+            .iter()
+            .filter(|(_, kind)| kind.as_str() == kind_key)
+            .map(|(uid, _)| uid.clone())
+            .collect();
+        for uid in old_uids {
+            self.exists.remove(&uid);
+            self.uid_to_kind.remove(&uid);
+            if let Some(old) = self.objects_with_owners.remove(&uid) {
+                for owner in old.owner_uids {
+                    if let Some(children) = self.children_of.get_mut(&owner) {
+                        children.remove(&uid);
+                    }
+                }
+            }
+            self.children_of.remove(&uid);
+        }
+        self.children_of.retain(|_, children| !children.is_empty());
+        let records: Vec<ObjRecord> = snapshot.into_values().collect();
+        for record in &records {
+            self.store_record(record.clone());
+        }
+        self.pending_init.remove(kind_key);
+
+        // Only after the complete per-kind snapshot is installed may an
+        // orphan decision be made. This also lets owners from another kind
+        // that finished relisting in the meantime be considered correctly.
+        if self.ready() {
+            for record in records {
+                if record
+                    .owner_uids
+                    .iter()
+                    .all(|owner| !self.exists.contains(owner))
+                {
+                    delete_object(client, &self.resources, &record).await;
+                }
+            }
         }
     }
 
     async fn handle_delete(&mut self, client: &Client, obj: DynamicObject) {
         let Some(uid) = obj.uid() else { return };
         self.exists.remove(&uid);
-        self.objects_with_owners.remove(&uid);
-        let Some(children) = self.children_of.remove(&uid) else { return };
+        self.uid_to_kind.remove(&uid);
+        if let Some(record) = self.objects_with_owners.remove(&uid) {
+            for owner in record.owner_uids {
+                if let Some(children) = self.children_of.get_mut(&owner) {
+                    children.remove(&uid);
+                }
+            }
+        }
+        self.children_of.retain(|_, children| !children.is_empty());
+        let Some(children) = self.children_of.remove(&uid) else {
+            return;
+        };
         for child_uid in children {
-            let Some(record) = self.objects_with_owners.get(&child_uid).cloned() else { continue };
+            let Some(record) = self.objects_with_owners.get(&child_uid).cloned() else {
+                continue;
+            };
             let any_owner_alive = record.owner_uids.iter().any(|o| self.exists.contains(o));
             if !any_owner_alive {
                 delete_object(client, &self.resources, &record).await;
@@ -178,10 +289,14 @@ impl State {
 }
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
-    let discovery = Discovery::new(client.clone()).run().await.context("running API discovery for garbage-collector-controller")?;
+    let discovery = Discovery::new(client.clone())
+        .run()
+        .await
+        .context("running API discovery for garbage-collector-controller")?;
 
     let mut resources = HashMap::new();
-    let mut streams: Vec<BoxStream<'static, (String, watcher::Result<Event<DynamicObject>>)>> = Vec::new();
+    let mut streams: Vec<BoxStream<'static, (String, watcher::Result<Event<DynamicObject>>)>> =
+        Vec::new();
     for group in discovery.groups() {
         for (ar, caps) in group.recommended_resources() {
             if !should_watch(&ar, &caps) {
@@ -191,8 +306,9 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             resources.insert(key.clone(), ar.clone());
             let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
             let key_for_stream = key.clone();
-            let stream =
-                watcher(api, watcher::Config::default()).map(move |ev| (key_for_stream.clone(), ev)).boxed();
+            let stream = watcher(api, watcher::Config::default())
+                .map(move |ev| (key_for_stream.clone(), ev))
+                .boxed();
             streams.push(stream);
         }
     }
@@ -201,7 +317,10 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
         tracing::warn!("garbage-collector-controller found no watchable/deletable namespaced resource kinds via discovery — nothing to do");
         return Ok(());
     }
-    tracing::info!(kind_count = resources.len(), "garbage-collector-controller discovered resource kinds to watch");
+    tracing::info!(
+        kind_count = resources.len(),
+        "garbage-collector-controller discovered resource kinds to watch"
+    );
 
     let mut state = State {
         pending_init: resources.keys().cloned().collect(),
@@ -209,22 +328,30 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
         exists: HashSet::new(),
         objects_with_owners: HashMap::new(),
         children_of: HashMap::new(),
+        uid_to_kind: HashMap::new(),
+        relist: HashMap::new(),
     };
 
     let mut combined = select_all(streams);
     while let Some((kind_key, ev)) = combined.next().await {
         match ev {
-            Ok(Event::Apply(obj)) | Ok(Event::InitApply(obj)) => {
-                state.handle_apply(&client, &kind_key, obj).await;
+            Ok(Event::Apply(obj)) => {
+                let staged = state.pending_init.contains(&kind_key);
+                state.handle_apply(&client, &kind_key, obj, staged).await;
+            }
+            Ok(Event::InitApply(obj)) => {
+                state.handle_apply(&client, &kind_key, obj, true).await;
             }
             Ok(Event::Delete(obj)) => {
                 state.handle_delete(&client, obj).await;
             }
-            Ok(Event::Init) => {}
+            Ok(Event::Init) => state.begin_relist(&kind_key),
             Ok(Event::InitDone) => {
-                state.pending_init.remove(&kind_key);
+                state.finish_relist(&client, &kind_key).await;
             }
-            Err(e) => tracing::warn!(kind = %kind_key, error = ?e, "watch error in garbage-collector-controller"),
+            Err(e) => {
+                tracing::warn!(kind = %kind_key, error = ?e, "watch error in garbage-collector-controller")
+            }
         }
     }
     Ok(())

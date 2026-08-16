@@ -53,6 +53,10 @@
 //! deployment (nothing else grants that group `certificatesigningrequests`
 //! write access), a real simplification if RBAC is ever hand-edited to grant
 //! that group to something else.
+//! The request's x509 subject is still parsed and constrained before approval:
+//! its Common Name must start with `system:node:` and its complete
+//! organization list must be exactly `system:nodes`; this prevents a valid
+//! bootstrap group from requesting an arbitrary certificate identity.
 //!
 //! **No `expirationSeconds` honoring** — every issued certificate gets
 //! rcgen's own default validity rather than the CSR's requested duration
@@ -68,7 +72,9 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use k8s_openapi::api::certificates::v1::{CertificateSigningRequest, CertificateSigningRequestCondition};
+use k8s_openapi::api::certificates::v1::{
+    CertificateSigningRequest, CertificateSigningRequestCondition,
+};
 use kube::api::{Api, DeleteParams, Patch, PatchParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
@@ -93,7 +99,7 @@ const TICK_PERIOD: StdDuration = StdDuration::from_secs(60);
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CsrSubject {
     pub common_name: Option<String>,
-    pub organization: Option<String>,
+    pub organizations: Vec<String>,
 }
 
 /// Parses the subject out of a CSR's PEM-encoded x509 request, via
@@ -103,12 +109,23 @@ pub struct CsrSubject {
 /// one and written).
 fn parse_csr_subject(csr_pem: &str) -> Result<CsrSubject> {
     let der = pem::parse(csr_pem).context("decoding CSR PEM envelope")?;
-    let (_, csr) = x509_parser::certification_request::X509CertificationRequest::from_der(der.contents())
-        .map_err(|e| anyhow::anyhow!("parsing CSR DER as x509: {e:?}"))?;
+    let (_, csr) =
+        x509_parser::certification_request::X509CertificationRequest::from_der(der.contents())
+            .map_err(|e| anyhow::anyhow!("parsing CSR DER as x509: {e:?}"))?;
     let subject = &csr.certification_request_info.subject;
-    let common_name = subject.iter_common_name().next().and_then(|a| a.as_str().ok()).map(str::to_string);
-    let organization = subject.iter_organization().next().and_then(|a| a.as_str().ok()).map(str::to_string);
-    Ok(CsrSubject { common_name, organization })
+    let common_name = subject
+        .iter_common_name()
+        .next()
+        .and_then(|a| a.as_str().ok())
+        .map(str::to_string);
+    let organizations = subject
+        .iter_organization()
+        .filter_map(|a| a.as_str().ok().map(str::to_string))
+        .collect();
+    Ok(CsrSubject {
+        common_name,
+        organizations,
+    })
 }
 
 /// Should this CSR be auto-approved? Pure given the fields the apiserver
@@ -118,7 +135,12 @@ fn parse_csr_subject(csr_pem: &str) -> Result<CsrSubject> {
 /// see module doc for why a group check stands in for a real
 /// `SubjectAccessReview`, and this function's own doc for why the group
 /// check alone isn't sufficient.
-pub fn should_auto_approve(signer_name: &str, groups: &[String], usages: &[String], subject: &CsrSubject) -> bool {
+pub fn should_auto_approve(
+    signer_name: &str,
+    groups: &[String],
+    usages: &[String],
+    subject: &CsrSubject,
+) -> bool {
     signer_name == KUBELET_CLIENT_SIGNER
         && groups.iter().any(|g| g == BOOTSTRAP_GROUP)
         && usages.iter().any(|u| u == "client auth")
@@ -127,7 +149,7 @@ pub fn should_auto_approve(signer_name: &str, groups: &[String], usages: &[Strin
         // privilege widening even with the subject check above correct.
         && usages.iter().all(|u| matches!(u.as_str(), "digital signature" | "key encipherment" | "client auth"))
         && subject.common_name.as_deref().is_some_and(|cn| cn.starts_with("system:node:"))
-        && subject.organization.as_deref() == Some("system:nodes")
+        && matches!(subject.organizations.as_slice(), [organization] if organization == "system:nodes")
 }
 
 pub fn already_decided(conditions: &[CertificateSigningRequestCondition]) -> bool {
@@ -138,8 +160,14 @@ pub fn already_decided(conditions: &[CertificateSigningRequestCondition]) -> boo
 
 /// Approved, but no certificate issued yet — exactly what the signing half
 /// waits for.
-pub fn needs_signing(conditions: &[CertificateSigningRequestCondition], has_certificate: bool) -> bool {
-    !has_certificate && conditions.iter().any(|c| c.type_ == "Approved" && c.status == "True")
+pub fn needs_signing(
+    conditions: &[CertificateSigningRequestCondition],
+    has_certificate: bool,
+) -> bool {
+    !has_certificate
+        && conditions
+            .iter()
+            .any(|c| c.type_ == "Approved" && c.status == "True")
 }
 
 /// A terminal CSR (issued, denied, or failed) past `CLEANUP_AGE` since its
@@ -156,8 +184,14 @@ pub fn is_due_for_cleanup(terminal_since: DateTime<Utc>, now: DateTime<Utc>) -> 
 fn terminal_since(conditions: &[CertificateSigningRequestCondition]) -> Option<DateTime<Utc>> {
     conditions
         .iter()
-        .filter(|c| matches!(c.type_.as_str(), "Approved" | "Denied" | "Failed") && c.status == "True")
-        .filter_map(|c| c.last_transition_time.as_ref().and_then(crate::k8s_time::to_chrono))
+        .filter(|c| {
+            matches!(c.type_.as_str(), "Approved" | "Denied" | "Failed") && c.status == "True"
+        })
+        .filter_map(|c| {
+            c.last_transition_time
+                .as_ref()
+                .and_then(crate::k8s_time::to_chrono)
+        })
         .max()
 }
 
@@ -199,8 +233,10 @@ fn parse_ca_key_pem(key_pem: &str) -> Result<rcgen::KeyPair> {
     if let Ok(key) = rcgen::KeyPair::from_pem(key_pem) {
         return Ok(key);
     }
-    let secret = p256::SecretKey::from_sec1_pem(key_pem).context("CA key is neither valid PKCS#8 nor SEC1/P-256 PEM")?;
-    let pkcs8_pem = p256::pkcs8::EncodePrivateKey::to_pkcs8_pem(&secret, Default::default()).context("re-encoding SEC1 CA key as PKCS#8")?;
+    let secret = p256::SecretKey::from_sec1_pem(key_pem)
+        .context("CA key is neither valid PKCS#8 nor SEC1/P-256 PEM")?;
+    let pkcs8_pem = p256::pkcs8::EncodePrivateKey::to_pkcs8_pem(&secret, Default::default())
+        .context("re-encoding SEC1 CA key as PKCS#8")?;
     rcgen::KeyPair::from_pem(pkcs8_pem.as_str()).context("parsing the re-encoded PKCS#8 CA key")
 }
 
@@ -248,14 +284,21 @@ fn load_signing_ca(cfg: &crate::config::Config) -> Option<SigningCa> {
 }
 
 fn sign_csr(ca: &SigningCa, csr_pem: &str) -> Result<String> {
-    let params = rcgen::CertificateSigningRequestParams::from_pem(csr_pem).context("parsing CSR PEM")?;
-    let signed = params.signed_by(&ca.cert, &ca.key).context("signing CSR with the cluster CA")?;
+    let params =
+        rcgen::CertificateSigningRequestParams::from_pem(csr_pem).context("parsing CSR PEM")?;
+    let signed = params
+        .signed_by(&ca.cert, &ca.key)
+        .context("signing CSR with the cluster CA")?;
     Ok(signed.pem())
 }
 
 async fn approve(client: &Client, name: &str, existing: &[CertificateSigningRequestCondition]) {
     let mut conditions = existing.to_vec();
-    conditions.push(condition("Approved", "AutoApproved", "Auto-approved by nodecontroller's certificatesigningrequest-approving-controller"));
+    conditions.push(condition(
+        "Approved",
+        "AutoApproved",
+        "Auto-approved by nodecontroller's certificatesigningrequest-approving-controller",
+    ));
     let patch = serde_json::json!({ "status": { "conditions": conditions } });
     let bytes = match serde_json::to_vec(&patch) {
         Ok(b) => b,
@@ -266,7 +309,9 @@ async fn approve(client: &Client, name: &str, existing: &[CertificateSigningRequ
     };
     let req = match http::Request::builder()
         .method("PATCH")
-        .uri(format!("/apis/certificates.k8s.io/v1/certificatesigningrequests/{name}/approval"))
+        .uri(format!(
+            "/apis/certificates.k8s.io/v1/certificatesigningrequests/{name}/approval"
+        ))
         .header("Content-Type", "application/merge-patch+json")
         .body(bytes)
     {
@@ -277,7 +322,9 @@ async fn approve(client: &Client, name: &str, existing: &[CertificateSigningRequ
         }
     };
     match client.request::<serde_json::Value>(req).await {
-        Ok(_) => tracing::info!(csr = %name, "certificatesigningrequest-approving-controller auto-approved a kubelet-client CSR"),
+        Ok(_) => {
+            tracing::info!(csr = %name, "certificatesigningrequest-approving-controller auto-approved a kubelet-client CSR")
+        }
         Err(e) => tracing::warn!(csr = %name, error = ?e, "failed to approve CSR"),
     }
 }
@@ -295,7 +342,11 @@ async fn reconcile_csr(client: &Client, ca: &Option<SigningCa>, name: &str) {
     if csr.spec.signer_name != KUBELET_CLIENT_SIGNER {
         return;
     }
-    let conditions = csr.status.as_ref().and_then(|s| s.conditions.clone()).unwrap_or_default();
+    let conditions = csr
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.clone())
+        .unwrap_or_default();
     let has_certificate = csr.status.as_ref().is_some_and(|s| s.certificate.is_some());
 
     if !already_decided(&conditions) {
@@ -331,14 +382,20 @@ async fn reconcile_csr(client: &Client, ca: &Option<SigningCa>, name: &str) {
     };
     match sign_csr(ca, &csr_pem) {
         Ok(cert_pem) => {
-            let status_patch = serde_json::json!({ "status": { "certificate": base64_pem(&cert_pem) } });
-            if let Err(e) = api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch)).await {
+            let status_patch =
+                serde_json::json!({ "status": { "certificate": base64_pem(&cert_pem) } });
+            if let Err(e) = api
+                .patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch))
+                .await
+            {
                 tracing::warn!(csr = %name, error = ?e, "failed to patch issued certificate onto CertificateSigningRequest");
             } else {
                 tracing::info!(csr = %name, "certificatesigningrequest-signing-controller issued a certificate");
             }
         }
-        Err(e) => tracing::warn!(csr = %name, error = ?e, "failed to sign CertificateSigningRequest"),
+        Err(e) => {
+            tracing::warn!(csr = %name, error = ?e, "failed to sign CertificateSigningRequest")
+        }
     }
 }
 
@@ -355,15 +412,24 @@ fn base64_pem(pem: &str) -> String {
 async fn sweep_cleanup(client: &Client, csrs: &HashMap<String, CertificateSigningRequest>) {
     let now = Utc::now();
     for csr in csrs.values() {
-        let conditions = csr.status.as_ref().and_then(|s| s.conditions.as_ref()).cloned().unwrap_or_default();
-        let Some(since) = terminal_since(&conditions) else { continue };
+        let conditions = csr
+            .status
+            .as_ref()
+            .and_then(|s| s.conditions.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        let Some(since) = terminal_since(&conditions) else {
+            continue;
+        };
         if !is_due_for_cleanup(since, now) {
             continue;
         }
         let name = csr.name_any();
         let api: Api<CertificateSigningRequest> = Api::all(client.clone());
         match api.delete(&name, &DeleteParams::default()).await {
-            Ok(_) => tracing::info!(csr = %name, "certificatesigningrequest-cleaner-controller deleted a terminal CSR past its age threshold"),
+            Ok(_) => {
+                tracing::info!(csr = %name, "certificatesigningrequest-cleaner-controller deleted a terminal CSR past its age threshold")
+            }
             Err(kube::Error::Api(ref e)) if e.is_not_found() => {}
             Err(e) => tracing::warn!(csr = %name, error = ?e, "failed to delete terminal CSR"),
         }
@@ -378,7 +444,12 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
 
     let mut csrs: HashMap<String, CertificateSigningRequest> = HashMap::new();
     let api: Api<CertificateSigningRequest> = Api::all(client.clone());
-    for c in api.list(&Default::default()).await.context("listing CertificateSigningRequests to seed csr controllers")?.items {
+    for c in api
+        .list(&Default::default())
+        .await
+        .context("listing CertificateSigningRequests to seed csr controllers")?
+        .items
+    {
         let name = c.name_any();
         csrs.insert(name.clone(), c);
         reconcile_csr(&client, &ca, &name).await;
@@ -422,7 +493,7 @@ mod tests {
     fn node_subject() -> CsrSubject {
         CsrSubject {
             common_name: Some("system:node:my-node".to_string()),
-            organization: Some("system:nodes".to_string()),
+            organizations: vec!["system:nodes".to_string()],
         }
     }
 
@@ -482,14 +553,30 @@ mod tests {
     // putting it in the CSR's own subject.
     #[test]
     fn rejects_a_non_node_common_name_even_with_the_bootstrap_group() {
-        let subject = CsrSubject { common_name: Some("kubernetes-admin".to_string()), organization: Some("system:nodes".to_string()) };
-        assert!(!should_auto_approve(KUBELET_CLIENT_SIGNER, &["system:bootstrappers".to_string()], &["client auth".to_string()], &subject));
+        let subject = CsrSubject {
+            common_name: Some("kubernetes-admin".to_string()),
+            organizations: vec!["system:nodes".to_string()],
+        };
+        assert!(!should_auto_approve(
+            KUBELET_CLIENT_SIGNER,
+            &["system:bootstrappers".to_string()],
+            &["client auth".to_string()],
+            &subject
+        ));
     }
 
     #[test]
     fn rejects_a_non_system_nodes_organization() {
-        let subject = CsrSubject { common_name: Some("system:node:my-node".to_string()), organization: Some("system:masters".to_string()) };
-        assert!(!should_auto_approve(KUBELET_CLIENT_SIGNER, &["system:bootstrappers".to_string()], &["client auth".to_string()], &subject));
+        let subject = CsrSubject {
+            common_name: Some("system:node:my-node".to_string()),
+            organizations: vec!["system:masters".to_string()],
+        };
+        assert!(!should_auto_approve(
+            KUBELET_CLIENT_SIGNER,
+            &["system:bootstrappers".to_string()],
+            &["client auth".to_string()],
+            &subject
+        ));
     }
 
     #[test]
@@ -503,6 +590,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_an_extra_organization_even_when_system_nodes_is_present() {
+        let subject = CsrSubject {
+            common_name: Some("system:node:my-node".to_string()),
+            organizations: vec!["system:nodes".to_string(), "system:masters".to_string()],
+        };
+        assert!(!should_auto_approve(
+            KUBELET_CLIENT_SIGNER,
+            &["system:bootstrappers".to_string()],
+            &["client auth".to_string()],
+            &subject
+        ));
+    }
+
+    #[test]
     fn parses_the_subject_out_of_a_real_csr_pem() {
         let mut params = rcgen::CertificateParams::default();
         let mut dn = rcgen::DistinguishedName::new();
@@ -510,7 +611,11 @@ mod tests {
         dn.push(rcgen::DnType::OrganizationName, "system:nodes");
         params.distinguished_name = dn;
         let key = rcgen::KeyPair::generate().expect("generate a test key");
-        let csr_pem = params.serialize_request(&key).expect("build a test CSR").pem().expect("PEM-encode the test CSR");
+        let csr_pem = params
+            .serialize_request(&key)
+            .expect("build a test CSR")
+            .pem()
+            .expect("PEM-encode the test CSR");
 
         let subject = parse_csr_subject(&csr_pem).expect("parse the subject back out");
         assert_eq!(subject, node_subject());

@@ -70,7 +70,9 @@
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Pod};
-use k8s_openapi::api::storage::v1::{VolumeAttachment, VolumeAttachmentSource, VolumeAttachmentSpec};
+use k8s_openapi::api::storage::v1::{
+    VolumeAttachment, VolumeAttachmentSource, VolumeAttachmentSpec,
+};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, DeleteParams, PostParams};
 use kube::runtime::watcher::Event;
@@ -100,7 +102,10 @@ fn va_name(key: &AttachmentKey) -> String {
 /// Which CSI `(driver, PV name)` a bound PVC resolves to, if any — `None`
 /// for an unbound PVC or a PV with no `spec.csi` (in-tree/other volume
 /// types, out of scope — see module doc).
-fn csi_pv_for_claim(pvc: &PersistentVolumeClaim, pvs: &HashMap<String, PersistentVolume>) -> Option<(String, String)> {
+fn csi_pv_for_claim(
+    pvc: &PersistentVolumeClaim,
+    pvs: &HashMap<String, PersistentVolume>,
+) -> Option<(String, String)> {
     let pv_name = pvc.spec.as_ref()?.volume_name.as_ref()?;
     let pv = pvs.get(pv_name)?;
     let csi = pv.spec.as_ref()?.csi.as_ref()?;
@@ -117,14 +122,28 @@ pub fn desired_attachments(
 ) -> HashSet<AttachmentKey> {
     let mut desired = HashSet::new();
     for pod in pods.values() {
-        let Some(node_name) = pod.spec.as_ref().and_then(|s| s.node_name.clone()) else { continue };
+        let Some(node_name) = pod.spec.as_ref().and_then(|s| s.node_name.clone()) else {
+            continue;
+        };
         let namespace = pod.namespace().unwrap_or_default();
-        let Some(volumes) = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()) else { continue };
+        let Some(volumes) = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()) else {
+            continue;
+        };
         for vol in volumes {
-            let Some(claim) = vol.persistent_volume_claim.as_ref() else { continue };
-            let Some(pvc) = pvcs.get(&format!("{namespace}/{}", claim.claim_name)) else { continue };
-            let Some((driver, pv_name)) = csi_pv_for_claim(pvc, pvs) else { continue };
-            desired.insert(AttachmentKey { driver, pv_name, node_name: node_name.clone() });
+            let Some(claim) = vol.persistent_volume_claim.as_ref() else {
+                continue;
+            };
+            let Some(pvc) = pvcs.get(&format!("{namespace}/{}", claim.claim_name)) else {
+                continue;
+            };
+            let Some((driver, pv_name)) = csi_pv_for_claim(pvc, pvs) else {
+                continue;
+            };
+            desired.insert(AttachmentKey {
+                driver,
+                pv_name,
+                node_name: node_name.clone(),
+            });
         }
     }
     desired
@@ -132,11 +151,17 @@ pub fn desired_attachments(
 
 fn build_volume_attachment(key: &AttachmentKey) -> VolumeAttachment {
     VolumeAttachment {
-        metadata: ObjectMeta { name: Some(va_name(key)), ..Default::default() },
+        metadata: ObjectMeta {
+            name: Some(va_name(key)),
+            ..Default::default()
+        },
         spec: VolumeAttachmentSpec {
             attacher: key.driver.clone(),
             node_name: key.node_name.clone(),
-            source: VolumeAttachmentSource { persistent_volume_name: Some(key.pv_name.clone()), ..Default::default() },
+            source: VolumeAttachmentSource {
+                persistent_volume_name: Some(key.pv_name.clone()),
+                ..Default::default()
+            },
         },
         status: None,
     }
@@ -159,20 +184,31 @@ async fn reconcile(
         }
         let va = build_volume_attachment(key);
         match va_api.create(&PostParams::default(), &va).await {
-            Ok(_) => tracing::info!(name = %name, driver = %key.driver, pv = %key.pv_name, node = %key.node_name, "attach-detach-controller created a VolumeAttachment"),
+            Ok(_) => {
+                tracing::info!(name = %name, driver = %key.driver, pv = %key.pv_name, node = %key.node_name, "attach-detach-controller created a VolumeAttachment")
+            }
             Err(kube::Error::Api(ref e)) if e.is_already_exists() => {}
-            Err(e) => tracing::warn!(name = %name, error = ?e, "attach-detach-controller failed to create a VolumeAttachment"),
+            Err(e) => {
+                tracing::warn!(name = %name, error = ?e, "attach-detach-controller failed to create a VolumeAttachment")
+            }
         }
     }
 
     for name in existing.keys() {
-        if desired_names.contains(name) {
+        // The apiserver may contain VolumeAttachments created by another
+        // controller or an operator. This controller owns only its stable
+        // `va-<hash>` names, so never detach anything outside that namespace.
+        if desired_names.contains(name) || !name.starts_with("va-") {
             continue;
         }
         match va_api.delete(name, &DeleteParams::default()).await {
-            Ok(_) => tracing::info!(name = %name, "attach-detach-controller deleted an unneeded VolumeAttachment"),
+            Ok(_) => {
+                tracing::info!(name = %name, "attach-detach-controller deleted an unneeded VolumeAttachment")
+            }
             Err(kube::Error::Api(ref e)) if e.is_not_found() => {}
-            Err(e) => tracing::warn!(name = %name, error = ?e, "attach-detach-controller failed to delete a VolumeAttachment"),
+            Err(e) => {
+                tracing::warn!(name = %name, error = ?e, "attach-detach-controller failed to delete a VolumeAttachment")
+            }
         }
     }
 }
@@ -192,16 +228,36 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let pv_api: Api<PersistentVolume> = Api::all(client.clone());
     let va_api: Api<VolumeAttachment> = Api::all(client.clone());
 
-    for p in pod_api.list(&Default::default()).await.context("listing Pods to seed attach-detach-controller")?.items {
+    for p in pod_api
+        .list(&Default::default())
+        .await
+        .context("listing Pods to seed attach-detach-controller")?
+        .items
+    {
         pods.insert(ns_key(&p), p);
     }
-    for c in pvc_api.list(&Default::default()).await.context("listing PVCs to seed attach-detach-controller")?.items {
+    for c in pvc_api
+        .list(&Default::default())
+        .await
+        .context("listing PVCs to seed attach-detach-controller")?
+        .items
+    {
         pvcs.insert(ns_key(&c), c);
     }
-    for v in pv_api.list(&Default::default()).await.context("listing PVs to seed attach-detach-controller")?.items {
+    for v in pv_api
+        .list(&Default::default())
+        .await
+        .context("listing PVs to seed attach-detach-controller")?
+        .items
+    {
         pvs.insert(v.name_any(), v);
     }
-    for v in va_api.list(&Default::default()).await.context("listing VolumeAttachments to seed attach-detach-controller")?.items {
+    for v in va_api
+        .list(&Default::default())
+        .await
+        .context("listing VolumeAttachments to seed attach-detach-controller")?
+        .items
+    {
         vas.insert(v.name_any(), v);
     }
     reconcile(&va_api, &pods, &pvcs, &pvs, &vas).await;
@@ -252,17 +308,25 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 mod tests {
     use super::*;
     use k8s_openapi::api::core::v1::{
-        CSIPersistentVolumeSource, PersistentVolumeClaimSpec, PersistentVolumeClaimVolumeSource, PersistentVolumeSpec, PodSpec, Volume,
+        CSIPersistentVolumeSource, PersistentVolumeClaimSpec, PersistentVolumeClaimVolumeSource,
+        PersistentVolumeSpec, PodSpec, Volume,
     };
 
     fn pod(name: &str, node: Option<&str>, claim: &str) -> Pod {
         Pod {
-            metadata: ObjectMeta { name: Some(name.to_string()), namespace: Some("default".to_string()), ..Default::default() },
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
             spec: Some(PodSpec {
                 node_name: node.map(str::to_string),
                 volumes: Some(vec![Volume {
                     name: "data".to_string(),
-                    persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource { claim_name: claim.to_string(), read_only: None }),
+                    persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+                        claim_name: claim.to_string(),
+                        read_only: None,
+                    }),
                     ..Default::default()
                 }]),
                 ..Default::default()
@@ -273,17 +337,31 @@ mod tests {
 
     fn bound_csi_pvc(name: &str, pv_name: &str) -> PersistentVolumeClaim {
         PersistentVolumeClaim {
-            metadata: ObjectMeta { name: Some(name.to_string()), namespace: Some("default".to_string()), ..Default::default() },
-            spec: Some(PersistentVolumeClaimSpec { volume_name: Some(pv_name.to_string()), ..Default::default() }),
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
+            spec: Some(PersistentVolumeClaimSpec {
+                volume_name: Some(pv_name.to_string()),
+                ..Default::default()
+            }),
             ..Default::default()
         }
     }
 
     fn csi_pv(name: &str, driver: &str) -> PersistentVolume {
         PersistentVolume {
-            metadata: ObjectMeta { name: Some(name.to_string()), ..Default::default() },
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
             spec: Some(PersistentVolumeSpec {
-                csi: Some(CSIPersistentVolumeSource { driver: driver.to_string(), volume_handle: "vol-1".to_string(), ..Default::default() }),
+                csi: Some(CSIPersistentVolumeSource {
+                    driver: driver.to_string(),
+                    volume_handle: "vol-1".to_string(),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
@@ -296,7 +374,14 @@ mod tests {
         let pvcs = HashMap::from([("default/c1".to_string(), bound_csi_pvc("c1", "pv-1"))]);
         let pvs = HashMap::from([("pv-1".to_string(), csi_pv("pv-1", "disk.csi.example.com"))]);
         let desired = desired_attachments(&pods, &pvcs, &pvs);
-        assert_eq!(desired, HashSet::from([AttachmentKey { driver: "disk.csi.example.com".to_string(), pv_name: "pv-1".to_string(), node_name: "node-a".to_string() }]));
+        assert_eq!(
+            desired,
+            HashSet::from([AttachmentKey {
+                driver: "disk.csi.example.com".to_string(),
+                pv_name: "pv-1".to_string(),
+                node_name: "node-a".to_string()
+            }])
+        );
     }
 
     #[test]
@@ -311,7 +396,11 @@ mod tests {
     fn an_unbound_pvc_wants_nothing() {
         let pods = HashMap::from([("default/p1".to_string(), pod("p1", Some("node-a"), "c1"))]);
         let unbound = PersistentVolumeClaim {
-            metadata: ObjectMeta { name: Some("c1".to_string()), namespace: Some("default".to_string()), ..Default::default() },
+            metadata: ObjectMeta {
+                name: Some("c1".to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
             spec: Some(PersistentVolumeClaimSpec::default()),
             ..Default::default()
         };
@@ -323,7 +412,14 @@ mod tests {
     fn a_non_csi_pv_wants_nothing() {
         let pods = HashMap::from([("default/p1".to_string(), pod("p1", Some("node-a"), "c1"))]);
         let pvcs = HashMap::from([("default/c1".to_string(), bound_csi_pvc("c1", "pv-1"))]);
-        let non_csi = PersistentVolume { metadata: ObjectMeta { name: Some("pv-1".to_string()), ..Default::default() }, spec: Some(PersistentVolumeSpec::default()), ..Default::default() };
+        let non_csi = PersistentVolume {
+            metadata: ObjectMeta {
+                name: Some("pv-1".to_string()),
+                ..Default::default()
+            },
+            spec: Some(PersistentVolumeSpec::default()),
+            ..Default::default()
+        };
         let pvs = HashMap::from([("pv-1".to_string(), non_csi)]);
         assert!(desired_attachments(&pods, &pvcs, &pvs).is_empty());
     }
@@ -341,8 +437,16 @@ mod tests {
 
     #[test]
     fn attachment_name_is_deterministic_and_key_sensitive() {
-        let a = AttachmentKey { driver: "d".to_string(), pv_name: "pv".to_string(), node_name: "n".to_string() };
-        let b = AttachmentKey { driver: "d".to_string(), pv_name: "pv".to_string(), node_name: "n2".to_string() };
+        let a = AttachmentKey {
+            driver: "d".to_string(),
+            pv_name: "pv".to_string(),
+            node_name: "n".to_string(),
+        };
+        let b = AttachmentKey {
+            driver: "d".to_string(),
+            pv_name: "pv".to_string(),
+            node_name: "n2".to_string(),
+        };
         assert_eq!(va_name(&a), va_name(&a));
         assert_ne!(va_name(&a), va_name(&b));
     }

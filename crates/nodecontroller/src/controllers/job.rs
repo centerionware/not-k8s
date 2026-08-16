@@ -74,7 +74,12 @@ const JOB_TRACKING_FINALIZER: &str = "batch.kubernetes.io/job-tracking";
 /// How many new Pods to create this reconcile — 0 once the Job has already
 /// met its target, capped by both `parallelism` and (when set) how much of
 /// `completions` remains outstanding.
-pub fn pods_to_create(parallelism: i32, completions: Option<i32>, active: i32, succeeded: i32) -> i32 {
+pub fn pods_to_create(
+    parallelism: i32,
+    completions: Option<i32>,
+    active: i32,
+    succeeded: i32,
+) -> i32 {
     let mut room = (parallelism - active).max(0);
     if let Some(completions) = completions {
         let remaining = (completions - succeeded - active).max(0);
@@ -92,7 +97,12 @@ pub enum Outcome {
 /// Whether the Job has reached a terminal outcome given its current
 /// counts. `None` means "still running" — pure decision, the reconcile
 /// loop just acts on it.
-pub fn job_outcome(succeeded: i32, failed: i32, completions: Option<i32>, backoff_limit: i32) -> Option<Outcome> {
+pub fn job_outcome(
+    succeeded: i32,
+    failed: i32,
+    completions: Option<i32>,
+    backoff_limit: i32,
+) -> Option<Outcome> {
     let target_met = match completions {
         Some(c) => succeeded >= c,
         None => succeeded >= 1, // worker-pool pattern: any success is the Job's success
@@ -107,7 +117,12 @@ pub fn job_outcome(succeeded: i32, failed: i32, completions: Option<i32>, backof
 }
 
 fn owned_by(pod: &Pod, job_uid: &str) -> bool {
-    pod.metadata.owner_references.as_ref().into_iter().flatten().any(|o| o.controller == Some(true) && o.uid == job_uid)
+    pod.metadata
+        .owner_references
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .any(|o| o.controller == Some(true) && o.uid == job_uid)
 }
 
 fn owner_reference(job: &Job) -> OwnerReference {
@@ -123,10 +138,23 @@ fn owner_reference(job: &Job) -> OwnerReference {
 }
 
 fn build_pod(job: &Job, name: &str) -> Pod {
-    let template = job.spec.as_ref().map(|s| s.template.clone()).unwrap_or_default();
-    let mut labels = template.metadata.as_ref().and_then(|m| m.labels.clone()).unwrap_or_default();
-    labels.entry("job-name".to_string()).or_insert_with(|| job.name_any());
-    let annotations = template.metadata.as_ref().and_then(|m| m.annotations.clone());
+    let template = job
+        .spec
+        .as_ref()
+        .map(|s| s.template.clone())
+        .unwrap_or_default();
+    let mut labels = template
+        .metadata
+        .as_ref()
+        .and_then(|m| m.labels.clone())
+        .unwrap_or_default();
+    labels
+        .entry("job-name".to_string())
+        .or_insert_with(|| job.name_any());
+    let annotations = template
+        .metadata
+        .as_ref()
+        .and_then(|m| m.annotations.clone());
     Pod {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
@@ -163,7 +191,12 @@ fn skip_job(job: &Job) -> bool {
     indexed || foreign_manager
 }
 
-async fn reconcile_job(client: &Client, namespace: &str, name: &str, pod_cache: &HashMap<String, Pod>) {
+async fn reconcile_job(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    pod_cache: &HashMap<String, Pod>,
+) {
     let job_api: Api<Job> = Api::namespaced(client.clone(), namespace);
     let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
 
@@ -181,23 +214,44 @@ async fn reconcile_job(client: &Client, namespace: &str, name: &str, pod_cache: 
     let Some(job_uid) = job.uid() else { return };
     let spec = job.spec.clone().unwrap_or_default();
 
-    let owned: Vec<&Pod> =
-        pod_cache.values().filter(|p| p.namespace().as_deref() == Some(namespace)).filter(|p| owned_by(p, &job_uid)).collect();
-    let live: Vec<&&Pod> = owned.iter().filter(|p| p.metadata.deletion_timestamp.is_none()).collect();
+    let owned: Vec<&Pod> = pod_cache
+        .values()
+        .filter(|p| p.namespace().as_deref() == Some(namespace))
+        .filter(|p| owned_by(p, &job_uid))
+        .collect();
+    let live: Vec<&&Pod> = owned
+        .iter()
+        .filter(|p| p.metadata.deletion_timestamp.is_none())
+        .collect();
 
-    let succeeded = owned.iter().filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Succeeded")).count() as i32;
-    let failed = owned.iter().filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Failed")).count() as i32;
+    let succeeded = owned
+        .iter()
+        .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Succeeded"))
+        .count() as i32;
+    let failed = owned
+        .iter()
+        .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Failed"))
+        .count() as i32;
     let active = live
         .iter()
-        .filter(|p| !matches!(p.status.as_ref().and_then(|s| s.phase.as_deref()), Some("Succeeded") | Some("Failed")))
+        .filter(|p| {
+            !matches!(
+                p.status.as_ref().and_then(|s| s.phase.as_deref()),
+                Some("Succeeded") | Some("Failed")
+            )
+        })
         .count() as i32;
 
     let backoff_limit = spec.backoff_limit.unwrap_or(6);
     let suspend = spec.suspend.unwrap_or(false);
     let outcome = job_outcome(succeeded, failed, spec.completions, backoff_limit);
-    let already_terminal = job.status.as_ref().and_then(|s| s.conditions.as_ref()).into_iter().flatten().any(|c| {
-        (c.type_ == "Complete" || c.type_ == "Failed") && c.status == "True"
-    });
+    let already_terminal = job
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .into_iter()
+        .flatten()
+        .any(|c| (c.type_ == "Complete" || c.type_ == "Failed") && c.status == "True");
 
     if outcome.is_none() && !suspend && !already_terminal {
         let parallelism = spec.parallelism.unwrap_or(1);
@@ -210,7 +264,20 @@ async fn reconcile_job(client: &Client, namespace: &str, name: &str, pod_cache: 
         // parallelism — the exact bug this project already hit once with
         // ReplicaSet's `generateName` (see deployment-controller's own
         // history) and is avoiding here from the start.
-        let base = owned.len() as i32;
+        // Never reuse a suffix after a terminal Pod disappears from the
+        // cache. Reusing a live Pod's deterministic name turns AlreadyExists
+        // into a permanent progress stall.
+        let prefix = format!("{name}-");
+        let base = owned
+            .iter()
+            .filter_map(|p| {
+                p.name_any()
+                    .strip_prefix(&prefix)
+                    .and_then(|s| s.parse::<i32>().ok())
+            })
+            .max()
+            .map(|max| max + 1)
+            .unwrap_or(0);
         for i in 0..pods_to_create(parallelism, spec.completions, active, succeeded) {
             let pod_name = format!("{name}-{}", base + i);
             let pod = build_pod(&job, &pod_name);
@@ -224,7 +291,12 @@ async fn reconcile_job(client: &Client, namespace: &str, name: &str, pod_cache: 
         }
     } else if suspend && !already_terminal {
         // Suspending resets the active generation: delete every live Pod.
-        for pod in &live {
+        for pod in live.iter().filter(|p| {
+            !matches!(
+                p.status.as_ref().and_then(|s| s.phase.as_deref()),
+                Some("Succeeded") | Some("Failed")
+            )
+        }) {
             if let Err(e) = pod_api.delete(&pod.name_any(), &Default::default()).await {
                 tracing::warn!(namespace = %namespace, job = %name, pod = %pod.name_any(), error = ?e, "failed to delete Pod for suspended Job");
             }
@@ -257,7 +329,10 @@ async fn reconcile_job(client: &Client, namespace: &str, name: &str, pod_cache: 
                 // doesn't implement `successPolicy` itself (see module
                 // doc); satisfying the admission rule just means setting
                 // both conditions together.
-                conditions.push(condition("SuccessCriteriaMet", "Job reached its completion target"));
+                conditions.push(condition(
+                    "SuccessCriteriaMet",
+                    "Job reached its completion target",
+                ));
                 conditions.push(condition("Complete", "Job reached its completion target"));
                 status.completion_time = Some(crate::k8s_time::from_chrono(crate::k8s_time::now()));
             } else {
@@ -275,7 +350,10 @@ async fn reconcile_job(client: &Client, namespace: &str, name: &str, pod_cache: 
     let status_matches = job.status.as_ref() == Some(&status);
     if !status_matches {
         let patch = serde_json::json!({ "status": status });
-        if let Err(e) = job_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+        if let Err(e) = job_api
+            .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+        {
             tracing::warn!(namespace = %namespace, job = %name, error = ?e, "failed to patch Job status");
         }
     }
@@ -294,9 +372,15 @@ async fn reconcile_job(client: &Client, namespace: &str, name: &str, pod_cache: 
     if terminal_now {
         if let Some(finalizers) = &job.metadata.finalizers {
             if finalizers.iter().any(|f| f == JOB_TRACKING_FINALIZER) {
-                let remaining: Vec<&String> = finalizers.iter().filter(|f| *f != JOB_TRACKING_FINALIZER).collect();
+                let remaining: Vec<&String> = finalizers
+                    .iter()
+                    .filter(|f| *f != JOB_TRACKING_FINALIZER)
+                    .collect();
                 let patch = serde_json::json!({ "metadata": { "finalizers": remaining } });
-                if let Err(e) = job_api.patch(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+                if let Err(e) = job_api
+                    .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+                    .await
+                {
                     tracing::warn!(namespace = %namespace, job = %name, error = ?e, "failed to strip job-tracking finalizer from finished Job");
                 }
             }
@@ -315,10 +399,20 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let pod_api: Api<Pod> = Api::all(client.clone());
     let job_api: Api<Job> = Api::all(client.clone());
 
-    for p in pod_api.list(&Default::default()).await.context("listing Pods to seed job-controller")?.items {
+    for p in pod_api
+        .list(&Default::default())
+        .await
+        .context("listing Pods to seed job-controller")?
+        .items
+    {
         pods.insert(format!("{}/{}", ns_of(&p), p.name_any()), p);
     }
-    for j in job_api.list(&Default::default()).await.context("listing Jobs to seed job-controller")?.items {
+    for j in job_api
+        .list(&Default::default())
+        .await
+        .context("listing Jobs to seed job-controller")?
+        .items
+    {
         let ns = ns_of(&j);
         let name = j.name_any();
         jobs.insert((ns.clone(), name.clone()));

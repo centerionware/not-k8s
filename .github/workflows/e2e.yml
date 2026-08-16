@@ -38,7 +38,7 @@ on:
         default: false
         type: boolean
       controller_manager:
-        description: 'Which controller manager does node lifecycle/podCIDR/GC: none (k3s bundled kube-controller-manager, the shipped default) or nodecontroller (ours, which also passes --disable-controller-manager to k3s). Only cases/node_lifecycle_controller.sh needs ours, and it self-skips without it. Leave as none for a full-suite run — nodecontroller is Group A only (docs/CONTROLLER_MANAGER.md): no workload controllers, no GC, no ServiceAccount/namespace bootstrapping yet, so turning it on for the full suite would make an incomplete component the gate for tests that need those.'
+        description: 'Which controller manager runs the suite: none (k3s bundled kube-controller-manager, the shipped default) or nodecontroller (ours, which also passes --disable-controller-manager to k3s). nodecontroller implements the controller domains documented in docs/CONTROLLER_MANAGER.md, including node lifecycle/PodCIDR, workload controllers, garbage collection, ServiceAccounts, quotas, and storage helpers; use it to exercise those implementations, while cases outside that scope should self-skip.'
         required: false
         default: none
         type: choice

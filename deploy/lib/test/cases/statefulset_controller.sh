@@ -1,7 +1,6 @@
 # lib/test/cases/statefulset_controller.sh — nodecontroller's Group E:
 # statefulset-controller. Proves stable ordinal identity (pod-0, pod-1 by
-# name, not a random suffix) and OrderedReady scale-down (highest ordinal
-# goes first).
+# name, not a random suffix) and OrderedReady scale-up/scale-down semantics.
 
 _nodecontroller_is_running_sts() {
     if command -v systemctl >/dev/null 2>&1; then
@@ -10,9 +9,20 @@ _nodecontroller_is_running_sts() {
     pgrep -x nodecontroller >/dev/null 2>&1
 }
 
+_k3s_controller_manager_disabled_sts() {
+    local args=""
+    if command -v systemctl >/dev/null 2>&1; then
+        args="$(systemctl show k3s -p ExecStart --value 2>/dev/null || true)"
+    fi
+    [[ "$args" == *--disable-controller-manager* ]] && return 0
+    ps -eo args= 2>/dev/null | grep -E '[k]3s( server)?' | grep -q -- '--disable-controller-manager'
+}
+
 _require_nodecontroller_sts() {
     _nodecontroller_is_running_sts \
-        || skip_test "nodecontroller isn't running here — deploy with --controller-manager=nodecontroller (which also disables k3s's own controller manager) to exercise these"
+        || skip_test "nodecontroller isn't running here — deploy with --controller-manager=nodecontroller to exercise these"
+    _k3s_controller_manager_disabled_sts \
+        || skip_test "k3s's bundled controller-manager is still enabled; deploy with --controller-manager=nodecontroller so this test exercises nodecontroller"
 }
 
 test_statefulset_creates_ordinal_pods_and_scales_down_highest_first() {
@@ -38,12 +48,26 @@ spec:
       containers:
         - name: busybox
           image: busybox:latest
-          command: ["sleep", "3600"]
+          command: ["sh", "-c", "while [ ! -f /tmp/release ]; do sleep 1; done; sleep 3600"]
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/release"]
+            periodSeconds: 1
 EOF
     trap 'kctl delete statefulset "$sts" --ignore-not-found >/dev/null 2>&1 || true; kctl delete pods -l "app=$sts" --ignore-not-found >/dev/null 2>&1 || true' EXIT
 
     wait_until 60 "statefulset $sts creates pod ${sts}-0" \
         bash -c "kctl get pod '${sts}-0' >/dev/null 2>&1"
+
+    # Keep ordinal zero Running but unready with a gate inside the container.
+    # OrderedReady must not create ordinal one while this gate is closed.
+    wait_until 30 "statefulset $sts starts pod ${sts}-0 but keeps it unready" \
+        bash -c "[[ \"\$(kctl get pod '${sts}-0' -o jsonpath='{.status.phase}')\" == 'Running' && \"\$(kctl get pod '${sts}-0' -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}')\" != 'True' ]]"
+    sleep 5
+    assert_true bash -c "! kctl get pod '${sts}-1' >/dev/null 2>&1" \
+        "OrderedReady must not create ${sts}-1 while ${sts}-0 is unready"
+
+    kctl exec "${sts}-0" -- touch /tmp/release >/dev/null
 
     wait_until 90 "statefulset $sts creates pod ${sts}-1 after ${sts}-0 is Ready" \
         bash -c "kctl get pod '${sts}-1' >/dev/null 2>&1"

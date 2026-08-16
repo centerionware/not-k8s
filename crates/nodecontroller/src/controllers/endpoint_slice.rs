@@ -56,7 +56,10 @@ const MANAGED_BY_VALUE: &str = "nodecontroller";
 /// caller is expected to have already filtered those out, not this
 /// function, so an empty selector deliberately matches nothing here rather
 /// than everything.
-pub fn selector_matches(selector: &BTreeMap<String, String>, labels: &BTreeMap<String, String>) -> bool {
+pub fn selector_matches(
+    selector: &BTreeMap<String, String>,
+    labels: &BTreeMap<String, String>,
+) -> bool {
     if selector.is_empty() {
         return false;
     }
@@ -94,7 +97,11 @@ fn pod_ready(pod: &Pod) -> bool {
 /// Falls back to `service_port` itself if a named port genuinely isn't
 /// found, rather than dropping the endpoint — a Service is more useful
 /// pointed at *a* plausible port than not routed at all.
-fn resolve_target_port(target_port: Option<&IntOrString>, service_port: i32, sample_pod: Option<&Pod>) -> i32 {
+fn resolve_target_port(
+    target_port: Option<&IntOrString>,
+    service_port: i32,
+    sample_pod: Option<&Pod>,
+) -> i32 {
     match target_port {
         None => service_port,
         Some(IntOrString::Int(n)) => *n,
@@ -121,7 +128,11 @@ pub fn build_ports(service_ports: &[ServicePort], sample_pod: Option<&Pod>) -> V
         .iter()
         .map(|sp| EndpointPort {
             name: sp.name.clone(),
-            port: Some(resolve_target_port(sp.target_port.as_ref(), sp.port, sample_pod)),
+            port: Some(resolve_target_port(
+                sp.target_port.as_ref(),
+                sp.port,
+                sample_pod,
+            )),
             protocol: Some(sp.protocol.clone().unwrap_or_else(|| "TCP".to_string())),
             app_protocol: sp.app_protocol.clone(),
         })
@@ -165,7 +176,12 @@ pub fn is_managed(service: &Service) -> bool {
         .is_some_and(|sel| !sel.is_empty())
 }
 
-async fn reconcile_service(client: &Client, namespace: &str, name: &str, pod_cache: &HashMap<String, Pod>) {
+async fn reconcile_service(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    pod_cache: &HashMap<String, Pod>,
+) {
     let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
     let slice_api: Api<EndpointSlice> = Api::namespaced(client.clone(), namespace);
 
@@ -174,7 +190,9 @@ async fn reconcile_service(client: &Client, namespace: &str, name: &str, pod_cac
         Ok(None) => {
             // Gone — remove any slice we own for it (no GC controller to
             // do this via ownerReferences yet, see this module's header).
-            let _ = slice_api.delete(&slice_name(name), &Default::default()).await;
+            let _ = slice_api
+                .delete(&slice_name(name), &Default::default())
+                .await;
             return;
         }
         Err(e) => {
@@ -186,23 +204,43 @@ async fn reconcile_service(client: &Client, namespace: &str, name: &str, pod_cac
     if !is_managed(&service) {
         // Not (or no longer) ours — if we previously created a slice for
         // it (e.g. its selector was just cleared), drop it.
-        let _ = slice_api.delete(&slice_name(name), &Default::default()).await;
+        let _ = slice_api
+            .delete(&slice_name(name), &Default::default())
+            .await;
         return;
     }
-    let selector = service.spec.as_ref().and_then(|s| s.selector.clone()).unwrap_or_default();
-    let service_ports = service.spec.as_ref().and_then(|s| s.ports.clone()).unwrap_or_default();
+    let selector = service
+        .spec
+        .as_ref()
+        .and_then(|s| s.selector.clone())
+        .unwrap_or_default();
+    let service_ports = service
+        .spec
+        .as_ref()
+        .and_then(|s| s.ports.clone())
+        .unwrap_or_default();
 
     let matching: Vec<&Pod> = pod_cache
         .values()
         .filter(|p| p.namespace().as_deref() == Some(namespace))
-        .filter(|p| selector_matches(&selector, p.metadata.labels.as_ref().unwrap_or(&BTreeMap::new())))
+        .filter(|p| {
+            selector_matches(
+                &selector,
+                p.metadata.labels.as_ref().unwrap_or(&BTreeMap::new()),
+            )
+        })
         .collect();
 
     let sample_pod = matching.first().copied();
     let ports = build_ports(&service_ports, sample_pod);
     let endpoints: Vec<Endpoint> = matching
         .iter()
-        .filter_map(|p| p.status.as_ref().and_then(|s| s.pod_ip.as_ref()).map(|ip| build_endpoint(p, ip)))
+        .filter_map(|p| {
+            p.status
+                .as_ref()
+                .and_then(|s| s.pod_ip.as_ref())
+                .map(|ip| build_endpoint(p, ip))
+        })
         .collect();
 
     let mut labels = BTreeMap::new();
@@ -254,7 +292,11 @@ async fn reconcile_service(client: &Client, namespace: &str, name: &str, pod_cac
     // race with a concurrent reconcile of the same Service (the same
     // pattern nodelet's own node registration uses).
     if let Err(e) = slice_api
-        .patch(&slice_name(name), &PatchParams::apply(MANAGED_BY_VALUE).force(), &Patch::Apply(&slice))
+        .patch(
+            &slice_name(name),
+            &PatchParams::apply(MANAGED_BY_VALUE).force(),
+            &Patch::Apply(&slice),
+        )
         .await
     {
         tracing::warn!(namespace = %namespace, service = %name, error = ?e, "failed to apply EndpointSlice");
@@ -272,11 +314,17 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     // this crate uses.
     let svc_api: Api<Service> = Api::all(client.clone());
     let pod_api: Api<Pod> = Api::all(client.clone());
-    let existing_pods = pod_api.list(&Default::default()).await.context("listing Pods to seed endpointslice-controller")?;
+    let existing_pods = pod_api
+        .list(&Default::default())
+        .await
+        .context("listing Pods to seed endpointslice-controller")?;
     for p in existing_pods.items {
         pods.insert(pod_key(&p), p);
     }
-    let existing_services = svc_api.list(&Default::default()).await.context("listing Services to seed endpointslice-controller")?;
+    let existing_services = svc_api
+        .list(&Default::default())
+        .await
+        .context("listing Services to seed endpointslice-controller")?;
     for s in &existing_services.items {
         if !is_managed(s) {
             continue;
@@ -297,7 +345,11 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(svc))) | Some(Ok(Event::InitApply(svc))) => {
                         let ns = svc.namespace().unwrap_or_default();
                         let name = svc.name_any();
-                        services.insert((ns.clone(), name.clone()), ());
+                        if is_managed(&svc) {
+                            services.insert((ns.clone(), name.clone()), ());
+                        } else {
+                            services.remove(&(ns.clone(), name.clone()));
+                        }
                         reconcile_service(&client, &ns, &name, &pods).await;
                     }
                     Some(Ok(Event::Delete(svc))) => {
@@ -363,12 +415,18 @@ mod tests {
     use k8s_openapi::api::core::v1::{Container, PodSpec, PodStatus};
 
     fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
     fn an_empty_selector_matches_nothing() {
-        assert!(!selector_matches(&BTreeMap::new(), &labels(&[("app", "web")])));
+        assert!(!selector_matches(
+            &BTreeMap::new(),
+            &labels(&[("app", "web")])
+        ));
     }
 
     #[test]
@@ -422,7 +480,10 @@ mod tests {
 
     #[test]
     fn target_port_numeric_is_used_directly() {
-        assert_eq!(resolve_target_port(Some(&IntOrString::Int(8080)), 80, None), 8080);
+        assert_eq!(
+            resolve_target_port(Some(&IntOrString::Int(8080)), 80, None),
+            8080
+        );
     }
 
     fn pod_with_container_port(name: &str, port: i32) -> Pod {
@@ -445,13 +506,27 @@ mod tests {
     #[test]
     fn target_port_named_resolves_against_the_sample_pod() {
         let pod = pod_with_container_port("http", 8080);
-        assert_eq!(resolve_target_port(Some(&IntOrString::String("http".to_string())), 80, Some(&pod)), 8080);
+        assert_eq!(
+            resolve_target_port(
+                Some(&IntOrString::String("http".to_string())),
+                80,
+                Some(&pod)
+            ),
+            8080
+        );
     }
 
     #[test]
     fn target_port_named_but_not_found_falls_back_to_the_service_port() {
         let pod = pod_with_container_port("grpc", 9000);
-        assert_eq!(resolve_target_port(Some(&IntOrString::String("http".to_string())), 80, Some(&pod)), 80);
+        assert_eq!(
+            resolve_target_port(
+                Some(&IntOrString::String("http".to_string())),
+                80,
+                Some(&pod)
+            ),
+            80
+        );
     }
 
     #[test]
@@ -476,7 +551,10 @@ mod tests {
     fn build_endpoint_carries_the_pod_ip_and_node_name() {
         let mut pod = pod_with_container_port("http", 8080);
         pod.spec.as_mut().unwrap().node_name = Some("node-a".to_string());
-        pod.status = Some(PodStatus { pod_ip: Some("10.42.0.5".to_string()), ..Default::default() });
+        pod.status = Some(PodStatus {
+            pod_ip: Some("10.42.0.5".to_string()),
+            ..Default::default()
+        });
         let ep = build_endpoint(&pod, "10.42.0.5");
         assert_eq!(ep.addresses, vec!["10.42.0.5".to_string()]);
         assert_eq!(ep.node_name.as_deref(), Some("node-a"));

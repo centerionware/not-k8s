@@ -43,12 +43,25 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 const SUPPORTED_KEYS: &[&str] = &["pods", "services"];
 
+fn counts_toward_pod_quota(pod: &Pod) -> bool {
+    !matches!(
+        pod.status
+            .as_ref()
+            .and_then(|status| status.phase.as_deref()),
+        Some("Succeeded") | Some("Failed")
+    )
+}
+
 /// Pure: `status.used` for whichever of `hard_keys` this controller
 /// actually tracks. Split out from the reconcile loop so the "which keys
 /// get a number, which are left alone" rule is unit-testable without a
 /// cluster — the same discipline every pure decision function in this
 /// crate follows.
-pub fn compute_used(hard_keys: &[String], pod_count: usize, service_count: usize) -> BTreeMap<String, Quantity> {
+pub fn compute_used(
+    hard_keys: &[String],
+    pod_count: usize,
+    service_count: usize,
+) -> BTreeMap<String, Quantity> {
     let mut used = BTreeMap::new();
     for key in hard_keys {
         let count = match key.as_str() {
@@ -90,7 +103,10 @@ async fn reconcile_quota(
     }
 
     let patch = serde_json::json!({ "status": { "used": used, "hard": hard } });
-    if let Err(e) = api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+    if let Err(e) = api
+        .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
         tracing::warn!(namespace = %namespace, quota = %name, error = ?e, "failed to patch ResourceQuota status");
     }
 }
@@ -108,13 +124,30 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let svc_api: Api<Service> = Api::all(client.clone());
     let quota_api: Api<ResourceQuota> = Api::all(client.clone());
 
-    for p in pod_api.list(&Default::default()).await.context("listing Pods to seed resourcequota-controller")?.items {
-        pods.entry(ns_of(&p)).or_default().insert(p.name_any());
+    for p in pod_api
+        .list(&Default::default())
+        .await
+        .context("listing Pods to seed resourcequota-controller")?
+        .items
+    {
+        if counts_toward_pod_quota(&p) {
+            pods.entry(ns_of(&p)).or_default().insert(p.name_any());
+        }
     }
-    for s in svc_api.list(&Default::default()).await.context("listing Services to seed resourcequota-controller")?.items {
+    for s in svc_api
+        .list(&Default::default())
+        .await
+        .context("listing Services to seed resourcequota-controller")?
+        .items
+    {
         services.entry(ns_of(&s)).or_default().insert(s.name_any());
     }
-    for q in quota_api.list(&Default::default()).await.context("listing ResourceQuotas to seed resourcequota-controller")?.items {
+    for q in quota_api
+        .list(&Default::default())
+        .await
+        .context("listing ResourceQuotas to seed resourcequota-controller")?
+        .items
+    {
         let ns = ns_of(&q);
         let name = q.name_any();
         quotas.insert((ns.clone(), name.clone()));
@@ -131,7 +164,11 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 match ev {
                     Some(Ok(Event::Apply(p))) | Some(Ok(Event::InitApply(p))) => {
                         let ns = ns_of(&p);
-                        pods.entry(ns.clone()).or_default().insert(p.name_any());
+                        if counts_toward_pod_quota(&p) {
+                            pods.entry(ns.clone()).or_default().insert(p.name_any());
+                        } else if let Some(set) = pods.get_mut(&ns) {
+                            set.remove(&p.name_any());
+                        }
                         reconcile_namespace_quotas(&client, &ns, &quotas, &pods, &services).await;
                     }
                     Some(Ok(Event::Delete(p))) => {
@@ -234,7 +271,10 @@ mod tests {
         // is the real behavior.
         for key in SUPPORTED_KEYS {
             let used = compute_used(&[key.to_string()], 1, 1);
-            assert!(used.contains_key(*key), "{key} is listed as supported but compute_used doesn't handle it");
+            assert!(
+                used.contains_key(*key),
+                "{key} is listed as supported but compute_used doesn't handle it"
+            );
         }
     }
 }

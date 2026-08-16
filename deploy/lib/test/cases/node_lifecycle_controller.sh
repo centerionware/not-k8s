@@ -18,9 +18,20 @@ _nodecontroller_is_running() {
     pgrep -x nodecontroller >/dev/null 2>&1
 }
 
+_k3s_controller_manager_disabled() {
+    local args=""
+    if command -v systemctl >/dev/null 2>&1; then
+        args="$(systemctl show k3s -p ExecStart --value 2>/dev/null || true)"
+    fi
+    [[ "$args" == *--disable-controller-manager* ]] && return 0
+    ps -eo args= 2>/dev/null | grep -E '[k]3s( server)?' | grep -q -- '--disable-controller-manager'
+}
+
 _require_nodecontroller() {
     _nodecontroller_is_running \
-        || skip_test "nodecontroller isn't running here — deploy with --controller-manager=nodecontroller (which also disables k3s's own controller manager) to exercise these"
+        || skip_test "nodecontroller isn't running here — deploy with --controller-manager=nodecontroller to exercise these"
+    _k3s_controller_manager_disabled \
+        || skip_test "k3s's bundled controller-manager is still enabled; deploy with --controller-manager=nodecontroller so this test exercises nodecontroller"
 }
 
 node_taint_present() { # node_taint_present <taint-key>
@@ -29,14 +40,32 @@ node_taint_present() { # node_taint_present <taint-key>
     [[ "$key" == "$1" ]]
 }
 
+node_taint_absent() { # node_taint_absent <taint-key>
+    ! node_taint_present "$1"
+}
+
 test_node_gets_a_pod_cidr_allocated() {
     _require_nodecontroller
-    # If this node has ever come up successfully with a working CNI, it
-    # already has one — this asserts nodecontroller (not k3s) is the thing
-    # that put it there, which only matters when it's actually running.
+    local fake="nodecontroller-cidr-test"
+    trap 'kubectl delete node "$fake" --ignore-not-found >/dev/null 2>&1 || true' EXIT
+
+    # A fresh Node is the important part: the real worker Node may already
+    # have been assigned a CIDR before nodecontroller started.
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Node
+metadata:
+  name: $fake
+EOF
+
+    wait_until 60 "disposable Node $fake receives a PodCIDR from nodecontroller" \
+        bash -c "[[ -n \"\$(kubectl get node '$fake' -o jsonpath='{.spec.podCIDR}' 2>/dev/null)\" ]]"
     local cidr
-    cidr="$(kubectl get node "$(node_name)" -o jsonpath='{.spec.podCIDR}')"
-    assert_not_empty "$cidr" "Node.spec.podCIDR is set (allocated by nodecontroller's node-ipam-controller)"
+    cidr="$(kubectl get node "$fake" -o jsonpath='{.spec.podCIDR}')"
+    assert_not_empty "$cidr" "Node.spec.podCIDR is set on the disposable Node"
+
+    trap - EXIT
+    kubectl delete node "$fake" --ignore-not-found >/dev/null 2>&1 || true
 }
 
 # The real thing this test breaks and repairs: nodelet's Lease renewal
@@ -75,7 +104,7 @@ test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers() {
     wait_until 120 "node $name Ready again after nodelet restarted" \
         bash -c '[[ "$(node_condition_status Ready)" == "True" ]]'
     wait_until 60 "unreachable taint cleared after the heartbeat Lease resumed renewing" \
-        bash -c '! node_taint_present "node.kubernetes.io/unreachable"'
+        node_taint_absent "node.kubernetes.io/unreachable"
 }
 
 register_test test_node_gets_a_pod_cidr_allocated

@@ -45,7 +45,12 @@ use kube::{Client, ResourceExt};
 use std::collections::HashMap;
 
 fn pod_ready(pod: &Pod) -> bool {
-    pod.status.as_ref().and_then(|s| s.conditions.as_ref()).into_iter().flatten().any(|c| c.type_ == "Ready" && c.status == "True")
+    pod.status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .into_iter()
+        .flatten()
+        .any(|c| c.type_ == "Ready" && c.status == "True")
 }
 
 /// The four numeric status fields — pure given `expected`/`healthy` counts
@@ -60,7 +65,9 @@ pub fn compute_status(
     let desired_healthy = if let Some(min) = min_available {
         crate::controllers::deployment::resolve_int_or_str(Some(min), expected, true, 100)
     } else if let Some(max) = max_unavailable {
-        (expected - crate::controllers::deployment::resolve_int_or_str(Some(max), expected, false, 0)).max(0)
+        (expected
+            - crate::controllers::deployment::resolve_int_or_str(Some(max), expected, false, 0))
+        .max(0)
     } else {
         0
     };
@@ -78,19 +85,31 @@ async fn reconcile_pdb(client: &Client, namespace: &str, name: &str, pods: &Hash
             return;
         }
     };
-    let Some(selector) = pdb.spec.as_ref().and_then(|s| s.selector.as_ref()) else { return };
+    let Some(selector) = pdb.spec.as_ref().and_then(|s| s.selector.as_ref()) else {
+        return;
+    };
     let spec = pdb.spec.clone().unwrap_or_default();
 
     let matching: Vec<&Pod> = pods
         .values()
         .filter(|p| p.namespace().as_deref() == Some(namespace))
-        .filter(|p| p.metadata.deletion_timestamp.is_none())
-        .filter(|p| p.metadata.labels.as_ref().is_some_and(|l| crate::controllers::replica_set::label_selector_matches(selector, l)))
+        .filter(|p| {
+            p.metadata.labels.as_ref().is_some_and(|l| {
+                crate::controllers::replica_set::label_selector_matches(selector, l)
+            })
+        })
         .collect();
     let expected = matching.len() as i32;
-    let healthy = matching.iter().filter(|p| pod_ready(p)).count() as i32;
-    let (desired_healthy, disruptions_allowed, expected_pods) =
-        compute_status(expected, healthy, spec.min_available.as_ref(), spec.max_unavailable.as_ref());
+    let healthy = matching
+        .iter()
+        .filter(|p| p.metadata.deletion_timestamp.is_none() && pod_ready(p))
+        .count() as i32;
+    let (desired_healthy, disruptions_allowed, expected_pods) = compute_status(
+        expected,
+        healthy,
+        spec.min_available.as_ref(),
+        spec.max_unavailable.as_ref(),
+    );
 
     let status = PodDisruptionBudgetStatus {
         current_healthy: healthy,
@@ -104,7 +123,10 @@ async fn reconcile_pdb(client: &Client, namespace: &str, name: &str, pods: &Hash
         return;
     }
     let patch = serde_json::json!({ "status": status });
-    if let Err(e) = api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+    if let Err(e) = api
+        .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
         tracing::warn!(namespace = %namespace, pdb = %name, error = ?e, "failed to patch PodDisruptionBudget status");
     }
 }
@@ -120,10 +142,20 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let pod_api: Api<Pod> = Api::all(client.clone());
     let pdb_api: Api<PodDisruptionBudget> = Api::all(client.clone());
 
-    for p in pod_api.list(&Default::default()).await.context("listing Pods to seed disruption-controller")?.items {
+    for p in pod_api
+        .list(&Default::default())
+        .await
+        .context("listing Pods to seed disruption-controller")?
+        .items
+    {
         pods.insert(format!("{}/{}", ns_of(&p), p.name_any()), p);
     }
-    for pdb in pdb_api.list(&Default::default()).await.context("listing PodDisruptionBudgets to seed disruption-controller")?.items {
+    for pdb in pdb_api
+        .list(&Default::default())
+        .await
+        .context("listing PodDisruptionBudgets to seed disruption-controller")?
+        .items
+    {
         let ns = ns_of(&pdb);
         let name = pdb.name_any();
         pdbs.insert((ns.clone(), name.clone()));

@@ -28,7 +28,11 @@ use std::time::{Duration, Instant};
 /// scheduling — a small entry that arrives after a large one still waits,
 /// which keeps per-key latency bounded by "how many ticks since it became
 /// due", not by how the rest of the batch happened to sort.
-pub fn partition_by_budget<K: Clone>(due: &[K], costs: &[Duration], budget: Duration) -> (Vec<K>, Vec<K>) {
+pub fn partition_by_budget<K: Clone>(
+    due: &[K],
+    costs: &[Duration],
+    budget: Duration,
+) -> (Vec<K>, Vec<K>) {
     debug_assert_eq!(due.len(), costs.len());
     let mut spent = Duration::ZERO;
     let mut processed = Vec::with_capacity(due.len());
@@ -76,7 +80,14 @@ pub struct Governor<K: Eq + Hash + Clone> {
 }
 
 impl<K: Eq + Hash + Clone> Governor<K> {
-    pub fn new(slot_count: u64, wheel_tick: Duration, start: Instant, tick_period: Duration, budget_percent: f64, jitter_fraction: f64) -> Self {
+    pub fn new(
+        slot_count: u64,
+        wheel_tick: Duration,
+        start: Instant,
+        tick_period: Duration,
+        budget_percent: f64,
+        jitter_fraction: f64,
+    ) -> Self {
         Governor {
             wheel: TimingWheel::new(slot_count, wheel_tick, start),
             deferred: VecDeque::new(),
@@ -89,7 +100,13 @@ impl<K: Eq + Hash + Clone> Governor<K> {
     /// Insert `key`, due at `base_deadline` jittered by `sample` (a caller-
     /// supplied random value in `[-1.0, 1.0]` — see `jitter.rs`'s own doc
     /// comment for why the randomness is passed in rather than drawn here).
-    pub fn insert_jittered(&mut self, key: K, base_deadline: Instant, interval: Duration, sample: f64) -> Result<(), InsertError> {
+    pub fn insert_jittered(
+        &mut self,
+        key: K,
+        base_deadline: Instant,
+        interval: Duration,
+        sample: f64,
+    ) -> Result<(), InsertError> {
         let jittered = jitter(interval, self.jitter_fraction, sample);
         // jitter() returns a duration around `interval`; the actual deadline
         // is "now-relative-base" shifted by the difference from the
@@ -99,7 +116,9 @@ impl<K: Eq + Hash + Clone> Governor<K> {
         let deadline = if delta >= 0.0 {
             base_deadline + Duration::from_secs_f64(delta)
         } else {
-            base_deadline.checked_sub(Duration::from_secs_f64(-delta)).unwrap_or(base_deadline)
+            base_deadline
+                .checked_sub(Duration::from_secs_f64(-delta))
+                .unwrap_or(base_deadline)
         };
         self.wheel.insert(key, deadline)
     }
@@ -121,10 +140,11 @@ impl<K: Eq + Hash + Clone> Governor<K> {
     }
 
     /// One tick: pull deferred-then-newly-due keys, hand them to the caller.
-    /// The caller is responsible for timing its own processing and calling
-    /// [`Governor::requeue_overflow`] with anything that didn't fit — kept
-    /// as two steps rather than one closure so the budget arithmetic
-    /// ([`partition_by_budget`]) stays pure and independently testable.
+    /// The caller must check the budget before each potentially expensive
+    /// reconciliation and call [`Governor::requeue_overflow`] with the
+    /// unprocessed suffix. Keeping this boundary explicit preserves
+    /// deferred-before-newly-due ordering without doing over-budget work
+    /// before pacing can take effect.
     pub fn due_this_tick(&mut self, now: Instant) -> Vec<K> {
         let mut due: Vec<K> = self.deferred.drain(..).collect();
         due.extend(self.wheel.advance(now));
@@ -154,7 +174,11 @@ mod tests {
     #[test]
     fn overflow_is_deferred_once_the_budget_is_spent() {
         let due = vec![1, 2, 3];
-        let costs = vec![Duration::from_micros(40), Duration::from_micros(40), Duration::from_micros(40)];
+        let costs = vec![
+            Duration::from_micros(40),
+            Duration::from_micros(40),
+            Duration::from_micros(40),
+        ];
         let (processed, deferred) = partition_by_budget(&due, &costs, Duration::from_micros(100));
         assert_eq!(processed, vec![1, 2]);
         assert_eq!(deferred, vec![3]);
@@ -182,15 +206,34 @@ mod tests {
 
     #[test]
     fn budget_percent_is_clamped_to_a_sane_range() {
-        assert_eq!(budget_for_tick(0.0, Duration::from_millis(100)), Duration::ZERO);
-        assert_eq!(budget_for_tick(1000.0, Duration::from_millis(100)), Duration::from_millis(100));
+        assert_eq!(
+            budget_for_tick(0.0, Duration::from_millis(100)),
+            Duration::ZERO
+        );
+        assert_eq!(
+            budget_for_tick(1000.0, Duration::from_millis(100)),
+            Duration::from_millis(100)
+        );
     }
 
     #[test]
     fn deferred_work_is_returned_before_newly_due_work() {
         let start = Instant::now();
-        let mut g: Governor<u32> = Governor::new(10, Duration::from_millis(100), start, Duration::from_millis(100), 1.0, 0.0);
-        g.insert_jittered(2, start + Duration::from_millis(100), Duration::from_millis(100), 0.0).unwrap();
+        let mut g: Governor<u32> = Governor::new(
+            10,
+            Duration::from_millis(100),
+            start,
+            Duration::from_millis(100),
+            1.0,
+            0.0,
+        );
+        g.insert_jittered(
+            2,
+            start + Duration::from_millis(100),
+            Duration::from_millis(100),
+            0.0,
+        )
+        .unwrap();
         g.requeue_overflow(vec![1]); // simulates "1" not fitting last tick's budget
         let due = g.due_this_tick(start + Duration::from_millis(100));
         assert_eq!(due, vec![1, 2]);
