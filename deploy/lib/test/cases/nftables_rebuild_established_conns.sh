@@ -18,6 +18,15 @@ test_a_long_lived_watch_survives_a_service_churn_burst() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local pod="established-conn-watcher"
 
+    # A dedicated curl-bundling image, not $TEST_IMAGE + a runtime `apk add`:
+    # installing curl at container-start time depends on live internet
+    # access to Alpine's CDN *from the pod network*, which is unreliable in
+    # CI (confirmed live: "temporary error (try again later)" / DNS
+    # resolution flakiness) and is a test-infra concern this test has no
+    # business depending on. curlimages/curl is Alpine-based with curl
+    # (and a real shell) already in the image, so the only network access
+    # this test needs at pod-start is the same image pull every other test
+    # here already relies on working.
     apply_manifest <<PODEOF
 apiVersion: v1
 kind: Pod
@@ -27,8 +36,8 @@ spec:
   serviceAccountName: default
   containers:
     - name: watcher
-      image: $TEST_IMAGE
-      command: ["sh", "-c", "apk add --no-cache curl >/tmp/apk.log 2>&1; TOKEN=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token); CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt; curl -sS -N --connect-timeout 5 --max-time 90 --cacert \$CACERT -H \"Authorization: Bearer \$TOKEN\" \"https://\$KUBERNETES_SERVICE_HOST:\$KUBERNETES_SERVICE_PORT/api/v1/namespaces/$TEST_NAMESPACE/pods?watch=true&timeoutSeconds=85\" > /tmp/watch.out 2>/tmp/watch.err; echo WATCH_EXIT=\$? >> /tmp/watch.err; sleep 3600"]
+      image: curlimages/curl:8.10.1
+      command: ["sh", "-c", "TOKEN=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token); CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt; curl -sS -N --connect-timeout 5 --max-time 90 --cacert \$CACERT -H \"Authorization: Bearer \$TOKEN\" \"https://\$KUBERNETES_SERVICE_HOST:\$KUBERNETES_SERVICE_PORT/api/v1/namespaces/$TEST_NAMESPACE/pods?watch=true&timeoutSeconds=85\" > /tmp/watch.out 2>/tmp/watch.err; echo WATCH_EXIT=\$? >> /tmp/watch.err; sleep 3600"]
 PODEOF
     trap 'kubectl delete pod "$pod" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; for i in $(seq 1 25); do kubectl delete svc "churn-svc-$i" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; done' EXIT
 
@@ -36,10 +45,10 @@ PODEOF
 
     # Wait for the watch to actually be alive and past its initial response
     # (real bytes received, curl still running) before starting the churn —
-    # a blind fixed sleep here previously raced curl's own startup (apk
-    # install + TLS handshake) and produced a false failure with 0 bytes
-    # received before the burst ever ran. This wait is the thing the test is
-    # actually about: an idle, already-established watch connection.
+    # a blind fixed sleep here previously raced curl's own startup (TLS
+    # handshake) and produced a false failure with 0 bytes received before
+    # the burst ever ran. This wait is the thing the test is actually about:
+    # an idle, already-established watch connection.
     watch_started() {
         local bytes pids
         bytes="$(kubectl exec "$pod" -n "$TEST_NAMESPACE" -- sh -c 'wc -c < /tmp/watch.out 2>/dev/null' 2>/dev/null)"
@@ -47,8 +56,8 @@ PODEOF
         [ "${bytes:-0}" -gt 0 ] && [ "${pids:-0}" -gt 0 ]
     }
     if ! try_wait_until 45 watch_started; then
-        echo "=== watch never established; apk.log + watch.err ==="
-        kubectl exec "$pod" -n "$TEST_NAMESPACE" -- sh -c 'cat /tmp/apk.log 2>/dev/null; echo ---; cat /tmp/watch.err 2>/dev/null' 2>&1
+        echo "=== watch never established; watch.err ==="
+        kubectl exec "$pod" -n "$TEST_NAMESPACE" -- sh -c 'cat /tmp/watch.err 2>/dev/null' 2>&1
         die "watch connection never got past its initial response before the churn burst — test infra issue, not the regression under test"
     fi
 
