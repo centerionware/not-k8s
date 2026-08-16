@@ -32,10 +32,18 @@
 //! live in CI while verifying Group G that its absence silently breaks any
 //! Pod-side component (the CSI external-provisioner sidecar, concretely)
 //! that builds its own in-cluster client, since `kube-root-ca.crt` never
-//! existed in any namespace for its projected token volume to mount. See
-//! `docs/CONTROLLER_MANAGER.md`'s "Delivery order" for what's next: Groups
-//! D, E, F, and G are now complete (plus this one Group C piece), so Group
-//! H (DRA-adjacent) is next.
+//! existed in any namespace for its projected token volume to mount.
+//! **Group G's dynamic-CSI e2e path is a known, unresolved regression** —
+//! see `docs/CONTROLLER_MANAGER.md`'s Group G section and
+//! `pv_binder.rs`'s module doc for the diagnostic trail; this blocks
+//! merging the whole multi-group PR and must be resolved, not silently
+//! left. Group H's `ephemeral-volume-controller`/`resourceclaim-controller`
+//! (`controllers/resource_claim.rs`) is implemented, pairing with
+//! nodelet's existing DRA consumer side in `runtime/cri/claims.rs`;
+//! `device-taint-eviction-controller` is scoped out (no infrastructure in
+//! this project's e2e suite to verify it against). See
+//! `docs/CONTROLLER_MANAGER.md`'s "Delivery order" for what's next: Group
+//! I (CSR/PKI) is next.
 //!
 //! Single leader-election lease (`kube-system/kube-controller-manager`,
 //! matching upstream's own name — see `config.rs`) covers the whole
@@ -101,6 +109,7 @@ pub async fn run() -> Result<()> {
             controllers::pv_binder::run(client.clone(), &cfg),
             controllers::storage_protection::run(client.clone(), &cfg),
             controllers::root_ca_publisher::run(client.clone(), &cfg),
+            controllers::resource_claim::run(client.clone(), &cfg),
         )?;
         Ok(())
     })

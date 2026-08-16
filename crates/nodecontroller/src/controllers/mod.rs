@@ -14,6 +14,7 @@ pub mod node_ipam;
 pub mod node_lifecycle;
 pub mod pv_binder;
 pub mod replica_set;
+pub mod resource_claim;
 pub mod resource_quota;
 pub mod root_ca_publisher;
 pub mod service_account;

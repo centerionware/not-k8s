@@ -484,15 +484,33 @@ are implemented and e2e-verified.
   targets. Not a gap, the same reasoning `CLAUDE.md`'s "confirmed genuinely
   NOT kubelet's job" list uses one layer up.
 
-## H. DRA-adjacent — Tier 2
+## H. DRA-adjacent — Tier 2 — **ephemeral-volume-controller implemented; device-taint-eviction-controller scoped out**
 
-- `ephemeral-volume-controller` / `resourceclaim-controller`: creates
-  `ResourceClaim`s from a Pod's `resourceClaimTemplates`. Pairs directly
-  with nodelet's existing `runtime/cri/claims.rs`/`dra.rs` — nodelet
-  already speaks the consumer side of this protocol via the raw-request
-  `RawResourceClaim` escape hatch (k8s-openapi v1_33 pin, see CLAUDE.md).
-- `device-taint-eviction-controller`: newer (1.31+), evicts pods off
-  tainted devices.
+- `ephemeral-volume-controller` / `resourceclaim-controller`
+  (`crates/nodecontroller/src/controllers/resource_claim.rs`,
+  **implemented**): creates a `ResourceClaim` from a Pod's
+  `spec.resourceClaims[].resourceClaimTemplateName` entries and records the
+  generated name in `pod.status.resourceClaimStatuses`. Pairs directly with
+  nodelet's existing `runtime/cri/claims.rs`'s `resource_claim_object_name()`,
+  which reads exactly that status field — nodelet already speaks the
+  consumer side of this protocol via its own raw-request `RawResourceClaim`
+  escape hatch (k8s-openapi v1_33 pin, see `CLAUDE.md`); this controller
+  uses the same raw-request approach for the producer side, treating a
+  `ResourceClaimTemplate`'s `spec.spec` as an opaque JSON blob it copies
+  through rather than modeling the full DRA spec schema. Cleanup of the
+  generated `ResourceClaim` needs no dedicated logic here — it carries an
+  owner reference back to the Pod, so `garbage-collector-controller`
+  (Group D, generic across every discovered kind) already cascades it.
+- `device-taint-eviction-controller` (**scoped out**): evicts Pods off
+  devices carrying a `DeviceTaintRule` (`resource.k8s.io/v1alpha3`, newer
+  than this workspace's `v1_33` k8s-openapi pin and still alpha upstream).
+  Neither this project's reference DRA driver
+  (`kubernetes-sigs/dra-example-driver`, `deploy/lib/e2e-full-setup.sh`)
+  nor any e2e test exercises `DeviceTaintRule` — there is nothing this
+  slice could verify against, the same "no infrastructure to prove it
+  against" reasoning `docs/GAP_CLOSURE.md` uses elsewhere. Revisit if a
+  real device-tainting workflow becomes something this project's e2e
+  coverage actually needs.
 
 ## I. CSR / cluster PKI — Tier 2
 

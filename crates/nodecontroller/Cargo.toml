@@ -29,7 +29,10 @@ path = "src/lib.rs"
 # only reading one back. `base64` decodes a kubeconfig's inline
 # `certificate-authority-data`, the same pattern nodelet's own
 # `bootstrap.rs` already uses — `root_ca_publisher.rs` needs it to read the
-# cluster CA it publishes into every namespace.
+# cluster CA it publishes into every namespace. `http` builds the raw
+# requests `resource_claim.rs` needs for `resource.k8s.io` (not
+# k8s-openapi-typed until its "v1_34" schema feature — see CLAUDE.md),
+# the same escape hatch nodelet's own `claims.rs` already uses.
 [dependencies]
 tokio = { workspace = true }
 kube = { workspace = true }
@@ -44,4 +47,5 @@ rustls = { workspace = true }
 rand = "0.8"
 chrono = { workspace = true }
 base64 = "0.22"
+http = "1"
 node-leaderelection = { path = "../node-leaderelection" }
