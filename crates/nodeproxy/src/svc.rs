@@ -4,19 +4,18 @@
 //! ipvs rules to make ClusterIPs (which no interface ever owns) resolve to a
 //! real backend pod. This does the same job with nftables, scoped to what a
 //! single-node edge cluster needs: reconcile-on-event (no periodic resync,
-//! no polling), the whole ruleset rebuilt atomically from current state every
-//! time a Service or EndpointSlice changes — coalesced across a short
-//! (`REBUILD_DEBOUNCE`) quiet window, not literally once per individual
-//! watch event, so a burst (a Deployment scaling up N pods fires N
-//! EndpointSlice updates within milliseconds of each other) becomes one
-//! rebuild instead of N. Still purely event-driven, not polling — the
-//! debounce timer only ever fires because an event armed it, never on its
-//! own schedule. See `run()`'s own comment for why this exists: found live
-//! investigating a real TCP-reset bug on long-lived pod-to-apiserver
-//! connections (github.com/centerionware/not-k8s/issues/30 has the full
-//! diagnostic trail), where the leading suspect was an already-established
-//! connection's conntrack NAT state getting caught in one of these
-//! rebuilds mid-flight.
+//! no polling), the whole ruleset rebuilt atomically from current state
+//! every time a Service or EndpointSlice changes.
+//!
+//! Both the nft table (`build_ruleset()`) and the xtables/iptables fallback
+//! (`build_statistic_ruleset()`) carry an explicit `ct state
+//! established,related accept` rule, first in their chain, ahead of any
+//! DNAT rule — found live investigating a real TCP-reset bug on long-lived
+//! pod-to-apiserver connections (github.com/centerionware/not-k8s/issues/30
+//! has the full diagnostic trail): rebuilding the whole ruleset on every
+//! event is supposed to leave an already-established connection's conntrack
+//! NAT state untouched, but this rule makes that guarantee explicit instead
+//! of implicit, rather than trying to reduce how often a rebuild happens.
 //!
 //! This used to run as a task inside `nodelet` itself. It's a separate
 //! process now for the same reason kube-proxy is separate from the kubelet
@@ -132,30 +131,11 @@ use kube::{Api, Client, ResourceExt};
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tracing::{debug, info, warn};
 
 const TABLE: &str = "not_k8s_svc";
 const SVC_NAME_LABEL: &str = "kubernetes.io/service-name";
-
-/// How long to hold a dirty ruleset before actually rebuilding the nftables
-/// table — see `run()`'s own comment for why. Short enough that it's
-/// nowhere near visible against this crate's own e2e `wait_until` timeouts
-/// (seconds), long enough to coalesce a real burst (a Deployment scaling
-/// up N pods fires N EndpointSlice updates within milliseconds of each
-/// other).
-const REBUILD_DEBOUNCE: Duration = Duration::from_millis(75);
-
-/// Resolves at `deadline` if one is set, otherwise never — lets a single
-/// `tokio::select!` branch double as "wait for the debounce timer, or
-/// don't race one at all when nothing is dirty," without a separate
-/// `if let` split across two arms.
-async fn sleep_until_opt(deadline: Option<Instant>) {
-    match deadline {
-        Some(d) => tokio::time::sleep_until(d.into()).await,
-        None => std::future::pending().await,
-    }
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Family {
@@ -227,23 +207,15 @@ unaffected either way",
         let mut state = State::default();
         let mut svc_stream = watch_services(&self.client);
         let mut ep_stream = watch_endpoint_slices(&self.client);
-        // Set once state is dirtied by an event, cleared once the debounced
-        // rebuild actually runs — see `REBUILD_DEBOUNCE`'s own doc comment
-        // for why this exists at all (found live investigating
-        // github.com/centerionware/not-k8s/issues/30: a burst of
-        // Service/EndpointSlice events — e.g. a Deployment scaling up N
-        // pods — was rebuilding this table N times in rapid succession,
-        // the leading suspect for TCP resets seen on long-lived pod-to-
-        // apiserver connections held open across one of those rebuilds).
-        let mut rebuild_deadline: Option<Instant> = None;
 
         loop {
+            let mut changed = false;
             tokio::select! {
                 item = svc_stream.next() => {
                     match item {
                         Some(Ok(ev)) => {
                             apply_event(&mut state.services, ev);
-                            rebuild_deadline = Some(Instant::now() + REBUILD_DEBOUNCE);
+                            changed = true;
                         }
                         Some(Err(e)) => warn!(error = ?e, "service watch error"),
                         None => {
@@ -257,7 +229,7 @@ unaffected either way",
                     match item {
                         Some(Ok(ev)) => {
                             apply_event(&mut state.endpoint_slices, ev);
-                            rebuild_deadline = Some(Instant::now() + REBUILD_DEBOUNCE);
+                            changed = true;
                         }
                         Some(Err(e)) => warn!(error = ?e, "endpointslice watch error"),
                         None => {
@@ -267,55 +239,54 @@ unaffected either way",
                         }
                     }
                 }
-                _ = sleep_until_opt(rebuild_deadline), if rebuild_deadline.is_some() => {
-                    rebuild_deadline = None;
-                // Re-read on every rebuild rather than caching: an address
-                // added or removed later must be picked up. Only costs a
-                // subprocess on kernels that actually need the fallback.
-                let local = if caps.fib { Vec::new() } else { local_addrs() };
-                let ruleset =
-                    build_ruleset(&state, self.ip_family, self.lb_method, caps, &local);
-                // Propagated, not just logged. Reconciliation here is purely
-                // event-driven — the whole point of the design, but it means
-                // there is no periodic resync to quietly retry a failed
-                // apply. Logging and continuing would leave the kernel
-                // holding the last good ruleset while nodeproxy reports
-                // healthy, with the divergence persisting until some
-                // unrelated Service or EndpointSlice happened to change.
-                // Returning lets main() exit non-zero so the service manager
-                // restarts, relists, and rebuilds from scratch — which also
-                // recovers on its own once whatever produced the rejected
-                // ruleset is gone.
-                apply_nft(&ruleset)
-                    .map_err(|e| anyhow::anyhow!(e))
-                    .context("applying the nftables ruleset")?;
-                // The xtables fallback, only ever non-empty on a kernel
-                // that cannot select among backends natively. Applied after
-                // the nft table so a failure here still leaves single-backend
-                // routing in place.
-                if !caps.numgen {
-                    for family in [Family::V4, Family::V6] {
-                        // Gated per family: a host with iptables but no
-                        // ip6tables must keep serving IPv4 rather than
-                        // failing the whole apply over a tool it never
-                        // needed.
-                        if !caps.statistic(family) {
-                            continue;
+            }
+            if !changed {
+                continue;
+            }
+            // Re-read on every rebuild rather than caching: an address
+            // added or removed later must be picked up. Only costs a
+            // subprocess on kernels that actually need the fallback.
+            let local = if caps.fib { Vec::new() } else { local_addrs() };
+            let ruleset = build_ruleset(&state, self.ip_family, self.lb_method, caps, &local);
+            // Propagated, not just logged. Reconciliation here is purely
+            // event-driven — the whole point of the design, but it means
+            // there is no periodic resync to quietly retry a failed
+            // apply. Logging and continuing would leave the kernel
+            // holding the last good ruleset while nodeproxy reports
+            // healthy, with the divergence persisting until some
+            // unrelated Service or EndpointSlice happened to change.
+            // Returning lets main() exit non-zero so the service manager
+            // restarts, relists, and rebuilds from scratch — which also
+            // recovers on its own once whatever produced the rejected
+            // ruleset is gone.
+            apply_nft(&ruleset)
+                .map_err(|e| anyhow::anyhow!(e))
+                .context("applying the nftables ruleset")?;
+            // The xtables fallback, only ever non-empty on a kernel
+            // that cannot select among backends natively. Applied after
+            // the nft table so a failure here still leaves single-backend
+            // routing in place.
+            if !caps.numgen {
+                for family in [Family::V4, Family::V6] {
+                    // Gated per family: a host with iptables but no
+                    // ip6tables must keep serving IPv4 rather than
+                    // failing the whole apply over a tool it never
+                    // needed.
+                    if !caps.statistic(family) {
+                        continue;
+                    }
+                    match build_statistic_ruleset(&state, self.ip_family, caps, family) {
+                        Some(rs) => {
+                            ensure_statistic_chain(family)?;
+                            apply_statistic(family, &rs).with_context(|| {
+                                format!("applying the {} statistic ruleset", ipt(family))
+                            })?;
                         }
-                        match build_statistic_ruleset(&state, self.ip_family, caps, family) {
-                            Some(rs) => {
-                                ensure_statistic_chain(family)?;
-                                apply_statistic(family, &rs).with_context(|| {
-                                    format!("applying the {} statistic ruleset", ipt(family))
-                                })?;
-                            }
-                            None => flush_statistic_chain(family)?,
-                        }
+                        None => flush_statistic_chain(family)?,
                     }
                 }
-                debug!("ruleset applied");
-                }
             }
+            debug!("ruleset applied");
         }
     }
 }
@@ -1464,41 +1435,4 @@ mod tests {
         assert_eq!(Family::of("fd00::5"), Family::V6);
     }
 
-    /// `sleep_until_opt(None)` must never resolve on its own — it's the
-    /// "nothing is dirty, don't race a rebuild at all" case in `run()`'s
-    /// `tokio::select!`, and a real resolution here would mean the loop
-    /// spuriously wakes up and rebuilds with nothing new to apply.
-    #[tokio::test(start_paused = true)]
-    async fn sleep_until_opt_none_never_resolves() {
-        let never = tokio::time::timeout(Duration::from_secs(3600), sleep_until_opt(None)).await;
-        assert!(never.is_err(), "sleep_until_opt(None) resolved on its own");
-    }
-
-    /// The core debounce property `REBUILD_DEBOUNCE` exists for: repeatedly
-    /// re-arming the deadline (simulating a burst of Service/EndpointSlice
-    /// events arriving close together) must delay the actual rebuild until
-    /// `REBUILD_DEBOUNCE` after the *last* event, not fire once per event —
-    /// found live investigating github.com/centerionware/not-k8s/issues/30.
-    /// Uses paused virtual time so this is deterministic and instant to run,
-    /// not a real-time sleep-based test.
-    #[tokio::test(start_paused = true)]
-    async fn debounce_coalesces_a_burst_into_one_wakeup() {
-        let mut deadline = Some(tokio::time::Instant::now().into_std() + REBUILD_DEBOUNCE);
-        let mut wakeups = 0;
-        // Re-arm three more times, each before the previous deadline would
-        // have fired, exactly like three EndpointSlice events landing in
-        // quick succession.
-        for _ in 0..3 {
-            tokio::select! {
-                _ = sleep_until_opt(deadline) => { wakeups += 1; }
-                _ = tokio::time::sleep(REBUILD_DEBOUNCE / 2) => {
-                    deadline = Some(tokio::time::Instant::now().into_std() + REBUILD_DEBOUNCE);
-                }
-            }
-        }
-        assert_eq!(wakeups, 0, "debounce fired before the burst went quiet");
-        sleep_until_opt(deadline).await;
-        wakeups += 1;
-        assert_eq!(wakeups, 1, "a burst of re-arms must coalesce into exactly one rebuild");
-    }
 }
