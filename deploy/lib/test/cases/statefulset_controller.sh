@@ -65,4 +65,72 @@ EOF
     kctl delete pods -l "app=$sts" --ignore-not-found >/dev/null 2>&1 || true
 }
 
+# CodeRabbit finding on PR #29: build_pod cloned the template PodSpec
+# verbatim and never injected a Volume for each volumeClaimTemplate, so a
+# container's volumeMount referencing one had no matching spec.volumes
+# entry — the apiserver rejects that Pod outright (a real create-time
+# 422, not a Pending state), regardless of whether any CSI provisioner
+# exists to ever bind the PVC. Deliberately doesn't need a working
+# provisioner (see csi_pvc.sh for that, separately gated): the fix under
+# test is "the Pod object gets created and accepted at all," which is
+# provable with no StorageClass, no external-provisioner, nothing but the
+# stock local-path-provisioner every not-k8s node already has.
+test_statefulset_with_a_volume_claim_template_creates_an_accepted_pod() {
+    _require_nodecontroller_sts
+    local sts="sts-pvc-test"
+
+    apply_manifest <<EOF
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: $sts
+spec:
+  serviceName: $sts
+  replicas: 1
+  selector:
+    matchLabels:
+      app: $sts
+  template:
+    metadata:
+      labels:
+        app: $sts
+    spec:
+      containers:
+        - name: busybox
+          image: busybox:latest
+          command: ["sleep", "3600"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 64Mi
+EOF
+    trap 'kctl delete statefulset "$sts" --ignore-not-found >/dev/null 2>&1 || true; kctl delete pods -l "app=$sts" --ignore-not-found >/dev/null 2>&1 || true; kctl delete pvc "data-${sts}-0" --ignore-not-found >/dev/null 2>&1 || true' EXIT
+
+    # The bug this test exists for fails right here: without the fix, the
+    # Pod object is never created at all (rejected by apiserver validation
+    # on the volumeMount/volumes mismatch), so it never even appears.
+    if ! try_wait_until 30 bash -c "kctl get pod '${sts}-0' >/dev/null 2>&1"; then
+        die "the StatefulSet's Pod was never created at all — this is the exact symptom of a volumeMount with no matching spec.volumes entry; check nodecontroller's log for a Pod creation rejection"
+    fi
+
+    local vol_name claim_name
+    vol_name="$(kctl get pod "${sts}-0" -o jsonpath='{.spec.volumes[?(@.persistentVolumeClaim)].name}')"
+    claim_name="$(kctl get pod "${sts}-0" -o jsonpath='{.spec.volumes[?(@.persistentVolumeClaim)].persistentVolumeClaim.claimName}')"
+    assert_eq "$vol_name" "data" "injected volume name must match the volumeMount/template name, not the generated PVC name"
+    assert_eq "$claim_name" "data-${sts}-0" "injected volume's claimName must match the PVC build_pvc actually creates"
+
+    trap - EXIT
+    kctl delete statefulset "$sts" --ignore-not-found >/dev/null 2>&1 || true
+    kctl delete pods -l "app=$sts" --ignore-not-found >/dev/null 2>&1 || true
+    kctl delete pvc "data-${sts}-0" --ignore-not-found >/dev/null 2>&1 || true
+}
+
 register_test test_statefulset_creates_ordinal_pods_and_scales_down_highest_first
+register_test test_statefulset_with_a_volume_claim_template_creates_an_accepted_pod

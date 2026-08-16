@@ -80,15 +80,58 @@ const BOOTSTRAP_GROUP: &str = "system:bootstrappers";
 const CLEANUP_AGE: chrono::Duration = chrono::Duration::hours(1);
 const TICK_PERIOD: StdDuration = StdDuration::from_secs(60);
 
+/// The identity fields inside a CSR's own x509 request — the actual
+/// security boundary for auto-approval. `spec.groups` alone isn't enough:
+/// it says who *asked*, not what identity the resulting certificate would
+/// carry. Upstream's own `csrapproving-controller` requires the Common
+/// Name to start with `system:node:` and the Organization to be exactly
+/// `system:nodes` before approving a
+/// `kubernetes.io/kube-apiserver-client-kubelet` CSR — without this check
+/// a `system:bootstrappers` principal could request `CN=kubernetes-admin,
+/// O=system:masters` and get a cluster-admin certificate auto-approved
+/// and signed.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CsrSubject {
+    pub common_name: Option<String>,
+    pub organization: Option<String>,
+}
+
+/// Parses the subject out of a CSR's PEM-encoded x509 request. Reuses
+/// rcgen's own CSR parsing (the `x509-parser` feature, already needed by
+/// `sign_csr`) rather than adding a second x509 dependency for the same
+/// job.
+fn parse_csr_subject(csr_pem: &str) -> Result<CsrSubject> {
+    let params = rcgen::CertificateSigningRequestParams::from_pem(csr_pem).context("parsing CSR PEM for subject validation")?;
+    let dn = &params.params.distinguished_name;
+    Ok(CsrSubject {
+        common_name: dn.get(&rcgen::DnType::CommonName).map(|v| v.to_string()),
+        organization: dn.get(&rcgen::DnType::OrganizationName).map(|v| v.to_string()),
+    })
+}
+
 /// Should this CSR be auto-approved? Pure given the fields the apiserver
-/// itself populated on creation (never attacker-controlled) — see module
-/// doc for why a group check stands in for a real `SubjectAccessReview`.
-pub fn should_auto_approve(signer_name: &str, groups: &[String], usages: &[String]) -> bool {
-    signer_name == KUBELET_CLIENT_SIGNER && groups.iter().any(|g| g == BOOTSTRAP_GROUP) && usages.iter().any(|u| u == "client auth")
+/// itself populated on creation (`signer_name`/`groups`/`usages`, never
+/// attacker-controlled) plus the CSR's own parsed subject (attacker
+/// *supplied*, but it's exactly the identity the boundary is checking) —
+/// see module doc for why a group check stands in for a real
+/// `SubjectAccessReview`, and this function's own doc for why the group
+/// check alone isn't sufficient.
+pub fn should_auto_approve(signer_name: &str, groups: &[String], usages: &[String], subject: &CsrSubject) -> bool {
+    signer_name == KUBELET_CLIENT_SIGNER
+        && groups.iter().any(|g| g == BOOTSTRAP_GROUP)
+        && usages.iter().any(|u| u == "client auth")
+        // Reject any usage outside the set a kubelet-client cert actually
+        // needs — an approved-but-overbroad usage list is itself a
+        // privilege widening even with the subject check above correct.
+        && usages.iter().all(|u| matches!(u.as_str(), "digital signature" | "key encipherment" | "client auth"))
+        && subject.common_name.as_deref().is_some_and(|cn| cn.starts_with("system:node:"))
+        && subject.organization.as_deref() == Some("system:nodes")
 }
 
 pub fn already_decided(conditions: &[CertificateSigningRequestCondition]) -> bool {
-    conditions.iter().any(|c| matches!(c.type_.as_str(), "Approved" | "Denied" | "Failed"))
+    conditions
+        .iter()
+        .any(|c| matches!(c.type_.as_str(), "Approved" | "Denied" | "Failed") && c.status == "True")
 }
 
 /// Approved, but no certificate issued yet — exactly what the signing half
@@ -256,7 +299,18 @@ async fn reconcile_csr(client: &Client, ca: &Option<SigningCa>, name: &str) {
     if !already_decided(&conditions) {
         let groups = csr.spec.groups.clone().unwrap_or_default();
         let usages = csr.spec.usages.clone().unwrap_or_default();
-        if should_auto_approve(&csr.spec.signer_name, &groups, &usages) {
+        // Parse failure (bad UTF-8, malformed PEM, unparseable x509) fails
+        // closed to an empty subject, which should_auto_approve's own
+        // checks then reject — never treat "couldn't read the identity"
+        // as "no identity claims to object to".
+        let subject = String::from_utf8(csr.spec.request.0.clone())
+            .ok()
+            .and_then(|pem| parse_csr_subject(&pem).ok())
+            .unwrap_or_else(|| {
+                tracing::warn!(csr = %name, "failed to parse CSR request PEM for subject validation; will not auto-approve");
+                CsrSubject::default()
+            });
+        if should_auto_approve(&csr.spec.signer_name, &groups, &usages, &subject) {
             approve(client, name, &conditions).await;
         }
         return;
@@ -363,24 +417,101 @@ mod tests {
         Utc.timestamp_opt(secs, 0).unwrap()
     }
 
+    fn node_subject() -> CsrSubject {
+        CsrSubject {
+            common_name: Some("system:node:my-node".to_string()),
+            organization: Some("system:nodes".to_string()),
+        }
+    }
+
     #[test]
-    fn approves_a_bootstrapper_client_auth_csr() {
-        assert!(should_auto_approve(KUBELET_CLIENT_SIGNER, &["system:bootstrappers".to_string()], &["client auth".to_string()]));
+    fn approves_a_bootstrapper_client_auth_csr_with_a_valid_node_subject() {
+        assert!(should_auto_approve(
+            KUBELET_CLIENT_SIGNER,
+            &["system:bootstrappers".to_string()],
+            &["client auth".to_string()],
+            &node_subject()
+        ));
     }
 
     #[test]
     fn rejects_the_wrong_signer() {
-        assert!(!should_auto_approve("kubernetes.io/kubelet-serving", &["system:bootstrappers".to_string()], &["client auth".to_string()]));
+        assert!(!should_auto_approve(
+            "kubernetes.io/kubelet-serving",
+            &["system:bootstrappers".to_string()],
+            &["client auth".to_string()],
+            &node_subject()
+        ));
     }
 
     #[test]
     fn rejects_without_the_bootstrap_group() {
-        assert!(!should_auto_approve(KUBELET_CLIENT_SIGNER, &["some-other-group".to_string()], &["client auth".to_string()]));
+        assert!(!should_auto_approve(
+            KUBELET_CLIENT_SIGNER,
+            &["some-other-group".to_string()],
+            &["client auth".to_string()],
+            &node_subject()
+        ));
     }
 
     #[test]
     fn rejects_without_client_auth_usage() {
-        assert!(!should_auto_approve(KUBELET_CLIENT_SIGNER, &["system:bootstrappers".to_string()], &["server auth".to_string()]));
+        assert!(!should_auto_approve(
+            KUBELET_CLIENT_SIGNER,
+            &["system:bootstrappers".to_string()],
+            &["server auth".to_string()],
+            &node_subject()
+        ));
+    }
+
+    #[test]
+    fn rejects_a_usage_outside_the_allowed_set_even_alongside_client_auth() {
+        assert!(!should_auto_approve(
+            KUBELET_CLIENT_SIGNER,
+            &["system:bootstrappers".to_string()],
+            &["client auth".to_string(), "server auth".to_string()],
+            &node_subject()
+        ));
+    }
+
+    // The whole point of this fix (github.com/centerionware/not-k8s CodeRabbit
+    // finding, PR #29): a bootstrap-token holder in `system:bootstrappers`
+    // must not be able to obtain an arbitrary identity's certificate just by
+    // putting it in the CSR's own subject.
+    #[test]
+    fn rejects_a_non_node_common_name_even_with_the_bootstrap_group() {
+        let subject = CsrSubject { common_name: Some("kubernetes-admin".to_string()), organization: Some("system:nodes".to_string()) };
+        assert!(!should_auto_approve(KUBELET_CLIENT_SIGNER, &["system:bootstrappers".to_string()], &["client auth".to_string()], &subject));
+    }
+
+    #[test]
+    fn rejects_a_non_system_nodes_organization() {
+        let subject = CsrSubject { common_name: Some("system:node:my-node".to_string()), organization: Some("system:masters".to_string()) };
+        assert!(!should_auto_approve(KUBELET_CLIENT_SIGNER, &["system:bootstrappers".to_string()], &["client auth".to_string()], &subject));
+    }
+
+    #[test]
+    fn rejects_a_missing_subject() {
+        assert!(!should_auto_approve(
+            KUBELET_CLIENT_SIGNER,
+            &["system:bootstrappers".to_string()],
+            &["client auth".to_string()],
+            &CsrSubject::default()
+        ));
+    }
+
+    #[test]
+    fn parses_the_subject_out_of_a_real_csr_pem() {
+        let mut params = rcgen::CertificateParams::default();
+        let mut dn = rcgen::DistinguishedName::new();
+        dn.push(rcgen::DnType::CommonName, "system:node:my-node");
+        dn.push(rcgen::DnType::OrganizationName, "system:nodes");
+        params.distinguished_name = dn;
+        let key = rcgen::KeyPair::generate().expect("generate a test key");
+        let csr_pem = params.serialize_request(&key).expect("build a test CSR").pem().expect("PEM-encode the test CSR");
+
+        let subject = parse_csr_subject(&csr_pem).expect("parse the subject back out");
+        assert_eq!(subject, node_subject());
     }
 
     fn cond(type_: &str, status: &str) -> CertificateSigningRequestCondition {

@@ -51,7 +51,7 @@
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{StatefulSet, StatefulSetStatus};
-use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod};
+use k8s_openapi::api::core::v1::{PersistentVolumeClaim, PersistentVolumeClaimVolumeSource, Pod, Volume};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::runtime::watcher::Event;
@@ -136,15 +136,41 @@ fn pod_hash(pod: &Pod) -> Option<&str> {
     pod.metadata.labels.as_ref().and_then(|l| l.get(POD_TEMPLATE_HASH_LABEL)).map(|s| s.as_str())
 }
 
+/// The generated per-ordinal PVC's own object name — shared by `build_pvc`
+/// (which creates it) and `build_pod` (which must reference the exact same
+/// name in its injected volume) so the two can never drift apart.
+fn pvc_name_for_ordinal(claim_name: &str, sts_name: &str, ordinal: i32) -> String {
+    format!("{claim_name}-{sts_name}-{ordinal}")
+}
+
 fn build_pod(sts: &StatefulSet, ordinal: i32, hash: &str) -> Option<Pod> {
     let spec = sts.spec.as_ref()?;
-    let pod_spec = spec.template.spec.clone()?;
+    let mut pod_spec = spec.template.spec.clone()?;
+    // Real StatefulSet semantics: a `volumeClaimTemplate` named e.g. "www"
+    // means containers mount a volume literally named "www" — the PVC
+    // object backing it has a different, generated name
+    // (`pvc_name_for_ordinal`), but the Volume's own `.name` is the
+    // template's name, matching what `volumeMounts` in the template
+    // reference. Without this the apiserver rejects the Pod outright:
+    // every volumeMount has no corresponding `spec.volumes` entry.
+    let sts_name = sts.name_any();
+    for template in spec.volume_claim_templates.iter().flatten() {
+        let Some(claim_name) = template.metadata.name.as_ref() else { continue };
+        pod_spec.volumes.get_or_insert_with(Vec::new).push(Volume {
+            name: claim_name.clone(),
+            persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+                claim_name: pvc_name_for_ordinal(claim_name, &sts_name, ordinal),
+                read_only: None,
+            }),
+            ..Default::default()
+        });
+    }
     let mut labels = spec.template.metadata.as_ref().and_then(|m| m.labels.clone()).unwrap_or_default();
     labels.insert(POD_TEMPLATE_HASH_LABEL.to_string(), hash.to_string());
     let annotations = spec.template.metadata.as_ref().and_then(|m| m.annotations.clone());
     Some(Pod {
         metadata: ObjectMeta {
-            name: Some(pod_name(&sts.name_any(), ordinal)),
+            name: Some(pod_name(&sts_name, ordinal)),
             namespace: sts.namespace(),
             labels: Some(labels),
             annotations,
@@ -160,7 +186,7 @@ fn build_pvc(sts: &StatefulSet, template: &PersistentVolumeClaim, ordinal: i32) 
     let claim_name = template.metadata.name.as_ref()?;
     Some(PersistentVolumeClaim {
         metadata: ObjectMeta {
-            name: Some(format!("{claim_name}-{}-{ordinal}", sts.name_any())),
+            name: Some(pvc_name_for_ordinal(claim_name, &sts.name_any(), ordinal)),
             namespace: sts.namespace(),
             labels: template.metadata.labels.clone(),
             annotations: template.metadata.annotations.clone(),
@@ -416,5 +442,60 @@ mod tests {
         assert_eq!(ordinal_from_pod_name("web", "web-0"), Some(0));
         assert_eq!(ordinal_from_pod_name("web", "web-12"), Some(12));
         assert_eq!(ordinal_from_pod_name("web", "other-0"), None);
+    }
+
+    fn sts_with_pvc_template() -> StatefulSet {
+        use k8s_openapi::api::apps::v1::StatefulSetSpec;
+        use k8s_openapi::api::core::v1::{Container, PodSpec, PodTemplateSpec, VolumeMount};
+        StatefulSet {
+            metadata: ObjectMeta { name: Some("web".to_string()), namespace: Some("default".to_string()), ..Default::default() },
+            spec: Some(StatefulSetSpec {
+                service_name: "web".to_string(),
+                template: PodTemplateSpec {
+                    metadata: None,
+                    spec: Some(PodSpec {
+                        containers: vec![Container {
+                            name: "app".to_string(),
+                            volume_mounts: Some(vec![VolumeMount {
+                                name: "www".to_string(),
+                                mount_path: "/data".to_string(),
+                                ..Default::default()
+                            }]),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                },
+                volume_claim_templates: Some(vec![PersistentVolumeClaim {
+                    metadata: ObjectMeta { name: Some("www".to_string()), ..Default::default() },
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            status: None,
+        }
+    }
+
+    // The actual bug CodeRabbit caught in PR #29: build_pod cloned the
+    // template PodSpec verbatim, so a volumeMount referencing a
+    // volumeClaimTemplate had no matching spec.volumes entry and the
+    // apiserver rejected every such Pod outright.
+    #[test]
+    fn build_pod_injects_a_volume_for_each_pvc_template_matching_build_pvcs_name() {
+        let sts = sts_with_pvc_template();
+        let pod = build_pod(&sts, 0, "hash1").expect("build_pod should produce a Pod");
+        let volumes = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()).expect("Pod must have injected volumes");
+        assert_eq!(volumes.len(), 1);
+        let vol = &volumes[0];
+        // Volume name matches the volumeMount in the template ("www"), not
+        // the generated PVC's own object name.
+        assert_eq!(vol.name, "www");
+        let claim = vol.persistent_volume_claim.as_ref().expect("volume must be PVC-backed");
+
+        let template = sts.spec.as_ref().unwrap().volume_claim_templates.as_ref().unwrap().first().unwrap();
+        let pvc = build_pvc(&sts, template, 0).expect("build_pvc should produce a PVC");
+        // The two must never drift: the volume's claim_name is exactly the
+        // PVC object build_pvc actually creates.
+        assert_eq!(claim.claim_name, pvc.metadata.name.unwrap());
     }
 }
