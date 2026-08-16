@@ -1,7 +1,16 @@
-commit: f4ba1be5e31e1bcb9c2a3987ce6a1c832858d966
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31927676032
-timestamp (UTC): 2026-08-16T04:56:58Z
+commit: 9b6cbdca27963ed138abc1ddcc47cf2f727ca287
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31927905412
+timestamp (UTC): 2026-08-16T05:05:48Z
 shard: 4/5
-exit code: unknown
+exit code: 0
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+==> Test namespace: not-k8s-e2e-1786856709
+==> 233 test(s) registered total (before sharding); running now...
+==> Shard 4/5: 44 test(s) selected
+▶ test_disruption_controller_computes_pdb_status
+  ✔ PASS (37s)
+
+════════════════════════════════════════
+Results: 1 passed, 0 failed, 0 skipped
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786856709...
