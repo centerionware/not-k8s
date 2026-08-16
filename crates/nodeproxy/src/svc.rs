@@ -5,7 +5,9 @@
 //! real backend pod. This does the same job with nftables, scoped to what a
 //! single-node edge cluster needs: reconcile-on-event (no periodic resync,
 //! no polling), the whole ruleset rebuilt atomically from current state
-//! every time a Service or EndpointSlice changes.
+//! every time a Service or EndpointSlice changes. Initial relists are folded
+//! into one rebuild after both snapshots are complete, rather than rebuilding
+//! once for every `InitApply` item.
 //!
 //! The whole ruleset is rebuilt on each Service or EndpointSlice event. Keep
 //! an explicit `established,related accept` fast path ahead of the DNAT rules:
@@ -169,6 +171,46 @@ impl Family {
 struct State {
     services: HashMap<String, Service>,
     endpoint_slices: HashMap<String, EndpointSlice>,
+    services_initialized: bool,
+    endpoint_slices_initialized: bool,
+    dirty: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventPhase {
+    Init,
+    InitApply,
+    Apply,
+    Delete,
+    InitDone,
+}
+
+impl State {
+    /// Records one watch event and reports whether the current snapshot is
+    /// ready for a rebuild. `watcher` emits one `InitApply` per existing
+    /// object during a relist; those events only dirty the mirror. Rebuild
+    /// once both resource kinds have reached `InitDone`, then rebuild
+    /// immediately for ordinary live changes.
+    fn record_event(&mut self, services: bool, phase: EventPhase) -> bool {
+        self.dirty = true;
+        let initialized = if services {
+            &mut self.services_initialized
+        } else {
+            &mut self.endpoint_slices_initialized
+        };
+        match phase {
+            EventPhase::Init => *initialized = false,
+            EventPhase::InitDone => *initialized = true,
+            EventPhase::InitApply | EventPhase::Apply | EventPhase::Delete => {}
+        }
+
+        if self.dirty && self.services_initialized && self.endpoint_slices_initialized {
+            self.dirty = false;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 pub struct ServiceProxy {
@@ -216,8 +258,8 @@ unaffected either way",
                 item = svc_stream.next() => {
                     match item {
                         Some(Ok(ev)) => {
-                            apply_event(&mut state.services, ev);
-                            changed = true;
+                            let phase = apply_event(&mut state.services, ev);
+                            changed |= state.record_event(true, phase);
                         }
                         Some(Err(e)) => warn!(error = ?e, "service watch error"),
                         None => {
@@ -230,8 +272,8 @@ unaffected either way",
                 item = ep_stream.next() => {
                     match item {
                         Some(Ok(ev)) => {
-                            apply_event(&mut state.endpoint_slices, ev);
-                            changed = true;
+                            let phase = apply_event(&mut state.endpoint_slices, ev);
+                            changed |= state.record_event(false, phase);
                         }
                         Some(Err(e)) => warn!(error = ?e, "endpointslice watch error"),
                         None => {
@@ -313,18 +355,28 @@ fn obj_key<T: ResourceExt>(obj: &T) -> String {
 
 /// Fold a watch event into our local mirror. `Init` means a relist just
 /// started (drop anything stale from before a reconnect); `InitApply`/`Apply`
-/// upsert; `Delete` removes; `InitDone` needs no action (the next loop tick
-/// reconciles).
-fn apply_event<T: Clone + ResourceExt>(map: &mut HashMap<String, T>, ev: Event<T>) {
+/// upsert; `Delete` removes; `InitDone` marks the snapshot complete. The
+/// caller batches `InitApply` events and rebuilds only after both resource
+/// kinds finish their initial relist.
+fn apply_event<T: Clone + ResourceExt>(map: &mut HashMap<String, T>, ev: Event<T>) -> EventPhase {
     match ev {
-        Event::Init => map.clear(),
-        Event::InitApply(obj) | Event::Apply(obj) => {
+        Event::Init => {
+            map.clear();
+            EventPhase::Init
+        }
+        Event::InitApply(obj) => {
             map.insert(obj_key(&obj), obj);
+            EventPhase::InitApply
+        }
+        Event::Apply(obj) => {
+            map.insert(obj_key(&obj), obj);
+            EventPhase::Apply
         }
         Event::Delete(obj) => {
             map.remove(&obj_key(&obj));
+            EventPhase::Delete
         }
-        Event::InitDone => {}
+        Event::InitDone => EventPhase::InitDone,
     }
 }
 
@@ -1314,6 +1366,28 @@ mod tests {
             },
         );
         state
+    }
+
+    #[test]
+    fn initial_relists_rebuild_once_after_both_snapshots_finish() {
+        let mut state = State::default();
+
+        assert!(!state.record_event(true, EventPhase::Init));
+        assert!(!state.record_event(true, EventPhase::InitApply));
+        assert!(!state.record_event(true, EventPhase::InitDone));
+        assert!(!state.record_event(false, EventPhase::Init));
+        assert!(!state.record_event(false, EventPhase::InitApply));
+        assert!(state.record_event(false, EventPhase::InitDone));
+        assert!(!state.dirty);
+
+        // Live changes stay immediate after the initial snapshots are ready.
+        assert!(state.record_event(true, EventPhase::Apply));
+
+        // A reconnect batches again until that resource's new snapshot is
+        // complete, so stale state is never applied one object at a time.
+        assert!(!state.record_event(true, EventPhase::Init));
+        assert!(!state.record_event(true, EventPhase::InitApply));
+        assert!(state.record_event(true, EventPhase::InitDone));
     }
 
     /// `build_ruleset()`'s real output — not a hand-written stand-in script
