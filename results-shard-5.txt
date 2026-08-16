@@ -1,10 +1,10 @@
-commit: 6055478e183372ffb15452b69951dc66422df294
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31972045077
-timestamp (UTC): 2026-08-16T21:11:05Z
+commit: 8a23836d89b505a4b7972aae22726ed90fee3e51
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31973474655
+timestamp (UTC): 2026-08-16T21:40:14Z
 shard: 5/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786914139
+==> Test namespace: not-k8s-e2e-1786915888
 ==> 235 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 44 test(s) selected
 ▶ test_tls_bootstrap_issues_a_real_client_certificate
@@ -18,8 +18,8 @@ exit code: 0
 ▶ test_datastore_refuses_a_cluster_it_cannot_be_part_of
   ✔ PASS (0s)
 ▶ test_apiserver_state_survives_a_datastore_restart
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13456/environ: Permission denied
-  ✔ PASS (13s)
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13493/environ: Permission denied
+  ✔ PASS (7s)
 ▶ test_the_cluster_survives_the_leader_being_killed
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
@@ -32,9 +32,9 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (102s)
+  ✔ PASS (105s)
 ▶ test_custom_dns_config_reaches_resolv_conf
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_eviction_manual_procedure
     (skip: triggering real eviction safely needs either an artificially-low pressure threshold or actually exhausting a resource — neither is something this suite does to a live node automatically. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES set just above current MemAvailable (forces MemoryPressure=True without real exhaustion), (3) apply a BestEffort pod and a Guaranteed pod, (4) within NODELET_EVICTION_CHECK_SECS (default 10s) confirm the BestEffort pod gets phase Failed/reason Evicted and is deleted, while the Guaranteed pod is untouched, (5) restore the normal threshold and restart nodelet.)
   ○ SKIP (0s)
@@ -56,7 +56,7 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_a_long_lived_watch_survives_a_service_churn_burst
 === watcher pod status ===
 NAME                       READY   STATUS    RESTARTS   AGE   IP           NODE            NOMINATED NODE   READINESS GATES
-established-conn-watcher   1/1     Running   0          28s   10.42.0.15   runnervmzvulz   <none>           <none>
+established-conn-watcher   1/1     Running   0          27s   10.42.0.15   runnervmzvulz   <none>           <none>
 === watch.err ===
 host=10.43.0.1 port=443
 *   Trying 10.43.0.1:443...
@@ -74,9 +74,9 @@ host=10.43.0.1 port=443
 * TLSv1.3 (IN), TLS handshake, Request CERT (13):
 { [65 bytes data]
 * TLSv1.3 (IN), TLS handshake, Certificate (11):
-{ [953 bytes data]
+{ [952 bytes data]
 * TLSv1.3 (IN), TLS handshake, CERT verify (15):
-{ [79 bytes data]
+{ [78 bytes data]
 * TLSv1.3 (IN), TLS handshake, Finished (20):
 { [36 bytes data]
 * TLSv1.3 (OUT), TLS change cipher, Change cipher spec (1):
@@ -89,53 +89,53 @@ host=10.43.0.1 port=443
 * ALPN: server accepted h2
 * Server certificate:
 *  subject: O=k3s; CN=k3s
-*  start date: Aug 16 20:01:29 2026 GMT
-*  expire date: Aug 16 20:01:29 2027 GMT
+*  start date: Aug 16 20:30:37 2026 GMT
+*  expire date: Aug 16 20:30:37 2027 GMT
 *  subjectAltName: host "10.43.0.1" matched cert's IP address!
-*  issuer: CN=k3s-server-ca@1786914089
+*  issuer: CN=k3s-server-ca@1786915837
 *  SSL certificate verify ok.
 *   Certificate level 0: Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256
 *   Certificate level 1: Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256
-} [5 bytes data]
-* Connected to 10.43.0.1 (10.43.0.1) port 443
-* using HTTP/2
-* [HTTP/2] [1] OPENED stream for https://10.43.0.1:443/api/v1/namespaces/not-k8s-e2e-1786914139/pods?watch=true&timeoutSeconds=85
-* [HTTP/2] [1] [:method: GET]
-* [HTTP/2] [1] [:scheme: https]
-* [HTTP/2] [1] [:authority: 10.43.0.1]
-* [HTTP/2] [1] [:path: /api/v1/namespaces/not-k8s-e2e-1786914139/pods?watch=true&timeoutSeconds=85]
-* [HTTP/2] [1] [user-agent: curl/8.10.1]
-* [HTTP/2] [1] [accept: */*]
-* [HTTP/2] [1] [authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6InFpY1lDRGZRZmdYOFpMakNPNzFPaDY5YkhHMXl4aXdlNkZRV2lNcHJLaHMifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDUwNDUxLCJpYXQiOjE3ODY5MTQ0NTEsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiOTc0YjMxNDctNmFiYy00YmRmLThhMzctZjUyMjYxZGNjODA4Iiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2OTE0MTM5Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6IjMzNmZiZDE3LWZiNTgtNGU3MS1hNmI1LWZkMWE0NDg4ZTM5ZSJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6ImZiYzYzNWU5LTBlOWEtNDQ0Mi05Y2IxLWE0MjRmN2FmNzJiNSJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6ImFjZTg3ZWIxLThlNDItNGM3NC1iZjBkLTMwNjBiNGUyNDhjNCJ9LCJ3YXJuYWZ0ZXIiOjE3ODY5MTgwNTh9LCJuYmYiOjE3ODY5MTQ0NTEsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2OTE0MTM5OmRlZmF1bHQifQ.Efd0ZmCrYeKm7bmSWBMHraGC7EsCaa-iBxuF6aKSXHH1q_OJmXU5nzYha3Tmk2gEPB9wI9IRCyxmED-ZCLipOtdRFdKhCzSeaYcdPxuVKoJrGbwo7KRE_hWafg2KEd65dh5jDKyVq0ttvn-m45mycv1Dx5ssaZE1bPOmXbckMFAFuPsJ7Pp_fQQcbGN8VQjXKxK_dGVVQU4Gxe0h5vJuz66u7884hmJ3SM5IGKKbb4rEQfg2fZ79uEs4qHiXK0L_5A9q1ST20OLqoeUSLsmes9xaaXn4mUnKtpcxcFOakzn3U89g9ww0noVP5IEhOhQbkkCvsMgF1pyIa_VJ4c6yGA]
-} [5 bytes data]
-> GET /api/v1/namespaces/not-k8s-e2e-1786914139/pods?watch=true&timeoutSeconds=85 HTTP/2
-> Host: 10.43.0.1
-> User-Agent: curl/8.10.1
-> Accept: */*
-> Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6InFpY1lDRGZRZmdYOFpMakNPNzFPaDY5YkhHMXl4aXdlNkZRV2lNcHJLaHMifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDUwNDUxLCJpYXQiOjE3ODY5MTQ0NTEsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiOTc0YjMxNDctNmFiYy00YmRmLThhMzctZjUyMjYxZGNjODA4Iiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2OTE0MTM5Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6IjMzNmZiZDE3LWZiNTgtNGU3MS1hNmI1LWZkMWE0NDg4ZTM5ZSJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6ImZiYzYzNWU5LTBlOWEtNDQ0Mi05Y2IxLWE0MjRmN2FmNzJiNSJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6ImFjZTg3ZWIxLThlNDItNGM3NC1iZjBkLTMwNjBiNGUyNDhjNCJ9LCJ3YXJuYWZ0ZXIiOjE3ODY5MTgwNTh9LCJuYmYiOjE3ODY5MTQ0NTEsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2OTE0MTM5OmRlZmF1bHQifQ.Efd0ZmCrYeKm7bmSWBMHraGC7EsCaa-iBxuF6aKSXHH1q_OJmXU5nzYha3Tmk2gEPB9wI9IRCyxmED-ZCLipOtdRFdKhCzSeaYcdPxuVKoJrGbwo7KRE_hWafg2KEd65dh5jDKyVq0ttvn-m45mycv1Dx5ssaZE1bPOmXbckMFAFuPsJ7Pp_fQQcbGN8VQjXKxK_dGVVQU4Gxe0h5vJuz66u7884hmJ3SM5IGKKbb4rEQfg2fZ79uEs4qHiXK0L_5A9q1ST20OLqoeUSLsmes9xaaXn4mUnKtpcxcFOakzn3U89g9ww0noVP5IEhOhQbkkCvsMgF1pyIa_VJ4c6yGA
-> 
 { [5 bytes data]
 * TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
 { [122 bytes data]
+* Connected to 10.43.0.1 (10.43.0.1) port 443
+* using HTTP/2
+* [HTTP/2] [1] OPENED stream for https://10.43.0.1:443/api/v1/namespaces/not-k8s-e2e-1786915888/pods?watch=true&timeoutSeconds=85
+* [HTTP/2] [1] [:method: GET]
+* [HTTP/2] [1] [:scheme: https]
+* [HTTP/2] [1] [:authority: 10.43.0.1]
+* [HTTP/2] [1] [:path: /api/v1/namespaces/not-k8s-e2e-1786915888/pods?watch=true&timeoutSeconds=85]
+* [HTTP/2] [1] [user-agent: curl/8.10.1]
+* [HTTP/2] [1] [accept: */*]
+* [HTTP/2] [1] [authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IjNHbk4xRXN2T1AtUHFaY3E1TUtrQWtBSEh2WVJRUGZ5MkdNU1dIeU5zazgifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDUyMTk5LCJpYXQiOjE3ODY5MTYxOTksImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiNTMxOWY4MzYtYzExNy00MGYxLTkwY2YtOWNiYTg2ZjA0OWRhIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2OTE1ODg4Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6IjdlNmQwNDAzLTMzMTctNGM4YS05ZDYwLWZhMmM3NzBiNThiNCJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6ImY1MzQzY2UxLTk0YjAtNDlkNS1iMTgzLWM1ZjFmYTBiMmY0ZCJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6IjU0ZTU1YmEwLTNiNjYtNGZjMC1hY2YwLTU3ZTc0YThhYThkMyJ9LCJ3YXJuYWZ0ZXIiOjE3ODY5MTk4MDZ9LCJuYmYiOjE3ODY5MTYxOTksInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2OTE1ODg4OmRlZmF1bHQifQ.LpoePj-5W7_LiD5H6ZLcCFL0W_sGXHEF8EBCV2scwm-WsZAQWDbbh6IRKSLMdpxASUrzd7t8OWl7PmkpeC42RThnuDt-LAln-gVzzXP1LtHAoSlPejpm4hYxmoOtahpY7z-boFlS9ochgi6FWU4TpSCVg1la9v0YbxcyQ28bJwrL59UJJCJQPid2DBYWRs74sMQGv3dV6P0UoAemSeuHlFvFMfVh_6eDtgfMnSq7UgnTJbcRsBNDfEyAXdkTJ0FrBD9vlDk026uPthib9Yp6e9oeWC1rab2nUhszA1H2J2UDwTkDuP67W_mjZ-mWbJZRU0xrNka-OGjN8Gq30GNPTw]
+} [5 bytes data]
+> GET /api/v1/namespaces/not-k8s-e2e-1786915888/pods?watch=true&timeoutSeconds=85 HTTP/2
+> Host: 10.43.0.1
+> User-Agent: curl/8.10.1
+> Accept: */*
+> Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IjNHbk4xRXN2T1AtUHFaY3E1TUtrQWtBSEh2WVJRUGZ5MkdNU1dIeU5zazgifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDUyMTk5LCJpYXQiOjE3ODY5MTYxOTksImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiNTMxOWY4MzYtYzExNy00MGYxLTkwY2YtOWNiYTg2ZjA0OWRhIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2OTE1ODg4Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6IjdlNmQwNDAzLTMzMTctNGM4YS05ZDYwLWZhMmM3NzBiNThiNCJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6ImY1MzQzY2UxLTk0YjAtNDlkNS1iMTgzLWM1ZjFmYTBiMmY0ZCJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6IjU0ZTU1YmEwLTNiNjYtNGZjMC1hY2YwLTU3ZTc0YThhYThkMyJ9LCJ3YXJuYWZ0ZXIiOjE3ODY5MTk4MDZ9LCJuYmYiOjE3ODY5MTYxOTksInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2OTE1ODg4OmRlZmF1bHQifQ.LpoePj-5W7_LiD5H6ZLcCFL0W_sGXHEF8EBCV2scwm-WsZAQWDbbh6IRKSLMdpxASUrzd7t8OWl7PmkpeC42RThnuDt-LAln-gVzzXP1LtHAoSlPejpm4hYxmoOtahpY7z-boFlS9ochgi6FWU4TpSCVg1la9v0YbxcyQ28bJwrL59UJJCJQPid2DBYWRs74sMQGv3dV6P0UoAemSeuHlFvFMfVh_6eDtgfMnSq7UgnTJbcRsBNDfEyAXdkTJ0FrBD9vlDk026uPthib9Yp6e9oeWC1rab2nUhszA1H2J2UDwTkDuP67W_mjZ-mWbJZRU0xrNka-OGjN8Gq30GNPTw
+> 
+{ [5 bytes data]
 * Request completely sent off
 { [5 bytes data]
 < HTTP/2 200 
-< audit-id: 172e774c-ea5b-48e0-9ead-971bbcb78dfb
+< audit-id: 0a5a40cc-5417-4354-b31e-a6ae2eaa3d1f
 < cache-control: no-cache, private
 < content-type: application/json
-< x-kubernetes-pf-flowschema-uid: 7ae2a461-727b-4a82-9f95-8e66583c86a9
-< x-kubernetes-pf-prioritylevel-uid: 424a65ea-dbfb-4e24-83a3-f18a1f36f402
-< date: Sun, 16 Aug 2026 21:07:32 GMT
+< x-kubernetes-pf-flowschema-uid: e8fa37ff-5a62-44b5-a5a6-150db3b3ab39
+< x-kubernetes-pf-prioritylevel-uid: 7ad0e917-426f-486a-a950-de1625d82e61
+< date: Sun, 16 Aug 2026 21:36:40 GMT
 < 
-{ [5 bytes data]
+} [5 bytes data]
 watch.out bytes=10951 curl_processes_still_running=1
-  ✔ PASS (61s)
+  ✔ PASS (62s)
 ▶ test_pressure_conditions_are_present_and_normally_false
   ✔ PASS (1s)
 ▶ test_pod_resources_grpc_query_returns_real_data
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_startup_probe_failure_past_threshold_restarts_the_container
-  ✔ PASS (34s)
+  ✔ PASS (35s)
 ▶ test_metrics_cadvisor_returns_real_container_usage
   ✔ PASS (3s)
 ▶ test_hugepages_limit_is_enforced_via_cgroup
@@ -158,15 +158,15 @@ watch.out bytes=10951 curl_processes_still_running=1
   ✔ PASS (3s)
 ▶ test_proc_mount_unmasked_leaves_proc_kcore_readable
 ==> WARNING: expected /proc/kcore to be readable (non-zero bytes) under procMount: Unmasked, got 0 -- check proc_mount_paths()'s Unmasked branch in runtime/cri/resources.rs; not failing outright since this depends on the CRI runtime actually honoring an explicitly-empty masked_paths the same way it honors a populated one
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_containers_get_isolated_pid_namespaces_by_default
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_clusterip_service_routes_to_its_backend_pod
-  ✔ PASS (3s)
-▶ test_a_pod_reaching_its_own_service_gets_hairpin_masquerade
   ✔ PASS (4s)
-▶ test_headless_service_programs_no_rules_and_does_not_break_others
+▶ test_a_pod_reaching_its_own_service_gets_hairpin_masquerade
   ✔ PASS (3s)
+▶ test_headless_service_programs_no_rules_and_does_not_break_others
+  ✔ PASS (4s)
 ▶ test_stats_summary_returns_real_pod_usage
   ✔ PASS (3s)
 ▶ test_kubectl_attach_streams_the_containers_stdout
@@ -175,11 +175,11 @@ watch.out bytes=10951 curl_processes_still_running=1
 ▶ test_downward_api_volume_writes_pod_metadata
   ✔ PASS (3s)
 ▶ test_host_aliases_still_work_under_host_users_false
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_fsgroup_never_applies_to_hostpath_volumes
   ✔ PASS (5s)
 ▶ test_recursive_read_only_if_possible_falls_back_without_erroring
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_host_path_directory_type_rejects_a_nonexistent_path
   ✔ PASS (3s)
 ▶ test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
@@ -191,4 +191,4 @@ watch.out bytes=10951 curl_processes_still_running=1
 ════════════════════════════════════════
 Results: 36 passed, 0 failed, 8 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786914139...
+==> Cleaning up test namespace not-k8s-e2e-1786915888...
