@@ -1,48 +1,16 @@
-commit: 5307dacfb1ee8eadd0d15057735e0cdddae0978b
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31929997066
-timestamp (UTC): 2026-08-16T05:58:43Z
+commit: 4b13bccd5291021110f320106b55deecbcb64feb
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31930489480
+timestamp (UTC): 2026-08-16T06:11:13Z
 shard: 5/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786859920
-==> 234 test(s) registered total (before sharding); running now...
-==> Shard 5/5: 44 test(s) selected
-▶ test_diag3_csr_ca_loading
-=== DIAG3: full nodecontroller journal grep for csr-signing ===
-Aug 16 05:57:13 runnervmzvulz run-nodecontroller.sh[15942]: 2026-08-16T05:57:13.856905Z  WARN csr-signing-controller: found a CA key but failed to parse it path=/var/lib/rancher/k3s/server/tls/server-ca.key error=CouldNotParseKeyPair
-Aug 16 05:57:13 runnervmzvulz run-nodecontroller.sh[15942]: 2026-08-16T05:57:13.856938Z  WARN certificatesigningrequest-signing-controller starting without a usable CA — approval and cleanup still work, signing will not
-Aug 16 05:57:26 runnervmzvulz run-nodecontroller.sh[15942]: 2026-08-16T05:57:26.071628Z  WARN watch error in csr controllers error=WatchFailed(ReadEvents(Custom { kind: Other, error: Service(hyper::Error(Body, Custom { kind: UnexpectedEof, error: "peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof" })) }))
-Aug 16 05:57:28 runnervmzvulz run-nodecontroller.sh[15942]: 2026-08-16T05:57:28.152382Z  WARN watch error in csr controllers error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 389 (424)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-=== DIAG3: server-ca file presence/perms as root ===
--rw-r--r-- 1 root root 570 Aug 16 05:55 /var/lib/rancher/k3s/server/tls/server-ca.crt
--rw------- 1 root root 227 Aug 16 05:55 /var/lib/rancher/k3s/server/tls/server-ca.key
-=== DIAG3: nodecontroller process user ===
-USER     CMD
-root     /home/runner/work/not-k8s/not-k8s/bin/nodecontroller
-==> FATAL: diag3 dump above
-  ✘ FAIL (0s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 16 05:57:26 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:26.955531Z ERROR failed with status 503 Service Unavailable
-    Aug 16 05:57:26 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:26.979687Z ERROR failed with status 503 Service Unavailable
-    Aug 16 05:57:27 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:27.070677Z ERROR failed with status 503 Service Unavailable
-    Aug 16 05:57:27 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:27.103552Z ERROR failed with status 503 Service Unavailable
-    Aug 16 05:57:27 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:27.118560Z ERROR failed with status 503 Service Unavailable
-    Aug 16 05:57:27 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:27.132541Z ERROR failed with status 503 Service Unavailable
-    Aug 16 05:57:27 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:27.224650Z ERROR failed with status 503 Service Unavailable
-    Aug 16 05:57:27 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:27.316535Z ERROR failed with status 503 Service Unavailable
-    Aug 16 05:57:27 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:27.352132Z ERROR failed with status 503 Service Unavailable
-    Aug 16 05:57:27 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:27.365018Z ERROR failed with status 503 Service Unavailable
-    Aug 16 05:57:27 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:27.854583Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 390 (424)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 05:57:27 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:27.889794Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 418 (424)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 05:57:27 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:27.911010Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 365 (424)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 05:57:30 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:57:30.180531Z  INFO CreateContainer succeeded container=coredns container_id=7bfb503da6102909571fb21b803108434507e3f6d8e5c1cb7969a20622a5374a
-    Aug 16 05:58:08 runnervmzvulz run-nodelet.sh[15527]: 2026-08-16T05:58:08.150460Z  INFO node status pushed
+==> Test namespace: not-k8s-e2e-1786860665
+==> 233 test(s) registered total (before sharding); running now...
+==> Shard 5/5: 43 test(s) selected
+▶ test_tls_bootstrap_issues_a_real_client_certificate
+  ✔ PASS (7s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
-Failed:
-  - test_diag3_csr_ca_loading
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786859920...
+==> Cleaning up test namespace not-k8s-e2e-1786860665...
