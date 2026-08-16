@@ -39,10 +39,24 @@ EOF
         # CI runner tears down.
         echo "=== PVC $claim describe ==="
         kubectl describe pvc "$claim" -n "$TEST_NAMESPACE" 2>&1
-        echo "=== provisioner pod(s) ==="
-        kubectl get pods -l app=csi-hostpathplugin -o wide --all-namespaces 2>&1
-        echo "=== provisioner sidecar logs (csi-provisioner, tail 80) ==="
-        kubectl logs -l app=csi-hostpathplugin -c csi-provisioner -n default --tail=80 2>&1
+        echo "=== all pods, every namespace (looking for the provisioner) ==="
+        kubectl get pods --all-namespaces -o wide 2>&1
+        # Found by name substring, not a guessed label — a first attempt at
+        # this diagnostic used `-l app=csi-hostpathplugin` and got "No
+        # resources found" despite the StatefulSet itself creating fine, so
+        # the real label clearly isn't that. Name substring survives label
+        # changes in the reference driver's own manifests.
+        local prov_pod prov_ns
+        prov_pod="$(kubectl get pods --all-namespaces --no-headers 2>/dev/null | grep -i csi-hostpathplugin | head -1 | awk '{print $2}')"
+        prov_ns="$(kubectl get pods --all-namespaces --no-headers 2>/dev/null | grep -i csi-hostpathplugin | head -1 | awk '{print $1}')"
+        if [[ -n "$prov_pod" ]]; then
+            echo "=== provisioner pod describe ($prov_ns/$prov_pod) ==="
+            kubectl describe pod "$prov_pod" -n "$prov_ns" 2>&1
+            echo "=== provisioner sidecar logs (csi-provisioner, tail 80) ==="
+            kubectl logs "$prov_pod" -n "$prov_ns" -c csi-provisioner --tail=80 2>&1
+        else
+            echo "=== no pod matching 'csi-hostpathplugin' found anywhere — driver never scheduled at all ==="
+        fi
         echo "=== events for $claim ==="
         kubectl get events -n "$TEST_NAMESPACE" --field-selector "involvedObject.name=$claim" 2>&1
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
