@@ -1,27 +1,17 @@
-commit: de9b73397fdedfad8acda14a39e5604fa3092c3b
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31936359366
-timestamp (UTC): 2026-08-16T08:32:58Z
+commit: d474751033b8b968fdd9ce51799fda43660627e2
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31937112981
+timestamp (UTC): 2026-08-16T08:50:29Z
 shard: 5/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786869094
+==> Test namespace: not-k8s-e2e-1786870166
 ==> 234 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 44 test(s) selected
 ▶ test_a_long_lived_watch_survives_a_service_churn_burst
-=== watch never established; watch.out + watch.err ===
---watch.out--
-{
-  "kind": "Status",
-  "apiVersion": "v1",
-  "metadata": {},
-  "status": "Failure",
-  "message": "pods is forbidden: User \"system:serviceaccount:not-k8s-e2e-1786869094:default\" cannot watch resource \"pods\" in API group \"\" in the namespace \"not-k8s-e2e-1786869094\"",
-  "reason": "Forbidden",
-  "details": {
-    "kind": "pods"
-  },
-  "code": 403
-}--watch.err--
+=== watcher pod status ===
+NAME                       READY   STATUS    RESTARTS   AGE   IP          NODE            NOMINATED NODE   READINESS GATES
+established-conn-watcher   1/1     Running   0          28s   10.42.0.4   runnervmzvulz   <none>           <none>
+=== watch.err ===
 host=10.43.0.1 port=443
 *   Trying 10.43.0.1:443...
 * ALPN: curl offers h2,http/1.1
@@ -53,10 +43,10 @@ host=10.43.0.1 port=443
 * ALPN: server accepted h2
 * Server certificate:
 *  subject: O=k3s; CN=k3s
-*  start date: Aug 16 07:28:32 2026 GMT
-*  expire date: Aug 16 07:28:32 2027 GMT
+*  start date: Aug 16 07:46:31 2026 GMT
+*  expire date: Aug 16 07:46:31 2027 GMT
 *  subjectAltName: host "10.43.0.1" matched cert's IP address!
-*  issuer: CN=k3s-server-ca@1786868912
+*  issuer: CN=k3s-server-ca@1786869991
 *  SSL certificate verify ok.
 *   Certificate level 0: Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256
 *   Certificate level 1: Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256
@@ -65,60 +55,37 @@ host=10.43.0.1 port=443
 { [122 bytes data]
 * Connected to 10.43.0.1 (10.43.0.1) port 443
 * using HTTP/2
-* [HTTP/2] [1] OPENED stream for https://10.43.0.1:443/api/v1/namespaces/not-k8s-e2e-1786869094/pods?watch=true&timeoutSeconds=85
+* [HTTP/2] [1] OPENED stream for https://10.43.0.1:443/api/v1/namespaces/not-k8s-e2e-1786870166/pods?watch=true&timeoutSeconds=85
 * [HTTP/2] [1] [:method: GET]
 * [HTTP/2] [1] [:scheme: https]
 * [HTTP/2] [1] [:authority: 10.43.0.1]
-* [HTTP/2] [1] [:path: /api/v1/namespaces/not-k8s-e2e-1786869094/pods?watch=true&timeoutSeconds=85]
+* [HTTP/2] [1] [:path: /api/v1/namespaces/not-k8s-e2e-1786870166/pods?watch=true&timeoutSeconds=85]
 * [HTTP/2] [1] [user-agent: curl/8.10.1]
 * [HTTP/2] [1] [accept: */*]
-* [HTTP/2] [1] [authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6ImwtUTJrRXNfNUZteG13UmlUVUpzMWNMVm5sVlhVcUVOa2lBNlRnT0JoV0kifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDA1MDk1LCJpYXQiOjE3ODY4NjkwOTUsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiODcxZDNjNjQtMTY3YS00NThmLTg0NjEtMjIyZjQwODZhMjRlIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2ODY5MDk0Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6IjhiZjcxOWQzLTViOTAtNDE0ZC04ZjA5LTVkOGU4NTNmNmVlYSJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6ImI1MGJjZDUwLTBmNzctNDE4OC04NTg4LTUwNTM1NzA1NGRjNiJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6IjIzNGVkMmU0LWQyYzUtNDg2ZS05ZTJhLWY0ZGYzOTc0MDY5OCJ9LCJ3YXJuYWZ0ZXIiOjE3ODY4NzI3MDJ9LCJuYmYiOjE3ODY4NjkwOTUsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2ODY5MDk0OmRlZmF1bHQifQ.SHGG7Q8xfsBuOKdPW16Wzs-DXo5W2RB3vlUNI_h6-IixDbYPt642sUZwmw7GQNkjoBQ8GAYcMWUIm2drKu5lxXLmjHqx5K_xBjPpAfp-R8GfD4RMCOOl-ztjq3-uLQw4ZXJC9FxZs6CP00grjrf-rOHofEZHX-x3O8R8c3TXiyS6_Yg0ioHJdAlqEBiBr82oKB5g5lIpHMNR6qoUyVMkwB_AcBPeoauQPYiBPbk6nuXY7ViMO7DyPpPFggYH5H92WHL6fx_0it0u_GUzfe9G41j06V2X356WSGDxz9F01tbfxGVAJHSsYSpvJjCCTC7197YzPqqIQ30srEZP4h_fHA]
+* [HTTP/2] [1] [authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IktXcmFoeEp0WFVZZ1BfTEVRTVNqSUNYV3lkUXliWmxfVE45cDJnZ196cW8ifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDA2MTY4LCJpYXQiOjE3ODY4NzAxNjgsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiOTg1YmNkNzYtOTA3Ny00NmUxLWFkNjgtNzA1OGNjMzUxOGFiIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2ODcwMTY2Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6ImU4Mjg3MGRkLTkzNmYtNDMwYi1iMDYwLTIzMmVkZWVjYzU3OCJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6ImFlNDFlNDFlLTcwNGEtNDU4NS1iOGVjLTZiNWU0NTJjMWVlZiJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6ImI1ZDhlZWUwLTExOWQtNDc4NS05MmI0LTcxOTgxNzgwNWFmNCJ9LCJ3YXJuYWZ0ZXIiOjE3ODY4NzM3NzV9LCJuYmYiOjE3ODY4NzAxNjgsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2ODcwMTY2OmRlZmF1bHQifQ.s0DNO2yLAYnTOOYwIrcjXCPxgogd1Nz4mSgeGTgdNtgxLe4uqUeLdjczPUO8a2Fy9QqDyHfK2J-4hrHnss-czqp6z1R_fjT5rtxs89CRiF3_kZl9psDbBNiqgi8oHSp-6Lr8qhBRnju6Fh51zx7P5lBxd3JQFq1qQc44GUMhs7FJWhoGe-wT6SH2OwL-NvhKdar-v4m7o73aw5Iqcr8RVIEJGXrJIjBCOuMpQeK4vEEmZ-myzst1UVk7ro5VHLkmUyDhEuHvqKu5YmgXhRYQ48bu7XLIUgVM-ZP4QuhBB3Atwd1FZjxN3HUHZ6g9MlvSNckDdYLnQNaIUdUKRmRLcQ]
 } [5 bytes data]
-> GET /api/v1/namespaces/not-k8s-e2e-1786869094/pods?watch=true&timeoutSeconds=85 HTTP/2
+> GET /api/v1/namespaces/not-k8s-e2e-1786870166/pods?watch=true&timeoutSeconds=85 HTTP/2
 > Host: 10.43.0.1
 > User-Agent: curl/8.10.1
 > Accept: */*
-> Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6ImwtUTJrRXNfNUZteG13UmlUVUpzMWNMVm5sVlhVcUVOa2lBNlRnT0JoV0kifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDA1MDk1LCJpYXQiOjE3ODY4NjkwOTUsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiODcxZDNjNjQtMTY3YS00NThmLTg0NjEtMjIyZjQwODZhMjRlIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2ODY5MDk0Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6IjhiZjcxOWQzLTViOTAtNDE0ZC04ZjA5LTVkOGU4NTNmNmVlYSJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6ImI1MGJjZDUwLTBmNzctNDE4OC04NTg4LTUwNTM1NzA1NGRjNiJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6IjIzNGVkMmU0LWQyYzUtNDg2ZS05ZTJhLWY0ZGYzOTc0MDY5OCJ9LCJ3YXJuYWZ0ZXIiOjE3ODY4NzI3MDJ9LCJuYmYiOjE3ODY4NjkwOTUsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2ODY5MDk0OmRlZmF1bHQifQ.SHGG7Q8xfsBuOKdPW16Wzs-DXo5W2RB3vlUNI_h6-IixDbYPt642sUZwmw7GQNkjoBQ8GAYcMWUIm2drKu5lxXLmjHqx5K_xBjPpAfp-R8GfD4RMCOOl-ztjq3-uLQw4ZXJC9FxZs6CP00grjrf-rOHofEZHX-x3O8R8c3TXiyS6_Yg0ioHJdAlqEBiBr82oKB5g5lIpHMNR6qoUyVMkwB_AcBPeoauQPYiBPbk6nuXY7ViMO7DyPpPFggYH5H92WHL6fx_0it0u_GUzfe9G41j06V2X356WSGDxz9F01tbfxGVAJHSsYSpvJjCCTC7197YzPqqIQ30srEZP4h_fHA
+> Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IktXcmFoeEp0WFVZZ1BfTEVRTVNqSUNYV3lkUXliWmxfVE45cDJnZ196cW8ifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDA2MTY4LCJpYXQiOjE3ODY4NzAxNjgsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiOTg1YmNkNzYtOTA3Ny00NmUxLWFkNjgtNzA1OGNjMzUxOGFiIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2ODcwMTY2Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6ImU4Mjg3MGRkLTkzNmYtNDMwYi1iMDYwLTIzMmVkZWVjYzU3OCJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6ImFlNDFlNDFlLTcwNGEtNDU4NS1iOGVjLTZiNWU0NTJjMWVlZiJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6ImI1ZDhlZWUwLTExOWQtNDc4NS05MmI0LTcxOTgxNzgwNWFmNCJ9LCJ3YXJuYWZ0ZXIiOjE3ODY4NzM3NzV9LCJuYmYiOjE3ODY4NzAxNjgsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2ODcwMTY2OmRlZmF1bHQifQ.s0DNO2yLAYnTOOYwIrcjXCPxgogd1Nz4mSgeGTgdNtgxLe4uqUeLdjczPUO8a2Fy9QqDyHfK2J-4hrHnss-czqp6z1R_fjT5rtxs89CRiF3_kZl9psDbBNiqgi8oHSp-6Lr8qhBRnju6Fh51zx7P5lBxd3JQFq1qQc44GUMhs7FJWhoGe-wT6SH2OwL-NvhKdar-v4m7o73aw5Iqcr8RVIEJGXrJIjBCOuMpQeK4vEEmZ-myzst1UVk7ro5VHLkmUyDhEuHvqKu5YmgXhRYQ48bu7XLIUgVM-ZP4QuhBB3Atwd1FZjxN3HUHZ6g9MlvSNckDdYLnQNaIUdUKRmRLcQ
 > 
+{ [5 bytes data]
 * Request completely sent off
 { [5 bytes data]
-< HTTP/2 403 
-< audit-id: 2a67dd9b-c1e6-41ca-9ab9-869b966f43db
+< HTTP/2 200 
+< audit-id: 30172c49-65a3-4d65-89f6-aff0a7fbe312
 < cache-control: no-cache, private
 < content-type: application/json
-< x-content-type-options: nosniff
-< x-kubernetes-pf-flowschema-uid: f3a42ac5-e434-4ba6-9b78-89247a15d878
-< x-kubernetes-pf-prioritylevel-uid: 7899db14-634a-47b4-bb71-219cb46bd493
-< content-length: 354
-< date: Sun, 16 Aug 2026 08:31:36 GMT
+< x-kubernetes-pf-flowschema-uid: 8ed2f90c-979d-4895-9cb0-db89f84a5a0d
+< x-kubernetes-pf-prioritylevel-uid: bab5e785-6ccc-4f60-86f3-3e1a583a326e
+< date: Sun, 16 Aug 2026 08:49:30 GMT
 < 
 { [5 bytes data]
-* Connection #0 to host 10.43.0.1 left intact
-WATCH_EXIT=0
-==> FATAL: watch connection never got past its initial response before the churn burst — test infra issue, not the regression under test
-  ✘ FAIL (81s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 16 08:30:19 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:30:19.178074Z ERROR failed with status 503 Service Unavailable
-    Aug 16 08:30:19 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:30:19.179719Z ERROR failed with status 503 Service Unavailable
-    Aug 16 08:30:19 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:30:19.180701Z ERROR failed with status 503 Service Unavailable
-    Aug 16 08:30:19 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:30:19.699048Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 426 (438)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 08:30:19 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:30:19.700357Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 388 (438)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 08:30:19 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:30:19.702441Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 365 (438)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 08:30:53 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:30:53.576651Z  INFO node status pushed
-    Aug 16 08:31:36 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:31:36.445936Z  INFO CreateContainer succeeded container=watcher container_id=3e2096dff96aaf823aff0956338ff27f1fb4d6f3a38c0323aa5abc0526fcf346
-    Aug 16 08:31:53 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:31:53.623518Z  INFO node status pushed
-    Aug 16 08:32:53 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:32:53.669256Z  INFO node status pushed
-    Aug 16 08:32:54 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:32:54.389778Z  INFO torn down pod=not-k8s-e2e-1786869094/established-conn-watcher
-    Aug 16 08:32:54 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:32:54.406110Z  WARN failed to write pod status pod=not-k8s-e2e-1786869094/established-conn-watcher error=ApiError: pods "established-conn-watcher" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"established-conn-watcher\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "established-conn-watcher", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 16 08:32:54 runnervmzvulz run-nodelet.sh[15764]: Caused by:
-    Aug 16 08:32:54 runnervmzvulz run-nodelet.sh[15764]:     pods "established-conn-watcher" not found: NotFound
-    Aug 16 08:32:54 runnervmzvulz run-nodelet.sh[15764]: 2026-08-16T08:32:54.410007Z  INFO torn down pod=not-k8s-e2e-1786869094/established-conn-watcher
+watch.out bytes=6059 curl_processes_still_running=1
+  ✔ PASS (62s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
-Failed:
-  - test_a_long_lived_watch_survives_a_service_churn_burst
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786869094...
+==> Cleaning up test namespace not-k8s-e2e-1786870166...
