@@ -142,6 +142,23 @@ struct SigningCa {
 /// result is exactly the signal an operator needs to diagnose a
 /// misconfigured mount, and `debug`-level noise would be filtered out
 /// under this project's own `RUST_LOG=info` default, silently hiding it.
+/// Parses a CA private key PEM as PKCS#8 first (rcgen's default `ring`
+/// backend's own native format); on failure, re-parses it as SEC1
+/// ("EC PRIVATE KEY") P-256 — k3s's own real default CA key format,
+/// confirmed live in CI (`rcgen::KeyPair::from_pem` returning
+/// `CouldNotParseKeyPair` on it directly) — and re-encodes to PKCS#8
+/// before handing it to rcgen. Only P-256 SEC1 is handled as a fallback,
+/// not a general SEC1 EC converter; a non-P-256 SEC1 key still fails,
+/// loudly, through this same path.
+fn parse_ca_key_pem(key_pem: &str) -> Result<rcgen::KeyPair> {
+    if let Ok(key) = rcgen::KeyPair::from_pem(key_pem) {
+        return Ok(key);
+    }
+    let secret = p256::SecretKey::from_sec1_pem(key_pem).context("CA key is neither valid PKCS#8 nor SEC1/P-256 PEM")?;
+    let pkcs8_pem = p256::pkcs8::EncodePrivateKey::to_pkcs8_pem(&secret, Default::default()).context("re-encoding SEC1 CA key as PKCS#8")?;
+    rcgen::KeyPair::from_pem(pkcs8_pem.as_str()).context("parsing the re-encoded PKCS#8 CA key")
+}
+
 fn load_signing_ca(cfg: &crate::config::Config) -> Option<SigningCa> {
     for (cert_path, key_path) in cfg.csr_signing_ca_candidates() {
         let cert_pem = match std::fs::read_to_string(&cert_path) {
@@ -158,10 +175,10 @@ fn load_signing_ca(cfg: &crate::config::Config) -> Option<SigningCa> {
                 continue;
             }
         };
-        let key = match rcgen::KeyPair::from_pem(&key_pem) {
+        let key = match parse_ca_key_pem(&key_pem) {
             Ok(k) => k,
             Err(e) => {
-                tracing::warn!(path = %key_path, error = ?e, "csr-signing-controller: found a CA key but failed to parse it");
+                tracing::warn!(path = %key_path, error = ?e, "csr-signing-controller: found a CA key but failed to parse it (tried both PKCS#8 and SEC1/P-256)");
                 continue;
             }
         };

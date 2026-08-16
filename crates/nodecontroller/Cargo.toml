@@ -37,7 +37,14 @@ path = "src/lib.rs"
 # client side) is reused here for CSR *signing* — `csr.rs`'s
 # certificatesigningrequest-signing-controller; the `x509-parser` feature
 # is what `CertificateParams::from_ca_cert_pem` (loading an existing CA
-# rather than generating a new one) needs.
+# rather than generating a new one) needs. `p256` is a one-purpose
+# conversion helper `csr.rs` needs alongside rcgen: k3s's own generated CA
+# key is SEC1 ("EC PRIVATE KEY") PEM, and rcgen's default `ring` crypto
+# backend only parses PKCS#8 ("PRIVATE KEY") — confirmed live in CI
+# (`CouldNotParseKeyPair`). Switching rcgen itself to its `aws_lc_rs`
+# backend would fix this too, but pulls in a C/C++ build dependency this
+# project's own memory-constrained build hosts (see CLAUDE.md) don't need
+# to pay for just to reformat one key file; `p256` is pure Rust.
 [dependencies]
 tokio = { workspace = true }
 kube = { workspace = true }
@@ -54,4 +61,5 @@ chrono = { workspace = true }
 base64 = "0.22"
 http = "1"
 rcgen = { version = "0.13", features = ["x509-parser"] }
+p256 = { version = "0.13", features = ["pem", "pkcs8"] }
 node-leaderelection = { path = "../node-leaderelection" }
