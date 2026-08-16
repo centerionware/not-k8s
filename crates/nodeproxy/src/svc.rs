@@ -901,10 +901,17 @@ fn build_statistic_ruleset(
     if rules.is_empty() {
         return None;
     }
+    // Same established-connection fast-path as the nft table's own
+    // (`build_ruleset()`'s own comment has the full reasoning) — this
+    // chain is rewritten wholesale on every rebuild exactly like the nft
+    // one is, so it needs the same explicit guarantee that an
+    // already-tracked connection is never re-evaluated against the
+    // `statistic`-matched DNAT rules below, first rule in the chain.
+    let established = format!("-A {IPT_CHAIN} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT");
     // `:CHAIN - [0:0]` replaces this chain's contents; --noflush leaves
     // every other chain in `nat` (flannel's, anyone else's) untouched.
     // Verified directly: two consecutive applies leave two rules, not four.
-    Some(format!("*nat\n:{IPT_CHAIN} - [0:0]\n{}\nCOMMIT\n", rules.join("\n")))
+    Some(format!("*nat\n:{IPT_CHAIN} - [0:0]\n{established}\n{}\nCOMMIT\n", rules.join("\n")))
 }
 
 /// Installs the chain and the jumps into it. Idempotent: the jump is only
@@ -1045,6 +1052,38 @@ mod tests {
             // No CAP_NET_ADMIN (e.g. unprivileged sandbox) — nft can't reach
             // netlink to check at all; that's not a syntax failure.
             eprintln!("skipping: nft -c produced no output (likely no CAP_NET_ADMIN here)");
+            Ok(())
+        } else {
+            Err(format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ))
+        }
+    }
+
+    /// `nft_check`'s counterpart for the xtables fallback — requires a real
+    /// `iptables-restore` binary; skips itself otherwise, same reasoning.
+    /// `--test` is `iptables-restore`'s own dry-run: parses and validates
+    /// without committing, the same job `nft -c` does for the nft path.
+    fn ipt_check(ruleset: &str) -> Result<(), String> {
+        if Command::new("iptables-restore").arg("--version").output().is_err() {
+            eprintln!("skipping: iptables-restore not installed");
+            return Ok(());
+        }
+        let mut child = Command::new("iptables-restore")
+            .args(["--test", "--noflush"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        child.stdin.take().unwrap().write_all(ruleset.as_bytes()).unwrap();
+        let out = child.wait_with_output().map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok(())
+        } else if out.stderr.is_empty() && out.stdout.is_empty() {
+            eprintln!("skipping: iptables-restore --test produced no output (likely no CAP_NET_ADMIN here)");
             Ok(())
         } else {
             Err(format!(
@@ -1288,6 +1327,22 @@ mod tests {
         // NodePort comes along for free here — xtables has its own local
         // match, so no address enumeration and no dependence on nft_fib.
         assert!(rs.contains("-m addrtype --dst-type LOCAL"), "{rs}");
+
+        // Same established-connection fast-path as the nft table (added
+        // investigating github.com/centerionware/not-k8s/issues/30) — this
+        // chain is rewritten wholesale on every rebuild exactly like the
+        // nft one, so it needs the same explicit guarantee, first rule in
+        // the chain (right after the `:CHAIN - [0:0]` header, before any
+        // `statistic`-matched DNAT rule).
+        let established_line = "-A NOTK8S-SVC -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT";
+        assert!(rs.contains(established_line), "missing the established fast-path rule:\n{rs}");
+        let established_pos = rs.find(established_line).unwrap();
+        let first_dnat_pos = rs.find("-j DNAT").unwrap();
+        assert!(
+            established_pos < first_dnat_pos,
+            "established fast-path rule must precede DNAT rules:\n{rs}"
+        );
+        ipt_check(&rs).unwrap_or_else(|e| panic!("build_statistic_ruleset() output failed a real iptables-restore --test: {e}"));
     }
 
     /// And the nft table must NOT also program those Services, or two DNAT
