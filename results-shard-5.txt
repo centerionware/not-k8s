@@ -1,91 +1,14 @@
-commit: d474751033b8b968fdd9ce51799fda43660627e2
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31937112981
-timestamp (UTC): 2026-08-16T08:50:29Z
+commit: 827ca7096f26367d5988562cd18b0ba62074d1a0
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31938082586
+timestamp (UTC): 2026-08-16T09:11:14Z
 shard: 5/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786870166
+==> Test namespace: not-k8s-e2e-1786871473
 ==> 234 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 44 test(s) selected
-▶ test_a_long_lived_watch_survives_a_service_churn_burst
-=== watcher pod status ===
-NAME                       READY   STATUS    RESTARTS   AGE   IP          NODE            NOMINATED NODE   READINESS GATES
-established-conn-watcher   1/1     Running   0          28s   10.42.0.4   runnervmzvulz   <none>           <none>
-=== watch.err ===
-host=10.43.0.1 port=443
-*   Trying 10.43.0.1:443...
-* ALPN: curl offers h2,http/1.1
-} [5 bytes data]
-* TLSv1.3 (OUT), TLS handshake, Client hello (1):
-} [512 bytes data]
-*  CAfile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-*  CApath: /etc/ssl/certs
-{ [5 bytes data]
-* TLSv1.3 (IN), TLS handshake, Server hello (2):
-{ [122 bytes data]
-* TLSv1.3 (IN), TLS handshake, Encrypted Extensions (8):
-{ [15 bytes data]
-* TLSv1.3 (IN), TLS handshake, Request CERT (13):
-{ [65 bytes data]
-* TLSv1.3 (IN), TLS handshake, Certificate (11):
-{ [955 bytes data]
-* TLSv1.3 (IN), TLS handshake, CERT verify (15):
-{ [79 bytes data]
-* TLSv1.3 (IN), TLS handshake, Finished (20):
-{ [36 bytes data]
-* TLSv1.3 (OUT), TLS change cipher, Change cipher spec (1):
-} [1 bytes data]
-* TLSv1.3 (OUT), TLS handshake, Certificate (11):
-} [8 bytes data]
-* TLSv1.3 (OUT), TLS handshake, Finished (20):
-} [36 bytes data]
-* SSL connection using TLSv1.3 / TLS_AES_128_GCM_SHA256 / x25519 / id-ecPublicKey
-* ALPN: server accepted h2
-* Server certificate:
-*  subject: O=k3s; CN=k3s
-*  start date: Aug 16 07:46:31 2026 GMT
-*  expire date: Aug 16 07:46:31 2027 GMT
-*  subjectAltName: host "10.43.0.1" matched cert's IP address!
-*  issuer: CN=k3s-server-ca@1786869991
-*  SSL certificate verify ok.
-*   Certificate level 0: Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256
-*   Certificate level 1: Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256
-{ [5 bytes data]
-* TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
-{ [122 bytes data]
-* Connected to 10.43.0.1 (10.43.0.1) port 443
-* using HTTP/2
-* [HTTP/2] [1] OPENED stream for https://10.43.0.1:443/api/v1/namespaces/not-k8s-e2e-1786870166/pods?watch=true&timeoutSeconds=85
-* [HTTP/2] [1] [:method: GET]
-* [HTTP/2] [1] [:scheme: https]
-* [HTTP/2] [1] [:authority: 10.43.0.1]
-* [HTTP/2] [1] [:path: /api/v1/namespaces/not-k8s-e2e-1786870166/pods?watch=true&timeoutSeconds=85]
-* [HTTP/2] [1] [user-agent: curl/8.10.1]
-* [HTTP/2] [1] [accept: */*]
-* [HTTP/2] [1] [authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IktXcmFoeEp0WFVZZ1BfTEVRTVNqSUNYV3lkUXliWmxfVE45cDJnZ196cW8ifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDA2MTY4LCJpYXQiOjE3ODY4NzAxNjgsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiOTg1YmNkNzYtOTA3Ny00NmUxLWFkNjgtNzA1OGNjMzUxOGFiIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2ODcwMTY2Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6ImU4Mjg3MGRkLTkzNmYtNDMwYi1iMDYwLTIzMmVkZWVjYzU3OCJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6ImFlNDFlNDFlLTcwNGEtNDU4NS1iOGVjLTZiNWU0NTJjMWVlZiJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6ImI1ZDhlZWUwLTExOWQtNDc4NS05MmI0LTcxOTgxNzgwNWFmNCJ9LCJ3YXJuYWZ0ZXIiOjE3ODY4NzM3NzV9LCJuYmYiOjE3ODY4NzAxNjgsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2ODcwMTY2OmRlZmF1bHQifQ.s0DNO2yLAYnTOOYwIrcjXCPxgogd1Nz4mSgeGTgdNtgxLe4uqUeLdjczPUO8a2Fy9QqDyHfK2J-4hrHnss-czqp6z1R_fjT5rtxs89CRiF3_kZl9psDbBNiqgi8oHSp-6Lr8qhBRnju6Fh51zx7P5lBxd3JQFq1qQc44GUMhs7FJWhoGe-wT6SH2OwL-NvhKdar-v4m7o73aw5Iqcr8RVIEJGXrJIjBCOuMpQeK4vEEmZ-myzst1UVk7ro5VHLkmUyDhEuHvqKu5YmgXhRYQ48bu7XLIUgVM-ZP4QuhBB3Atwd1FZjxN3HUHZ6g9MlvSNckDdYLnQNaIUdUKRmRLcQ]
-} [5 bytes data]
-> GET /api/v1/namespaces/not-k8s-e2e-1786870166/pods?watch=true&timeoutSeconds=85 HTTP/2
-> Host: 10.43.0.1
-> User-Agent: curl/8.10.1
-> Accept: */*
-> Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IktXcmFoeEp0WFVZZ1BfTEVRTVNqSUNYV3lkUXliWmxfVE45cDJnZ196cW8ifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDA2MTY4LCJpYXQiOjE3ODY4NzAxNjgsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiOTg1YmNkNzYtOTA3Ny00NmUxLWFkNjgtNzA1OGNjMzUxOGFiIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2ODcwMTY2Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6ImU4Mjg3MGRkLTkzNmYtNDMwYi1iMDYwLTIzMmVkZWVjYzU3OCJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6ImFlNDFlNDFlLTcwNGEtNDU4NS1iOGVjLTZiNWU0NTJjMWVlZiJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6ImI1ZDhlZWUwLTExOWQtNDc4NS05MmI0LTcxOTgxNzgwNWFmNCJ9LCJ3YXJuYWZ0ZXIiOjE3ODY4NzM3NzV9LCJuYmYiOjE3ODY4NzAxNjgsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2ODcwMTY2OmRlZmF1bHQifQ.s0DNO2yLAYnTOOYwIrcjXCPxgogd1Nz4mSgeGTgdNtgxLe4uqUeLdjczPUO8a2Fy9QqDyHfK2J-4hrHnss-czqp6z1R_fjT5rtxs89CRiF3_kZl9psDbBNiqgi8oHSp-6Lr8qhBRnju6Fh51zx7P5lBxd3JQFq1qQc44GUMhs7FJWhoGe-wT6SH2OwL-NvhKdar-v4m7o73aw5Iqcr8RVIEJGXrJIjBCOuMpQeK4vEEmZ-myzst1UVk7ro5VHLkmUyDhEuHvqKu5YmgXhRYQ48bu7XLIUgVM-ZP4QuhBB3Atwd1FZjxN3HUHZ6g9MlvSNckDdYLnQNaIUdUKRmRLcQ
-> 
-{ [5 bytes data]
-* Request completely sent off
-{ [5 bytes data]
-< HTTP/2 200 
-< audit-id: 30172c49-65a3-4d65-89f6-aff0a7fbe312
-< cache-control: no-cache, private
-< content-type: application/json
-< x-kubernetes-pf-flowschema-uid: 8ed2f90c-979d-4895-9cb0-db89f84a5a0d
-< x-kubernetes-pf-prioritylevel-uid: bab5e785-6ccc-4f60-86f3-3e1a583a326e
-< date: Sun, 16 Aug 2026 08:49:30 GMT
-< 
-{ [5 bytes data]
-watch.out bytes=6059 curl_processes_still_running=1
-  ✔ PASS (62s)
 
 ════════════════════════════════════════
-Results: 1 passed, 0 failed, 0 skipped
+Results: 0 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786870166...
+==> Cleaning up test namespace not-k8s-e2e-1786871473...
