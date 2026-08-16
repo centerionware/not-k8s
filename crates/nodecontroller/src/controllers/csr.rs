@@ -189,7 +189,7 @@ fn sign_csr(ca: &SigningCa, csr_pem: &str) -> Result<String> {
     Ok(signed.pem())
 }
 
-async fn approve(api: &Api<CertificateSigningRequest>, name: &str, existing: &[CertificateSigningRequestCondition]) {
+async fn approve(client: &Client, name: &str, existing: &[CertificateSigningRequestCondition]) {
     let mut conditions = existing.to_vec();
     conditions.push(condition("Approved", "AutoApproved", "Auto-approved by nodecontroller's certificatesigningrequest-approving-controller"));
     let patch = serde_json::json!({ "status": { "conditions": conditions } });
@@ -212,7 +212,7 @@ async fn approve(api: &Api<CertificateSigningRequest>, name: &str, existing: &[C
             return;
         }
     };
-    match api.client().request::<serde_json::Value>(req).await {
+    match client.request::<serde_json::Value>(req).await {
         Ok(_) => tracing::info!(csr = %name, "certificatesigningrequest-approving-controller auto-approved a kubelet-client CSR"),
         Err(e) => tracing::warn!(csr = %name, error = ?e, "failed to approve CSR"),
     }
@@ -238,7 +238,7 @@ async fn reconcile_csr(client: &Client, ca: &Option<SigningCa>, name: &str) {
         let groups = csr.spec.groups.clone().unwrap_or_default();
         let usages = csr.spec.usages.clone().unwrap_or_default();
         if should_auto_approve(&csr.spec.signer_name, &groups, &usages) {
-            approve(&api, name, &conditions).await;
+            approve(client, name, &conditions).await;
         }
         return;
     }
