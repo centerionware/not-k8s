@@ -1,14 +1,37 @@
-commit: d474751033b8b968fdd9ce51799fda43660627e2
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31937112981
-timestamp (UTC): 2026-08-16T08:49:36Z
+commit: 827ca7096f26367d5988562cd18b0ba62074d1a0
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31938082586
+timestamp (UTC): 2026-08-16T09:13:45Z
 shard: 2/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786870175
+==> Test namespace: not-k8s-e2e-1786871533
 ==> 234 test(s) registered total (before sharding); running now...
 ==> Shard 2/5: 51 test(s) selected
+▶ test_pod_mounts_a_persistent_volume_claim
+=== PVC csi-pvc-check-claim describe ===
+Name:          csi-pvc-check-claim
+Namespace:     not-k8s-e2e-1786871533
+StorageClass:  csi-hostpath-sc
+Status:        Pending
+Volume:        
+Labels:        <none>
+Annotations:   <none>
+Finalizers:    [kubernetes.io/pvc-protection]
+Capacity:      
+Access Modes:  
+VolumeMode:    Filesystem
+Used By:       <none>
+Events:        <none>
+=== provisioner pod(s) ===
+No resources found
+=== provisioner sidecar logs (csi-provisioner, tail 80) ===
+No resources found in default namespace.
+=== events for csi-pvc-check-claim ===
+No resources found in not-k8s-e2e-1786871533 namespace.
+    (skip: PVC 'csi-pvc-check-claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS (csi-hostpath-sc); not something nodelet itself does (see docs/GAP_CLOSURE.md's out-of-scope notes) — see the diagnostic dump printed above for why, before assuming it's the benign case)
+  ○ SKIP (91s)
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 0 skipped
+Results: 0 passed, 0 failed, 1 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786870175...
+==> Cleaning up test namespace not-k8s-e2e-1786871533...
