@@ -1,20 +1,16 @@
-commit: f8770cf4905e3f5590a91414fc4098343a6045b8
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31912687867
-timestamp (UTC): 2026-08-15T22:49:31Z
+commit: 1a2ea078d79c3e6f3f2761846768f3e6aa1d488a
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31917785142
+timestamp (UTC): 2026-08-16T00:47:54Z
 shard: 5/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786833976
-==> 226 test(s) registered total (before sharding); running now...
+==> Test namespace: not-k8s-e2e-1786841240
+==> 227 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 42 test(s) selected
 ▶ test_daemonset_places_a_pod_directly
   ✔ PASS (33s)
-▶ test_replicaset_creates_and_scales_pods
-  ✔ PASS (96s)
-▶ test_statefulset_creates_ordinal_pods_and_scales_down_highest_first
-  ✔ PASS (65s)
 
 ════════════════════════════════════════
-Results: 3 passed, 0 failed, 0 skipped
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786833976...
+==> Cleaning up test namespace not-k8s-e2e-1786841240...
