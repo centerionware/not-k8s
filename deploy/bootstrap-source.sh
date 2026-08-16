@@ -426,7 +426,6 @@ ensure_nft
 enable_bridge_netfilter
 if [[ "$SKIP_NODELET" -eq 0 ]]; then
     run_and_verify
-    enable_kubelet_certificate_authority_trust
 else
     log "Skipping nodelet build/install/start (--skip-nodelet) — control plane + containerd + CNI are up, nothing else touches this node."
 fi

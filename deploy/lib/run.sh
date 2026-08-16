@@ -14,6 +14,17 @@ run_and_verify() {
     log "Starting nodelet (runtime=$NODELET_RUNTIME)..."
     install_nodelet_service
 
+    # bootstrap-source.sh must add nodelet's kubelet-serving CA to the
+    # apiserver after nodelet has generated it. That operation deliberately
+    # restarts k3s. Do it before starting the controller manager and the other
+    # apiserver clients: otherwise every one of nodecontroller's independent
+    # watches is cut at once, all relists together after 503/410 responses,
+    # and a sidecar that starts during that recovery window can be left with a
+    # permanently starved watch. Starting these clients after the planned
+    # restart keeps the restart a one-client recovery instead of a cluster-
+    # wide watch storm.
+    enable_kubelet_certificate_authority_trust
+
     # nodeproxy is a separate service with no ordering relationship to
     # nodelet — it only needs the apiserver. --proxy=none skips it entirely
     # (something else owns ClusterIP/NodePort routing on this node), and

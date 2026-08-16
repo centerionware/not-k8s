@@ -5,6 +5,19 @@
 # listed in the running nodelet's NODELET_CSI_DRIVERS — skips cleanly
 # without both. Set TEST_CSI_STORAGE_CLASS to exercise this for real.
 
+_skip_or_fail_dynamic_pvc() {
+    local message="$1"
+    # With the reference driver installed, a custom controller deployment is
+    # an intentional end-to-end assertion, not an optional capability. Keep
+    # the historical skip for ad-hoc runs without our controller or without a
+    # real provisioner, but do not let a broken nodecontroller path report a
+    # green run merely because the harness treats skips as success.
+    if [[ "${CONTROLLER_MANAGER:-none}" == "nodecontroller" ]]; then
+        die "$message — dynamic CSI provisioning is required when testing nodecontroller"
+    fi
+    skip_test "$message"
+}
+
 test_pod_mounts_a_persistent_volume_claim() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     if [[ -z "${TEST_CSI_STORAGE_CLASS:-}" ]]; then
@@ -60,7 +73,7 @@ EOF
         echo "=== events for $claim ==="
         kubectl get events -n "$TEST_NAMESPACE" --field-selector "involvedObject.name=$claim" 2>&1
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS); not something nodelet itself does (see docs/GAP_CLOSURE.md's out-of-scope notes) — see the diagnostic dump printed above for why, before assuming it's the benign case"
+        _skip_or_fail_dynamic_pvc "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS); not something nodelet itself does (see docs/GAP_CLOSURE.md's out-of-scope notes) — see the diagnostic dump printed above for why, before assuming it's the benign case"
     fi
 
     apply_manifest <<EOF
@@ -195,7 +208,7 @@ EOF
 
     if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_BLOCK_STORAGE_CLASS ($TEST_CSI_BLOCK_STORAGE_CLASS)"
+        _skip_or_fail_dynamic_pvc "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_BLOCK_STORAGE_CLASS ($TEST_CSI_BLOCK_STORAGE_CLASS)"
     fi
 
     apply_manifest <<EOF
@@ -271,7 +284,7 @@ spec:
 EOF
     if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
+        _skip_or_fail_dynamic_pvc "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
     fi
 
     apply_manifest <<EOF
@@ -390,7 +403,7 @@ spec:
 EOF
     if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
+        _skip_or_fail_dynamic_pvc "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
     fi
 
     local pv_name
