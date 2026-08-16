@@ -1,37 +1,16 @@
-commit: b1ebee3e5c8c0f7c00056b9765be2572764f59d8
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31920584499
-timestamp (UTC): 2026-08-16T02:01:18Z
+commit: faf0d18010300d9669391a1912112a58d7716806
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31921043547
+timestamp (UTC): 2026-08-16T02:12:37Z
 shard: 4/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786845612
+==> Test namespace: not-k8s-e2e-1786846341
 ==> 231 test(s) registered total (before sharding); running now...
 ==> Shard 4/5: 43 test(s) selected
 ▶ test_ttl_after_finished_controller_deletes_expired_jobs
-==> FATAL: timed out after 60s waiting for: ttl-after-finished-controller deletes job ttl-test past its TTL
-  ✘ FAIL (63s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 16 01:58:58 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T01:58:58.525842Z ERROR failed with status 503 Service Unavailable
-    Aug 16 01:58:58 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T01:58:58.807487Z ERROR failed with status 503 Service Unavailable
-    Aug 16 01:58:58 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T01:58:58.807641Z ERROR failed with status 503 Service Unavailable
-    Aug 16 01:58:58 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T01:58:58.808009Z ERROR failed with status 503 Service Unavailable
-    Aug 16 01:58:59 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T01:58:59.365765Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 415 (422)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 01:58:59 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T01:58:59.365968Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 364 (422)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 01:58:59 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T01:58:59.366086Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 364 (422)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 01:59:00 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T01:59:00.386338Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 16 01:59:00 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T01:59:00.421667Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 16 01:59:37 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T01:59:37.365791Z  INFO node status pushed
-    Aug 16 02:00:13 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T02:00:13.395662Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 16 02:00:13 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T02:00:13.672679Z  INFO CreateContainer succeeded container=busybox container_id=08bdf0a7e2d8070e18002b39dea89ddbd6fe7365b2f23f28c6fb5a0f29d8b89c
-    Aug 16 02:00:13 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T02:00:13.777344Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 16 02:00:37 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T02:00:37.408586Z  INFO node status pushed
-    Aug 16 02:01:16 runnervmzvulz run-nodelet.sh[14907]: 2026-08-16T02:01:16.448660Z  INFO torn down pod=not-k8s-e2e-1786845612/ttl-test-0
+  ✔ PASS (15s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
-Failed:
-  - test_ttl_after_finished_controller_deletes_expired_jobs
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786845612...
+==> Cleaning up test namespace not-k8s-e2e-1786846341...
