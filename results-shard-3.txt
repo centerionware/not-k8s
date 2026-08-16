@@ -1,22 +1,22 @@
-commit: 8575528b881b6c0f68d0f1fb2a2cf5f75a10cb10
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31970376848
-timestamp (UTC): 2026-08-16T20:33:33Z
+commit: 6055478e183372ffb15452b69951dc66422df294
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31972045077
+timestamp (UTC): 2026-08-16T21:07:34Z
 shard: 3/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786912091
+==> Test namespace: not-k8s-e2e-1786914154
 ==> 235 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 44 test(s) selected
 ▶ test_cronjob_controller_creates_a_job_on_schedule
-  ✔ PASS (55s)
+  ✔ PASS (34s)
 ▶ test_installed_component_binaries_are_runnable_whatever_the_layout
   ✔ PASS (0s)
 ▶ test_datastore_enforces_compare_and_swap
-  ✔ PASS (1s)
+  ✔ PASS (0s)
 ▶ test_datastore_expires_a_lease_and_its_keys
   ✔ PASS (1s)
 ▶ test_apiserver_crud_round_trips_through_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13471/environ: Permission denied
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13606/environ: Permission denied
 Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
   ✔ PASS (6s)
 ▶ test_a_follower_forwards_writes_to_the_leader
@@ -28,20 +28,20 @@ Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-app
 ▶ test_deployment_creates_replicaset_and_rolls_update
   ✔ PASS (65s)
 ▶ test_allocated_resources_status_absent_without_device_resources
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_kubectl_debug_adds_and_starts_an_ephemeral_container
-  ✔ PASS (4s)
+  ✔ PASS (3s)
 ▶ test_eviction_soft_grace_period_manual_procedure
     (skip: proving the soft-threshold grace period (round 101 — a pod isn't evicted the instant a looser *soft* threshold is crossed, only once it's stayed continuously crossed for NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS) needs artificial pressure sustained across multiple ticks, harder to orchestrate reliably here than the base eviction procedure above. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_SOFT_THRESHOLD_BYTES set just above current MemAvailable (so MemoryPressure's soft signal trips immediately) but NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES (the hard one) left at its normal, much-lower default, and NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS set to something short like 20, (3) apply a BestEffort pod, (4) confirm it is NOT evicted before the grace period elapses but IS evicted (phase Failed/reason Evicted) once NODELET_EVICTION_CHECK_SECS ticks have accumulated past NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS of continuous soft pressure, (5) restore normal thresholds and restart nodelet. The pure decision logic itself (eviction::pressure_action_due()) is already covered by cargo test's eviction_tests/pressure_action_due.rs — this only proves the live wiring end to end.)
-  ○ SKIP (0s)
+  ○ SKIP (1s)
 ▶ test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed
   ✔ PASS (38s)
 ▶ test_poststart_hook_runs_after_container_start
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_native_sidecar_container_starts_before_app_container_and_keeps_running
   ✔ PASS (3s)
 ▶ test_crash_loop_backoff_reports_waiting_reason_and_last_state
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_termination_message_path_is_read_back_into_container_status
   ✔ PASS (3s)
 ▶ test_container_status_reports_a_real_image_id
@@ -49,19 +49,19 @@ Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-app
 ▶ test_host_port_publishes_the_container_on_the_nodes_own_ip
   ✔ PASS (3s)
 ▶ test_node_is_ready_with_capacity_advertised
-  ✔ PASS (0s)
+  ✔ PASS (1s)
 ▶ test_node_status_images_reflects_a_real_pulled_image
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_liveness_probes_own_grace_period_overrides_the_pods
-  ✔ PASS (13s)
+  ✔ PASS (14s)
 ▶ test_grpc_probe_leaves_pod_not_ready_against_the_wrong_port
   ✔ PASS (15s)
 ▶ test_resourcequota_used_pods_tracks_actual_pod_count
-  ✔ PASS (33s)
+  ✔ PASS (32s)
 ▶ test_in_place_resize_updates_memory_limit_without_restarting
   ✔ PASS (4s)
 ▶ test_guaranteed_pod_gets_the_protected_oom_score
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_scheduler_honours_a_node_selector_that_matches_nothing
     (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
   ○ SKIP (0s)
@@ -72,17 +72,17 @@ Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-app
     (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
   ○ SKIP (0s)
 ▶ test_without_read_only_root_filesystem_writes_succeed
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_host_users_volume_ownership_translation_is_correct
-  ✔ PASS (3s)
-▶ test_sysctls_are_applied_to_the_sandbox
-  ✔ PASS (3s)
-▶ test_nodeproxy_runs_as_its_own_service_separate_from_nodelet
-  ✔ PASS (0s)
-▶ test_deleting_a_service_removes_its_rules
   ✔ PASS (4s)
+▶ test_sysctls_are_applied_to_the_sandbox
+  ✔ PASS (2s)
+▶ test_nodeproxy_runs_as_its_own_service_separate_from_nodelet
+  ✔ PASS (1s)
+▶ test_deleting_a_service_removes_its_rules
+  ✔ PASS (3s)
 ▶ test_statefulset_with_a_volume_claim_template_creates_an_accepted_pod
-  ✔ PASS (0s)
+  ✔ PASS (1s)
 ▶ test_kubectl_logs_follow_streams_new_output
   ✔ PASS (4s)
 ▶ test_a_slow_terminating_pod_does_not_stall_another_pods_creation
@@ -92,11 +92,11 @@ Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-app
 ▶ test_service_account_token_projected_volume_mints_a_real_token
   ✔ PASS (3s)
 ▶ test_image_volume_source_mounts_a_read_only_image
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_mount_propagation_private_default_does_not_see_a_new_host_mount
   ✔ PASS (8s)
 ▶ test_host_path_directory_mounts_the_real_host_directory
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_config_file_precedence_a_real_env_var_still_wins
   ✔ PASS (2s)
 ▶ test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull
@@ -113,21 +113,17 @@ ec6419fed67b: Pulling fs layer
 71af8d887193: Waiting
 5e8b95221646: Waiting
 ec6419fed67b: Waiting
-e5ad846ecbb8: Verifying Checksum
-e5ad846ecbb8: Download complete
-f0c9ed0cf49e: Verifying Checksum
-f0c9ed0cf49e: Download complete
 4f4fb700ef54: Verifying Checksum
 4f4fb700ef54: Download complete
+e5ad846ecbb8: Download complete
 f0c9ed0cf49e: Pull complete
 e5ad846ecbb8: Pull complete
 4f4fb700ef54: Pull complete
-ec6419fed67b: Verifying Checksum
 ec6419fed67b: Download complete
-5e8b95221646: Verifying Checksum
-5e8b95221646: Download complete
 71af8d887193: Verifying Checksum
 71af8d887193: Download complete
+5e8b95221646: Verifying Checksum
+5e8b95221646: Download complete
 71af8d887193: Pull complete
 5e8b95221646: Pull complete
 ec6419fed67b: Pull complete
@@ -145,15 +141,14 @@ bbbdd6c6894b: Pulling fs layer
 6d464ea18732: Waiting
 bbbdd6c6894b: Verifying Checksum
 bbbdd6c6894b: Download complete
-44cf07d57ee4: Verifying Checksum
 44cf07d57ee4: Download complete
 8e82f80af0de: Verifying Checksum
-44cf07d57ee4: Pull complete
+8e82f80af0de: Download complete
 3493bf46cdec: Verifying Checksum
 3493bf46cdec: Download complete
-bbbdd6c6894b: Pull complete
+44cf07d57ee4: Pull complete
 6d464ea18732: Verifying Checksum
-6d464ea18732: Download complete
+bbbdd6c6894b: Pull complete
 8e82f80af0de: Pull complete
 3493bf46cdec: Pull complete
 6d464ea18732: Pull complete
@@ -168,7 +163,7 @@ Configure a credential helper to remove this warning. See
 https://docs.docker.com/go/credential-store/
 
 ==> writing the fake credential-provider binary and config...
-  ✔ PASS (12s)
+  ✔ PASS (11s)
 ▶ test_scheduler_schedules_a_pod_an_http_extender_approves
     (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
   ○ SKIP (0s)
@@ -176,4 +171,4 @@ https://docs.docker.com/go/credential-store/
 ════════════════════════════════════════
 Results: 37 passed, 0 failed, 7 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786912091...
+==> Cleaning up test namespace not-k8s-e2e-1786914154...
