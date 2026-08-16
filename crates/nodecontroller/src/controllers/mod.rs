@@ -6,6 +6,7 @@
 pub mod daemon_set;
 pub mod deployment;
 pub mod endpoint_slice;
+pub mod garbage_collector;
 pub mod node_ipam;
 pub mod node_lifecycle;
 pub mod replica_set;

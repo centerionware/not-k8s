@@ -253,25 +253,29 @@ fan-out) — the plan's suggested first PR.
 - `clusterrole-aggregation-controller`: merges `aggregationRule`-selected
   ClusterRoles (the mechanism `view`/`edit`/`admin` are built from).
 
-## D. Garbage collection & quota — Tier 0 / 2 — **resourcequota-controller implemented** (object-count only)
+## D. Garbage collection & quota — Tier 0 / 2 — **garbage-collector-controller and resourcequota-controller implemented** (object-count quota only)
 
-- `garbage-collector-controller` (**0**) — **deliberately deferred, not
-  skipped by oversight**: owner-reference cascade deletion. Without it
-  `kubectl delete deployment` orphans ReplicaSets and Pods forever — this
-  is arguably the single most-felt gap if skipped long-term, since it's
-  invisible until the first `kubectl delete` of anything with children.
-  Two real reasons it isn't this session's next slice: (1) **it has little
-  value yet** — Group E (workload controllers) isn't implemented, and
-  nothing today creates the owner chains (Deployment→ReplicaSet→Pod) this
-  controller exists to clean up; the one owner-ref relationship this crate
-  itself creates (EndpointSlice→Service, Group B) already deletes
-  explicitly rather than waiting on GC. (2) **a real implementation is
-  generic across every resource kind** — upstream's is one of the most
-  complex controllers in kube-controller-manager for exactly that reason
-  (dynamic/unstructured clients, a live dependency graph, three deletion
-  propagation policies). Building it properly is its own dedicated pass,
-  best done once Group E gives it something real to do — not a small
-  extension of an existing file. Revisit right after Group E lands.
+- `garbage-collector-controller` (`crates/nodecontroller/src/controllers/garbage_collector.rs`,
+  **implemented, generic across every namespaced kind via dynamic
+  discovery**): owner-reference cascade deletion. Landed right after Group
+  E, as planned — Group E is what first gives it a real owner chain
+  (Deployment→ReplicaSet→Pod) worth cleaning up. Built via `kube::discovery`
+  rather than a hardcoded kind list: one dynamic watch per discovered
+  namespaced/watchable/deletable resource kind, funneled into a single
+  event loop that tracks live UIDs and a reverse owner→children index
+  purely from watch events — recursion (grandchild cleanup) falls out of
+  the event loop itself (a cascade-deleted child's own Delete event
+  re-enters the same loop), no explicit recursive graph walk. Real
+  simplifications, named in that file's own module doc: (1) discovery runs
+  once at startup, not on a live/invalidatable RESTMapper — a CRD installed
+  after nodecontroller starts is invisible to it until restarted; (2)
+  namespaced resources only — matches upstream's actual scope, since
+  `OwnerReference` carries no namespace field and cross-namespace ownership
+  isn't representable at all; (3) background propagation only —
+  `Foreground`/`Orphan` `propagationPolicy` requests are not honored, every
+  delete cascades immediately regardless of what the caller asked for; (4)
+  `coordination.k8s.io` (Lease) and `events.k8s.io`/`Event` are excluded
+  from discovery — high-churn, GC-irrelevant kinds.
 - `resourcequota-controller` (`crates/nodecontroller/src/controllers/resource_quota.rs`,
   **implemented, object-count quotas only**): keeps `ResourceQuota.status.used`
   current for `pods` and `services` counts. Worth stating precisely: the

@@ -10,13 +10,14 @@
 //! controllers of Group E (`replicaset-controller`/`deployment-controller`/
 //! `daemonset-controller`/`statefulset-controller`) are implemented, plus
 //! the minimum slice of Group C (`serviceaccount-controller` only) needed
-//! to unblock testing Group A at all — see `controllers/service_account.rs`'s,
-//! `controllers/resource_quota.rs`'s, and each `controllers/*.rs` workload
-//! file's own module doc for why each is scoped the way it is. See
-//! `docs/CONTROLLER_MANAGER.md`'s "Delivery order" for what's next: Group
-//! E is now complete, so garbage-collector-controller (Group D, deferred
-//! until it had something real to clean up — see that file's own doc) is
-//! next, then Group F (batch controllers).
+//! to unblock testing Group A at all, plus `garbage-collector-controller`
+//! (Group D's other half, deferred until Group E existed to produce a real
+//! owner chain to clean up) — see `controllers/service_account.rs`'s,
+//! `controllers/resource_quota.rs`'s, `controllers/garbage_collector.rs`'s,
+//! and each `controllers/*.rs` workload file's own module doc for why each
+//! is scoped the way it is. See `docs/CONTROLLER_MANAGER.md`'s "Delivery
+//! order" for what's next: Groups D and E are now both complete, so Group F
+//! (batch controllers: job/cronjob/ttl-after-finished) is next.
 //!
 //! Single leader-election lease (`kube-system/kube-controller-manager`,
 //! matching upstream's own name — see `config.rs`) covers the whole
@@ -72,6 +73,7 @@ pub async fn run() -> Result<()> {
             controllers::deployment::run(client.clone(), &cfg),
             controllers::daemon_set::run(client.clone(), &cfg),
             controllers::stateful_set::run(client.clone(), &cfg),
+            controllers::garbage_collector::run(client.clone(), &cfg),
         )?;
         Ok(())
     })
