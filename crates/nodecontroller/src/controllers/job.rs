@@ -46,7 +46,15 @@
 //! decided, not the live snapshot that decided it), and `Complete=True`
 //! requires a `SuccessCriteriaMet=True` condition alongside it (a
 //! `successPolicy`-era invariant; both conditions are set together even
-//! though `successPolicy` itself isn't implemented here).
+//! though `successPolicy` itself isn't implemented here). A third: the
+//! apiserver adds a `batch.kubernetes.io/job-tracking` finalizer to every
+//! Job at creation regardless of which controller-manager is running, and
+//! a Job can never actually be deleted (by `ttl-after-finished-controller`
+//! or anyone else) until that finalizer is removed — this controller
+//! strips it once a Job reaches a terminal outcome, standing in for
+//! upstream's real removal condition ("finished accounting via
+//! `uncountedTerminatedPods`") with this crate's simpler equivalent
+//! ("reconcile decided the outcome").
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
@@ -59,6 +67,7 @@ use kube::{Client, ResourceExt};
 use std::collections::HashMap;
 
 const RESERVED_MANAGED_BY: &str = "kubernetes.io/job-controller";
+const JOB_TRACKING_FINALIZER: &str = "batch.kubernetes.io/job-tracking";
 
 /// How many new Pods to create this reconcile — 0 once the Job has already
 /// met its target, capped by both `parallelism` and (when set) how much of
@@ -261,6 +270,29 @@ async fn reconcile_job(client: &Client, namespace: &str, name: &str, pod_cache: 
         let patch = serde_json::json!({ "status": status });
         if let Err(e) = job_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
             tracing::warn!(namespace = %namespace, job = %name, error = ?e, "failed to patch Job status");
+        }
+    }
+
+    // The apiserver adds `batch.kubernetes.io/job-tracking` to every Job at
+    // creation (JobTrackingWithFinalizers, GA since 1.26 — apiserver-side,
+    // not something a controller opts into). Upstream's own job-controller
+    // strips it once it has finished accounting a Job's terminated Pods via
+    // `uncountedTerminatedPods`; this controller doesn't do that
+    // bookkeeping (see module doc), but still must remove the finalizer
+    // once terminal, or the Job can never actually be deleted by anyone —
+    // confirmed live in CI: `ttl-after-finished-controller` "succeeded" at
+    // deleting a finished Job every tick forever, because a delete with a
+    // finalizer still present only sets `deletionTimestamp` and never
+    // actually removes the object.
+    if terminal_now {
+        if let Some(finalizers) = &job.metadata.finalizers {
+            if finalizers.iter().any(|f| f == JOB_TRACKING_FINALIZER) {
+                let remaining: Vec<&String> = finalizers.iter().filter(|f| *f != JOB_TRACKING_FINALIZER).collect();
+                let patch = serde_json::json!({ "metadata": { "finalizers": remaining } });
+                if let Err(e) = job_api.patch(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+                    tracing::warn!(namespace = %namespace, job = %name, error = ?e, "failed to strip job-tracking finalizer from finished Job");
+                }
+            }
         }
     }
 }
