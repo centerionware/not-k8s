@@ -1,7 +1,18 @@
-commit: f6fa585e5a9bb30b3cb78240e22194b1298e926b
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31919224201
-timestamp (UTC): 2026-08-16T01:21:22Z
+commit: 4587c61dc34d7bffc9467697634db52054b9051a
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31919549352
+timestamp (UTC): 2026-08-16T01:35:42Z
 shard: 3/5
-exit code: unknown
+exit code: 0
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+==> Test namespace: not-k8s-e2e-1786843983
+==> 231 test(s) registered total (before sharding); running now...
+==> Shard 3/5: 43 test(s) selected
+▶ test_cronjob_controller_creates_a_job_on_schedule
+  ✔ PASS (60s)
+▶ test_deployment_creates_replicaset_and_rolls_update
+  ✔ PASS (98s)
+
+════════════════════════════════════════
+Results: 2 passed, 0 failed, 0 skipped
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786843983...
