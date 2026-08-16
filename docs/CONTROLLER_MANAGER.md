@@ -230,7 +230,7 @@ fan-out) — the plan's suggested first PR.
   `garbage-collector-controller` doesn't exist) — a Service delete
   explicitly deletes its own EndpointSlice instead.
 
-## C. Identity & namespace bootstrap — Tier 0 — **serviceaccount-controller implemented** (minimum slice)
+## C. Identity & namespace bootstrap — Tier 0 — **serviceaccount-controller and root-ca-cert-publisher-controller implemented**
 
 - `serviceaccount-controller` (`crates/nodecontroller/src/controllers/service_account.rs`):
   ensures every namespace has a `default` ServiceAccount. **Landed earlier
@@ -247,9 +247,27 @@ fan-out) — the plan's suggested first PR.
   pulled forward. The rest of Group C below is still not implemented.
 - `namespace-controller`: finalizer-driven namespace deletion (purges
   every namespaced object before the Namespace itself goes away).
-- `root-ca-cert-publisher-controller`: writes the `kube-root-ca.crt`
-  ConfigMap every namespace gets, that pods' projected SA tokens rely on
-  to verify the apiserver.
+- `root-ca-cert-publisher-controller`
+  (`crates/nodecontroller/src/controllers/root_ca_publisher.rs`,
+  **implemented, pulled forward like `serviceaccount-controller` was**):
+  writes the `kube-root-ca.crt` ConfigMap every namespace gets, that a
+  Pod's default projected service-account-token volume mounts alongside
+  the token so anything inside the Pod building an in-cluster client can
+  verify the apiserver's TLS certificate. Found load-bearing the same way
+  `serviceaccount-controller` was — live in CI, not from reading the spec:
+  while verifying Group G, the real CSI `external-provisioner` sidecar
+  (which builds its own in-cluster client, same as any properly-written
+  controller) logged `"Expected to load root CA config from
+  /var/run/secrets/.../ca.crt ... no such file or directory"` and never
+  became a working client, so `csi_pvc.sh`/`csi_attach.sh`'s PVCs sat
+  `Pending` forever with zero provisioning events — not a
+  `persistentvolume-binder-controller` bug, this was the actual root
+  cause. Reads the CA once at startup from nodecontroller's own ambient
+  kubeconfig (matching this crate's existing "don't solve cert bootstrap,
+  just read `$KUBECONFIG`" stance) rather than a `--root-ca-file` flag;
+  named gaps: no CA rotation support (needs a restart to pick up a
+  rotated CA) and no protection against a hand-deleted ConfigMap (it just
+  gets recreated on the next Namespace reconcile, not blocked).
 - `clusterrole-aggregation-controller`: merges `aggregationRule`-selected
   ClusterRoles (the mechanism `view`/`edit`/`admin` are built from).
 

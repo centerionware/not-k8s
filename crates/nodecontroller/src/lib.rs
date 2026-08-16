@@ -26,9 +26,16 @@
 //! is scoped out (see `docs/CONTROLLER_MANAGER.md`'s Group G section: no
 //! in-tree volume plugins exist to expand, and CSI resize goes through the
 //! external-resizer sidecar directly against the PVC, no controller-manager
-//! involvement needed). See `docs/CONTROLLER_MANAGER.md`'s "Delivery order"
-//! for what's next: Groups D, E, F, and G are now complete, so Group H
-//! (DRA-adjacent) is next.
+//! involvement needed). `root-ca-cert-publisher-controller`
+//! (`controllers/root_ca_publisher.rs`, Group C) was pulled forward out of
+//! delivery order the same way `serviceaccount-controller` was — confirmed
+//! live in CI while verifying Group G that its absence silently breaks any
+//! Pod-side component (the CSI external-provisioner sidecar, concretely)
+//! that builds its own in-cluster client, since `kube-root-ca.crt` never
+//! existed in any namespace for its projected token volume to mount. See
+//! `docs/CONTROLLER_MANAGER.md`'s "Delivery order" for what's next: Groups
+//! D, E, F, and G are now complete (plus this one Group C piece), so Group
+//! H (DRA-adjacent) is next.
 //!
 //! Single leader-election lease (`kube-system/kube-controller-manager`,
 //! matching upstream's own name — see `config.rs`) covers the whole
@@ -93,6 +100,7 @@ pub async fn run() -> Result<()> {
             controllers::attach_detach::run(client.clone(), &cfg),
             controllers::pv_binder::run(client.clone(), &cfg),
             controllers::storage_protection::run(client.clone(), &cfg),
+            controllers::root_ca_publisher::run(client.clone(), &cfg),
         )?;
         Ok(())
     })

@@ -18,14 +18,18 @@ path = "src/lib.rs"
 # pure apiserver client. No `cri` feature, no tonic/prost/zbus, no dependency
 # on nodeproxy's nftables tree — see CLAUDE.md's crate-isolation rule.
 #
-# `rand` and `chrono` are the two additions over nodescheduler's own list.
-# `rand` is scoped to exactly one job: jitter on timing-wheel insert (see
-# docs/CONTROLLER_MANAGER.md's "Jitter on insert" section) so correlated
-# deadlines — every Node renews on the same node-monitor-period — don't
-# bunch into the same wheel slot. `chrono` is what k8s-openapi's own `Time`
-# newtype wraps (`chrono::DateTime<Utc>`) — needed once a controller sets a
-# status timestamp itself (Job's `startTime`/`completionTime`,
-# CronJob's `lastScheduleTime`) rather than only reading one back.
+# `rand`, `chrono`, and `base64` are the three additions over
+# nodescheduler's own list. `rand` is scoped to exactly one job: jitter on
+# timing-wheel insert (see docs/CONTROLLER_MANAGER.md's "Jitter on insert"
+# section) so correlated deadlines — every Node renews on the same
+# node-monitor-period — don't bunch into the same wheel slot. `chrono` is
+# what k8s-openapi's own `Time` newtype wraps (`chrono::DateTime<Utc>`) —
+# needed once a controller sets a status timestamp itself (Job's
+# `startTime`/`completionTime`, CronJob's `lastScheduleTime`) rather than
+# only reading one back. `base64` decodes a kubeconfig's inline
+# `certificate-authority-data`, the same pattern nodelet's own
+# `bootstrap.rs` already uses — `root_ca_publisher.rs` needs it to read the
+# cluster CA it publishes into every namespace.
 [dependencies]
 tokio = { workspace = true }
 kube = { workspace = true }
@@ -39,4 +43,5 @@ futures = { workspace = true }
 rustls = { workspace = true }
 rand = "0.8"
 chrono = { workspace = true }
+base64 = "0.22"
 node-leaderelection = { path = "../node-leaderelection" }
