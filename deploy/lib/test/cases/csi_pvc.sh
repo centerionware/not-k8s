@@ -28,8 +28,25 @@ spec:
 EOF
 
     if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
+        # Diagnose before skipping, not just skip silently — a PVC never
+        # binding can mean "no provisioner installed" (the expected, benign
+        # skip reason) or a real regression in the provisioner's own path
+        # (e.g. github.com/centerionware/not-k8s/issues/30's TCP-reset
+        # investigation: the provisioner's own watch to the apiserver is
+        # exactly the kind of long-lived connection that bug would hit).
+        # Capturing this here is the only way to tell those apart after the
+        # fact — the reference driver's own pod is gone once the ephemeral
+        # CI runner tears down.
+        echo "=== PVC $claim describe ==="
+        kubectl describe pvc "$claim" -n "$TEST_NAMESPACE" 2>&1
+        echo "=== provisioner pod(s) ==="
+        kubectl get pods -l app=csi-hostpathplugin -o wide --all-namespaces 2>&1
+        echo "=== provisioner sidecar logs (csi-provisioner, tail 80) ==="
+        kubectl logs -l app=csi-hostpathplugin -c csi-provisioner -n default --tail=80 2>&1
+        echo "=== events for $claim ==="
+        kubectl get events -n "$TEST_NAMESPACE" --field-selector "involvedObject.name=$claim" 2>&1
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS); not something nodelet itself does (see docs/GAP_CLOSURE.md's out-of-scope notes)"
+        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS); not something nodelet itself does (see docs/GAP_CLOSURE.md's out-of-scope notes) — see the diagnostic dump printed above for why, before assuming it's the benign case"
     fi
 
     apply_manifest <<EOF
