@@ -1,14 +1,19 @@
-commit: 588624a78fa9e5d0985c0131672bacab82abd5db
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31924597233
-timestamp (UTC): 2026-08-16T03:43:41Z
+commit: 128950d5cf160a43f7116b8c7632a30e3bb4819a
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31925131300
+timestamp (UTC): 2026-08-16T03:57:02Z
 shard: 2/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786851820
-==> 233 test(s) registered total (before sharding); running now...
+==> Test namespace: not-k8s-e2e-1786852527
+==> 232 test(s) registered total (before sharding); running now...
 ==> Shard 2/5: 51 test(s) selected
+▶ test_pod_mounts_a_persistent_volume_claim
+    (skip: PVC 'csi-pvc-check-claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS (csi-hostpath-sc); not something nodelet itself does (see docs/GAP_CLOSURE.md's out-of-scope notes))
+  ○ SKIP (91s)
+▶ test_job_controller_fails_after_backoff_limit
+  ✔ PASS (3s)
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 0 skipped
+Results: 1 passed, 0 failed, 1 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786851820...
+==> Cleaning up test namespace not-k8s-e2e-1786852527...
