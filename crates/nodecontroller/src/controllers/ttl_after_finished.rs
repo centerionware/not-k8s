@@ -10,7 +10,12 @@
 //! Deleting a Job here cascades to its Pods via `garbage-collector-controller`
 //! (Group D) — this controller does nothing itself to clean up a Job's
 //! Pods, matching upstream's own division of labor (ttl-after-finished only
-//! ever deletes the Job object).
+//! ever deletes the Job object). The delete explicitly requests
+//! `Background` propagation rather than leaving it unset — confirmed live
+//! in CI that an unset propagation policy left the Job in Foreground-style
+//! limbo (a `deletionTimestamp` set, the object never actually removed)
+//! deadlocked against `garbage-collector-controller`, which only reacts to
+//! a real `Delete` watch event for the parent.
 //!
 //! # Scope of this slice
 //!
@@ -79,7 +84,17 @@ async fn sweep(client: &Client, jobs: &HashMap<String, Job>) {
         let namespace = job.namespace().unwrap_or_default();
         let name = job.name_any();
         let api: Api<Job> = Api::namespaced(client.clone(), &namespace);
-        match api.delete(&name, &DeleteParams::default()).await {
+        // Explicit Background propagation, not the bare default: confirmed
+        // live in CI that leaving propagationPolicy unset here deadlocked
+        // against garbage-collector-controller — that controller only acts
+        // on a real `Delete` watch event for the parent, but an unset
+        // propagation policy left the Job in Foreground-style limbo
+        // (deletionTimestamp set, object never actually removed) waiting
+        // on its own Pod, which was in turn waiting on the Job's real
+        // removal to trigger cascade deletion. Same explicit choice
+        // garbage-collector-controller's own deletes already make.
+        let dp = DeleteParams { propagation_policy: Some(kube::api::PropagationPolicy::Background), ..Default::default() };
+        match api.delete(&name, &dp).await {
             Ok(_) => tracing::info!(namespace = %namespace, job = %name, "ttl-after-finished-controller deleted a finished Job past its TTL"),
             Err(kube::Error::Api(ref e)) if e.is_not_found() => {}
             Err(e) => tracing::warn!(namespace = %namespace, job = %name, error = ?e, "failed to delete finished Job past its TTL"),
