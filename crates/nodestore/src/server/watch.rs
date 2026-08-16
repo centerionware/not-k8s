@@ -178,27 +178,19 @@ async fn handle_request(
             // Reconcile first: the store revision can be ahead of the
             // broadcast receiver when this request wins the select, and
             // advertising that revision before replaying it would let the
-            // client skip a real event. Progress is per watcher, so each
-            // response must carry that watcher's ID; -1 is not a broadcast
-            // watch ID in the etcd protocol.
+            // client skip a real event. An explicit progress request covers
+            // every watcher, so etcd uses -1 for the broadcast response.
             if !resync(api, watchers, tx).await {
                 return false;
             }
             let revision = api.current_revision().unwrap_or(0);
-            for watcher in watchers.values() {
-                if tx
-                    .send(Ok(pb::WatchResponse {
-                        header: api.header(revision),
-                        watch_id: watcher.id,
-                        ..Default::default()
-                    }))
-                    .await
-                    .is_err()
-                {
-                    return false;
-                }
-            }
-            true
+            tx.send(Ok(pb::WatchResponse {
+                header: api.header(revision),
+                watch_id: -1,
+                ..Default::default()
+            }))
+            .await
+            .is_ok()
         }
         None => true, // empty request; nothing to do
     }
