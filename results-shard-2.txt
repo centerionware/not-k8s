@@ -1,7 +1,37 @@
-commit: b1ebee3e5c8c0f7c00056b9765be2572764f59d8
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31920584499
-timestamp (UTC): 2026-08-16T01:58:51Z
+commit: faf0d18010300d9669391a1912112a58d7716806
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31921043547
+timestamp (UTC): 2026-08-16T02:14:57Z
 shard: 2/5
-exit code: unknown
+exit code: 1
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+==> Test namespace: not-k8s-e2e-1786846403
+==> 231 test(s) registered total (before sharding); running now...
+==> Shard 2/5: 51 test(s) selected
+▶ test_job_controller_fails_after_backoff_limit
+==> FATAL: timed out after 90s waiting for: job job-fail-test reports Failed condition after exhausting backoffLimit
+  ✘ FAIL (91s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 16 02:12:20 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:12:20.583779Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
+    Aug 16 02:12:20 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:12:20.601459Z  WARN failed to write pod status pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff error=ApiError: pods "dra-example-driver-kubeletplugin-b6c54aa289bd22ff" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 02:12:20 runnervmzvulz run-nodelet.sh[14776]: Caused by:
+    Aug 16 02:12:20 runnervmzvulz run-nodelet.sh[14776]:     pods "dra-example-driver-kubeletplugin-b6c54aa289bd22ff" not found: NotFound
+    Aug 16 02:12:20 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:12:20.607303Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
+    Aug 16 02:12:20 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:12:20.750399Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 02:12:20 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:12:20.773339Z  INFO CreateContainer succeeded container=plugin container_id=75d20f759215e5fb2f56b6401b4bdee8ecd7e40c4148d2a8aa94830b7c85f9b5
+    Aug 16 02:12:20 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:12:20.947794Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 02:12:28 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:12:28.538388Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-482db44c-4f01-44e7-b891-81be57b8064a.sock plugin_type=DRAPlugin
+    Aug 16 02:13:18 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:13:18.722995Z  INFO node status pushed
+    Aug 16 02:13:25 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:13:25.012749Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 02:13:25 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:13:25.475663Z  INFO CreateContainer succeeded container=busybox container_id=0ba055e9cb47ae7e98946c9b63ffffd5b56052bc1b3614bdf860008b7d1920cf
+    Aug 16 02:13:25 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:13:25.537295Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 02:14:18 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:14:18.766686Z  INFO node status pushed
+    Aug 16 02:14:55 runnervmzvulz run-nodelet.sh[14776]: 2026-08-16T02:14:55.261308Z  INFO torn down pod=not-k8s-e2e-1786846403/job-fail-test-0
+
+════════════════════════════════════════
+Results: 0 passed, 1 failed, 0 skipped
+Failed:
+  - test_job_controller_fails_after_backoff_limit
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786846403...
