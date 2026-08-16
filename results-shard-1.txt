@@ -1,10 +1,10 @@
-commit: aedc3b9ba9bf52fcf9bfb912ba538ec22e02b4b2
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31923697232
-timestamp (UTC): 2026-08-16T03:22:37Z
+commit: 0dad7b25df8c563a54901b92d07f22cad7274077
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31924147198
+timestamp (UTC): 2026-08-16T03:34:03Z
 shard: 1/5
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786850463
+==> Test namespace: not-k8s-e2e-1786851148
 ==> 233 test(s) registered total (before sharding); running now...
 ==> Shard 1/5: 52 test(s) selected
 ▶ test_diag_pv_binder_state
@@ -14,14 +14,14 @@ kind: PersistentVolumeClaim
 metadata:
   annotations:
     kubectl.kubernetes.io/last-applied-configuration: |
-      {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"diag-claim","namespace":"not-k8s-e2e-1786850463"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"64Mi"}},"storageClassName":"csi-hostpath-sc"}}
-  creationTimestamp: "2026-08-16T03:21:04Z"
+      {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"diag-claim","namespace":"not-k8s-e2e-1786851148"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"64Mi"}},"storageClassName":"csi-hostpath-sc"}}
+  creationTimestamp: "2026-08-16T03:32:29Z"
   finalizers:
   - kubernetes.io/pvc-protection
   name: diag-claim
-  namespace: not-k8s-e2e-1786850463
-  resourceVersion: "844"
-  uid: ca0d8dc2-4832-4b6d-8d75-2e11a2f7bc95
+  namespace: not-k8s-e2e-1786851148
+  resourceVersion: "2685"
+  uid: 03afdfde-f106-4a6e-b029-cd0cc64e9d20
 spec:
   accessModes:
   - ReadWriteOnce
@@ -39,36 +39,184 @@ items: []
 kind: List
 metadata:
   resourceVersion: ""
-=== DIAG: provisioner pods ===
-No resources found
-=== DIAG: provisioner logs ===
-No resources found in default namespace.
+=== DIAG: all pods ===
+NAMESPACE            NAME                                                READY   STATUS    RESTARTS   AGE     IP           NODE            NOMINATED NODE   READINESS GATES
+default              csi-hostpath-socat-0                                1/1     Running   0          2m55s   10.42.0.5    runnervmzvulz   <none>           <none>
+default              csi-hostpathplugin-0                                7/7     Running   0          2m56s   10.42.0.4    runnervmzvulz   <none>           <none>
+default              smoke-test                                          1/1     Running   0          4m27s   10.42.0.2    runnervmzvulz   <none>           <none>
+dra-example-driver   dra-example-driver-kubeletplugin-b6c54aa289bd22ff   1/1     Running   0          8s      10.42.0.44   runnervmzvulz   <none>           <none>
+kube-system          coredns-e882b0b14ed1a949-qglqm                      0/1     Running   0          4m35s   10.42.0.3    runnervmzvulz   <none>           <none>
+=== DIAG: all statefulsets ===
+NAMESPACE   NAME                 READY   AGE
+default     csi-hostpath-socat   1/1     2m55s
+default     csi-hostpathplugin   1/1     2m56s
+=== DIAG: csi-hostpathplugin sts describe ===
+Name:               csi-hostpathplugin
+Namespace:          default
+CreationTimestamp:  Sun, 16 Aug 2026 03:31:04 +0000
+Selector:           app.kubernetes.io/component=plugin,app.kubernetes.io/instance=hostpath.csi.k8s.io,app.kubernetes.io/name=csi-hostpathplugin,app.kubernetes.io/part-of=csi-driver-host-path
+Labels:             app.kubernetes.io/component=plugin
+                    app.kubernetes.io/instance=hostpath.csi.k8s.io
+                    app.kubernetes.io/name=csi-hostpathplugin
+                    app.kubernetes.io/part-of=csi-driver-host-path
+Annotations:        <none>
+Replicas:           1 desired | 1 total
+Update Strategy:    RollingUpdate
+  Partition:        0
+Pods Status:        1 Running / 0 Waiting / 0 Succeeded / 0 Failed
+Pod Template:
+  Labels:           app.kubernetes.io/component=plugin
+                    app.kubernetes.io/instance=hostpath.csi.k8s.io
+                    app.kubernetes.io/name=csi-hostpathplugin
+                    app.kubernetes.io/part-of=csi-driver-host-path
+  Service Account:  csi-hostpathplugin-sa
+  Containers:
+   hostpath:
+    Image:      registry.k8s.io/sig-storage/hostpathplugin:v1.17.1
+    Port:       9898/TCP (healthz)
+    Host Port:  0/TCP (healthz)
+    Args:
+      --drivername=hostpath.csi.k8s.io
+      --v=5
+      --endpoint=$(CSI_ENDPOINT)
+      --nodeid=$(KUBE_NODE_NAME)
+    Liveness:  http-get http://:healthz/healthz delay=10s timeout=3s period=2s #success=1 #failure=5
+    Environment:
+      CSI_ENDPOINT:    unix:///csi/csi.sock
+      KUBE_NODE_NAME:   (v1:spec.nodeName)
+    Mounts:
+      /csi from socket-dir (rw)
+      /csi-data-dir from csi-data-dir (rw)
+      /dev from dev-dir (rw)
+      /var/lib/nodelet/plugins from plugins-dir (rw)
+      /var/lib/nodelet/pods from mountpoint-dir (rw)
+   node-driver-registrar:
+    Image:      registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+    Port:       9809/TCP (healthz)
+    Host Port:  0/TCP (healthz)
+    Args:
+      --v=5
+      --csi-address=/csi/csi.sock
+      --kubelet-registration-path=/var/lib/nodelet/plugins/csi-hostpath/csi.sock
+      --http-endpoint=:9809
+    Liveness:  http-get http://:healthz/healthz delay=30s timeout=15s period=10s #success=1 #failure=3
+    Environment:
+      KUBE_NODE_NAME:   (v1:spec.nodeName)
+    Mounts:
+      /csi from socket-dir (rw)
+      /csi-data-dir from csi-data-dir (rw)
+      /registration from registration-dir (rw)
+   liveness-probe:
+    Image:      registry.k8s.io/sig-storage/livenessprobe:v2.19.0
+    Port:       <none>
+    Host Port:  <none>
+    Args:
+      --csi-address=/csi/csi.sock
+      --health-port=9898
+    Environment:  <none>
+    Mounts:
+      /csi from socket-dir (rw)
+   csi-attacher:
+    Image:      registry.k8s.io/sig-storage/csi-attacher:v4.12.0
+    Port:       <none>
+    Host Port:  <none>
+    Args:
+      --v=5
+      --csi-address=/csi/csi.sock
+    Environment:  <none>
+    Mounts:
+      /csi from socket-dir (rw)
+   csi-provisioner:
+    Image:      registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
+    Port:       <none>
+    Host Port:  <none>
+    Args:
+      -v=5
+      --csi-address=/csi/csi.sock
+      --feature-gates=Topology=true
+    Environment:  <none>
+    Mounts:
+      /csi from socket-dir (rw)
+   csi-resizer:
+    Image:      registry.k8s.io/sig-storage/csi-resizer:v2.2.1
+    Port:       <none>
+    Host Port:  <none>
+    Args:
+      -v=5
+      -csi-address=/csi/csi.sock
+    Environment:  <none>
+    Mounts:
+      /csi from socket-dir (rw)
+   csi-snapshotter:
+    Image:      registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
+    Port:       <none>
+    Host Port:  <none>
+    Args:
+      -v=5
+      --csi-address=/csi/csi.sock
+    Environment:  <none>
+    Mounts:
+      /csi from socket-dir (rw)
+  Volumes:
+   socket-dir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/lib/nodelet/plugins/csi-hostpath
+    HostPathType:  DirectoryOrCreate
+   mountpoint-dir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/lib/nodelet/pods
+    HostPathType:  DirectoryOrCreate
+   registration-dir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/lib/nodelet/plugins_registry
+    HostPathType:  Directory
+   plugins-dir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/lib/nodelet/plugins
+    HostPathType:  Directory
+   csi-data-dir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/lib/csi-hostpath-data/
+    HostPathType:  DirectoryOrCreate
+   dev-dir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /dev
+    HostPathType:  Directory
+  Node-Selectors:  <none>
+  Tolerations:     <none>
+Volume Claims:     <none>
+Events:            <none>
+=== DIAG: storageclasses ===
+NAME                    PROVISIONER           RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+csi-hostpath-block-sc   hostpath.csi.k8s.io   Delete          Immediate              false                  2m46s
+csi-hostpath-sc         hostpath.csi.k8s.io   Delete          Immediate              false                  2m46s
+csi-hostpath-sc-wait    hostpath.csi.k8s.io   Delete          WaitForFirstConsumer   false                  2m46s
 === DIAG: events ===
-No resources found in not-k8s-e2e-1786850463 namespace.
+No resources found in not-k8s-e2e-1786851148 namespace.
 ==> FATAL: diagnostic dump above — this always fails on purpose
-  ✘ FAIL (91s, exit 1)
+  ✘ FAIL (92s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 16 03:19:56 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:19:56.744658Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 16 03:19:58 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:19:58.690290Z  INFO CreateContainer succeeded container=plugin container_id=89e5445d175b70b0ec3f63348f6901a11b6fd14441c12666d3a1c5459124d825
-    Aug 16 03:19:58 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:19:58.834767Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:00.593202Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
-    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:00.611419Z  WARN failed to write pod status pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff error=ApiError: pods "dra-example-driver-kubeletplugin-b6c54aa289bd22ff" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: Caused by:
-    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]:     pods "dra-example-driver-kubeletplugin-b6c54aa289bd22ff" not found: NotFound
-    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:00.618921Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
-    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:00.763327Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:00.785542Z  INFO CreateContainer succeeded container=plugin container_id=7b7fd505c27bc55703a266f5423ebb70c1c8459b2f7e312b6e846365a2a2f0ae
-    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:00.969038Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 16 03:20:01 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:01.146840Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-e71e50d5-4bb7-41be-b253-56e080a9625d.sock plugin_type=DRAPlugin
-    Aug 16 03:20:01 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:01.297279Z  INFO node status pushed
-    Aug 16 03:21:01 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:21:01.345641Z  INFO node status pushed
-    Aug 16 03:22:01 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:22:01.389556Z  INFO node status pushed
+    Aug 16 03:34:00 runnervmzvulz run-nodelet.sh[14877]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (38329220-456c-43a4-a13c-9f1fae5e85b5) does not match the UID in record. The object might have been deleted and then recreated: Conflict
+    Aug 16 03:34:00 runnervmzvulz run-nodelet.sh[14877]: 2026-08-16T03:34:00.416025Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 03:34:00 runnervmzvulz run-nodelet.sh[14877]: 2026-08-16T03:34:00.576127Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
+    Aug 16 03:34:00 runnervmzvulz run-nodelet.sh[14877]: 2026-08-16T03:34:00.749943Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
+    Aug 16 03:34:00 runnervmzvulz run-nodelet.sh[14877]: Caused by:
+    Aug 16 03:34:00 runnervmzvulz run-nodelet.sh[14877]:     0: ApiError: pods "dra-example-driver-kubeletplugin-b6c54aa289bd22ff" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 03:34:00 runnervmzvulz run-nodelet.sh[14877]:     1: pods "dra-example-driver-kubeletplugin-b6c54aa289bd22ff" not found: NotFound
+    Aug 16 03:34:00 runnervmzvulz run-nodelet.sh[14877]: 2026-08-16T03:34:00.753624Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 03:34:00 runnervmzvulz run-nodelet.sh[14877]: 2026-08-16T03:34:00.777096Z  INFO CreateContainer succeeded container=plugin container_id=b331fcffa7163ba0a662f0e906459d54ec481cd308938bb70dead562a2d6717d
+    Aug 16 03:34:01 runnervmzvulz run-nodelet.sh[14877]: 2026-08-16T03:34:01.468897Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
+    Aug 16 03:34:01 runnervmzvulz run-nodelet.sh[14877]: Caused by:
+    Aug 16 03:34:01 runnervmzvulz run-nodelet.sh[14877]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (caf42ea7-ce42-4d05-a051-5fd2def4b1e9) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (caf42ea7-ce42-4d05-a051-5fd2def4b1e9) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 03:34:01 runnervmzvulz run-nodelet.sh[14877]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (caf42ea7-ce42-4d05-a051-5fd2def4b1e9) does not match the UID in record. The object might have been deleted and then recreated: Conflict
+    Aug 16 03:34:01 runnervmzvulz run-nodelet.sh[14877]: 2026-08-16T03:34:01.477152Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 03:34:01 runnervmzvulz run-nodelet.sh[14877]: 2026-08-16T03:34:01.511554Z  INFO CreateContainer succeeded container=plugin container_id=036e14d7c934db91a66aa95dfe6e78fa0f713b60345efb907e569c215cf1f576
 
 ════════════════════════════════════════
 Results: 0 passed, 1 failed, 0 skipped
 Failed:
   - test_diag_pv_binder_state
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786850463...
+==> Cleaning up test namespace not-k8s-e2e-1786851148...
