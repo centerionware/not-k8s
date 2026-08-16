@@ -15,9 +15,13 @@
 //! owner chain to clean up) — see `controllers/service_account.rs`'s,
 //! `controllers/resource_quota.rs`'s, `controllers/garbage_collector.rs`'s,
 //! and each `controllers/*.rs` workload file's own module doc for why each
-//! is scoped the way it is. See `docs/CONTROLLER_MANAGER.md`'s "Delivery
-//! order" for what's next: Groups D and E are now both complete, so Group F
-//! (batch controllers: job/cronjob/ttl-after-finished) is next.
+//! is scoped the way it is. Group F (batch controllers —
+//! `job-controller`/`cronjob-controller`/`ttl-after-finished-controller`)
+//! is implemented too, see `controllers/job.rs`, `controllers/cron_job.rs`,
+//! `controllers/ttl_after_finished.rs`, and `cron_schedule.rs`. See
+//! `docs/CONTROLLER_MANAGER.md`'s "Delivery order" for what's next: Groups
+//! D, E, and F are now all complete, so Group G (volume/storage lifecycle)
+//! is next.
 //!
 //! Single leader-election lease (`kube-system/kube-controller-manager`,
 //! matching upstream's own name — see `config.rs`) covers the whole
@@ -28,7 +32,9 @@
 
 pub mod config;
 pub mod controllers;
+pub mod cron_schedule;
 pub mod jitter;
+pub mod k8s_time;
 pub mod pacing;
 pub mod watch;
 pub mod wheel;
@@ -74,6 +80,9 @@ pub async fn run() -> Result<()> {
             controllers::daemon_set::run(client.clone(), &cfg),
             controllers::stateful_set::run(client.clone(), &cfg),
             controllers::garbage_collector::run(client.clone(), &cfg),
+            controllers::job::run(client.clone(), &cfg),
+            controllers::cron_job::run(client.clone(), &cfg),
+            controllers::ttl_after_finished::run(client.clone(), &cfg),
         )?;
         Ok(())
     })

@@ -353,12 +353,44 @@ Group E is now feature-complete at this project's documented scope: all
 four workload controllers real users mean by "the controller manager"
 are implemented and e2e-verified.
 
-## F. Batch controllers — Tier 1 / 2
+## F. Batch controllers — Tier 1 / 2 — **all three implemented (job, cronjob, ttl-after-finished)**
 
-- `job-controller`, `cronjob-controller` (**1**): straightforward,
-  self-contained, no dependency on group E.
-- `ttl-after-finished-controller` (**2**): sweeps finished Jobs past
-  `spec.ttlSecondsAfterFinished`.
+- `job-controller` (`crates/nodecontroller/src/controllers/job.rs`,
+  **implemented**): runs a Job's Pods to completion — creates up to
+  `spec.parallelism` Pods, reports `Complete`/`Failed` once the target is
+  reached or `backoffLimit` is exceeded. Purely event-driven, same shape as
+  `replicaset-controller`. Real simplifications, named in that file's own
+  module doc: `NonIndexed` completion mode only (no per-index tracking); no
+  `podFailurePolicy`/`successPolicy`; no `activeDeadlineSeconds` (needs a
+  poll timer this controller deliberately doesn't have); completion/failure
+  counts recomputed from the live Pod set each reconcile rather than
+  upstream's `uncountedTerminatedPods` bookkeeping (equivalent here because
+  this controller never deletes a terminal Pod itself); `spec.managedBy`
+  honored as a skip.
+- `cronjob-controller` (`crates/nodecontroller/src/controllers/cron_job.rs`,
+  **implemented**): creates a Job from `spec.jobTemplate` each time
+  `spec.schedule` comes due. The one genuinely poll-driven controller in
+  this group (a periodic scan, the "plain heap tier" this doc's mechanism
+  section describes — one entry per CronJob, not per node, so no
+  `wheel.rs` involvement). Schedule parsing/next-run math is a small
+  from-scratch 5-field cron parser, `crates/nodecontroller/src/cron_schedule.rs`
+  (same "write it, don't pull in a dependency for a small well-scoped
+  surface" call this crate already made for FNV template hashing). Real
+  simplifications: catches up one missed schedule boundary per tick, not
+  every boundary missed during downtime; `startingDeadlineSeconds` skips a
+  too-late boundary rather than tracking each missed occurrence
+  individually; `spec.timeZone` is not honored — every schedule evaluates
+  in UTC; `concurrencyPolicy` (`Allow`/`Forbid`/`Replace`) is fully
+  implemented.
+- `ttl-after-finished-controller`
+  (`crates/nodecontroller/src/controllers/ttl_after_finished.rs`,
+  **implemented**): deletes a finished Job once
+  `spec.ttlSecondsAfterFinished` has elapsed since it finished (deletion
+  cascades to the Job's Pods via `garbage-collector-controller`, not
+  handled here directly). Also poll-driven, also the plain-heap tier — a
+  flat periodic scan of the cached Job set rather than a per-Job wheel/heap
+  entry, since expected cardinality (finished Jobs with a TTL set,
+  cluster-wide) doesn't justify the extra structure.
 
 ## G. Volume/storage lifecycle — Tier 0 / 2
 

@@ -18,6 +18,7 @@
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
+use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::api::core::v1::{Namespace, Node, Pod, ResourceQuota, Service};
 use kube::runtime::utils::{Backoff, WatchStreamExt};
@@ -113,6 +114,16 @@ pub fn watch_daemon_sets(client: &Client) -> BoxStream<'static, watcher::Result<
 
 pub fn watch_stateful_sets(client: &Client) -> BoxStream<'static, watcher::Result<Event<StatefulSet>>> {
     let api: Api<StatefulSet> = Api::all(client.clone());
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+}
+
+pub fn watch_jobs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Job>>> {
+    let api: Api<Job> = Api::all(client.clone());
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+}
+
+pub fn watch_cron_jobs(client: &Client) -> BoxStream<'static, watcher::Result<Event<CronJob>>> {
+    let api: Api<CronJob> = Api::all(client.clone());
     watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
