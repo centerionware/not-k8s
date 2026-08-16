@@ -49,6 +49,12 @@ on:
         default: nodeproxy
         type: choice
         options: [nodeproxy, none]
+      datastore:
+        description: 'Which control-plane datastore to use: nodestore (the default stronger path) or none (k3s bundled kine, useful for isolating controller/API behavior from nodestore).'
+        required: false
+        default: nodestore
+        type: choice
+        options: [nodestore, none]
 
 permissions:
   contents: write
@@ -192,7 +198,7 @@ jobs:
         env:
           NOTK8S_BUILD_PROFILE: debug
           NOTK8S_BUILD_LAYOUT: ${{ inputs.layout || 'split' }}
-          DATASTORE: nodestore
+          DATASTORE: ${{ inputs.datastore || 'nodestore' }}
           SCHEDULER: ${{ inputs.scheduler || 'none' }}
           # Same two-halves-of-one-switch pairing as SCHEDULER, same
           # "leave off for a full-suite run" reasoning — see this input's
