@@ -18,10 +18,17 @@
 //! is scoped the way it is. Group F (batch controllers —
 //! `job-controller`/`cronjob-controller`/`ttl-after-finished-controller`)
 //! is implemented too, see `controllers/job.rs`, `controllers/cron_job.rs`,
-//! `controllers/ttl_after_finished.rs`, and `cron_schedule.rs`. See
-//! `docs/CONTROLLER_MANAGER.md`'s "Delivery order" for what's next: Groups
-//! D, E, and F are now all complete, so Group G (volume/storage lifecycle)
-//! is next.
+//! `controllers/ttl_after_finished.rs`, and `cron_schedule.rs`. All of
+//! Group G is implemented: `attach-detach-controller`
+//! (`controllers/attach_detach.rs`, Tier 0), `persistentvolume-binder-controller`
+//! (`controllers/pv_binder.rs`), and pv/pvc-protection-controller
+//! (`controllers/storage_protection.rs`) — `persistentvolume-expander-controller`
+//! is scoped out (see `docs/CONTROLLER_MANAGER.md`'s Group G section: no
+//! in-tree volume plugins exist to expand, and CSI resize goes through the
+//! external-resizer sidecar directly against the PVC, no controller-manager
+//! involvement needed). See `docs/CONTROLLER_MANAGER.md`'s "Delivery order"
+//! for what's next: Groups D, E, F, and G are now complete, so Group H
+//! (DRA-adjacent) is next.
 //!
 //! Single leader-election lease (`kube-system/kube-controller-manager`,
 //! matching upstream's own name — see `config.rs`) covers the whole
@@ -83,6 +90,9 @@ pub async fn run() -> Result<()> {
             controllers::job::run(client.clone(), &cfg),
             controllers::cron_job::run(client.clone(), &cfg),
             controllers::ttl_after_finished::run(client.clone(), &cfg),
+            controllers::attach_detach::run(client.clone(), &cfg),
+            controllers::pv_binder::run(client.clone(), &cfg),
+            controllers::storage_protection::run(client.clone(), &cfg),
         )?;
         Ok(())
     })

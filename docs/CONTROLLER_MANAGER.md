@@ -392,19 +392,51 @@ are implemented and e2e-verified.
   entry, since expected cardinality (finished Jobs with a TTL set,
   cluster-wide) doesn't justify the extra structure.
 
-## G. Volume/storage lifecycle — Tier 0 / 2
+## G. Volume/storage lifecycle — Tier 0 / 2 — **implemented (attach-detach, binder, pv/pvc-protection; expander scoped out)**
 
-- `attach-detach-controller` (**0**): nodelet already *consumes* its
-  annotation (commit `9264e11`, "controller-managed attach-detach
-  annotation") — volumes tests currently pass only because k3s's bundled
-  copy does this today; disabling k3s's controller-manager without this
-  reimplemented breaks every attach-requiring volume test that currently
-  passes.
-- `persistentvolume-binder-controller` (**2**): PVC↔PV binding for
-  non-dynamic (pre-created PV) provisioning.
-- `pv-protection-controller` / `pvc-protection-controller` (**2**):
-  finalizer-based "don't delete a PV/PVC still in use."
-- `persistentvolume-expander-controller` (**2**): PVC resize requests.
+- `attach-detach-controller` (`crates/nodecontroller/src/controllers/attach_detach.rs`,
+  **implemented**): creates/deletes `VolumeAttachment` objects so a CSI
+  driver's external-attacher sidecar actually attaches a volume — nodelet
+  already *consumes* the result (commit `9264e11`, "controller-managed
+  attach-detach annotation"; nodelet itself sets the
+  `volumes.kubernetes.io/controller-managed-attach-detach` Node annotation
+  this controller's existence is predicated on). Desired state (`(driver,
+  PV, node)` triples wanted by live, scheduled Pods) is recomputed fresh
+  from the Pod/PVC/PV caches on every relevant event rather than tracked
+  incrementally — real simplifications named in the file's own module doc:
+  CSI volumes only (no in-tree plugin types — this project has no cloud
+  provider to migrate from anyway), a Pod keeps its volumes desired until
+  it's fully removed from the apiserver (not just `deletionTimestamp` set,
+  deliberately conservative), and no `--node-detach-timeout`-style
+  force-detach for a node that goes permanently unreachable.
+- `persistentvolume-binder-controller`
+  (`crates/nodecontroller/src/controllers/pv_binder.rs`, **implemented**):
+  binds a PVC to a PV — both the common provisioner-prebound path (a CSI
+  external-provisioner already set `pv.spec.claimRef`, this controller
+  finishes the handshake) and the static path (hand-created PV, matched by
+  storage class + access modes). Load-bearing in practice despite the
+  plan's original Tier 2 label: this project's own `csi_pvc.sh`/
+  `csi_attach.sh` e2e tests gate on `PVC.status.phase == Bound`, which
+  nothing sets without this controller once k3s's own copy is disabled.
+  Named simplification: no capacity comparison for static matching
+  (`Quantity` has no arithmetic — the same gap `resourcequota-controller`
+  documents), and no unbind/reclaim-policy handling once bound.
+- `pv-protection-controller` / `pvc-protection-controller`
+  (`crates/nodecontroller/src/controllers/storage_protection.rs`,
+  **implemented**): the standard finalizer-based "don't let this disappear
+  while something still needs it" pattern — PV in use means `Bound`, PVC in
+  use means referenced by name from a live Pod's `spec.volumes`. No
+  admission-time delete rejection (this controller only manages the
+  finalizer itself, not a second enforcement layer) — the protection still
+  holds since the object won't actually disappear until the finalizer is
+  removed.
+- `persistentvolume-expander-controller` (**scoped out**): this project has
+  no in-tree volume plugins to expand (this controller's real upstream job
+  is in-tree `ControllerExpandVolume` calls), and CSI resize is handled
+  directly by the external-resizer sidecar watching PVCs — no
+  controller-manager involvement needed for the CSI-only case this project
+  targets. Not a gap, the same reasoning `CLAUDE.md`'s "confirmed genuinely
+  NOT kubelet's job" list uses one layer up.
 
 ## H. DRA-adjacent — Tier 2
 

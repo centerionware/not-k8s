@@ -20,7 +20,8 @@ use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::coordination::v1::Lease;
-use k8s_openapi::api::core::v1::{Namespace, Node, Pod, ResourceQuota, Service};
+use k8s_openapi::api::core::v1::{Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, ResourceQuota, Service};
+use k8s_openapi::api::storage::v1::VolumeAttachment;
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -124,6 +125,21 @@ pub fn watch_jobs(client: &Client) -> BoxStream<'static, watcher::Result<Event<J
 
 pub fn watch_cron_jobs(client: &Client) -> BoxStream<'static, watcher::Result<Event<CronJob>>> {
     let api: Api<CronJob> = Api::all(client.clone());
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+}
+
+pub fn watch_persistent_volume_claims(client: &Client) -> BoxStream<'static, watcher::Result<Event<PersistentVolumeClaim>>> {
+    let api: Api<PersistentVolumeClaim> = Api::all(client.clone());
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+}
+
+pub fn watch_persistent_volumes(client: &Client) -> BoxStream<'static, watcher::Result<Event<PersistentVolume>>> {
+    let api: Api<PersistentVolume> = Api::all(client.clone());
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+}
+
+pub fn watch_volume_attachments(client: &Client) -> BoxStream<'static, watcher::Result<Event<VolumeAttachment>>> {
+    let api: Api<VolumeAttachment> = Api::all(client.clone());
     watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
