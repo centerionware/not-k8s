@@ -1,54 +1,100 @@
-commit: e081b452a062ff20c25b5656787741eaa6cee81a
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31931964698
-timestamp (UTC): 2026-08-16T06:49:11Z
+commit: 63b1153b3e2d9bb2b81d7a3b0c246d65a50ab909
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31932392725
+timestamp (UTC): 2026-08-16T06:58:01Z
 shard: 5/5
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786862860
+==> Test namespace: not-k8s-e2e-1786863439
 ==> 235 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 44 test(s) selected
-▶ test_diag5_in_cluster_watch
-=== DIAG5: pod logs (plain GET then watch) ===
-BEFORE_CURL
-PLAIN_EXIT=6
-BEFORE_WATCH_CURL
-WATCH_EXIT=6
-=== DIAG5: plain.err ===
-* Could not resolve host: kubernetes.default.svc
-* Could not resolve host: kubernetes.default.svc
-* Could not resolve: kubernetes.default.svc:443
-* closing connection #0
-curl: (6) Could not resolve host: kubernetes.default.svc
-=== DIAG5: watch.err (partial, curl -v trace) ===
-* Could not resolve host: kubernetes.default.svc
-* Could not resolve host: kubernetes.default.svc
-* Could not resolve: kubernetes.default.svc:443
-* closing connection #0
-curl: (6) Could not resolve host: kubernetes.default.svc
+▶ test_diag5_dns_investigation
+=== DIAG5: pod resolv.conf ===
+# This is /run/systemd/resolve/stub-resolv.conf managed by man:systemd-resolved(8).
+# Do not edit.
+#
+# This file might be symlinked as /etc/resolv.conf. If you're looking at
+# /etc/resolv.conf and seeing this text, you have followed the symlink.
+#
+# This is a dynamic resolv.conf file for connecting local clients to the
+# internal DNS stub resolver of systemd-resolved. This file lists all
+# configured search domains.
+#
+# Run "resolvectl status" to see details about the uplink DNS servers
+# currently in use.
+#
+# Third party programs should typically not access this file directly, but only
+# through the symlink at /etc/resolv.conf. To manage man:resolv.conf(5) in a
+# different way, replace this symlink by a static file or a different symlink.
+#
+# See man:systemd-resolved.service(8) for details about the supported modes of
+# operation for /etc/resolv.conf.
+
+nameserver 127.0.0.53
+options edns0 trust-ad
+search 0ec3n2hyagzerni52n0yzw2ude.dx.internal.cloudapp.net
+=== DIAG5: kube-system coredns pods ===
+coredns-e882b0b14ed1a949-lzr4m   1/1     Running   0          92s   10.42.0.3   runnervmzvulz   <none>           <none>
+=== DIAG5: coredns service + endpoints ===
+kube-dns   ClusterIP   10.43.0.10   <none>        53/UDP,53/TCP,9153/TCP   2m52s   k8s-app=kube-dns
+kube-dns-nc   IPv4          53,53,9153   10.42.0.3   92s
+=== DIAG5: coredns pod logs ===
+maxprocs: Leaving GOMAXPROCS=4: CPU quota undefined
+[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.override
+[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.server
+[ERROR] plugin/kubernetes: Failed to watch: failed to list *v1.Namespace: starting
+[ERROR] plugin/kubernetes: Failed to watch: failed to list *v1.EndpointSlice: starting
+[ERROR] plugin/kubernetes: Failed to watch: failed to list *v1.Service: starting
+[INFO] plugin/kubernetes: waiting for Kubernetes API before starting server
+[INFO] plugin/kubernetes: waiting for Kubernetes API before starting server
+[INFO] plugin/kubernetes: waiting for Kubernetes API before starting server
+.:53
+[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.override
+[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.server
+[INFO] plugin/reload: Running configuration SHA512 = a55b0a21291f511a65165ac72ac3ccd4573673e954640f51eb0abeb93bbdb2f740f0894d0156975f16f7b15f87435d85d8b4f6d2b8bd58e4294421404cb2fd80
+CoreDNS-1.14.6
+linux/amd64, go1.26.5, 424d125
+[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.override
+[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.server
+[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.override
+[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.server
+[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.override
+[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.server
+=== DIAG5: nslookup kubernetes.default.svc from pod ===
+error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to start exec "9f4be6f680667e4168321de3397f66c7c4f3e969a07259694c92fce37f5bbc58": OCI runtime exec failed: exec failed: unable to start container process: exec: "nslookup": executable file not found in $PATH
+=== DIAG5: nslookup against 8.8.8.8 directly (bypass cluster DNS) ===
+error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to start exec "440a20ec83fa3e6f31ac4708a276d3949c692bb52de661e1a702e26a1e1e8d44": OCI runtime exec failed: exec failed: unable to start container process: exec: "nslookup": executable file not found in $PATH
+=== DIAG5: default/kubernetes service+endpoints ===
+NAME         TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE     SELECTOR
+kubernetes   ClusterIP   10.43.0.1    <none>        443/TCP   2m56s   <none>
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME         ENDPOINTS         AGE
+kubernetes   10.1.0.160:6443   2m56s
+=== DIAG5: can the pod reach the apiserver ClusterIP directly (no DNS) ===
+HTTP_CODE=401
 ==> FATAL: diag5 dump above
-  ✘ FAIL (88s, exit 1)
+  ✘ FAIL (40s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 16 06:46:26 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:46:26.713559Z ERROR failed with status 503 Service Unavailable
-    Aug 16 06:46:26 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:46:26.715920Z ERROR failed with status 503 Service Unavailable
-    Aug 16 06:46:26 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:46:26.718293Z ERROR failed with status 503 Service Unavailable
-    Aug 16 06:46:27 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:46:27.086972Z ERROR failed with status 503 Service Unavailable
-    Aug 16 06:46:27 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:46:27.089655Z ERROR failed with status 503 Service Unavailable
-    Aug 16 06:46:27 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:46:27.090278Z ERROR failed with status 503 Service Unavailable
-    Aug 16 06:46:27 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:46:27.945219Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 433 (439)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 06:46:27 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:46:27.949075Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 394 (439)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 06:46:27 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:46:27.949332Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 364 (439)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 06:47:05 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:47:05.765845Z  INFO node status pushed
-    Aug 16 06:47:44 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:47:44.254303Z  INFO CreateContainer succeeded container=watcher container_id=2e8ae63db4cdcfbc8030b277167d05333652ef14be1c1fd5d89b5cf859c7de98
-    Aug 16 06:48:05 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:48:05.810962Z  INFO node status pushed
-    Aug 16 06:49:05 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:49:05.853976Z  INFO node status pushed
-    Aug 16 06:49:09 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:49:09.358898Z  INFO torn down pod=not-k8s-e2e-1786862860/diag5-watcher
-    Aug 16 06:49:09 runnervmzvulz run-nodelet.sh[15835]: 2026-08-16T06:49:09.412613Z  INFO torn down pod=not-k8s-e2e-1786862860/diag5-watcher
+    Aug 16 06:56:05 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:56:05.894234Z ERROR failed with status 503 Service Unavailable
+    Aug 16 06:56:05 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:56:05.900232Z ERROR failed with status 503 Service Unavailable
+    Aug 16 06:56:05 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:56:05.929567Z ERROR failed with status 503 Service Unavailable
+    Aug 16 06:56:06 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:56:06.012721Z ERROR failed with status 503 Service Unavailable
+    Aug 16 06:56:06 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:56:06.018197Z ERROR failed with status 503 Service Unavailable
+    Aug 16 06:56:06 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:56:06.177630Z ERROR failed with status 503 Service Unavailable
+    Aug 16 06:56:06 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:56:06.258630Z ERROR failed with status 503 Service Unavailable
+    Aug 16 06:56:06 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:56:06.263239Z ERROR failed with status 503 Service Unavailable
+    Aug 16 06:56:07 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:56:07.021681Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 392 (418)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 16 06:56:07 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:56:07.021997Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 365 (418)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 16 06:56:48 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:56:48.914315Z  INFO node status pushed
+    Aug 16 06:57:23 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:57:23.870001Z  INFO CreateContainer succeeded container=watcher container_id=7465d497e1cf1733bb2fe89242ed03b30c579ffdb8aa1cba962a3e3c95ee18fc
+    Aug 16 06:57:49 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:57:49.014268Z  INFO node status pushed
+    Aug 16 06:58:00 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:58:00.344045Z  INFO torn down pod=not-k8s-e2e-1786863439/diag5-watcher
+    Aug 16 06:58:00 runnervmzvulz run-nodelet.sh[15655]: 2026-08-16T06:58:00.468621Z  INFO torn down pod=not-k8s-e2e-1786863439/diag5-watcher
 
 ════════════════════════════════════════
 Results: 0 passed, 1 failed, 0 skipped
 Failed:
-  - test_diag5_in_cluster_watch
+  - test_diag5_dns_investigation
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786862860...
+==> Cleaning up test namespace not-k8s-e2e-1786863439...
