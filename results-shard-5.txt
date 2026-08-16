@@ -1,7 +1,16 @@
-commit: f6fa585e5a9bb30b3cb78240e22194b1298e926b
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31919224201
-timestamp (UTC): 2026-08-16T01:21:13Z
+commit: 4587c61dc34d7bffc9467697634db52054b9051a
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31919549352
+timestamp (UTC): 2026-08-16T01:34:34Z
 shard: 5/5
-exit code: unknown
+exit code: 0
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+==> Test namespace: not-k8s-e2e-1786844005
+==> 231 test(s) registered total (before sharding); running now...
+==> Shard 5/5: 43 test(s) selected
+▶ test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods
+  ✔ PASS (68s)
+
+════════════════════════════════════════
+Results: 1 passed, 0 failed, 0 skipped
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786844005...
