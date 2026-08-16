@@ -543,17 +543,30 @@ are implemented and e2e-verified.
   legacy kubeadm bootstrap-token flow, low value now that projected SA
   tokens are the default join mechanism.
 
-## J. Autoscaling & disruption — Tier 2
+## J. Autoscaling & disruption — Tier 2 — **disruption-controller implemented; HPA scoped out**
 
-- `horizontalpodautoscaler-controller`: needs a live metrics API
-  (`metrics-server` or equivalent) to be useful at all — document as an
-  external dependency this project installs for e2e (mirroring how
-  `deploy/lib/e2e-full-setup.sh` already installs real CSI/DRA reference
-  drivers for those gated tests) rather than something `nodecontroller`
-  provides itself.
-- `disruption-controller`: PodDisruptionBudget `.status` computation
-  (`currentHealthy`, `disruptionsAllowed`), consumed by eviction API
-  callers (`kubectl drain`, cluster-autoscaler-style tooling).
+- `disruption-controller` (`crates/nodecontroller/src/controllers/disruption.rs`,
+  **implemented**): keeps `PodDisruptionBudget.status`
+  (`currentHealthy`/`desiredHealthy`/`disruptionsAllowed`/`expectedPods`)
+  current. This controller never blocks an eviction itself — that's the
+  apiserver's own `policy/v1` eviction-subresource admission, reading
+  `status.disruptionsAllowed`; without this controller that field never
+  updates, so `kubectl drain` and similar tooling see a permanently stale
+  value. Named simplifications: healthy means `Ready=True` only, no
+  `unhealthyPodEvictionPolicy` distinction (that policy only affects the
+  apiserver's own admission decision, out of this controller's scope
+  entirely); no `status.conditions`/`disruptedPods` bookkeeping (upstream
+  niceties nothing in this project reads); a PDB with neither
+  `minAvailable` nor `maxUnavailable` set (invalid per upstream's own
+  validation, not re-validated here) fails open rather than closed.
+- `horizontalpodautoscaler-controller` (**scoped out**): needs a live
+  metrics API (`metrics-server` or equivalent) to be useful at all, and
+  unlike Groups G/H's CSI/DRA reference drivers, nothing in this project's
+  e2e infrastructure installs one — there is no real infrastructure to
+  verify an actual scaling decision against, the same "no infrastructure
+  to prove it against" reasoning `device-taint-eviction-controller`
+  above uses. Revisit if `deploy/lib/e2e-full-setup.sh` ever grows a
+  metrics-server leg.
 
 ## Explicitly out of scope
 

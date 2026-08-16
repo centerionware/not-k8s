@@ -22,6 +22,7 @@ use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::api::core::v1::{Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, ResourceQuota, Service};
+use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use k8s_openapi::api::storage::v1::VolumeAttachment;
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
@@ -146,6 +147,11 @@ pub fn watch_volume_attachments(client: &Client) -> BoxStream<'static, watcher::
 
 pub fn watch_certificate_signing_requests(client: &Client) -> BoxStream<'static, watcher::Result<Event<CertificateSigningRequest>>> {
     let api: Api<CertificateSigningRequest> = Api::all(client.clone());
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+}
+
+pub fn watch_pod_disruption_budgets(client: &Client) -> BoxStream<'static, watcher::Result<Event<PodDisruptionBudget>>> {
+    let api: Api<PodDisruptionBudget> = Api::all(client.clone());
     watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 

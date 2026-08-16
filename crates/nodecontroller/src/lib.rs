@@ -47,9 +47,18 @@
 //! CA's private key, not just its cert; see that file's own module doc
 //! for the config knobs and the degraded-but-not-crashed behavior when the
 //! key isn't available. `bootstrap-signer-controller`/`token-cleaner-controller`
-//! remain deferred (legacy kubeadm bootstrap-token flow). See
-//! `docs/CONTROLLER_MANAGER.md`'s "Delivery order" for what's next: Group
-//! J (autoscaling/disruption) is next.
+//! remain deferred (legacy kubeadm bootstrap-token flow). Group J's
+//! `disruption-controller` (`controllers/disruption.rs`) is implemented,
+//! keeping `PodDisruptionBudget.status` current for the apiserver's own
+//! eviction-admission check to read; `horizontalpodautoscaler-controller`
+//! is scoped out (no metrics-server in this project's e2e infrastructure
+//! to verify a real scaling decision against — see
+//! `docs/CONTROLLER_MANAGER.md`'s Group J section). With Group J's
+//! verifiable half done, **every group through J is now implemented**
+//! except the one open item Group G's own section documents (the
+//! dynamic-CSI e2e path, a real regression blocking merge) — see that
+//! section and `pv_binder.rs`'s module doc before assuming this crate is
+//! ready to ship.
 //!
 //! Single leader-election lease (`kube-system/kube-controller-manager`,
 //! matching upstream's own name — see `config.rs`) covers the whole
@@ -117,6 +126,7 @@ pub async fn run() -> Result<()> {
             controllers::root_ca_publisher::run(client.clone(), &cfg),
             controllers::resource_claim::run(client.clone(), &cfg),
             controllers::csr::run(client.clone(), &cfg),
+            controllers::disruption::run(client.clone(), &cfg),
         )?;
         Ok(())
     })
