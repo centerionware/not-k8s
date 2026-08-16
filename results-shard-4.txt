@@ -1,16 +1,7 @@
-commit: faf0d18010300d9669391a1912112a58d7716806
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31921043547
-timestamp (UTC): 2026-08-16T02:12:37Z
+commit: 8dd9813198474f63c4a0d0845d2c64b86cc7679c
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31921788427
+timestamp (UTC): 2026-08-16T02:24:07Z
 shard: 4/5
-exit code: 0
+exit code: unknown
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786846341
-==> 231 test(s) registered total (before sharding); running now...
-==> Shard 4/5: 43 test(s) selected
-▶ test_ttl_after_finished_controller_deletes_expired_jobs
-  ✔ PASS (15s)
-
-════════════════════════════════════════
-Results: 1 passed, 0 failed, 0 skipped
-════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786846341...
+(no results captured — the run failed before test-e2e.sh could produce output)
