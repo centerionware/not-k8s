@@ -7,13 +7,13 @@
 //! no polling), the whole ruleset rebuilt atomically from current state
 //! every time a Service or EndpointSlice changes.
 //!
-//! NAT chains are evaluated for the first packet of a flow; subsequent
-//! packets use the conntrack NAT binding and do not need an
-//! `established,related accept` rule in these chains. The whole ruleset is
-//! rebuilt on each Service or EndpointSlice event, so the long-lived-flow
-//! regression is covered by the end-to-end
-//! `nftables_rebuild_established_conns.sh` test, which keeps a real watch
-//! connection open across a burst of replacements.
+//! The whole ruleset is rebuilt on each Service or EndpointSlice event. Keep
+//! an explicit `established,related accept` fast path ahead of the DNAT rules:
+//! this is required for long-lived pod-to-apiserver watches in the target
+//! kernels, where replacing the table can otherwise reset the connection
+//! before the conntrack NAT binding is reused. The end-to-end
+//! `nftables_rebuild_established_conns.sh` test keeps a real watch open across
+//! a burst of replacements.
 //!
 //! This used to run as a task inside `nodelet` itself. It's a separate
 //! process now for the same reason kube-proxy is separate from the kubelet
@@ -584,6 +584,16 @@ fn build_ruleset(
     script.push_str(&format!(
         "add chain inet {TABLE} postrouting {{ type nat hook postrouting priority srcnat ; policy accept ; }}\n"
     ));
+    // Keep already-established pod-to-Service flows out of the DNAT
+    // selection rules while this table is being rebuilt. In particular, the
+    // CSI provisioner's long-lived PVC watch otherwise gets reset and never
+    // observes claims created after its initial informer list.
+    script.push_str(&format!(
+        "add rule inet {TABLE} prerouting ct state established,related accept\n"
+    ));
+    script.push_str(&format!(
+        "add rule inet {TABLE} output ct state established,related accept\n"
+    ));
     script.push_str(&format!(
         "add rule inet {TABLE} postrouting ct status dnat masquerade\n"
     ));
@@ -937,11 +947,16 @@ fn build_statistic_ruleset(
     if rules.is_empty() {
         return None;
     }
+    // Keep the fallback's long-lived conntrack flows out of its per-event
+    // statistic/DNAT rules for the same reason as the nftables chains above.
+    let established = format!(
+        "-A {IPT_CHAIN} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+    );
     // `:CHAIN - [0:0]` replaces this chain's contents; --noflush leaves
     // every other chain in `nat` (flannel's, anyone else's) untouched.
     // Verified directly: two consecutive applies leave two rules, not four.
     Some(format!(
-        "*nat\n:{IPT_CHAIN} - [0:0]\n{}\nCOMMIT\n",
+        "*nat\n:{IPT_CHAIN} - [0:0]\n{established}\n{}\nCOMMIT\n",
         rules.join("\n")
     ))
 }
@@ -1414,6 +1429,10 @@ mod tests {
             .expect("three backends must produce a fallback ruleset");
 
         assert!(rs.starts_with("*nat\n:NOTK8S-SVC - [0:0]\n"), "{rs}");
+        assert!(
+            rs.contains("-A NOTK8S-SVC -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"),
+            "{rs}"
+        );
         assert!(rs.trim_end().ends_with("COMMIT"), "{rs}");
         // 1/3 then 1/2 then unconditional — the scheme that actually splits
         // evenly. A flat 1/N on every rule would drop ~30% off the end.

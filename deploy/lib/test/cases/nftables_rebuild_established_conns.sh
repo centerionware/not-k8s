@@ -1,8 +1,7 @@
 # lib/test/cases/nftables_rebuild_established_conns.sh — nodeproxy's
-# conntrack preservation across a ruleset replacement. NAT rules select a
-# connection on its first packet; this test verifies the kernel keeps the
-# resulting NAT binding for an already-established flow, rather than relying
-# on an ineffective established-state rule in the NAT chain.
+# conntrack preservation across a ruleset replacement. The nodeproxy also
+# emits an explicit established-state fast path; this test verifies that the
+# complete behavior survives a real replacement on the target kernel.
 # github.com/centerionware/not-k8s/issues/30: a burst of Service/
 # EndpointSlice events (e.g. a Deployment scaling up N pods) rebuilds the
 # whole nftables table once per event — real TCP resets were observed on
