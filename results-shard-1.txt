@@ -1,20 +1,20 @@
-commit: de32bb7940a889fa51296d5db1d1968f2241797d
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31934204764
-timestamp (UTC): 2026-08-16T07:41:42Z
+commit: 6066d6077056dde26685aa664f37559d12f87c13
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31934668341
+timestamp (UTC): 2026-08-16T07:52:51Z
 shard: 1/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786866090
+==> Test namespace: not-k8s-e2e-1786866761
 ==> 234 test(s) registered total (before sharding); running now...
 ==> Shard 1/5: 51 test(s) selected
 ▶ test_nodeport_service_is_reachable_on_the_node_ip
-  ✔ PASS (5s)
+  ✔ PASS (3s)
 ▶ test_multiple_backends_actually_share_traffic
-  (distribution: a=22 b=18 of 40)
+  (distribution: a=17 b=23 of 40)
   (kernel has nft_numgen — expecting the native map form)
   ✔ PASS (6s)
 
 ════════════════════════════════════════
 Results: 2 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786866090...
+==> Cleaning up test namespace not-k8s-e2e-1786866761...
