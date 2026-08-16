@@ -59,8 +59,24 @@ SVCEOF
 
     echo "=== watcher pod status ==="
     kubectl get pod "$pod" -n "$TEST_NAMESPACE" -o wide
+    assert_true bash -c "kubectl get pod '$pod' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Running"
+
+    # Two positive checks, not just "no error substring" (which would pass
+    # vacuously if the exec itself silently failed, or watch.err doesn't
+    # exist yet): the watch must have actually received real bytes, and
+    # curl must still be running (not have exited at all — an exit for any
+    # reason this soon, clean or otherwise, means the connection didn't
+    # survive to keep streaming).
+    local watch_bytes curl_pid_count
+    watch_bytes="$(kubectl exec "$pod" -n "$TEST_NAMESPACE" -- sh -c 'wc -c < /tmp/watch.out 2>/dev/null' 2>&1)"
+    curl_pid_count="$(kubectl exec "$pod" -n "$TEST_NAMESPACE" -- sh -c 'pgrep curl | wc -l' 2>&1)"
+    echo "watch.out bytes=$watch_bytes curl_processes_still_running=$curl_pid_count"
+    assert_true test "${watch_bytes:-0}" -gt 0
+    assert_true test "${curl_pid_count:-0}" -gt 0
+
     local exec_out
-    exec_out="$(kubectl exec "$pod" -n "$TEST_NAMESPACE" -- sh -c 'cat /tmp/watch.err 2>/dev/null; echo ---; wc -l < /tmp/watch.out 2>/dev/null' 2>&1)"
+    exec_out="$(kubectl exec "$pod" -n "$TEST_NAMESPACE" -- sh -c 'cat /tmp/watch.err 2>/dev/null' 2>&1)"
+    echo "=== watch.err ==="
     echo "$exec_out"
     assert_not_contains "$exec_out" "connection reset by peer" \
         "a burst of Service churn must not reset a long-lived pod-to-apiserver connection"

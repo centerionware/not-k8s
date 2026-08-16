@@ -575,6 +575,24 @@ fn build_ruleset(
     script.push_str(&format!(
         "add chain inet {TABLE} postrouting {{ type nat hook postrouting priority srcnat ; policy accept ; }}\n"
     ));
+    // Explicit fast-path for already-tracked connections, first rule in
+    // both NAT chains, ahead of every DNAT rule below — added investigating
+    // github.com/centerionware/not-k8s/issues/30, a real TCP-reset bug on
+    // long-lived pod-to-apiserver connections held open across a table
+    // rebuild (this whole table is rebuilt from scratch on every Service/
+    // EndpointSlice change — see this module's own doc comment). Once a
+    // connection's DNAT decision is in conntrack, the kernel applies it to
+    // every subsequent packet on that flow regardless of whether the
+    // originating rule is still present — that's what's *supposed* to make
+    // a `flush table` + rebuild safe for already-open connections in the
+    // first place, but this makes it explicit and unconditional rather
+    // than relying on that behavior implicitly: an established/related
+    // packet is accepted (i.e. "don't re-run DNAT selection") before it
+    // ever reaches a rule that could, even transiently mid-rebuild, fail to
+    // match it. Standard nftables hardening for exactly this failure mode,
+    // not a not-k8s invention.
+    script.push_str(&format!("add rule inet {TABLE} prerouting ct state established,related accept\n"));
+    script.push_str(&format!("add rule inet {TABLE} output ct state established,related accept\n"));
     script.push_str(&format!("add rule inet {TABLE} postrouting ct status dnat masquerade\n"));
     for r in &prerouting {
         script.push_str(&format!("add rule inet {TABLE} prerouting {r}\n"));
@@ -1157,6 +1175,37 @@ mod tests {
             },
         );
         state
+    }
+
+    /// `build_ruleset()`'s real output — not a hand-written stand-in script
+    /// — must itself be valid nftables syntax the kernel accepts, including
+    /// the `ct state established,related accept` fast-path rules added
+    /// investigating github.com/centerionware/not-k8s/issues/30 (skips
+    /// itself without `nft`/CAP_NET_ADMIN, same as `nft_check`'s other
+    /// callers).
+    #[test]
+    fn established_fast_path_rules_are_present_and_pass_real_nft_syntax_check() {
+        let state = state_with_one_nodeport_service();
+        let rs = build_ruleset(&state, IpFamily::V4, LbMethod::Random, Caps::all(), &[]);
+        assert!(
+            rs.contains("add rule inet not_k8s_svc prerouting ct state established,related accept"),
+            "missing the prerouting fast-path rule:\n{rs}"
+        );
+        assert!(
+            rs.contains("add rule inet not_k8s_svc output ct state established,related accept"),
+            "missing the output fast-path rule:\n{rs}"
+        );
+        // Must come before any DNAT rule — an established-connection packet
+        // has to hit this rule and return before ever reaching a per-Service
+        // rule below it, or the fast path doesn't actually fast-path
+        // anything.
+        let established_pos = rs.find("ct state established,related accept").unwrap();
+        let first_dnat_pos = rs.find(" dnat ").unwrap();
+        assert!(
+            established_pos < first_dnat_pos,
+            "established fast-path rule must precede DNAT rules:\n{rs}"
+        );
+        nft_check(&rs).unwrap_or_else(|e| panic!("build_ruleset() output failed real nft syntax check: {e}"));
     }
 
     /// The point of the whole fallback: NodePort must keep working on a
