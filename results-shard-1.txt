@@ -1,7 +1,17 @@
-commit: 827ca7096f26367d5988562cd18b0ba62074d1a0
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31938082586
-timestamp (UTC): 2026-08-16T09:12:28Z
+commit: bc2c4ea73bf16cb35978b8c328bfc14e87e7aa4b
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31938822134
+timestamp (UTC): 2026-08-16T09:31:59Z
 shard: 1/5
-exit code: unknown
+exit code: 0
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+==> Test namespace: not-k8s-e2e-1786872625
+==> 234 test(s) registered total (before sharding); running now...
+==> Shard 1/5: 51 test(s) selected
+▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
+    (skip: PVC 'csi-attach-check-claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_ATTACH_STORAGE_CLASS)
+  ○ SKIP (92s)
+
+════════════════════════════════════════
+Results: 0 passed, 0 failed, 1 skipped
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786872625...
