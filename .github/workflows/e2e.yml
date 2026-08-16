@@ -43,6 +43,12 @@ on:
         default: none
         type: choice
         options: [none, nodecontroller]
+      proxy:
+        description: 'Whether to install nodeproxy (the default Service/ClusterIP routing path) or run the controller-manager test without it. The none option is for isolating apiserver/watch failures from nftables churn.'
+        required: false
+        default: nodeproxy
+        type: choice
+        options: [nodeproxy, none]
 
 permissions:
   contents: write
@@ -197,7 +203,7 @@ jobs:
           # debug_scheduler_log off reproduces exactly today's behaviour
           # (run-nodescheduler.sh's own RUST_LOG=info default applies).
           RUST_LOG: ${{ inputs.debug_scheduler_log && 'nodescheduler=debug' || '' }}
-        run: sudo -E ./deploy/bootstrap-source.sh --with-cri
+        run: sudo -E ./deploy/bootstrap-source.sh --with-cri --proxy=${{ inputs.proxy || 'nodeproxy' }}
 
       - name: Install misc e2e prerequisites (hugepages, grpcurl)
         # Round 124: split out of e2e-full-setup.sh — these aren't
