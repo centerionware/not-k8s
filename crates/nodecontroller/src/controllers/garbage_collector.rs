@@ -110,6 +110,15 @@ fn owner_uids_of(obj: &DynamicObject) -> Vec<String> {
         .collect()
 }
 
+/// An object with no owner references is not an orphan. `Iterator::all()` is
+/// true for an empty iterator, so keeping the non-empty check here is
+/// important: otherwise every ordinary namespace-scoped object (including
+/// ServiceAccounts and the per-namespace `kube-root-ca.crt` ConfigMap) looks
+/// orphaned as soon as the initial relist completes.
+fn all_owners_dead(owner_uids: &[String], exists: &HashSet<String>) -> bool {
+    !owner_uids.is_empty() && owner_uids.iter().all(|owner| !exists.contains(owner))
+}
+
 /// Deletes `record`, background-propagated. Silently ignores "already
 /// gone" — the routine outcome of two cascade paths reaching the same
 /// child (e.g. discovered both directly and via a since-vanished owner).
@@ -207,7 +216,7 @@ impl State {
             return;
         }
         self.store_record(record.clone());
-        let all_dead = self.ready() && owner_uids.iter().all(|o| !self.exists.contains(o));
+        let all_dead = self.ready() && all_owners_dead(&owner_uids, &self.exists);
         if all_dead {
             delete_object(client, &self.resources, &record).await;
         }
@@ -250,11 +259,7 @@ impl State {
         // that finished relisting in the meantime be considered correctly.
         if self.ready() {
             for record in records {
-                if record
-                    .owner_uids
-                    .iter()
-                    .all(|owner| !self.exists.contains(owner))
-                {
+                if all_owners_dead(&record.owner_uids, &self.exists) {
                     delete_object(client, &self.resources, &record).await;
                 }
             }
@@ -285,6 +290,27 @@ impl State {
                 delete_object(client, &self.resources, &record).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_object_without_owner_references_is_not_an_orphan() {
+        assert!(!all_owners_dead(&[], &HashSet::new()));
+    }
+
+    #[test]
+    fn an_object_with_a_dead_owner_is_an_orphan() {
+        assert!(all_owners_dead(&["dead".to_string()], &HashSet::new()));
+    }
+
+    #[test]
+    fn an_object_with_a_live_owner_is_not_an_orphan() {
+        let exists = HashSet::from(["live".to_string()]);
+        assert!(!all_owners_dead(&["live".to_string()], &exists));
     }
 }
 
