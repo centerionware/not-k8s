@@ -1,10 +1,10 @@
-commit: 8575528b881b6c0f68d0f1fb2a2cf5f75a10cb10
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31970376848
-timestamp (UTC): 2026-08-16T20:36:52Z
+commit: 6055478e183372ffb15452b69951dc66422df294
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31972045077
+timestamp (UTC): 2026-08-16T21:11:05Z
 shard: 5/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786912085
+==> Test namespace: not-k8s-e2e-1786914139
 ==> 235 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 44 test(s) selected
 ▶ test_tls_bootstrap_issues_a_real_client_certificate
@@ -18,8 +18,8 @@ exit code: 0
 ▶ test_datastore_refuses_a_cluster_it_cannot_be_part_of
   ✔ PASS (0s)
 ▶ test_apiserver_state_survives_a_datastore_restart
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13443/environ: Permission denied
-  ✔ PASS (9s)
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13456/environ: Permission denied
+  ✔ PASS (13s)
 ▶ test_the_cluster_survives_the_leader_being_killed
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
@@ -32,9 +32,9 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (106s)
+  ✔ PASS (102s)
 ▶ test_custom_dns_config_reaches_resolv_conf
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_eviction_manual_procedure
     (skip: triggering real eviction safely needs either an artificially-low pressure threshold or actually exhausting a resource — neither is something this suite does to a live node automatically. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES set just above current MemAvailable (forces MemoryPressure=True without real exhaustion), (3) apply a BestEffort pod and a Guaranteed pod, (4) within NODELET_EVICTION_CHECK_SECS (default 10s) confirm the BestEffort pod gets phase Failed/reason Evicted and is deleted, while the Guaranteed pod is untouched, (5) restore the normal threshold and restart nodelet.)
   ○ SKIP (0s)
@@ -48,9 +48,9 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_init_container_failure_blocks_app_container_under_restart_policy_never
   ✔ PASS (3s)
 ▶ test_restart_policy_never_exit_nonzero_is_failed
-  ✔ PASS (2s)
-▶ test_pod_status_reports_host_ips_plural
   ✔ PASS (3s)
+▶ test_pod_status_reports_host_ips_plural
+  ✔ PASS (2s)
 ▶ test_image_pull_policy_if_not_present_skips_the_registry_round_trip
   ✔ PASS (37s)
 ▶ test_a_long_lived_watch_survives_a_service_churn_burst
@@ -74,7 +74,7 @@ host=10.43.0.1 port=443
 * TLSv1.3 (IN), TLS handshake, Request CERT (13):
 { [65 bytes data]
 * TLSv1.3 (IN), TLS handshake, Certificate (11):
-{ [956 bytes data]
+{ [953 bytes data]
 * TLSv1.3 (IN), TLS handshake, CERT verify (15):
 { [79 bytes data]
 * TLSv1.3 (IN), TLS handshake, Finished (20):
@@ -89,45 +89,46 @@ host=10.43.0.1 port=443
 * ALPN: server accepted h2
 * Server certificate:
 *  subject: O=k3s; CN=k3s
-*  start date: Aug 16 19:27:15 2026 GMT
-*  expire date: Aug 16 19:27:15 2027 GMT
+*  start date: Aug 16 20:01:29 2026 GMT
+*  expire date: Aug 16 20:01:29 2027 GMT
 *  subjectAltName: host "10.43.0.1" matched cert's IP address!
-*  issuer: CN=k3s-server-ca@1786912035
+*  issuer: CN=k3s-server-ca@1786914089
 *  SSL certificate verify ok.
 *   Certificate level 0: Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256
 *   Certificate level 1: Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256
 } [5 bytes data]
 * Connected to 10.43.0.1 (10.43.0.1) port 443
 * using HTTP/2
-* [HTTP/2] [1] OPENED stream for https://10.43.0.1:443/api/v1/namespaces/not-k8s-e2e-1786912085/pods?watch=true&timeoutSeconds=85
+* [HTTP/2] [1] OPENED stream for https://10.43.0.1:443/api/v1/namespaces/not-k8s-e2e-1786914139/pods?watch=true&timeoutSeconds=85
 * [HTTP/2] [1] [:method: GET]
 * [HTTP/2] [1] [:scheme: https]
 * [HTTP/2] [1] [:authority: 10.43.0.1]
-* [HTTP/2] [1] [:path: /api/v1/namespaces/not-k8s-e2e-1786912085/pods?watch=true&timeoutSeconds=85]
+* [HTTP/2] [1] [:path: /api/v1/namespaces/not-k8s-e2e-1786914139/pods?watch=true&timeoutSeconds=85]
 * [HTTP/2] [1] [user-agent: curl/8.10.1]
 * [HTTP/2] [1] [accept: */*]
-* [HTTP/2] [1] [authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkJLOUlIN1BtbWQ3V0hiV0VsdWs3azBjMm5McVBCa1hmSUFtcmxzNTRpSTQifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDQ4Mzk4LCJpYXQiOjE3ODY5MTIzOTgsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiZjc0OGMwNTgtMjI0NC00ODllLTk5OWEtZjVkOTI5YjMwZjk0Iiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2OTEyMDg1Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6ImQwM2I4MjVjLWE5MjctNGMzMS1iNzI0LTVmZDI4OTRmMTQwNCJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6IjZlMDI1YWNiLTIxZjItNGE2NC1iY2Y5LWQ1N2NjNzRkMTUyMCJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6ImViZjdlMjRkLTQ0MWUtNDc5ZS05YmI0LTMzZmMyMmNlYjJlNSJ9LCJ3YXJuYWZ0ZXIiOjE3ODY5MTYwMDV9LCJuYmYiOjE3ODY5MTIzOTgsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2OTEyMDg1OmRlZmF1bHQifQ.YAeP6LAj0_4iI0j9b6yeYgDUockwynJdhcIa9H6PkmlRjADrAPsAwZ7DLAq1kZ8qg4W_1MYYf58jI_LaV-TeQvHwHXo5eu-mTsf6-nk6-eknDiT_pxx8eCa89EwtYL9Jp9_A-ssJvODM7JUwpTTjqlfETRqrI8qLGmiDj3rKYDb2TjrWDZxeopKwVI-A7HXGGYKSkTsO2E8wwe3p1YMsF4NlV4yZyTDylsXZkusTFvHErDS4eH6JeJXKcpb8Q7fQNmyjlqjnoa4IWwf0zBrSjvugZQNCduiy0ZqeFO47LOw105Ugdr6qMY2LDUgfkdMwa2AEMcecChh8ekMjuTM6zw]
+* [HTTP/2] [1] [authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6InFpY1lDRGZRZmdYOFpMakNPNzFPaDY5YkhHMXl4aXdlNkZRV2lNcHJLaHMifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDUwNDUxLCJpYXQiOjE3ODY5MTQ0NTEsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiOTc0YjMxNDctNmFiYy00YmRmLThhMzctZjUyMjYxZGNjODA4Iiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2OTE0MTM5Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6IjMzNmZiZDE3LWZiNTgtNGU3MS1hNmI1LWZkMWE0NDg4ZTM5ZSJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6ImZiYzYzNWU5LTBlOWEtNDQ0Mi05Y2IxLWE0MjRmN2FmNzJiNSJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6ImFjZTg3ZWIxLThlNDItNGM3NC1iZjBkLTMwNjBiNGUyNDhjNCJ9LCJ3YXJuYWZ0ZXIiOjE3ODY5MTgwNTh9LCJuYmYiOjE3ODY5MTQ0NTEsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2OTE0MTM5OmRlZmF1bHQifQ.Efd0ZmCrYeKm7bmSWBMHraGC7EsCaa-iBxuF6aKSXHH1q_OJmXU5nzYha3Tmk2gEPB9wI9IRCyxmED-ZCLipOtdRFdKhCzSeaYcdPxuVKoJrGbwo7KRE_hWafg2KEd65dh5jDKyVq0ttvn-m45mycv1Dx5ssaZE1bPOmXbckMFAFuPsJ7Pp_fQQcbGN8VQjXKxK_dGVVQU4Gxe0h5vJuz66u7884hmJ3SM5IGKKbb4rEQfg2fZ79uEs4qHiXK0L_5A9q1ST20OLqoeUSLsmes9xaaXn4mUnKtpcxcFOakzn3U89g9ww0noVP5IEhOhQbkkCvsMgF1pyIa_VJ4c6yGA]
 } [5 bytes data]
-> GET /api/v1/namespaces/not-k8s-e2e-1786912085/pods?watch=true&timeoutSeconds=85 HTTP/2
+> GET /api/v1/namespaces/not-k8s-e2e-1786914139/pods?watch=true&timeoutSeconds=85 HTTP/2
 > Host: 10.43.0.1
 > User-Agent: curl/8.10.1
 > Accept: */*
-> Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkJLOUlIN1BtbWQ3V0hiV0VsdWs3azBjMm5McVBCa1hmSUFtcmxzNTRpSTQifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDQ4Mzk4LCJpYXQiOjE3ODY5MTIzOTgsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiZjc0OGMwNTgtMjI0NC00ODllLTk5OWEtZjVkOTI5YjMwZjk0Iiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2OTEyMDg1Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6ImQwM2I4MjVjLWE5MjctNGMzMS1iNzI0LTVmZDI4OTRmMTQwNCJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6IjZlMDI1YWNiLTIxZjItNGE2NC1iY2Y5LWQ1N2NjNzRkMTUyMCJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6ImViZjdlMjRkLTQ0MWUtNDc5ZS05YmI0LTMzZmMyMmNlYjJlNSJ9LCJ3YXJuYWZ0ZXIiOjE3ODY5MTYwMDV9LCJuYmYiOjE3ODY5MTIzOTgsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2OTEyMDg1OmRlZmF1bHQifQ.YAeP6LAj0_4iI0j9b6yeYgDUockwynJdhcIa9H6PkmlRjADrAPsAwZ7DLAq1kZ8qg4W_1MYYf58jI_LaV-TeQvHwHXo5eu-mTsf6-nk6-eknDiT_pxx8eCa89EwtYL9Jp9_A-ssJvODM7JUwpTTjqlfETRqrI8qLGmiDj3rKYDb2TjrWDZxeopKwVI-A7HXGGYKSkTsO2E8wwe3p1YMsF4NlV4yZyTDylsXZkusTFvHErDS4eH6JeJXKcpb8Q7fQNmyjlqjnoa4IWwf0zBrSjvugZQNCduiy0ZqeFO47LOw105Ugdr6qMY2LDUgfkdMwa2AEMcecChh8ekMjuTM6zw
+> Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6InFpY1lDRGZRZmdYOFpMakNPNzFPaDY5YkhHMXl4aXdlNkZRV2lNcHJLaHMifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NDUwNDUxLCJpYXQiOjE3ODY5MTQ0NTEsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiOTc0YjMxNDctNmFiYy00YmRmLThhMzctZjUyMjYxZGNjODA4Iiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2OTE0MTM5Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6IjMzNmZiZDE3LWZiNTgtNGU3MS1hNmI1LWZkMWE0NDg4ZTM5ZSJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6ImZiYzYzNWU5LTBlOWEtNDQ0Mi05Y2IxLWE0MjRmN2FmNzJiNSJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6ImFjZTg3ZWIxLThlNDItNGM3NC1iZjBkLTMwNjBiNGUyNDhjNCJ9LCJ3YXJuYWZ0ZXIiOjE3ODY5MTgwNTh9LCJuYmYiOjE3ODY5MTQ0NTEsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2OTE0MTM5OmRlZmF1bHQifQ.Efd0ZmCrYeKm7bmSWBMHraGC7EsCaa-iBxuF6aKSXHH1q_OJmXU5nzYha3Tmk2gEPB9wI9IRCyxmED-ZCLipOtdRFdKhCzSeaYcdPxuVKoJrGbwo7KRE_hWafg2KEd65dh5jDKyVq0ttvn-m45mycv1Dx5ssaZE1bPOmXbckMFAFuPsJ7Pp_fQQcbGN8VQjXKxK_dGVVQU4Gxe0h5vJuz66u7884hmJ3SM5IGKKbb4rEQfg2fZ79uEs4qHiXK0L_5A9q1ST20OLqoeUSLsmes9xaaXn4mUnKtpcxcFOakzn3U89g9ww0noVP5IEhOhQbkkCvsMgF1pyIa_VJ4c6yGA
 > 
-* Request completely sent off
 { [5 bytes data]
 * TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
 { [122 bytes data]
+* Request completely sent off
+{ [5 bytes data]
 < HTTP/2 200 
-< audit-id: 0451e53c-144d-464d-9fc6-b512e42e36a3
+< audit-id: 172e774c-ea5b-48e0-9ead-971bbcb78dfb
 < cache-control: no-cache, private
 < content-type: application/json
-< x-kubernetes-pf-flowschema-uid: 51343931-45ad-48b3-bc74-bd6f3d85c147
-< x-kubernetes-pf-prioritylevel-uid: 6ba84eba-3958-495e-9044-b23cc6367b1e
-< date: Sun, 16 Aug 2026 20:33:19 GMT
+< x-kubernetes-pf-flowschema-uid: 7ae2a461-727b-4a82-9f95-8e66583c86a9
+< x-kubernetes-pf-prioritylevel-uid: 424a65ea-dbfb-4e24-83a3-f18a1f36f402
+< date: Sun, 16 Aug 2026 21:07:32 GMT
 < 
 { [5 bytes data]
-watch.out bytes=10947 curl_processes_still_running=1
+watch.out bytes=10951 curl_processes_still_running=1
   ✔ PASS (61s)
 ▶ test_pressure_conditions_are_present_and_normally_false
   ✔ PASS (1s)
@@ -157,37 +158,37 @@ watch.out bytes=10947 curl_processes_still_running=1
   ✔ PASS (3s)
 ▶ test_proc_mount_unmasked_leaves_proc_kcore_readable
 ==> WARNING: expected /proc/kcore to be readable (non-zero bytes) under procMount: Unmasked, got 0 -- check proc_mount_paths()'s Unmasked branch in runtime/cri/resources.rs; not failing outright since this depends on the CRI runtime actually honoring an explicitly-empty masked_paths the same way it honors a populated one
-  ✔ PASS (3s)
-▶ test_containers_get_isolated_pid_namespaces_by_default
   ✔ PASS (2s)
-▶ test_clusterip_service_routes_to_its_backend_pod
-  ✔ PASS (4s)
-▶ test_a_pod_reaching_its_own_service_gets_hairpin_masquerade
+▶ test_containers_get_isolated_pid_namespaces_by_default
   ✔ PASS (3s)
-▶ test_headless_service_programs_no_rules_and_does_not_break_others
+▶ test_clusterip_service_routes_to_its_backend_pod
+  ✔ PASS (3s)
+▶ test_a_pod_reaching_its_own_service_gets_hairpin_masquerade
   ✔ PASS (4s)
+▶ test_headless_service_programs_no_rules_and_does_not_break_others
+  ✔ PASS (3s)
 ▶ test_stats_summary_returns_real_pod_usage
   ✔ PASS (3s)
 ▶ test_kubectl_attach_streams_the_containers_stdout
 ==> WARNING: kubectl attach didn't show streamed output within 20s (may still be buffering)
   ✔ PASS (43s)
 ▶ test_downward_api_volume_writes_pod_metadata
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_host_aliases_still_work_under_host_users_false
   ✔ PASS (3s)
 ▶ test_fsgroup_never_applies_to_hostpath_volumes
   ✔ PASS (5s)
 ▶ test_recursive_read_only_if_possible_falls_back_without_erroring
-  ✔ PASS (3s)
-▶ test_host_path_directory_type_rejects_a_nonexistent_path
   ✔ PASS (2s)
-▶ test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
+▶ test_host_path_directory_type_rejects_a_nonexistent_path
   ✔ PASS (3s)
+▶ test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
+  ✔ PASS (2s)
 ▶ test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host
     (skip: this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case (align() alone should already satisfy it, spread() never needs to trigger))
-  ○ SKIP (0s)
+  ○ SKIP (1s)
 
 ════════════════════════════════════════
 Results: 36 passed, 0 failed, 8 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786912085...
+==> Cleaning up test namespace not-k8s-e2e-1786914139...
