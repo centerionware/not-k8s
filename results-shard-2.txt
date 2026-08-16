@@ -1,16 +1,16 @@
-commit: 5b7244e561af61c73a3338750ef4ebe8701e527d
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31978018220
-timestamp (UTC): 2026-08-16T23:14:00Z
+commit: 0e0098c931449e0567de62146d3192b1f806fa24
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31978599843
+timestamp (UTC): 2026-08-16T23:22:55Z
 shard: 2/5
-exit code: 0
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786921766
+==> Test namespace: not-k8s-e2e-1786922481
 ==> 235 test(s) registered total (before sharding); running now...
 ==> Shard 2/5: 51 test(s) selected
 ▶ test_pod_mounts_a_persistent_volume_claim
 === PVC csi-pvc-check-claim describe ===
 Name:          csi-pvc-check-claim
-Namespace:     not-k8s-e2e-1786921766
+Namespace:     not-k8s-e2e-1786922481
 StorageClass:  csi-hostpath-sc
 Status:        Pending
 Volume:        
@@ -24,18 +24,18 @@ Used By:       <none>
 Events:        <none>
 === all pods, every namespace (looking for the provisioner) ===
 NAMESPACE            NAME                                                READY   STATUS    RESTARTS   AGE     IP          NODE            NOMINATED NODE   READINESS GATES
-default              csi-hostpath-socat-0                                1/1     Running   0          3m4s    10.42.0.5   runnervmzvulz   <none>           <none>
-default              csi-hostpathplugin-0                                7/7     Running   0          3m5s    10.42.0.4   runnervmzvulz   <none>           <none>
-default              smoke-test                                          1/1     Running   0          3m24s   10.42.0.3   runnervmzvulz   <none>           <none>
-dra-example-driver   dra-example-driver-kubeletplugin-b6c54aa289bd22ff   1/1     Running   0          2m35s   10.42.0.7   runnervmzvulz   <none>           <none>
-kube-system          coredns-e882b0b14ed1a949-5tth8                      0/1     Running   0          3m31s   10.42.0.2   runnervmzvulz   <none>           <none>
+default              csi-hostpath-socat-0                                1/1     Running   0          2m53s   10.42.0.5   runnervmzvulz   <none>           <none>
+default              csi-hostpathplugin-0                                7/7     Running   0          2m54s   10.42.0.4   runnervmzvulz   <none>           <none>
+default              smoke-test                                          1/1     Running   0          3m12s   10.42.0.2   runnervmzvulz   <none>           <none>
+dra-example-driver   dra-example-driver-kubeletplugin-b6c54aa289bd22ff   1/1     Running   0          2m34s   10.42.0.7   runnervmzvulz   <none>           <none>
+kube-system          coredns-e882b0b14ed1a949-lf6q5                      0/1     Running   0          3m18s   10.42.0.3   runnervmzvulz   <none>           <none>
 === provisioner pod describe (default/csi-hostpathplugin-0) ===
 Name:             csi-hostpathplugin-0
 Namespace:        default
 Priority:         0
 Service Account:  csi-hostpathplugin-sa
-Node:             runnervmzvulz/10.1.0.151
-Start Time:       Sun, 16 Aug 2026 23:07:55 +0000
+Node:             runnervmzvulz/10.1.0.247
+Start Time:       Sun, 16 Aug 2026 23:19:59 +0000
 Labels:           app.kubernetes.io/component=plugin
                   app.kubernetes.io/instance=hostpath.csi.k8s.io
                   app.kubernetes.io/name=csi-hostpathplugin
@@ -49,7 +49,7 @@ IPs:
 Controlled By:  StatefulSet/csi-hostpathplugin
 Containers:
   hostpath:
-    Container ID:  containerd://079db73e4e81a99a1396c8bacbd109ff20e04794359c94e3356523a35cc021ae
+    Container ID:  containerd://427660dc27fe0a9d4d52f6417758e7901399835596ee7ec72b87e7e8354ec7a8
     Image:         registry.k8s.io/sig-storage/hostpathplugin:v1.17.1
     Image ID:      sha256:09f69e9cbcb0d5e4bca212f2a4f403127b246b93b767b24fb61bc9f4dd243858
     Port:          9898/TCP (healthz)
@@ -60,7 +60,7 @@ Containers:
       --endpoint=$(CSI_ENDPOINT)
       --nodeid=$(KUBE_NODE_NAME)
     State:          Running
-      Started:      Sun, 16 Aug 2026 23:07:55 +0000
+      Started:      Sun, 16 Aug 2026 23:19:59 +0000
     Ready:          True
     Restart Count:  0
     Liveness:       http-get http://:healthz/healthz delay=10s timeout=3s period=2s #success=1 #failure=5
@@ -73,9 +73,9 @@ Containers:
       /dev from dev-dir (rw)
       /var/lib/nodelet/plugins from plugins-dir (rw)
       /var/lib/nodelet/pods from mountpoint-dir (rw)
-      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-kdh9h (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-pc576 (ro)
   node-driver-registrar:
-    Container ID:  containerd://ff0565d5439be46b7f985e15255a892cb67528689bcf339d67168db84d0134b8
+    Container ID:  containerd://7763e19320d534f1d960ed8c4f6b20ccca61ea32d2cf6661785f5828c75c2159
     Image:         registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
     Image ID:      sha256:905ecc40d0b09c1ccfe82596e1996bf8285346ef31be259080e7277429116337
     Port:          9809/TCP (healthz)
@@ -86,7 +86,7 @@ Containers:
       --kubelet-registration-path=/var/lib/nodelet/plugins/csi-hostpath/csi.sock
       --http-endpoint=:9809
     State:          Running
-      Started:      Sun, 16 Aug 2026 23:07:55 +0000
+      Started:      Sun, 16 Aug 2026 23:19:59 +0000
     Ready:          True
     Restart Count:  0
     Liveness:       http-get http://:healthz/healthz delay=30s timeout=15s period=10s #success=1 #failure=3
@@ -96,9 +96,9 @@ Containers:
       /csi from socket-dir (rw)
       /csi-data-dir from csi-data-dir (rw)
       /registration from registration-dir (rw)
-      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-kdh9h (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-pc576 (ro)
   liveness-probe:
-    Container ID:  containerd://7595ee9611f38d4f0ee97c072b30edfe5a52aee54e045205473c719747bb9d82
+    Container ID:  containerd://cd0023fd7fc7a075f360c31141c93fb5fc2edd66cd7d5a1a0760db24bc30204f
     Image:         registry.k8s.io/sig-storage/livenessprobe:v2.19.0
     Image ID:      sha256:b6d35c6d5906de641322e3e440847ce219111a7ad5df72f0b2c6e15562c2ca9b
     Port:          <none>
@@ -107,15 +107,15 @@ Containers:
       --csi-address=/csi/csi.sock
       --health-port=9898
     State:          Running
-      Started:      Sun, 16 Aug 2026 23:07:55 +0000
+      Started:      Sun, 16 Aug 2026 23:19:59 +0000
     Ready:          True
     Restart Count:  0
     Environment:    <none>
     Mounts:
       /csi from socket-dir (rw)
-      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-kdh9h (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-pc576 (ro)
   csi-attacher:
-    Container ID:  containerd://7f5c2788d7c3ebc484646743e4327fb3a985e3c8d6204d7ff4e2d81feab1ca6f
+    Container ID:  containerd://feb1deb0cdf252b365cc8f408741f0e0cd03babf0a66b0c403bc3eb249a41f7d
     Image:         registry.k8s.io/sig-storage/csi-attacher:v4.12.0
     Image ID:      sha256:7272884ab4c3e4b672210d2839d599f38af7977c46b1c30594e81ce568b1967f
     Port:          <none>
@@ -124,15 +124,15 @@ Containers:
       --v=5
       --csi-address=/csi/csi.sock
     State:          Running
-      Started:      Sun, 16 Aug 2026 23:07:55 +0000
+      Started:      Sun, 16 Aug 2026 23:19:59 +0000
     Ready:          True
     Restart Count:  0
     Environment:    <none>
     Mounts:
       /csi from socket-dir (rw)
-      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-kdh9h (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-pc576 (ro)
   csi-provisioner:
-    Container ID:  containerd://04598a740a435d140213bd2bd8d3ce22c1aaef293d3f42faffb730bad0f8c900
+    Container ID:  containerd://66c998d63e1b3758e95be412f5442d260832a3b231681d445fcfab2331955c9a
     Image:         registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
     Image ID:      sha256:d2554c75df37acb1f0671d9f66e395b402243cd82c778f0863d4d5361780a5d6
     Port:          <none>
@@ -142,15 +142,15 @@ Containers:
       --csi-address=/csi/csi.sock
       --feature-gates=Topology=true
     State:          Running
-      Started:      Sun, 16 Aug 2026 23:07:55 +0000
+      Started:      Sun, 16 Aug 2026 23:19:59 +0000
     Ready:          True
     Restart Count:  0
     Environment:    <none>
     Mounts:
       /csi from socket-dir (rw)
-      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-kdh9h (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-pc576 (ro)
   csi-resizer:
-    Container ID:  containerd://2bb13ed5ecb76637fe772821f51aadc96f31815081439a52b6e396f7176c8354
+    Container ID:  containerd://fed4ff7319ec9f55d02f4c048ba0de7450d4572a54e402874120426a96b212fe
     Image:         registry.k8s.io/sig-storage/csi-resizer:v2.2.1
     Image ID:      sha256:e30b98ca11fe0d51eda866e73efe55a547a49b2879f505a090382e4aa9ce430c
     Port:          <none>
@@ -159,15 +159,15 @@ Containers:
       -v=5
       -csi-address=/csi/csi.sock
     State:          Running
-      Started:      Sun, 16 Aug 2026 23:07:55 +0000
+      Started:      Sun, 16 Aug 2026 23:19:59 +0000
     Ready:          True
     Restart Count:  0
     Environment:    <none>
     Mounts:
       /csi from socket-dir (rw)
-      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-kdh9h (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-pc576 (ro)
   csi-snapshotter:
-    Container ID:  containerd://bc078e76824cd20f71e35ee419b56e1f4b154e2f51f342a90c5f3287b1ef8ceb
+    Container ID:  containerd://05863e707a6162d3c071163b62d7735d12a8572464389ac10a5c3b8e05d485e5
     Image:         registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
     Image ID:      sha256:12ee5bdc35931a5d53924f29a2b19db18f7c935b94003668d11cae010148696a
     Port:          <none>
@@ -176,13 +176,13 @@ Containers:
       -v=5
       --csi-address=/csi/csi.sock
     State:          Running
-      Started:      Sun, 16 Aug 2026 23:07:55 +0000
+      Started:      Sun, 16 Aug 2026 23:19:59 +0000
     Ready:          True
     Restart Count:  0
     Environment:    <none>
     Mounts:
       /csi from socket-dir (rw)
-      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-kdh9h (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-pc576 (ro)
 Conditions:
   Type                  Status
   Initialized           True 
@@ -215,7 +215,7 @@ Volumes:
     Type:          HostPath (bare host directory volume)
     Path:          /dev
     HostPathType:  Directory
-  kube-api-access-kdh9h:
+  kube-api-access-pc576:
     Type:                    Projected (a volume that contains injected data from multiple sources)
     TokenExpirationSeconds:  3607
     ConfigMapName:           kube-root-ca.crt
@@ -226,84 +226,98 @@ Node-Selectors:              <none>
 Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
                              node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
 Events:
-  Type    Reason     Age   From               Message
-  ----    ------     ----  ----               -------
-  Normal  Scheduled  3m5s  default-scheduler  Successfully assigned default/csi-hostpathplugin-0 to runnervmzvulz
+  Type    Reason     Age    From               Message
+  ----    ------     ----   ----               -------
+  Normal  Scheduled  2m54s  default-scheduler  Successfully assigned default/csi-hostpathplugin-0 to runnervmzvulz
 === provisioner sidecar logs (csi-provisioner, tail 80) ===
-I0816 23:08:01.703842       1 feature_gate.go:477] "Warning: setting GA feature gate. It will be removed in a future release." featureGate="Topology" value=true
-I0816 23:08:01.703900       1 feature_gate.go:477] "Updated" featureGates={"Topology":true}
-I0816 23:08:01.703923       1 csi-provisioner.go:156] "Version" version="v6.3.0"
-I0816 23:08:01.703933       1 csi-provisioner.go:179] Building kube configs for running in cluster...
-I0816 23:08:01.704070       1 envvar.go:195] "Feature gate default state" feature="ClientsAllowTLSCacheGC" enabled=true
-I0816 23:08:01.704086       1 envvar.go:195] "Feature gate default state" feature="ClientsPreferCBOR" enabled=false
-I0816 23:08:01.704089       1 envvar.go:195] "Feature gate default state" feature="AtomicFIFO" enabled=true
-I0816 23:08:01.704093       1 envvar.go:195] "Feature gate default state" feature="InOrderInformersBatchProcess" enabled=true
-I0816 23:08:01.704096       1 envvar.go:195] "Feature gate default state" feature="ClientsAllowCARotation" enabled=true
-I0816 23:08:01.704104       1 envvar.go:195] "Feature gate default state" feature="ClientsAllowCBOR" enabled=false
-I0816 23:08:01.704109       1 envvar.go:195] "Feature gate default state" feature="InOrderInformers" enabled=true
-I0816 23:08:01.704114       1 envvar.go:195] "Feature gate default state" feature="WatchListClient" enabled=true
-I0816 23:08:01.704119       1 envvar.go:195] "Feature gate default state" feature="InformerResourceVersion" enabled=true
-I0816 23:08:01.704122       1 envvar.go:195] "Feature gate default state" feature="UnlockWhileProcessingFIFO" enabled=true
-I0816 23:08:31.708349       1 connection.go:234] "Connecting" address="unix:///csi/csi.sock"
-I0816 23:08:31.708434       1 clientconn.go:1837] "[core] original dial target is: \"unix:///csi/csi.sock\"\n"
-I0816 23:08:31.708467       1 clientconn.go:375] "[core] [Channel #1] Channel created for target \"unix:///csi/csi.sock\"\n"
-I0816 23:08:31.708502       1 logging.go:39] "[core] [Channel #1] parsed dial target is: resolver.Target{URL:url.URL{Scheme:\"unix\", Opaque:\"\", User:(*url.Userinfo)(nil), Host:\"\", Path:\"/csi/csi.sock\", Fragment:\"\", RawQuery:\"\", RawPath:\"\", RawFragment:\"\", ForceQuery:false, OmitHost:false}}\n"
-I0816 23:08:31.708521       1 logging.go:39] "[core] [Channel #1] Channel authority set to \"localhost\"\n"
-I0816 23:08:31.708557       1 logging.go:39] "[core] [Channel #1] Channel Connectivity change to CONNECTING\n"
-I0816 23:08:31.708751       1 logging.go:39] "[core] [Channel #1] Resolver state updated: {\n  \"Addresses\": [\n    {\n      \"Addr\": \"/csi/csi.sock\",\n      \"ServerName\": \"\",\n      \"Attributes\": {\n        \"\\u003c%!p(networktype.keyType=grpc.internal.transport.networktype)\\u003e\": \"unix\"\n      },\n      \"BalancerAttributes\": null,\n      \"Metadata\": null\n    }\n  ],\n  \"Endpoints\": [\n    {\n      \"Addresses\": [\n        {\n          \"Addr\": \"/csi/csi.sock\",\n          \"ServerName\": \"\",\n          \"Attributes\": {\n            \"\\u003c%!p(networktype.keyType=grpc.internal.transport.networktype)\\u003e\": \"unix\"\n          },\n          \"BalancerAttributes\": null,\n          \"Metadata\": null\n        }\n      ],\n      \"Attributes\": null\n    }\n  ],\n  \"ServiceConfig\": null,\n  \"Attributes\": null\n} (resolver returned new addresses)\n"
-I0816 23:08:31.708782       1 logging.go:39] "[core] [Channel #1] Channel switches to new LB policy \"pick_first\"\n"
-I0816 23:08:31.708856       1 pickfirst.go:257] "[pick-first-leaf-lb] [pick-first-leaf-lb 0xb2da6f07e0] Received new config {\n  \"shuffleAddressList\": false\n}, resolver state {\n  \"Addresses\": [\n    {\n      \"Addr\": \"/csi/csi.sock\",\n      \"ServerName\": \"\",\n      \"Attributes\": {\n        \"\\u003c%!p(networktype.keyType=grpc.internal.transport.networktype)\\u003e\": \"unix\"\n      },\n      \"BalancerAttributes\": null,\n      \"Metadata\": null\n    }\n  ],\n  \"Endpoints\": [\n    {\n      \"Addresses\": [\n        {\n          \"Addr\": \"/csi/csi.sock\",\n          \"ServerName\": \"\",\n          \"Attributes\": {\n            \"\\u003c%!p(networktype.keyType=grpc.internal.transport.networktype)\\u003e\": \"unix\"\n          },\n          \"BalancerAttributes\": null,\n          \"Metadata\": null\n        }\n      ],\n      \"Attributes\": null\n    }\n  ],\n  \"ServiceConfig\": null,\n  \"Attributes\": null\n}\n"
-I0816 23:08:31.708910       1 clientconn.go:923] "[core] [Channel #1 SubChannel #2] Subchannel created\n"
-I0816 23:08:31.709018       1 clientconn.go:375] "[core] [Channel #1] Channel exiting idle mode\n"
-I0816 23:08:31.709099       1 logging.go:39] "[core] [Channel #1 SubChannel #2] Subchannel Connectivity change to CONNECTING\n"
-I0816 23:08:31.709129       1 logging.go:39] "[core] [Channel #1 SubChannel #2] Subchannel picks a new address \"/csi/csi.sock\" to connect\n"
-I0816 23:08:31.709426       1 logging.go:39] "[core] [Channel #1 SubChannel #2] Subchannel Connectivity change to READY\n"
-I0816 23:08:31.709739       1 pickfirst.go:653] "[pick-first-leaf-lb] [pick-first-leaf-lb 0xb2da6f07e0] SubConn 0xb2da2f65f0 reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.\n"
-I0816 23:08:31.709873       1 logging.go:39] "[core] [Channel #1] Channel Connectivity change to READY\n"
-I0816 23:08:31.709963       1 common.go:143] "Probing CSI driver for readiness"
-I0816 23:08:31.710059       1 connection.go:264] "GRPC call" method="/csi.v1.Identity/Probe" request="{}"
-I0816 23:08:31.711563       1 connection.go:270] "GRPC response" response="{}" err=null
-I0816 23:08:31.711578       1 connection.go:264] "GRPC call" method="/csi.v1.Identity/GetPluginInfo" request="{}"
-I0816 23:08:31.712145       1 connection.go:270] "GRPC response" response="{\"name\":\"hostpath.csi.k8s.io\",\"vendor_version\":\"v1.17.1\"}" err=null
-I0816 23:08:31.712177       1 csi-provisioner.go:246] Detected CSI driver hostpath.csi.k8s.io
-I0816 23:08:31.712190       1 connection.go:264] "GRPC call" method="/csi.v1.Identity/GetPluginCapabilities" request="{}"
-I0816 23:08:31.712792       1 connection.go:270] "GRPC response" response="{\"capabilities\":[{\"service\":{\"type\":\"CONTROLLER_SERVICE\"}},{\"service\":{\"type\":\"GROUP_CONTROLLER_SERVICE\"}},{\"service\":{\"type\":\"VOLUME_ACCESSIBILITY_CONSTRAINTS\"}}]}" err=null
-I0816 23:08:31.712810       1 connection.go:264] "GRPC call" method="/csi.v1.Controller/ControllerGetCapabilities" request="{}"
-I0816 23:08:31.713338       1 connection.go:270] "GRPC response" response="{\"capabilities\":[{\"rpc\":{\"type\":\"CREATE_DELETE_VOLUME\"}},{\"rpc\":{\"type\":\"GET_VOLUME\"}},{\"rpc\":{\"type\":\"GET_CAPACITY\"}},{\"rpc\":{\"type\":\"CREATE_DELETE_SNAPSHOT\"}},{\"rpc\":{\"type\":\"LIST_VOLUMES\"}},{\"rpc\":{\"type\":\"CLONE_VOLUME\"}},{\"rpc\":{\"type\":\"VOLUME_CONDITION\"}},{\"rpc\":{\"type\":\"SINGLE_NODE_MULTI_WRITER\"}},{\"rpc\":{\"type\":\"EXPAND_VOLUME\"}},{\"rpc\":{\"type\":\"LIST_SNAPSHOTS\"}}]}" err=null
-I0816 23:08:31.713422       1 csi-provisioner.go:318] CSI driver does not support PUBLISH_UNPUBLISH_VOLUME, not watching VolumeAttachments
-I0816 23:08:31.713820       1 controller.go:769] "Using saving PVs to API server in background"
-I0816 23:09:01.715178       1 reflector.go:425] "Starting reflector" type="*v1.Node" resyncPeriod="1h0m0s" reflector="k8s.io/client-go/informers/factory.go:177"
-I0816 23:09:01.715209       1 reflector.go:472] "Listing and watching" type="*v1.Node" reflector="k8s.io/client-go/informers/factory.go:177"
-I0816 23:09:01.715180       1 reflector.go:425] "Starting reflector" type="*v1.CSINode" resyncPeriod="1h0m0s" reflector="k8s.io/client-go/informers/factory.go:177"
-I0816 23:09:01.715223       1 reflector.go:472] "Listing and watching" type="*v1.CSINode" reflector="k8s.io/client-go/informers/factory.go:177"
-I0816 23:09:01.715177       1 reflector.go:425] "Starting reflector" type="*v1.StorageClass" resyncPeriod="1h0m0s" reflector="k8s.io/client-go/informers/factory.go:177"
-I0816 23:09:01.715304       1 reflector.go:472] "Listing and watching" type="*v1.StorageClass" reflector="k8s.io/client-go/informers/factory.go:177"
-I0816 23:09:01.715180       1 reflector.go:425] "Starting reflector" type="*v1.PersistentVolumeClaim" resyncPeriod="15m0s" reflector="k8s.io/client-go/informers/factory.go:177"
-I0816 23:09:01.715395       1 reflector.go:472] "Listing and watching" type="*v1.PersistentVolumeClaim" reflector="k8s.io/client-go/informers/factory.go:177"
-I0816 23:09:32.716713       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=1 url="https://10.43.0.1:443/api/v1/nodes?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=6m2s&timeoutSeconds=362&watch=true"
-I0816 23:09:32.716786       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=1 url="https://10.43.0.1:443/api/v1/persistentvolumeclaims?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=8m51s&timeoutSeconds=531&watch=true"
-I0816 23:09:32.716754       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=1 url="https://10.43.0.1:443/apis/storage.k8s.io/v1/storageclasses?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=9m32s&timeoutSeconds=572&watch=true"
-I0816 23:09:32.716738       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=1 url="https://10.43.0.1:443/apis/storage.k8s.io/v1/csinodes?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=8m31s&timeoutSeconds=511&watch=true"
-I0816 23:10:03.718274       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=2 url="https://10.43.0.1:443/apis/storage.k8s.io/v1/storageclasses?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=9m32s&timeoutSeconds=572&watch=true"
-I0816 23:10:03.718310       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=2 url="https://10.43.0.1:443/api/v1/persistentvolumeclaims?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=8m51s&timeoutSeconds=531&watch=true"
-I0816 23:10:03.718321       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=2 url="https://10.43.0.1:443/api/v1/nodes?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=6m2s&timeoutSeconds=362&watch=true"
-I0816 23:10:03.718369       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=2 url="https://10.43.0.1:443/apis/storage.k8s.io/v1/csinodes?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=8m31s&timeoutSeconds=511&watch=true"
-I0816 23:10:34.719133       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=3 url="https://10.43.0.1:443/apis/storage.k8s.io/v1/csinodes?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=8m31s&timeoutSeconds=511&watch=true"
-I0816 23:10:34.719158       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=3 url="https://10.43.0.1:443/api/v1/nodes?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=6m2s&timeoutSeconds=362&watch=true"
-I0816 23:10:34.719183       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=3 url="https://10.43.0.1:443/apis/storage.k8s.io/v1/storageclasses?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=9m32s&timeoutSeconds=572&watch=true"
-I0816 23:10:34.719133       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=3 url="https://10.43.0.1:443/api/v1/persistentvolumeclaims?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=8m51s&timeoutSeconds=531&watch=true"
+I0816 23:20:02.993016       1 feature_gate.go:477] "Warning: setting GA feature gate. It will be removed in a future release." featureGate="Topology" value=true
+I0816 23:20:02.993106       1 feature_gate.go:477] "Updated" featureGates={"Topology":true}
+I0816 23:20:02.993131       1 csi-provisioner.go:156] "Version" version="v6.3.0"
+I0816 23:20:02.993138       1 csi-provisioner.go:179] Building kube configs for running in cluster...
+I0816 23:20:02.993286       1 envvar.go:195] "Feature gate default state" feature="InOrderInformers" enabled=true
+I0816 23:20:02.993304       1 envvar.go:195] "Feature gate default state" feature="UnlockWhileProcessingFIFO" enabled=true
+I0816 23:20:02.993309       1 envvar.go:195] "Feature gate default state" feature="AtomicFIFO" enabled=true
+I0816 23:20:02.993311       1 envvar.go:195] "Feature gate default state" feature="ClientsAllowTLSCacheGC" enabled=true
+I0816 23:20:02.993314       1 envvar.go:195] "Feature gate default state" feature="InformerResourceVersion" enabled=true
+I0816 23:20:02.993316       1 envvar.go:195] "Feature gate default state" feature="InOrderInformersBatchProcess" enabled=true
+I0816 23:20:02.993319       1 envvar.go:195] "Feature gate default state" feature="WatchListClient" enabled=true
+I0816 23:20:02.993321       1 envvar.go:195] "Feature gate default state" feature="ClientsAllowCARotation" enabled=true
+I0816 23:20:02.993329       1 envvar.go:195] "Feature gate default state" feature="ClientsPreferCBOR" enabled=false
+I0816 23:20:02.993334       1 envvar.go:195] "Feature gate default state" feature="ClientsAllowCBOR" enabled=false
+I0816 23:20:32.994502       1 connection.go:234] "Connecting" address="unix:///csi/csi.sock"
+I0816 23:20:32.994598       1 clientconn.go:1837] "[core] original dial target is: \"unix:///csi/csi.sock\"\n"
+I0816 23:20:32.994630       1 clientconn.go:375] "[core] [Channel #1] Channel created for target \"unix:///csi/csi.sock\"\n"
+I0816 23:20:32.994674       1 logging.go:39] "[core] [Channel #1] parsed dial target is: resolver.Target{URL:url.URL{Scheme:\"unix\", Opaque:\"\", User:(*url.Userinfo)(nil), Host:\"\", Path:\"/csi/csi.sock\", Fragment:\"\", RawQuery:\"\", RawPath:\"\", RawFragment:\"\", ForceQuery:false, OmitHost:false}}\n"
+I0816 23:20:32.994689       1 logging.go:39] "[core] [Channel #1] Channel authority set to \"localhost\"\n"
+I0816 23:20:32.994727       1 logging.go:39] "[core] [Channel #1] Channel Connectivity change to CONNECTING\n"
+I0816 23:20:32.994881       1 logging.go:39] "[core] [Channel #1] Resolver state updated: {\n  \"Addresses\": [\n    {\n      \"Addr\": \"/csi/csi.sock\",\n      \"ServerName\": \"\",\n      \"Attributes\": {\n        \"\\u003c%!p(networktype.keyType=grpc.internal.transport.networktype)\\u003e\": \"unix\"\n      },\n      \"BalancerAttributes\": null,\n      \"Metadata\": null\n    }\n  ],\n  \"Endpoints\": [\n    {\n      \"Addresses\": [\n        {\n          \"Addr\": \"/csi/csi.sock\",\n          \"ServerName\": \"\",\n          \"Attributes\": {\n            \"\\u003c%!p(networktype.keyType=grpc.internal.transport.networktype)\\u003e\": \"unix\"\n          },\n          \"BalancerAttributes\": null,\n          \"Metadata\": null\n        }\n      ],\n      \"Attributes\": null\n    }\n  ],\n  \"ServiceConfig\": null,\n  \"Attributes\": null\n} (resolver returned new addresses)\n"
+I0816 23:20:32.994935       1 logging.go:39] "[core] [Channel #1] Channel switches to new LB policy \"pick_first\"\n"
+I0816 23:20:32.995069       1 pickfirst.go:257] "[pick-first-leaf-lb] [pick-first-leaf-lb 0x22eb978fa7e0] Received new config {\n  \"shuffleAddressList\": false\n}, resolver state {\n  \"Addresses\": [\n    {\n      \"Addr\": \"/csi/csi.sock\",\n      \"ServerName\": \"\",\n      \"Attributes\": {\n        \"\\u003c%!p(networktype.keyType=grpc.internal.transport.networktype)\\u003e\": \"unix\"\n      },\n      \"BalancerAttributes\": null,\n      \"Metadata\": null\n    }\n  ],\n  \"Endpoints\": [\n    {\n      \"Addresses\": [\n        {\n          \"Addr\": \"/csi/csi.sock\",\n          \"ServerName\": \"\",\n          \"Attributes\": {\n            \"\\u003c%!p(networktype.keyType=grpc.internal.transport.networktype)\\u003e\": \"unix\"\n          },\n          \"BalancerAttributes\": null,\n          \"Metadata\": null\n        }\n      ],\n      \"Attributes\": null\n    }\n  ],\n  \"ServiceConfig\": null,\n  \"Attributes\": null\n}\n"
+I0816 23:20:32.995120       1 clientconn.go:923] "[core] [Channel #1 SubChannel #2] Subchannel created\n"
+I0816 23:20:32.995146       1 clientconn.go:375] "[core] [Channel #1] Channel exiting idle mode\n"
+I0816 23:20:32.995184       1 logging.go:39] "[core] [Channel #1 SubChannel #2] Subchannel Connectivity change to CONNECTING\n"
+I0816 23:20:32.995197       1 logging.go:39] "[core] [Channel #1 SubChannel #2] Subchannel picks a new address \"/csi/csi.sock\" to connect\n"
+I0816 23:20:32.995503       1 logging.go:39] "[core] [Channel #1 SubChannel #2] Subchannel Connectivity change to READY\n"
+I0816 23:20:32.995542       1 pickfirst.go:653] "[pick-first-leaf-lb] [pick-first-leaf-lb 0x22eb978fa7e0] SubConn 0x22eb97625950 reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.\n"
+I0816 23:20:32.995561       1 logging.go:39] "[core] [Channel #1] Channel Connectivity change to READY\n"
+I0816 23:20:32.995574       1 common.go:143] "Probing CSI driver for readiness"
+I0816 23:20:32.995592       1 connection.go:264] "GRPC call" method="/csi.v1.Identity/Probe" request="{}"
+I0816 23:20:32.997021       1 connection.go:270] "GRPC response" response="{}" err=null
+I0816 23:20:32.997065       1 connection.go:264] "GRPC call" method="/csi.v1.Identity/GetPluginInfo" request="{}"
+I0816 23:20:32.998088       1 connection.go:270] "GRPC response" response="{\"name\":\"hostpath.csi.k8s.io\",\"vendor_version\":\"v1.17.1\"}" err=null
+I0816 23:20:32.998144       1 csi-provisioner.go:246] Detected CSI driver hostpath.csi.k8s.io
+I0816 23:20:32.998187       1 connection.go:264] "GRPC call" method="/csi.v1.Identity/GetPluginCapabilities" request="{}"
+I0816 23:20:32.998681       1 connection.go:270] "GRPC response" response="{\"capabilities\":[{\"service\":{\"type\":\"CONTROLLER_SERVICE\"}},{\"service\":{\"type\":\"GROUP_CONTROLLER_SERVICE\"}},{\"service\":{\"type\":\"VOLUME_ACCESSIBILITY_CONSTRAINTS\"}}]}" err=null
+I0816 23:20:32.998702       1 connection.go:264] "GRPC call" method="/csi.v1.Controller/ControllerGetCapabilities" request="{}"
+I0816 23:20:32.999224       1 connection.go:270] "GRPC response" response="{\"capabilities\":[{\"rpc\":{\"type\":\"CREATE_DELETE_VOLUME\"}},{\"rpc\":{\"type\":\"GET_VOLUME\"}},{\"rpc\":{\"type\":\"GET_CAPACITY\"}},{\"rpc\":{\"type\":\"CREATE_DELETE_SNAPSHOT\"}},{\"rpc\":{\"type\":\"LIST_VOLUMES\"}},{\"rpc\":{\"type\":\"CLONE_VOLUME\"}},{\"rpc\":{\"type\":\"VOLUME_CONDITION\"}},{\"rpc\":{\"type\":\"SINGLE_NODE_MULTI_WRITER\"}},{\"rpc\":{\"type\":\"EXPAND_VOLUME\"}},{\"rpc\":{\"type\":\"LIST_SNAPSHOTS\"}}]}" err=null
+I0816 23:20:32.999313       1 csi-provisioner.go:318] CSI driver does not support PUBLISH_UNPUBLISH_VOLUME, not watching VolumeAttachments
+I0816 23:20:32.999660       1 controller.go:769] "Using saving PVs to API server in background"
+I0816 23:21:03.000390       1 reflector.go:425] "Starting reflector" type="*v1.PersistentVolumeClaim" resyncPeriod="15m0s" reflector="k8s.io/client-go/informers/factory.go:177"
+I0816 23:21:03.000385       1 reflector.go:425] "Starting reflector" type="*v1.StorageClass" resyncPeriod="1h0m0s" reflector="k8s.io/client-go/informers/factory.go:177"
+I0816 23:21:03.000419       1 reflector.go:472] "Listing and watching" type="*v1.StorageClass" reflector="k8s.io/client-go/informers/factory.go:177"
+I0816 23:21:03.000414       1 reflector.go:425] "Starting reflector" type="*v1.Node" resyncPeriod="1h0m0s" reflector="k8s.io/client-go/informers/factory.go:177"
+I0816 23:21:03.000431       1 reflector.go:472] "Listing and watching" type="*v1.Node" reflector="k8s.io/client-go/informers/factory.go:177"
+I0816 23:21:03.000419       1 reflector.go:472] "Listing and watching" type="*v1.PersistentVolumeClaim" reflector="k8s.io/client-go/informers/factory.go:177"
+I0816 23:21:03.000418       1 reflector.go:425] "Starting reflector" type="*v1.CSINode" resyncPeriod="1h0m0s" reflector="k8s.io/client-go/informers/factory.go:177"
+I0816 23:21:03.000564       1 reflector.go:472] "Listing and watching" type="*v1.CSINode" reflector="k8s.io/client-go/informers/factory.go:177"
+I0816 23:21:34.001495       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=1 url="https://10.43.0.1:443/api/v1/persistentvolumeclaims?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=7m59s&timeoutSeconds=479&watch=true"
+I0816 23:21:34.001497       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=1 url="https://10.43.0.1:443/apis/storage.k8s.io/v1/storageclasses?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=8m46s&timeoutSeconds=526&watch=true"
+I0816 23:21:34.001522       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=1 url="https://10.43.0.1:443/api/v1/nodes?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=7m17s&timeoutSeconds=437&watch=true"
+I0816 23:21:34.001495       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=1 url="https://10.43.0.1:443/apis/storage.k8s.io/v1/csinodes?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=6m31s&timeoutSeconds=391&watch=true"
+I0816 23:22:05.002345       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=2 url="https://10.43.0.1:443/apis/storage.k8s.io/v1/csinodes?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=6m31s&timeoutSeconds=391&watch=true"
+I0816 23:22:05.002363       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=2 url="https://10.43.0.1:443/apis/storage.k8s.io/v1/storageclasses?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=8m46s&timeoutSeconds=526&watch=true"
+I0816 23:22:05.002345       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=2 url="https://10.43.0.1:443/api/v1/persistentvolumeclaims?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=7m59s&timeoutSeconds=479&watch=true"
+I0816 23:22:05.002365       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=2 url="https://10.43.0.1:443/api/v1/nodes?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=7m17s&timeoutSeconds=437&watch=true"
+I0816 23:22:36.003554       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=3 url="https://10.43.0.1:443/apis/storage.k8s.io/v1/csinodes?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=6m31s&timeoutSeconds=391&watch=true"
+I0816 23:22:36.003600       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=3 url="https://10.43.0.1:443/apis/storage.k8s.io/v1/storageclasses?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=8m46s&timeoutSeconds=526&watch=true"
+I0816 23:22:36.003554       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=3 url="https://10.43.0.1:443/api/v1/nodes?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=7m17s&timeoutSeconds=437&watch=true"
+I0816 23:22:36.003827       1 with_retry.go:234] "Got a Retry-After response" delay="1s" attempt=3 url="https://10.43.0.1:443/api/v1/persistentvolumeclaims?allowWatchBookmarks=true&resourceVersionMatch=NotOlderThan&sendInitialEvents=true&timeout=7m59s&timeoutSeconds=479&watch=true"
 === events for csi-pvc-check-claim ===
-No resources found in not-k8s-e2e-1786921766 namespace.
-    (skip: PVC 'csi-pvc-check-claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS (csi-hostpath-sc); not something nodelet itself does (see docs/GAP_CLOSURE.md's out-of-scope notes) — see the diagnostic dump printed above for why, before assuming it's the benign case)
-  ○ SKIP (92s)
-▶ test_pod_uses_a_raw_block_volume
-    (skip: PVC 'csi-block-check-claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_BLOCK_STORAGE_CLASS (csi-hostpath-block-sc))
-  ○ SKIP (90s)
-▶ test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
-    (skip: PVC 'fsgroup-policy-check-claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS (csi-hostpath-sc))
-  ○ SKIP (91s)
+No resources found in not-k8s-e2e-1786922481 namespace.
+==> FATAL: PVC 'csi-pvc-check-claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS (csi-hostpath-sc); not something nodelet itself does (see docs/GAP_CLOSURE.md's out-of-scope notes) — see the diagnostic dump printed above for why, before assuming it's the benign case — dynamic CSI provisioning is required when testing nodecontroller
+  ✘ FAIL (91s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 16 23:20:03 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:20:03.850526Z  INFO CreateContainer succeeded container=csi-resizer container_id=fed4ff7319ec9f55d02f4c048ba0de7450d4572a54e402874120426a96b212fe
+    Aug 16 23:20:04 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:20:04.727167Z  INFO CreateContainer succeeded container=csi-snapshotter container_id=05863e707a6162d3c071163b62d7735d12a8572464389ac10a5c3b8e05d485e5
+    Aug 16 23:20:04 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:20:04.908268Z  INFO plugin registry: plugin registered name=hostpath.csi.k8s.io endpoint=/var/lib/nodelet/plugins/csi-hostpath/csi.sock plugin_type=CSIPlugin
+    Aug 16 23:20:05 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:20:05.032147Z  INFO CreateContainer succeeded container=socat container_id=eda78c46121f3084c28d042507116ab19f3e0f31a228e5ed1c074f844d42f0bf
+    Aug 16 23:20:15 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:20:15.794043Z  INFO CreateContainer succeeded container=plugin container_id=c11b1a1ff33028a9ca379a6754bd5fe75640df5735f9d0fd6e46d67f68208454
+    Aug 16 23:20:18 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:20:18.023421Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
+    Aug 16 23:20:18 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:20:18.044108Z  WARN failed to write pod status pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff error=ApiError: pods "dra-example-driver-kubeletplugin-b6c54aa289bd22ff" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 23:20:18 runnervmzvulz run-nodelet.sh[14525]: Caused by:
+    Aug 16 23:20:18 runnervmzvulz run-nodelet.sh[14525]:     pods "dra-example-driver-kubeletplugin-b6c54aa289bd22ff" not found: NotFound
+    Aug 16 23:20:18 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:20:18.049264Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
+    Aug 16 23:20:18 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:20:18.207350Z  INFO CreateContainer succeeded container=plugin container_id=ebf2a0c21378e312aa44aa156a57491985e05e17fc83b9df7c457f2596820bab
+    Aug 16 23:20:24 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:20:24.932389Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-4c013205-2d8e-4fee-b8f6-3815d5510afc.sock plugin_type=DRAPlugin
+    Aug 16 23:20:24 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:20:24.979901Z  INFO node status pushed
+    Aug 16 23:21:25 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:21:25.020801Z  INFO node status pushed
+    Aug 16 23:22:25 runnervmzvulz run-nodelet.sh[14525]: 2026-08-16T23:22:25.063766Z  INFO node status pushed
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 3 skipped
+Results: 0 passed, 1 failed, 0 skipped
+Failed:
+  - test_pod_mounts_a_persistent_volume_claim
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786921766...
+==> Cleaning up test namespace not-k8s-e2e-1786922481...
