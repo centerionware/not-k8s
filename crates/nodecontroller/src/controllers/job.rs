@@ -46,7 +46,9 @@
 //! decided, not the live snapshot that decided it), and `Complete=True`
 //! requires a `SuccessCriteriaMet=True` condition alongside it (a
 //! `successPolicy`-era invariant; both conditions are set together even
-//! though `successPolicy` itself isn't implemented here). A third: the
+//! though `successPolicy` itself isn't implemented here — the same
+//! `FailureTarget=True` condition is required alongside `Failed=True` on
+//! the failure path, confirmed live in CI the same way). A third: the
 //! apiserver adds a `batch.kubernetes.io/job-tracking` finalizer to every
 //! Job at creation regardless of which controller-manager is running, and
 //! a Job can never actually be deleted (by `ttl-after-finished-controller`
@@ -259,6 +261,11 @@ async fn reconcile_job(client: &Client, namespace: &str, name: &str, pod_cache: 
                 conditions.push(condition("Complete", "Job reached its completion target"));
                 status.completion_time = Some(crate::k8s_time::from_chrono(crate::k8s_time::now()));
             } else {
+                // Same JobValidation admission invariant as Complete/
+                // SuccessCriteriaMet above, mirrored for the failure path
+                // — confirmed live in CI: `Failed=True` was rejected
+                // without a `FailureTarget=True` condition present too.
+                conditions.push(condition("FailureTarget", "Job exceeded its backoffLimit"));
                 conditions.push(condition("Failed", "Job exceeded its backoffLimit"));
             }
             status.conditions = Some(conditions);
