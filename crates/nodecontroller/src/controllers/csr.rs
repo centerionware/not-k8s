@@ -96,17 +96,19 @@ pub struct CsrSubject {
     pub organization: Option<String>,
 }
 
-/// Parses the subject out of a CSR's PEM-encoded x509 request. Reuses
-/// rcgen's own CSR parsing (the `x509-parser` feature, already needed by
-/// `sign_csr`) rather than adding a second x509 dependency for the same
-/// job.
+/// Parses the subject out of a CSR's PEM-encoded x509 request, via
+/// `x509-parser` directly (see Cargo.toml's comment on why: rcgen's own
+/// `DnValue` — what would come back from `DistinguishedName::get` — has no
+/// way to read its string content back out, only to be constructed from
+/// one and written).
 fn parse_csr_subject(csr_pem: &str) -> Result<CsrSubject> {
-    let params = rcgen::CertificateSigningRequestParams::from_pem(csr_pem).context("parsing CSR PEM for subject validation")?;
-    let dn = &params.params.distinguished_name;
-    Ok(CsrSubject {
-        common_name: dn.get(&rcgen::DnType::CommonName).map(|v| v.to_string()),
-        organization: dn.get(&rcgen::DnType::OrganizationName).map(|v| v.to_string()),
-    })
+    let der = pem::parse(csr_pem).context("decoding CSR PEM envelope")?;
+    let (_, csr) = x509_parser::certification_request::X509CertificationRequest::from_der(der.contents())
+        .map_err(|e| anyhow::anyhow!("parsing CSR DER as x509: {e:?}"))?;
+    let subject = &csr.certification_request_info.subject;
+    let common_name = subject.iter_common_name().next().and_then(|a| a.as_str().ok()).map(str::to_string);
+    let organization = subject.iter_organization().next().and_then(|a| a.as_str().ok()).map(str::to_string);
+    Ok(CsrSubject { common_name, organization })
 }
 
 /// Should this CSR be auto-approved? Pure given the fields the apiserver

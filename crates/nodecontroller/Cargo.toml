@@ -62,4 +62,14 @@ base64 = "0.22"
 http = "1"
 rcgen = { version = "0.13", features = ["x509-parser"] }
 p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+# CSR subject validation (`csr.rs`'s `parse_csr_subject`) needs to read the
+# Common Name / Organization back out of a CSR's own x509 request. rcgen's
+# `DnValue` (what `DistinguishedName::get` returns) has no `Display`/
+# `ToString` impl — it's write-only from this crate's perspective — so
+# reading a subject back out goes through `x509-parser` directly instead
+# (already pulled in transitively by rcgen's own `x509-parser` feature, so
+# this adds no new dependency to the tree, just makes it nameable). `pem`
+# decodes the CSR's PEM envelope to the DER bytes x509-parser needs.
+x509-parser = "0.16"
+pem = "3"
 node-leaderelection = { path = "../node-leaderelection" }

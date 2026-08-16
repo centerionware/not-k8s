@@ -450,7 +450,7 @@ mod tests {
         StatefulSet {
             metadata: ObjectMeta { name: Some("web".to_string()), namespace: Some("default".to_string()), ..Default::default() },
             spec: Some(StatefulSetSpec {
-                service_name: "web".to_string(),
+                service_name: Some("web".to_string()),
                 template: PodTemplateSpec {
                     metadata: None,
                     spec: Some(PodSpec {
