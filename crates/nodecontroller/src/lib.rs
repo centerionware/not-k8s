@@ -77,6 +77,23 @@ pub mod watch;
 pub mod wheel;
 
 use anyhow::{Context, Result};
+use std::future::Future;
+use std::time::Duration;
+
+/// Keep controller initialization from arriving at the apiserver as one
+/// synchronized burst.  Most controllers perform several seed LISTs before
+/// opening their long-lived watches; starting all of those futures in one
+/// `try_join!` made the CSI sidecars' own watches receive HTTP 429/Retry-After
+/// responses on the small k3s control planes used by the e2e suite.
+async fn start_controller<F>(name: &'static str, slot: u64, controller: F) -> Result<()>
+where
+    F: Future<Output = Result<()>>,
+{
+    const START_SPACING: Duration = Duration::from_millis(500);
+    tokio::time::sleep(START_SPACING * slot as u32).await;
+    tracing::debug!(controller = name, slot, "starting nodecontroller controller");
+    controller.await
+}
 
 /// Install rustls' default `CryptoProvider`, unless something already did.
 ///
@@ -107,26 +124,26 @@ pub async fn run() -> Result<()> {
     node_leaderelection::run_as_leader(client.clone(), &election_cfg, || async move {
         tracing::info!("nodecontroller is now leading — starting all controllers");
         tokio::try_join!(
-            controllers::node_ipam::run(client.clone(), &cfg),
-            controllers::node_lifecycle::run(client.clone(), &cfg),
-            controllers::service_account::run(client.clone(), &cfg),
-            controllers::endpoint_slice::run(client.clone(), &cfg),
-            controllers::resource_quota::run(client.clone(), &cfg),
-            controllers::replica_set::run(client.clone(), &cfg),
-            controllers::deployment::run(client.clone(), &cfg),
-            controllers::daemon_set::run(client.clone(), &cfg),
-            controllers::stateful_set::run(client.clone(), &cfg),
-            controllers::garbage_collector::run(client.clone(), &cfg),
-            controllers::job::run(client.clone(), &cfg),
-            controllers::cron_job::run(client.clone(), &cfg),
-            controllers::ttl_after_finished::run(client.clone(), &cfg),
-            controllers::attach_detach::run(client.clone(), &cfg),
-            controllers::pv_binder::run(client.clone(), &cfg),
-            controllers::storage_protection::run(client.clone(), &cfg),
-            controllers::root_ca_publisher::run(client.clone(), &cfg),
-            controllers::resource_claim::run(client.clone(), &cfg),
-            controllers::csr::run(client.clone(), &cfg),
-            controllers::disruption::run(client.clone(), &cfg),
+            start_controller("node-ipam", 0, controllers::node_ipam::run(client.clone(), &cfg)),
+            start_controller("node-lifecycle", 1, controllers::node_lifecycle::run(client.clone(), &cfg)),
+            start_controller("service-account", 2, controllers::service_account::run(client.clone(), &cfg)),
+            start_controller("endpoint-slice", 3, controllers::endpoint_slice::run(client.clone(), &cfg)),
+            start_controller("resource-quota", 4, controllers::resource_quota::run(client.clone(), &cfg)),
+            start_controller("replica-set", 5, controllers::replica_set::run(client.clone(), &cfg)),
+            start_controller("deployment", 6, controllers::deployment::run(client.clone(), &cfg)),
+            start_controller("daemon-set", 7, controllers::daemon_set::run(client.clone(), &cfg)),
+            start_controller("stateful-set", 8, controllers::stateful_set::run(client.clone(), &cfg)),
+            start_controller("garbage-collector", 9, controllers::garbage_collector::run(client.clone(), &cfg)),
+            start_controller("job", 10, controllers::job::run(client.clone(), &cfg)),
+            start_controller("cron-job", 11, controllers::cron_job::run(client.clone(), &cfg)),
+            start_controller("ttl-after-finished", 12, controllers::ttl_after_finished::run(client.clone(), &cfg)),
+            start_controller("attach-detach", 13, controllers::attach_detach::run(client.clone(), &cfg)),
+            start_controller("pv-binder", 14, controllers::pv_binder::run(client.clone(), &cfg)),
+            start_controller("storage-protection", 15, controllers::storage_protection::run(client.clone(), &cfg)),
+            start_controller("root-ca-publisher", 16, controllers::root_ca_publisher::run(client.clone(), &cfg)),
+            start_controller("resource-claim", 17, controllers::resource_claim::run(client.clone(), &cfg)),
+            start_controller("csr", 18, controllers::csr::run(client.clone(), &cfg)),
+            start_controller("disruption", 19, controllers::disruption::run(client.clone(), &cfg)),
         )?;
         Ok(())
     })

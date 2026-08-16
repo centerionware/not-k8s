@@ -362,25 +362,55 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
         relist: HashMap::new(),
     };
 
-    let mut combined = select_all(streams);
-    while let Some((kind_key, ev)) = combined.next().await {
-        match ev {
-            Ok(Event::Apply(obj)) => {
-                let staged = state.pending_init.contains(&kind_key);
-                state.handle_apply(&client, &kind_key, obj, staged).await;
+    // Discovery commonly returns dozens of kinds. Starting every dynamic
+    // watcher at once recreates the same apiserver burst that controller
+    // startup pacing avoids for the typed controllers. Keep a small active
+    // set and admit one more stream periodically; a watch remains in
+    // `combined` after its initial list, so this only paces admission and
+    // does not serialize steady-state event handling.
+    let mut pending_streams = streams.into_iter();
+    let mut combined = select_all(Vec::new());
+    for _ in 0..4 {
+        if let Some(stream) = pending_streams.next() {
+            combined.push(stream);
+        }
+    }
+    let mut admit = tokio::time::interval(std::time::Duration::from_millis(250));
+
+    loop {
+        tokio::select! {
+            event = combined.next() => {
+                let Some((kind_key, ev)) = event else {
+                    if let Some(stream) = pending_streams.next() {
+                        combined.push(stream);
+                        continue;
+                    }
+                    break;
+                };
+                match ev {
+                    Ok(Event::Apply(obj)) => {
+                        let staged = state.pending_init.contains(&kind_key);
+                        state.handle_apply(&client, &kind_key, obj, staged).await;
+                    }
+                    Ok(Event::InitApply(obj)) => {
+                        state.handle_apply(&client, &kind_key, obj, true).await;
+                    }
+                    Ok(Event::Delete(obj)) => {
+                        state.handle_delete(&client, obj).await;
+                    }
+                    Ok(Event::Init) => state.begin_relist(&kind_key),
+                    Ok(Event::InitDone) => {
+                        state.finish_relist(&client, &kind_key).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(kind = %kind_key, error = ?e, "watch error in garbage-collector-controller")
+                    }
+                }
             }
-            Ok(Event::InitApply(obj)) => {
-                state.handle_apply(&client, &kind_key, obj, true).await;
-            }
-            Ok(Event::Delete(obj)) => {
-                state.handle_delete(&client, obj).await;
-            }
-            Ok(Event::Init) => state.begin_relist(&kind_key),
-            Ok(Event::InitDone) => {
-                state.finish_relist(&client, &kind_key).await;
-            }
-            Err(e) => {
-                tracing::warn!(kind = %kind_key, error = ?e, "watch error in garbage-collector-controller")
+            _ = admit.tick(), if pending_streams.len() > 0 => {
+                if let Some(stream) = pending_streams.next() {
+                    combined.push(stream);
+                }
             }
         }
     }
