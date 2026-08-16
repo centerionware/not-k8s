@@ -37,6 +37,16 @@
 //!
 //! **`ttlSecondsAfterFinished` is a separate controller**
 //! (`ttl-after-finished-controller`, this same group) — not handled here.
+//!
+//! **Two apiserver admission invariants this controller must satisfy even
+//! though it doesn't implement the features behind them**, both confirmed
+//! live in CI (k3s 1.33's `JobValidation` admission plugin, real `422`
+//! responses, not documentation): a finished Job's `status.active` must be
+//! `0` (this reconcile reports the *post-outcome* count once an outcome is
+//! decided, not the live snapshot that decided it), and `Complete=True`
+//! requires a `SuccessCriteriaMet=True` condition alongside it (a
+//! `successPolicy`-era invariant; both conditions are set together even
+//! though `successPolicy` itself isn't implemented here).
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
@@ -46,7 +56,6 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference}
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
-use rand::Rng;
 use std::collections::HashMap;
 
 const RESERVED_MANAGED_BY: &str = "kubernetes.io/job-controller";
@@ -84,12 +93,6 @@ pub fn job_outcome(succeeded: i32, failed: i32, completions: Option<i32>, backof
         return Some(Outcome::Failed);
     }
     None
-}
-
-fn random_suffix() -> String {
-    const CHARSET: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
-    let mut rng = rand::thread_rng();
-    (0..5).map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char).collect()
 }
 
 fn owned_by(pod: &Pod, job_uid: &str) -> bool {
@@ -187,11 +190,25 @@ async fn reconcile_job(client: &Client, namespace: &str, name: &str, pod_cache: 
 
     if outcome.is_none() && !suspend && !already_terminal {
         let parallelism = spec.parallelism.unwrap_or(1);
-        for _ in 0..pods_to_create(parallelism, spec.completions, active, succeeded) {
-            let pod_name = format!("{name}-{}", random_suffix());
+        // Deterministic names, not build_pod's random suffix directly:
+        // two concurrent reconciles (a Job event and a Pod event racing
+        // each other, both reading a `pod_cache` that hasn't yet observed
+        // the other's in-flight create) both computing "1 more Pod needed"
+        // must land on the *same* name, so the loser's create fails
+        // AlreadyExists instead of both succeeding and overshooting
+        // parallelism — the exact bug this project already hit once with
+        // ReplicaSet's `generateName` (see deployment-controller's own
+        // history) and is avoiding here from the start.
+        let base = owned.len() as i32;
+        for i in 0..pods_to_create(parallelism, spec.completions, active, succeeded) {
+            let pod_name = format!("{name}-{}", base + i);
             let pod = build_pod(&job, &pod_name);
-            if let Err(e) = pod_api.create(&PostParams::default(), &pod).await {
-                tracing::warn!(namespace = %namespace, job = %name, pod = %pod_name, error = ?e, "failed to create Pod for Job");
+            match pod_api.create(&PostParams::default(), &pod).await {
+                Ok(_) => {}
+                Err(kube::Error::Api(ref e)) if e.is_already_exists() => {}
+                Err(e) => {
+                    tracing::warn!(namespace = %namespace, job = %name, pod = %pod_name, error = ?e, "failed to create Pod for Job");
+                }
             }
         }
     } else if suspend && !already_terminal {
@@ -204,7 +221,14 @@ async fn reconcile_job(client: &Client, namespace: &str, name: &str, pod_cache: 
     }
 
     let mut status = job.status.clone().unwrap_or_default();
-    status.active = Some(if suspend { 0 } else { active });
+    // The apiserver's JobValidation admission rejects a finished Job
+    // (Complete or Failed) reporting any Pod still active — confirmed live
+    // in CI (a real `422 active>0 is invalid for finished job` response):
+    // once this reconcile knows the outcome, report the *post-outcome*
+    // active count (0), not the live snapshot that outcome was computed
+    // from.
+    let terminal_now = already_terminal || outcome.is_some();
+    status.active = Some(if suspend || terminal_now { 0 } else { active });
     status.succeeded = Some(succeeded);
     status.failed = Some(failed);
     if status.start_time.is_none() && !suspend {
@@ -212,16 +236,23 @@ async fn reconcile_job(client: &Client, namespace: &str, name: &str, pod_cache: 
     }
     if !already_terminal {
         if let Some(o) = outcome {
-            let (type_, msg) = match o {
-                Outcome::Complete => ("Complete", "Job reached its completion target"),
-                Outcome::Failed => ("Failed", "Job exceeded its backoffLimit"),
-            };
             let mut conditions = status.conditions.clone().unwrap_or_default();
-            conditions.push(condition(type_, msg));
-            status.conditions = Some(conditions);
             if o == Outcome::Complete {
+                // The apiserver's JobValidation admission also rejects
+                // Complete=True without a SuccessCriteriaMet=True
+                // condition already present (confirmed live in CI) — a
+                // newer batch/v1 invariant tying Complete to the
+                // success-policy machinery even though this controller
+                // doesn't implement `successPolicy` itself (see module
+                // doc); satisfying the admission rule just means setting
+                // both conditions together.
+                conditions.push(condition("SuccessCriteriaMet", "Job reached its completion target"));
+                conditions.push(condition("Complete", "Job reached its completion target"));
                 status.completion_time = Some(crate::k8s_time::from_chrono(crate::k8s_time::now()));
+            } else {
+                conditions.push(condition("Failed", "Job exceeded its backoffLimit"));
             }
+            status.conditions = Some(conditions);
         }
     }
 
