@@ -40,6 +40,19 @@ pub const NODE_LEASE_NAMESPACE: &str = "kube-node-lease";
 const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
 const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Use Kubernetes' streaming-list form for every controller watch. The
+/// default ListWatch strategy performs a separate LIST and then a WATCH;
+/// nodecontroller has many controllers (and several watch the same resource
+/// kind), so starting them all that way creates a large, synchronized burst
+/// of apiserver requests. Streaming lists carry the initial objects through
+/// the watch itself, preserving the same Init/InitApply/InitDone sequence while
+/// removing that extra request. This is also the path used by the reference
+/// CSI provisioner in the real e2e setup, so the apiservers we support already
+/// advertise the required feature.
+fn watch_config() -> watcher::Config {
+    watcher::Config::default().streaming_lists()
+}
+
 fn watch_backoff(consecutive_failures: u32) -> std::time::Duration {
     if consecutive_failures == 0 {
         return std::time::Duration::ZERO;
@@ -72,87 +85,87 @@ impl Backoff for WatchBackoffPolicy {
 
 pub fn watch_nodes(client: &Client) -> BoxStream<'static, watcher::Result<Event<Node>>> {
     let api: Api<Node> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_node_leases(client: &Client) -> BoxStream<'static, watcher::Result<Event<Lease>>> {
     let api: Api<Lease> = Api::namespaced(client.clone(), NODE_LEASE_NAMESPACE);
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_namespaces(client: &Client) -> BoxStream<'static, watcher::Result<Event<Namespace>>> {
     let api: Api<Namespace> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_services(client: &Client) -> BoxStream<'static, watcher::Result<Event<Service>>> {
     let api: Api<Service> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_pods(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pod>>> {
     let api: Api<Pod> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_resource_quotas(client: &Client) -> BoxStream<'static, watcher::Result<Event<ResourceQuota>>> {
     let api: Api<ResourceQuota> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_replica_sets(client: &Client) -> BoxStream<'static, watcher::Result<Event<ReplicaSet>>> {
     let api: Api<ReplicaSet> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_deployments(client: &Client) -> BoxStream<'static, watcher::Result<Event<Deployment>>> {
     let api: Api<Deployment> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_daemon_sets(client: &Client) -> BoxStream<'static, watcher::Result<Event<DaemonSet>>> {
     let api: Api<DaemonSet> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_stateful_sets(client: &Client) -> BoxStream<'static, watcher::Result<Event<StatefulSet>>> {
     let api: Api<StatefulSet> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_jobs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Job>>> {
     let api: Api<Job> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_cron_jobs(client: &Client) -> BoxStream<'static, watcher::Result<Event<CronJob>>> {
     let api: Api<CronJob> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_persistent_volume_claims(client: &Client) -> BoxStream<'static, watcher::Result<Event<PersistentVolumeClaim>>> {
     let api: Api<PersistentVolumeClaim> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_persistent_volumes(client: &Client) -> BoxStream<'static, watcher::Result<Event<PersistentVolume>>> {
     let api: Api<PersistentVolume> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_volume_attachments(client: &Client) -> BoxStream<'static, watcher::Result<Event<VolumeAttachment>>> {
     let api: Api<VolumeAttachment> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_certificate_signing_requests(client: &Client) -> BoxStream<'static, watcher::Result<Event<CertificateSigningRequest>>> {
     let api: Api<CertificateSigningRequest> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 pub fn watch_pod_disruption_budgets(client: &Client) -> BoxStream<'static, watcher::Result<Event<PodDisruptionBudget>>> {
     let api: Api<PodDisruptionBudget> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 #[cfg(test)]
