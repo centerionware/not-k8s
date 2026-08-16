@@ -1,14 +1,16 @@
-commit: 3cb182bce6416c832eb84d68ce757b7f20f1f326
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31926377424
-timestamp (UTC): 2026-08-16T04:27:34Z
+commit: 1d221a705400a22a18323679d88a4a8d93f24348
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31927280095
+timestamp (UTC): 2026-08-16T04:51:25Z
 shard: 2/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786854453
-==> 233 test(s) registered total (before sharding); running now...
+==> Test namespace: not-k8s-e2e-1786855883
+==> 232 test(s) registered total (before sharding); running now...
 ==> Shard 2/5: 51 test(s) selected
+▶ test_resource_api_group_is_enabled
+  ✔ PASS (1s)
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 0 skipped
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786854453...
+==> Cleaning up test namespace not-k8s-e2e-1786855883...
