@@ -37,7 +37,7 @@ spec:
   containers:
     - name: watcher
       image: curlimages/curl:8.10.1
-      command: ["sh", "-c", "TOKEN=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token); CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt; curl -sS -N --connect-timeout 5 --max-time 90 --cacert \$CACERT -H \"Authorization: Bearer \$TOKEN\" \"https://\$KUBERNETES_SERVICE_HOST:\$KUBERNETES_SERVICE_PORT/api/v1/namespaces/$TEST_NAMESPACE/pods?watch=true&timeoutSeconds=85\" > /tmp/watch.out 2>/tmp/watch.err; echo WATCH_EXIT=\$? >> /tmp/watch.err; sleep 3600"]
+      command: ["sh", "-c", "TOKEN=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token); CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt; echo \"host=\$KUBERNETES_SERVICE_HOST port=\$KUBERNETES_SERVICE_PORT\" > /tmp/watch.err; curl -v -sS -N --connect-timeout 5 --max-time 90 --cacert \$CACERT -H \"Authorization: Bearer \$TOKEN\" \"https://\$KUBERNETES_SERVICE_HOST:\$KUBERNETES_SERVICE_PORT/api/v1/namespaces/$TEST_NAMESPACE/pods?watch=true&timeoutSeconds=85\" > /tmp/watch.out 2>>/tmp/watch.err; echo WATCH_EXIT=\$? >> /tmp/watch.err; sleep 3600"]
 PODEOF
     trap 'kubectl delete pod "$pod" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; for i in $(seq 1 25); do kubectl delete svc "churn-svc-$i" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; done' EXIT
 
@@ -56,8 +56,8 @@ PODEOF
         [ "${bytes:-0}" -gt 0 ] && [ "${pids:-0}" -gt 0 ]
     }
     if ! try_wait_until 45 watch_started; then
-        echo "=== watch never established; watch.err ==="
-        kubectl exec "$pod" -n "$TEST_NAMESPACE" -- sh -c 'cat /tmp/watch.err 2>/dev/null' 2>&1
+        echo "=== watch never established; watch.out + watch.err ==="
+        kubectl exec "$pod" -n "$TEST_NAMESPACE" -- sh -c 'echo "--watch.out--"; cat /tmp/watch.out 2>/dev/null; echo "--watch.err--"; cat /tmp/watch.err 2>/dev/null' 2>&1
         die "watch connection never got past its initial response before the churn burst — test infra issue, not the regression under test"
     fi
 
