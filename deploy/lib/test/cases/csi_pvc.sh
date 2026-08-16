@@ -12,7 +12,17 @@ _skip_or_fail_dynamic_pvc() {
     # the historical skip for ad-hoc runs without our controller or without a
     # real provisioner, but do not let a broken nodecontroller path report a
     # green run merely because the harness treats skips as success.
-    if [[ "${CONTROLLER_MANAGER:-none}" == "nodecontroller" ]]; then
+    local custom_controller=0
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl is-active --quiet nodecontroller.service 2>/dev/null \
+            && systemctl show k3s.service -p ExecStart --value 2>/dev/null \
+                | grep -q -- '--disable-controller-manager' \
+            && custom_controller=1
+    elif pgrep -x nodecontroller >/dev/null 2>&1 \
+        && ps -eo args= 2>/dev/null | grep -q '[k]3s.*--disable-controller-manager'; then
+        custom_controller=1
+    fi
+    if (( custom_controller )); then
         die "$message — dynamic CSI provisioning is required when testing nodecontroller"
     fi
     skip_test "$message"
