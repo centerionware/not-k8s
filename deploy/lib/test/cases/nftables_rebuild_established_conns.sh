@@ -18,6 +18,40 @@ test_a_long_lived_watch_survives_a_service_churn_burst() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local pod="established-conn-watcher"
 
+    # The `default` ServiceAccount gets no RBAC beyond its own token by
+    # design — real Kubernetes RBAC, not something this test should widen
+    # cluster-wide. A dedicated Role+RoleBinding scoped to this one
+    # namespace's pods, same shape CoreDNS's own ClusterRole grants it for
+    # the resources it actually watches. Found live in CI: without this the
+    # watch below gets a real, correct 403 Forbidden that looks identical
+    # (0 bytes, clean exit) to the connection never being established at
+    # all — see the try_wait_until diagnostic branch below.
+    apply_manifest <<RBACEOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: established-conn-watcher-pods
+  namespace: $TEST_NAMESPACE
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: established-conn-watcher-pods
+  namespace: $TEST_NAMESPACE
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: $TEST_NAMESPACE
+roleRef:
+  kind: Role
+  name: established-conn-watcher-pods
+  apiGroup: rbac.authorization.k8s.io
+RBACEOF
+
     # A dedicated curl-bundling image, not $TEST_IMAGE + a runtime `apk add`:
     # installing curl at container-start time depends on live internet
     # access to Alpine's CDN *from the pod network*, which is unreliable in
@@ -39,7 +73,7 @@ spec:
       image: curlimages/curl:8.10.1
       command: ["sh", "-c", "TOKEN=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token); CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt; echo \"host=\$KUBERNETES_SERVICE_HOST port=\$KUBERNETES_SERVICE_PORT\" > /tmp/watch.err; curl -v -sS -N --connect-timeout 5 --max-time 90 --cacert \$CACERT -H \"Authorization: Bearer \$TOKEN\" \"https://\$KUBERNETES_SERVICE_HOST:\$KUBERNETES_SERVICE_PORT/api/v1/namespaces/$TEST_NAMESPACE/pods?watch=true&timeoutSeconds=85\" > /tmp/watch.out 2>>/tmp/watch.err; echo WATCH_EXIT=\$? >> /tmp/watch.err; sleep 3600"]
 PODEOF
-    trap 'kubectl delete pod "$pod" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; for i in $(seq 1 25); do kubectl delete svc "churn-svc-$i" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; done' EXIT
+    trap 'kubectl delete pod "$pod" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; kubectl delete role established-conn-watcher-pods -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; kubectl delete rolebinding established-conn-watcher-pods -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; for i in $(seq 1 25); do kubectl delete svc "churn-svc-$i" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; done' EXIT
 
     wait_until 30 "$pod Running" pod_is_phase "$pod" Running
 
