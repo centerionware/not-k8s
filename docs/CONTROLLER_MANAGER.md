@@ -410,7 +410,7 @@ are implemented and e2e-verified.
   entry, since expected cardinality (finished Jobs with a TTL set,
   cluster-wide) doesn't justify the extra structure.
 
-## G. Volume/storage lifecycle — Tier 0 / 2 — **implemented (attach-detach, binder, pv/pvc-protection; expander scoped out)**
+## G. Volume/storage lifecycle — Tier 0 / 2 — **implemented (attach-detach, binder, pv/pvc-protection; expander scoped out) — dynamic CSI e2e path still open, see persistentvolume-binder-controller below**
 
 - `attach-detach-controller` (`crates/nodecontroller/src/controllers/attach_detach.rs`,
   **implemented**): creates/deletes `VolumeAttachment` objects so a CSI
@@ -428,26 +428,54 @@ are implemented and e2e-verified.
   deliberately conservative), and no `--node-detach-timeout`-style
   force-detach for a node that goes permanently unreachable.
 - `persistentvolume-binder-controller`
-  (`crates/nodecontroller/src/controllers/pv_binder.rs`, **implemented**):
-  binds a PVC to a PV — both the common provisioner-prebound path (a CSI
-  external-provisioner already set `pv.spec.claimRef`, this controller
-  finishes the handshake) and the static path (hand-created PV, matched by
-  storage class + access modes). Load-bearing in practice despite the
-  plan's original Tier 2 label: this project's own `csi_pvc.sh`/
+  (`crates/nodecontroller/src/controllers/pv_binder.rs`, **implemented,
+  static path e2e-verified; provisioner-prebound path unverified — see
+  below**): binds a PVC to a PV — both the common provisioner-prebound path
+  (a CSI external-provisioner already set `pv.spec.claimRef`, this
+  controller finishes the handshake) and the static path (hand-created PV,
+  matched by storage class + access modes). Load-bearing in practice
+  despite the plan's original Tier 2 label: this project's own `csi_pvc.sh`/
   `csi_attach.sh` e2e tests gate on `PVC.status.phase == Bound`, which
   nothing sets without this controller once k3s's own copy is disabled.
   Named simplification: no capacity comparison for static matching
   (`Quantity` has no arithmetic — the same gap `resourcequota-controller`
   documents), and no unbind/reclaim-policy handling once bound.
+  **Open verification gap, found and diagnosed live in CI, not yet
+  resolved**: `csi_pvc.sh`/`csi_attach.sh` still skip under
+  `controller_manager=nodecontroller` — traced (via a throwaway diagnostic
+  branch dumping the reference `external-provisioner` sidecar's own
+  container logs) past an initial real bug in this crate
+  (`root-ca-cert-publisher-controller` was missing entirely — fixed, see
+  Group C) to a second layer: the CSI reference driver's provisioner sets
+  up its informers correctly, negotiates with the driver, then goes
+  completely silent — never observed reacting to a real PVC at all, cluster
+  or namespace events included. This coincides with the same
+  `"peer closed connection without sending TLS close_notify"` watch
+  instability independently visible in this crate's *own* controllers'
+  logs throughout this session (relist-and-continue there, because they
+  handle it explicitly) — plausibly the same root cause silently stalling
+  the reference driver's Go client, which has no equivalent visible
+  recovery in its own logs. **This test path has never actually passed
+  under `controller_manager=nodecontroller`** (confirmed against
+  `e2e-results` history: its only passing runs predate this branch, under
+  k3s's own controller-manager) — named here explicitly rather than
+  silently left unverified, per this project's "verified against real
+  infrastructure" standard. The static-binding path
+  (`storage_lifecycle_controllers.sh`) and the code itself are unaffected
+  and separately e2e-verified. Revisit before this multi-group PR merges.
 - `pv-protection-controller` / `pvc-protection-controller`
   (`crates/nodecontroller/src/controllers/storage_protection.rs`,
   **implemented**): the standard finalizer-based "don't let this disappear
-  while something still needs it" pattern — PV in use means `Bound`, PVC in
-  use means referenced by name from a live Pod's `spec.volumes`. No
-  admission-time delete rejection (this controller only manages the
-  finalizer itself, not a second enforcement layer) — the protection still
-  holds since the object won't actually disappear until the finalizer is
-  removed.
+  while something still needs it" pattern — PV in use means its
+  `spec.claimRef` still points at a PVC that actually exists (**not**
+  `status.phase == "Bound"`, a bug caught in review before it shipped:
+  this slice never transitions a PV's phase back to `Released` after its
+  PVC is deleted, so phase-based protection would leave every bound PV
+  permanently undeletable), PVC in use means referenced by name from a
+  live Pod's `spec.volumes`. No admission-time delete rejection (this
+  controller only manages the finalizer itself, not a second enforcement
+  layer) — the protection still holds since the object won't actually
+  disappear until the finalizer is removed.
 - `persistentvolume-expander-controller` (**scoped out**): this project has
   no in-tree volume plugins to expand (this controller's real upstream job
   is in-tree `ControllerExpandVolume` calls), and CSI resize is handled

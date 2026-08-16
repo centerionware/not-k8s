@@ -35,6 +35,25 @@
 //! documented PVC-lifecycle gap: this crate's PVCs are created with no
 //! reclaim automation anywhere yet).
 //!
+//! # Open verification gap — read before trusting the provisioner-prebound path
+//!
+//! **The provisioner-prebound path is unverified against real CSI e2e
+//! infrastructure as of this writing** — `docs/CONTROLLER_MANAGER.md`'s
+//! Group G section has the full diagnostic account. Short version: traced
+//! `csi_pvc.sh`/`csi_attach.sh` still skipping under
+//! `controller_manager=nodecontroller` past one real bug already fixed here
+//! (a missing `root-ca-cert-publisher-controller`) to the reference
+//! `external-provisioner` sidecar itself going silent after informer setup
+//! — never observed reacting to a real PVC, coincident with the same watch
+//! instability (`peer closed connection without sending TLS close_notify`)
+//! independently visible in this crate's own controllers' logs. The logic
+//! above (`claimed_by`, matching a PV's `spec.claimRef` to the PVC by
+//! namespace+name) is exactly what upstream's own binder does and is
+//! covered by this file's unit tests, but has never been proven end to end
+//! against a real external-provisioner under this crate's own
+//! controller-manager. The static-binding path is unaffected and is
+//! e2e-verified (`storage_lifecycle_controllers.sh`).
+//!
 //! **First-match wins for static binding**, not upstream's "smallest PV
 //! that still satisfies the request" preference — with no capacity
 //! comparison available (see above) there's no meaningful ordering to rank

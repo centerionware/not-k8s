@@ -60,6 +60,12 @@
 //! `node-lifecycle-controller`'s own pod eviction removes the Pods, which
 //! then naturally clears this controller's desired set. A real, named gap
 //! for the "node vanished and never comes back" case specifically.
+//!
+//! **Depends on `persistentvolume-binder-controller` actually binding a PV
+//! first** (no PV, no attachment to create) — see that file's own module
+//! doc for an open, live-CI-diagnosed verification gap in the
+//! provisioner-prebound (dynamic CSI) path this controller's own e2e
+//! coverage (`csi_attach.sh`) currently inherits.
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
