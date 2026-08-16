@@ -1,14 +1,74 @@
-commit: 6ac113cf6effaff5c6ab5b9bda826ba79b7951fd
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31923288802
-timestamp (UTC): 2026-08-16T03:11:26Z
+commit: aedc3b9ba9bf52fcf9bfb912ba538ec22e02b4b2
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31923697232
+timestamp (UTC): 2026-08-16T03:22:37Z
 shard: 1/5
-exit code: 0
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786849884
+==> Test namespace: not-k8s-e2e-1786850463
 ==> 233 test(s) registered total (before sharding); running now...
-==> Shard 1/5: 51 test(s) selected
+==> Shard 1/5: 52 test(s) selected
+▶ test_diag_pv_binder_state
+=== DIAG: PVC ===
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"diag-claim","namespace":"not-k8s-e2e-1786850463"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"64Mi"}},"storageClassName":"csi-hostpath-sc"}}
+  creationTimestamp: "2026-08-16T03:21:04Z"
+  finalizers:
+  - kubernetes.io/pvc-protection
+  name: diag-claim
+  namespace: not-k8s-e2e-1786850463
+  resourceVersion: "844"
+  uid: ca0d8dc2-4832-4b6d-8d75-2e11a2f7bc95
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 64Mi
+  storageClassName: csi-hostpath-sc
+  volumeMode: Filesystem
+status:
+  phase: Pending
+=== DIAG: PVs ===
+No resources found
+apiVersion: v1
+items: []
+kind: List
+metadata:
+  resourceVersion: ""
+=== DIAG: provisioner pods ===
+No resources found
+=== DIAG: provisioner logs ===
+No resources found in default namespace.
+=== DIAG: events ===
+No resources found in not-k8s-e2e-1786850463 namespace.
+==> FATAL: diagnostic dump above — this always fails on purpose
+  ✘ FAIL (91s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 16 03:19:56 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:19:56.744658Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 03:19:58 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:19:58.690290Z  INFO CreateContainer succeeded container=plugin container_id=89e5445d175b70b0ec3f63348f6901a11b6fd14441c12666d3a1c5459124d825
+    Aug 16 03:19:58 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:19:58.834767Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:00.593202Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
+    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:00.611419Z  WARN failed to write pod status pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff error=ApiError: pods "dra-example-driver-kubeletplugin-b6c54aa289bd22ff" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: Caused by:
+    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]:     pods "dra-example-driver-kubeletplugin-b6c54aa289bd22ff" not found: NotFound
+    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:00.618921Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
+    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:00.763327Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:00.785542Z  INFO CreateContainer succeeded container=plugin container_id=7b7fd505c27bc55703a266f5423ebb70c1c8459b2f7e312b6e846365a2a2f0ae
+    Aug 16 03:20:00 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:00.969038Z  WARN projected volume: failed to fetch ConfigMap source configmap=kube-root-ca.crt error=Api(Status { status: Some(Failure), code: 404, message: "configmaps \"kube-root-ca.crt\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "kube-root-ca.crt", group: "", kind: "configmaps", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 16 03:20:01 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:01.146840Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-e71e50d5-4bb7-41be-b253-56e080a9625d.sock plugin_type=DRAPlugin
+    Aug 16 03:20:01 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:20:01.297279Z  INFO node status pushed
+    Aug 16 03:21:01 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:21:01.345641Z  INFO node status pushed
+    Aug 16 03:22:01 runnervmzvulz run-nodelet.sh[15431]: 2026-08-16T03:22:01.389556Z  INFO node status pushed
 
 ════════════════════════════════════════
-Results: 0 passed, 0 failed, 0 skipped
+Results: 0 passed, 1 failed, 0 skipped
+Failed:
+  - test_diag_pv_binder_state
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786849884...
+==> Cleaning up test namespace not-k8s-e2e-1786850463...
