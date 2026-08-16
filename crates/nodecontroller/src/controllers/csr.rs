@@ -80,6 +80,7 @@ use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use std::collections::HashMap;
 use std::time::Duration as StdDuration;
+use x509_parser::prelude::FromDer;
 
 const KUBELET_CLIENT_SIGNER: &str = "kubernetes.io/kube-apiserver-client-kubelet";
 const BOOTSTRAP_GROUP: &str = "system:bootstrappers";
