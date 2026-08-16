@@ -137,22 +137,24 @@ struct SigningCa {
 /// `Config::csr_signing_ca_candidates()` — the explicit env-var override
 /// alone if set, otherwise every well-known path this project's supported
 /// control planes might use) and loads the first pair that's actually
-/// present and parses. A missing file is expected for every candidate that
-/// isn't this deployment's real control plane, so it's logged at `debug`,
-/// not `warn`; only a candidate that exists but fails to *parse* is loud.
+/// present and parses. Every candidate's outcome is logged at `warn` (not
+/// just failures) — with today's single-entry candidate list a "missing"
+/// result is exactly the signal an operator needs to diagnose a
+/// misconfigured mount, and `debug`-level noise would be filtered out
+/// under this project's own `RUST_LOG=info` default, silently hiding it.
 fn load_signing_ca(cfg: &crate::config::Config) -> Option<SigningCa> {
     for (cert_path, key_path) in cfg.csr_signing_ca_candidates() {
         let cert_pem = match std::fs::read_to_string(&cert_path) {
             Ok(s) => s,
             Err(e) => {
-                tracing::debug!(path = %cert_path, error = ?e, "csr-signing-controller: candidate CA cert not present, trying the next one");
+                tracing::warn!(path = %cert_path, error = ?e, "csr-signing-controller: candidate CA cert not present, trying the next one");
                 continue;
             }
         };
         let key_pem = match std::fs::read_to_string(&key_path) {
             Ok(s) => s,
             Err(e) => {
-                tracing::debug!(path = %key_path, error = ?e, "csr-signing-controller: candidate CA key not present, trying the next one");
+                tracing::warn!(path = %key_path, error = ?e, "csr-signing-controller: candidate CA key not present, trying the next one");
                 continue;
             }
         };
@@ -243,10 +245,13 @@ async fn reconcile_csr(client: &Client, ca: &Option<SigningCa>, name: &str) {
         return;
     }
 
-    let Some(ca) = ca else { return };
     if !needs_signing(&conditions, has_certificate) {
         return;
     }
+    let Some(ca) = ca else {
+        tracing::warn!(csr = %name, "CertificateSigningRequest is Approved and needs signing, but no CA was loaded at startup — see this process's earlier startup logs for why");
+        return;
+    };
     let Ok(csr_pem) = String::from_utf8(csr.spec.request.0.clone()) else {
         tracing::warn!(csr = %name, "CSR request field is not valid UTF-8 PEM");
         return;
