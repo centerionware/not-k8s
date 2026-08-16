@@ -19,6 +19,7 @@ use futures::stream::BoxStream;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::batch::v1::{CronJob, Job};
+use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::api::core::v1::{Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, ResourceQuota, Service};
 use k8s_openapi::api::storage::v1::VolumeAttachment;
@@ -140,6 +141,11 @@ pub fn watch_persistent_volumes(client: &Client) -> BoxStream<'static, watcher::
 
 pub fn watch_volume_attachments(client: &Client) -> BoxStream<'static, watcher::Result<Event<VolumeAttachment>>> {
     let api: Api<VolumeAttachment> = Api::all(client.clone());
+    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+}
+
+pub fn watch_certificate_signing_requests(client: &Client) -> BoxStream<'static, watcher::Result<Event<CertificateSigningRequest>>> {
+    let api: Api<CertificateSigningRequest> = Api::all(client.clone());
     watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 

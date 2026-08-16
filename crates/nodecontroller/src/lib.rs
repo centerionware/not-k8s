@@ -41,9 +41,15 @@
 //! (`controllers/resource_claim.rs`) is implemented, pairing with
 //! nodelet's existing DRA consumer side in `runtime/cri/claims.rs`;
 //! `device-taint-eviction-controller` is scoped out (no infrastructure in
-//! this project's e2e suite to verify it against). See
+//! this project's e2e suite to verify it against). Group I
+//! (`controllers/csr.rs`: `certificatesigningrequest-{approving,signing,cleaner}-controller`)
+//! is implemented too — the one place in this crate needing the cluster
+//! CA's private key, not just its cert; see that file's own module doc
+//! for the config knobs and the degraded-but-not-crashed behavior when the
+//! key isn't available. `bootstrap-signer-controller`/`token-cleaner-controller`
+//! remain deferred (legacy kubeadm bootstrap-token flow). See
 //! `docs/CONTROLLER_MANAGER.md`'s "Delivery order" for what's next: Group
-//! I (CSR/PKI) is next.
+//! J (autoscaling/disruption) is next.
 //!
 //! Single leader-election lease (`kube-system/kube-controller-manager`,
 //! matching upstream's own name — see `config.rs`) covers the whole
@@ -110,6 +116,7 @@ pub async fn run() -> Result<()> {
             controllers::storage_protection::run(client.clone(), &cfg),
             controllers::root_ca_publisher::run(client.clone(), &cfg),
             controllers::resource_claim::run(client.clone(), &cfg),
+            controllers::csr::run(client.clone(), &cfg),
         )?;
         Ok(())
     })

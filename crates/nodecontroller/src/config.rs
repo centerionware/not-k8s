@@ -50,6 +50,22 @@ mod defaults {
     /// land in the same wheel slot. Matches the reasoning kubelet's own
     /// sync loop jitter uses.
     pub const JITTER_FRACTION: f64 = 0.05;
+
+    /// Well-known `(cert, key)` path pairs for a cluster CA, tried in order
+    /// when `NODECONTROLLER_CSR_SIGNING_CA_{CERT,KEY}_PATH` aren't set —
+    /// the one real external dependency `docs/CONTROLLER_MANAGER.md`'s
+    /// Group I section flags: `certificatesigningrequest-signing-controller`
+    /// needs the CA *key*, not just the cert every other controller already
+    /// gets via the ambient kubeconfig. Only k3s's own layout today (this
+    /// project's only supported control plane so far, confirmed as a live
+    /// path by the unmerged, profiling-only
+    /// `upstream-kube-apiserver-controller-manager` branch, which had to
+    /// source it from exactly this directory) — kept as a *list*, not a
+    /// single hardcoded default, since a future non-k3s control plane needs
+    /// a different path without this becoming a bigger refactor: add its
+    /// pair here.
+    pub const CSR_SIGNING_CA_CANDIDATES: &[(&str, &str)] =
+        &[("/var/lib/rancher/k3s/server/tls/server-ca.crt", "/var/lib/rancher/k3s/server/tls/server-ca.key")];
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +85,12 @@ pub struct Config {
     pub tick_period: Duration,
     pub cpu_budget_percent: f64,
     pub jitter_fraction: f64,
+
+    /// Explicit override for both the CA cert and key path — both `None`
+    /// (the default) means "search `defaults::CSR_SIGNING_CA_CANDIDATES`
+    /// instead," see `csr_signing_ca_candidates()`.
+    pub csr_signing_ca_cert_path: Option<String>,
+    pub csr_signing_ca_key_path: Option<String>,
 }
 
 impl Default for Config {
@@ -89,6 +111,8 @@ impl Default for Config {
             tick_period: Duration::from_millis(defaults::TICK_PERIOD_MILLIS),
             cpu_budget_percent: defaults::CPU_BUDGET_PERCENT,
             jitter_fraction: defaults::JITTER_FRACTION,
+            csr_signing_ca_cert_path: None,
+            csr_signing_ca_key_path: None,
         }
     }
 }
@@ -166,6 +190,8 @@ impl Config {
                 d.cpu_budget_percent,
             )?,
             jitter_fraction: parse_env("NODECONTROLLER_JITTER_FRACTION", d.jitter_fraction)?,
+            csr_signing_ca_cert_path: var("NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH"),
+            csr_signing_ca_key_path: var("NODECONTROLLER_CSR_SIGNING_CA_KEY_PATH"),
         };
 
         cfg.validate()?;
@@ -195,6 +221,13 @@ impl Config {
         if self.tick_period.is_zero() {
             bail!("NODECONTROLLER_TICK_PERIOD_MILLIS must be at least 1.");
         }
+        if self.csr_signing_ca_cert_path.is_some() != self.csr_signing_ca_key_path.is_some() {
+            bail!(
+                "NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH and NODECONTROLLER_CSR_SIGNING_CA_KEY_PATH \
+                 must be set together or not at all — setting only one would silently pair an \
+                 explicit override with a well-known-candidate fallback for the other."
+            );
+        }
         if self.leader_elect {
             if self.renew_deadline >= self.lease_duration {
                 bail!(
@@ -216,6 +249,17 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// `(cert path, key path)` pairs to try, in order, for the CSR-signing
+    /// CA — the explicit env-var override alone if set (validated in
+    /// `validate()` to be all-or-nothing), otherwise every well-known
+    /// candidate in `defaults::CSR_SIGNING_CA_CANDIDATES`.
+    pub fn csr_signing_ca_candidates(&self) -> Vec<(String, String)> {
+        if let (Some(cert), Some(key)) = (&self.csr_signing_ca_cert_path, &self.csr_signing_ca_key_path) {
+            return vec![(cert.clone(), key.clone())];
+        }
+        defaults::CSR_SIGNING_CA_CANDIDATES.iter().map(|(c, k)| (c.to_string(), k.to_string())).collect()
     }
 
     pub fn election(&self) -> node_leaderelection::ElectionConfig {

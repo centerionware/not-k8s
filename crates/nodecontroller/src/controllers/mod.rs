@@ -5,6 +5,7 @@
 
 pub mod attach_detach;
 pub mod cron_job;
+pub mod csr;
 pub mod daemon_set;
 pub mod deployment;
 pub mod endpoint_slice;

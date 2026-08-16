@@ -32,7 +32,12 @@ path = "src/lib.rs"
 # cluster CA it publishes into every namespace. `http` builds the raw
 # requests `resource_claim.rs` needs for `resource.k8s.io` (not
 # k8s-openapi-typed until its "v1_34" schema feature — see CLAUDE.md),
-# the same escape hatch nodelet's own `claims.rs` already uses.
+# the same escape hatch nodelet's own `claims.rs` already uses. `rcgen`
+# (already a nodelet dependency, for CSR *generation* on the bootstrap
+# client side) is reused here for CSR *signing* — `csr.rs`'s
+# certificatesigningrequest-signing-controller; the `x509-parser` feature
+# is what `CertificateParams::from_ca_cert_pem` (loading an existing CA
+# rather than generating a new one) needs.
 [dependencies]
 tokio = { workspace = true }
 kube = { workspace = true }
@@ -48,4 +53,5 @@ rand = "0.8"
 chrono = { workspace = true }
 base64 = "0.22"
 http = "1"
+rcgen = { version = "0.13", features = ["x509-parser"] }
 node-leaderelection = { path = "../node-leaderelection" }

@@ -512,17 +512,33 @@ are implemented and e2e-verified.
   real device-tainting workflow becomes something this project's e2e
   coverage actually needs.
 
-## I. CSR / cluster PKI — Tier 2
+## I. CSR / cluster PKI — Tier 2 — **implemented (approving, signing, cleaner)**
 
 - `certificatesigningrequest-signing-controller`,
-  `-approving-controller`, `-cleaner-controller`.
+  `-approving-controller`, `-cleaner-controller`
+  (`crates/nodecontroller/src/controllers/csr.rs`, **implemented**): the
+  approving+signing halves are what nodelet's own TLS bootstrap flow
+  (`crates/nodelet/src/bootstrap.rs`, active only when
+  `NODELET_BOOTSTRAP_KUBECONFIG` is set) waits on — without them a
+  bootstrapping node's CSR sits forever, since nodelet itself "never
+  self-approves; approval is entirely the apiserver's job."
 - The **one** group with a real external dependency this plan can't
-  design away: signing needs the cluster CA *key*
-  (`server-ca.key`), confirmed as a live operational requirement by the
-  (unmerged, profiling-only) `upstream-kube-apiserver-controller-manager`
-  branch, which had to source it from k3s's own TLS dir. Document as a
-  required permission/mount for this one controller in the eventual
-  service unit, not something the rest of `nodecontroller` needs.
+  design away: signing needs the cluster CA *key*, not just its cert.
+  Configurable via `NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH`/
+  `_KEY_PATH`; left unset, tries a list of well-known candidate paths
+  (today: k3s's own `server-ca.{crt,key}`, confirmed as a live
+  operational path by the unmerged, profiling-only
+  `upstream-kube-apiserver-controller-manager` branch) — a list, not a
+  single hardcoded default, since this project won't run on k3s forever.
+  Missing/unreadable CA files degrade signing only (approving/cleaning
+  keep working) rather than crashing the process.
+  Named simplifications, all in the file's own module doc: only the
+  `kubernetes.io/kube-apiserver-client-kubelet` signer is handled (the
+  only one this project's own stack ever requests); approval is a
+  `spec.groups` check for `system:bootstrappers` rather than a real
+  `SubjectAccessReview`; no `expirationSeconds` honoring (every cert gets
+  `rcgen`'s own default validity); the cleaner uses one flat 1-hour
+  terminal-age threshold rather than upstream's per-outcome windows.
 - `bootstrap-signer-controller`, `token-cleaner-controller` (**defer**):
   legacy kubeadm bootstrap-token flow, low value now that projected SA
   tokens are the default join mechanism.
