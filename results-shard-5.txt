@@ -1,276 +1,43 @@
-commit: ab7cc433815e6467a18ebd3c0136c2b51560f503
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31933349634
-timestamp (UTC): 2026-08-16T07:21:07Z
+commit: de32bb7940a889fa51296d5db1d1968f2241797d
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31934204764
+timestamp (UTC): 2026-08-16T07:42:01Z
 shard: 5/5
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786864864
+==> Test namespace: not-k8s-e2e-1786866051
 ==> 234 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 44 test(s) selected
-▶ test_diag6_rbac_bootstrap_root_cause
-=== DIAG6: full k3s journal since boot, grepped for RBAC/bootstrap-roles ===
-Aug 16 07:18:11 runnervmzvulz k3s[14742]: time="2026-08-16T07:18:11Z" level=info msg="Running kube-apiserver --advertise-port=6443 --allow-privileged=true --anonymous-auth=false --api-audiences=https://kubernetes.default.svc.cluster.local,k3s --authorization-mode=Node,RBAC --bind-address=127.0.0.1 --cert-dir=/var/lib/rancher/k3s/server/tls/temporary-certs --client-ca-file=/var/lib/rancher/k3s/server/tls/client-ca.crt --egress-selector-config-file=/var/lib/rancher/k3s/server/etc/egress-selector-config.yaml --enable-admission-plugins=NodeRestriction --enable-aggregator-routing=true --enable-bootstrap-token-auth=true --etcd-cafile=/var/lib/nodestore/pki/client/ca.crt --etcd-certfile=/var/lib/nodestore/pki/client/client.crt --etcd-keyfile=/var/lib/nodestore/pki/client/client.key --etcd-servers=https://127.0.0.1:2379 --feature-gates=ServiceAccountTokenPodNodeInfo=true --kubelet-certificate-authority=/var/lib/rancher/k3s/server/tls/server-ca.crt --kubelet-client-certificate=/var/lib/rancher/k3s/server/tls/client-kube-apiserver.crt --kubelet-client-key=/var/lib/rancher/k3s/server/tls/client-kube-apiserver.key --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname --profiling=false --proxy-client-cert-file=/var/lib/rancher/k3s/server/tls/client-auth-proxy.crt --proxy-client-key-file=/var/lib/rancher/k3s/server/tls/client-auth-proxy.key --requestheader-allowed-names=system:auth-proxy --requestheader-client-ca-file=/var/lib/rancher/k3s/server/tls/request-header-ca.crt --requestheader-extra-headers-prefix=X-Remote-Extra- --requestheader-group-headers=X-Remote-Group --requestheader-username-headers=X-Remote-User --secure-port=6444 --service-account-issuer=https://kubernetes.default.svc.cluster.local --service-account-key-file=/var/lib/rancher/k3s/server/tls/service.key --service-account-signing-key-file=/var/lib/rancher/k3s/server/tls/service.current.key --service-cluster-ip-range=10.43.0.0/16 --service-node-port-range=30000-32767 --storage-backend=etcd3 --tls-cert-file=/var/lib/rancher/k3s/server/tls/serving-kube-apiserver.crt --tls-cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305 --tls-private-key-file=/var/lib/rancher/k3s/server/tls/serving-kube-apiserver.key"
-Aug 16 07:18:11 runnervmzvulz k3s[14742]: I0816 07:18:11.605501   14742 instance.go:240] Using reconciler: lease
-Aug 16 07:18:11 runnervmzvulz k3s[14742]: I0816 07:18:11.856083   14742 handler.go:304] Adding GroupVersion rbac.authorization.k8s.io v1 to ResourceManager
-Aug 16 07:18:11 runnervmzvulz k3s[14742]: W0816 07:18:11.856099   14742 genericapiserver.go:798] Skipping API rbac.authorization.k8s.io/v1beta1 because it has no resources.
-Aug 16 07:18:11 runnervmzvulz k3s[14742]: W0816 07:18:11.856107   14742 genericapiserver.go:798] Skipping API rbac.authorization.k8s.io/v1alpha1 because it has no resources.
-Aug 16 07:18:13 runnervmzvulz k3s[14742]: time="2026-08-16T07:18:13Z" level=info msg="Polling for API server readiness: GET /readyz failed: an error on the server (\"[+]ping ok\\n[+]log ok\\n[+]etcd ok\\n[+]etcd-readiness ok\\n[+]informer-sync ok\\n[+]poststarthook/start-apiserver-admission-initializer ok\\n[+]poststarthook/generic-apiserver-start-informers ok\\n[+]poststarthook/priority-and-fairness-config-consumer ok\\n[+]poststarthook/priority-and-fairness-filter ok\\n[+]poststarthook/storage-object-count-tracker-hook ok\\n[+]poststarthook/start-apiextensions-informers ok\\n[+]poststarthook/start-apiextensions-controllers ok\\n[+]poststarthook/crd-informer-synced ok\\n[+]poststarthook/start-system-namespaces-controller ok\\n[+]poststarthook/peer-endpoint-reconciler-controller ok\\n[+]poststarthook/start-cluster-authentication-info-controller ok\\n[+]poststarthook/start-kube-apiserver-identity-lease-controller ok\\n[+]poststarthook/start-kube-apiserver-identity-lease-garbage-collector ok\\n[+]poststarthook/storage-readiness ok\\n[+]poststarthook/start-legacy-token-tracking-controller ok\\n[+]poststarthook/start-service-ip-repair-controllers ok\\n[-]poststarthook/rbac/bootstrap-roles failed: reason withheld\\n[+]poststarthook/scheduling/bootstrap-system-priority-classes ok\\n[+]poststarthook/priority-and-fairness-config-producer ok\\n[+]poststarthook/bootstrap-controller ok\\n[+]poststarthook/start-kubernetes-service-cidr-controller ok\\n[+]poststarthook/aggregator-reload-proxy-client-cert ok\\n[+]poststarthook/start-kube-aggregator-informers ok\\n[+]poststarthook/apiservice-status-local-available-controller ok\\n[+]poststarthook/apiservice-status-remote-available-controller ok\\n[+]poststarthook/apiservice-registration-controller ok\\n[+]poststarthook/apiservice-discovery-controller ok\\n[+]poststarthook/kube-apiserver-autoregistration ok\\n[+]autoregister-completion ok\\n[+]poststarthook/apiservice-openapi-controller ok\\n[+]poststarthook/apiservice-openapiv3-controller ok\\n[+]shutdown ok\\nreadyz check failed\") has prevented the request from succeeding"
-Aug 16 07:18:13 runnervmzvulz k3s[14742]: I0816 07:18:13.547733   14742 controller.go:667] quota admission added evaluator for: roles.rbac.authorization.k8s.io
-Aug 16 07:18:13 runnervmzvulz k3s[14742]: I0816 07:18:13.579854   14742 controller.go:667] quota admission added evaluator for: rolebindings.rbac.authorization.k8s.io
-Aug 16 07:18:18 runnervmzvulz k3s[14742]: time="2026-08-16T07:18:18Z" level=info msg="Starting rbac.authorization.k8s.io/v1, Kind=ClusterRoleBinding controller"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=info msg="Reconciling bootstrap data between datastore and disk"
-Aug 16 07:19:51 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:51Z" level=info msg="Running kube-apiserver --advertise-port=6443 --allow-privileged=true --anonymous-auth=false --api-audiences=https://kubernetes.default.svc.cluster.local,k3s --authorization-mode=Node,RBAC --bind-address=127.0.0.1 --cert-dir=/var/lib/rancher/k3s/server/tls/temporary-certs --client-ca-file=/var/lib/rancher/k3s/server/tls/client-ca.crt --egress-selector-config-file=/var/lib/rancher/k3s/server/etc/egress-selector-config.yaml --enable-admission-plugins=NodeRestriction --enable-aggregator-routing=true --enable-bootstrap-token-auth=true --etcd-cafile=/var/lib/nodestore/pki/client/ca.crt --etcd-certfile=/var/lib/nodestore/pki/client/client.crt --etcd-keyfile=/var/lib/nodestore/pki/client/client.key --etcd-servers=https://127.0.0.1:2379 --feature-gates=ServiceAccountTokenPodNodeInfo=true --kubelet-certificate-authority=/var/lib/nodelet/pki/server-ca.pem --kubelet-client-certificate=/var/lib/rancher/k3s/server/tls/client-kube-apiserver.crt --kubelet-client-key=/var/lib/rancher/k3s/server/tls/client-kube-apiserver.key --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname --profiling=false --proxy-client-cert-file=/var/lib/rancher/k3s/server/tls/client-auth-proxy.crt --proxy-client-key-file=/var/lib/rancher/k3s/server/tls/client-auth-proxy.key --requestheader-allowed-names=system:auth-proxy --requestheader-client-ca-file=/var/lib/rancher/k3s/server/tls/request-header-ca.crt --requestheader-extra-headers-prefix=X-Remote-Extra- --requestheader-group-headers=X-Remote-Group --requestheader-username-headers=X-Remote-User --secure-port=6444 --service-account-issuer=https://kubernetes.default.svc.cluster.local --service-account-key-file=/var/lib/rancher/k3s/server/tls/service.key --service-account-signing-key-file=/var/lib/rancher/k3s/server/tls/service.current.key --service-cluster-ip-range=10.43.0.0/16 --service-node-port-range=30000-32767 --storage-backend=etcd3 --tls-cert-file=/var/lib/rancher/k3s/server/tls/serving-kube-apiserver.crt --tls-cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305 --tls-private-key-file=/var/lib/rancher/k3s/server/tls/serving-kube-apiserver.key"
-Aug 16 07:19:51 runnervmzvulz k3s[17701]: I0816 07:19:51.073038   17701 instance.go:240] Using reconciler: lease
-Aug 16 07:19:51 runnervmzvulz k3s[17701]: I0816 07:19:51.370432   17701 handler.go:304] Adding GroupVersion rbac.authorization.k8s.io v1 to ResourceManager
-Aug 16 07:19:51 runnervmzvulz k3s[17701]: W0816 07:19:51.370446   17701 genericapiserver.go:798] Skipping API rbac.authorization.k8s.io/v1beta1 because it has no resources.
-Aug 16 07:19:51 runnervmzvulz k3s[17701]: W0816 07:19:51.370451   17701 genericapiserver.go:798] Skipping API rbac.authorization.k8s.io/v1alpha1 because it has no resources.
-Aug 16 07:19:53 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:53Z" level=info msg="Starting rbac.authorization.k8s.io/v1, Kind=ClusterRoleBinding controller"
-=== DIAG6: k3s journal around any 'failed' or 'error' near apiserver startup ===
-Aug 16 07:18:10 runnervmzvulz k3s[14742]: time="2026-08-16T07:18:10Z" level=warning msg="Webhooks and apiserver aggregation may not function properly without an agent; please set egress-selector-mode to 'cluster' or 'pod'"
-Aug 16 07:18:10 runnervmzvulz k3s[14742]: time="2026-08-16T07:18:10Z" level=warning msg="dynamiclistener [::]:6443: no cached certificate available for preload - deferring certificate load until storage initialization or first client request"
-Aug 16 07:18:12 runnervmzvulz k3s[14742]: time="2026-08-16T07:18:12Z" level=error msg="Error while syncing ConfigMap" configmap=kube-system/kube-apiserver-legacy-service-account-token-tracking error="namespaces \"kube-system\" not found" logger=k3s/UnhandledError
-Aug 16 07:19:30 runnervmzvulz k3s[14742]: time="2026-08-16T07:19:30Z" level=error msg="No InternalIP addresses found for node runnervmzvulz"
-Aug 16 07:19:30 runnervmzvulz k3s[14742]: time="2026-08-16T07:19:30Z" level=error msg="No InternalIP addresses found for node runnervmzvulz"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=warning msg="Webhooks and apiserver aggregation may not function properly without an agent; please set egress-selector-mode to 'cluster' or 'pod'"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32876: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32880: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32922: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32902: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32934: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32908: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32896: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32944: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32966: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33010: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33042: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33026: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33070: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33134: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33056: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32996: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33194: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33124: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33028: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33154: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33144: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32986: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33084: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33170: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33182: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33088: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32978: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33164: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:32950: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33162: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33104: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33114: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33148: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33198: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33200: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33216: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33424: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33426: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33438: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33460: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33450: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33458: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33472: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33482: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33478: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33500: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33496: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33504: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33232: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33256: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33246: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33270: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33278: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33290: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33306: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33316: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33330: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33334: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33344: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33512: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33358: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33370: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33520: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33396: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33372: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33382: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33402: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33414: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33622: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33616: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33650: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33646: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33630: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33522: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33526: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33528: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33532: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33540: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33556: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33574: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33560: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33576: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33586: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33600: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33664: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33672: starting"
-Aug 16 07:19:50 runnervmzvulz k3s[17701]: time="2026-08-16T07:19:50Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:33676: starting"
-=== DIAG6: coredns ClusterRole/ClusterRoleBinding presence ===
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  annotations:
-    objectset.rio.cattle.io/applied: H4sIAAAAAAAA/4xSzY7TMBB+FTRnNzRtdxsicUAcOHDjwAX1MLanWxPXE81MslpWfXfkUBBCWrqnaPL5+xv7GXBMX0k0cYEexGNocLITS/qBlrg0Q6dN4rdzCw6GVCL08DFPaiRfOBM4OJNhREPonwFLYVt4Wkf23ymYkjWSuAlolqmKpaoC7kWcHwvJ6mEeoIdhq38hc+vefE4lvv8QI5ebEgXPBD0EFopFX3VcRwyVM0yeVvqkRme4OMjoKS+lKiCFjJa9eGZTExzHVB6uG1xFOuKU7X+GJ9QT9OADbbrt5l3Xte1+t8X1trtHf9euj5vj/Z6O+91mtw53+xrhWuZXpv53p4sDmTIp9N+Wy/wkPI11Ajg4EFKeJCwwUIkjp7LkUpI51f8ORo7186e8VuJM4hdSTmrg4BEtnOBwcf+YxKSBZ5Kn60N52TSnG9KHy88AAAD//+vz0jGOAgAA
-    objectset.rio.cattle.io/id: ""
-    objectset.rio.cattle.io/owner-gvk: k3s.cattle.io/v1, Kind=Addon
-    objectset.rio.cattle.io/owner-name: coredns
-    objectset.rio.cattle.io/owner-namespace: kube-system
-  creationTimestamp: "2026-08-16T07:18:17Z"
-  labels:
-    kubernetes.io/bootstrapping: rbac-defaults
-    objectset.rio.cattle.io/hash: bce283298811743a0386ab510f2f67ef74240c57
-  name: system:coredns
-  resourceVersion: "232"
-  uid: 5a6203d2-8b97-4842-b23d-3361fb447c1a
-rules:
-- apiGroups:
-  - ""
-  resources:
-  - endpoints
-  - services
-  - pods
-  - namespaces
-  verbs:
-  - list
-  - watch
-- apiGroups:
-  - discovery.k8s.io
-  resources:
-  - endpointslices
-  verbs:
-  - list
-  - watch
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  annotations:
-    objectset.rio.cattle.io/applied: H4sIAAAAAAAA/4ySQe/TMAzFvwryuStru/9aInEYHDhwGxIXxMFJ3C20i6vEKYKp3x21YxpI2+Bo2e/J/j2fAQf3mUJ07EFB0GhyTHLk4H6iOPZ518Tc8euxgAw65y0oeN+nKBT23NM7563zB8jgRIIWBUGdAb1nWeRxLll/IyORJA+Oc4MiPc2ebjaD7GGfv3sKq8PYgYKuin90xiJ79dF5+3ZnLft/Wng8ESgwHMj6+F/jcUAza7qkaRV/RKETZHf5JE3Bk9CCCZNwGizKrJWQCKYMetTULyT+HtbMEiXgMMwIL/RXllpMvTzb8ojxCAq0obKpyjdNUxT1psJ11WxRvxTrtmy3NbX1ptyszUs9r/CbwOUQdQUxZRC4pz21S2qD+xA4Dc/+4O4TwBP/mC5HgPpyvko/URidoZ0xnLzc1Ld8HiUwfZ1+BQAA//+fo6ANsgIAAA
-    objectset.rio.cattle.io/id: ""
-    objectset.rio.cattle.io/owner-gvk: k3s.cattle.io/v1, Kind=Addon
-    objectset.rio.cattle.io/owner-name: coredns
-    objectset.rio.cattle.io/owner-namespace: kube-system
-    rbac.authorization.kubernetes.io/autoupdate: "true"
-  creationTimestamp: "2026-08-16T07:18:17Z"
-  labels:
-    kubernetes.io/bootstrapping: rbac-defaults
-    objectset.rio.cattle.io/hash: bce283298811743a0386ab510f2f67ef74240c57
-  name: system:coredns
-  resourceVersion: "233"
-  uid: e4b3cd82-185f-4cba-af4e-0147786e83c0
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: system:coredns
-subjects:
-- kind: ServiceAccount
-  name: coredns
-  namespace: kube-system
-=== DIAG6: coredns SA can-i list namespaces (real authorization check) ===
-Warning: resource 'namespaces' is not namespace scoped
-
-yes
-yes
-=== DIAG6: coredns pod current status ===
-NAME                             READY   STATUS    RESTARTS   AGE   IP          NODE            NOMINATED NODE   READINESS GATES
-coredns-e882b0b14ed1a949-wwtw9   1/1     Running   0          88s   10.42.0.2   runnervmzvulz   <none>           <none>
-maxprocs: Leaving GOMAXPROCS=4: CPU quota undefined
-[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.override
-[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.server
-.:53
-[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.override
-[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.server
-[INFO] plugin/reload: Running configuration SHA512 = a55b0a21291f511a65165ac72ac3ccd4573673e954640f51eb0abeb93bbdb2f740f0894d0156975f16f7b15f87435d85d8b4f6d2b8bd58e4294421404cb2fd80
-CoreDNS-1.14.6
-linux/amd64, go1.26.5, 424d125
-[ERROR] plugin/kubernetes: Failed to watch: apiserver not ready - error from a previous attempt: read tcp 10.42.0.2:33930->10.43.0.1:443: read: connection reset by peer
-[ERROR] plugin/kubernetes: Failed to watch: apiserver not ready - error from a previous attempt: read tcp 10.42.0.2:33922->10.43.0.1:443: read: connection reset by peer
-[ERROR] plugin/kubernetes: Failed to watch: apiserver not ready - error from a previous attempt: read tcp 10.42.0.2:33946->10.43.0.1:443: read: connection reset by peer
-[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.override
-[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.server
-[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.override
-[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.server
-[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.override
-[WARNING] No files matching import glob pattern: /etc/coredns/custom/*.server
-=== DIAG6: readyz verbose (the real per-check breakdown, not the scrubbed summary) ===
-[+]ping ok
-[+]log ok
-[+]etcd ok
-[+]etcd-readiness ok
-[+]informer-sync ok
-[+]poststarthook/start-apiserver-admission-initializer ok
-[+]poststarthook/generic-apiserver-start-informers ok
-[+]poststarthook/priority-and-fairness-config-consumer ok
-[+]poststarthook/priority-and-fairness-filter ok
-[+]poststarthook/storage-object-count-tracker-hook ok
-[+]poststarthook/start-apiextensions-informers ok
-[+]poststarthook/start-apiextensions-controllers ok
-[+]poststarthook/crd-informer-synced ok
-[+]poststarthook/start-system-namespaces-controller ok
-[+]poststarthook/peer-endpoint-reconciler-controller ok
-[+]poststarthook/start-cluster-authentication-info-controller ok
-[+]poststarthook/start-kube-apiserver-identity-lease-controller ok
-[+]poststarthook/start-kube-apiserver-identity-lease-garbage-collector ok
-[+]poststarthook/storage-readiness ok
-[+]poststarthook/start-legacy-token-tracking-controller ok
-[+]poststarthook/start-service-ip-repair-controllers ok
-[+]poststarthook/rbac/bootstrap-roles ok
-[+]poststarthook/scheduling/bootstrap-system-priority-classes ok
-[+]poststarthook/priority-and-fairness-config-producer ok
-[+]poststarthook/bootstrap-controller ok
-[+]poststarthook/start-kubernetes-service-cidr-controller ok
-[+]poststarthook/aggregator-reload-proxy-client-cert ok
-[+]poststarthook/start-kube-aggregator-informers ok
-[+]poststarthook/apiservice-status-local-available-controller ok
-[+]poststarthook/apiservice-status-remote-available-controller ok
-[+]poststarthook/apiservice-registration-controller ok
-[+]poststarthook/apiservice-discovery-controller ok
-[+]poststarthook/kube-apiserver-autoregistration ok
-[+]autoregister-completion ok
-[+]poststarthook/apiservice-openapi-controller ok
-[+]poststarthook/apiservice-openapiv3-controller ok
-[+]shutdown ok
-readyz check passed
-=== DIAG6: k3s startup flags actually used ===
-CMD
-/usr/local/bin/k3s server
-==> FATAL: diag6 dump above
-  ✘ FAIL (1s, exit 1)
+▶ test_a_long_lived_watch_survives_a_service_churn_burst
+=== watcher pod status ===
+NAME               READY   STATUS    RESTARTS   AGE   IP          NODE            NOMINATED NODE   READINESS GATES
+debounce-watcher   1/1     Running   0          33s   10.42.0.4   runnervmzvulz   <none>           <none>
+watch.out bytes=0 curl_processes_still_running=0
+==> FATAL: assertion failed: command failed: test 0 -gt 0
+  ✘ FAIL (66s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 16 07:19:51 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:51.019589Z ERROR failed with status 503 Service Unavailable
-    Aug 16 07:19:51 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:51.062683Z ERROR failed with status 503 Service Unavailable
-    Aug 16 07:19:51 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:51.080780Z ERROR failed with status 503 Service Unavailable
-    Aug 16 07:19:51 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:51.124297Z ERROR failed with status 503 Service Unavailable
-    Aug 16 07:19:51 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:51.169072Z ERROR failed with status 503 Service Unavailable
-    Aug 16 07:19:51 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:51.172029Z ERROR failed with status 503 Service Unavailable
-    Aug 16 07:19:51 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:51.180529Z ERROR failed with status 503 Service Unavailable
-    Aug 16 07:19:51 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:51.215158Z ERROR failed with status 503 Service Unavailable
-    Aug 16 07:19:51 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:51.225181Z ERROR failed with status 503 Service Unavailable
-    Aug 16 07:19:51 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:51.267778Z ERROR failed with status 503 Service Unavailable
-    Aug 16 07:19:51 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:51.312730Z ERROR failed with status 503 Service Unavailable
-    Aug 16 07:19:52 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:52.001938Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 391 (423)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 07:19:52 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:52.004472Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 416 (423)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 07:19:52 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:19:52.041963Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 363 (423)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 16 07:20:31 runnervmzvulz run-nodelet.sh[16476]: 2026-08-16T07:20:31.840804Z  INFO node status pushed
+    Aug 16 07:39:37 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:39:37.939009Z ERROR failed with status 503 Service Unavailable
+    Aug 16 07:39:38 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:39:38.068876Z ERROR failed with status 503 Service Unavailable
+    Aug 16 07:39:38 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:39:38.071893Z ERROR failed with status 503 Service Unavailable
+    Aug 16 07:39:38 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:39:38.074832Z ERROR failed with status 503 Service Unavailable
+    Aug 16 07:39:38 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:39:38.237786Z ERROR failed with status 503 Service Unavailable
+    Aug 16 07:39:38 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:39:38.240555Z ERROR failed with status 503 Service Unavailable
+    Aug 16 07:39:38 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:39:38.242518Z ERROR failed with status 503 Service Unavailable
+    Aug 16 07:39:38 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:39:38.649696Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 364 (421)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 16 07:39:38 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:39:38.650305Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 385 (421)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 16 07:39:38 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:39:38.651501Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 419 (421)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 16 07:40:20 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:40:20.344803Z  INFO node status pushed
+    Aug 16 07:40:54 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:40:54.371831Z  INFO CreateContainer succeeded container=watcher container_id=2596e157bfbc9d161f167901f757050386a81024123d37f85fc480603820ec64
+    Aug 16 07:41:20 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:41:20.383842Z  INFO node status pushed
+    Aug 16 07:41:55 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:41:55.869155Z  INFO torn down pod=not-k8s-e2e-1786866051/debounce-watcher
+    Aug 16 07:41:55 runnervmzvulz run-nodelet.sh[16275]: 2026-08-16T07:41:55.919684Z  INFO torn down pod=not-k8s-e2e-1786866051/debounce-watcher
+▶ test_clusterip_service_routes_to_its_backend_pod
+  ✔ PASS (2s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
+Results: 1 passed, 1 failed, 0 skipped
 Failed:
-  - test_diag6_rbac_bootstrap_root_cause
+  - test_a_long_lived_watch_survives_a_service_churn_burst
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786864864...
+==> Cleaning up test namespace not-k8s-e2e-1786866051...
