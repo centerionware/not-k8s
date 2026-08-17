@@ -12,10 +12,11 @@
 //! address family at a time rather than baking in an IPv4/IPv6 pair.
 
 use anyhow::{bail, Context, Result};
+use crate::workqueue::KeyedWorkQueue;
 use k8s_openapi::api::core::v1::Node;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client, ResourceExt};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Parses `"a.b.c.d"` into its 32-bit representation. No external crate for
 /// this — the parse is small, exact, and this crate otherwise has no need
@@ -144,15 +145,30 @@ impl CidrAllocator {
     }
 }
 
-async fn reconcile_node(api: &Api<Node>, allocator: &mut CidrAllocator, node: &Node) {
+async fn reconcile_node(
+    api: &Api<Node>,
+    allocator: &mut CidrAllocator,
+    pending: &mut HashMap<String, String>,
+    node: &Node,
+) -> Option<String> {
     let name = node.name_any();
-    let already_has_one = node.spec.as_ref().and_then(|s| s.pod_cidr.as_ref()).is_some();
-    if already_has_one {
-        return;
+    if let Some(existing) = node.spec.as_ref().and_then(|s| s.pod_cidr.as_ref()) {
+        if let Some(in_flight) = pending.remove(&name) {
+            if in_flight != *existing {
+                let _ = allocator.release(&in_flight);
+            }
+        }
+        return None;
     }
-    let Some(cidr) = allocator.allocate() else {
-        tracing::error!(node = %name, "cluster CIDR exhausted — no podCIDR block left to allocate");
-        return;
+    let cidr = if let Some(in_flight) = pending.get(&name) {
+        in_flight.clone()
+    } else {
+        let Some(cidr) = allocator.allocate() else {
+            tracing::error!(node = %name, "cluster CIDR exhausted — no podCIDR block left to allocate");
+            return None;
+        };
+        pending.insert(name.clone(), cidr.clone());
+        cidr
     };
     tracing::info!(node = %name, pod_cidr = %cidr, "allocating podCIDR");
     let patch = serde_json::json!({ "spec": { "podCIDR": cidr, "podCIDRs": [cidr] } });
@@ -164,33 +180,70 @@ async fn reconcile_node(api: &Api<Node>, allocator: &mut CidrAllocator, node: &N
         // Give the block back rather than leaking it — the next Apply event
         // for this same Node (or the next relist) will retry the patch and
         // needs a free block to try again with.
-        let _ = allocator.release(&cidr);
+        if pending.remove(&name).is_some() {
+            let _ = allocator.release(&cidr);
+        }
+        return None;
     }
+    pending.remove(&name);
+    Some(cidr)
 }
 
 pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
     let api: Api<Node> = Api::all(client.clone());
     let mut allocator = CidrAllocator::new(&cfg.cluster_cidr, cfg.node_cidr_mask_size)?;
+    let mut nodes: HashMap<String, Node> = HashMap::new();
+    let mut pending: HashMap<String, String> = HashMap::new();
+    let queue = KeyedWorkQueue::default();
 
     let mut stream = crate::watch::watch_nodes(&client);
     use futures::StreamExt;
-    while let Some(ev) = stream.next().await {
-        match ev {
-            Ok(Event::Apply(node)) | Ok(Event::InitApply(node)) => {
-                if let Some(cidr) = node.spec.as_ref().and_then(|s| s.pod_cidr.as_ref()) {
-                    if let Err(e) = allocator.mark_allocated(cidr) {
-                        tracing::warn!(node = %node.name_any(), pod_cidr = %cidr, error = ?e, "couldn't parse an existing Node's podCIDR while initializing the CIDR allocator");
+    loop {
+        tokio::select! {
+            ev = stream.next() => {
+                let Some(ev) = ev else { break };
+                match ev {
+                    Ok(Event::Apply(node)) | Ok(Event::InitApply(node)) => {
+                        let name = node.name_any();
+                        if let Some(cidr) = node.spec.as_ref().and_then(|s| s.pod_cidr.as_ref()) {
+                            if let Err(e) = allocator.mark_allocated(cidr) {
+                                tracing::warn!(node = %name, pod_cidr = %cidr, error = ?e, "couldn't parse an existing Node's podCIDR while initializing the CIDR allocator");
+                            }
+                        }
+                        // A status/taint update can deliver an older full
+                        // Node object after our podCIDR patch has succeeded.
+                        // Do not let that stale object erase the local cache
+                        // and allocate a second block for the same Node.
+                        let incoming_has_cidr = node.spec.as_ref().and_then(|s| s.pod_cidr.as_ref()).is_some();
+                        let cached_has_cidr = nodes.get(&name).and_then(|n| n.spec.as_ref()).and_then(|s| s.pod_cidr.as_ref()).is_some();
+                        if incoming_has_cidr || !cached_has_cidr {
+                            nodes.insert(name.clone(), node);
+                            queue.enqueue(name);
+                        }
+                    }
+                    Ok(Event::Delete(node)) => {
+                        let name = node.name_any();
+                        if let Some(cidr) = node.spec.as_ref().and_then(|s| s.pod_cidr.as_ref()) {
+                            let _ = allocator.release(cidr);
+                        }
+                        if let Some(in_flight) = pending.remove(&name) {
+                            let _ = allocator.release(&in_flight);
+                        }
+                        nodes.remove(&name);
+                    }
+                    Ok(Event::Init | Event::InitDone) => {}
+                    Err(e) => tracing::warn!(error = ?e, "node watch error in node-ipam-controller"),
+                }
+            }
+            key = queue.pop() => {
+                let Some(node) = nodes.get(&key).cloned() else { continue };
+                if let Some(cidr) = reconcile_node(&api, &mut allocator, &mut pending, &node).await {
+                    if let Some(cached) = nodes.get_mut(&key) {
+                        cached.spec.get_or_insert_with(Default::default).pod_cidr = Some(cidr.clone());
+                        cached.spec.get_or_insert_with(Default::default).pod_cidrs = Some(vec![cidr]);
                     }
                 }
-                reconcile_node(&api, &mut allocator, &node).await;
             }
-            Ok(Event::Delete(node)) => {
-                if let Some(cidr) = node.spec.as_ref().and_then(|s| s.pod_cidr.clone()) {
-                    let _ = allocator.release(&cidr);
-                }
-            }
-            Ok(Event::Init | Event::InitDone) => {}
-            Err(e) => tracing::warn!(error = ?e, "node watch error in node-ipam-controller"),
         }
     }
     Ok(())
