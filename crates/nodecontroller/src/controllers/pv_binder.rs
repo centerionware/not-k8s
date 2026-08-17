@@ -168,6 +168,37 @@ fn provisioner_for_claim<'a>(
     (!class.provisioner.is_empty()).then_some(class.provisioner.as_str())
 }
 
+/// A static PV under a WaitForFirstConsumer StorageClass must remain
+/// available to the scheduler until a scheduling cycle has made the choice.
+/// The scheduler's static PreBind path expresses that choice by writing the
+/// PV's claimRef; that pre-bound form is allowed through even though the PVC
+/// does not carry the selected-node annotation used by dynamic provisioning.
+fn defer_unclaimed_wait_for_first_consumer_pv(
+    pvc: &PersistentVolumeClaim,
+    pv: &PersistentVolume,
+    storage_classes: &HashMap<String, StorageClass>,
+) -> bool {
+    if !is_unclaimed(pv) {
+        return false;
+    }
+    let Some(class_name) = pvc
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.storage_class_name.as_deref())
+    else {
+        return false;
+    };
+    let Some(class) = storage_classes.get(class_name) else {
+        return false;
+    };
+    class.volume_binding_mode.as_deref() == Some("WaitForFirstConsumer")
+        && !pvc.metadata.annotations.as_ref().is_some_and(|annotations| {
+            annotations
+                .get(SELECTED_NODE_ANNOTATION)
+                .is_some_and(|node| !node.is_empty())
+        })
+}
+
 async fn request_dynamic_provisioning(
     pvc_api: &Api<PersistentVolumeClaim>,
     pvc: &PersistentVolumeClaim,
@@ -222,6 +253,9 @@ async fn reconcile_claim(
         }
         return;
     };
+    if defer_unclaimed_wait_for_first_consumer_pv(pvc, &pv, storage_classes) {
+        return;
+    }
     let pv_name = pv.name_any();
 
     if is_unclaimed(&pv) {
@@ -470,6 +504,25 @@ mod tests {
             provisioner_for_claim(&claim, &classes),
             Some("hostpath.csi.k8s.io")
         );
+    }
+
+    #[test]
+    fn static_wait_for_first_consumer_binding_waits_until_the_scheduler_prebinds() {
+        let claim = claim_for_class("delayed");
+        let pv = pv("pv-a", "delayed", &["ReadWriteOnce"], None);
+        let classes = HashMap::from([(
+            "delayed".to_string(),
+            storage_class("delayed", "WaitForFirstConsumer"),
+        )]);
+        assert!(defer_unclaimed_wait_for_first_consumer_pv(&claim, &pv, &classes));
+
+        let mut prebound = pv;
+        prebound.spec.as_mut().unwrap().claim_ref = Some(ObjectReference {
+            namespace: Some("".to_string()),
+            name: Some(claim.name_any()),
+            ..Default::default()
+        });
+        assert!(!defer_unclaimed_wait_for_first_consumer_pv(&claim, &prebound, &classes));
     }
 
     #[test]
