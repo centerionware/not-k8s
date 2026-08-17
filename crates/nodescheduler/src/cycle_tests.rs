@@ -333,7 +333,7 @@ impl crate::framework::Plugin for ErrorOnOneNode {
 impl crate::framework::FilterPlugin for ErrorOnOneNode {
     fn filter(&self, _state: &CycleState, _pod: &PodInfo, node: &crate::cache::NodeInfo) -> Status {
         if node.name == "broken" {
-            Status::error(self.name(), "plugin state is invalid")
+            Status::error("ErrorOnOneNode", "plugin state is invalid")
         } else {
             Status::success()
         }

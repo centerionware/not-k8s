@@ -89,7 +89,10 @@ impl ScorePlugin for NodeResourcesBalancedAllocation {
                 // wildly imbalanced for a resource nobody uses.
                 continue;
             }
-            let used = node.non_zero_requested.get(name) + requests.get(name);
+            let used = node
+                .non_zero_requested
+                .get(name)
+                .saturating_add(requests.get(name));
             fractions.push((used as f64 / allocatable as f64).min(1.0));
         }
 

@@ -38,6 +38,7 @@ pub enum EventResource {
     AssignedPod,
     UnschedulablePod,
     Node,
+    Namespace,
     PersistentVolume,
     PersistentVolumeClaim,
     CsiNode,

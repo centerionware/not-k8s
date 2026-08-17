@@ -96,7 +96,7 @@
 //! this plugin because nothing else needs it.
 
 use crate::cache::{
-    NodeInfo, PodClaimRef, PodInfo, RawDeviceClass, RawDeviceRequestAllocationResult,
+    NodeInfo, PodInfo, RawDeviceClass, RawDeviceRequestAllocationResult,
     RawResourceClaim, Snapshot,
 };
 use crate::events::{ActionType, ClusterEvent, EventResource};
@@ -121,15 +121,13 @@ fn device_id(r: &RawDeviceRequestAllocationResult) -> DeviceId {
 
 /// One claim's resolution, computed once in `PreFilter`.
 enum ClaimPlan {
-    /// Already allocated. `needs_reservation` is `false` when this pod is
-    /// already listed in `reservedFor` (nothing to write in Reserve/PreBind)
-    /// and `true` when it still needs adding. Either way `node_selector` —
+    /// Already allocated. `node_selector` —
     /// the *existing* allocation's own topology constraint, if any — still
     /// has to be honoured by Filter and (if every node fails it) is what
     /// `PostFilter` can free: an already-reserved-for-this-pod claim on an
     /// unreachable topology is exactly as stuck as one that still needs the
     /// reservation write, so both must carry it, not just the latter.
-    Reserved { claim_key: String, needs_reservation: bool, node_selector: Option<Box<NodeSelector>> },
+    Reserved { claim_key: String, node_selector: Option<Box<NodeSelector>> },
     /// Unallocated. `by_node` is only ever `Some` for a node that can
     /// satisfy every request in the claim.
     Allocate { claim_key: String, by_node: HashMap<String, Vec<RawDeviceRequestAllocationResult>> },
@@ -188,17 +186,25 @@ impl Plugin for DynamicResources {
 fn events_impl() -> Vec<ClusterEventWithHint> {
     vec![
         ClusterEventWithHint::always(ClusterEvent::new(
+            EventResource::Node,
+            ActionType::ADD | ActionType::UPDATE_NODE_LABEL,
+        )),
+        ClusterEventWithHint::always(ClusterEvent::new(
             EventResource::ResourceClaim,
             ActionType::ADD | ActionType::UPDATE,
         )),
         ClusterEventWithHint::always(ClusterEvent::new(
             EventResource::ResourceSlice,
-            ActionType::ADD | ActionType::UPDATE | ActionType::DELETE,
+            ActionType::ADD | ActionType::UPDATE,
         )),
-        ClusterEventWithHint::always(ClusterEvent::new(EventResource::DeviceClass, ActionType::ADD)),
-        // A claim reservation freeing up (the pod that held it is gone) is
-        // the ordinary way a device shortage resolves.
-        ClusterEventWithHint::always(ClusterEvent::new(EventResource::AssignedPod, ActionType::DELETE)),
+        ClusterEventWithHint::always(ClusterEvent::new(
+            EventResource::DeviceClass,
+            ActionType::ADD | ActionType::UPDATE,
+        )),
+        ClusterEventWithHint::always(ClusterEvent::new(
+            EventResource::UnschedulablePod,
+            ActionType::UPDATE_POD_GENERATED_RESOURCE_CLAIM,
+        )),
     ]
 }
 
@@ -518,51 +524,88 @@ fn constraint_allows(
     true
 }
 
-/// Try to satisfy every request in a claim against one node's candidate
-/// devices, given the identities already spoken for. `None` means this node
-/// cannot satisfy the claim at all. This is an exhaustive, early-exit search:
-/// the first complete solution wins, matching upstream's allocator.
-fn allocate_on_node(
-    requests: &[crate::cache::dra::RawDeviceRequest],
-    constraints: &[crate::cache::dra::RawDeviceConstraint],
+/// One unallocated claim prepared once before walking the nodes.
+struct ClaimAllocationInput {
+    requests: Vec<crate::cache::dra::RawDeviceRequest>,
+    constraints: Vec<crate::cache::dra::RawDeviceConstraint>,
+    compiled: CompiledSelectors,
+}
+
+/// Allocate all of a pod's still-unallocated claims together. Upstream gives
+/// the structured allocator the complete claim slice, not one claim at a
+/// time: device exclusivity and backtracking therefore cross claim
+/// boundaries. Allocating each claim independently can hand two claims the
+/// same device, while greedily committing claim A can also hide a valid
+/// solution in which A takes its second choice and claim B takes its only
+/// choice.
+fn allocate_claims_on_node(
+    claims: &[ClaimAllocationInput],
     device_classes: &HashMap<&str, &RawDeviceClass>,
     candidates: &[Candidate],
     excluded: &HashSet<DeviceId>,
-    compiled: &CompiledSelectors,
-) -> Option<Vec<RawDeviceRequestAllocationResult>> {
-    let constraint_states: Vec<ConstraintState> =
-        constraints.iter().map(|c| ConstraintState { constraint: c.clone(), value: None }).collect();
-
+) -> Option<Vec<Vec<RawDeviceRequestAllocationResult>>> {
+    if claims.is_empty() {
+        return Some(Vec::new());
+    }
     allocate_request(
         0,
-        requests,
+        0,
+        claims,
         device_classes,
         candidates,
         excluded,
-        compiled,
         HashSet::new(),
-        constraint_states,
+        constraint_states(&claims[0].constraints),
+        Vec::new(),
         Vec::new(),
     )
 }
 
+fn constraint_states(
+    constraints: &[crate::cache::dra::RawDeviceConstraint],
+) -> Vec<ConstraintState> {
+    constraints
+        .iter()
+        .map(|constraint| ConstraintState { constraint: constraint.clone(), value: None })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn allocate_request(
+    claim_index: usize,
     request_index: usize,
-    requests: &[crate::cache::dra::RawDeviceRequest],
+    claims: &[ClaimAllocationInput],
     device_classes: &HashMap<&str, &RawDeviceClass>,
     candidates: &[Candidate],
     excluded: &HashSet<DeviceId>,
-    compiled: &CompiledSelectors,
     picked: HashSet<DeviceId>,
     constraint_states: Vec<ConstraintState>,
     out: Vec<RawDeviceRequestAllocationResult>,
-) -> Option<Vec<RawDeviceRequestAllocationResult>> {
-    if request_index == requests.len() {
-        return Some(out);
+    completed: Vec<Vec<RawDeviceRequestAllocationResult>>,
+) -> Option<Vec<Vec<RawDeviceRequestAllocationResult>>> {
+    let claim = &claims[claim_index];
+    if request_index == claim.requests.len() {
+        let mut completed = completed;
+        completed.push(out);
+        let next_claim = claim_index + 1;
+        if next_claim == claims.len() {
+            return Some(completed);
+        }
+        return allocate_request(
+            next_claim,
+            0,
+            claims,
+            device_classes,
+            candidates,
+            excluded,
+            picked,
+            constraint_states(&claims[next_claim].constraints),
+            Vec::new(),
+            completed,
+        );
     }
 
-    let alternatives = effective_requests(&requests[request_index])?;
+    let alternatives = effective_requests(&claim.requests[request_index])?;
     for eff in &alternatives {
         let Some(class) = device_classes.get(eff.device_class_name.as_str()) else { continue };
         let mut selectors = eff.selectors.clone();
@@ -574,7 +617,7 @@ fn allocate_request(
             // doing so would make a cross-request constraint easier.
             let all: Vec<&Candidate> = candidates
                 .iter()
-                .filter(|c| device_matches(&selectors, &c.driver, &c.basic, compiled))
+                .filter(|c| device_matches(&selectors, &c.driver, &c.basic, &claim.compiled))
                 .collect();
             if all.is_empty() {
                 continue;
@@ -604,15 +647,16 @@ fn allocate_request(
             }
             if valid {
                 if let Some(solution) = allocate_request(
+                    claim_index,
                     request_index + 1,
-                    requests,
+                    claims,
                     device_classes,
                     candidates,
                     excluded,
-                    compiled,
                     next_picked,
                     next_states,
                     next_out,
+                    completed.clone(),
                 ) {
                     return Some(solution);
                 }
@@ -621,19 +665,20 @@ fn allocate_request(
         }
 
         if let Some(solution) = allocate_exact(
+            claim_index,
             request_index,
             eff,
             &selectors,
             0,
             eff.count,
-            requests,
+            claims,
             device_classes,
             candidates,
             excluded,
-            compiled,
             picked.clone(),
             constraint_states.clone(),
             out.clone(),
+            completed.clone(),
         ) {
             return Some(solution);
         }
@@ -643,40 +688,43 @@ fn allocate_request(
 
 #[allow(clippy::too_many_arguments)]
 fn allocate_exact(
+    claim_index: usize,
     request_index: usize,
     eff: &EffectiveRequest,
     selectors: &[crate::cache::dra::RawDeviceSelector],
     candidate_start: usize,
     remaining: usize,
-    requests: &[crate::cache::dra::RawDeviceRequest],
+    claims: &[ClaimAllocationInput],
     device_classes: &HashMap<&str, &RawDeviceClass>,
     candidates: &[Candidate],
     excluded: &HashSet<DeviceId>,
-    compiled: &CompiledSelectors,
     picked: HashSet<DeviceId>,
     constraint_states: Vec<ConstraintState>,
     out: Vec<RawDeviceRequestAllocationResult>,
-) -> Option<Vec<RawDeviceRequestAllocationResult>> {
+    completed: Vec<Vec<RawDeviceRequestAllocationResult>>,
+) -> Option<Vec<Vec<RawDeviceRequestAllocationResult>>> {
     if remaining == 0 {
         return allocate_request(
+            claim_index,
             request_index + 1,
-            requests,
+            claims,
             device_classes,
             candidates,
             excluded,
-            compiled,
             picked,
             constraint_states,
             out,
+            completed,
         );
     }
 
+    let claim = &claims[claim_index];
     for (index, c) in candidates.iter().enumerate().skip(candidate_start) {
         let id = (c.driver.clone(), c.pool.clone(), c.name.clone());
         if !eff.admin_access && (excluded.contains(&id) || picked.contains(&id)) {
             continue;
         }
-        if !device_matches(selectors, &c.driver, &c.basic, compiled) {
+        if !device_matches(selectors, &c.driver, &c.basic, &claim.compiled) {
             continue;
         }
 
@@ -692,19 +740,20 @@ fn allocate_exact(
         next_out.push(allocation_result(eff, c));
 
         if let Some(solution) = allocate_exact(
+            claim_index,
             request_index,
             eff,
             selectors,
             index + 1,
             remaining - 1,
-            requests,
+            claims,
             device_classes,
             candidates,
             excluded,
-            compiled,
             next_picked,
             next_states,
             next_out,
+            completed.clone(),
         ) {
             return Some(solution);
         }
@@ -757,96 +806,153 @@ fn pre_filter_impl(
     let device_classes: HashMap<&str, &RawDeviceClass> =
         snapshot.device_classes.iter().map(|(k, v)| (k.as_str(), v)).collect();
 
-        let mut plans = Vec::new();
-        for pc in &pod.resource_claims {
-            let Some(claim_name) = pc.object_name(&pod.resource_claim_statuses) else {
-                // PreEnqueue already gates this; a claim missing here despite
-                // that means it was deleted after admission — the pod will
-                // sit unschedulable until a new one is generated.
-                return (
-                    Status::unschedulable(NAME, format!("resourceclaim for {:?} does not exist", pc.name)),
-                    None,
-                );
-            };
-            let Some(claim) = snapshot.resource_claim(&pod.namespace, &claim_name) else {
-                return (
-                    Status::unschedulable(NAME, format!("resourceclaim {claim_name:?} not found")),
-                    None,
-                );
-            };
-            let claim_key = claim.key();
+    let mut plans = Vec::new();
+    let mut pending_plan_indices = Vec::new();
+    let mut pending_claims = Vec::new();
+    for pc in &pod.resource_claims {
+        let Some(claim_name) = pc.object_name(&pod.resource_claim_statuses) else {
+            // PreEnqueue already gates this; a claim missing here despite
+            // that means it was deleted after admission — the pod will
+            // sit unschedulable until a new one is generated.
+            return (
+                Status::unschedulable(NAME, format!("resourceclaim for {:?} does not exist", pc.name)),
+                None,
+            );
+        };
+        let Some(claim) = snapshot.resource_claim(&pod.namespace, &claim_name) else {
+            return (
+                Status::unschedulable(NAME, format!("resourceclaim {claim_name:?} not found")),
+                None,
+            );
+        };
+        let claim_key = claim.key();
 
-            if claim.bound() {
-                let already_reserved = claim
-                    .status
-                    .as_ref()
-                    .and_then(|s| s.reserved_for.as_ref())
-                    .into_iter()
-                    .flatten()
-                    .any(|r| r.resource == "pods" && r.name == pod.name && r.uid == pod.uid);
-                let node_selector = claim
-                    .status
-                    .as_ref()
-                    .and_then(|s| s.allocation.as_ref())
-                    .and_then(|a| a.node_selector.clone())
-                    .map(Box::new);
-                plans.push(ClaimPlan::Reserved { claim_key, needs_reservation: !already_reserved, node_selector });
-                continue;
-            }
-
-            let requests = claim
-                .spec
-                .devices
+        if claim.metadata.deletion_timestamp.is_some() {
+            return (
+                Status::unschedulable(
+                    NAME,
+                    format!("resourceclaim {claim_name:?} is being deleted"),
+                ),
+                None,
+            );
+        }
+        if pc.resource_claim_template_name.is_some()
+            && !claim
+                .metadata
+                .owner_references
                 .as_ref()
-                .and_then(|d| d.requests.clone())
-                .unwrap_or_default();
-            if requests.iter().any(|r| effective_requests(r).is_none()) {
-                return (
-                    Status::unresolvable(
-                        NAME,
-                        format!("resourceclaim {claim_name:?} has a malformed device request (neither exactly nor firstAvailable set, a missing deviceClassName, or an unrecognized allocationMode)"),
+                .into_iter()
+                .flatten()
+                .any(|owner| owner.controller == Some(true) && owner.uid == pod.uid)
+        {
+            return (
+                Status::unresolvable(
+                    NAME,
+                    format!(
+                        "resourceclaim {claim_name:?} was not created for pod {} (pod is not owner)",
+                        pod.key()
                     ),
-                    None,
-                );
-            }
-            let constraints = claim.spec.devices.as_ref().and_then(|d| d.constraints.clone()).unwrap_or_default();
+                ),
+                None,
+            );
+        }
 
-            // Every expression this claim's requests could evaluate,
-            // compiled once — the same set gets checked against every
-            // node's candidates below, so compiling inside that loop (or
-            // inside `allocate_on_node`, once per device) would repeat the
-            // same compile nodes × devices-per-node times. See
-            // `compile_selectors`'s doc comment.
-            let mut compiled = CompiledSelectors::new();
-            for req in &requests {
-                // Already validated above — every request has at least one
-                // alternative, or this function already returned.
-                let Some(alternatives) = effective_requests(req) else { continue };
-                for eff in &alternatives {
+        if claim.bound() {
+            let node_selector = claim
+                .status
+                .as_ref()
+                .and_then(|s| s.allocation.as_ref())
+                .and_then(|a| a.node_selector.clone())
+                .map(Box::new);
+            plans.push(ClaimPlan::Reserved { claim_key, node_selector });
+            continue;
+        }
+
+        let requests = claim
+            .spec
+            .devices
+            .as_ref()
+            .and_then(|d| d.requests.clone())
+            .unwrap_or_default();
+        if requests.iter().any(|r| effective_requests(r).is_none()) {
+            return (
+                Status::unresolvable(
+                    NAME,
+                    format!("resourceclaim {claim_name:?} has a malformed device request (neither exactly nor firstAvailable set, a missing deviceClassName, or an unrecognized allocationMode)"),
+                ),
+                None,
+            );
+        }
+        let constraints = claim
+            .spec
+            .devices
+            .as_ref()
+            .and_then(|d| d.constraints.clone())
+            .unwrap_or_default();
+
+        // Every expression this claim's requests could evaluate,
+        // compiled once — the same set gets checked against every
+        // node's candidates below, so compiling inside that loop (or
+        // inside the allocator, once per device) would repeat the
+        // same compile nodes × devices-per-node times. See
+        // `compile_selectors`'s doc comment.
+        let mut compiled = CompiledSelectors::new();
+        for req in &requests {
+            // Already validated above — every request has at least one
+            // alternative, or this function already returned.
+            let Some(alternatives) = effective_requests(req) else { continue };
+            for eff in &alternatives {
+                compile_selectors(
+                    eff.selectors
+                        .iter()
+                        .filter_map(|s| s.cel.as_ref().map(|c| c.expression.clone())),
+                    &mut compiled,
+                );
+                if let Some(class) = device_classes.get(eff.device_class_name.as_str()) {
                     compile_selectors(
-                        eff.selectors.iter().filter_map(|s| s.cel.as_ref().map(|c| c.expression.clone())),
+                        class
+                            .spec
+                            .selectors
+                            .iter()
+                            .flatten()
+                            .filter_map(|s| s.cel.as_ref().map(|c| c.expression.clone())),
                         &mut compiled,
                     );
-                    if let Some(class) = device_classes.get(eff.device_class_name.as_str()) {
-                        compile_selectors(
-                            class.spec.selectors.iter().flatten().filter_map(|s| s.cel.as_ref().map(|c| c.expression.clone())),
-                            &mut compiled,
-                        );
-                    }
                 }
             }
-
-            let mut by_node = HashMap::new();
-            for node in snapshot.nodes() {
-                let candidates = candidates_for_node(snapshot, node);
-                if let Some(devices) =
-                    allocate_on_node(&requests, &constraints, &device_classes, &candidates, excluded, &compiled)
-                {
-                    by_node.insert(node.name.clone(), devices);
-                }
-            }
-            plans.push(ClaimPlan::Allocate { claim_key, by_node });
         }
+
+        pending_plan_indices.push(plans.len());
+        pending_claims.push(ClaimAllocationInput { requests, constraints, compiled });
+        plans.push(ClaimPlan::Allocate { claim_key, by_node: HashMap::new() });
+    }
+
+    // Allocate every unallocated claim jointly per node. Device exclusivity
+    // and the allocator's rollback state span claim boundaries upstream;
+    // doing one independent pass per claim can both double-select a device
+    // and miss a valid solution which requires an earlier claim to choose a
+    // different candidate.
+    if !pending_claims.is_empty() {
+        for node in snapshot.nodes() {
+            let candidates = candidates_for_node(snapshot, node);
+            let Some(per_claim) = allocate_claims_on_node(
+                &pending_claims,
+                &device_classes,
+                &candidates,
+                excluded,
+            ) else {
+                continue;
+            };
+            for (plan_index, devices) in
+                pending_plan_indices.iter().copied().zip(per_claim)
+            {
+                let ClaimPlan::Allocate { by_node, .. } = &mut plans[plan_index] else {
+                    unreachable!("pending DRA claims always have Allocate plans")
+                };
+                by_node.insert(node.name.clone(), devices);
+            }
+        }
+    }
 
     state.write(NAME, WantedClaims(plans));
     (Status::success(), None)
@@ -953,7 +1059,7 @@ impl crate::framework::ReservePlugin for DynamicResources {
         let mut assumed = Vec::new();
         for plan in &wanted.0 {
             match plan {
-                // Always assumed, even when `needs_reservation` is false:
+                // Always assumed, even when the reservation already exists:
                 // `commit_claim` re-checks the *fresh* claim before writing
                 // and no-ops the reservedFor append if it's already there,
                 // so this is idempotent — and it must run either way, or
@@ -980,8 +1086,7 @@ impl crate::framework::ReservePlugin for DynamicResources {
         {
             let mut devices = self.assumed_devices.lock().unwrap();
             for a in &assumed {
-                // An admin-access pick is never exclusive — see
-                // `allocate_on_node`'s doc comment — so it must not enter
+                // An admin-access pick is never exclusive, so it must not enter
                 // the assume cache either, or a later cycle's `excluded`
                 // would wrongly treat it as spoken for.
                 for d in a.new_devices.iter().filter(|d| !d.admin_access) {

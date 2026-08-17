@@ -370,9 +370,11 @@ impl Cache {
         self.touch(node_name);
     }
 
-    pub fn upsert_namespace(&mut self, name: &str, labels: BTreeMap<String, String>) {
+    pub fn upsert_namespace(&mut self, name: &str, labels: BTreeMap<String, String>) -> bool {
+        let added = !self.namespaces.contains_key(name);
         Arc::make_mut(&mut self.namespaces).insert(name.to_string(), labels);
         self.generation += 1;
+        added
     }
 
     pub fn remove_namespace(&mut self, name: &str) {
@@ -393,9 +395,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_pv(&mut self, name: String, pv: PvInfo) {
+    pub fn upsert_pv(&mut self, name: String, pv: PvInfo) -> bool {
+        let added = !self.pvs.contains_key(&name);
         Arc::make_mut(&mut self.pvs).insert(name, pv);
         self.generation += 1;
+        added
     }
 
     pub fn remove_pv(&mut self, name: &str) {
@@ -403,9 +407,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_pvc(&mut self, key: String, pvc: PvcInfo) {
+    pub fn upsert_pvc(&mut self, key: String, pvc: PvcInfo) -> bool {
+        let added = !self.pvcs.contains_key(&key);
         Arc::make_mut(&mut self.pvcs).insert(key, pvc);
         self.generation += 1;
+        added
     }
 
     pub fn remove_pvc(&mut self, key: &str) {
@@ -413,9 +419,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_storage_class(&mut self, name: String, sc: StorageClassInfo) {
+    pub fn upsert_storage_class(&mut self, name: String, sc: StorageClassInfo) -> bool {
+        let added = !self.storage_classes.contains_key(&name);
         Arc::make_mut(&mut self.storage_classes).insert(name, sc);
         self.generation += 1;
+        added
     }
 
     pub fn remove_storage_class(&mut self, name: &str) {
@@ -423,9 +431,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_csi_node(&mut self, node_name: String, info: CsiNodeInfo) {
+    pub fn upsert_csi_node(&mut self, node_name: String, info: CsiNodeInfo) -> bool {
+        let added = !self.csi_nodes.contains_key(&node_name);
         Arc::make_mut(&mut self.csi_nodes).insert(node_name, info);
         self.generation += 1;
+        added
     }
 
     pub fn remove_csi_node(&mut self, node_name: &str) {
@@ -433,9 +443,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_csi_driver(&mut self, name: String, info: CsiDriverInfo) {
+    pub fn upsert_csi_driver(&mut self, name: String, info: CsiDriverInfo) -> bool {
+        let added = !self.csi_drivers.contains_key(&name);
         Arc::make_mut(&mut self.csi_drivers).insert(name, info);
         self.generation += 1;
+        added
     }
 
     pub fn remove_csi_driver(&mut self, name: &str) {
@@ -450,9 +462,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_resource_claim(&mut self, key: String, claim: RawResourceClaim) {
+    pub fn upsert_resource_claim(&mut self, key: String, claim: RawResourceClaim) -> bool {
+        let added = !self.resource_claims.contains_key(&key);
         Arc::make_mut(&mut self.resource_claims).insert(key, claim);
         self.generation += 1;
+        added
     }
 
     pub fn remove_resource_claim(&mut self, key: &str) {
@@ -460,9 +474,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_device_class(&mut self, name: String, class: RawDeviceClass) {
+    pub fn upsert_device_class(&mut self, name: String, class: RawDeviceClass) -> bool {
+        let added = !self.device_classes.contains_key(&name);
         Arc::make_mut(&mut self.device_classes).insert(name, class);
         self.generation += 1;
+        added
     }
 
     pub fn remove_device_class(&mut self, name: &str) {
@@ -470,9 +486,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_resource_slice(&mut self, name: String, slice: RawResourceSlice) {
+    pub fn upsert_resource_slice(&mut self, name: String, slice: RawResourceSlice) -> bool {
+        let added = !self.resource_slices.contains_key(&name);
         Arc::make_mut(&mut self.resource_slices).insert(name, slice);
         self.generation += 1;
+        added
     }
 
     pub fn remove_resource_slice(&mut self, name: &str) {

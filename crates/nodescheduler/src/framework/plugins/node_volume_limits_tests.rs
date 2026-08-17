@@ -1,6 +1,6 @@
 use super::*;
 use crate::cache::{Cache, CsiNodeInfo, PvInfo, PvcInfo};
-use crate::framework::plugins::testutil::{node, pod};
+use crate::framework::plugins::testutil::pod;
 use k8s_openapi::api::core::v1::Node as ApiNode;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use std::sync::Arc;

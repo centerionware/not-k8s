@@ -98,7 +98,7 @@ pub(crate) fn default_normalize_score(reverse: bool, scores: &mut [i64]) {
         return;
     }
     for s in scores.iter_mut() {
-        let scaled = MAX_NODE_SCORE * *s / max;
+        let scaled = MAX_NODE_SCORE.saturating_mul(*s) / max;
         *s = if reverse { MAX_NODE_SCORE - scaled } else { scaled };
     }
 }
