@@ -416,7 +416,7 @@ are implemented and e2e-verified.
   entry, since expected cardinality (finished Jobs with a TTL set,
   cluster-wide) doesn't justify the extra structure.
 
-## G. Volume/storage lifecycle — Tier 0 / 2 — **implemented (attach-detach, binder, pv/pvc-protection; expander scoped out) — dynamic-provisioning handoff fix awaiting CI verification**
+## G. Volume/storage lifecycle — Tier 0 / 2 — **implemented (attach-detach, binder, pv/pvc-protection; expander scoped out) — static and dynamic paths e2e-verified**
 
 - `attach-detach-controller` (`crates/nodecontroller/src/controllers/attach_detach.rs`,
   **implemented**): creates/deletes `VolumeAttachment` objects so a CSI
@@ -435,7 +435,7 @@ are implemented and e2e-verified.
   force-detach for a node that goes permanently unreachable.
 - `persistentvolume-binder-controller`
   (`crates/nodecontroller/src/controllers/pv_binder.rs`, **implemented;
-  static path e2e-verified, dynamic fix awaiting targeted CI**): binds a PVC
+  static and dynamic paths e2e-verified**): binds a PVC
   to a PV and owns the upstream-compatible handoff to dynamic provisioners.
   Static matching runs first (hand-created PV, matched by storage class +
   access modes). When no PV matches, the controller resolves the
@@ -468,8 +468,9 @@ are implemented and e2e-verified.
   but kube-scheduler rejected the claim until the binder also published
   `bind-completed`. Driver-independent e2e assertions now check both contracts
   directly in `storage_lifecycle_controllers.sh`; the existing real
-  `csi_pvc.sh`/`csi_attach.sh` tests remain the end-to-end gate. **Do not call
-  the dynamic path verified until those targeted tests pass in CI.**
+  `csi_pvc.sh`/`csi_attach.sh` tests remain the end-to-end gate. Exact-head
+  targeted e2e run 31998373256 passed dynamic provisioning, filesystem PVC,
+  raw-block PVC, and attach-required VolumeAttachment on 2026-08-17.
 - `pv-protection-controller` / `pvc-protection-controller`
   (`crates/nodecontroller/src/controllers/storage_protection.rs`,
   **implemented**): the standard finalizer-based "don't let this disappear
