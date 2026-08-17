@@ -116,7 +116,8 @@ where
 
         let task_shared = shared.clone();
         tokio::spawn(async move {
-            let mut stream = watcher(api, watch_config()).backoff(WatchBackoffPolicy::default());
+            let stream = watcher(api, watch_config()).backoff(WatchBackoffPolicy::default());
+            futures::pin_mut!(stream);
             while let Some(result) = stream.next().await {
                 let Ok(event) = result else {
                     tracing::warn!("shared nodecontroller watch received an error; kube-rs will retry it");
