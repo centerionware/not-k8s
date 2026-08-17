@@ -148,7 +148,7 @@ async fn reconcile_claim(
 ) {
     let namespace = pvc.namespace().unwrap_or_default();
     let name = pvc.name_any();
-    let pvc_api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace.clone());
+    let pvc_api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), &namespace);
     let pv_api: Api<PersistentVolume> = Api::all(client.clone());
 
     // The shared PVC informer already delivered the current object. Do not

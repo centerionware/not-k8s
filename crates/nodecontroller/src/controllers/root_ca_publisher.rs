@@ -54,7 +54,7 @@
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::{ConfigMap, Namespace};
+use k8s_openapi::api::core::v1::ConfigMap;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, PostParams};
 use kube::runtime::watcher::Event;
