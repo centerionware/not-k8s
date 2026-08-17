@@ -96,7 +96,8 @@
 //! this plugin because nothing else needs it.
 
 use crate::cache::{
-    NodeInfo, PodInfo, RawDeviceClass, RawDeviceRequestAllocationResult,
+    NodeInfo, PodInfo, RawDeviceAllocationConfiguration, RawDeviceClass,
+    RawDeviceClaimConfiguration, RawDeviceRequestAllocationResult,
     RawResourceClaim, Snapshot,
 };
 use crate::events::{ActionType, ClusterEvent, EventResource};
@@ -130,7 +131,13 @@ enum ClaimPlan {
     Reserved { claim_key: String, node_selector: Option<Box<NodeSelector>> },
     /// Unallocated. `by_node` is only ever `Some` for a node that can
     /// satisfy every request in the claim.
-    Allocate { claim_key: String, by_node: HashMap<String, Vec<RawDeviceRequestAllocationResult>> },
+    Allocate { claim_key: String, by_node: HashMap<String, PendingAllocation> },
+}
+
+#[derive(Clone)]
+struct PendingAllocation {
+    devices: Vec<RawDeviceRequestAllocationResult>,
+    config: Vec<RawDeviceAllocationConfiguration>,
 }
 
 struct WantedClaims(Vec<ClaimPlan>);
@@ -143,6 +150,7 @@ struct AssumedClaim {
     /// Empty for `AddReservation` — nothing new was allocated, only a
     /// reservation needs writing.
     new_devices: Vec<RawDeviceRequestAllocationResult>,
+    new_config: Vec<RawDeviceAllocationConfiguration>,
 }
 
 /// `Clone`, deliberately: `Registry` boxes a separate instance per extension
@@ -528,6 +536,7 @@ fn constraint_allows(
 struct ClaimAllocationInput {
     requests: Vec<crate::cache::dra::RawDeviceRequest>,
     constraints: Vec<crate::cache::dra::RawDeviceConstraint>,
+    config: Vec<RawDeviceClaimConfiguration>,
     compiled: CompiledSelectors,
 }
 
@@ -774,6 +783,65 @@ fn allocation_result(
     }
 }
 
+/// Combine DeviceClass and ResourceClaim configuration exactly as the
+/// structured allocator does after selecting request alternatives. Class
+/// config is emitted once per class and tagged with every selected request
+/// using it; claim config is retained only when it applies to a selected
+/// top-level request or selected subrequest.
+fn allocation_config(
+    claim: &ClaimAllocationInput,
+    devices: &[RawDeviceRequestAllocationResult],
+    device_classes: &HashMap<&str, &RawDeviceClass>,
+) -> Vec<RawDeviceAllocationConfiguration> {
+    let mut out = Vec::new();
+    let mut class_ranges: HashMap<String, std::ops::Range<usize>> = HashMap::new();
+    let mut selected_names = Vec::new();
+
+    for request in &claim.requests {
+        let Some(selected) = effective_requests(request).and_then(|alternatives| {
+            alternatives
+                .into_iter()
+                .find(|candidate| devices.iter().any(|device| device.request == candidate.result_name))
+        }) else {
+            continue;
+        };
+        selected_names.push((request.name.clone(), selected.result_name.clone()));
+
+        if let Some(range) = class_ranges.get(&selected.device_class_name).cloned() {
+            for index in range {
+                out[index].requests.push(selected.result_name.clone());
+            }
+            continue;
+        }
+        let start = out.len();
+        if let Some(class) = device_classes.get(selected.device_class_name.as_str()) {
+            for config in class.spec.config.iter().flatten() {
+                out.push(RawDeviceAllocationConfiguration {
+                    source: "FromClass".to_string(),
+                    requests: vec![selected.result_name.clone()],
+                    opaque: config.opaque.clone(),
+                });
+            }
+        }
+        class_ranges.insert(selected.device_class_name, start..out.len());
+    }
+
+    for config in &claim.config {
+        let applies = config.requests.is_empty()
+            || selected_names.iter().any(|(top, selected)| {
+                config.requests.iter().any(|configured| configured == top || configured == selected)
+            });
+        if applies {
+            out.push(RawDeviceAllocationConfiguration {
+                source: "FromClaim".to_string(),
+                requests: config.requests.clone(),
+                opaque: config.opaque.clone(),
+            });
+        }
+    }
+    out
+}
+
 impl PreFilterPlugin for DynamicResources {
     fn pre_filter(
         &self,
@@ -889,6 +957,12 @@ fn pre_filter_impl(
             .as_ref()
             .and_then(|d| d.constraints.clone())
             .unwrap_or_default();
+        let config = claim
+            .spec
+            .devices
+            .as_ref()
+            .and_then(|devices| devices.config.clone())
+            .unwrap_or_default();
 
         // Every expression this claim's requests could evaluate,
         // compiled once — the same set gets checked against every
@@ -923,7 +997,7 @@ fn pre_filter_impl(
         }
 
         pending_plan_indices.push(plans.len());
-        pending_claims.push(ClaimAllocationInput { requests, constraints, compiled });
+        pending_claims.push(ClaimAllocationInput { requests, constraints, config, compiled });
         plans.push(ClaimPlan::Allocate { claim_key, by_node: HashMap::new() });
     }
 
@@ -943,13 +1017,18 @@ fn pre_filter_impl(
             ) else {
                 continue;
             };
-            for (plan_index, devices) in
-                pending_plan_indices.iter().copied().zip(per_claim)
+            for (claim_index, (plan_index, devices)) in
+                pending_plan_indices.iter().copied().zip(per_claim).enumerate()
             {
                 let ClaimPlan::Allocate { by_node, .. } = &mut plans[plan_index] else {
                     unreachable!("pending DRA claims always have Allocate plans")
                 };
-                by_node.insert(node.name.clone(), devices);
+                let config = allocation_config(
+                    &pending_claims[claim_index],
+                    &devices,
+                    &device_classes,
+                );
+                by_node.insert(node.name.clone(), PendingAllocation { devices, config });
             }
         }
     }
@@ -1067,18 +1146,26 @@ impl crate::framework::ReservePlugin for DynamicResources {
                 // remembered) never confirms the write for a
                 // no-longer-quite-so-nothing-to-do claim.
                 ClaimPlan::Reserved { claim_key, .. } => {
-                    assumed.push(AssumedClaim { claim_key: claim_key.clone(), new_devices: Vec::new() });
+                    assumed.push(AssumedClaim {
+                        claim_key: claim_key.clone(),
+                        new_devices: Vec::new(),
+                        new_config: Vec::new(),
+                    });
                 }
                 ClaimPlan::Allocate { claim_key, by_node } => {
                     // Filter already checked this node has an entry; a miss
                     // here means a plugin bug, not a scheduling outcome.
-                    let Some(devices) = by_node.get(node) else {
+                    let Some(allocation) = by_node.get(node) else {
                         return Status::error(
                             NAME,
                             format!("internal: Filter approved node {node} with no computed allocation for {claim_key}"),
                         );
                     };
-                    assumed.push(AssumedClaim { claim_key: claim_key.clone(), new_devices: devices.clone() });
+                    assumed.push(AssumedClaim {
+                        claim_key: claim_key.clone(),
+                        new_devices: allocation.devices.clone(),
+                        new_config: allocation.config.clone(),
+                    });
                 }
             }
         }
@@ -1163,6 +1250,7 @@ impl DynamicResources {
                 None => crate::cache::dra::RawAllocationResult {
                     devices: Some(crate::cache::dra::RawDeviceAllocationResult {
                         results: Some(assumed.new_devices.clone()),
+                        config: (!assumed.new_config.is_empty()).then(|| assumed.new_config.clone()),
                     }),
                     node_selector: Some(single_node_selector(node)),
                 },

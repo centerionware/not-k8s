@@ -315,6 +315,34 @@ pub struct Candidate {
     pub latest_start_of_highest: Option<k8s_openapi::jiff::Timestamp>,
 }
 
+impl Candidate {
+    /// Rebuild the upstream tiebreak metadata whenever an extender replaces
+    /// a candidate's victim set.
+    pub fn from_victims(node: &NodeInfo, victims: Victims) -> Self {
+        let victim_pods: Vec<&PodInfo> = node
+            .pods
+            .iter()
+            .filter(|pod| victims.pods.contains(&pod.key()))
+            .map(|pod| pod.as_ref())
+            .collect();
+        let highest = victim_pods.iter().map(|pod| pod.priority).max().unwrap_or(0);
+        Candidate {
+            node: node.name.clone(),
+            highest_victim_priority: highest,
+            sum_victim_priorities: victim_pods
+                .iter()
+                .map(|pod| pod.priority as i64)
+                .sum(),
+            latest_start_of_highest: victim_pods
+                .iter()
+                .filter(|pod| pod.priority == highest)
+                .map(|pod| pod_start_time(pod))
+                .max(),
+            victims,
+        }
+    }
+}
+
 /// Upstream's `pickOneNodeForPreemption`: six tiebreaks, in order.
 ///
 /// Each stage narrows the set; the first node survives an exact tie. The

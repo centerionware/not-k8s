@@ -406,7 +406,7 @@ async fn an_out_of_range_normalized_score_aborts_instead_of_being_clamped() {
         .await;
     match outcome {
         CycleOutcome::Error { reason } => assert!(reason.contains("outside [0, 100]"), "{reason}"),
-        other => panic!("invalid plugin score must abort the cycle, got {other:?}"),
+        _ => panic!("invalid plugin score must abort the cycle"),
     }
 }
 

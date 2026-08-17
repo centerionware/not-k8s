@@ -66,23 +66,56 @@ fn empty_verbs_mean_the_extension_is_not_implemented() {
 }
 
 #[test]
-fn a_preempt_verb_is_refused_by_name_rather_than_silently_ignored() {
-    let err = parse_extenders(
+fn a_preempt_verb_is_supported() {
+    let cfg = parse_extenders(
         r#"[{"urlPrefix":"http://ext","filterVerb":"filter","preemptVerb":"preempt"}]"#,
     )
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("preemptVerb"), "{err}");
+    .unwrap();
+    assert_eq!(cfg[0].preempt_verb.as_deref(), Some("preempt"));
 }
 
 #[test]
-fn a_tls_config_is_refused_by_name_rather_than_silently_ignored() {
-    let err = parse_extenders(
-        r#"[{"urlPrefix":"https://ext","filterVerb":"filter","tlsConfig":{"insecure":true}}]"#,
+fn node_cache_preemption_uses_upstreams_pascal_case_uid_shape() {
+    let args = ExtenderPreemptionArgs {
+        pod: Pod::default(),
+        node_name_to_victims: None,
+        node_name_to_meta_victims: Some(BTreeMap::from([(
+            "node-a".to_string(),
+            WireMetaVictims {
+                pods: vec![WireMetaPod { uid: "victim-uid".to_string() }],
+                num_pdb_violations: 1,
+            },
+        )])),
+    };
+    let value = serde_json::to_value(args).unwrap();
+    assert_eq!(
+        value["NodeNameToMetaVictims"]["node-a"]["Pods"][0]["UID"],
+        "victim-uid"
+    );
+    assert!(value.get("NodeNameToVictims").is_none());
+}
+
+#[test]
+fn upstream_tls_config_and_duration_fields_parse() {
+    let cfg = parse_extenders(
+        r#"[{"urlPrefix":"https://ext","filterVerb":"filter","enableHTTPS":true,
+             "httpTimeout":"1m30.5s","tlsConfig":{"insecure":true,"caData":"UEVN"}}]"#,
     )
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("tlsConfig"), "{err}");
+    .unwrap();
+    assert!(cfg[0].enable_https);
+    assert_eq!(cfg[0].http_timeout, Duration::from_millis(90_500));
+    let tls = cfg[0].tls_config.as_ref().unwrap();
+    assert!(tls.insecure);
+    assert_eq!(tls.ca_data.as_deref(), Some(b"PEM".as_slice()));
+}
+
+#[test]
+fn a_zero_upstream_timeout_gets_the_five_second_default() {
+    let cfg = parse_extenders(
+        r#"[{"urlPrefix":"http://ext","filterVerb":"filter","httpTimeout":"0s"}]"#,
+    )
+    .unwrap();
+    assert_eq!(cfg[0].http_timeout, Duration::from_secs(5));
 }
 
 #[test]

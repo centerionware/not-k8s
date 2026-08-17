@@ -1,8 +1,8 @@
 use super::*;
 use crate::cache::dra::{
-    RawBasicDevice, RawCelSelector, RawDevice, RawDeviceAttribute, RawDeviceClassSpec,
-    RawDeviceRequest, RawDeviceSelector, RawResourceClaimSpec, RawResourcePool,
-    RawResourceSliceSpec,
+    RawBasicDevice, RawCelSelector, RawDevice, RawDeviceAttribute, RawDeviceClassConfiguration,
+    RawDeviceClassSpec, RawDeviceClaimConfiguration, RawDeviceRequest, RawDeviceSelector,
+    RawOpaqueDeviceConfiguration, RawResourceClaimSpec, RawResourcePool, RawResourceSliceSpec,
 };
 use crate::cache::{Cache, PodClaimRef, RawDeviceClass, RawResourceClaim, RawResourceSlice};
 use crate::framework::plugins::testutil::pod;
@@ -22,6 +22,7 @@ fn class_with_cel(name: &str, expr: &str) -> RawDeviceClass {
         metadata: ObjectMeta { name: Some(name.to_string()), ..Default::default() },
         spec: RawDeviceClassSpec {
             selectors: Some(vec![RawDeviceSelector { cel: Some(RawCelSelector { expression: expr.to_string() }) }]),
+            config: None,
         },
     }
 }
@@ -43,6 +44,7 @@ fn unbound_claim(namespace: &str, name: &str, class: &str, count: i64) -> RawRes
                     first_available: None,
                 }]),
                 constraints: None,
+                config: None,
             }),
         },
         status: None,
@@ -130,6 +132,55 @@ fn a_claim_with_a_satisfiable_class_selector_is_allocated_on_a_matching_node() {
 
     let n = snapshot.node("n1").unwrap().as_ref().clone();
     assert!(filter_impl(&state, &p, &n).is_success());
+}
+
+#[test]
+fn allocation_copies_selected_class_and_claim_configuration_for_the_driver() {
+    let mut class = class_with_cel("gpu.example.com", "true");
+    class.spec.config = Some(vec![RawDeviceClassConfiguration {
+        opaque: Some(RawOpaqueDeviceConfiguration {
+            driver: "gpu.example.com".to_string(),
+            parameters: serde_json::json!({"profile":"class-default"}),
+        }),
+    }]);
+    let classes = HashMap::from([("gpu.example.com", &class)]);
+    let claim = ClaimAllocationInput {
+        requests: vec![RawDeviceRequest {
+            name: "req".to_string(),
+            exactly: Some(crate::cache::dra::RawExactDeviceRequest {
+                device_class_name: Some("gpu.example.com".to_string()),
+                selectors: None,
+                allocation_mode: None,
+                count: Some(1),
+                admin_access: None,
+            }),
+            first_available: None,
+        }],
+        constraints: Vec::new(),
+        config: vec![RawDeviceClaimConfiguration {
+            requests: vec!["req".to_string()],
+            opaque: Some(RawOpaqueDeviceConfiguration {
+                driver: "gpu.example.com".to_string(),
+                parameters: serde_json::json!({"profile":"pod-specific"}),
+            }),
+        }],
+        compiled: CompiledSelectors::new(),
+    };
+    let selected = vec![RawDeviceRequestAllocationResult {
+        request: "req".to_string(),
+        driver: "gpu.example.com".to_string(),
+        pool: "pool".to_string(),
+        device: "gpu-0".to_string(),
+        admin_access: false,
+    }];
+
+    let config = allocation_config(&claim, &selected, &classes);
+    assert_eq!(config.len(), 2);
+    assert_eq!(config[0].source, "FromClass");
+    assert_eq!(config[0].requests, vec!["req"]);
+    assert_eq!(config[1].source, "FromClaim");
+    assert_eq!(config[1].requests, vec!["req"]);
+    assert_eq!(config[1].opaque.as_ref().unwrap().parameters["profile"], "pod-specific");
 }
 
 #[test]
@@ -230,6 +281,7 @@ fn allocation_backtracks_when_an_early_valid_pick_is_needed_by_a_later_request()
                 // upstream rolls that choice back and uses broad-only.
                 requests: Some(vec![exact("broad", "broad"), exact("narrow", "narrow")]),
                 constraints: None,
+                config: None,
             }),
         },
         status: None,
@@ -246,8 +298,8 @@ fn allocation_backtracks_when_an_early_valid_pick_is_needed_by_a_later_request()
     let wanted = state.read::<WantedClaims>(NAME).unwrap();
     let ClaimPlan::Allocate { by_node, .. } = &wanted.0[0] else { panic!("expected allocation") };
     let allocation = by_node.get("n1").unwrap();
-    assert_eq!(allocation[0].device, "broad-only");
-    assert_eq!(allocation[1].device, "only-narrow");
+    assert_eq!(allocation.devices[0].device, "broad-only");
+    assert_eq!(allocation.devices[1].device, "only-narrow");
 }
 
 #[test]
@@ -564,7 +616,7 @@ fn allocation_mode_all_takes_every_matching_device() {
 
     let wanted = state.read::<WantedClaims>(NAME).unwrap();
     let ClaimPlan::Allocate { by_node, .. } = &wanted.0[0] else { panic!("expected Allocate") };
-    assert_eq!(by_node.get("n1").unwrap().len(), 2, "'All' must take every matching device, not just one");
+    assert_eq!(by_node.get("n1").unwrap().devices.len(), 2, "'All' must take every matching device, not just one");
 }
 
 #[test]
@@ -653,6 +705,7 @@ fn first_available_falls_through_to_a_later_subrequest() {
                     ]),
                 }]),
                 constraints: None,
+                config: None,
             }),
         },
         status: None,
@@ -669,7 +722,7 @@ fn first_available_falls_through_to_a_later_subrequest() {
 
     let wanted = state.read::<WantedClaims>(NAME).unwrap();
     let ClaimPlan::Allocate { by_node, .. } = &wanted.0[0] else { panic!("expected Allocate") };
-    assert_eq!(by_node.get("n1").unwrap()[0].request, "req/fallback", "the fallback subrequest's own name must be recorded");
+    assert_eq!(by_node.get("n1").unwrap().devices[0].request, "req/fallback", "the fallback subrequest's own name must be recorded");
 }
 
 #[test]
@@ -723,6 +776,7 @@ fn a_match_attribute_constraint_rejects_a_device_set_with_different_values() {
                     match_attribute: Some("gpu.example.com/numa".to_string()),
                     requests: vec![],
                 }]),
+                config: None,
             }),
         },
         status: None,
@@ -788,6 +842,7 @@ fn a_match_attribute_constraint_admits_a_consistent_device_set() {
                     match_attribute: Some("gpu.example.com/numa".to_string()),
                     requests: vec![],
                 }]),
+                config: None,
             }),
         },
         status: None,
@@ -836,8 +891,8 @@ fn per_device_node_selection_scopes_each_device_to_its_own_node() {
 
     let wanted = state.read::<WantedClaims>(NAME).unwrap();
     let ClaimPlan::Allocate { by_node, .. } = &wanted.0[0] else { panic!("expected Allocate") };
-    assert_eq!(by_node.get("n1").unwrap()[0].device, "gpu-on-n1");
-    assert_eq!(by_node.get("n2").unwrap()[0].device, "gpu-on-n2");
+    assert_eq!(by_node.get("n1").unwrap().devices[0].device, "gpu-on-n1");
+    assert_eq!(by_node.get("n2").unwrap().devices[0].device, "gpu-on-n2");
 }
 
 #[test]

@@ -367,13 +367,17 @@ async fn scheduling_loop(
                     let pdbs = budgets.lock().unwrap().clone();
                     let outcome = scheduler.preempt(
                         &registry,
+                        &extenders,
                         &pod,
                         &snapshot,
                         &node_statuses,
                         &pdbs,
                         &mut rng,
-                    );
-                    if let Some(outcome) = outcome {
+                    ).await;
+                    if let Err(error) = &outcome {
+                        tracing::warn!(pod = %pod.key(), %error, "preemption extender failed");
+                    }
+                    if let Ok(Some(outcome)) = outcome {
                         tracing::info!(
                             pod = %pod.key(),
                             node = %outcome.nominated_node,
@@ -555,6 +559,37 @@ async fn evict_victims(
         };
         let api: Api<k8s_openapi::api::core::v1::Pod> =
             Api::namespaced(client.clone(), namespace);
+        // Kubernetes marks a victim before deleting it. Consumers use this
+        // condition to distinguish scheduler preemption from an arbitrary
+        // user/controller deletion, and kubelet can begin graceful shutdown
+        // with the right reason while the DELETE is in flight.
+        let disruption = serde_json::json!({
+            "status": { "conditions": [{
+                "type": "DisruptionTarget",
+                "status": "True",
+                "reason": "PreemptionByScheduler",
+                "message": format!(
+                    "Preempted by pod {}/{} on node {}",
+                    preemptor.namespace,
+                    preemptor.name,
+                    node,
+                ),
+                "lastTransitionTime": k8s_openapi::jiff::Timestamp::now().to_string(),
+            }] }
+        });
+        if let Err(error) = api
+            .patch_status(
+                name,
+                &PatchParams {
+                    field_manager: Some("nodescheduler".to_string()),
+                    ..Default::default()
+                },
+                &Patch::Strategic(disruption),
+            )
+            .await
+        {
+            tracing::warn!(victim = %victim, %error, "couldn't mark preemption victim as a disruption target");
+        }
         match api.delete(name, &DeleteParams::default()).await {
             Ok(_) => tracing::info!(victim = %victim, for_pod = %preemptor.key(), "evicted"),
             // A victim that is already gone is the ordinary race, not a

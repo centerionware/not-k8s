@@ -797,15 +797,16 @@ impl Scheduler {
     /// candidate, or no victim set makes the pod fit — all of which mean
     /// "leave the cluster alone", which is the right answer far more often
     /// than not.
-    pub fn preempt(
+    pub async fn preempt(
         &self,
         registry: &Registry,
+        extenders: &[crate::extender::Extender],
         pod: &PodInfo,
         snapshot: &Snapshot,
         node_statuses: &NodeToStatus,
         budgets: &[crate::preempt::PdbState],
         rng: &mut Rng,
-    ) -> Option<PreemptionOutcome> {
+    ) -> anyhow::Result<Option<PreemptionOutcome>> {
         use crate::preempt::{
             eligible_to_preempt, offset_and_num_candidates, pick_one_node, select_victims_on_node,
             Candidate,
@@ -824,14 +825,16 @@ impl Scheduler {
             .and_then(|n| snapshot.node(n))
             .map(|n| n.pods.iter().any(|p| p.priority < pod.priority))
             .unwrap_or(false);
-        eligible_to_preempt(pod.preemption_policy.as_deref(), draining, false).ok()?;
+        if eligible_to_preempt(pod.preemption_policy.as_deref(), draining, false).is_err() {
+            return Ok(None);
+        }
 
         // Only nodes eviction could actually fix. A node rejected as
         // UnschedulableAndUnresolvable — wrong name, unmatched affinity, no
         // topology domain — stays rejected however many pods die on it.
         let candidates_by_name = node_statuses.preemption_candidates();
         if candidates_by_name.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         let (offset, wanted) =
@@ -861,30 +864,43 @@ impl Scheduler {
             });
 
             if let Some(victims) = victims {
-                let victim_pods: Vec<&PodInfo> = node
-                    .pods
-                    .iter()
-                    .filter(|p| victims.pods.contains(&p.key()))
-                    .map(|p| p.as_ref())
-                    .collect();
-                let highest = victim_pods.iter().map(|p| p.priority).max().unwrap_or(0);
-                found.push(Candidate {
-                    node: node.name.clone(),
-                    highest_victim_priority: highest,
-                    sum_victim_priorities: victim_pods.iter().map(|p| p.priority as i64).sum(),
-                    latest_start_of_highest: victim_pods
-                        .iter()
-                        .filter(|p| p.priority == highest)
-                        .map(|p| crate::preempt::pod_start_time(p))
-                        .max(),
-                    victims,
-                });
+                found.push(Candidate::from_victims(node, victims));
             }
         }
 
-        let best = pick_one_node(&found)?;
-        let node = snapshot.node(&best.node)?;
-        Some(PreemptionOutcome {
+        // Preemption-capable extenders run sequentially and each receives the
+        // candidate map returned by the previous one. A non-ignorable error
+        // aborts preemption; an ignorable error preserves the current map.
+        for extender in extenders.iter().filter(|extender| {
+            extender.config.preempt_verb.is_some() && extender.config.applies_to(pod)
+        }) {
+            match extender.process_preemption(pod, &found, snapshot).await {
+                Ok(Some(replaced)) => {
+                    found = replaced
+                        .into_iter()
+                        .map(|selection| {
+                            let node = snapshot.node(&selection.node).expect("extender resolved a snapshot node");
+                            Candidate::from_victims(
+                                node,
+                                crate::preempt::Victims {
+                                    pods: selection.pod_keys,
+                                    pdb_violations: selection.pdb_violations,
+                                },
+                            )
+                        })
+                        .collect();
+                }
+                Ok(None) => {}
+                Err(error) if extender.config.ignorable => {
+                    tracing::warn!(extender = %extender.config.url_prefix, %error, "ignorable extender preemption call failed; preserving candidates");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        let Some(best) = pick_one_node(&found) else { return Ok(None) };
+        let Some(node) = snapshot.node(&best.node) else { return Ok(None) };
+        Ok(Some(PreemptionOutcome {
             nominated_node: best.node.clone(),
             victims: node
                 .pods
@@ -892,7 +908,7 @@ impl Scheduler {
                 .filter(|p| best.victims.pods.contains(&p.key()))
                 .map(|p| p.key())
                 .collect(),
-        })
+        }))
     }
 
     /// Would the pod fit on this node with `removed` hypothetically gone?
