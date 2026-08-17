@@ -1,37 +1,16 @@
-commit: 374ddef6334c132d46c44ef87dc85c88b058053d
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32061077421
-timestamp (UTC): 2026-08-17T19:41:18Z
+commit: 0c454a4d9594e0dae683d195914e5c46f3e2ea22
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32064762219
+timestamp (UTC): 2026-08-17T20:21:22Z
 shard: 5/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786995596
+==> Test namespace: not-k8s-e2e-1786998048
 ==> 238 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 44 test(s) selected
 ▶ test_scheduler_schedules_a_pod_an_http_extender_approves
-==> FATAL: timed out after 60s waiting for: sched-extender-accept to be bound to a node
-  ✘ FAIL (79s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.258809Z ERROR failed with status 503 Service Unavailable
-    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.259753Z ERROR failed with status 503 Service Unavailable
-    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.357069Z ERROR failed with status 503 Service Unavailable
-    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.359827Z ERROR failed with status 503 Service Unavailable
-    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.359926Z ERROR failed with status 503 Service Unavailable
-    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.507617Z ERROR failed with status 503 Service Unavailable
-    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.509272Z ERROR failed with status 503 Service Unavailable
-    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.509711Z ERROR failed with status 503 Service Unavailable
-    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.841950Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 349 (361)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.844507Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 349 (361)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.845533Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 349 (361)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 17 19:39:40 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:40.757687Z  INFO CreateContainer succeeded container=coredns container_id=79e83c11221f07cb073a497a2af8ae599c06aa84dd647f507863f4ec0a066d2a
-    Aug 17 19:39:46 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:46.732811Z  INFO CreateContainer succeeded container=busybox container_id=9b20d2f0bca6f320f075a92738f75f380b481f4a3c8b8a6f58378106b5bffd0f
-    Aug 17 19:40:09 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:40:09.115407Z  INFO node status pushed
-    Aug 17 19:41:09 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:41:09.158016Z  INFO node status pushed
+  ✔ PASS (33s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
-Failed:
-  - test_scheduler_schedules_a_pod_an_http_extender_approves
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786995596...
+==> Cleaning up test namespace not-k8s-e2e-1786998048...
