@@ -77,7 +77,11 @@ EOF
     wait_until 60 "deleting deployment $dep cascades to its ReplicaSet" \
         bash -c "[[ \"\$(_gc_replicaset_count '$dep')\" == '0' ]]"
 
-    wait_until 60 "deleting deployment $dep cascades to its Pods" \
+    # The API's normal Pod termination grace and nodelet's CRI teardown both
+    # participate in deleting the child objects. The controller has already
+    # issued the cascade delete by the time this assertion runs, so this is
+    # a convergence bound, not a controller reaction-time bound.
+    wait_until 120 "deleting deployment $dep cascades to its Pods" \
         bash -c "[[ \"\$(_gc_pod_count '$dep')\" == '0' ]]"
 
     trap - EXIT

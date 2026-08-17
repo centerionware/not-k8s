@@ -97,6 +97,7 @@ struct ObjRecord {
     namespace: String,
     name: String,
     owner_uids: Vec<String>,
+    deleting: bool,
 }
 
 fn owner_uids_of(obj: &DynamicObject) -> Vec<String> {
@@ -117,6 +118,10 @@ fn owner_uids_of(obj: &DynamicObject) -> Vec<String> {
 /// orphaned as soon as the initial relist completes.
 fn all_owners_dead(owner_uids: &[String], exists: &HashSet<String>) -> bool {
     !owner_uids.is_empty() && owner_uids.iter().all(|owner| !exists.contains(owner))
+}
+
+fn should_delete_orphan(record: &ObjRecord, ready: bool, exists: &HashSet<String>) -> bool {
+    ready && !record.deleting && all_owners_dead(&record.owner_uids, exists)
 }
 
 /// Deletes `record`, background-propagated. Silently ignores "already
@@ -207,6 +212,7 @@ impl State {
             namespace: obj.namespace().unwrap_or_default(),
             name: obj.name_any(),
             owner_uids: owner_uids.clone(),
+            deleting: obj.metadata.deletion_timestamp.is_some(),
         };
         if staged {
             self.relist
@@ -216,8 +222,7 @@ impl State {
             return;
         }
         self.store_record(record.clone());
-        let all_dead = self.ready() && all_owners_dead(&owner_uids, &self.exists);
-        if all_dead {
+        if should_delete_orphan(&record, self.ready(), &self.exists) {
             delete_object(client, &self.resources, &record).await;
         }
     }
@@ -259,7 +264,7 @@ impl State {
         // that finished relisting in the meantime be considered correctly.
         if self.ready() {
             for record in records {
-                if all_owners_dead(&record.owner_uids, &self.exists) {
+                if should_delete_orphan(&record, true, &self.exists) {
                     delete_object(client, &self.resources, &record).await;
                 }
             }
@@ -286,7 +291,7 @@ impl State {
                 continue;
             };
             let any_owner_alive = record.owner_uids.iter().any(|o| self.exists.contains(o));
-            if !any_owner_alive {
+            if !record.deleting && !any_owner_alive {
                 delete_object(client, &self.resources, &record).await;
             }
         }
@@ -311,6 +316,19 @@ mod tests {
     fn an_object_with_a_live_owner_is_not_an_orphan() {
         let exists = HashSet::from(["live".to_string()]);
         assert!(!all_owners_dead(&["live".to_string()], &exists));
+    }
+
+    #[test]
+    fn a_terminating_object_is_not_deleted_again() {
+        let record = ObjRecord {
+            uid: "child-uid".to_string(),
+            gvk_key: "v1/Pod".to_string(),
+            namespace: "default".to_string(),
+            name: "child".to_string(),
+            owner_uids: vec!["dead-owner".to_string()],
+            deleting: true,
+        };
+        assert!(!should_delete_orphan(&record, true, &HashSet::new()));
     }
 }
 
