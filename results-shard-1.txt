@@ -1,7 +1,37 @@
-commit: a9df12ac7fc2e4f3916693967becff5df50149ce
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31995039529
-timestamp (UTC): 2026-08-17T04:49:56Z
+commit: b8a213ab0f5771ee4d76fbd2a172c5b4676c4c81
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31996890058
+timestamp (UTC): 2026-08-17T05:17:50Z
 shard: 1/5
-exit code: unknown
+exit code: 1
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+==> Test namespace: not-k8s-e2e-1786943744
+==> 236 test(s) registered total (before sharding); running now...
+==> Shard 1/5: 52 test(s) selected
+▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
+==> FATAL: pod never reached Running — check nodelet's logs for 'driver requires attach but no matching VolumeAttachment exists yet' (external-attacher not running) or 'VolumeAttachment found but not yet attached' (attach still in progress)
+  ✘ FAIL (122s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 17 05:15:42 runnervmzvulz run-nodelet.sh[15204]: 2026-08-17T05:15:42.428220Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
+    Aug 17 05:15:42 runnervmzvulz run-nodelet.sh[15204]: 2026-08-17T05:15:42.444933Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
+    Aug 17 05:15:42 runnervmzvulz run-nodelet.sh[15204]: 2026-08-17T05:15:42.542638Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
+    Aug 17 05:15:42 runnervmzvulz run-nodelet.sh[15204]: Caused by:
+    Aug 17 05:15:42 runnervmzvulz run-nodelet.sh[15204]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (18cb20fc-9f84-4434-a009-087ddd2152d4) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (18cb20fc-9f84-4434-a009-087ddd2152d4) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 17 05:15:42 runnervmzvulz run-nodelet.sh[15204]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (18cb20fc-9f84-4434-a009-087ddd2152d4) does not match the UID in record. The object might have been deleted and then recreated: Conflict
+    Aug 17 05:15:42 runnervmzvulz run-nodelet.sh[15204]: 2026-08-17T05:15:42.564345Z  INFO CreateContainer succeeded container=plugin container_id=2aeaba2904e1c958628faf6ee35264e8a9ba124adca92ee2a1ab90025c299702
+    Aug 17 05:15:42 runnervmzvulz run-nodelet.sh[15204]: 2026-08-17T05:15:42.647134Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
+    Aug 17 05:15:42 runnervmzvulz run-nodelet.sh[15204]: Caused by:
+    Aug 17 05:15:42 runnervmzvulz run-nodelet.sh[15204]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (18cb20fc-9f84-4434-a009-087ddd2152d4) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (18cb20fc-9f84-4434-a009-087ddd2152d4) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 17 05:15:42 runnervmzvulz run-nodelet.sh[15204]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (18cb20fc-9f84-4434-a009-087ddd2152d4) does not match the UID in record. The object might have been deleted and then recreated: Conflict
+    Aug 17 05:15:42 runnervmzvulz run-nodelet.sh[15204]: 2026-08-17T05:15:42.931719Z  INFO CreateContainer succeeded container=plugin container_id=f6b34de4cb79914c94d0b030391ac0b41f0fe0f689ceb2be1ac8846e9669f1dc
+    Aug 17 05:15:52 runnervmzvulz run-nodelet.sh[15204]: 2026-08-17T05:15:52.561344Z  INFO plugin registry: plugin registered name=gpu.example.com endpoint=/var/lib/nodelet/plugins/gpu.example.com/dra-3308d47a-c657-4735-b2c2-244fc0c1e8cf.sock plugin_type=DRAPlugin
+    Aug 17 05:16:22 runnervmzvulz run-nodelet.sh[15204]: 2026-08-17T05:16:22.708607Z  INFO node status pushed
+    Aug 17 05:17:22 runnervmzvulz run-nodelet.sh[15204]: 2026-08-17T05:17:22.750638Z  INFO node status pushed
+
+════════════════════════════════════════
+Results: 0 passed, 1 failed, 0 skipped
+Failed:
+  - test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1786943744...
