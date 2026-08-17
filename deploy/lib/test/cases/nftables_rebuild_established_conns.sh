@@ -74,7 +74,11 @@ spec:
 PODEOF
     trap 'kubectl delete pod "$pod" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; kubectl delete role established-conn-watcher-pods -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; kubectl delete rolebinding established-conn-watcher-pods -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; for i in $(seq 1 25); do kubectl delete svc "churn-svc-$i" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true; done' EXIT
 
-    wait_until 30 "$pod Running" pod_is_phase "$pod" Running
+    # This image is intentionally separate from the suite's tiny test image
+    # and may be the first uncached pull on a fresh runner. The test is about
+    # an established watch surviving nftables churn, not a 30-second image
+    # pull ceiling.
+    wait_until 90 "$pod Running" pod_is_phase "$pod" Running
 
     # Wait for the watch to actually be alive and past its initial response
     # (real bytes received, curl still running) before starting the churn —

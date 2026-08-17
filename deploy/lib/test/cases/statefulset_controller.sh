@@ -72,6 +72,12 @@ EOF
     wait_until 90 "statefulset $sts creates pod ${sts}-1 after ${sts}-0 is Ready" \
         bash -c "kctl get pod '${sts}-1' >/dev/null 2>&1"
 
+    # The readiness probe is deliberately gated by a file inside each Pod.
+    # OrderedReady only gates creation of ordinal one on ordinal zero; once
+    # ordinal one exists it still has to be made ready independently before
+    # readyReplicas can legitimately reach two.
+    kctl exec "${sts}-1" -- touch /tmp/release >/dev/null
+
     wait_until 90 "statefulset $sts reports 2 readyReplicas" \
         bash -c "[[ \"\$(kctl get statefulset '$sts' -o jsonpath='{.status.readyReplicas}')\" == '2' ]]"
 
