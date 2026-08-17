@@ -9,8 +9,9 @@
 //! slice of Group D (`resourcequota-controller`), and all four workload
 //! controllers of Group E (`replicaset-controller`/`deployment-controller`/
 //! `daemonset-controller`/`statefulset-controller`) are implemented, plus
-//! the minimum slice of Group C (`serviceaccount-controller` only) needed
-//! to unblock testing Group A at all, plus `garbage-collector-controller`
+//! the minimum slice of Group C (`serviceaccount-controller`) needed
+//! to unblock testing Group A at all, plus `namespace-controller` and
+//! `garbage-collector-controller`
 //! (Group D's other half, deferred until Group E existed to produce a real
 //! owner chain to clean up) — see `controllers/service_account.rs`'s,
 //! `controllers/resource_quota.rs`'s, `controllers/garbage_collector.rs`'s,
@@ -139,6 +140,7 @@ pub async fn run() -> Result<()> {
             start_controller(&cfg, "node-ipam", controllers::node_ipam::run(client.clone(), &cfg)),
             start_controller(&cfg, "node-lifecycle", controllers::node_lifecycle::run(client.clone(), &cfg)),
             start_controller(&cfg, "service-account", controllers::service_account::run(client.clone(), &cfg)),
+            start_controller(&cfg, "namespace", controllers::namespace::run(client.clone(), &cfg)),
             start_controller(&cfg, "endpoint-slice", controllers::endpoint_slice::run(client.clone(), &cfg)),
             start_controller(&cfg, "resource-quota", controllers::resource_quota::run(client.clone(), &cfg)),
             start_controller(&cfg, "replica-set", controllers::replica_set::run(client.clone(), &cfg)),

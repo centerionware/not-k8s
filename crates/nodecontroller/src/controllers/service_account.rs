@@ -13,10 +13,9 @@
 //! `die()`s outright rather than let the whole suite fail on misleading
 //! secondary errors. That isn't a Group A concern in the abstract; it's a
 //! hard block on testing Group A at all. This is the minimum slice of Group
-//! C needed to unblock that — not the rest of it (no finalizer-driven
-//! namespace deletion, no root-ca-cert-publisher, no clusterrole
-//! aggregation — see docs/CONTROLLER_MANAGER.md, Group C, for what's still
-//! actually missing).
+//! C needed to unblock that. Namespace finalization and root-CA publication
+//! are separate controllers; clusterrole aggregation remains outside this
+//! slice (see docs/CONTROLLER_MANAGER.md, Group C).
 
 use anyhow::Result;
 use crate::workqueue::KeyedWorkQueue;

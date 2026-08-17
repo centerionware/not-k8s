@@ -163,6 +163,7 @@ picks wheel vs. heap per the cardinality rule in the section above:
 | A: node-ipam | No | — | pure event (Node created/podCIDR empty) |
 | B: service routing | No | — | pure event (Service/Pod/EndpointSlice watch) |
 | C: identity/namespace | No | — | pure event |
+| C: namespace deletion | Yes — objects with their own finalizers can outlive the delete request | Yes | low-frequency retry only while a Namespace is `Terminating` |
 | D: garbage-collector | Mostly no | Partially — safety-net relist | heap, long period (upstream: 30min), insurance against a missed/dropped watch event, not routine |
 | D: resourcequota | No | — | informer cache + keyed queue |
 | D: podgc | Yes — "has this terminated Pod aged out" | Yes | **wheel** (one entry per terminated Pod) |
@@ -179,7 +180,8 @@ picks wheel vs. heap per the cardinality rule in the section above:
 
 The wheel/heap entries above are the *entire* polling surface of this
 component; event controllers must not reach for `tokio::time::interval`
-outside this mechanism, that is the same kind of regression
+outside this mechanism (the namespace controller's explicitly documented
+terminating-cleanup retry is the one low-frequency exception), that is the same kind of regression
 `SCHEDULER.md` flags for its own timers: "if it ever fires, that's a bug
 report, not a routine event" applies here too, just to a different,
 larger set of cases where it's honestly expected to fire.
@@ -235,7 +237,7 @@ fan-out) — the plan's suggested first PR.
   `garbage-collector-controller` doesn't exist) — a Service delete
   explicitly deletes its own EndpointSlice instead.
 
-## C. Identity & namespace bootstrap — Tier 0 — **serviceaccount-controller and root-ca-cert-publisher-controller implemented**
+## C. Identity & namespace bootstrap — Tier 0 — **namespace, serviceaccount, and root-ca-cert-publisher controllers implemented**
 
 - `serviceaccount-controller` (`crates/nodecontroller/src/controllers/service_account.rs`):
   ensures every namespace has a `default` ServiceAccount. **Landed earlier
@@ -249,9 +251,16 @@ fan-out) — the plan's suggested first PR.
   same run's own log) rejects any pod that doesn't name one explicitly.
   Without this piece, Group A was un-testable, not just incomplete — so
   this one controller (pure event, watch Namespace, create-if-missing) was
-  pulled forward. The rest of Group C below is still not implemented.
+  pulled forward. The remaining Group C controllers below are separate
+  concerns.
 - `namespace-controller`: finalizer-driven namespace deletion (purges
-  every namespaced object before the Namespace itself goes away).
+  every discovered namespaced object before the Namespace itself goes away).
+  It uses the Namespace `/finalize` subresource, so the protected
+  `spec.finalizers` handoff is the same one upstream uses; discovery includes
+  CRD-backed namespaced resources, and a low-frequency retry remains active
+  only while a Namespace is `Terminating` so object finalizers can make
+  progress. Discovery is refreshed only on process restart, matching the
+  garbage collector's documented discovery scope.
 - `root-ca-cert-publisher-controller`
   (`crates/nodecontroller/src/controllers/root_ca_publisher.rs`,
   **implemented, pulled forward like `serviceaccount-controller` was**):
