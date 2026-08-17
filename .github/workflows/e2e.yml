@@ -42,6 +42,52 @@ permissions:
   contents: write
 
 jobs:
+  # Plan the shard matrix without touching a cluster. Registration and
+  # filtering are pure shell, so an --only dispatch that lands on only one or
+  # two shards no longer spends the other runners' time bootstrapping and
+  # compiling a cluster just to run zero tests.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      has_tests: ${{ steps.plan.outputs.has_tests }}
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Select non-empty shards
+        id: plan
+        env:
+          ONLY_PATTERN: ${{ inputs.only || '' }}
+        run: |
+          set -euo pipefail
+          entries=()
+          for shard in 1 2 3 4 5; do
+            args=(--list --shard="$shard/5")
+            [[ -z "$ONLY_PATTERN" ]] || args+=(--only="$ONLY_PATTERN")
+            selected="$(./deploy/test-e2e.sh "${args[@]}")"
+            count="$(printf '%s\n' "$selected" | sed -n 's/^selected_tests=//p')"
+            [[ "$count" =~ ^[0-9]+$ ]] || {
+              echo "planner did not return a selected_tests count for shard $shard" >&2
+              exit 1
+            }
+            if (( count > 0 )); then
+              needs_drivers=false
+              (( shard <= 2 )) && needs_drivers=true
+              entries+=("{\"shard\":$shard,\"needs_drivers\":$needs_drivers}")
+            fi
+          done
+
+          if ((${#entries[@]} == 0)); then
+            # Keep the JSON valid even when the e2e job is skipped by its
+            # job-level condition below. No runner is allocated in this case.
+            echo 'has_tests=false' >> "$GITHUB_OUTPUT"
+            echo 'shards=[{"shard":1,"needs_drivers":false}]' >> "$GITHUB_OUTPUT"
+          else
+            shards_json="$(IFS=,; printf '[%s]' "${entries[*]}")"
+            echo 'has_tests=true' >> "$GITHUB_OUTPUT"
+            echo "shards=$shards_json" >> "$GITHUB_OUTPUT"
+          fi
+
   # Sharded 5 ways, exactly like release.yml's own e2e stage — same
   # test-e2e.sh --shard=N/M and harness.sh _filter_shard() machinery, same
   # needs_drivers split, and needs_drivers MUST keep matching harness.sh's
@@ -56,24 +102,16 @@ jobs:
   # perform, so every unfiltered dispatch was a 90-minute way of learning
   # nothing.
   #
-  # --only dispatches were unaffected and stay that way: a filter that
-  # matches a handful of tests runs them on every shard's cluster, and the
-  # shards that match nothing finish in setup time.
+  # --only dispatches now allocate only the shards whose filtered test list
+  # is non-empty; a filter that matches one test no longer creates four
+  # unrelated clusters just to report four empty summaries.
   e2e:
+    needs: plan
+    if: needs.plan.outputs.has_tests == 'true'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - shard: 1
-            needs_drivers: true
-          - shard: 2
-            needs_drivers: true
-          - shard: 3
-            needs_drivers: false
-          - shard: 4
-            needs_drivers: false
-          - shard: 5
-            needs_drivers: false
+        include: ${{ fromJSON(needs.plan.outputs.shards) }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:

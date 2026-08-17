@@ -25,6 +25,7 @@
 #                                            # (round 124) — for splitting one long run across several
 #                                            # independent CI runners/clusters; combine with --only to
 #                                            # shard within an already-filtered subset.
+#   ./deploy/test-e2e.sh --list --only=probes --shard=2/5  # register/filter only; no cluster required
 #   ./deploy/test-e2e.sh --keep             # don't delete the test namespace at the end (debugging)
 #   ./deploy/test-e2e.sh --namespace=foo    # use a specific namespace instead of a generated one
 #
@@ -40,6 +41,7 @@ TEST_LIB_DIR="$LIB_DIR/test"
 
 ONLY_PATTERN=""
 KEEP_NAMESPACE=0
+LIST_ONLY=0
 TEST_NAMESPACE="not-k8s-e2e-$(date +%s)"
 SHARD_INDEX=""
 SHARD_TOTAL=""
@@ -47,6 +49,7 @@ SHARD_TOTAL=""
 for arg in "$@"; do
     case "$arg" in
         --only=*) ONLY_PATTERN="${arg#--only=}" ;;
+        --list) LIST_ONLY=1 ;;
         --shard=*)
             shard_arg="${arg#--shard=}"
             SHARD_INDEX="${shard_arg%%/*}"
@@ -74,9 +77,6 @@ export TEST_NAMESPACE
 # shellcheck source=lib/common.sh
 source "$LIB_DIR/common.sh"
 
-command -v kubectl >/dev/null 2>&1 || die "kubectl not found on PATH."
-kubectl get nodes >/dev/null 2>&1 || die "kubectl can't reach a cluster (check KUBECONFIG). This suite needs a live not-k8s deployment — see deploy/bootstrap-source.sh --with-cri."
-
 # shellcheck source=lib/test/harness.sh
 source "$TEST_LIB_DIR/harness.sh"
 # shellcheck source=lib/test/k8s.sh
@@ -89,6 +89,25 @@ source "$TEST_LIB_DIR/nodelet_env.sh"
 source "$TEST_LIB_DIR/nodeproxy_env.sh"
 # shellcheck source=lib/test/nodescheduler_env.sh
 source "$TEST_LIB_DIR/nodescheduler_env.sh"
+
+# Registration is pure shell: case files only define functions and call
+# register_test.  Let CI perform that cheap part without a cluster so its
+# matrix planner can omit shards that have no selected tests before they pay
+# for bootstrap, compilation, containerd, and driver setup.
+if [[ "$LIST_ONLY" -eq 1 ]]; then
+    source "$TEST_LIB_DIR/netns.sh"
+    for case_file in "$TEST_LIB_DIR"/cases/*.sh; do
+        # shellcheck source=/dev/null
+        source "$case_file"
+    done
+    _select_tests_for_run
+    printf 'selected_tests=%s\n' "${#TESTS_REGISTERED[@]}"
+    printf '%s\n' "${TESTS_REGISTERED[@]}"
+    exit 0
+fi
+
+command -v kubectl >/dev/null 2>&1 || die "kubectl not found on PATH."
+kubectl get nodes >/dev/null 2>&1 || die "kubectl can't reach a cluster (check KUBECONFIG). This suite needs a live not-k8s deployment — see deploy/bootstrap-source.sh --with-cri."
 
 if ! node_uses_cri_runtime; then
     warn "Node is running the mock runtime (or its status hasn't been checked yet) — most of these tests need real containers and will SKIP. Run nodelet with NODELET_RUNTIME=cri."
