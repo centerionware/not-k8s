@@ -1,10 +1,10 @@
-commit: 4182e1fb52726c2cb940c7625dd5622e81b8a0c8
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32066557934
-timestamp (UTC): 2026-08-17T20:47:26Z
+commit: 76467bc559e384438128737666e52ce51ec9dd0d
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32072469509
+timestamp (UTC): 2026-08-17T22:15:05Z
 shard: 5/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786999199
+==> Test namespace: not-k8s-e2e-1787004341
 ==> 238 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 44 test(s) selected
 ▶ test_tls_bootstrap_issues_a_real_client_certificate
@@ -14,12 +14,12 @@ exit code: 0
 ▶ test_datastore_serves_the_etcd_status_rpc
   ✔ PASS (0s)
 ▶ test_datastore_streams_watch_events_as_they_happen
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_datastore_refuses_a_cluster_it_cannot_be_part_of
   ✔ PASS (0s)
 ▶ test_apiserver_state_survives_a_datastore_restart
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11884/environ: Permission denied
-  ✔ PASS (9s)
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13883/environ: Permission denied
+  ✔ PASS (8s)
 ▶ test_the_cluster_survives_the_leader_being_killed
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
@@ -32,14 +32,14 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (150s)
+  ✔ PASS (148s)
 ▶ test_custom_dns_config_reaches_resolv_conf
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_eviction_manual_procedure
     (skip: triggering real eviction safely needs either an artificially-low pressure threshold or actually exhausting a resource — neither is something this suite does to a live node automatically. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES set just above current MemAvailable (forces MemoryPressure=True without real exhaustion), (3) apply a BestEffort pod and a Guaranteed pod, (4) within NODELET_EVICTION_CHECK_SECS (default 10s) confirm the BestEffort pod gets phase Failed/reason Evicted and is deleted, while the Guaranteed pod is untouched, (5) restore the normal threshold and restart nodelet.)
   ○ SKIP (0s)
 ▶ test_pod_exceeding_an_empty_dir_size_limit_is_evicted
-  ✔ PASS (34s)
+  ✔ PASS (36s)
 ▶ test_unreferenced_image_is_not_removed_below_the_watermark
 ==>     waiting through at least one NODELET_GC_INTERVAL_SECS cycle (default 300s) to confirm busybox:1.36.1 survives it...
   ✔ PASS (96s)
@@ -52,38 +52,35 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_pod_status_reports_host_ips_plural
   ✔ PASS (2s)
 ▶ test_image_pull_policy_if_not_present_skips_the_registry_round_trip
-  ✔ PASS (41s)
+  ✔ PASS (37s)
 ▶ test_host_network_pod_needs_no_explicit_port_mapping
   ✔ PASS (3s)
 ▶ test_node_reports_hugepages_capacity_when_reserved
   ✔ PASS (0s)
 ▶ test_pod_resources_socket_is_created_on_a_cri_node
-  ✔ PASS (1s)
+  ✔ PASS (0s)
 ▶ test_startup_probe_gates_liveness_and_readiness
   ✔ PASS (7s)
 ▶ test_metrics_resource_returns_real_pod_usage
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 ▶ test_memory_limit_is_enforced_via_cgroup
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_env_resource_field_ref_reports_the_containers_own_limits
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 ▶ test_scheduler_honours_a_node_selector_that_matches
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (1s)
 ▶ test_scheduler_holds_the_leader_lease
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (8s)
 ▶ test_scheduler_does_not_preempt_when_policy_forbids_it
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (78s)
 ▶ test_without_read_only_root_filesystem_writes_succeed
   ✔ PASS (3s)
 ▶ test_host_users_volume_ownership_translation_is_correct
   ✔ PASS (3s)
 ▶ test_sysctls_are_applied_to_the_sandbox
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_nodeproxy_runs_as_its_own_service_separate_from_nodelet
-  ✔ PASS (0s)
+  ✔ PASS (1s)
 ▶ test_deleting_a_service_removes_its_rules
   ✔ PASS (3s)
 ▶ test_statefulset_with_a_volume_claim_template_creates_an_accepted_pod
@@ -112,10 +109,9 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ==> starting containerd again — nothing touches the Pod, so only nodelet's own retry can recover it...
   ✔ PASS (37s)
 ▶ test_scheduler_schedules_a_pod_an_http_extender_approves
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (35s)
 
 ════════════════════════════════════════
-Results: 34 passed, 0 failed, 10 skipped
+Results: 38 passed, 0 failed, 6 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786999199...
+==> Cleaning up test namespace not-k8s-e2e-1787004341...
