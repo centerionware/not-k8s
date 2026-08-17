@@ -7,11 +7,17 @@
 //!
 //! # Two binding paths
 //!
-//! **Provisioner-prebound** (the common case for this project's CSI e2e
-//! tests): the external-provisioner sidecar creates a new PV with
-//! `spec.claimRef` already pointing at the PVC that triggered provisioning.
-//! This controller's job here is just to finish the handshake: set
-//! `pvc.spec.volumeName` and both objects' `status.phase` to `Bound`.
+//! **Dynamic provisioning** (the common case for this project's CSI e2e
+//! tests) is a two-stage handshake. After static matching finds no PV, this
+//! controller resolves the PVC's StorageClass and writes
+//! `volume.kubernetes.io/storage-provisioner=<class.provisioner>`. The
+//! external-provisioner deliberately ignores an unannotated PVC; this write
+//! is what asks it to call CSI `CreateVolume`. It then creates a new PV with
+//! `spec.claimRef` already pointing at the PVC, and this controller finishes
+//! the handshake by setting `pvc.spec.volumeName` and both objects' phase to
+//! `Bound`. For `WaitForFirstConsumer`, the provisioner annotation is held
+//! until the scheduler has written `volume.kubernetes.io/selected-node`,
+//! matching upstream's ordering.
 //!
 //! **Static** (a PV created by hand, no provisioner involved): finds an
 //! unclaimed PV whose `storageClassName` matches (both empty counts as a
@@ -35,25 +41,6 @@
 //! documented PVC-lifecycle gap: this crate's PVCs are created with no
 //! reclaim automation anywhere yet).
 //!
-//! # Open verification gap — read before trusting the provisioner-prebound path
-//!
-//! **The provisioner-prebound path is unverified against real CSI e2e
-//! infrastructure as of this writing** — `docs/CONTROLLER_MANAGER.md`'s
-//! Group G section has the full diagnostic account. Short version: traced
-//! `csi_pvc.sh`/`csi_attach.sh` still skipping under
-//! `controller_manager=nodecontroller` past one real bug already fixed here
-//! (a missing `root-ca-cert-publisher-controller`) to the reference
-//! `external-provisioner` sidecar itself going silent after informer setup
-//! — never observed reacting to a real PVC, coincident with the same watch
-//! instability (`peer closed connection without sending TLS close_notify`)
-//! independently visible in this crate's own controllers' logs. The logic
-//! above (`claimed_by`, matching a PV's `spec.claimRef` to the PVC by
-//! namespace+name) is exactly what upstream's own binder does and is
-//! covered by this file's unit tests, but has never been proven end to end
-//! against a real external-provisioner under this crate's own
-//! controller-manager. The static-binding path is unaffected and is
-//! e2e-verified (`storage_lifecycle_controllers.sh`).
-//!
 //! **First-match wins for static binding**, not upstream's "smallest PV
 //! that still satisfies the request" preference — with no capacity
 //! comparison available (see above) there's no meaningful ordering to rank
@@ -65,10 +52,14 @@ use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
     ObjectReference, PersistentVolume, PersistentVolumeClaim, PersistentVolumeStatus,
 };
+use k8s_openapi::api::storage::v1::StorageClass;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use std::collections::HashMap;
+
+const STORAGE_PROVISIONER_ANNOTATION: &str = "volume.kubernetes.io/storage-provisioner";
+const SELECTED_NODE_ANNOTATION: &str = "volume.kubernetes.io/selected-node";
 
 fn is_bound(pvc: &PersistentVolumeClaim) -> bool {
     pvc.spec
@@ -142,10 +133,65 @@ pub fn pv_for_claim<'a>(
     })
 }
 
+/// Resolve the external provisioner that should be asked to handle this
+/// claim after static matching failed. Upstream's PV controller owns this
+/// handoff; the external provisioner does not infer ownership from
+/// `storageClassName` alone.
+fn provisioner_for_claim<'a>(
+    pvc: &PersistentVolumeClaim,
+    storage_classes: &'a HashMap<String, StorageClass>,
+) -> Option<&'a str> {
+    let class_name = pvc.spec.as_ref()?.storage_class_name.as_deref()?;
+    let class = storage_classes.get(class_name)?;
+    if class.volume_binding_mode.as_deref() == Some("WaitForFirstConsumer") {
+        let selected = pvc
+            .metadata
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.get(SELECTED_NODE_ANNOTATION));
+        if !selected.is_some_and(|node| !node.is_empty()) {
+            return None;
+        }
+    }
+    (!class.provisioner.is_empty()).then_some(class.provisioner.as_str())
+}
+
+async fn request_dynamic_provisioning(
+    pvc_api: &Api<PersistentVolumeClaim>,
+    pvc: &PersistentVolumeClaim,
+    provisioner: &str,
+) {
+    if pvc
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|annotations| annotations.get(STORAGE_PROVISIONER_ANNOTATION))
+        .is_some_and(|current| current == provisioner)
+    {
+        return;
+    }
+
+    let name = pvc.name_any();
+    let namespace = pvc.namespace().unwrap_or_default();
+    let patch = serde_json::json!({
+        "metadata": {
+            "annotations": { (STORAGE_PROVISIONER_ANNOTATION): provisioner }
+        }
+    });
+    match pvc_api
+        .patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
+        Ok(_) => tracing::info!(namespace = %namespace, pvc = %name, %provisioner, "persistentvolume-binder-controller requested dynamic provisioning"),
+        Err(e) => tracing::warn!(namespace = %namespace, pvc = %name, %provisioner, error = ?e, "failed to request dynamic provisioning for PersistentVolumeClaim"),
+    }
+}
+
 async fn reconcile_claim(
     client: &Client,
     pvc: &PersistentVolumeClaim,
     pvs: &mut HashMap<String, PersistentVolume>,
+    storage_classes: &HashMap<String, StorageClass>,
 ) {
     let namespace = pvc.namespace().unwrap_or_default();
     let name = pvc.name_any();
@@ -159,6 +205,9 @@ async fn reconcile_claim(
         return;
     }
     let Some(pv) = pv_for_claim(pvc, pvs).cloned() else {
+        if let Some(provisioner) = provisioner_for_claim(pvc, storage_classes) {
+            request_dynamic_provisioning(&pvc_api, pvc, provisioner).await;
+        }
         return;
     };
     let pv_name = pv.name_any();
@@ -237,10 +286,12 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pvs: HashMap<String, PersistentVolume> = HashMap::new();
     let mut claims: HashMap<(String, String), PersistentVolumeClaim> = HashMap::new();
+    let mut storage_classes: HashMap<String, StorageClass> = HashMap::new();
     let queue = KeyedWorkQueue::default();
 
     let mut pv_stream = crate::watch::watch_persistent_volumes(&client);
     let mut pvc_stream = crate::watch::watch_persistent_volume_claims(&client);
+    let mut storage_class_stream = crate::watch::watch_storage_classes(&client);
 
     loop {
         tokio::select! {
@@ -272,9 +323,25 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     None => return Ok(()),
                 }
             }
+            ev = storage_class_stream.next() => {
+                match ev {
+                    Some(Ok(Event::Apply(class))) | Some(Ok(Event::InitApply(class))) => {
+                        storage_classes.insert(class.name_any(), class);
+                        for pvc in claims.values() {
+                            queue.enqueue((ns_of(pvc), pvc.name_any()));
+                        }
+                    }
+                    Some(Ok(Event::Delete(class))) => {
+                        storage_classes.remove(&class.name_any());
+                    }
+                    Some(Ok(Event::Init | Event::InitDone)) => {}
+                    Some(Err(e)) => tracing::warn!(error = ?e, "StorageClass watch error in persistentvolume-binder-controller"),
+                    None => return Ok(()),
+                }
+            }
             key = queue.pop() => {
                 if let Some(pvc) = claims.get(&key).cloned() {
-                    reconcile_claim(&client, &pvc, &mut pvs).await;
+                    reconcile_claim(&client, &pvc, &mut pvs, &storage_classes).await;
                 }
             }
         }
@@ -286,6 +353,59 @@ mod tests {
     use super::*;
     use k8s_openapi::api::core::v1::{PersistentVolumeClaimSpec, PersistentVolumeSpec};
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use std::collections::BTreeMap;
+
+    fn claim_for_class(class_name: &str) -> PersistentVolumeClaim {
+        PersistentVolumeClaim {
+            metadata: ObjectMeta::default(),
+            spec: Some(PersistentVolumeClaimSpec {
+                storage_class_name: Some(class_name.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn storage_class(name: &str, mode: &str) -> StorageClass {
+        StorageClass {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            provisioner: "hostpath.csi.k8s.io".to_string(),
+            volume_binding_mode: Some(mode.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn immediate_class_requests_its_external_provisioner() {
+        let claim = claim_for_class("fast");
+        let classes = HashMap::from([("fast".to_string(), storage_class("fast", "Immediate"))]);
+        assert_eq!(
+            provisioner_for_claim(&claim, &classes),
+            Some("hostpath.csi.k8s.io")
+        );
+    }
+
+    #[test]
+    fn wait_for_first_consumer_waits_for_scheduler_selected_node() {
+        let mut claim = claim_for_class("delayed");
+        let classes = HashMap::from([(
+            "delayed".to_string(),
+            storage_class("delayed", "WaitForFirstConsumer"),
+        )]);
+        assert_eq!(provisioner_for_claim(&claim, &classes), None);
+
+        claim.metadata.annotations = Some(BTreeMap::from([(
+            SELECTED_NODE_ANNOTATION.to_string(),
+            "node-a".to_string(),
+        )]));
+        assert_eq!(
+            provisioner_for_claim(&claim, &classes),
+            Some("hostpath.csi.k8s.io")
+        );
+    }
 
     fn pvc(name: &str, class: &str, modes: &[&str]) -> PersistentVolumeClaim {
         PersistentVolumeClaim {

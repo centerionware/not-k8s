@@ -23,7 +23,7 @@ use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, ResourceQuota, Service, ServiceAccount};
 use k8s_openapi::api::policy::v1::PodDisruptionBudget;
-use k8s_openapi::api::storage::v1::VolumeAttachment;
+use k8s_openapi::api::storage::v1::{StorageClass, VolumeAttachment};
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -357,6 +357,8 @@ shared_watch!(watch_persistent_volume_claims, SHARED_PVCS, PersistentVolumeClaim
 
 shared_watch!(watch_persistent_volumes, SHARED_PVS, PersistentVolume);
 
+shared_watch!(watch_storage_classes, SHARED_STORAGE_CLASSES, StorageClass);
+
 shared_watch!(watch_volume_attachments, SHARED_VOLUME_ATTACHMENTS, VolumeAttachment);
 
 shared_watch!(watch_certificate_signing_requests, SHARED_CSRS, CertificateSigningRequest);
@@ -399,6 +401,7 @@ pub fn watch_dynamic_resource(
         ("batch/v1", "CronJob") => dynamic_shared!(watch_cron_jobs),
         ("batch/v1", "Job") => dynamic_shared!(watch_jobs),
         ("policy/v1", "PodDisruptionBudget") => dynamic_shared!(watch_pod_disruption_budgets),
+        ("storage.k8s.io/v1", "StorageClass") => dynamic_shared!(watch_storage_classes),
         _ => None,
     }
 }

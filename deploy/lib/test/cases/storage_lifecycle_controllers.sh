@@ -1,11 +1,9 @@
 # lib/test/cases/storage_lifecycle_controllers.sh — nodecontroller's Group
-# G: persistentvolume-binder-controller (static path) and
-# pv-protection-controller/pvc-protection-controller. Deliberately uses a
-# hostPath-backed static PV, not a real CSI driver — these two controllers'
-# logic (bind matching, finalizer add/remove) doesn't depend on CSI at all,
-# so this doesn't need the TEST_CSI_* infrastructure csi_pvc.sh/csi_attach.sh
-# gate on (those two exercise attach-detach-controller and the
-# provisioner-prebound half of the binder for real, against real CSI infra).
+# G: persistentvolume-binder-controller and pv-protection-controller/
+# pvc-protection-controller. These direct controller tests need no real CSI
+# driver: one uses a hostPath static PV and the other verifies the dynamic
+# provisioner handoff with a deliberately fake provisioner. csi_pvc.sh and
+# csi_attach.sh separately exercise the complete handoff against real CSI.
 
 _nodecontroller_is_running_storage() {
     if command -v systemctl >/dev/null 2>&1; then
@@ -85,3 +83,47 @@ EOF
 }
 
 register_test test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion
+
+# Upstream's PV controller, not the external provisioner itself, turns an
+# unbound StorageClass-backed claim into provisioning work by copying the
+# class's provisioner onto this annotation. Without it a perfectly healthy
+# CSI provisioner watches the PVC but deliberately ignores it forever. This
+# uses a fake provisioner so it proves the handoff directly without requiring
+# the optional reference CSI driver.
+test_pv_binder_requests_dynamic_provisioning_from_the_storage_class() {
+    _require_nodecontroller_storage
+    local class="pv-binder-dynamic-handoff-class"
+    local pvc="pv-binder-dynamic-handoff-claim"
+    local provisioner="not-k8s.test/fake-provisioner"
+
+    apply_manifest <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: $class
+provisioner: $provisioner
+volumeBindingMode: Immediate
+EOF
+    apply_manifest <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: $pvc
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: $class
+  resources:
+    requests:
+      storage: 10Mi
+EOF
+    trap 'kctl delete pvc "$pvc" --ignore-not-found >/dev/null 2>&1 || true; kubectl delete storageclass "$class" --ignore-not-found >/dev/null 2>&1 || true' EXIT
+
+    wait_until 30 "persistentvolume-binder-controller requests the StorageClass provisioner" \
+        bash -c "[[ \"\$(kctl get pvc '$pvc' -o jsonpath='{.metadata.annotations.volume\\.kubernetes\\.io/storage-provisioner}')\" == '$provisioner' ]]"
+
+    kctl delete pvc "$pvc" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete storageclass "$class" --ignore-not-found >/dev/null 2>&1 || true
+    trap - EXIT
+}
+
+register_test test_pv_binder_requests_dynamic_provisioning_from_the_storage_class

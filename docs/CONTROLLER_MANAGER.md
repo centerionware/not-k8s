@@ -265,9 +265,10 @@ fan-out) — the plan's suggested first PR.
   controller) logged `"Expected to load root CA config from
   /var/run/secrets/.../ca.crt ... no such file or directory"` and never
   became a working client, so `csi_pvc.sh`/`csi_attach.sh`'s PVCs sat
-  `Pending` forever with zero provisioning events — not a
-  `persistentvolume-binder-controller` bug, this was the actual root
-  cause. Reads the CA once at startup from nodecontroller's own ambient
+  `Pending` forever with zero provisioning events. This was one real cause,
+  but not the final Group G blocker: after it was fixed, the provisioner
+  became a healthy client and exposed the binder handoff bug documented
+  below. Reads the CA once at startup from nodecontroller's own ambient
   kubeconfig (matching this crate's existing "don't solve cert bootstrap,
   just read `$KUBECONFIG`" stance) rather than a `--root-ca-file` flag;
   named gaps: no CA rotation support (needs a restart to pick up a
@@ -415,7 +416,7 @@ are implemented and e2e-verified.
   entry, since expected cardinality (finished Jobs with a TTL set,
   cluster-wide) doesn't justify the extra structure.
 
-## G. Volume/storage lifecycle — Tier 0 / 2 — **implemented (attach-detach, binder, pv/pvc-protection; expander scoped out) — dynamic CSI e2e path still open, see persistentvolume-binder-controller below**
+## G. Volume/storage lifecycle — Tier 0 / 2 — **implemented (attach-detach, binder, pv/pvc-protection; expander scoped out) — dynamic-provisioning handoff fix awaiting CI verification**
 
 - `attach-detach-controller` (`crates/nodecontroller/src/controllers/attach_detach.rs`,
   **implemented**): creates/deletes `VolumeAttachment` objects so a CSI
@@ -433,41 +434,35 @@ are implemented and e2e-verified.
   deliberately conservative), and no `--node-detach-timeout`-style
   force-detach for a node that goes permanently unreachable.
 - `persistentvolume-binder-controller`
-  (`crates/nodecontroller/src/controllers/pv_binder.rs`, **implemented,
-  static path e2e-verified; provisioner-prebound path unverified — see
-  below**): binds a PVC to a PV — both the common provisioner-prebound path
-  (a CSI external-provisioner already set `pv.spec.claimRef`, this
-  controller finishes the handshake) and the static path (hand-created PV,
-  matched by storage class + access modes). Load-bearing in practice
+  (`crates/nodecontroller/src/controllers/pv_binder.rs`, **implemented;
+  static path e2e-verified, dynamic fix awaiting targeted CI**): binds a PVC
+  to a PV and owns the upstream-compatible handoff to dynamic provisioners.
+  Static matching runs first (hand-created PV, matched by storage class +
+  access modes). When no PV matches, the controller resolves the
+  StorageClass and writes
+  `volume.kubernetes.io/storage-provisioner=<class.provisioner>`; the
+  external provisioner deliberately ignores the claim until this annotation
+  exists. For `WaitForFirstConsumer`, that write waits for the scheduler's
+  `volume.kubernetes.io/selected-node` annotation. Once the provisioner
+  creates a PV with `spec.claimRef`, this controller finishes the handshake.
+  Load-bearing in practice
   despite the plan's original Tier 2 label: this project's own `csi_pvc.sh`/
   `csi_attach.sh` e2e tests gate on `PVC.status.phase == Bound`, which
   nothing sets without this controller once k3s's own copy is disabled.
   Named simplification: no capacity comparison for static matching
   (`Quantity` has no arithmetic — the same gap `resourcequota-controller`
   documents), and no unbind/reclaim-policy handling once bound.
-  **Open verification gap, found and diagnosed live in CI, not yet
-  resolved**: `csi_pvc.sh`/`csi_attach.sh` still skip under
-  `controller_manager=nodecontroller` — traced (via a throwaway diagnostic
-  branch dumping the reference `external-provisioner` sidecar's own
-  container logs) past an initial real bug in this crate
-  (`root-ca-cert-publisher-controller` was missing entirely — fixed, see
-  Group C) to a second layer: the CSI reference driver's provisioner sets
-  up its informers correctly, negotiates with the driver, then goes
-  completely silent — never observed reacting to a real PVC at all, cluster
-  or namespace events included. This coincides with the same
-  `"peer closed connection without sending TLS close_notify"` watch
-  instability independently visible in this crate's *own* controllers'
-  logs throughout this session (relist-and-continue there, because they
-  handle it explicitly) — plausibly the same root cause silently stalling
-  the reference driver's Go client, which has no equivalent visible
-  recovery in its own logs. **This test path has never actually passed
-  under `controller_manager=nodecontroller`** (confirmed against
-  `e2e-results` history: its only passing runs predate this branch, under
-  k3s's own controller-manager) — named here explicitly rather than
-  silently left unverified, per this project's "verified against real
-  infrastructure" standard. The static-binding path
-  (`storage_lifecycle_controllers.sh`) and the code itself are unaffected
-  and separately e2e-verified. Revisit before this multi-group PR merges.
+  **Issue #30 diagnosis**: after the root-CA, nodeproxy, datastore, watch
+  pressure, and informer/workqueue hypotheses were isolated, the decisive
+  run showed a healthy CSI provisioner with populated caches, but no PVC
+  event, no provisioning event, and no `CreateVolume`. Comparing the Rust
+  binder to Kubernetes 1.33's `provisionClaimOperationExternal` found the
+  missing transition above. The previous implementation returned when no PV
+  existed, which is exactly where upstream annotates the PVC to wake the
+  external provisioner. A driver-independent e2e assertion now checks that
+  annotation directly in `storage_lifecycle_controllers.sh`; the existing
+  real `csi_pvc.sh`/`csi_attach.sh` tests remain the end-to-end gate. **Do not
+  call the dynamic path verified until those targeted tests pass in CI.**
 - `pv-protection-controller` / `pvc-protection-controller`
   (`crates/nodecontroller/src/controllers/storage_protection.rs`,
   **implemented**): the standard finalizer-based "don't let this disappear
