@@ -1,22 +1,223 @@
 commit: 4182e1fb52726c2cb940c7625dd5622e81b8a0c8
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32065548898
-timestamp (UTC): 2026-08-17T20:31:27Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32066557934
+timestamp (UTC): 2026-08-17T20:51:13Z
 shard: 1/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786998579
+==> Test namespace: not-k8s-e2e-1786999227
 ==> 238 test(s) registered total (before sharding); running now...
 ==> Shard 1/5: 52 test(s) selected
+▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
+  ✔ PASS (35s)
+▶ test_dynamic_csi_registration_actually_registered_the_driver
+  ✔ PASS (0s)
+▶ test_csi_ephemeral_inline_volume_is_mounted
+  ✔ PASS (3s)
+▶ test_node_reports_volumes_in_use_for_a_csi_volume
+  ✔ PASS (119s)
+▶ test_plugin_registry_watches_for_dra_drivers_too
+  ✔ PASS (0s)
+▶ test_dra_claim_is_allocated_and_reserved_for_the_pod
+  ✔ PASS (3s)
 ▶ test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen
-  ✔ PASS (43s)
+    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
+  ○ SKIP (0s)
+▶ test_job_controller_runs_pods_to_completion
+    (skip: nodecontroller isn't running here — deploy with --controller-manager=nodecontroller (which also disables k3s's own controller manager) to exercise these)
+  ○ SKIP (0s)
+▶ test_combined_binary_contains_every_component
+    (skip: no combined binary here (split layout — build with --layout=combined or --layout=both))
+  ○ SKIP (0s)
+▶ test_pod_cgroup_reflects_its_qos_class
+  ✔ PASS (3s)
+▶ test_datastore_round_trips_a_key_over_grpc
+  ✔ PASS (0s)
+▶ test_datastore_replays_missed_events_to_a_late_watcher
+  ✔ PASS (10s)
+▶ test_datastore_refuses_a_malformed_cluster_spec
+  ✔ PASS (0s)
+▶ test_cluster_elects_a_single_leader
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_a_minority_refuses_writes_rather_than_inventing_them
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_upgrade_straight_to_a_multi_member_cluster_is_refused
+    (skip: needs root to create network namespaces — this needs real network namespaces)
+  ○ SKIP (0s)
+▶ test_device_plugin_health_transition_updates_allocated_resources_status
+==> installing grpcio/grpcio-tools for the fake device plugin...
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
+  ✔ PASS (138s)
+▶ test_spec_hostname_overrides_the_container_hostname
+  ✔ PASS (3s)
+▶ test_eviction_priority_tiebreak_manual_procedure
+    (skip: proving priority-based tiebreaking (round 26 — pick_eviction_candidate() ranks by spec.priority within a QoS class before falling back to usage) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with different PriorityClasses (e.g. a low-priority one and a high-priority one, or set spec.priority directly), force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the LOWER-priority pod is evicted first even if the higher-priority pod is using more memory — proof priority wins the tiebreak before usage does, matching real kubelet's rankMemoryPressure ordering. The pure ranking logic itself (priority beats usage, QoS class still outranks priority) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end.)
+  ○ SKIP (0s)
+▶ test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods
+    (skip: nodecontroller isn't running here — deploy with --controller-manager=nodecontroller to exercise these)
+  ○ SKIP (0s)
+▶ test_basic_pod_runs
+  ✔ PASS (3s)
+▶ test_crashing_container_restarts_and_increments_restart_count
+  ✔ PASS (5s)
+▶ test_exited_container_reports_terminated_state_with_exit_code
+  ✔ PASS (3s)
+▶ test_pod_status_reports_qos_class
+  ✔ PASS (2s)
+▶ test_a_long_lived_watch_survives_a_service_churn_burst
+=== watcher pod status ===
+NAME                       READY   STATUS    RESTARTS   AGE   IP           NODE            NOMINATED NODE   READINESS GATES
+established-conn-watcher   1/1     Running   0          27s   10.42.0.19   runnervmzvulz   <none>           <none>
+=== watch.err ===
+host=10.43.0.1 port=443
+*   Trying 10.43.0.1:443...
+* ALPN: curl offers h2,http/1.1
+} [5 bytes data]
+* TLSv1.3 (OUT), TLS handshake, Client hello (1):
+} [512 bytes data]
+*  CAfile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+*  CApath: /etc/ssl/certs
+{ [5 bytes data]
+* TLSv1.3 (IN), TLS handshake, Server hello (2):
+{ [122 bytes data]
+* TLSv1.3 (IN), TLS handshake, Encrypted Extensions (8):
+{ [15 bytes data]
+* TLSv1.3 (IN), TLS handshake, Request CERT (13):
+{ [65 bytes data]
+* TLSv1.3 (IN), TLS handshake, Certificate (11):
+{ [953 bytes data]
+* TLSv1.3 (IN), TLS handshake, CERT verify (15):
+{ [79 bytes data]
+* TLSv1.3 (IN), TLS handshake, Finished (20):
+{ [36 bytes data]
+* TLSv1.3 (OUT), TLS change cipher, Change cipher spec (1):
+} [1 bytes data]
+* TLSv1.3 (OUT), TLS handshake, Certificate (11):
+} [8 bytes data]
+* TLSv1.3 (OUT), TLS handshake, Finished (20):
+} [36 bytes data]
+* SSL connection using TLSv1.3 / TLS_AES_128_GCM_SHA256 / x25519 / id-ecPublicKey
+* ALPN: server accepted h2
+* Server certificate:
+*  subject: O=k3s; CN=k3s
+*  start date: Aug 17 19:38:43 2026 GMT
+*  expire date: Aug 17 19:38:43 2027 GMT
+*  subjectAltName: host "10.43.0.1" matched cert's IP address!
+*  issuer: CN=k3s-server-ca@1786999123
+*  SSL certificate verify ok.
+*   Certificate level 0: Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256
+*   Certificate level 1: Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256
+} [5 bytes data]
+* Connected to 10.43.0.1 (10.43.0.1) port 443
+* using HTTP/2
+* [HTTP/2] [1] OPENED stream for https://10.43.0.1:443/api/v1/namespaces/not-k8s-e2e-1786999227/pods?watch=true&timeoutSeconds=85
+* [HTTP/2] [1] [:method: GET]
+* [HTTP/2] [1] [:scheme: https]
+* [HTTP/2] [1] [:authority: 10.43.0.1]
+* [HTTP/2] [1] [:path: /api/v1/namespaces/not-k8s-e2e-1786999227/pods?watch=true&timeoutSeconds=85]
+* [HTTP/2] [1] [user-agent: curl/8.10.1]
+* [HTTP/2] [1] [accept: */*]
+* [HTTP/2] [1] [authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6Il9kYjBVT0ZjeXFiT2pRMFUyZnZZODVmTE1tNHR3NnFTUFlKLVh4b1UyS00ifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NTM1NTU2LCJpYXQiOjE3ODY5OTk1NTYsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiOWNiMzJlYTMtODhjYS00YmU1LTk1ZmYtNjcyNTAwMzhlOGRkIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2OTk5MjI3Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6ImZmMWE0NWRmLTk1YWEtNGMzMy1hY2ZhLTcwNWQ2NTkxYmNmZSJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6IjMxMGU5OWQ5LTU0NWItNDA1OS1iN2JhLTg4N2FjMTUwODYyNiJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6IjQ3ZmE5ZGVlLTJkM2UtNDQwMS04YjMyLTE0ZmZkZWRiZjA1NSJ9LCJ3YXJuYWZ0ZXIiOjE3ODcwMDMxNjN9LCJuYmYiOjE3ODY5OTk1NTYsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2OTk5MjI3OmRlZmF1bHQifQ.2NHOIkFqKtwsKnlUSzsEloA_331l21Dtj6EMFftl9PFlJuTS0I8VPAfhQIVI48fo-BuaK0EUyh9dFkr3fJU4ug8kFHBNOzDquggHJmfHU3N2K5iDbTrrM96zb4Yy5yF0VAAnDBP6gphW1WWCgIEzreL8Bo8mlTlMjCuS5zVFbvDfSOW4nW0GEw7v_8eKymahabxb2dik7xb4OvkbcGF0hQ9PHyA5XyO2TiTqarymE8S3qn3VG3Degs9Dz1KOcDTHrEPT99N3e5Aw2wMvVcttTzI3_-p3hSQMoxR_c3xdIaa3osQizmH5lfb7eMhQyuChES8OKqmlGw7A8V5EmmmMYA]
+} [5 bytes data]
+> GET /api/v1/namespaces/not-k8s-e2e-1786999227/pods?watch=true&timeoutSeconds=85 HTTP/2
+> Host: 10.43.0.1
+> User-Agent: curl/8.10.1
+> Accept: */*
+> Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6Il9kYjBVT0ZjeXFiT2pRMFUyZnZZODVmTE1tNHR3NnFTUFlKLVh4b1UyS00ifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NTM1NTU2LCJpYXQiOjE3ODY5OTk1NTYsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiOWNiMzJlYTMtODhjYS00YmU1LTk1ZmYtNjcyNTAwMzhlOGRkIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg2OTk5MjI3Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6ImZmMWE0NWRmLTk1YWEtNGMzMy1hY2ZhLTcwNWQ2NTkxYmNmZSJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6IjMxMGU5OWQ5LTU0NWItNDA1OS1iN2JhLTg4N2FjMTUwODYyNiJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6IjQ3ZmE5ZGVlLTJkM2UtNDQwMS04YjMyLTE0ZmZkZWRiZjA1NSJ9LCJ3YXJuYWZ0ZXIiOjE3ODcwMDMxNjN9LCJuYmYiOjE3ODY5OTk1NTYsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg2OTk5MjI3OmRlZmF1bHQifQ.2NHOIkFqKtwsKnlUSzsEloA_331l21Dtj6EMFftl9PFlJuTS0I8VPAfhQIVI48fo-BuaK0EUyh9dFkr3fJU4ug8kFHBNOzDquggHJmfHU3N2K5iDbTrrM96zb4Yy5yF0VAAnDBP6gphW1WWCgIEzreL8Bo8mlTlMjCuS5zVFbvDfSOW4nW0GEw7v_8eKymahabxb2dik7xb4OvkbcGF0hQ9PHyA5XyO2TiTqarymE8S3qn3VG3Degs9Dz1KOcDTHrEPT99N3e5Aw2wMvVcttTzI3_-p3hSQMoxR_c3xdIaa3osQizmH5lfb7eMhQyuChES8OKqmlGw7A8V5EmmmMYA
+> 
+{ [5 bytes data]
+* TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+{ [122 bytes data]
+* Request completely sent off
+{ [5 bytes data]
+< HTTP/2 200 
+< audit-id: 105a8c50-efc7-42c3-a4bd-d05832a49887
+< cache-control: no-cache, private
+< content-type: application/json
+< x-kubernetes-pf-flowschema-uid: 919596f6-6ff4-47e3-89ba-0cb86ae1ce60
+< x-kubernetes-pf-prioritylevel-uid: 69a24927-5184-43bd-9203-6074123c5205
+< date: Mon, 17 Aug 2026 20:45:58 GMT
+< 
+} [5 bytes data]
+watch.out bytes=53363 curl_processes_still_running=1
+  ✔ PASS (62s)
+▶ test_pressure_conditions_are_present_and_normally_false
+  ✔ PASS (1s)
+▶ test_pod_resources_grpc_query_returns_real_data
+  ✔ PASS (3s)
+▶ test_startup_probe_failure_past_threshold_restarts_the_container
+  ✔ PASS (34s)
+▶ test_metrics_cadvisor_returns_real_container_usage
+  ✔ PASS (3s)
+▶ test_hugepages_limit_is_enforced_via_cgroup
+    (skip: no /sys/fs/cgroup/hugetlb.2MB.limit_in_bytes in the container — this node's cgroup v2 hierarchy may not have the hugetlb controller enabled)
+  ○ SKIP (23s)
+▶ test_cpu_limit_is_enforced_via_cgroup
+  ✔ PASS (3s)
+▶ test_runtime_class_handler_is_honored
+  ✔ PASS (3s)
 ▶ test_scheduler_rejects_a_pod_that_does_not_fit
-  ✔ PASS (11s)
+    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
+  ○ SKIP (0s)
 ▶ test_scheduler_honours_pod_anti_affinity
-  ✔ PASS (43s)
+    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
+  ○ SKIP (0s)
 ▶ test_scheduler_resolves_a_namespace_selector_against_real_labels
+    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
+  ○ SKIP (0s)
+▶ test_container_status_reports_resolved_user
+  ✔ PASS (3s)
+▶ test_proc_mount_default_masks_proc_kcore
+  ✔ PASS (3s)
+▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
+==> WARNING: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership, got '3000 5000' — this runtime may not implement Merge's image-group-membership resolution (a newer-than-usual runc feature); not failing outright since nodelet itself only passes the policy through to CRI unchanged
+  ✔ PASS (1s)
+▶ test_clusterip_is_reachable_from_inside_a_pod
+  ✔ PASS (7s)
+▶ test_session_affinity_pins_a_client_to_one_backend
+  ✔ PASS (5s)
+▶ test_kubectl_logs_follow_streams_new_output
+  ✔ PASS (5s)
+▶ test_a_slow_terminating_pod_does_not_stall_another_pods_creation
   ✔ PASS (11s)
+▶ test_configmap_and_secret_volumes_are_materialized
+  ✔ PASS (3s)
+▶ test_service_account_token_projected_volume_mints_a_real_token
+  ✔ PASS (3s)
+▶ test_image_volume_source_mounts_a_read_only_image
+  ✔ PASS (3s)
+▶ test_mount_propagation_private_default_does_not_see_a_new_host_mount
+  ✔ PASS (8s)
+▶ test_host_path_directory_mounts_the_real_host_directory
+  ✔ PASS (2s)
+▶ test_cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container
+  ✔ PASS (7s)
+▶ test_image_gc_removes_unreferenced_images_above_the_watermark
+  ✔ PASS (37s)
+▶ test_log_rotation_creates_a_rotated_file
+==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786999227_log-rotation_6e18455d-a635-4b8a-8855-cbc28d192f56 (log_rotate_interval, default 10s)...
+  ✔ PASS (12s)
+▶ test_client_certificate_authentication_works
+...+.+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+...+..+.......+..+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.......+.....+...+.........+...+......+....+.....+.+..+..........+.........+......+..+.+.........+..+...............+....+..+.......+........+....+..................+.....+.+..+.........+.+....................+...+...............+.+..............+......+.+..+.+..+...................+........+.+.....+.+..............+.+.....+.........+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.......+.+..+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+...................+...+..+...+.......+.....+.+...+...........+.+.....+...+......+.+........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*......+.....+......+....+...........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+......+....+...+.........+........+.+...........+......+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+..+...+.+.....+......+...+.+............+..+...+...+....+..+....+.........+..+.+.....+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+........+......+.........+.......+...+...+..+.......+.....+.+..+.......+........+...+.......+..+....+............+...+..+.......+..+......+.............+.....+.+...+..+.........+.......+...+..+.......+.....+......+....+...........+....+.....+...+....+.....+......+............+...+.........+...+.+...........................+.....+....+...+.................+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+...+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+............+...+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+.......+...+.....+.+.....+.+...+...........+.+.....+....+.....+.+...+..+.+..............+.+...+...........+.+..+...+....+........+.+.........+...........+.+........+.+............+.....+...............+....+...+...............+...+...+.................+....+...+........+...+..........+.....+.......+.....+..........+..............+.........+.........+.+.........+..+.........+.+...+...............+...+.........+...........+...+.+....................+.........+....+..+.............+..+......+...+.........+.+......+........+.+...........+....+.........+..+...+......+......+.+........+.......+..+...+.......+.....+......+....+...+..............+................+..+............+......+.............+.........+...+.........+...+.....+.+..+....+..............+......+.+.......................+.+...+..+.+..+......+.+...........+............................+.....+............+....+...............+.....+.+...+...........+...+...+....+...+...+...+.....+....+..+..........+.........+.........+...+..+......+....+..+.+.........+.......................+......+......+.+..................+...........+......+....+...+.....+.+......+...+......+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+Certificate request self-signature ok
+subject=CN = alice, O = system:masters
+.....+...+......+....+......+...+......+..+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+........+.+...+..+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..............+..+...+...+............+................+..+...+......+...................+..+....+.....+.+..+...+..........+.................+............+......+...+.+...+...+..+.+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+..+.+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+............+.....+...+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+..+.+..+..........+...+...+.....+......+...+.+..+....+.....+...+.+..+.......+...+........+.........+................+..+....+.....+...+..........+........+...+.......+...+.........+........+...+.+...+.....+.+.....+...............+.......+..+...+...+.......+.........+...........+.............+..+....+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+  ✔ PASS (3s)
+▶ test_static_pod_creates_a_mirror_pod
+  ✔ PASS (73s)
 
 ════════════════════════════════════════
-Results: 4 passed, 0 failed, 0 skipped
+Results: 40 passed, 0 failed, 12 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786998579...
+==> Cleaning up test namespace not-k8s-e2e-1786999227...
