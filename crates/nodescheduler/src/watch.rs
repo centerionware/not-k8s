@@ -216,6 +216,14 @@ pub struct WatchTargets {
     /// nominee actually gets placed) right where it calls `cache.add_pod` —
     /// see that call site's own comment for why both are needed.
     pub nominator: Arc<Mutex<crate::preempt::Nominator>>,
+    /// Event-driven completion for VolumeBinding's per-pod waiters. The PVC
+    /// informer publishes here after updating the cache, replacing periodic
+    /// API GETs in the binding cycle.
+    pub pvc_bindings: crate::pvc_binding::PvcBindingTracker,
+    /// Full Pod/Node objects are retained only for configured HTTP extenders,
+    /// whose wire contract requires them. The default projection-only path
+    /// remains unchanged.
+    pub preserve_extender_objects: bool,
 }
 
 /// Mirrors of the last version of each object, so updates can be diffed.
@@ -506,13 +514,16 @@ fn handle_pvc_event(ev: Event<Pvc>, sweep: &mut RelistSweep, targets: &WatchTarg
         Event::InitDone => {
             for key in sweep.finish() {
                 cache.remove_pvc(&key);
+                targets.pvc_bindings.observe(&key, false);
             }
         }
         Event::InitApply(pvc) | Event::Apply(pvc) => {
             let info = crate::cache::PvcInfo::from_api(&pvc);
             let key = info.key();
+            let fully_bound = info.bound;
             sweep.observe(&key);
-            cache.upsert_pvc(key, info);
+            cache.upsert_pvc(key.clone(), info);
+            targets.pvc_bindings.observe(&key, fully_bound);
         }
         Event::Delete(pvc) => {
             let ns = pvc.metadata.namespace.clone().unwrap_or_default();
@@ -520,6 +531,7 @@ fn handle_pvc_event(ev: Event<Pvc>, sweep: &mut RelistSweep, targets: &WatchTarg
             let key = format!("{ns}/{name}");
             sweep.forget(&key);
             cache.remove_pvc(&key);
+            targets.pvc_bindings.observe(&key, false);
         }
     }
 }
@@ -1030,7 +1042,11 @@ fn handle_node_event(ev: Event<Node>, mirror: &mut Mirror, sweep: &mut RelistSwe
             sweep.observe(&name);
             let previous = mirror.nodes.insert(name.clone(), node.clone());
 
-            targets.cache.lock().unwrap().upsert_node(&node);
+            targets
+                .cache
+                .lock()
+                .unwrap()
+                .upsert_node_with_api_object(&node, targets.preserve_extender_objects);
 
             let action = match &previous {
                 // First sight of this node: an addition, whatever the relist
@@ -1118,7 +1134,11 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, sweep: &mut RelistSweep
             let key = pod_key(&pod);
             sweep.observe(&key);
             let previous = mirror.pods.insert(key.clone(), pod.clone());
-            let info = Arc::new(PodInfo::from_pod(&pod, k8s_openapi::jiff::Timestamp::now()));
+            let mut projected = PodInfo::from_pod(&pod, k8s_openapi::jiff::Timestamp::now());
+            if targets.preserve_extender_objects {
+                projected.api_object = Some(Box::new(pod.clone()));
+            }
+            let info = Arc::new(projected);
 
             match route_pod(&info, &targets.profile_names) {
                 PodRoute::Cache => {
@@ -1491,6 +1511,8 @@ mod tests {
             budgets: Arc::new(Mutex::new(Vec::new())),
             assumed: Arc::new(Mutex::new(crate::cache::AssumedPods::new())),
             nominator: Arc::new(Mutex::new(crate::preempt::Nominator::default())),
+            pvc_bindings: crate::pvc_binding::PvcBindingTracker::default(),
+            preserve_extender_objects: false,
         }
     }
 

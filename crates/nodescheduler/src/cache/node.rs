@@ -45,6 +45,9 @@ pub struct ImageState {
 /// The scheduler's view of a node.
 #[derive(Clone, Debug, Default)]
 pub struct NodeInfo {
+    /// Full object retained only when an HTTP extender is configured. See
+    /// `PodInfo::api_object`; ordinary clusters pay no duplicate-object cost.
+    pub api_object: Option<Box<Node>>,
     pub name: String,
     pub labels: BTreeMap<String, String>,
     pub taints: Vec<Taint>,

@@ -283,6 +283,16 @@ impl Cache {
 
     /// Add or update a node, preserving the pods already committed to it.
     pub fn upsert_node(&mut self, node: &k8s_openapi::api::core::v1::Node) {
+        self.upsert_node_with_api_object(node, false);
+    }
+
+    /// Add/update a node and optionally retain the full API object for HTTP
+    /// extenders. The default cache path remains projection-only.
+    pub fn upsert_node_with_api_object(
+        &mut self,
+        node: &k8s_openapi::api::core::v1::Node,
+        preserve_api_object: bool,
+    ) {
         let Some(name) = node.metadata.name.clone() else {
             return;
         };
@@ -293,6 +303,7 @@ impl Cache {
             .map(|n| (**n).clone())
             .unwrap_or_default();
         info.update_from_node(node, gen);
+        info.api_object = preserve_api_object.then(|| Box::new(node.clone()));
         self.nodes.insert(name.clone(), Arc::new(info));
         self.touch(&name);
     }

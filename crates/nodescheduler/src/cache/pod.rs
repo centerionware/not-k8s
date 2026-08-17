@@ -371,6 +371,10 @@ impl LegacyVolumeId {
 /// The scheduler's view of a pod.
 #[derive(Clone, Debug, Default)]
 pub struct PodInfo {
+    /// Full object retained only when an HTTP extender is configured. The
+    /// default path keeps this `None`, preserving the projection's memory
+    /// advantage; extenders receive the exact API object upstream sends.
+    pub api_object: Option<Box<Pod>>,
     pub namespace: String,
     pub name: String,
     pub uid: String,
@@ -432,6 +436,10 @@ pub struct PodInfo {
     pub attempts: u32,
     /// Set by preemption; the node this pod has been promised.
     pub nominated_node_name: Option<String>,
+    /// Existing PodScheduled condition, retained so reporting can preserve
+    /// lastTransitionTime when the status remains False. Upstream changes
+    /// that timestamp only when the condition status actually transitions.
+    pub pod_scheduled_condition: Option<k8s_openapi::api::core::v1::PodCondition>,
 }
 
 /// A weighted preferred node-affinity term, flattened out of the API shape so
@@ -536,6 +544,7 @@ impl PodInfo {
         }
 
         PodInfo {
+            api_object: None,
             namespace: meta.namespace.clone().unwrap_or_default(),
             name: meta.name.clone().unwrap_or_default(),
             uid: meta.uid.clone().unwrap_or_default(),
@@ -615,6 +624,14 @@ impl PodInfo {
                 .status
                 .as_ref()
                 .and_then(|s| s.nominated_node_name.clone()),
+            pod_scheduled_condition: pod
+                .status
+                .as_ref()
+                .and_then(|s| s.conditions.as_ref())
+                .into_iter()
+                .flatten()
+                .find(|condition| condition.type_ == "PodScheduled")
+                .cloned(),
         }
     }
 }

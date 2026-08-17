@@ -50,44 +50,27 @@
 //!     sharing one) — see `cache/snapshot.rs`'s `resource_slices_for_node`
 //!     and this file's `candidates_for_node`.
 //!
-//! One real, documented algorithmic divergence: upstream's allocator is a
-//! full backtracking search (`allocateOne` tries a device, recurses, and
-//! rolls back and tries another if the recursion fails) so that an earlier
-//! request's suboptimal pick never dooms a later one. `allocate_on_node`
-//! here is a single greedy forward pass — each request picks the first
-//! selectable, unexcluded, constraint-satisfying devices it finds and never
-//! reconsiders them. This is exact for the overwhelmingly common shapes (one
-//! request, or several requests with disjoint device pools) and can, in
-//! principle, report "no fit" for a claim a full backtracking search would
-//! find a solution for when multiple requests compete for the same narrow
-//! pool under a shared constraint. It never does the reverse — accepts
-//! nothing a real allocation wouldn't be valid for.
+//! Device selection is a full backtracking search, like upstream's
+//! `allocator.allocateOne`: if a valid early pick prevents a later request
+//! from succeeding, it is rolled back and the next candidate (or the next
+//! `firstAvailable` alternative) is tried. The first complete solution wins.
 //!
 //! # The CEL environment this exposes, and where it diverges from upstream
 //!
 //! A selector's `device` variable carries `driver` (string), `attributes`
 //! (map from domain to map from name to bool/int/string — a `version`
 //! attribute is exposed as its string form), and `capacity` (map from
-//! domain to map from name to a plain `f64` in base units, but see below).
+//! domain to map from name to an exact canonical Kubernetes Quantity).
 //! Unprefixed attribute keys are exposed under both the empty domain and the
 //! device's own driver's domain, matching the common case
 //! (`device.attributes["dra.example.com"].foo` for an attribute the driver
 //! wrote as bare `foo`).
 //!
-//! Upstream's own CEL environment instead types `capacity` map values (and
-//! the `quantity(str)` function's return) as a custom `apiservercel`
-//! `Quantity` — an arbitrary-precision value with its own `isGreaterThan`/
-//! `isLessThan`/`compareTo`/`add`/`sub`/`sign`/`isInteger`/`asInteger`/
-//! `asApproximateFloat` methods. `cel-interpreter`'s `Value` is a closed enum
-//! with no opaque/custom-type variant — there is no way to add a real
-//! `Quantity` type without forking it, so `quantity.rs` registers those same
-//! method/function names operating on `f64` instead: a `quantity("10Gi")`
-//! parses to a plain float in base units the same way `device.capacity`
-//! entries already are, and every method above is implemented against that
-//! float. Every selector expression real DRA drivers write against capacity
-//! evaluates correctly under this — the divergence is precision only
-//! (`f64`'s ~15-17 significant decimal digits vs upstream's exact rational
-//! arithmetic), which no real device capacity value gets close to.
+//! `cel-interpreter` has no opaque/custom Value variant for upstream's
+//! `apiservercel.Quantity`, so `quantity.rs` carries a private canonical
+//! representation inside a CEL string and implements the same methods with
+//! arbitrary-precision rational arithmetic. Equivalent spellings compare
+//! equal and capacity never loses precision.
 //!
 //! # Why the actual device picks happen in `PreFilter`, not `Filter`
 //!
@@ -253,7 +236,7 @@ fn pre_enqueue_impl(pod: &PodInfo) -> Status {
 struct CelDevice {
     driver: String,
     attributes: BTreeMap<String, BTreeMap<String, CelAttr>>,
-    capacity: BTreeMap<String, BTreeMap<String, f64>>,
+    capacity: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(serde::Serialize, Clone, PartialEq, Debug)]
@@ -313,15 +296,12 @@ fn cel_device(driver: &str, basic: &crate::cache::dra::RawBasicDevice) -> CelDev
         };
         attributes.entry(domain).or_default().insert(name.to_string(), value);
     }
-    let mut capacity: BTreeMap<String, BTreeMap<String, f64>> = BTreeMap::new();
+    let mut capacity: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     for (key, cap) in basic.capacity.iter().flatten() {
         let (domain, name) = split_qualified(key, driver);
-        // The exact parsed value, not `parse_quantity`'s `.ceil()`-to-i64 —
-        // that rounding is right for a whole-unit resource ledger
-        // (millicores, bytes) but would silently corrupt a fractional
-        // device capacity (bandwidth in GB/s, say) before any selector ever
-        // saw it.
-        let value = crate::cache::pod::parse_quantity_f64(&cap.value.0).unwrap_or(0.0);
+        let Some(value) = crate::framework::plugins::quantity::canonical(&cap.value.0) else {
+            continue;
+        };
         capacity.entry(domain).or_default().insert(name.to_string(), value);
     }
     CelDevice { driver: driver.to_string(), attributes, capacity }
@@ -491,10 +471,9 @@ fn effective_requests(req: &crate::cache::dra::RawDeviceRequest) -> Option<Vec<E
 }
 
 /// Running state for one `matchAttribute` constraint across the devices
-/// picked so far for this claim on this node — the value the first covered
-/// device established, and how many devices are currently "in" the group
-/// (upstream only needs the count; we only need the value itself, since
-/// there's no backtracking `remove` to support here).
+/// picked so far for this claim on this node. Branches clone this small state
+/// before a pick, which is the rollback operation for the exhaustive search.
+#[derive(Clone)]
 struct ConstraintState {
     constraint: crate::cache::dra::RawDeviceConstraint,
     value: Option<CelAttr>,
@@ -541,9 +520,8 @@ fn constraint_allows(
 
 /// Try to satisfy every request in a claim against one node's candidate
 /// devices, given the identities already spoken for. `None` means this node
-/// cannot satisfy the claim at all. See the module header for the one
-/// deliberate divergence from upstream (a single greedy forward pass, no
-/// backtracking).
+/// cannot satisfy the claim at all. This is an exhaustive, early-exit search:
+/// the first complete solution wins, matching upstream's allocator.
 fn allocate_on_node(
     requests: &[crate::cache::dra::RawDeviceRequest],
     constraints: &[crate::cache::dra::RawDeviceConstraint],
@@ -552,84 +530,199 @@ fn allocate_on_node(
     excluded: &HashSet<DeviceId>,
     compiled: &CompiledSelectors,
 ) -> Option<Vec<RawDeviceRequestAllocationResult>> {
-    let mut picked: HashSet<DeviceId> = HashSet::new();
-    let mut out = Vec::new();
-    let mut constraint_states: Vec<ConstraintState> =
+    let constraint_states: Vec<ConstraintState> =
         constraints.iter().map(|c| ConstraintState { constraint: c.clone(), value: None }).collect();
 
-    for req in requests {
-        let alternatives = effective_requests(req)?;
-        let mut satisfied = false;
+    allocate_request(
+        0,
+        requests,
+        device_classes,
+        candidates,
+        excluded,
+        compiled,
+        HashSet::new(),
+        constraint_states,
+        Vec::new(),
+    )
+}
 
-        'alternatives: for eff in &alternatives {
-            let Some(class) = device_classes.get(eff.device_class_name.as_str()) else { continue };
-            let mut selectors = eff.selectors.clone();
-            selectors.extend(class.spec.selectors.clone().unwrap_or_default());
+#[allow(clippy::too_many_arguments)]
+fn allocate_request(
+    request_index: usize,
+    requests: &[crate::cache::dra::RawDeviceRequest],
+    device_classes: &HashMap<&str, &RawDeviceClass>,
+    candidates: &[Candidate],
+    excluded: &HashSet<DeviceId>,
+    compiled: &CompiledSelectors,
+    picked: HashSet<DeviceId>,
+    constraint_states: Vec<ConstraintState>,
+    out: Vec<RawDeviceRequestAllocationResult>,
+) -> Option<Vec<RawDeviceRequestAllocationResult>> {
+    if request_index == requests.len() {
+        return Some(out);
+    }
 
-            // Trying an alternative must not leave partial state behind if
-            // it fails partway — clone the constraint values so a failed
-            // attempt can be discarded rather than corrupting the next
-            // alternative's (or the next request's) view.
-            let mut trial_states: Vec<ConstraintState> = constraint_states
+    let alternatives = effective_requests(&requests[request_index])?;
+    for eff in &alternatives {
+        let Some(class) = device_classes.get(eff.device_class_name.as_str()) else { continue };
+        let mut selectors = eff.selectors.clone();
+        selectors.extend(class.spec.selectors.clone().unwrap_or_default());
+
+        if eff.all_devices {
+            // AllocationMode=All has a predetermined set: every selectable,
+            // currently available device. It cannot skip one merely because
+            // doing so would make a cross-request constraint easier.
+            let all: Vec<&Candidate> = candidates
                 .iter()
-                .map(|s| ConstraintState { constraint: s.constraint.clone(), value: s.value.clone() })
+                .filter(|c| device_matches(&selectors, &c.driver, &c.basic, compiled))
                 .collect();
-            let mut trial_picked = picked.clone();
-            let mut found = Vec::new();
-
-            // A request for exactly zero devices (not valid upstream — API
-            // validation requires count >= 1 — but defensively handled the
-            // same safe way as any other malformed-but-parseable input)
-            // needs no candidate search at all: it is trivially satisfied.
-            if !eff.all_devices && eff.count == 0 {
-                picked = trial_picked;
-                satisfied = true;
-                break 'alternatives;
+            if all.is_empty() {
+                continue;
             }
 
-            for c in candidates {
+            let mut next_picked = picked.clone();
+            let mut next_states = constraint_states.clone();
+            let mut next_out = out.clone();
+            let mut valid = true;
+            for c in all {
                 let id = (c.driver.clone(), c.pool.clone(), c.name.clone());
-                if !eff.admin_access && (excluded.contains(&id) || trial_picked.contains(&id)) {
-                    continue;
-                }
-                if !device_matches(&selectors, &c.driver, &c.basic, compiled) {
-                    continue;
-                }
-                if !constraint_allows(&mut trial_states, &eff.result_name, &c.driver, &c.basic) {
-                    continue;
-                }
-                if !eff.admin_access {
-                    trial_picked.insert(id);
-                }
-                found.push(RawDeviceRequestAllocationResult {
-                    request: eff.result_name.clone(),
-                    driver: c.driver.clone(),
-                    pool: c.pool.clone(),
-                    device: c.name.clone(),
-                    admin_access: eff.admin_access,
-                });
-                if !eff.all_devices && found.len() == eff.count {
+                // "All" is a predetermined set of every selectable device.
+                // If even one is busy, the request fails; silently omitting
+                // the busy member would turn All into "all currently free".
+                if !eff.admin_access && (excluded.contains(&id) || next_picked.contains(&id)) {
+                    valid = false;
                     break;
                 }
+                if !constraint_allows(&mut next_states, &eff.result_name, &c.driver, &c.basic) {
+                    valid = false;
+                    break;
+                }
+                if !eff.admin_access {
+                    next_picked.insert(id);
+                }
+                next_out.push(allocation_result(eff, c));
             }
-
-            let got_enough = if eff.all_devices { !found.is_empty() } else { found.len() == eff.count };
-            if !got_enough {
-                continue 'alternatives; // this alternative doesn't fit; try the next
+            if valid {
+                if let Some(solution) = allocate_request(
+                    request_index + 1,
+                    requests,
+                    device_classes,
+                    candidates,
+                    excluded,
+                    compiled,
+                    next_picked,
+                    next_states,
+                    next_out,
+                ) {
+                    return Some(solution);
+                }
             }
-
-            picked = trial_picked;
-            constraint_states = trial_states;
-            out.extend(found);
-            satisfied = true;
-            break 'alternatives;
+            continue;
         }
 
-        if !satisfied {
-            return None;
+        if let Some(solution) = allocate_exact(
+            request_index,
+            eff,
+            &selectors,
+            0,
+            eff.count,
+            requests,
+            device_classes,
+            candidates,
+            excluded,
+            compiled,
+            picked.clone(),
+            constraint_states.clone(),
+            out.clone(),
+        ) {
+            return Some(solution);
         }
     }
-    Some(out)
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn allocate_exact(
+    request_index: usize,
+    eff: &EffectiveRequest,
+    selectors: &[crate::cache::dra::RawDeviceSelector],
+    candidate_start: usize,
+    remaining: usize,
+    requests: &[crate::cache::dra::RawDeviceRequest],
+    device_classes: &HashMap<&str, &RawDeviceClass>,
+    candidates: &[Candidate],
+    excluded: &HashSet<DeviceId>,
+    compiled: &CompiledSelectors,
+    picked: HashSet<DeviceId>,
+    constraint_states: Vec<ConstraintState>,
+    out: Vec<RawDeviceRequestAllocationResult>,
+) -> Option<Vec<RawDeviceRequestAllocationResult>> {
+    if remaining == 0 {
+        return allocate_request(
+            request_index + 1,
+            requests,
+            device_classes,
+            candidates,
+            excluded,
+            compiled,
+            picked,
+            constraint_states,
+            out,
+        );
+    }
+
+    for (index, c) in candidates.iter().enumerate().skip(candidate_start) {
+        let id = (c.driver.clone(), c.pool.clone(), c.name.clone());
+        if !eff.admin_access && (excluded.contains(&id) || picked.contains(&id)) {
+            continue;
+        }
+        if !device_matches(selectors, &c.driver, &c.basic, compiled) {
+            continue;
+        }
+
+        let mut next_states = constraint_states.clone();
+        if !constraint_allows(&mut next_states, &eff.result_name, &c.driver, &c.basic) {
+            continue;
+        }
+        let mut next_picked = picked.clone();
+        if !eff.admin_access {
+            next_picked.insert(id);
+        }
+        let mut next_out = out.clone();
+        next_out.push(allocation_result(eff, c));
+
+        if let Some(solution) = allocate_exact(
+            request_index,
+            eff,
+            selectors,
+            index + 1,
+            remaining - 1,
+            requests,
+            device_classes,
+            candidates,
+            excluded,
+            compiled,
+            next_picked,
+            next_states,
+            next_out,
+        ) {
+            return Some(solution);
+        }
+    }
+    None
+}
+
+fn allocation_result(
+    eff: &EffectiveRequest,
+    candidate: &Candidate,
+) -> RawDeviceRequestAllocationResult {
+    RawDeviceRequestAllocationResult {
+        request: eff.result_name.clone(),
+        driver: candidate.driver.clone(),
+        pool: candidate.pool.clone(),
+        device: candidate.name.clone(),
+        admin_access: eff.admin_access,
+    }
 }
 
 impl PreFilterPlugin for DynamicResources {

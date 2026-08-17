@@ -59,6 +59,7 @@ pub struct ExtenderConfig {
     pub url_prefix: String,
     pub filter_verb: Option<String>,
     pub prioritize_verb: Option<String>,
+    pub bind_verb: Option<String>,
     pub weight: i64,
     pub node_cache_capable: bool,
     pub ignorable: bool,
@@ -68,6 +69,9 @@ pub struct ExtenderConfig {
     /// resource names. Empty (the common case, and upstream's own default)
     /// means every pod.
     pub managed_resources: Vec<String>,
+    /// Resources for which the extender, not NodeResourcesFit, owns fit
+    /// validation (`managedResources[].ignoredByScheduler`).
+    pub ignored_by_scheduler: Vec<String>,
 }
 
 impl ExtenderConfig {
@@ -118,6 +122,8 @@ pub struct RawExtenderConfig {
 #[serde(rename_all = "camelCase")]
 pub struct RawManagedResource {
     pub name: String,
+    #[serde(default)]
+    pub ignored_by_scheduler: bool,
 }
 
 fn default_weight() -> i64 {
@@ -135,14 +141,6 @@ pub fn parse_extenders(raw: &str) -> anyhow::Result<Vec<ExtenderConfig>> {
         .map_err(|e| anyhow::anyhow!("NODESCHEDULER_EXTENDERS_JSON is not a valid extender array: {e}"))?;
     let mut out = Vec::with_capacity(parsed.len());
     for r in parsed {
-        if r.bind_verb.is_some() {
-            anyhow::bail!(
-                "extender {:?} sets bindVerb, which this scheduler does not implement — an \
-                 extender-driven Bind would silently never run. Remove bindVerb (DefaultBinder \
-                 will bind instead) or drop this extender.",
-                r.url_prefix
-            );
-        }
         if r.preempt_verb.is_some() {
             anyhow::bail!(
                 "extender {:?} sets preemptVerb, which this scheduler does not implement — \
@@ -159,7 +157,7 @@ pub fn parse_extenders(raw: &str) -> anyhow::Result<Vec<ExtenderConfig>> {
                 r.url_prefix
             );
         }
-        if r.filter_verb.is_none() && r.prioritize_verb.is_none() {
+        if r.filter_verb.is_none() && r.prioritize_verb.is_none() && r.bind_verb.is_none() {
             anyhow::bail!(
                 "extender {:?} sets neither filterVerb nor prioritizeVerb — it would never be \
                  called for anything.",
@@ -170,11 +168,18 @@ pub fn parse_extenders(raw: &str) -> anyhow::Result<Vec<ExtenderConfig>> {
             url_prefix: r.url_prefix,
             filter_verb: r.filter_verb,
             prioritize_verb: r.prioritize_verb,
+            bind_verb: r.bind_verb,
             weight: r.weight,
             node_cache_capable: r.node_cache_capable,
             ignorable: r.ignorable,
             http_timeout: Duration::from_secs(r.http_timeout_seconds),
-            managed_resources: r.managed_resources.into_iter().map(|m| m.name).collect(),
+            managed_resources: r.managed_resources.iter().map(|m| m.name.clone()).collect(),
+            ignored_by_scheduler: r
+                .managed_resources
+                .into_iter()
+                .filter(|m| m.ignored_by_scheduler)
+                .map(|m| m.name)
+                .collect(),
         });
     }
     Ok(out)
@@ -184,28 +189,18 @@ pub fn parse_extenders(raw: &str) -> anyhow::Result<Vec<ExtenderConfig>> {
 // The wire types, matching upstream's `k8s.io/kube-scheduler/extender/v1`
 // ─────────────────────────────────────────────────────────────────────────
 
-// The JSON names below are transcribed field by field from upstream's Go
-// struct tags, not derived by a `rename_all` convention — because there is no
-// convention to derive them from. Upstream mixes three spellings in the same
-// two structs: `pod`/`nodes`/`error`/`host`/`score` are lowercase,
-// `failedNodes`/`failedAndUnresolvableNodes` are camelCase, and `nodenames`
-// is neither (it is the camelCase of `NodeNames` with the word break simply
-// dropped). Any single `rename_all` therefore gets most of them wrong.
-//
-// This was wrong here in exactly that way — `rename_all = "PascalCase"` on
-// all three types — and the e2e fake extender in
-// deploy/lib/test/cases/scheduler.sh had been written to match the wrong
-// spelling, so the test passed while a real extender could not have worked:
-// its Filter reply's `nodenames` would deserialize as absent, and a
-// Prioritize reply would fail to decode entirely.
+// These names are intentionally PascalCase. The authoritative upstream Go
+// structs carry no json tags, so encoding/json uses their exported field
+// names verbatim. A lowercase fake once made this implementation and its e2e
+// test agree with each other while both were incompatible with real clients.
 
 #[derive(Serialize)]
 struct ExtenderArgs {
-    #[serde(rename = "pod")]
+    #[serde(rename = "Pod")]
     pod: Pod,
-    #[serde(rename = "nodes", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Nodes", skip_serializing_if = "Option::is_none")]
     nodes: Option<NodeListArg>,
-    #[serde(rename = "nodenames", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "NodeNames", skip_serializing_if = "Option::is_none")]
     node_names: Option<Vec<String>>,
 }
 
@@ -221,24 +216,42 @@ struct NodeListArg {
 
 #[derive(Deserialize, Debug, Default)]
 struct ExtenderFilterResult {
-    #[serde(rename = "nodes", default)]
+    #[serde(rename = "Nodes", default)]
     nodes: Option<NodeListArg>,
-    #[serde(rename = "nodenames", default)]
+    #[serde(rename = "NodeNames", default)]
     node_names: Option<Vec<String>>,
-    #[serde(rename = "failedNodes", default)]
+    #[serde(rename = "FailedNodes", default)]
     failed_nodes: BTreeMap<String, String>,
-    #[serde(rename = "failedAndUnresolvableNodes", default)]
+    #[serde(rename = "FailedAndUnresolvableNodes", default)]
     failed_and_unresolvable_nodes: BTreeMap<String, String>,
-    #[serde(rename = "error", default)]
+    #[serde(rename = "Error", default)]
     error: String,
 }
 
 #[derive(Deserialize, Debug)]
 struct HostPriority {
-    #[serde(rename = "host")]
+    #[serde(rename = "Host")]
     host: String,
-    #[serde(rename = "score")]
+    #[serde(rename = "Score")]
     score: i64,
+}
+
+#[derive(Serialize)]
+struct ExtenderBindingArgs<'a> {
+    #[serde(rename = "PodName")]
+    pod_name: &'a str,
+    #[serde(rename = "PodNamespace")]
+    pod_namespace: &'a str,
+    #[serde(rename = "PodUID")]
+    pod_uid: &'a str,
+    #[serde(rename = "Node")]
+    node: &'a str,
+}
+
+#[derive(Deserialize)]
+struct ExtenderBindingResult {
+    #[serde(rename = "Error", default)]
+    error: String,
 }
 
 /// The outcome of one extender's Filter call: which node names survived,
@@ -252,6 +265,9 @@ pub struct FilterOutcome {
 }
 
 fn pod_to_api(pod: &PodInfo) -> Pod {
+    if let Some(api) = &pod.api_object {
+        return (**api).clone();
+    }
     Pod {
         metadata: ObjectMeta {
             name: Some(pod.name.clone()),
@@ -272,6 +288,9 @@ fn pod_to_api(pod: &PodInfo) -> Pod {
 }
 
 fn node_to_api(node: &NodeInfo) -> Node {
+    if let Some(api) = &node.api_object {
+        return (**api).clone();
+    }
     let mut allocatable: BTreeMap<String, Quantity> = BTreeMap::new();
     allocatable.insert("cpu".to_string(), Quantity(format!("{}m", node.allocatable.milli_cpu)));
     allocatable.insert("memory".to_string(), Quantity(node.allocatable.memory.to_string()));
@@ -380,7 +399,32 @@ impl Extender {
         ))
     }
 
+    /// Let an interested extender take over Bind. `None` means this extender
+    /// has no bindVerb; `Some(())` means the Binding was completed remotely.
+    pub async fn bind(&self, pod: &PodInfo, node: &str) -> anyhow::Result<Option<()>> {
+        let Some(verb) = &self.config.bind_verb else { return Ok(None) };
+        let args = ExtenderBindingArgs {
+            pod_name: &pod.name,
+            pod_namespace: &pod.namespace,
+            pod_uid: &pod.uid,
+            node,
+        };
+        let result: ExtenderBindingResult = self.post_body(verb, &args).await?;
+        if !result.error.is_empty() {
+            anyhow::bail!("extender {:?} bind error: {}", self.config.url_prefix, result.error);
+        }
+        Ok(Some(()))
+    }
+
     async fn post<T: serde::de::DeserializeOwned>(&self, verb: &str, args: &ExtenderArgs) -> anyhow::Result<T> {
+        self.post_body(verb, args).await
+    }
+
+    async fn post_body<T: serde::de::DeserializeOwned>(
+        &self,
+        verb: &str,
+        args: &impl serde::Serialize,
+    ) -> anyhow::Result<T> {
         let url = format!("{}/{}", self.config.url_prefix.trim_end_matches('/'), verb);
         let resp = self
             .client

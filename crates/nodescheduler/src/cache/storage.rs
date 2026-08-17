@@ -21,6 +21,23 @@ use k8s_openapi::api::storage::v1::{CSIDriver, CSINode, CSIStorageCapacity, Stor
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use std::collections::BTreeMap;
 
+/// Published by the PV binder only after the PVC/PV binding transaction is
+/// complete. kube-scheduler uses this as the completion barrier instead of
+/// trusting a status field that can be observed between writes.
+pub const BIND_COMPLETED_ANNOTATION: &str = "pv.kubernetes.io/bind-completed";
+
+pub fn pvc_is_fully_bound(pvc: &PersistentVolumeClaim) -> bool {
+    pvc.spec
+        .as_ref()
+        .and_then(|s| s.volume_name.as_deref())
+        .is_some_and(|name| !name.is_empty())
+        && pvc
+            .metadata
+            .annotations
+            .as_ref()
+            .is_some_and(|a| a.contains_key(BIND_COMPLETED_ANNOTATION))
+}
+
 /// Bytes, from a `resource.k8s.io` `Quantity` — reuses `pod.rs`'s parser
 /// rather than a second implementation of the same suffix table.
 fn quantity_bytes(q: &k8s_openapi::apimachinery::pkg::api::resource::Quantity) -> i64 {
@@ -98,7 +115,8 @@ pub struct PvcInfo {
     pub requested_access_modes: Vec<String>,
     pub requested_bytes: i64,
     pub selector: Option<LabelSelector>,
-    /// `status.phase == "Bound"`.
+    /// Upstream's `isPVCFullyBound`: `spec.volumeName` is non-empty and the
+    /// PV binder has published `pv.kubernetes.io/bind-completed`.
     pub bound: bool,
     /// `spec.volumeMode`, defaulting to `"Filesystem"` when unset — see
     /// `PvInfo::volume_mode`'s doc comment for why a static match must
@@ -124,12 +142,13 @@ impl PvcInfo {
             .and_then(|r| r.get("storage"))
             .map(quantity_bytes)
             .unwrap_or(0);
-        let bound = pvc.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Bound");
+        let volume_name = spec.volume_name.filter(|name| !name.is_empty());
+        let bound = pvc_is_fully_bound(pvc);
         PvcInfo {
             namespace: pvc.metadata.namespace.clone().unwrap_or_default(),
             name: pvc.metadata.name.clone().unwrap_or_default(),
             storage_class_name: spec.storage_class_name,
-            volume_name: spec.volume_name,
+            volume_name,
             requested_access_modes: spec.access_modes.unwrap_or_default(),
             requested_bytes,
             selector: spec.selector,
@@ -212,5 +231,40 @@ impl StorageCapacityInfo {
             node_topology: c.node_topology.clone(),
             capacity_bytes: c.capacity.as_ref().map(quantity_bytes),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k8s_openapi::api::core::v1::{PersistentVolumeClaimSpec, PersistentVolumeClaimStatus};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+
+    fn pvc(volume_name: Option<&str>, completed: bool, phase: Option<&str>) -> PersistentVolumeClaim {
+        let annotations = completed.then(|| {
+            BTreeMap::from([(BIND_COMPLETED_ANNOTATION.to_string(), "yes".to_string())])
+        });
+        PersistentVolumeClaim {
+            metadata: ObjectMeta { annotations, ..Default::default() },
+            spec: Some(PersistentVolumeClaimSpec {
+                volume_name: volume_name.map(str::to_string),
+                ..Default::default()
+            }),
+            status: Some(PersistentVolumeClaimStatus {
+                phase: phase.map(str::to_string),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn phase_bound_without_the_completion_annotation_is_not_fully_bound() {
+        assert!(!pvc_is_fully_bound(&pvc(Some("pv"), false, Some("Bound"))));
+    }
+
+    #[test]
+    fn volume_name_and_completion_annotation_are_the_publication_barrier() {
+        assert!(pvc_is_fully_bound(&pvc(Some("pv"), true, None)));
+        assert!(!pvc_is_fully_bound(&pvc(None, true, Some("Bound"))));
     }
 }

@@ -56,6 +56,7 @@
 use crate::cache::{NodeInfo, PodInfo, Snapshot};
 use crate::framework::status::{Code, NodeToStatus, Status};
 use crate::framework::{CycleState, Registry, MAX_NODE_SCORE};
+use rayon::prelude::*;
 use std::sync::{Arc, Mutex};
 
 /// Below this many nodes, always consider all of them: the saving is not worth
@@ -98,7 +99,16 @@ impl Rng {
         if n == 0 {
             return 0;
         }
-        self.next_u64() % n
+        // Rejection removes `% n`'s bias when 2^64 is not divisible by n.
+        // The discarded tail is tiny (and zero for powers of two), while
+        // every returned bucket has exactly the same number of source values.
+        let zone = u64::MAX - (u64::MAX % n);
+        loop {
+            let value = self.next_u64();
+            if value < zone {
+                return value % n;
+            }
+        }
     }
 }
 
@@ -216,6 +226,8 @@ pub enum CycleOutcome {
 /// explicit parameter, resolved by the caller from `pod.scheduler_name`.
 pub struct Scheduler {
     pub percentage_of_nodes_to_score: i32,
+    parallelism: usize,
+    workers: rayon::ThreadPool,
     /// Rotates across cycles; see [`advance_start_index`].
     pub next_start_node_index: usize,
     /// Pods that have preempted and are waiting for their victims to drain.
@@ -231,9 +243,20 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn new(percentage_of_nodes_to_score: i32, nominator: Arc<Mutex<crate::preempt::Nominator>>) -> Self {
+    pub fn new(
+        percentage_of_nodes_to_score: i32,
+        parallelism: usize,
+        nominator: Arc<Mutex<crate::preempt::Nominator>>,
+    ) -> Self {
+        let parallelism = parallelism.max(1);
         Self {
             percentage_of_nodes_to_score,
+            parallelism,
+            workers: rayon::ThreadPoolBuilder::new()
+                .num_threads(parallelism)
+                .thread_name(|i| format!("nodescheduler-worker-{i}"))
+                .build()
+                .expect("a positive NODESCHEDULER_PARALLELISM builds a worker pool"),
             next_start_node_index: 0,
             nominator,
         }
@@ -340,6 +363,13 @@ impl Scheduler {
         self.next_start_node_index =
             advance_start_index(self.next_start_node_index, processed, snapshot.num_nodes());
 
+        // A Filter or PreFilterExtension error is a cycle failure, not an
+        // ordinary rejection attached to one node. In particular, a second
+        // feasible node must not hide that the cycle used invalid state.
+        if let Some(status) = node_statuses.first_error() {
+            return (CycleOutcome::Error { reason: status.to_string() }, state);
+        }
+
         // ── HTTP extenders' Filter ──────────────────────────────────────
         //
         // Run in configured order, each one narrowing what the last left —
@@ -439,13 +469,17 @@ impl Scheduler {
             if state.score_skipped(plugin.name()) {
                 continue;
             }
-            let mut raw: Vec<i64> = Vec::with_capacity(feasible.len());
-            for node in &feasible {
-                match plugin.score(&state, pod, node) {
-                    Ok(v) => raw.push(v),
-                    Err(status) => {
-                        return (CycleOutcome::Error { reason: status.to_string() }, state)
-                    }
+            let scored: Vec<Result<i64, Status>> = self.workers.install(|| {
+                feasible
+                    .par_iter()
+                    .map(|node| plugin.score(&state, pod, node))
+                    .collect()
+            });
+            let mut raw = Vec::with_capacity(scored.len());
+            for score in scored {
+                match score {
+                    Ok(value) => raw.push(value),
+                    Err(status) => return (CycleOutcome::Error { reason: status.to_string() }, state),
                 }
             }
             let status = plugin.normalize(&state, pod, &mut raw);
@@ -539,6 +573,53 @@ impl Scheduler {
         let mut statuses = NodeToStatus::default();
         let mut processed = 0usize;
 
+        // Nominated pods mutate PreFilterExtension state while one node is
+        // evaluated, so that uncommon preemption-drain path remains
+        // sequential. The normal path is read-only and fans Filter out over
+        // the configured worker pool in bounded waves, stopping after the
+        // first wave that reaches the upstream feasible-node target.
+        if self.parallelism > 1 && self.nominator.lock().unwrap().is_empty() {
+            let allowed: Option<std::collections::HashSet<&str>> =
+                restricted.map(|names| names.iter().map(String::as_str).collect());
+            let ordered: Vec<Arc<NodeInfo>> = (0..num_all)
+                .map(|i| all[(self.next_start_node_index + i) % num_all].clone())
+                .collect();
+
+            for wave in ordered.chunks(self.parallelism) {
+                let results: Vec<Option<Status>> = self.workers.install(|| {
+                    wave.par_iter()
+                        .map(|node| {
+                            if allowed.as_ref().is_some_and(|set| !set.contains(node.name.as_str())) {
+                                return None;
+                            }
+                            registry.filter.iter().find_map(|plugin| {
+                                if state.filter_skipped(plugin.name()) {
+                                    return None;
+                                }
+                                let status = plugin.filter(state, pod, node);
+                                (!status.is_success() && !status.is_skip()).then_some(status)
+                            })
+                        })
+                        .collect()
+                });
+                processed += wave.len();
+                for (node, rejected) in wave.iter().zip(results) {
+                    if allowed.as_ref().is_some_and(|set| !set.contains(node.name.as_str())) {
+                        continue;
+                    }
+                    match rejected {
+                        None => feasible.push(node.clone()),
+                        Some(status) => statuses.record(node.name.clone(), status),
+                    }
+                }
+                if feasible.len() >= wanted || statuses.first_error().is_some() {
+                    feasible.truncate(wanted);
+                    return (feasible, statuses, processed);
+                }
+            }
+            return (feasible, statuses, processed);
+        }
+
         for i in 0..num_all {
             let node = &all[(self.next_start_node_index + i) % num_all];
             processed += 1;
@@ -566,26 +647,37 @@ impl Scheduler {
                 .into_iter()
                 .filter(|n| n.priority >= pod.priority && n.uid != pod.uid)
                 .collect();
-            for plugin in &registry.pre_filter {
+            let mut rejected = None;
+            let mut added_nominees: Vec<(usize, usize)> = Vec::new();
+            for (plugin_index, plugin) in registry.pre_filter.iter().enumerate() {
                 if let Some(ext) = plugin.extensions() {
-                    for nominee in &nominees {
-                        ext.add_pod(state, pod, nominee, node);
+                    for (nominee_index, nominee) in nominees.iter().enumerate() {
+                        let status = ext.add_pod(state, pod, nominee, node);
+                        if !status.is_success() && !status.is_skip() {
+                            rejected = Some(status);
+                            break;
+                        }
+                        added_nominees.push((plugin_index, nominee_index));
                     }
+                }
+                if rejected.is_some() {
+                    break;
                 }
             }
 
-            let mut rejected = None;
-            for plugin in &registry.filter {
-                if state.filter_skipped(plugin.name()) {
-                    continue;
-                }
-                let status = plugin.filter(state, pod, node);
-                if !status.is_success() && !status.is_skip() {
-                    rejected = Some(status);
-                    // First rejection wins: the remaining filters cannot
-                    // un-reject the node, and running them is pure cost on
-                    // the node-count-times-plugin-count hot path.
-                    break;
+            if rejected.is_none() {
+                for plugin in &registry.filter {
+                    if state.filter_skipped(plugin.name()) {
+                        continue;
+                    }
+                    let status = plugin.filter(state, pod, node);
+                    if !status.is_success() && !status.is_skip() {
+                        rejected = Some(status);
+                        // First rejection wins: the remaining filters cannot
+                        // un-reject the node, and running them is pure cost on
+                        // the node-count-times-plugin-count hot path.
+                        break;
+                    }
                 }
             }
 
@@ -593,10 +685,11 @@ impl Scheduler {
             // symmetry requirement as preemption's dry runs — an asymmetric
             // add/remove pair would leak this node's nominees into every
             // later node's answer.
-            for plugin in &registry.pre_filter {
-                if let Some(ext) = plugin.extensions() {
-                    for nominee in &nominees {
-                        ext.remove_pod(state, pod, nominee, node);
+            for (plugin_index, nominee_index) in added_nominees.into_iter().rev() {
+                if let Some(ext) = registry.pre_filter[plugin_index].extensions() {
+                    let status = ext.remove_pod(state, pod, &nominees[nominee_index], node);
+                    if rejected.is_none() && !status.is_success() && !status.is_skip() {
+                        rejected = Some(status);
                     }
                 }
             }

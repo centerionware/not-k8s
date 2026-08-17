@@ -265,7 +265,7 @@ fn fit_scheduler(cpu_cores: &str) -> (Scheduler, Registry, crate::cache::Snapsho
         ..Default::default()
     });
     let snapshot = cache.snapshot();
-    (Scheduler::new(0, Arc::new(Mutex::new(crate::preempt::Nominator::default()))), registry, snapshot)
+    (Scheduler::new(0, 2, Arc::new(Mutex::new(crate::preempt::Nominator::default()))), registry, snapshot)
 }
 
 fn pod_wanting_milli_cpu(milli: i64) -> PodInfo {
@@ -324,6 +324,47 @@ async fn a_pod_that_fits_is_scheduled() {
     }
 }
 
+struct ErrorOnOneNode;
+
+impl crate::framework::Plugin for ErrorOnOneNode {
+    fn name(&self) -> &'static str { "ErrorOnOneNode" }
+}
+
+impl crate::framework::FilterPlugin for ErrorOnOneNode {
+    fn filter(&self, _state: &CycleState, _pod: &PodInfo, node: &crate::cache::NodeInfo) -> Status {
+        if node.name == "broken" {
+            Status::error(self.name(), "plugin state is invalid")
+        } else {
+            Status::success()
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_filter_error_aborts_the_cycle_even_when_another_node_passes() {
+    let registry = Registry {
+        filter: vec![Box::new(ErrorOnOneNode)],
+        ..Default::default()
+    };
+    let mut cache = Cache::new();
+    cache.upsert_node(&Node {
+        metadata: ObjectMeta { name: Some("broken".to_string()), ..Default::default() },
+        ..Default::default()
+    });
+    cache.upsert_node(&Node {
+        metadata: ObjectMeta { name: Some("healthy".to_string()), ..Default::default() },
+        ..Default::default()
+    });
+    let snapshot = cache.snapshot();
+    let mut sched = Scheduler::new(100, 2, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = sched
+        .schedule_one(&registry, &[], &pod_wanting_milli_cpu(1), &snapshot, &mut rng)
+        .await;
+    assert!(matches!(outcome, CycleOutcome::Error { .. }));
+}
+
 #[tokio::test]
 async fn a_pod_exactly_filling_the_node_still_fits() {
     let (mut sched, registry, snapshot) = fit_scheduler("4");
@@ -351,7 +392,7 @@ async fn one_millicore_over_capacity_does_not_fit() {
 #[tokio::test]
 async fn an_empty_cluster_reports_no_nodes_rather_than_scheduling_nowhere() {
     let registry = Registry::default();
-    let mut sched = Scheduler::new(0, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
+    let mut sched = Scheduler::new(0, 2, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
     let snapshot = crate::cache::Snapshot::default();
     let mut rng = Rng::new(1);
 

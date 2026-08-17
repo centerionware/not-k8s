@@ -151,6 +151,13 @@ impl NodeToStatus {
         self.per_node.is_empty()
     }
 
+    /// Any plugin malfunction aborts the entire cycle, even if another node
+    /// happened to pass. Treating Error as one node's ordinary rejection can
+    /// produce a placement from incomplete or corrupt plugin state.
+    pub fn first_error(&self) -> Option<&Status> {
+        self.per_node.iter().map(|(_, status)| status).find(|s| s.code == Code::Error)
+    }
+
     /// Nodes preemption could plausibly free up — i.e. rejected with
     /// `Unschedulable`, not `UnschedulableAndUnresolvable`.
     pub fn preemption_candidates(&self) -> Vec<&str> {

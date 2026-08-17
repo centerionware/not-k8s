@@ -119,13 +119,44 @@ pub(crate) fn default_normalize_score(reverse: bool, scores: &mut [i64]) {
 /// ResourceClaim's allocation and reservation in `PreBind`) — the only three
 /// plugins in this directory that perform I/O; everything else here is a
 /// pure function of the snapshot.
-pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profile_name: &str) -> Registry {
+pub fn default_registry(
+    client: kube::Client,
+    cfg: &crate::config::Config,
+    profile_name: &str,
+    pvc_bindings: crate::pvc_binding::PvcBindingTracker,
+) -> Registry {
     // One instance each, cloned into every vec it belongs to — see
     // `DynamicResources`'s (respectively `VolumeBinding`'s) own doc comment
     // on why each plugin's assume cache must be shared rather than
     // reconstructed per extension point.
     let dra = dynamic_resources::DynamicResources::new(client.clone());
-    let vb = volume_binding::VolumeBinding::new(client.clone(), cfg.volume_bind_timeout);
+    let vb = volume_binding::VolumeBinding::new(
+        client.clone(),
+        cfg.volume_bind_timeout,
+        pvc_bindings,
+    );
+    let ignored_resources = cfg
+        .extenders
+        .iter()
+        .flat_map(|extender| extender.ignored_by_scheduler.iter().cloned())
+        .collect();
+    let resources_fit = node_resources_fit::NodeResourcesFit {
+        strategy: match cfg.scoring_strategy {
+            crate::config::ScoringStrategyKind::LeastAllocated => {
+                node_resources_fit::ScoringStrategy::LeastAllocated
+            }
+            crate::config::ScoringStrategyKind::MostAllocated => {
+                node_resources_fit::ScoringStrategy::MostAllocated
+            }
+            crate::config::ScoringStrategyKind::RequestedToCapacityRatio => {
+                node_resources_fit::ScoringStrategy::RequestedToCapacityRatio {
+                    shape: vec![(0, 0), (100, 100)],
+                }
+            }
+        },
+        ignored_resources,
+        ..Default::default()
+    };
     Registry {
         profile_name: profile_name.to_string(),
         pre_enqueue: vec![
@@ -135,7 +166,7 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profi
         queue_sort: Some(Box::new(priority_sort::PrioritySort)),
         pre_filter: vec![
             Box::new(node_ports::NodePorts),
-            Box::new(node_resources_fit::NodeResourcesFit::default()),
+            Box::new(resources_fit.clone()),
             Box::new(volume_restrictions::VolumeRestrictions),
             Box::new(node_volume_limits::NodeVolumeLimits),
             Box::new(vb.clone()),
@@ -152,7 +183,7 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profi
             Box::new(taint_toleration::TaintToleration),
             Box::new(node_affinity::NodeAffinity::default()),
             Box::new(node_ports::NodePorts),
-            Box::new(node_resources_fit::NodeResourcesFit::default()),
+            Box::new(resources_fit.clone()),
             Box::new(volume_restrictions::VolumeRestrictions),
             Box::new(node_volume_limits::NodeVolumeLimits),
             Box::new(vb.clone()),
@@ -173,7 +204,7 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profi
             Box::new(taint_toleration::TaintToleration),
             Box::new(node_affinity::NodeAffinity::default()),
             Box::new(image_locality::ImageLocality),
-            Box::new(node_resources_fit::NodeResourcesFit::default()),
+            Box::new(resources_fit.clone()),
             Box::new(
                 node_resources_balanced_allocation::NodeResourcesBalancedAllocation::default(),
             ),
@@ -186,7 +217,7 @@ pub fn default_registry(client: kube::Client, cfg: &crate::config::Config, profi
             Box::new(taint_toleration::TaintToleration),
             Box::new(node_affinity::NodeAffinity::default()),
             Box::new(image_locality::ImageLocality),
-            Box::new(node_resources_fit::NodeResourcesFit::default()),
+            Box::new(resources_fit),
             Box::new(
                 node_resources_balanced_allocation::NodeResourcesBalancedAllocation::default(),
             ),

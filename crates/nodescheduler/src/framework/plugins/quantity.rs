@@ -1,31 +1,20 @@
-//! The `quantity(...)` CEL function and its methods — upstream's
-//! `k8s.io/apiserver/pkg/cel/library`'s `Quantity` library, ported onto
-//! `cel-interpreter`'s `Value::Float` rather than a genuine opaque
-//! `Quantity` type. See `dynamic_resources.rs`'s module header ("The CEL
-//! environment this exposes, and where it diverges from upstream") for why:
-//! `cel-interpreter`'s `Value` is a closed enum with no custom-type variant,
-//! so there is no way to add a real `Quantity` without forking the crate.
+//! Kubernetes' CEL Quantity library with exact arithmetic.
 //!
-//! Registered into every `Context` `device_matches` builds, alongside the
-//! `device` variable — see `install`.
-//!
-//! Function names and signatures match upstream's real doc comment
-//! (`staging/src/k8s.io/apiserver/pkg/cel/library/quantity.go`) exactly:
-//! `quantity(<string>)`, `isQuantity(<string>)`, and
-//! `<quantity>.{isInteger,asInteger,asApproximateFloat,sign,add,sub,
-//! isGreaterThan,isLessThan,compareTo}(...)`. Arithmetic/equality operators
-//! (`==`, `<`, `>`) are not registered here at all — `cel-interpreter`
-//! already implements those natively for `Value::Float`, and a `Quantity`
-//! value under this scheme *is* a `Value::Float`, so they already work.
+//! `cel-interpreter` has no custom/opaque Value variant, so an exact quantity
+//! is carried as a private canonical string (`numerator/denominator`) and all
+//! Quantity methods operate on that representation. Equivalent spellings
+//! canonicalize identically, while arithmetic never passes through f64.
 
 use cel_interpreter::extractors::This;
 use cel_interpreter::{Context, ExecutionError, FunctionContext, Value};
+use num_bigint::BigInt;
+use num_rational::BigRational;
+use num_traits::{Signed, ToPrimitive, Zero};
+use std::sync::Arc;
 
 type Result<T> = std::result::Result<T, ExecutionError>;
+const PREFIX: &str = "__notk8s_quantity:";
 
-/// Registers the whole library into `ctx`. Idempotent to call more than
-/// once (each call just overwrites the same names), but `device_matches`
-/// only ever builds one `Context` per selector evaluation, so it doesn't.
 pub fn install(ctx: &mut Context) {
     ctx.add_function("quantity", quantity);
     ctx.add_function("isQuantity", is_quantity);
@@ -40,107 +29,172 @@ pub fn install(ctx: &mut Context) {
     ctx.add_function("compareTo", compare_to);
 }
 
-/// A quantity string's numeric value, in base units — the same parser
-/// `cache/pod.rs` uses for CPU/memory quantities, reused here so
-/// `quantity("1Gi")` and a `ResourceSlice`'s own `capacity` entries agree on
-/// what a suffix means.
-fn parse(s: &str) -> Option<f64> {
-    crate::cache::pod::parse_quantity_f64(s)
+fn pow10(power: usize) -> BigInt {
+    BigInt::from(10u8).pow(power as u32)
 }
 
-/// `quantity(<string>) <Quantity>` — errors (does not merely return some
-/// sentinel) on a string that isn't a valid quantity, matching upstream: a
-/// selector calling this on bad input should fail closed via
-/// `device_matches`'s own "doesn't evaluate to a plain `true`" rule, not
-/// silently compare against zero.
-fn quantity(ftx: &FunctionContext, This(this): This<std::sync::Arc<String>>) -> Result<Value> {
-    parse(&this).map(Value::Float).ok_or_else(|| ftx.error(format!("invalid quantity {:?}", this.as_str())))
+/// Parse Kubernetes' quantity grammar into exact base units.
+fn parse(raw: &str) -> Option<BigRational> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let (number, multiplier) = ["Ki", "Mi", "Gi", "Ti", "Pi", "Ei"]
+        .iter()
+        .enumerate()
+        .find_map(|(index, suffix)| {
+            raw.strip_suffix(suffix).map(|number| {
+                (
+                    number,
+                    BigRational::from_integer(BigInt::from(1024u16).pow((index + 1) as u32)),
+                )
+            })
+        })
+        .or_else(|| {
+            let (suffix, power): (&str, i32) = [
+                ("n", -9), ("u", -6), ("m", -3), ("k", 3), ("M", 6),
+                ("G", 9), ("T", 12), ("P", 15), ("E", 18),
+            ]
+            .into_iter()
+            .find(|(suffix, _)| raw.ends_with(suffix))?;
+            let number = raw.strip_suffix(suffix)?;
+            let factor = if power >= 0 {
+                BigRational::from_integer(pow10(power as usize))
+            } else {
+                BigRational::new(BigInt::from(1), pow10((-power) as usize))
+            };
+            Some((number, factor))
+        })
+        .unwrap_or((raw, BigRational::from_integer(BigInt::from(1))));
+
+    let (mantissa, exponent) = split_exponent(number)?;
+    let negative = mantissa.starts_with('-');
+    let unsigned = mantissa
+        .strip_prefix('-')
+        .or_else(|| mantissa.strip_prefix('+'))
+        .unwrap_or(mantissa);
+    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    if (whole.is_empty() && fraction.is_empty())
+        || !whole.chars().all(|c| c.is_ascii_digit())
+        || !fraction.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let mut numerator = format!("{whole}{fraction}").parse::<BigInt>().ok()?;
+    if negative {
+        numerator = -numerator;
+    }
+    let mut value = BigRational::new(numerator, pow10(fraction.len()));
+    if exponent >= 0 {
+        value *= BigRational::from_integer(pow10(exponent as usize));
+    } else {
+        value /= BigRational::from_integer(pow10((-exponent) as usize));
+    }
+    Some(value * multiplier)
 }
 
-/// `isQuantity(<string>) <bool>`
-fn is_quantity(This(this): This<std::sync::Arc<String>>) -> bool {
-    parse(&this).is_some()
+fn split_exponent(number: &str) -> Option<(&str, i32)> {
+    for (index, ch) in number.char_indices().rev() {
+        if ch != 'e' && ch != 'E' {
+            continue;
+        }
+        let tail = &number[index + 1..];
+        let digits = tail
+            .strip_prefix('-')
+            .or_else(|| tail.strip_prefix('+'))
+            .unwrap_or(tail);
+        if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+            return Some((&number[..index], tail.parse().ok()?));
+        }
+    }
+    Some((number, 0))
 }
 
-fn as_float(v: &Value) -> Option<f64> {
-    match v {
-        Value::Float(f) => Some(*f),
-        Value::Int(i) => Some(*i as f64),
-        Value::UInt(u) => Some(*u as f64),
+fn encode(value: &BigRational) -> String {
+    format!("{PREFIX}{}/{}", value.numer(), value.denom())
+}
+
+fn decode_string(value: &str) -> Option<BigRational> {
+    let (numerator, denominator) = value.strip_prefix(PREFIX)?.split_once('/')?;
+    let denominator = denominator.parse::<BigInt>().ok()?;
+    if denominator.is_zero() {
+        return None;
+    }
+    Some(BigRational::new(numerator.parse().ok()?, denominator))
+}
+
+fn decode(value: &Value) -> Option<BigRational> {
+    match value {
+        Value::String(s) => decode_string(s),
+        Value::Int(i) => Some(BigRational::from_integer(BigInt::from(*i))),
+        Value::UInt(i) => Some(BigRational::from_integer(BigInt::from(*i))),
         _ => None,
     }
 }
 
-/// `<Quantity>.isInteger() <bool>`
-fn is_integer(ftx: &FunctionContext, This(this): This<Value>) -> Result<bool> {
-    let f = as_float(&this).ok_or_else(|| ftx.error(format!("{this:?} is not a quantity")))?;
-    Ok(f.fract() == 0.0 && f.is_finite() && f >= i64::MIN as f64 && f <= i64::MAX as f64)
+pub(crate) fn canonical(raw: &str) -> Option<String> {
+    parse(raw).map(|value| encode(&value))
 }
 
-/// `<Quantity>.asInteger() <int>`
+fn quantity(ftx: &FunctionContext, This(this): This<Arc<String>>) -> Result<Value> {
+    canonical(&this)
+        .map(|s| Value::String(Arc::new(s)))
+        .ok_or_else(|| ftx.error(format!("invalid quantity {:?}", this.as_str())))
+}
+
+fn is_quantity(This(this): This<Arc<String>>) -> bool {
+    parse(&this).is_some()
+}
+
+fn exact(ftx: &FunctionContext, value: &Value) -> Result<BigRational> {
+    decode(value).ok_or_else(|| ftx.error(format!("{value:?} is not a quantity")))
+}
+
+fn is_integer(ftx: &FunctionContext, This(this): This<Value>) -> Result<bool> {
+    let value = exact(ftx, &this)?;
+    Ok(value.is_integer() && value.to_integer().to_i64().is_some())
+}
+
 fn as_integer(ftx: &FunctionContext, This(this): This<Value>) -> Result<i64> {
-    let f = as_float(&this).ok_or_else(|| ftx.error(format!("{this:?} is not a quantity")))?;
-    if f.fract() != 0.0 || !f.is_finite() || f < i64::MIN as f64 || f > i64::MAX as f64 {
+    let value = exact(ftx, &this)?;
+    if !value.is_integer() {
         return Err(ftx.error("cannot convert value to integer"));
     }
-    Ok(f as i64)
+    value.to_integer().to_i64().ok_or_else(|| ftx.error("cannot convert value to integer"))
 }
 
-/// `<Quantity>.asApproximateFloat() <float>`
 fn as_approximate_float(ftx: &FunctionContext, This(this): This<Value>) -> Result<f64> {
-    as_float(&this).ok_or_else(|| ftx.error(format!("{this:?} is not a quantity")))
+    let value = exact(ftx, &this)?;
+    Ok(value.to_f64().unwrap_or_else(|| if value.is_negative() { f64::NEG_INFINITY } else { f64::INFINITY }))
 }
 
-/// `<Quantity>.sign() <int>`
 fn sign(ftx: &FunctionContext, This(this): This<Value>) -> Result<i64> {
-    let f = as_float(&this).ok_or_else(|| ftx.error(format!("{this:?} is not a quantity")))?;
-    Ok(if f > 0.0 {
-        1
-    } else if f < 0.0 {
-        -1
-    } else {
-        0
-    })
+    let value = exact(ftx, &this)?;
+    Ok(if value.is_positive() { 1 } else if value.is_negative() { -1 } else { 0 })
 }
 
-/// `<Quantity>.add(<quantity>|<integer>) <quantity>`
 fn add(ftx: &FunctionContext, This(this): This<Value>, other: Value) -> Result<Value> {
-    let a = as_float(&this).ok_or_else(|| ftx.error(format!("{this:?} is not a quantity")))?;
-    let b = as_float(&other).ok_or_else(|| ftx.error(format!("{other:?} is not a quantity or integer")))?;
-    Ok(Value::Float(a + b))
+    Ok(Value::String(Arc::new(encode(&(exact(ftx, &this)? + exact(ftx, &other)?)))))
 }
 
-/// `<Quantity>.sub(<quantity>|<integer>) <quantity>`
 fn sub(ftx: &FunctionContext, This(this): This<Value>, other: Value) -> Result<Value> {
-    let a = as_float(&this).ok_or_else(|| ftx.error(format!("{this:?} is not a quantity")))?;
-    let b = as_float(&other).ok_or_else(|| ftx.error(format!("{other:?} is not a quantity or integer")))?;
-    Ok(Value::Float(a - b))
+    Ok(Value::String(Arc::new(encode(&(exact(ftx, &this)? - exact(ftx, &other)?)))))
 }
 
-/// `<Quantity>.isGreaterThan(<quantity>) <bool>`
 fn is_greater_than(ftx: &FunctionContext, This(this): This<Value>, other: Value) -> Result<bool> {
-    let a = as_float(&this).ok_or_else(|| ftx.error(format!("{this:?} is not a quantity")))?;
-    let b = as_float(&other).ok_or_else(|| ftx.error(format!("{other:?} is not a quantity")))?;
-    Ok(a > b)
+    Ok(exact(ftx, &this)? > exact(ftx, &other)?)
 }
 
-/// `<Quantity>.isLessThan(<quantity>) <bool>`
 fn is_less_than(ftx: &FunctionContext, This(this): This<Value>, other: Value) -> Result<bool> {
-    let a = as_float(&this).ok_or_else(|| ftx.error(format!("{this:?} is not a quantity")))?;
-    let b = as_float(&other).ok_or_else(|| ftx.error(format!("{other:?} is not a quantity")))?;
-    Ok(a < b)
+    Ok(exact(ftx, &this)? < exact(ftx, &other)?)
 }
 
-/// `<Quantity>.compareTo(<quantity>) <int>`
 fn compare_to(ftx: &FunctionContext, This(this): This<Value>, other: Value) -> Result<i64> {
-    let a = as_float(&this).ok_or_else(|| ftx.error(format!("{this:?} is not a quantity")))?;
-    let b = as_float(&other).ok_or_else(|| ftx.error(format!("{other:?} is not a quantity")))?;
-    Ok(if a > b {
-        1
-    } else if a < b {
-        -1
-    } else {
-        0
+    Ok(match exact(ftx, &this)?.cmp(&exact(ftx, &other)?) {
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
     })
 }
 
@@ -151,52 +205,38 @@ mod tests {
     fn eval(expr: &str) -> Value {
         let mut ctx = Context::default();
         install(&mut ctx);
-        let program = cel_interpreter::Program::compile(expr).unwrap();
-        program.execute(&ctx).unwrap()
+        cel_interpreter::Program::compile(expr).unwrap().execute(&ctx).unwrap()
     }
 
     #[test]
-    fn quantity_parses_a_valid_string() {
-        assert_eq!(eval(r#"quantity("1.5G")"#), Value::Float(1_500_000_000.0));
+    fn quantities_are_exact_beyond_float64s_precision() {
+        assert_eq!(eval(r#"quantity("9007199254740993").compareTo(quantity("9007199254740992"))"#), Value::Int(1));
     }
 
     #[test]
-    fn quantity_on_an_invalid_string_is_an_error_not_a_silent_zero() {
+    fn equivalent_spellings_have_the_same_canonical_value() {
+        assert_eq!(eval(r#"quantity("1G") == quantity("1000000000")"#), Value::Bool(true));
+        assert_eq!(eval(r#"quantity("200M").compareTo(quantity("0.2G"))"#), Value::Int(0));
+    }
+
+    #[test]
+    fn binary_decimal_and_exponent_suffixes_are_exact() {
+        assert_eq!(eval(r#"quantity("1Gi").asInteger()"#), Value::Int(1_073_741_824));
+        assert_eq!(eval(r#"quantity("1e3").asInteger()"#), Value::Int(1000));
+        assert_eq!(eval(r#"quantity("1m").isInteger()"#), Value::Bool(false));
+    }
+
+    #[test]
+    fn arithmetic_and_scalar_conversions_match_upstream() {
+        assert_eq!(eval(r#"quantity("50k").add(20).sub(quantity("100k")).sub(-50000).asInteger()"#), Value::Int(20));
+    }
+
+    #[test]
+    fn invalid_quantities_fail_closed() {
+        assert_eq!(eval(r#"isQuantity("Three")"#), Value::Bool(false));
         let mut ctx = Context::default();
         install(&mut ctx);
-        let program = cel_interpreter::Program::compile(r#"quantity("not a quantity")"#).unwrap();
+        let program = cel_interpreter::Program::compile(r#"quantity("Three")"#).unwrap();
         assert!(program.execute(&ctx).is_err());
-    }
-
-    #[test]
-    fn is_quantity_distinguishes_valid_from_invalid() {
-        assert_eq!(eval(r#"isQuantity("1.3Gi")"#), Value::Bool(true));
-        assert_eq!(eval(r#"isQuantity("Three")"#), Value::Bool(false));
-    }
-
-    #[test]
-    fn comparisons_match_upstreams_documented_examples() {
-        assert_eq!(eval(r#"quantity("200M").compareTo(quantity("0.2G"))"#), Value::Int(0));
-        assert_eq!(eval(r#"quantity("50M").compareTo(quantity("50Mi"))"#), Value::Int(-1));
-        assert_eq!(eval(r#"quantity("150Mi").isGreaterThan(quantity("100Mi"))"#), Value::Bool(true));
-        assert_eq!(eval(r#"quantity("50M").isLessThan(quantity("100M"))"#), Value::Bool(true));
-    }
-
-    #[test]
-    fn arithmetic_matches_upstreams_documented_examples() {
-        assert_eq!(eval(r#"quantity("50k").add(20).sub(quantity("100k")).sub(-50000) == quantity("20")"#), Value::Bool(true));
-    }
-
-    #[test]
-    fn scalar_conversions_match_upstreams_documented_examples() {
-        assert_eq!(eval(r#"quantity("50000000G").isInteger()"#), Value::Bool(true));
-        assert_eq!(eval(r#"quantity("50k").asInteger() == 50000"#), Value::Bool(true));
-    }
-
-    #[test]
-    fn native_equality_and_ordering_already_work_on_the_underlying_float() {
-        // No registration needed for these — see the module header.
-        assert_eq!(eval(r#"quantity("1Gi") > quantity("1G")"#), Value::Bool(true));
-        assert_eq!(eval(r#"quantity("1G") == quantity("1000000000")"#), Value::Bool(true));
     }
 }

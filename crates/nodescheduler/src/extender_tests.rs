@@ -30,12 +30,9 @@ fn filter_and_prioritize_with_explicit_fields_all_parse() {
 }
 
 #[test]
-fn a_bind_verb_is_refused_by_name_rather_than_silently_ignored() {
-    let err =
-        parse_extenders(r#"[{"urlPrefix":"http://ext","filterVerb":"filter","bindVerb":"bind"}]"#)
-            .unwrap_err()
-            .to_string();
-    assert!(err.contains("bindVerb"), "{err}");
+fn a_bind_only_extender_is_a_valid_upstream_configuration() {
+    let cfg = parse_extenders(r#"[{"urlPrefix":"http://ext","bindVerb":"bind"}]"#).unwrap();
+    assert_eq!(cfg[0].bind_verb.as_deref(), Some("bind"));
 }
 
 #[test]
@@ -136,16 +133,11 @@ fn node_to_api_carries_name_labels_and_taints() {
 // ── The wire field names ─────────────────────────────────────────────────
 //
 // These pin the exact JSON spellings from upstream's
-// `k8s.io/kube-scheduler/extender/v1` struct tags. They exist because the
-// original code derived all three types' names from
-// `rename_all = "PascalCase"`, which is wrong for every field, and the e2e
-// fake extender had been written to match the wrong spelling — so nothing in
-// the suite would have caught it. Asserting on the serialized/deserialized
-// JSON rather than on the structs is the point: the bug was entirely in the
-// mapping, and only the mapping.
+// `k8s.io/kube-scheduler/extender/v1` structs. They have no JSON tags, so Go's
+// encoding/json uses the exported PascalCase field names verbatim.
 
 #[test]
-fn extender_args_serializes_upstreams_lowercase_field_names() {
+fn extender_args_serializes_upstreams_exported_go_field_names() {
     let args = ExtenderArgs {
         pod: Pod::default(),
         nodes: None,
@@ -153,29 +145,26 @@ fn extender_args_serializes_upstreams_lowercase_field_names() {
     };
     let v: serde_json::Value = serde_json::to_value(&args).unwrap();
 
-    assert!(v.get("pod").is_some(), "upstream's tag is `pod`, not `Pod`: {v}");
-    // Not `NodeNames`, and not `nodeNames` either — upstream's tag really is
-    // the word-break-free `nodenames`.
+    assert!(v.get("Pod").is_some(), "upstream's untagged Go field is `Pod`: {v}");
     assert_eq!(
-        v.get("nodenames").and_then(|n| n.as_array()).map(|a| a.len()),
+        v.get("NodeNames").and_then(|n| n.as_array()).map(|a| a.len()),
         Some(2),
-        "upstream's tag is `nodenames`: {v}"
+        "upstream's untagged Go field is `NodeNames`: {v}"
     );
     assert!(
-        v.get("nodes").is_none(),
+        v.get("Nodes").is_none(),
         "an absent NodeList must be omitted, not serialized as null: {v}"
     );
 }
 
 #[test]
 fn a_filter_reply_in_upstreams_spelling_decodes() {
-    // Byte for byte what a real extender returns — `nodenames`, `failedNodes`,
-    // `failedAndUnresolvableNodes`. Under the old PascalCase mapping every one
-    // of these read as absent, so a rejection looked like an empty result.
+    // Byte for byte what encoding/json emits for upstream's untagged Go
+    // structs.
     let raw = r#"{
-        "nodenames": ["keep-me"],
-        "failedNodes": {"rejected": "not enough widgets"},
-        "failedAndUnresolvableNodes": {"hopeless": "no widgets at all"}
+        "NodeNames": ["keep-me"],
+        "FailedNodes": {"rejected": "not enough widgets"},
+        "FailedAndUnresolvableNodes": {"hopeless": "no widgets at all"}
     }"#;
     let parsed: ExtenderFilterResult = serde_json::from_str(raw).unwrap();
 
@@ -194,7 +183,7 @@ fn a_prioritize_reply_in_upstreams_spelling_decodes() {
     // reply that fails to decode is an error, not a missing score, so a
     // non-ignorable extender took the whole scheduling cycle down with it.
     let scores: Vec<HostPriority> =
-        serde_json::from_str(r#"[{"host":"node-a","score":7},{"host":"node-b","score":0}]"#)
+        serde_json::from_str(r#"[{"Host":"node-a","Score":7},{"Host":"node-b","Score":0}]"#)
             .unwrap();
 
     assert_eq!(scores.len(), 2);

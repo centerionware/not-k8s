@@ -282,6 +282,37 @@ fn a_matching_unclaimed_static_pv_is_preferred_over_dynamic_provisioning() {
 }
 
 #[test]
+fn the_smallest_sufficient_static_pv_is_selected_deterministically() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    cache.upsert_pv("large".to_string(), matching_pv("large", 100));
+    cache.upsert_pv("small".to_string(), matching_pv("small", 10));
+    cache.upsert_pv("medium".to_string(), matching_pv("medium", 50));
+    cache.upsert_pvc("ns/claim".to_string(), pvc_wanting("ns", "claim", 10));
+    let snapshot = cache.snapshot();
+
+    let candidates = find_static_candidates(snapshot.pvc("ns", "claim").unwrap(), &snapshot, &no_excluded());
+    let by_node = resolve_by_node(&candidates, &snapshot);
+    assert_eq!(by_node.get("n1").map(String::as_str), Some("small"));
+}
+
+#[test]
+fn a_pv_prebound_to_the_claim_wins_even_when_a_smaller_volume_is_free() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    cache.upsert_pv("small".to_string(), matching_pv("small", 10));
+    let mut prebound = matching_pv("prebound", 100);
+    prebound.claim_ref = Some(("ns".to_string(), "claim".to_string()));
+    cache.upsert_pv("prebound".to_string(), prebound);
+    cache.upsert_pvc("ns/claim".to_string(), pvc_wanting("ns", "claim", 10));
+    let snapshot = cache.snapshot();
+
+    let candidates = find_static_candidates(snapshot.pvc("ns", "claim").unwrap(), &snapshot, &no_excluded());
+    let by_node = resolve_by_node(&candidates, &snapshot);
+    assert_eq!(by_node.get("n1").map(String::as_str), Some("prebound"));
+}
+
+#[test]
 fn a_static_pv_too_small_is_not_a_candidate() {
     let mut cache = Cache::new();
     cache.upsert_node(&api_node("n1", &[]));

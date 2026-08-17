@@ -161,6 +161,81 @@ fn a_request_for_more_devices_than_exist_is_rejected() {
 }
 
 #[test]
+fn allocation_backtracks_when_an_early_valid_pick_is_needed_by_a_later_request() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1"));
+    cache.upsert_device_class("broad".to_string(), class_with_cel("broad", "true"));
+    cache.upsert_device_class(
+        "narrow".to_string(),
+        class_with_cel(
+            "narrow",
+            r#"device.attributes["gpu.example.com"].kind == "narrow""#,
+        ),
+    );
+
+    let mut slice = slice_with_devices("gpu.example.com", "n1", &["only-narrow", "broad-only"]);
+    let devices = slice.spec.devices.as_mut().unwrap();
+    devices[0].basic.attributes = Some(std::collections::BTreeMap::from([(
+        "kind".to_string(),
+        RawDeviceAttribute {
+            bool: None,
+            int: None,
+            string: Some("narrow".to_string()),
+            version: None,
+        },
+    )]));
+    devices[1].basic.attributes = Some(std::collections::BTreeMap::from([(
+        "kind".to_string(),
+        RawDeviceAttribute {
+            bool: None,
+            int: None,
+            string: Some("broad".to_string()),
+            version: None,
+        },
+    )]));
+    cache.upsert_resource_slice("s1".to_string(), slice);
+
+    let exact = |name: &str, class: &str| RawDeviceRequest {
+        name: name.to_string(),
+        exactly: Some(crate::cache::dra::RawExactDeviceRequest {
+            device_class_name: Some(class.to_string()),
+            selectors: None,
+            allocation_mode: None,
+            count: Some(1),
+            admin_access: None,
+        }),
+        first_available: None,
+    };
+    let claim = RawResourceClaim {
+        metadata: claim_meta("ns", "claim"),
+        spec: RawResourceClaimSpec {
+            devices: Some(crate::cache::dra::RawDeviceClaim {
+                // The broad request sees only-narrow first. A greedy pass
+                // consumes it and incorrectly rejects the narrow request;
+                // upstream rolls that choice back and uses broad-only.
+                requests: Some(vec![exact("broad", "broad"), exact("narrow", "narrow")]),
+                constraints: None,
+            }),
+        },
+        status: None,
+    };
+    cache.upsert_resource_claim("ns/claim".to_string(), claim);
+    let snapshot = cache.snapshot();
+
+    let p = pod_with_claim("ns", "gpu", "claim");
+    let mut state = CycleState::default();
+    let (status, _) = pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
+    assert!(status.is_success());
+    assert!(filter_impl(&state, &p, snapshot.node("n1").unwrap()).is_success());
+
+    let wanted = state.read::<WantedClaims>(NAME).unwrap();
+    let ClaimPlan::Allocate { by_node, .. } = &wanted.0[0] else { panic!("expected allocation") };
+    let allocation = by_node.get("n1").unwrap();
+    assert_eq!(allocation[0].device, "broad-only");
+    assert_eq!(allocation[1].device, "only-narrow");
+}
+
+#[test]
 fn a_device_already_assumed_by_another_pods_cycle_is_excluded() {
     let mut cache = Cache::new();
     cache.upsert_node(&api_node("n1"));
@@ -219,6 +294,40 @@ fn a_device_attribute_selector_filters_correctly() {
     pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
     let n = snapshot.node("n1").unwrap().as_ref().clone();
     assert!(filter_impl(&state, &p, &n).is_success(), "exactly one device (\"big\") should satisfy the selector");
+}
+
+#[test]
+fn a_capacity_selector_uses_exact_quantity_arithmetic() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1"));
+    cache.upsert_device_class("gpu.example.com".to_string(), class_with_cel("gpu.example.com", "true"));
+    let mut slice = slice_with_devices("gpu.example.com", "n1", &["precise"]);
+    slice.spec.devices.as_mut().unwrap()[0].basic.capacity = Some(
+        std::collections::BTreeMap::from([(
+            "memory".to_string(),
+            crate::cache::dra::RawDeviceCapacity {
+                value: k8s_openapi::apimachinery::pkg::api::resource::Quantity(
+                    "9007199254740993".to_string(),
+                ),
+            },
+        )]),
+    );
+    cache.upsert_resource_slice("s1".to_string(), slice);
+
+    let mut claim = unbound_claim("ns", "claim", "gpu.example.com", 1);
+    claim.spec.devices.as_mut().unwrap().requests.as_mut().unwrap()[0]
+        .exactly.as_mut().unwrap().selectors = Some(vec![RawDeviceSelector {
+            cel: Some(RawCelSelector {
+                expression: r#"device.capacity["gpu.example.com"].memory.isGreaterThan(quantity("9007199254740992"))"#.to_string(),
+            }),
+        }]);
+    cache.upsert_resource_claim("ns/claim".to_string(), claim);
+    let snapshot = cache.snapshot();
+
+    let p = pod_with_claim("ns", "gpu", "claim");
+    let mut state = CycleState::default();
+    pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
+    assert!(filter_impl(&state, &p, snapshot.node("n1").unwrap()).is_success());
 }
 
 #[test]
@@ -337,6 +446,32 @@ fn allocation_mode_all_fails_when_nothing_matches() {
     pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
     let n = snapshot.node("n1").unwrap().as_ref().clone();
     assert!(!filter_impl(&state, &p, &n).is_success(), "'All' with zero matches must not trivially succeed");
+}
+
+#[test]
+fn allocation_mode_all_fails_when_one_of_the_matching_devices_is_busy() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1"));
+    cache.upsert_device_class("gpu.example.com".to_string(), class_with_cel("gpu.example.com", "true"));
+    cache.upsert_resource_slice(
+        "s1".to_string(),
+        slice_with_devices("gpu.example.com", "n1", &["gpu-0", "gpu-1"]),
+    );
+    let mut claim = unbound_claim("ns", "claim", "gpu.example.com", 1);
+    claim.spec.devices.as_mut().unwrap().requests.as_mut().unwrap()[0]
+        .exactly.as_mut().unwrap().allocation_mode = Some("All".to_string());
+    cache.upsert_resource_claim("ns/claim".to_string(), claim);
+    let snapshot = cache.snapshot();
+    let mut excluded = no_excluded();
+    excluded.insert(("gpu.example.com".to_string(), "n1".to_string(), "gpu-0".to_string()));
+
+    let p = pod_with_claim("ns", "gpu", "claim");
+    let mut state = CycleState::default();
+    pre_filter_impl(&mut state, &p, &snapshot, &excluded);
+    assert!(
+        !filter_impl(&state, &p, snapshot.node("n1").unwrap()).is_success(),
+        "All means every matching device, not every matching device that happens to be free"
+    );
 }
 
 #[test]

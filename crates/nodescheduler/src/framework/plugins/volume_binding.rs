@@ -67,8 +67,6 @@ use std::time::Duration;
 
 pub const NAME: &str = "VolumeBinding";
 
-const POLL_INTERVAL: Duration = Duration::from_secs(2);
-
 /// The annotation an external provisioner watches to learn which node it is
 /// provisioning for. Part of the PVC API contract, not invented here.
 const SELECTED_NODE_ANNOTATION: &str = "volume.kubernetes.io/selected-node";
@@ -78,6 +76,8 @@ const SELECTED_NODE_ANNOTATION: &str = "volume.kubernetes.io/selected-node";
 struct StaticCandidate {
     pv_name: String,
     node_affinity: Option<Box<NodeSelector>>,
+    capacity_bytes: i64,
+    pre_bound_to_claim: bool,
 }
 
 /// What a candidate node has to satisfy for one of the pod's PVCs.
@@ -119,6 +119,7 @@ struct WantedPvcs(Vec<PvcConstraint>);
 pub struct VolumeBinding {
     client: kube::Client,
     bind_timeout: Duration,
+    pvc_bindings: crate::pvc_binding::PvcBindingTracker,
     assumed_pvs: Arc<Mutex<HashSet<String>>>,
     /// pod uid -> (pvc name -> pv name), for `PreBind`/`Unreserve`/`PostBind`
     /// to find what `Reserve` picked for this pod, none of which see
@@ -127,10 +128,15 @@ pub struct VolumeBinding {
 }
 
 impl VolumeBinding {
-    pub fn new(client: kube::Client, bind_timeout: Duration) -> Self {
+    pub fn new(
+        client: kube::Client,
+        bind_timeout: Duration,
+        pvc_bindings: crate::pvc_binding::PvcBindingTracker,
+    ) -> Self {
         Self {
             client,
             bind_timeout,
+            pvc_bindings,
             assumed_pvs: Arc::new(Mutex::new(HashSet::new())),
             assumed_by_pod: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -240,6 +246,11 @@ fn find_static_candidates(pvc: &crate::cache::storage::PvcInfo, snapshot: &Snaps
     let to_candidate = |pv: &crate::cache::storage::PvInfo| StaticCandidate {
         pv_name: pv.name.clone(),
         node_affinity: pv.node_affinity.clone(),
+        capacity_bytes: pv.capacity_bytes,
+        pre_bound_to_claim: pv
+            .claim_ref
+            .as_ref()
+            .is_some_and(|(ns, name)| ns == &pvc.namespace && name == &pvc.name),
     };
     if let Some(vn) = &pvc.volume_name {
         return match snapshot.pv(vn) {
@@ -247,12 +258,22 @@ fn find_static_candidates(pvc: &crate::cache::storage::PvcInfo, snapshot: &Snaps
             _ => Vec::new(),
         };
     }
-    snapshot
+    let mut candidates: Vec<_> = snapshot
         .pvs
         .values()
         .filter(|pv| !excluded.contains(&pv.name) && static_matches(pvc, pv))
         .map(to_candidate)
-        .collect()
+        .collect();
+    // The upstream PV index visits the smallest sufficient volume first,
+    // while an explicit claimRef to this PVC wins immediately. HashMap
+    // iteration here used to make both decisions process-random.
+    candidates.sort_by(|a, b| {
+        b.pre_bound_to_claim
+            .cmp(&a.pre_bound_to_claim)
+            .then_with(|| a.capacity_bytes.cmp(&b.capacity_bytes))
+            .then_with(|| a.pv_name.cmp(&b.pv_name))
+    });
+    candidates
 }
 
 /// Resolve `candidates` to the one PV each node in `snapshot` could actually
@@ -548,12 +569,13 @@ impl VolumeBinding {
         use kube::api::{Api, Patch, PatchParams};
 
         let api: Api<PersistentVolumeClaim> = Api::namespaced(self.client.clone(), &pod.namespace);
+        let waiter = self.pvc_bindings.subscribe(format!("{}/{}", pod.namespace, pvc_name));
 
         let current = api
             .get(pvc_name)
             .await
             .map_err(|e| Status::error(NAME, format!("reading persistentvolumeclaim {pvc_name:?}: {e}")))?;
-        if current.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Bound") {
+        if crate::cache::storage::pvc_is_fully_bound(&current) {
             return Ok(());
         }
 
@@ -569,30 +591,24 @@ impl VolumeBinding {
             .map_err(|e| Status::error(NAME, format!("claiming persistentvolume {pv_name:?} for persistentvolumeclaim {pvc_name:?}: {e}")))?;
         }
 
-        self.poll_until_bound(&api, pvc_name).await
+        self.wait_until_bound(waiter, pvc_name).await
     }
 
-    async fn poll_until_bound(
+    async fn wait_until_bound(
         &self,
-        api: &kube::api::Api<k8s_openapi::api::core::v1::PersistentVolumeClaim>,
+        waiter: crate::pvc_binding::PvcBindingWaiter,
         pvc_name: &str,
     ) -> Result<(), Status> {
-        let deadline = tokio::time::Instant::now() + self.bind_timeout;
-        loop {
-            let current = api
-                .get(pvc_name)
-                .await
-                .map_err(|e| Status::error(NAME, format!("polling persistentvolumeclaim {pvc_name:?}: {e}")))?;
-            if current.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Bound") {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(Status::unschedulable(
-                    NAME,
-                    format!("persistentvolumeclaim {pvc_name:?} did not bind within {}s", self.bind_timeout.as_secs()),
-                ));
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
+        if waiter.wait(self.bind_timeout).await {
+            Ok(())
+        } else {
+            Err(Status::unschedulable(
+                NAME,
+                format!(
+                    "persistentvolumeclaim {pvc_name:?} did not bind within {}s",
+                    self.bind_timeout.as_secs()
+                ),
+            ))
         }
     }
 
@@ -601,12 +617,13 @@ impl VolumeBinding {
         use kube::api::{Api, Patch, PatchParams};
 
         let api: Api<PersistentVolumeClaim> = Api::namespaced(self.client.clone(), &pod.namespace);
+        let waiter = self.pvc_bindings.subscribe(format!("{}/{}", pod.namespace, pvc_name));
 
         let current = api
             .get(pvc_name)
             .await
             .map_err(|e| Status::error(NAME, format!("reading persistentvolumeclaim {pvc_name:?}: {e}")))?;
-        if current.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Bound") {
+        if crate::cache::storage::pvc_is_fully_bound(&current) {
             return Ok(());
         }
 
@@ -632,7 +649,7 @@ impl VolumeBinding {
             })?;
         }
 
-        self.poll_until_bound(&api, pvc_name).await
+        self.wait_until_bound(waiter, pvc_name).await
     }
 }
 

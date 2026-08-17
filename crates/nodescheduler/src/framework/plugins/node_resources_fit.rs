@@ -88,10 +88,11 @@ struct FitState {
     pod_count_delta: i64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct NodeResourcesFit {
     pub strategy: ScoringStrategy,
     pub weights: ResourceWeights,
+    pub ignored_resources: std::collections::HashSet<String>,
 }
 
 impl Plugin for NodeResourcesFit {
@@ -198,6 +199,9 @@ impl FilterPlugin for NodeResourcesFit {
         committed.sub(&fit.freed);
 
         for name in fit.requests.names() {
+            if self.ignored_resources.contains(&name) {
+                continue;
+            }
             let want = fit.requests.get(&name);
             let allocatable = node.allocatable.get(&name);
             let used = committed.get(&name);
