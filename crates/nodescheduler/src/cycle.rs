@@ -57,6 +57,7 @@ use crate::cache::{NodeInfo, PodInfo, Snapshot};
 use crate::framework::status::{Code, NodeToStatus, Status};
 use crate::framework::{CycleState, Registry, MAX_NODE_SCORE};
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Below this many nodes, always consider all of them: the saving is not worth
@@ -379,7 +380,7 @@ impl Scheduler {
             if allowed {
                 if let Some(node) = snapshot.node(&name) {
                     if self.filter_one_node(registry, &mut state, pod, node).is_none() {
-                        let mut preferred = vec![Arc::new(node.clone())];
+                        let mut preferred = vec![node.clone()];
                         let mut extender_failed = false;
                         for extender in extenders {
                             if !extender.config.applies_to(pod) {
@@ -942,33 +943,88 @@ impl Scheduler {
         let (offset, wanted) =
             offset_and_num_candidates(candidates_by_name.len() as i32, rng);
 
-        let mut found: Vec<Candidate> = Vec::new();
-        for i in 0..candidates_by_name.len() {
-            if found.len() as i32 >= wanted {
-                break;
-            }
-            let idx = (offset as usize + i) % candidates_by_name.len();
-            let Some(node) = snapshot.node(candidates_by_name[idx]) else {
-                continue;
-            };
-
-            // A fresh CycleState per node: PreFilter's per-cycle work is
-            // cheap to redo and sharing one across nodes would leak one
-            // node's hypothetical removals into the next node's answer.
-            let mut state = CycleState::default();
-            for plugin in &registry.pre_filter {
-                plugin.pre_filter(&mut state, pod, snapshot);
-            }
-
-            let mut budgets = budgets.to_vec();
-            let victims = select_victims_on_node(pod, node, &mut budgets, |removed| {
-                self.fits_without(registry, &mut state, pod, node, removed)
-            });
-
-            if let Some(victims) = victims {
-                found.push(Candidate::from_victims(node, victims));
-            }
+        // Match upstream's DryRunPreemption: nodes are evaluated in parallel,
+        // each PDB-safe/PDB-violating bucket retains at most `wanted`
+        // candidates, and cancellation only starts once there is at least one
+        // PDB-safe choice and the combined shortlist is large enough. Stopping
+        // at `wanted` violating candidates would miss a clean node immediately
+        // after them and evict through a budget unnecessarily.
+        #[derive(Default)]
+        struct CandidateBuckets {
+            non_violating: Vec<Candidate>,
+            violating: Vec<Candidate>,
+            errors: Vec<Status>,
         }
+
+        let buckets = Mutex::new(CandidateBuckets::default());
+        let cancelled = AtomicBool::new(false);
+        self.workers.install(|| {
+            (0..candidates_by_name.len()).into_par_iter().for_each(|i| {
+                if cancelled.load(Ordering::Acquire) {
+                    return;
+                }
+                let idx = (offset as usize + i) % candidates_by_name.len();
+                let Some(node) = snapshot.node(candidates_by_name[idx]) else {
+                    return;
+                };
+
+                // A fresh CycleState per node: PreFilter's per-cycle work is
+                // cheap to redo and sharing one across nodes would leak one
+                // node's hypothetical removals into the next node's answer.
+                let mut state = CycleState::default();
+                for plugin in &registry.pre_filter {
+                    plugin.pre_filter(&mut state, pod, snapshot);
+                }
+
+                let mut filter_error = None;
+                let mut node_budgets = budgets.to_vec();
+                let victims = select_victims_on_node(pod, node, &mut node_budgets, |removed| {
+                    match self.fits_without(registry, &mut state, pod, node, removed) {
+                        Ok(fits) => fits,
+                        Err(status) => {
+                            filter_error = Some(status);
+                            false
+                        }
+                    }
+                });
+
+                let mut buckets = buckets.lock().unwrap();
+                if let Some(status) = filter_error {
+                    buckets.errors.push(status);
+                    return;
+                }
+                let Some(victims) = victims else { return };
+                let non_violating = victims.pdb_violations == 0;
+                let target = if non_violating {
+                    &mut buckets.non_violating
+                } else {
+                    &mut buckets.violating
+                };
+                if target.len() < wanted as usize {
+                    target.push(Candidate::from_victims(node, victims));
+                }
+                if !buckets.non_violating.is_empty()
+                    && buckets.non_violating.len() + buckets.violating.len() >= wanted as usize
+                {
+                    cancelled.store(true, Ordering::Release);
+                }
+            });
+        });
+
+        let mut buckets = buckets.into_inner().unwrap();
+        if !buckets.errors.is_empty() {
+            anyhow::bail!(
+                "preemption Filter dry run failed: {}",
+                buckets
+                    .errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+        let mut found = buckets.non_violating;
+        found.append(&mut buckets.violating);
 
         // Preemption-capable extenders run sequentially and each receives the
         // candidate map returned by the previous one. A non-ignorable error
@@ -1029,7 +1085,7 @@ impl Scheduler {
         pod: &PodInfo,
         node: &NodeInfo,
         removed: &[&PodInfo],
-    ) -> bool {
+    ) -> Result<bool, Status> {
         for plugin in &registry.pre_filter {
             if let Some(ext) = plugin.extensions() {
                 for victim in removed {
@@ -1038,13 +1094,23 @@ impl Scheduler {
             }
         }
 
-        let fits = registry.filter.iter().all(|plugin| {
+        let mut fits = true;
+        let mut error = None;
+        for plugin in &registry.filter {
             if state.filter_skipped(plugin.name()) {
-                return true;
+                continue;
             }
             let status = plugin.filter(state, pod, node);
-            status.is_success() || status.is_skip()
-        });
+            if status.code == Code::Error {
+                error = Some(status);
+                fits = false;
+                break;
+            }
+            if !status.is_success() && !status.is_skip() {
+                fits = false;
+                break;
+            }
+        }
 
         for plugin in &registry.pre_filter {
             if let Some(ext) = plugin.extensions() {
@@ -1054,6 +1120,9 @@ impl Scheduler {
             }
         }
 
-        fits
+        match error {
+            Some(status) => Err(status),
+            None => Ok(fits),
+        }
     }
 }

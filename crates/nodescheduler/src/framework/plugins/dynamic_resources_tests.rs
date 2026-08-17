@@ -366,8 +366,8 @@ fn allocation_is_exclusive_and_backtracks_across_separate_claims() {
     let ClaimPlan::Allocate { by_node: narrow, .. } = &wanted.0[1] else {
         panic!("expected Allocate")
     };
-    assert_eq!(broad["n1"][0].device, "broad-only");
-    assert_eq!(narrow["n1"][0].device, "only-narrow");
+    assert_eq!(broad["n1"].devices[0].device, "broad-only");
+    assert_eq!(narrow["n1"].devices[0].device, "only-narrow");
 }
 
 #[test]

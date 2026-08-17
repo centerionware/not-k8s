@@ -225,6 +225,13 @@ what they were, because each had a plausible argument for leaving it:
 nominated-pod injection during Filter, victim selection with reprieve, and the
 six-way node choice.
 
+The dry run uses the same bounded parallel candidate search as upstream. It
+does not stop merely because the nominal candidate count has been reached by
+PDB-violating nodes: it keeps scanning until at least one PDB-safe candidate
+exists (or every potential node has been checked), then cancels outstanding
+work. Filter-plugin errors from those hypothetical removals abort preemption;
+they are never downgraded to an ordinary failed fit.
+
 One structural deviation from upstream, with no behavioural difference:
 preemption is driven from `cycle.rs` rather than being a `PostFilter` plugin.
 Its dry runs must re-run the *Filter* plugins against a hypothetical pod set,

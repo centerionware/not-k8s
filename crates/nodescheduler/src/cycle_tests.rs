@@ -425,6 +425,42 @@ async fn a_filter_error_aborts_the_cycle_even_when_another_node_passes() {
 }
 
 #[tokio::test]
+async fn a_filter_error_during_a_preemption_dry_run_is_not_a_failed_fit() {
+    let registry = Registry {
+        filter: vec![Box::new(ErrorOnOneNode)],
+        ..Default::default()
+    };
+    let mut cache = Cache::new();
+    cache.upsert_node(&Node {
+        metadata: ObjectMeta { name: Some("broken".to_string()), ..Default::default() },
+        ..Default::default()
+    });
+    let mut victim = pod_wanting_milli_cpu(1);
+    victim.uid = "victim".to_string();
+    victim.name = "victim".to_string();
+    victim.node_name = Some("broken".to_string());
+    cache.add_pod(Arc::new(victim));
+    let snapshot = cache.snapshot();
+
+    let mut statuses = NodeToStatus::default();
+    statuses.record(
+        "broken",
+        Status::unschedulable("NodeResourcesFit", "Insufficient cpu"),
+    );
+    let scheduler =
+        Scheduler::new(100, 2, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
+    let mut preemptor = pod_wanting_milli_cpu(1);
+    preemptor.priority = 100;
+    let mut rng = Rng::new(1);
+
+    let error = scheduler
+        .preempt(&registry, &[], &preemptor, &snapshot, &statuses, &[], &mut rng)
+        .await
+        .expect_err("a plugin error must abort preemption rather than reject one node");
+    assert!(error.to_string().contains("ErrorOnOneNode"), "{error}");
+}
+
+#[tokio::test]
 async fn an_out_of_range_normalized_score_aborts_instead_of_being_clamped() {
     let registry = Registry {
         score: vec![Box::new(InvalidNormalizedScore)],
