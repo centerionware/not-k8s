@@ -1138,7 +1138,6 @@ register_test test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_
 
 test_scheduler_claims_a_static_wait_for_first_consumer_volume() {
     _require_nodescheduler
-    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
 
     local class="sched-static-wfc" pv="sched-static-pv"
     local claim="sched-static-claim" pod="sched-static-pod"
@@ -1209,7 +1208,15 @@ spec:
         claimName: $claim
 EOF
 
-    wait_until 90 "$pod to run from its static volume" pod_is_phase "$pod" Running \
+    # This is a scheduler/storage-controller assertion, not a kubelet volume
+    # mount assertion. The nodelet deliberately supports PV-backed CSI only;
+    # an in-tree hostPath PV is useful here because it needs no external
+    # driver, but nodelet must not be expected to mount it. CSI-backed pod
+    # startup is covered by csi_pvc.sh.
+    wait_until 60 "$pod to be bound to a node" _pod_is_bound "$pod" \
+        || die "nodescheduler did not choose a node for the static PV/PVC"
+    wait_until 60 "$claim to become Bound" bash -c \
+        "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound" \
         || die "nodescheduler did not complete the static PV/PVC binding path"
     assert_eq "$(kubectl get pv "$pv" -o jsonpath='{.spec.claimRef.name}')" "$claim" \
         "VolumeBinding PreBind must prebind the PV to the selected claim"
@@ -1417,7 +1424,7 @@ test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection() {
     # process as `[{a:b}]`, silently invalid JSON) — `\"` is how a literal
     # quote survives into the child's environment.
     local json_env
-    json_env='NODESCHEDULER_EXTENDERS_JSON=[{\"urlPrefix\":\"http://127.0.0.1:'"$FEXT_PORT"'\",\"filterVerb\":\"filter\"}]'
+    json_env='NODESCHEDULER_EXTENDERS_JSON=[{\"urlPrefix\":\"http://127.0.0.1:'"$FEXT_PORT"'\",\"filterVerb\":\"filter\",\"nodeCacheCapable\":true}]'
     nodescheduler_restart_with_env "$json_env"
 
     local pod="sched-extender-reject"
@@ -1469,7 +1476,7 @@ test_scheduler_schedules_a_pod_an_http_extender_approves() {
     # process as `[{a:b}]`, silently invalid JSON) — `\"` is how a literal
     # quote survives into the child's environment.
     local json_env
-    json_env='NODESCHEDULER_EXTENDERS_JSON=[{\"urlPrefix\":\"http://127.0.0.1:'"$FEXT_PORT"'\",\"filterVerb\":\"filter\"}]'
+    json_env='NODESCHEDULER_EXTENDERS_JSON=[{\"urlPrefix\":\"http://127.0.0.1:'"$FEXT_PORT"'\",\"filterVerb\":\"filter\",\"nodeCacheCapable\":true}]'
     nodescheduler_restart_with_env "$json_env"
 
     local pod="sched-extender-accept"
