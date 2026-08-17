@@ -211,6 +211,7 @@ where
                         continue;
                     }
 
+                    while self.events.try_recv().is_ok() {}
                     self.initial = self
                         .shared
                         .objects
@@ -220,7 +221,6 @@ where
                         .cloned()
                         .collect();
                     self.initial_index = 0;
-                    while self.events.try_recv().is_ok() {}
                     self.phase = SubscriptionPhase::Init;
                 }
                 SubscriptionPhase::Init => {
