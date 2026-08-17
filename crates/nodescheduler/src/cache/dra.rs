@@ -75,9 +75,9 @@ pub struct RawDeviceClaim {
     /// Cross-request "must share an attribute" rules — evaluated in
     /// `dynamic_resources.rs`'s `allocate_on_node` as devices are picked, the
     /// same "first device in the group sets the value, later ones must
-    /// match" rule upstream's `matchAttributeConstraint` uses (see that
-    /// file's module header for the one real divergence: a single greedy
-    /// pass, not upstream's full backtracking search).
+    /// match" rule upstream's `matchAttributeConstraint` uses. The allocator
+    /// backtracks across requests and claims when an early match prevents a
+    /// complete solution.
     pub constraints: Option<Vec<RawDeviceConstraint>>,
     /// Driver configuration supplied by the claim. It does not participate
     /// in selection, but must be copied into the allocation result for the

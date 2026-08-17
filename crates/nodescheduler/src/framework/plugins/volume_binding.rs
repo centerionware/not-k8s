@@ -37,10 +37,10 @@
 //!     the same controller this project's stripped control plane already
 //!     runs) or the `volume.kubernetes.io/selected-node` annotation (dynamic
 //!     provisioning, telling the external provisioner which node to
-//!     provision for), then polls for `status.phase == "Bound"` either way —
-//!     the one genuinely blocking wait in this whole design (see
-//!     docs/SCHEDULER.md, invariant 4), which is exactly why it runs in the
-//!     binding cycle and not the scheduling loop;
+//!     provision for), then waits for the PVC watch to report
+//!     `status.phase == "Bound"` either way. The timeout is only a failure
+//!     ceiling; no apiserver polling loop runs. This is exactly why the wait
+//!     runs in the binding cycle and not the scheduling loop;
 //!   * an **already-bound** PVC's PV is still checked against
 //!     `spec.nodeAffinity`, which is how CSI topology-aware dynamic
 //!     provisioning expresses "this volume only exists in this zone" —
@@ -559,7 +559,8 @@ impl crate::framework::PostBindPlugin for VolumeBinding {
 
 impl VolumeBinding {
     /// A static claim: point the PVC at the specific PV `Reserve` picked and
-    /// poll for `Bound`. Setting `spec.volumeName` is the whole write this
+    /// await the watch-observed `Bound`. Setting `spec.volumeName` is the
+    /// whole write this
     /// side needs — the built-in PV binder controller (part of this
     /// project's stripped control plane, same as upstream's) observes a PVC
     /// naming a specific, matching, unclaimed PV and completes the bind

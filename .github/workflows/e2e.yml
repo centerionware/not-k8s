@@ -170,35 +170,16 @@ jobs:
         # which is what isolates a nodelet regression from a datastore one.
         #
         # SCHEDULER is deliberately NOT defaulted on, unlike DATASTORE above,
-        # and the difference is feature completeness rather than confidence.
-        #
-        # nodestore implements the whole etcd v3 surface the apiserver uses,
-        # so turning it on makes every test in this suite an additional
-        # assertion about it — strictly more coverage. nodescheduler is
-        # phase 1 (docs/SCHEDULER.md): no VolumeBinding, no DynamicResources,
-        # no PodTopologySpread, no InterPodAffinity, no preemption. Turning it
-        # on for the *full* suite therefore makes a phase-1 component the gate
-        # for phase-4 and phase-5 tests, which cannot pass and are not
-        # supposed to:
-        #
-        #   * a WaitForFirstConsumer PVC is never provisioned, because the
-        #     VolumeBinding plugin is what writes
-        #     volume.kubernetes.io/selected-node at PreBind;
-        #   * a ResourceClaim is never allocated, because the DynamicResources
-        #     plugin is what writes status.allocation and reservedFor before
-        #     the Binding (see docs/GAP_CLOSURE.md — that is the scheduler's
-        #     job, not kubelet's);
-        #   * anti-affinity and spread constraints are simply not evaluated,
-        #     so pods that ought to be rejected get placed.
-        #
-        # So: run the full suite against the shipped default, and dispatch
-        # scheduler coverage explicitly —
+        # because the shipped deployment default is still k3s's scheduler.
+        # nodescheduler now carries the default profile's topology,
+        # preemption, storage, DRA, profile, and extender phases, so an
+        # unfiltered run with it enabled is both supported and required before
+        # claiming parity. Dispatch targeted scheduler coverage while
+        # iterating:
         #
         #   gh workflow run e2e.yml -f scheduler=nodescheduler -f only=scheduler
         #
-        # Flip the default here once phases 4 and 5 land, at which point the
-        # "every pod-creating test also asserts our placement" property
-        # genuinely holds.
+        # Then leave `only` empty for the final all-shard nodescheduler gate.
         env:
           NOTK8S_BUILD_PROFILE: debug
           NOTK8S_BUILD_LAYOUT: ${{ inputs.layout || 'split' }}

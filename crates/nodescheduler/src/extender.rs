@@ -45,6 +45,7 @@ use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 /// One configured extender. Parsed from `NODESCHEDULER_EXTENDERS_JSON` — see
@@ -465,6 +466,10 @@ pub struct ExtenderVictims {
 /// unresolvable rejection is not a preemption candidate).
 pub struct FilterOutcome {
     pub passed: Vec<String>,
+    /// Non-cache-capable extenders may return full replacement Node objects.
+    /// Upstream builds fresh NodeInfos from those objects rather than looking
+    /// their names back up in the scheduler snapshot.
+    pub replacement_nodes: Option<Vec<Node>>,
     pub failed: BTreeMap<String, String>,
     pub failed_unresolvable: BTreeMap<String, String>,
 }
@@ -517,22 +522,66 @@ fn node_to_api(node: &NodeInfo) -> Node {
 pub struct Extender {
     pub config: ExtenderConfig,
     client: reqwest::Client,
+    /// Normally identical to `config.url_prefix`. With an explicit TLS
+    /// serverName the URL host is rewritten so rustls uses that name for SNI
+    /// and certificate verification, while the resolver and Host header keep
+    /// traffic pointed at the configured endpoint.
+    request_url_prefix: String,
+    original_host_header: Option<String>,
 }
 
 impl Extender {
     pub fn new(config: ExtenderConfig) -> anyhow::Result<Self> {
         let mut builder = reqwest::Client::builder().timeout(config.http_timeout);
+        let mut request_url_prefix = config.url_prefix.clone();
+        let mut original_host_header = None;
         if let Some(tls) = &config.tls_config {
-            // reqwest/rustls uses the URL host for SNI. An explicit upstream
-            // serverName override cannot be represented by ClientBuilder;
-            // fail loudly instead of connecting with subtly different TLS
-            // verification semantics.
             if !tls.server_name.is_empty() {
-                anyhow::bail!(
-                    "extender {:?} sets tlsConfig.serverName={:?}, which this transport cannot override independently of urlPrefix",
-                    config.url_prefix,
-                    tls.server_name,
-                );
+                let mut url = reqwest::Url::parse(&config.url_prefix).map_err(|error| {
+                    anyhow::anyhow!("parsing extender urlPrefix {:?}: {error}", config.url_prefix)
+                })?;
+                let endpoint_host = url.host_str().ok_or_else(|| {
+                    anyhow::anyhow!("extender urlPrefix {:?} has no host", config.url_prefix)
+                })?;
+                let port = url.port_or_known_default().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "extender urlPrefix {:?} has no port and its scheme has no default",
+                        config.url_prefix
+                    )
+                })?;
+                let addresses: Vec<SocketAddr> = match endpoint_host.parse::<IpAddr>() {
+                    Ok(ip) => vec![SocketAddr::new(ip, port)],
+                    Err(_) => (endpoint_host, port)
+                        .to_socket_addrs()
+                        .map_err(|error| {
+                            anyhow::anyhow!(
+                                "resolving extender endpoint {endpoint_host:?}:{port}: {error}"
+                            )
+                        })?
+                        .collect(),
+                };
+                if addresses.is_empty() {
+                    anyhow::bail!(
+                        "extender endpoint {endpoint_host:?}:{port} resolved to no addresses"
+                    );
+                }
+                builder = builder.resolve_to_addrs(&tls.server_name, &addresses);
+
+                let host_for_header = match endpoint_host.parse::<IpAddr>() {
+                    Ok(IpAddr::V6(_)) => format!("[{endpoint_host}]"),
+                    _ => endpoint_host.to_string(),
+                };
+                original_host_header = Some(match url.port() {
+                    Some(explicit) => format!("{host_for_header}:{explicit}"),
+                    None => host_for_header,
+                });
+                url.set_host(Some(&tls.server_name)).map_err(|_| {
+                    anyhow::anyhow!(
+                        "invalid extender tlsConfig.serverName {:?}",
+                        tls.server_name
+                    )
+                })?;
+                request_url_prefix = url.to_string();
             }
             let has_ca = tls.ca_data.as_ref().is_some_and(|data| !data.is_empty())
                 || !tls.ca_file.is_empty();
@@ -591,7 +640,7 @@ impl Extender {
         let client = builder
             .build()
             .map_err(|e| anyhow::anyhow!("building HTTP client for extender {:?}: {e}", config.url_prefix))?;
-        Ok(Self { config, client })
+        Ok(Self { config, client, request_url_prefix, original_host_header })
     }
 
     /// Ask this extender which of `nodes` the pod may run on. `None` means
@@ -615,10 +664,35 @@ impl Extender {
             anyhow::bail!("extender {:?} filter error: {}", self.config.url_prefix, result.error);
         }
 
-        let passed = if let Some(names) = result.node_names {
-            names
+        let (passed, replacement_nodes) = if self.config.node_cache_capable {
+            if let Some(names) = result.node_names {
+                let supplied: std::collections::HashSet<&str> =
+                    nodes.iter().map(|node| node.name.as_str()).collect();
+                if let Some(name) = names.iter().find(|name| !supplied.contains(name.as_str())) {
+                    anyhow::bail!(
+                        "extender {:?} claims filtered node {:?}, which was not in its input node list",
+                        self.config.url_prefix,
+                        name,
+                    );
+                }
+                (names, None)
+            } else if let Some(list) = result.nodes {
+                let names = list
+                    .items
+                    .iter()
+                    .filter_map(|node| node.metadata.name.clone())
+                    .collect();
+                (names, Some(list.items))
+            } else {
+                (Vec::new(), None)
+            }
         } else if let Some(list) = result.nodes {
-            list.items.into_iter().filter_map(|n| n.metadata.name).collect()
+            let names = list
+                .items
+                .iter()
+                .filter_map(|node| node.metadata.name.clone())
+                .collect();
+            (names, Some(list.items))
         } else {
             // Neither field set: verified against upstream's real
             // HTTPExtender.Filter (pkg/scheduler/extender.go) — `nodeResult`
@@ -627,20 +701,12 @@ impl Extender {
             // which nodes passed is read as "none of them did", not "all of
             // them did". Silently defaulting to "everyone passed" here
             // would make a `FailedNodes`-only response a no-op.
-            Vec::new()
+            (Vec::new(), None)
         };
-        let supplied: std::collections::HashSet<&str> =
-            nodes.iter().map(|node| node.name.as_str()).collect();
-        if let Some(name) = passed.iter().find(|name| !supplied.contains(name.as_str())) {
-            anyhow::bail!(
-                "extender {:?} claims filtered node {:?}, which was not in its input node list",
-                self.config.url_prefix,
-                name,
-            );
-        }
 
         Ok(Some(FilterOutcome {
             passed,
+            replacement_nodes,
             failed: result.failed_nodes,
             failed_unresolvable: result.failed_and_unresolvable_nodes,
         }))
@@ -796,11 +862,12 @@ impl Extender {
         verb: &str,
         args: &impl serde::Serialize,
     ) -> anyhow::Result<T> {
-        let url = format!("{}/{}", self.config.url_prefix.trim_end_matches('/'), verb);
-        let resp = self
-            .client
-            .post(&url)
-            .json(args)
+        let url = format!("{}/{}", self.request_url_prefix.trim_end_matches('/'), verb);
+        let mut request = self.client.post(&url).json(args);
+        if let Some(host) = &self.original_host_header {
+            request = request.header(reqwest::header::HOST, host);
+        }
+        let resp = request
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("calling extender {url:?}: {e}"))?;

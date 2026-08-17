@@ -793,7 +793,7 @@ fn allocation_config(
     devices: &[RawDeviceRequestAllocationResult],
     device_classes: &HashMap<&str, &RawDeviceClass>,
 ) -> Vec<RawDeviceAllocationConfiguration> {
-    let mut out = Vec::new();
+    let mut out: Vec<RawDeviceAllocationConfiguration> = Vec::new();
     let mut class_ranges: HashMap<String, std::ops::Range<usize>> = HashMap::new();
     let mut selected_names = Vec::new();
 

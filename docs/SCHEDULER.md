@@ -83,7 +83,8 @@ where possible, in the same spirit as `nodestore`'s determinism rules.
    implementation purposes.
 
 4. **`PreBind` must never block the scheduling loop.** `VolumeBinding`'s
-   `PreBind` polls for PVC binding with a 600s default timeout. That is the
+   `PreBind` waits for the PVC watch to report binding, with a 600s default
+   timeout as a failure ceiling. It does not poll the apiserver. That is the
    single genuinely blocking wait in the design, and it lives on the pod's own
    task. Making binding synchronous would let one slow provisioner stall
    placement cluster-wide.
@@ -242,7 +243,8 @@ against a node's), and `VolumeBinding` (unbound-immediate PVCs block a pod
 outright; unbound `WaitForFirstConsumer` PVCs are checked against
 `StorageClass.allowedTopologies` and, when a driver opts in,
 `CSIStorageCapacity`; an already-bound PV's `nodeAffinity` is enforced;
-`PreBind` writes `volume.kubernetes.io/selected-node` and polls for `Bound`).
+`PreBind` writes `volume.kubernetes.io/selected-node` and waits for the PVC
+watch to report `Bound`).
 The PV/PVC/StorageClass/CSINode/CSIDriver/CSIStorageCapacity informers all
 start unconditionally now, the same as Pod/Node — see "Informers" below for
 what that changes about the footprint claim. The reference CSI driver the
@@ -276,7 +278,7 @@ is handled — only `reservedFor` needs updating. `PreEnqueue` holds a pod
 whose template-based claim hasn't been generated yet, the same "not yet
 rejected, not yet reached scheduling" reasoning `SchedulingGates` uses.
 `PreBind` writes `status.allocation` + `status.reservedFor` in one step (DRA
-has no external process to poll for, unlike `VolumeBinding`'s PVC binding).
+has no external provisioning transition to wait for, unlike VolumeBinding).
 
 `firstAvailable` subrequests, `adminAccess`, `allocationMode: All`,
 cross-request `constraints` (`matchAttribute`), and a `ResourceSlice` using
@@ -284,12 +286,13 @@ cross-request `constraints` (`matchAttribute`), and a `ResourceSlice` using
 checked directly against upstream's real allocator
 (`k8s.io/dynamic-resource-allocation/structured/allocator.go`) rather than
 assumed from the API docs — see `dynamic_resources.rs`'s module header for
-the one real algorithmic divergence (`allocate_on_node` is a single greedy
-forward pass; upstream's is a full backtracking search) and the two real
-bugs that source-reading caught (the `v1.NodeSelector`-not-`LabelSelector`
+the two real bugs that source-reading caught (the
+`v1.NodeSelector`-not-`LabelSelector`
 type on `ResourceSlice.nodeSelector`, and `ClaimPlan::Nothing` never
 re-checking an existing allocation's topology on a node that already held
-the reservation).
+the reservation). Device selection now uses the same exhaustive backtracking
+shape as upstream, including rollback across claims and `firstAvailable`
+alternatives.
 
 `PostFilter` is ✅ implemented too: a claim already allocated to a topology
 no node satisfies, with nothing else still reserving it, gets deallocated so
@@ -297,16 +300,14 @@ the next attempt can pick differently — checked against upstream's real
 `DynamicResources.PostFilter`. This needed `PostFilterPlugin` to become
 `async` (zero existing implementors at the time, so free to widen).
 
-The CEL environment itself still diverges from upstream in one way: device
-capacity (and the `quantity(str)` function's return) is a plain `f64`, not
-upstream's own arbitrary-precision `apiservercel` `Quantity` — `quantity.rs`
-implements the same named methods
-(`isGreaterThan`/`isLessThan`/`compareTo`/`add`/`sub`/`sign`/`isInteger`/
-`asInteger`/`asApproximateFloat`) against that float, since `cel-interpreter`'s
-`Value` is a closed enum with no opaque-type variant to add a real `Quantity`
-without forking it. Every real selector expression evaluates correctly under
-this; the gap is precision only, for magnitudes no real device capacity gets
-near. See `dynamic_resources.rs`'s module header for the full accounting.
+The CEL interpreter has no opaque/custom value variant for upstream's
+`apiservercel.Quantity`. `quantity.rs` therefore carries a private canonical
+Quantity representation inside a CEL string and implements the same named
+methods (`isGreaterThan`/`isLessThan`/`compareTo`/`add`/`sub`/`sign`/
+`isInteger`/`asInteger`/`asApproximateFloat`) with arbitrary-precision
+rational arithmetic. Equivalent Kubernetes quantity spellings compare equal
+and selection never loses precision; see `dynamic_resources.rs`'s module
+header for the representation boundary.
 
 DRA needs the raw-request escape hatch: `resource.k8s.io/v1` does not exist in
 the pinned `k8s-openapi` v1_33 schema (only `v1alpha3`/`v1beta1`/`v1beta2`), so
@@ -354,20 +355,16 @@ sees nodes an earlier one already accepted) and Prioritize right after plugin
 Score (rescaled from the extender's own `[0, 10]` range onto the plugins'
 `[0, 100]` one — `score * weight * 10`, matching upstream's real combining
 formula in `schedule_one.go`'s `prioritizeNodes` — then added into the
-already-weighted plugin totals). `managedResources` is honored: an extender naming specific
-extended resources is only consulted for a pod requesting at least one of
-them. An `ignorable` extender that errors is logged and skipped rather than
-failing the cycle.
+already-weighted plugin totals). `managedResources` is honored against both
+requests and limits on normal and init containers. An `ignorable` extender
+that errors is logged and skipped rather than failing the cycle.
 
-Two things are refused outright at config-parse time, by name, rather than
-silently ignored: `bindVerb` (an extender-driven Bind never runs here —
-`DefaultBinder` always binds) and `preemptVerb` (the separate
-extender-preemption interface — ordinary preemption proceeds without
-consulting it). `tlsConfig` is refused the same way; a custom CA/client cert
-would silently not apply. `enableHTTPS` doesn't exist as a separate field at
-all — `urlPrefix` is expected to already carry its scheme (`"https://…"`) the
-way every other URL this project's env vars accept does, making a standalone
-HTTPS toggle redundant rather than missing.
+`bindVerb` and `preemptVerb` use the upstream extender/v1 request and response
+shapes. TLS configuration supports `enableHTTPS`, insecure verification,
+custom CA data/files, client certificate/key data/files, and Go-duration
+`httpTimeout`, including `tlsConfig.serverName` as an independent SNI and
+certificate-verification name while connections and the HTTP Host header stay
+pointed at the configured endpoint.
 
 ## Informers: start only what a plugin asked for
 

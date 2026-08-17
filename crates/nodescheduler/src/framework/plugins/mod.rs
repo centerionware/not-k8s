@@ -114,7 +114,8 @@ pub(crate) fn default_normalize_score(reverse: bool, scores: &mut [i64]) {
 /// means a profile dumped from either scheduler compares equal.
 ///
 /// `client` is used by [`default_binder::DefaultBinder`] (writes the
-/// Binding), [`volume_binding::VolumeBinding`] (annotates and polls a PVC in
+/// Binding), [`volume_binding::VolumeBinding`] (annotates and watch-waits for
+/// a PVC in
 /// `PreBind`), and [`dynamic_resources::DynamicResources`] (writes a
 /// ResourceClaim's allocation and reservation in `PreBind`) — the only three
 /// plugins in this directory that perform I/O; everything else here is a

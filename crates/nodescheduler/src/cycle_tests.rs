@@ -346,6 +346,48 @@ impl crate::framework::Plugin for InvalidNormalizedScore {
     fn name(&self) -> &'static str { "InvalidNormalizedScore" }
 }
 
+struct PreferNamedNode;
+
+impl crate::framework::Plugin for PreferNamedNode {
+    fn name(&self) -> &'static str { "PreferNamedNode" }
+}
+
+impl crate::framework::ScorePlugin for PreferNamedNode {
+    fn score(
+        &self,
+        _state: &CycleState,
+        _pod: &PodInfo,
+        node: &crate::cache::NodeInfo,
+    ) -> Result<i64, Status> {
+        Ok(if node.name == "better-score" { MAX_NODE_SCORE } else { 0 })
+    }
+}
+
+#[tokio::test]
+async fn a_feasible_nominated_node_is_chosen_before_normal_scoring() {
+    let registry = Registry { score: vec![Box::new(PreferNamedNode)], ..Default::default() };
+    let mut cache = Cache::new();
+    for name in ["nominated", "better-score"] {
+        cache.upsert_node(&Node {
+            metadata: ObjectMeta { name: Some(name.to_string()), ..Default::default() },
+            ..Default::default()
+        });
+    }
+    let snapshot = cache.snapshot();
+    let mut scheduler =
+        Scheduler::new(100, 2, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
+    let mut pod = pod_wanting_milli_cpu(1);
+    pod.nominated_node_name = Some("nominated".to_string());
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = scheduler.schedule_one(&registry, &[], &pod, &snapshot, &mut rng).await;
+    match outcome {
+        CycleOutcome::Scheduled { node } => assert_eq!(node, "nominated"),
+        CycleOutcome::Unschedulable { reason, .. } => panic!("nominee should fit: {reason}"),
+        CycleOutcome::Error { reason } => panic!("unexpected error: {reason}"),
+    }
+}
+
 impl crate::framework::ScorePlugin for InvalidNormalizedScore {
     fn score(
         &self,

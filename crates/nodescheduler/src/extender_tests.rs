@@ -110,6 +110,20 @@ fn upstream_tls_config_and_duration_fields_parse() {
 }
 
 #[test]
+fn tls_server_name_rewrites_sni_but_preserves_the_endpoint_host_header() {
+    let config = parse_extenders(
+        r#"[{"urlPrefix":"https://127.0.0.1:9443/base","filterVerb":"filter",
+             "enableHTTPS":true,
+             "tlsConfig":{"insecure":true,"serverName":"extender.internal"}}]"#,
+    )
+    .unwrap()
+    .remove(0);
+    let extender = Extender::new(config).unwrap();
+    assert_eq!(extender.request_url_prefix, "https://extender.internal:9443/base");
+    assert_eq!(extender.original_host_header.as_deref(), Some("127.0.0.1:9443"));
+}
+
+#[test]
 fn a_zero_upstream_timeout_gets_the_five_second_default() {
     let cfg = parse_extenders(
         r#"[{"urlPrefix":"http://ext","filterVerb":"filter","httpTimeout":"0s"}]"#,
