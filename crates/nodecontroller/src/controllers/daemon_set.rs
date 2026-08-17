@@ -50,7 +50,7 @@
 //! `numberAvailable` mirrors `numberReady` (`minReadySeconds` not tracked,
 //! same simplification `replica_set.rs` documents).
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{DaemonSet, DaemonSetStatus};
 use k8s_openapi::api::core::v1::{Node, Pod, Taint, Toleration};
@@ -379,38 +379,6 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
     let mut daemon_sets: std::collections::HashSet<(String, String)> =
         std::collections::HashSet::new();
-
-    let node_api: Api<Node> = Api::all(client.clone());
-    let pod_api: Api<Pod> = Api::all(client.clone());
-    let ds_api: Api<DaemonSet> = Api::all(client.clone());
-
-    for n in node_api
-        .list(&Default::default())
-        .await
-        .context("listing Nodes to seed daemonset-controller")?
-        .items
-    {
-        nodes.insert(n.name_any(), n);
-    }
-    for p in pod_api
-        .list(&Default::default())
-        .await
-        .context("listing Pods to seed daemonset-controller")?
-        .items
-    {
-        pods.insert(format!("{}/{}", ns_of(&p), p.name_any()), p);
-    }
-    for ds in ds_api
-        .list(&Default::default())
-        .await
-        .context("listing DaemonSets to seed daemonset-controller")?
-        .items
-    {
-        let ns = ns_of(&ds);
-        let name = ds.name_any();
-        daemon_sets.insert((ns.clone(), name.clone()));
-        reconcile_daemon_set(&client, &ns, &name, &nodes, &pods).await;
-    }
 
     let mut node_stream = crate::watch::watch_nodes(&client);
     let mut pod_stream = crate::watch::watch_pods(&client);

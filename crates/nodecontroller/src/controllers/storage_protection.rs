@@ -21,7 +21,7 @@
 //! is removed — the intended protection still holds, just via one
 //! mechanism instead of two.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::watcher::Event;
@@ -119,25 +119,6 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
     let mut pvcs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut pvs: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    let pod_api: Api<Pod> = Api::all(client.clone());
-    let pvc_api: Api<PersistentVolumeClaim> = Api::all(client.clone());
-    let pv_api: Api<PersistentVolume> = Api::all(client.clone());
-
-    for p in pod_api.list(&Default::default()).await.context("listing Pods to seed storage-protection")?.items {
-        pods.insert(format!("{}/{}", ns_of(&p), p.name_any()), p);
-    }
-    for c in pvc_api.list(&Default::default()).await.context("listing PVCs to seed storage-protection")?.items {
-        let ns = ns_of(&c);
-        let name = c.name_any();
-        pvcs.insert((ns.clone(), name.clone()));
-        reconcile_pvc(&client, &ns, &name, &pods).await;
-    }
-    for v in pv_api.list(&Default::default()).await.context("listing PVs to seed storage-protection")?.items {
-        let name = v.name_any();
-        pvs.insert(name.clone());
-        reconcile_pv(&client, &name, &pvcs).await;
-    }
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut pvc_stream = crate::watch::watch_persistent_volume_claims(&client);

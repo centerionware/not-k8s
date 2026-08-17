@@ -46,7 +46,7 @@ here cannot be eliminated, only made efficient** — the honest goal is not
 its one irreducible timer (leader-election renewal), generalized to
 everything in this crate that has the same shape.
 
-### The mechanism: a CPU-budgeted governor over a wheel + a heap
+### The mechanism: a CPU-targeted governor over a wheel + a heap
 
 `nodescheduler`'s backoff queue already proved the base pattern this
 crate builds on (`SCHEDULER.md`'s table, `flushBackoffQCompleted` row):
@@ -83,8 +83,8 @@ PDB/quota resync, ttl-after-finished, the GC safety-net relist. This is a
 deliberate two-tier choice, not "wheel everywhere" — see the table below
 for which structure each group actually uses.
 
-**2. A hard CPU-time budget per tick, enforced by the same governor that
-owns both structures.** Bounding wakeup count alone still allows a
+**2. A CPU-work budget per tick, enforced by the same governor that owns
+both structures.** Bounding wakeup count alone still allows a
 thundering-herd burst (a control-plane restart re-arming every node's
 check at once; a healed network partition un-tainting hundreds of nodes
 in the same tick) to spike a core to 100% draining a large batch of
@@ -96,7 +96,7 @@ budget per tick**, default target **0.3–1% of one core**
 the wheel/heap while cumulative measured processing time stays under
 budget; anything left over when the budget is hit waits for the next
 tick rather than blocking the loop — bounded added latency under a
-burst, in exchange for a hard CPU ceiling, which is the right trade for a
+burst, in exchange for a CPU ceiling on the timer work, which is the right trade for a
 background daemon (unlike a renderer, where a missed frame is directly
 user-visible — that distinction is *why* this transfers only partially:
 see below). Both the wheel and the heap feed this one governor; it is
@@ -126,6 +126,38 @@ keeps *steady-state* load flat over time rather than sawtoothing every
 `node-monitor-period`; the tick budget from (2) is then only the backstop
 for the bursts jitter can't fully absorb (a genuine mass event, not
 routine correlated renewal).
+
+### Shared informer snapshots and API admission
+
+The event-driven half has a different failure mode from timer work. A
+controller can be entirely async and still overload a small apiserver by
+starting many requests at once, or by reconciling every copy of a burst
+without coalescing it. The implementation therefore treats the shared
+watchers as informer-like caches: their `InitApply` sequence is the startup
+snapshot, and controllers do not issue a second seed `LIST` for the same
+resource. One underlying watch is shared by every controller that consumes a
+given built-in kind, including garbage collection where the typed watch is
+available.
+
+All controller traffic uses one rate-limited client, with a default minimum
+interval of 100ms between request starts
+(`NODECONTROLLER_API_REQUEST_INTERVAL_MILLIS`). The limiter is a Tower async
+`poll_ready` gate: it suspends the request future, never blocks a Tokio
+worker, and limits request admission rather than holding a permit for the
+lifetime of a watch response. Leader-election traffic uses its own
+unthrottled client so a full reconcile queue cannot delay lease renewal. This
+is intentionally separate from `NODECONTROLLER_CPU_BUDGET_PERCENT`: network
+waits consume apiserver concurrency but are not CPU work, so a CPU percentage
+cannot by itself bound HTTP request bursts.
+
+The timer governor is currently the hard budget for the node-lifecycle
+polling wheel; the event controllers remain async and are protected at the
+shared API boundary. A future controller that needs high-cardinality burst
+coalescing should add a keyed, rate-limited work queue rather than calling a
+network reconcile once for every duplicate event. That distinction is
+deliberate: request admission makes the present implementation safe on a
+small control plane, while a work queue is the next optimization for
+reducing redundant decisions and writes.
 
 Implemented in `crates/nodecontroller/src/wheel.rs` (the timing wheel —
 insert/cancel/advance as plain functions over a struct, no I/O, pure and
@@ -172,7 +204,7 @@ picks wheel vs. heap per the cardinality rule in the section above:
 | J: disruption (PDB) | Small — status recompute resync | Partially | heap, coalesced |
 
 The wheel/heap entries above are the *entire* polling surface of this
-component, all drained through the one CPU-budgeted governor — if a
+component, all drained through the one timer-work governor — if a
 future controller implementation reaches for `tokio::time::interval`
 outside this mechanism, that is the same kind of regression
 `SCHEDULER.md` flags for its own timers: "if it ever fires, that's a bug

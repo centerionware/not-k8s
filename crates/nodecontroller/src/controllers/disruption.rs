@@ -35,7 +35,7 @@
 //! closed, on a malformed spec this controller shouldn't have been asked
 //! to interpret in the first place.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::api::policy::v1::{PodDisruptionBudget, PodDisruptionBudgetStatus};
@@ -138,29 +138,6 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
     let mut pdbs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-
-    let pod_api: Api<Pod> = Api::all(client.clone());
-    let pdb_api: Api<PodDisruptionBudget> = Api::all(client.clone());
-
-    for p in pod_api
-        .list(&Default::default())
-        .await
-        .context("listing Pods to seed disruption-controller")?
-        .items
-    {
-        pods.insert(format!("{}/{}", ns_of(&p), p.name_any()), p);
-    }
-    for pdb in pdb_api
-        .list(&Default::default())
-        .await
-        .context("listing PodDisruptionBudgets to seed disruption-controller")?
-        .items
-    {
-        let ns = ns_of(&pdb);
-        let name = pdb.name_any();
-        pdbs.insert((ns.clone(), name.clone()));
-        reconcile_pdb(&client, &ns, &name, &pods).await;
-    }
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut pdb_stream = crate::watch::watch_pod_disruption_budgets(&client);

@@ -31,7 +31,7 @@
 //! the right structure here. See `pacing::Governor` and `wheel::TimingWheel`.
 
 use crate::pacing::Governor;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Node, Taint};
 use k8s_openapi::jiff::Timestamp;
@@ -221,23 +221,6 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
         cfg.jitter_fraction,
     );
 
-    // Seed from whatever's already there, same "the Node objects are the
-    // durable record" rule node-ipam's controller uses.
-    let existing = node_api
-        .list(&Default::default())
-        .await
-        .context("listing Nodes to seed node-lifecycle")?;
-    for n in &existing.items {
-        let name = n.name_any();
-        cache.insert(
-            name,
-            NodeLiveness {
-                ready_status: ready_condition_status(n),
-                last_renew: None,
-            },
-        );
-    }
-
     let mut nodes = crate::watch::watch_nodes(&client);
     let mut leases = crate::watch::watch_node_leases(&client);
     let mut ticks = tokio::time::interval(cfg.tick_period);
@@ -319,7 +302,7 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                 let due = governor.due_this_tick(now);
                 if due.is_empty() { continue; }
                 let budget = governor.budget();
-                let tick_started = Instant::now();
+                let tick_started = crate::pacing::process_cpu_time();
                 let mut deferred = Vec::new();
                 for (index, name) in due.iter().enumerate() {
                     // Decide whether this item fits before doing its network
@@ -327,7 +310,9 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                     // costs more than the budget, matching the pure pacing
                     // partition's progress guarantee; the remaining suffix
                     // waits for the next tick.
-                    if index > 0 && tick_started.elapsed() >= budget {
+                    if index > 0
+                        && crate::pacing::process_cpu_time().saturating_sub(tick_started) >= budget
+                    {
                         deferred.extend(due[index..].iter().cloned());
                         break;
                     }

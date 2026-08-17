@@ -55,6 +55,8 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 futures = { workspace = true }
+tower = { workspace = true }
+libc = "0.2"
 rustls = { workspace = true }
 rand = "0.8"
 chrono = { workspace = true }

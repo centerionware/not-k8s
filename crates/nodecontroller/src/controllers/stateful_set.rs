@@ -51,7 +51,7 @@
 //! for a volume reason, the same honestly-visible gap every other
 //! PVC-dependent path in this project has today.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{StatefulSet, StatefulSetStatus};
 use k8s_openapi::api::core::v1::{
@@ -440,29 +440,6 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
     let mut stateful_sets: std::collections::HashSet<(String, String)> =
         std::collections::HashSet::new();
-
-    let pod_api: Api<Pod> = Api::all(client.clone());
-    let sts_api: Api<StatefulSet> = Api::all(client.clone());
-
-    for p in pod_api
-        .list(&Default::default())
-        .await
-        .context("listing Pods to seed statefulset-controller")?
-        .items
-    {
-        pods.insert(format!("{}/{}", ns_of(&p), p.name_any()), p);
-    }
-    for sts in sts_api
-        .list(&Default::default())
-        .await
-        .context("listing StatefulSets to seed statefulset-controller")?
-        .items
-    {
-        let ns = ns_of(&sts);
-        let name = sts.name_any();
-        stateful_sets.insert((ns.clone(), name.clone()));
-        reconcile_stateful_set(&client, &ns, &name, &pods).await;
-    }
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut sts_stream = crate::watch::watch_stateful_sets(&client);

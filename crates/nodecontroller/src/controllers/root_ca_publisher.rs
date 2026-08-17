@@ -136,11 +136,6 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     };
     let ca_pem = String::from_utf8(ca_bytes).context("cluster CA data is not valid UTF-8 PEM")?;
 
-    let ns_api: Api<Namespace> = Api::all(client.clone());
-    for ns in ns_api.list(&Default::default()).await.context("listing Namespaces to seed root-ca-cert-publisher-controller")?.items {
-        reconcile_namespace(&client, &ns.name_any(), &ca_pem).await;
-    }
-
     let mut ns_stream = crate::watch::watch_namespaces(&client);
     loop {
         match ns_stream.next().await {

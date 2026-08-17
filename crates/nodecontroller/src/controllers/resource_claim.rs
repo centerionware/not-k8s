@@ -177,13 +177,6 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 }
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
-    let pod_api: Api<Pod> = Api::all(client.clone());
-    for p in pod_api.list(&Default::default()).await.context("listing Pods to seed resourceclaim-controller")?.items {
-        if p.spec.as_ref().and_then(|s| s.resource_claims.as_ref()).is_some_and(|c| !c.is_empty()) {
-            reconcile_pod(&client, &ns_of(&p), &p.name_any()).await;
-        }
-    }
-
     let mut pod_stream = crate::watch::watch_pods(&client);
     loop {
         match pod_stream.next().await {

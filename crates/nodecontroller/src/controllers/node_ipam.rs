@@ -107,11 +107,11 @@ impl CidrAllocator {
     }
 
     /// Record `subnet` as already taken, without allocating a new one. Used
-    /// to rebuild allocator state from the cluster's existing Nodes at
-    /// startup — this controller keeps no state of its own across a
-    /// restart; the Node objects themselves are the durable record, the
-    /// same "the leader resolves state from what's actually there" rule
-    /// `nodestore::command` states for its own determinism.
+    /// while consuming the shared watch's initial Node snapshot — this
+    /// controller keeps no state of its own across a restart; the Node
+    /// objects themselves are the durable record, the same "the leader
+    /// resolves state from what's actually there" rule `nodestore::command`
+    /// states for its own determinism.
     pub fn mark_allocated(&mut self, subnet: &str) -> Result<()> {
         let (addr, prefix) = parse_ipv4_cidr(subnet)?;
         if prefix != self.node_prefix {
@@ -172,23 +172,16 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
     let api: Api<Node> = Api::all(client.clone());
     let mut allocator = CidrAllocator::new(&cfg.cluster_cidr, cfg.node_cidr_mask_size)?;
 
-    let existing = api.list(&Default::default()).await.context("listing Nodes to seed the CIDR allocator")?;
-    for n in &existing.items {
-        if let Some(cidr) = n.spec.as_ref().and_then(|s| s.pod_cidr.as_ref()) {
-            if let Err(e) = allocator.mark_allocated(cidr) {
-                tracing::warn!(node = %n.name_any(), pod_cidr = %cidr, error = ?e, "couldn't parse an existing Node's podCIDR while seeding the allocator");
-            }
-        }
-    }
-    for n in &existing.items {
-        reconcile_node(&api, &mut allocator, n).await;
-    }
-
     let mut stream = crate::watch::watch_nodes(&client);
     use futures::StreamExt;
     while let Some(ev) = stream.next().await {
         match ev {
             Ok(Event::Apply(node)) | Ok(Event::InitApply(node)) => {
+                if let Some(cidr) = node.spec.as_ref().and_then(|s| s.pod_cidr.as_ref()) {
+                    if let Err(e) = allocator.mark_allocated(cidr) {
+                        tracing::warn!(node = %node.name_any(), pod_cidr = %cidr, error = ?e, "couldn't parse an existing Node's podCIDR while initializing the CIDR allocator");
+                    }
+                }
                 reconcile_node(&api, &mut allocator, &node).await;
             }
             Ok(Event::Delete(node)) => {

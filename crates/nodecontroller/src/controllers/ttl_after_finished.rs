@@ -27,7 +27,7 @@
 //! calls out for this controller — a real heap/wheel would only pay for
 //! itself at a cardinality this controller isn't expected to see.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::Job;
@@ -141,16 +141,6 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut jobs: HashMap<String, Job> = HashMap::new();
-    let job_api: Api<Job> = Api::all(client.clone());
-    for j in job_api
-        .list(&Default::default())
-        .await
-        .context("listing Jobs to seed ttl-after-finished-controller")?
-        .items
-    {
-        jobs.insert(format!("{}/{}", ns_of(&j), j.name_any()), j);
-    }
-
     let mut job_stream = crate::watch::watch_jobs(&client);
     let mut ticker = tokio::time::interval(TICK_PERIOD);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

@@ -39,7 +39,7 @@
 //! something else removes them, same as `kubectl delete service` did
 //! before Group D's minimum slice — a real, known gap, not new to this file.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{ReplicaSet, ReplicaSetStatus};
 use k8s_openapi::api::core::v1::Pod;
@@ -338,29 +338,6 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut replica_sets: std::collections::HashSet<(String, String)> =
         std::collections::HashSet::new();
     let mut expectations: Expectations = HashMap::new();
-
-    let pod_api: Api<Pod> = Api::all(client.clone());
-    let rs_api: Api<ReplicaSet> = Api::all(client.clone());
-
-    for p in pod_api
-        .list(&Default::default())
-        .await
-        .context("listing Pods to seed replicaset-controller")?
-        .items
-    {
-        pods.insert(format!("{}/{}", ns_of(&p), p.name_any()), p);
-    }
-    for rs in rs_api
-        .list(&Default::default())
-        .await
-        .context("listing ReplicaSets to seed replicaset-controller")?
-        .items
-    {
-        let ns = ns_of(&rs);
-        let name = rs.name_any();
-        replica_sets.insert((ns.clone(), name.clone()));
-        reconcile_replica_set(&client, &ns, &name, &pods, &mut expectations).await;
-    }
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut rs_stream = crate::watch::watch_replica_sets(&client);

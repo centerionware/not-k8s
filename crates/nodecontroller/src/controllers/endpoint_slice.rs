@@ -35,7 +35,7 @@
 //! GC exists, and so `kubectl` shows the real relationship), just not
 //! relied upon yet.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Pod, Service, ServicePort};
 use k8s_openapi::api::discovery::v1::{Endpoint, EndpointConditions, EndpointPort, EndpointSlice};
@@ -308,32 +308,6 @@ async fn reconcile_service(
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut services: HashMap<(String, String), ()> = HashMap::new();
     let mut pods: HashMap<String, Pod> = HashMap::new();
-
-    // Seed both caches from what's already there before watching, same
-    // "the objects are the durable record" rule every other controller in
-    // this crate uses.
-    let svc_api: Api<Service> = Api::all(client.clone());
-    let pod_api: Api<Pod> = Api::all(client.clone());
-    let existing_pods = pod_api
-        .list(&Default::default())
-        .await
-        .context("listing Pods to seed endpointslice-controller")?;
-    for p in existing_pods.items {
-        pods.insert(pod_key(&p), p);
-    }
-    let existing_services = svc_api
-        .list(&Default::default())
-        .await
-        .context("listing Services to seed endpointslice-controller")?;
-    for s in &existing_services.items {
-        if !is_managed(s) {
-            continue;
-        }
-        let ns = s.namespace().unwrap_or_default();
-        let name = s.name_any();
-        services.insert((ns.clone(), name.clone()), ());
-        reconcile_service(&client, &ns, &name, &pods).await;
-    }
 
     let mut svc_stream = crate::watch::watch_services(&client);
     let mut pod_stream = crate::watch::watch_pods(&client);

@@ -18,7 +18,7 @@
 //! aggregation — see docs/CONTROLLER_MANAGER.md, Group C, for what's still
 //! actually missing).
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Namespace, ServiceAccount};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -60,16 +60,6 @@ async fn ensure_default_service_account(client: &Client, ns: &str) {
 }
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
-    let ns_api: Api<Namespace> = Api::all(client.clone());
-
-    let existing = ns_api.list(&Default::default()).await.context("listing Namespaces to seed serviceaccount-controller")?;
-    for ns in &existing.items {
-        if is_terminating(ns) {
-            continue;
-        }
-        ensure_default_service_account(&client, &ns.name_any()).await;
-    }
-
     let mut stream = crate::watch::watch_namespaces(&client);
     while let Some(ev) = stream.next().await {
         match ev {

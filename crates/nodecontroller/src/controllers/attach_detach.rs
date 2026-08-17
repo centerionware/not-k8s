@@ -67,7 +67,7 @@
 //! provisioner-prebound (dynamic CSI) path this controller's own e2e
 //! coverage (`csi_attach.sh`) currently inherits.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Pod};
 use k8s_openapi::api::storage::v1::{
@@ -223,44 +223,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pvs: HashMap<String, PersistentVolume> = HashMap::new();
     let mut vas: HashMap<String, VolumeAttachment> = HashMap::new();
 
-    let pod_api: Api<Pod> = Api::all(client.clone());
-    let pvc_api: Api<PersistentVolumeClaim> = Api::all(client.clone());
-    let pv_api: Api<PersistentVolume> = Api::all(client.clone());
     let va_api: Api<VolumeAttachment> = Api::all(client.clone());
-
-    for p in pod_api
-        .list(&Default::default())
-        .await
-        .context("listing Pods to seed attach-detach-controller")?
-        .items
-    {
-        pods.insert(ns_key(&p), p);
-    }
-    for c in pvc_api
-        .list(&Default::default())
-        .await
-        .context("listing PVCs to seed attach-detach-controller")?
-        .items
-    {
-        pvcs.insert(ns_key(&c), c);
-    }
-    for v in pv_api
-        .list(&Default::default())
-        .await
-        .context("listing PVs to seed attach-detach-controller")?
-        .items
-    {
-        pvs.insert(v.name_any(), v);
-    }
-    for v in va_api
-        .list(&Default::default())
-        .await
-        .context("listing VolumeAttachments to seed attach-detach-controller")?
-        .items
-    {
-        vas.insert(v.name_any(), v);
-    }
-    reconcile(&va_api, &pods, &pvcs, &pvs, &vas).await;
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut pvc_stream = crate::watch::watch_persistent_volume_claims(&client);

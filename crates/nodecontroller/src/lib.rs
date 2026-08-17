@@ -78,19 +78,13 @@ pub mod wheel;
 
 use anyhow::{Context, Result};
 use std::future::Future;
-use std::time::Duration;
 
-/// Keep controller initialization from arriving at the apiserver as one
-/// synchronized burst.  Most controllers perform several seed LISTs before
-/// opening their long-lived watches; starting all of those futures in one
-/// `try_join!` made the CSI sidecars' own watches receive HTTP 429/Retry-After
-/// responses on the small k3s control planes used by the e2e suite.
-async fn start_controller<F>(
-    cfg: &config::Config,
-    name: &'static str,
-    slot: u64,
-    controller: F,
-) -> Result<()>
+/// Start one controller unless its diagnostic switch is set.
+///
+/// Request pacing belongs at the shared client boundary, not here. Sleeping
+/// each controller by a fixed slot only spaces the first poll of each future;
+/// it does not bound the LISTs, watches, or reconcile writes that follow.
+async fn start_controller<F>(cfg: &config::Config, name: &'static str, controller: F) -> Result<()>
 where
     F: Future<Output = Result<()>>,
 {
@@ -98,9 +92,7 @@ where
         tracing::info!(controller = name, "nodecontroller controller disabled by configuration");
         return Ok(());
     }
-    const START_SPACING: Duration = Duration::from_millis(500);
-    tokio::time::sleep(START_SPACING * slot as u32).await;
-    tracing::debug!(controller = name, slot, "starting nodecontroller controller");
+    tracing::debug!(controller = name, "starting nodecontroller controller");
     controller.await
 }
 
@@ -127,32 +119,45 @@ pub async fn run() -> Result<()> {
     install_crypto_provider();
 
     let cfg = config::Config::from_env()?;
-    let client = kube::Client::try_default().await.context("building apiserver client")?;
+    // All controllers, leader election, shared informers, and reconcile
+    // writes use this one client. A single async rate gate at this boundary
+    // prevents a controller startup or event fan-out from creating a burst
+    // of HTTP requests. The limit is on request starts, not on Tokio worker
+    // time: waiting is a pending future, and a response body (including a
+    // long-running watch) is never held by a CPU-budget permit.
+    let kube_config = kube::Config::infer().await.context("loading apiserver configuration")?;
+    let election_client = kube::client::ClientBuilder::try_from(kube_config.clone())
+        .context("building apiserver client")?
+        .build();
+    let client = kube::client::ClientBuilder::try_from(kube_config)
+        .context("building rate-limited controller apiserver client")?
+        .with_layer(&tower::limit::RateLimitLayer::new(1, cfg.api_request_interval))
+        .build();
 
     let election_cfg = cfg.election();
-    node_leaderelection::run_as_leader(client.clone(), &election_cfg, || async move {
+    node_leaderelection::run_as_leader(election_client, &election_cfg, || async move {
         tracing::info!("nodecontroller is now leading — starting all controllers");
         tokio::try_join!(
-            start_controller(&cfg, "node-ipam", 0, controllers::node_ipam::run(client.clone(), &cfg)),
-            start_controller(&cfg, "node-lifecycle", 1, controllers::node_lifecycle::run(client.clone(), &cfg)),
-            start_controller(&cfg, "service-account", 2, controllers::service_account::run(client.clone(), &cfg)),
-            start_controller(&cfg, "endpoint-slice", 3, controllers::endpoint_slice::run(client.clone(), &cfg)),
-            start_controller(&cfg, "resource-quota", 4, controllers::resource_quota::run(client.clone(), &cfg)),
-            start_controller(&cfg, "replica-set", 5, controllers::replica_set::run(client.clone(), &cfg)),
-            start_controller(&cfg, "deployment", 6, controllers::deployment::run(client.clone(), &cfg)),
-            start_controller(&cfg, "daemon-set", 7, controllers::daemon_set::run(client.clone(), &cfg)),
-            start_controller(&cfg, "stateful-set", 8, controllers::stateful_set::run(client.clone(), &cfg)),
-            start_controller(&cfg, "garbage-collector", 9, controllers::garbage_collector::run(client.clone(), &cfg)),
-            start_controller(&cfg, "job", 10, controllers::job::run(client.clone(), &cfg)),
-            start_controller(&cfg, "cron-job", 11, controllers::cron_job::run(client.clone(), &cfg)),
-            start_controller(&cfg, "ttl-after-finished", 12, controllers::ttl_after_finished::run(client.clone(), &cfg)),
-            start_controller(&cfg, "attach-detach", 13, controllers::attach_detach::run(client.clone(), &cfg)),
-            start_controller(&cfg, "pv-binder", 14, controllers::pv_binder::run(client.clone(), &cfg)),
-            start_controller(&cfg, "storage-protection", 15, controllers::storage_protection::run(client.clone(), &cfg)),
-            start_controller(&cfg, "root-ca-publisher", 16, controllers::root_ca_publisher::run(client.clone(), &cfg)),
-            start_controller(&cfg, "resource-claim", 17, controllers::resource_claim::run(client.clone(), &cfg)),
-            start_controller(&cfg, "csr", 18, controllers::csr::run(client.clone(), &cfg)),
-            start_controller(&cfg, "disruption", 19, controllers::disruption::run(client.clone(), &cfg)),
+            start_controller(&cfg, "node-ipam", controllers::node_ipam::run(client.clone(), &cfg)),
+            start_controller(&cfg, "node-lifecycle", controllers::node_lifecycle::run(client.clone(), &cfg)),
+            start_controller(&cfg, "service-account", controllers::service_account::run(client.clone(), &cfg)),
+            start_controller(&cfg, "endpoint-slice", controllers::endpoint_slice::run(client.clone(), &cfg)),
+            start_controller(&cfg, "resource-quota", controllers::resource_quota::run(client.clone(), &cfg)),
+            start_controller(&cfg, "replica-set", controllers::replica_set::run(client.clone(), &cfg)),
+            start_controller(&cfg, "deployment", controllers::deployment::run(client.clone(), &cfg)),
+            start_controller(&cfg, "daemon-set", controllers::daemon_set::run(client.clone(), &cfg)),
+            start_controller(&cfg, "stateful-set", controllers::stateful_set::run(client.clone(), &cfg)),
+            start_controller(&cfg, "garbage-collector", controllers::garbage_collector::run(client.clone(), &cfg)),
+            start_controller(&cfg, "job", controllers::job::run(client.clone(), &cfg)),
+            start_controller(&cfg, "cron-job", controllers::cron_job::run(client.clone(), &cfg)),
+            start_controller(&cfg, "ttl-after-finished", controllers::ttl_after_finished::run(client.clone(), &cfg)),
+            start_controller(&cfg, "attach-detach", controllers::attach_detach::run(client.clone(), &cfg)),
+            start_controller(&cfg, "pv-binder", controllers::pv_binder::run(client.clone(), &cfg)),
+            start_controller(&cfg, "storage-protection", controllers::storage_protection::run(client.clone(), &cfg)),
+            start_controller(&cfg, "root-ca-publisher", controllers::root_ca_publisher::run(client.clone(), &cfg)),
+            start_controller(&cfg, "resource-claim", controllers::resource_claim::run(client.clone(), &cfg)),
+            start_controller(&cfg, "csr", controllers::csr::run(client.clone(), &cfg)),
+            start_controller(&cfg, "disruption", controllers::disruption::run(client.clone(), &cfg)),
         )?;
         Ok(())
     })

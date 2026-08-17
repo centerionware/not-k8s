@@ -444,18 +444,6 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
     }
 
     let mut csrs: HashMap<String, CertificateSigningRequest> = HashMap::new();
-    let api: Api<CertificateSigningRequest> = Api::all(client.clone());
-    for c in api
-        .list(&Default::default())
-        .await
-        .context("listing CertificateSigningRequests to seed csr controllers")?
-        .items
-    {
-        let name = c.name_any();
-        csrs.insert(name.clone(), c);
-        reconcile_csr(&client, &ca, &name).await;
-    }
-
     let mut stream = crate::watch::watch_certificate_signing_requests(&client);
     let mut ticker = tokio::time::interval(TICK_PERIOD);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

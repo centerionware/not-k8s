@@ -49,17 +49,36 @@ pub fn partition_by_budget<K: Clone>(
     (processed, deferred)
 }
 
-/// `budget_percent` of one core, expressed as a wall-clock allowance per
-/// `tick_period` — e.g. 0.6% of a 100ms tick is 600µs. This is a coarse
-/// proxy for real CPU time (it measures wall-clock time spent inside the
-/// governor's own processing calls, not `CLOCK_THREAD_CPUTIME_ID`), which is
-/// the right level of precision here: these calls are dominated by
-/// synchronous decode/decision work with a network await in the middle, and
-/// tokio yields the executor during that await rather than spinning it — see
-/// docs/CONTROLLER_MANAGER.md's mechanism section for why sub-ms precision
-/// (which *would* need real CPU-time sampling) is explicitly not the goal.
+/// `budget_percent` of one core, expressed as a process-CPU allowance per
+/// `tick_period` — e.g. 0.3% of a 100ms tick is 300µs. The controller uses
+/// `CLOCK_PROCESS_CPUTIME_ID`, so time spent awaiting an apiserver response
+/// does not consume the CPU budget, while CPU used by any concurrently
+/// running controller in this process does. This is a scheduling budget for
+/// the polling work, not a promise that the whole daemon can never exceed
+/// the value during one individual system call or one unusually expensive
+/// reconcile.
 pub fn budget_for_tick(budget_percent: f64, tick_period: Duration) -> Duration {
     tick_period.mul_f64((budget_percent / 100.0).clamp(0.0, 1.0))
+}
+
+/// Process CPU time used for enforcing the timer-work budget. Kubernetes
+/// nodes supported by this project are Linux; returning zero on another
+/// target keeps the pure logic portable but deliberately disables this
+/// runtime measurement there rather than pretending wall time is CPU time.
+pub fn process_cpu_time() -> Duration {
+    #[cfg(target_family = "unix")]
+    {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` is a valid writable timespec and the clock id is a
+        // process CPU clock supplied by libc.
+        if unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) } == 0 {
+            return Duration::new(ts.tv_sec.max(0) as u64, ts.tv_nsec.max(0) as u32);
+        }
+    }
+    Duration::ZERO
 }
 
 /// Owns one wheel plus the deferred-overflow queue, and jitters every

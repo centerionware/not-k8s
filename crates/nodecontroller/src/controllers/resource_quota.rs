@@ -32,7 +32,7 @@
 //! `status.used` — never guessed at — so `kubectl describe quota` shows
 //! exactly what this controller does and doesn't track, not a wrong number.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Pod, ResourceQuota, Service};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
@@ -119,40 +119,6 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, HashSet<String>> = HashMap::new();
     let mut services: HashMap<String, HashSet<String>> = HashMap::new();
     let mut quotas: HashSet<(String, String)> = HashSet::new();
-
-    let pod_api: Api<Pod> = Api::all(client.clone());
-    let svc_api: Api<Service> = Api::all(client.clone());
-    let quota_api: Api<ResourceQuota> = Api::all(client.clone());
-
-    for p in pod_api
-        .list(&Default::default())
-        .await
-        .context("listing Pods to seed resourcequota-controller")?
-        .items
-    {
-        if counts_toward_pod_quota(&p) {
-            pods.entry(ns_of(&p)).or_default().insert(p.name_any());
-        }
-    }
-    for s in svc_api
-        .list(&Default::default())
-        .await
-        .context("listing Services to seed resourcequota-controller")?
-        .items
-    {
-        services.entry(ns_of(&s)).or_default().insert(s.name_any());
-    }
-    for q in quota_api
-        .list(&Default::default())
-        .await
-        .context("listing ResourceQuotas to seed resourcequota-controller")?
-        .items
-    {
-        let ns = ns_of(&q);
-        let name = q.name_any();
-        quotas.insert((ns.clone(), name.clone()));
-        reconcile_quota(&client, &ns, &name, &pods, &services).await;
-    }
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut svc_stream = crate::watch::watch_services(&client);

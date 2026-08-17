@@ -59,7 +59,7 @@
 //! comparison available (see above) there's no meaningful ordering to rank
 //! candidates by anyway.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
     ObjectReference, PersistentVolume, PersistentVolumeClaim, PersistentVolumeStatus,
@@ -143,25 +143,21 @@ pub fn pv_for_claim<'a>(
 
 async fn reconcile_claim(
     client: &Client,
-    namespace: &str,
-    name: &str,
+    pvc: &PersistentVolumeClaim,
     pvs: &mut HashMap<String, PersistentVolume>,
 ) {
-    let pvc_api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
+    let namespace = pvc.namespace().unwrap_or_default();
+    let name = pvc.name_any();
+    let pvc_api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace.clone());
     let pv_api: Api<PersistentVolume> = Api::all(client.clone());
 
-    let pvc = match pvc_api.get_opt(name).await {
-        Ok(Some(p)) => p,
-        Ok(None) => return,
-        Err(e) => {
-            tracing::warn!(namespace = %namespace, pvc = %name, error = ?e, "failed to read PersistentVolumeClaim for reconcile");
-            return;
-        }
-    };
-    if is_bound(&pvc) {
+    // The shared PVC informer already delivered the current object. Do not
+    // turn every watch event into a second GET; that was both redundant and
+    // a major source of request bursts during initial synchronization.
+    if is_bound(pvc) {
         return;
     }
-    let Some(pv) = pv_for_claim(&pvc, pvs).cloned() else {
+    let Some(pv) = pv_for_claim(pvc, pvs).cloned() else {
         return;
     };
     let pv_name = pv.name_any();
@@ -202,7 +198,7 @@ async fn reconcile_claim(
 
     let pvc_patch = serde_json::json!({ "spec": { "volumeName": pv_name } });
     if let Err(e) = pvc_api
-        .patch(name, &PatchParams::default(), &Patch::Merge(&pvc_patch))
+        .patch(&name, &PatchParams::default(), &Patch::Merge(&pvc_patch))
         .await
     {
         tracing::warn!(namespace = %namespace, pvc = %name, pv = %pv_name, error = ?e, "failed to set PersistentVolumeClaim.spec.volumeName");
@@ -210,7 +206,7 @@ async fn reconcile_claim(
     }
     let status_patch = serde_json::json!({ "status": { "phase": "Bound" } });
     if let Err(e) = pvc_api
-        .patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch))
+        .patch_status(&name, &PatchParams::default(), &Patch::Merge(&status_patch))
         .await
     {
         tracing::warn!(namespace = %namespace, pvc = %name, error = ?e, "failed to set PersistentVolumeClaim status to Bound");
@@ -239,30 +235,7 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pvs: HashMap<String, PersistentVolume> = HashMap::new();
-    let mut claims: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-
-    let pv_api: Api<PersistentVolume> = Api::all(client.clone());
-    let pvc_api: Api<PersistentVolumeClaim> = Api::all(client.clone());
-
-    for v in pv_api
-        .list(&Default::default())
-        .await
-        .context("listing PVs to seed persistentvolume-binder-controller")?
-        .items
-    {
-        pvs.insert(v.name_any(), v);
-    }
-    for c in pvc_api
-        .list(&Default::default())
-        .await
-        .context("listing PVCs to seed persistentvolume-binder-controller")?
-        .items
-    {
-        let ns = ns_of(&c);
-        let name = c.name_any();
-        claims.insert((ns.clone(), name.clone()));
-        reconcile_claim(&client, &ns, &name, &mut pvs).await;
-    }
+    let mut claims: HashMap<(String, String), PersistentVolumeClaim> = HashMap::new();
 
     let mut pv_stream = crate::watch::watch_persistent_volumes(&client);
     let mut pvc_stream = crate::watch::watch_persistent_volume_claims(&client);
@@ -273,8 +246,8 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 match ev {
                     Some(Ok(Event::Apply(pv))) | Some(Ok(Event::InitApply(pv))) => {
                         pvs.insert(pv.name_any(), pv);
-                        for (ns, name) in claims.clone() {
-                            reconcile_claim(&client, &ns, &name, &mut pvs).await;
+                        for pvc in claims.values() {
+                            reconcile_claim(&client, pvc, &mut pvs).await;
                         }
                     }
                     Some(Ok(Event::Delete(pv))) => { pvs.remove(&pv.name_any()); }
@@ -288,8 +261,8 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pvc))) | Some(Ok(Event::InitApply(pvc))) => {
                         let ns = ns_of(&pvc);
                         let name = pvc.name_any();
-                        claims.insert((ns.clone(), name.clone()));
-                        reconcile_claim(&client, &ns, &name, &mut pvs).await;
+                        claims.insert((ns, name), pvc.clone());
+                        reconcile_claim(&client, &pvc, &mut pvs).await;
                     }
                     Some(Ok(Event::Delete(pvc))) => { claims.remove(&(ns_of(&pvc), pvc.name_any())); }
                     Some(Ok(Event::Init | Event::InitDone)) => {}

@@ -58,7 +58,7 @@
 //! `uncountedTerminatedPods`") with this crate's simpler equivalent
 //! ("reconcile decided the outcome").
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{Job, JobCondition};
 use k8s_openapi::api::core::v1::Pod;
@@ -395,29 +395,6 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
     let mut jobs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-
-    let pod_api: Api<Pod> = Api::all(client.clone());
-    let job_api: Api<Job> = Api::all(client.clone());
-
-    for p in pod_api
-        .list(&Default::default())
-        .await
-        .context("listing Pods to seed job-controller")?
-        .items
-    {
-        pods.insert(format!("{}/{}", ns_of(&p), p.name_any()), p);
-    }
-    for j in job_api
-        .list(&Default::default())
-        .await
-        .context("listing Jobs to seed job-controller")?
-        .items
-    {
-        let ns = ns_of(&j);
-        let name = j.name_any();
-        jobs.insert((ns.clone(), name.clone()));
-        reconcile_job(&client, &ns, &name, &pods).await;
-    }
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut job_stream = crate::watch::watch_jobs(&client);

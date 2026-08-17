@@ -58,7 +58,7 @@
 //! own old, empty ReplicaSets past `revisionHistoryLimit` — that's this
 //! controller cleaning up after itself, not GC).
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentStatus, ReplicaSet, ReplicaSetSpec};
 use k8s_openapi::api::core::v1::PodTemplateSpec;
@@ -380,19 +380,6 @@ async fn reconcile_deployment(client: &Client, namespace: &str, name: &str, rs_c
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut replica_sets: HashMap<String, ReplicaSet> = HashMap::new();
     let mut deployments: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-
-    let rs_api: Api<ReplicaSet> = Api::all(client.clone());
-    let d_api: Api<Deployment> = Api::all(client.clone());
-
-    for rs in rs_api.list(&Default::default()).await.context("listing ReplicaSets to seed deployment-controller")?.items {
-        replica_sets.insert(format!("{}/{}", ns_of(&rs), rs.name_any()), rs);
-    }
-    for d in d_api.list(&Default::default()).await.context("listing Deployments to seed deployment-controller")?.items {
-        let ns = ns_of(&d);
-        let name = d.name_any();
-        deployments.insert((ns.clone(), name.clone()));
-        reconcile_deployment(&client, &ns, &name, &replica_sets).await;
-    }
 
     let mut rs_stream = crate::watch::watch_replica_sets(&client);
     let mut d_stream = crate::watch::watch_deployments(&client);

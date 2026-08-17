@@ -40,7 +40,7 @@
 //! reasonable, if not byte-identical, survivor set).
 
 use crate::cron_schedule::Schedule;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{CronJob, Job};
@@ -259,19 +259,6 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut jobs: HashMap<String, Job> = HashMap::new();
     let mut cron_jobs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-
-    let job_api: Api<Job> = Api::all(client.clone());
-    let cj_api: Api<CronJob> = Api::all(client.clone());
-
-    for j in job_api.list(&Default::default()).await.context("listing Jobs to seed cronjob-controller")?.items {
-        jobs.insert(format!("{}/{}", ns_of(&j), j.name_any()), j);
-    }
-    for cj in cj_api.list(&Default::default()).await.context("listing CronJobs to seed cronjob-controller")?.items {
-        let ns = ns_of(&cj);
-        let name = cj.name_any();
-        cron_jobs.insert((ns.clone(), name.clone()));
-        reconcile_cron_job(&client, &ns, &name, &jobs).await;
-    }
 
     let mut job_stream = crate::watch::watch_jobs(&client);
     let mut cj_stream = crate::watch::watch_cron_jobs(&client);
