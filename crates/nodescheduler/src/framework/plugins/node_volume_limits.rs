@@ -9,10 +9,11 @@
 //! `CSINode.spec.drivers[].allocatable.count`, which the driver itself
 //! reports. Two different mounts fold into one ceiling: a pod's PVC-backed
 //! volumes (resolved through the PVC to the PV it is bound to, or through the
-//! PVC's StorageClass provisioner while it is still unbound) and its
-//! ephemeral inline CSI volumes
-//! ([`crate::cache::PodInfo::csi_ephemeral_drivers`]) — a driver cannot tell
-//! the two apart once attached, so neither can this.
+//! PVC's StorageClass provisioner while it is still unbound). Identity is the
+//! CSI driver plus volume handle, not the PVC name: one volume mounted by two
+//! pods consumes one attachment slot. Direct inline CSI volumes are not
+//! attachable and therefore are not counted. Lingering VolumeAttachments are
+//! counted even after their pod has gone, matching upstream.
 //!
 //! # Why the per-node counts and limits are computed once, not once per node
 //!
@@ -39,10 +40,10 @@ const ATTACHED_KEY: &str = "NodeVolumeLimits/attached";
 /// A third key for each node's own reported per-driver ceiling.
 const LIMITS_KEY: &str = "NodeVolumeLimits/limits";
 
-/// This pod's new volumes, tallied by driver.
-struct WantedByDriver(HashMap<String, usize>);
-/// Every node's already-attached volumes, tallied by driver.
-struct AttachedByNodeAndDriver(HashMap<String, HashMap<String, usize>>);
+/// Unique volume identity -> CSI driver.
+struct WantedVolumes(HashMap<String, String>);
+/// Every node's already-attached unique volumes.
+struct AttachedVolumesByNode(HashMap<String, HashMap<String, String>>);
 /// Every node's own `CSINode`-reported ceiling, by driver. `None` for a
 /// driver means "reported, no limit"; a driver absent from the inner map was
 /// never registered on that node at all, which this plugin does not enforce
@@ -72,7 +73,7 @@ impl Plugin for NodeVolumeLimits {
             // rejection here could change.
             ClusterEventWithHint::always(ClusterEvent::new(
                 EventResource::PersistentVolumeClaim,
-                ActionType::UPDATE,
+                ActionType::ADD | ActionType::UPDATE,
             )),
             // A driver's own reported ceiling can change (e.g. after the
             // MutableCSINodeAllocatableCount feature updates it), and a new
@@ -81,53 +82,71 @@ impl Plugin for NodeVolumeLimits {
                 EventResource::CsiNode,
                 ActionType::ADD | ActionType::UPDATE,
             )),
+            ClusterEventWithHint::always(ClusterEvent::new(
+                EventResource::VolumeAttachment,
+                ActionType::DELETE,
+            )),
         ]
     }
 }
 
-/// Resolve one pod's CSI drivers, keyed so a PVC mounted twice by the same
-/// pod counts once but two different PVCs count separately.
-fn driver_counts_for_pod(pod: &PodInfo, snapshot: &Snapshot) -> HashMap<String, usize> {
-    let mut out: HashMap<String, usize> = HashMap::new();
+/// Resolve one pod's attachable volumes. Bound claims use the real CSI
+/// handle; an unbound delayed-binding claim gets a collision-proof synthetic
+/// identity until a PV exists, just as upstream does.
+fn volumes_for_pod(pod: &PodInfo, snapshot: &Snapshot) -> HashMap<String, String> {
+    let mut out = HashMap::new();
     for pvc_name in &pod.pvc_names {
         let Some(pvc) = snapshot.pvc(&pod.namespace, pvc_name) else {
             continue;
         };
-        let driver = pvc
-            .volume_name
-            .as_ref()
-            .and_then(|vn| snapshot.pv(vn))
-            .and_then(|pv| pv.csi_driver.clone())
-            .or_else(|| {
-                pvc.storage_class_name
-                    .as_ref()
-                    .and_then(|sc| snapshot.storage_class(sc))
-                    .map(|sc| sc.provisioner.clone())
-            });
-        if let Some(driver) = driver {
-            *out.entry(driver).or_default() += 1;
+        if let Some(pv) = pvc.volume_name.as_ref().and_then(|name| snapshot.pv(name)) {
+            if let (Some(driver), Some(handle)) = (&pv.csi_driver, &pv.csi_volume_handle) {
+                if !driver.is_empty() && !handle.is_empty() {
+                    out.insert(format!("{driver}/{handle}"), driver.clone());
+                    continue;
+                }
+            }
         }
-    }
-    for driver in &pod.csi_ephemeral_drivers {
-        *out.entry(driver.clone()).or_default() += 1;
+        if let Some(driver) = pvc
+            .storage_class_name
+            .as_ref()
+            .and_then(|name| snapshot.storage_class(name))
+            .map(|class| class.provisioner.clone())
+            .filter(|driver| !driver.is_empty())
+        {
+            out.insert(format!("pvc:{}/{}", pod.namespace, pvc_name), driver);
+        }
     }
     out
 }
 
-fn attached_counts_by_node(snapshot: &Snapshot) -> HashMap<String, HashMap<String, usize>> {
-    snapshot
-        .nodes()
-        .iter()
-        .map(|n| {
-            let mut totals: HashMap<String, usize> = HashMap::new();
-            for p in &n.pods {
-                for (driver, count) in driver_counts_for_pod(p, snapshot) {
-                    *totals.entry(driver).or_default() += count;
-                }
-            }
-            (n.name.clone(), totals)
-        })
-        .collect()
+fn attached_volumes_by_node(snapshot: &Snapshot) -> HashMap<String, HashMap<String, String>> {
+    let mut by_node = HashMap::new();
+    for node in snapshot.nodes() {
+        let attached = by_node.entry(node.name.clone()).or_insert_with(HashMap::new);
+        for pod in &node.pods {
+            attached.extend(volumes_for_pod(pod, snapshot));
+        }
+    }
+    for attachment in snapshot.volume_attachments.values() {
+        let Some(pv) = attachment.pv_name.as_ref().and_then(|name| snapshot.pv(name)) else {
+            continue;
+        };
+        let Some(handle) = pv.csi_volume_handle.as_ref().filter(|handle| !handle.is_empty()) else {
+            continue;
+        };
+        if attachment.attacher.is_empty() {
+            continue;
+        }
+        by_node
+            .entry(attachment.node_name.clone())
+            .or_insert_with(HashMap::new)
+            .insert(
+                format!("{}/{handle}", attachment.attacher),
+                attachment.attacher.clone(),
+            );
+    }
+    by_node
 }
 
 fn limits_by_node(snapshot: &Snapshot) -> HashMap<String, std::collections::BTreeMap<String, Option<i32>>> {
@@ -145,13 +164,13 @@ impl PreFilterPlugin for NodeVolumeLimits {
         pod: &PodInfo,
         snapshot: &Snapshot,
     ) -> (Status, Option<Vec<String>>) {
-        let wanted = driver_counts_for_pod(pod, snapshot);
+        let wanted = volumes_for_pod(pod, snapshot);
         if wanted.is_empty() {
             state.skip_filter(NAME);
             return (Status::skip(), None);
         }
-        state.write(NAME, WantedByDriver(wanted));
-        state.write(ATTACHED_KEY, AttachedByNodeAndDriver(attached_counts_by_node(snapshot)));
+        state.write(NAME, WantedVolumes(wanted));
+        state.write(ATTACHED_KEY, AttachedVolumesByNode(attached_volumes_by_node(snapshot)));
         state.write(LIMITS_KEY, LimitsByNodeAndDriver(limits_by_node(snapshot)));
         (Status::success(), None)
     }
@@ -159,7 +178,7 @@ impl PreFilterPlugin for NodeVolumeLimits {
 
 impl FilterPlugin for NodeVolumeLimits {
     fn filter(&self, state: &CycleState, _pod: &PodInfo, node: &NodeInfo) -> Status {
-        let Some(wanted) = state.read::<WantedByDriver>(NAME) else {
+        let Some(wanted) = state.read::<WantedVolumes>(NAME) else {
             // No PreFilter state — the preemption dry-run path builds a fresh
             // `CycleState` per hypothetical set and does not re-run PreFilter
             // for this plugin, or this cycle's pod had no CSI volumes at all
@@ -172,9 +191,20 @@ impl FilterPlugin for NodeVolumeLimits {
             // there is nothing to enforce.
             return Status::success();
         };
-        let attached = state.read::<AttachedByNodeAndDriver>(ATTACHED_KEY).and_then(|a| a.0.get(&node.name));
+        let attached = state.read::<AttachedVolumesByNode>(ATTACHED_KEY).and_then(|a| a.0.get(&node.name));
+        let mut already_by_driver: HashMap<&str, usize> = HashMap::new();
+        for driver in attached.into_iter().flat_map(|volumes| volumes.values()) {
+            *already_by_driver.entry(driver).or_default() += 1;
+        }
+        let mut wanted_by_driver: HashMap<&str, usize> = HashMap::new();
+        for (identity, driver) in &wanted.0 {
+            if attached.is_some_and(|volumes| volumes.contains_key(identity)) {
+                continue;
+            }
+            *wanted_by_driver.entry(driver).or_default() += 1;
+        }
 
-        for (driver, want) in &wanted.0 {
+        for (driver, want) in wanted_by_driver {
             let Some(limit) = limits.get(driver) else {
                 // This node's CSINode never registered the driver at all.
                 continue;
@@ -183,7 +213,7 @@ impl FilterPlugin for NodeVolumeLimits {
                 // Registered with no reported ceiling: unbounded.
                 continue;
             };
-            let already = attached.and_then(|a| a.get(driver)).copied().unwrap_or(0);
+            let already = already_by_driver.get(driver).copied().unwrap_or(0);
             if already + want > *limit as usize {
                 return Status::unschedulable(
                     NAME,

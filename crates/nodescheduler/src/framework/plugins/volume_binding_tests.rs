@@ -63,6 +63,59 @@ fn an_unbound_pvc_naming_no_storage_class_blocks_the_pod_outright() {
 }
 
 #[test]
+fn a_lost_or_terminating_pvc_is_rejected_before_binding() {
+    for pvc in [
+        PvcInfo {
+            namespace: "ns".to_string(),
+            name: "claim".to_string(),
+            phase: "Lost".to_string(),
+            volume_name: Some("gone".to_string()),
+            ..Default::default()
+        },
+        PvcInfo {
+            namespace: "ns".to_string(),
+            name: "claim".to_string(),
+            deleting: true,
+            ..Default::default()
+        },
+    ] {
+        let mut cache = Cache::new();
+        cache.upsert_pvc("ns/claim".to_string(), pvc);
+        let mut state = CycleState::default();
+        let (status, _) = pre_filter_impl(
+            &mut state,
+            &pod_with_pvc("ns", "claim"),
+            &cache.snapshot(),
+            &no_excluded(),
+        );
+        assert!(!status.is_success());
+        assert!(!status.code.is_resolvable_by_preemption());
+    }
+}
+
+#[test]
+fn a_generic_ephemeral_claim_must_be_owned_by_this_pod_uid() {
+    let mut cache = Cache::new();
+    cache.upsert_pvc(
+        "ns/p-cache".to_string(),
+        PvcInfo {
+            namespace: "ns".to_string(),
+            name: "p-cache".to_string(),
+            controller_owner_uid: Some("someone-else".to_string()),
+            ..Default::default()
+        },
+    );
+    let mut p = pod_with_pvc("ns", "p-cache");
+    p.uid = "this-pod".to_string();
+    p.ephemeral_pvc_names = vec!["p-cache".to_string()];
+    let mut state = CycleState::default();
+    let (status, _) =
+        pre_filter_impl(&mut state, &p, &cache.snapshot(), &no_excluded());
+    assert!(!status.is_success());
+    assert!(status.reasons[0].contains("pod is not owner"));
+}
+
+#[test]
 fn an_unbound_pvc_on_an_immediate_storage_class_blocks_the_pod_outright() {
     let mut cache = Cache::new();
     cache.upsert_storage_class(
@@ -746,9 +799,29 @@ fn reserve_errors_if_the_winning_node_has_no_usable_candidate() {
 #[test]
 fn it_wakes_on_the_events_that_can_actually_progress_binding() {
     let events = events_impl();
-    let pvc_updated = ClusterEvent::new(EventResource::PersistentVolumeClaim, ActionType::UPDATE);
-    let sc_added = ClusterEvent::new(EventResource::StorageClass, ActionType::ADD);
+    let registered: Vec<_> = events.into_iter().map(|e| e.event).collect();
 
-    assert!(events.iter().any(|e| e.event.matches(&pvc_updated)));
-    assert!(events.iter().any(|e| e.event.matches(&sc_added)));
+    assert_eq!(
+        registered,
+        vec![
+            ClusterEvent::new(EventResource::Node, ActionType::ADD | ActionType::UPDATE_NODE_LABEL),
+            ClusterEvent::new(
+                EventResource::PersistentVolumeClaim,
+                ActionType::ADD | ActionType::UPDATE,
+            ),
+            ClusterEvent::new(
+                EventResource::PersistentVolume,
+                ActionType::ADD | ActionType::UPDATE,
+            ),
+            ClusterEvent::new(
+                EventResource::StorageClass,
+                ActionType::ADD | ActionType::UPDATE,
+            ),
+            ClusterEvent::new(EventResource::CsiDriver, ActionType::UPDATE),
+            ClusterEvent::new(
+                EventResource::CsiStorageCapacity,
+                ActionType::ADD | ActionType::UPDATE,
+            ),
+        ]
+    );
 }

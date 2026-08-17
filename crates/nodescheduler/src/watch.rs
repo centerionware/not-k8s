@@ -321,6 +321,7 @@ type Sc = k8s_openapi::api::storage::v1::StorageClass;
 type CsiNode = k8s_openapi::api::storage::v1::CSINode;
 type CsiDriver = k8s_openapi::api::storage::v1::CSIDriver;
 type CsiStorageCapacity = k8s_openapi::api::storage::v1::CSIStorageCapacity;
+type VolumeAttachment = k8s_openapi::api::storage::v1::VolumeAttachment;
 type ResourceClaim = crate::cache::dra::RawResourceClaim;
 type DeviceClass = crate::cache::dra::RawDeviceClass;
 type ResourceSlice = crate::cache::dra::RawResourceSlice;
@@ -376,7 +377,7 @@ fn watch_pdbs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pdb>>
     watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
-/// Phase 4's six storage watches. Unconditional, the same as the pod/node/PDB
+/// Phase 4's seven storage watches. Unconditional, the same as the pod/node/PDB
 /// watches — `VolumeBinding`/`VolumeRestrictions`/`NodeVolumeLimits`/
 /// `VolumeZone` are always in the default profile, exactly as they are
 /// upstream, so there is no cluster-with-no-PVs case left where these cost
@@ -401,6 +402,11 @@ fn watch_csi_storage_capacities(
     client: &Client,
 ) -> BoxStream<'static, watcher::Result<Event<CsiStorageCapacity>>> {
     watcher(Api::<CsiStorageCapacity>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+}
+fn watch_volume_attachments(client: &Client) -> BoxStream<'static, watcher::Result<Event<VolumeAttachment>>> {
+    watcher(Api::<VolumeAttachment>::all(client.clone()), watcher::Config::default())
+        .backoff(WatchBackoffPolicy::default())
+        .boxed()
 }
 
 /// Phase 5's three DRA watches. Unconditional too, for the same reason as
@@ -715,6 +721,50 @@ fn handle_csi_driver_event(ev: Event<CsiDriver>, sweep: &mut RelistSweep, target
     }
 }
 
+fn handle_volume_attachment_event(
+    ev: Event<VolumeAttachment>,
+    sweep: &mut RelistSweep,
+    targets: &WatchTargets,
+) {
+    let mut cache = targets.cache.lock().unwrap();
+    let action = match ev {
+        Event::Init => { sweep.begin(); None }
+        Event::InitDone => {
+            let gone = sweep.finish();
+            for key in &gone {
+                cache.remove_volume_attachment(key);
+            }
+            (!gone.is_empty()).then_some(ActionType::DELETE)
+        }
+        Event::InitApply(attachment) | Event::Apply(attachment) => {
+            let name = attachment.metadata.name.clone().unwrap_or_default();
+            sweep.observe(&name);
+            Some(if cache.upsert_volume_attachment(
+                name,
+                crate::cache::VolumeAttachmentInfo::from_api(&attachment),
+            ) {
+                ActionType::ADD
+            } else {
+                ActionType::UPDATE
+            })
+        }
+        Event::Delete(attachment) => {
+            let name = attachment.metadata.name.clone().unwrap_or_default();
+            sweep.forget(&name);
+            cache.remove_volume_attachment(&name);
+            Some(ActionType::DELETE)
+        }
+    };
+    drop(cache);
+    if let Some(action) = action {
+        targets.queue.move_all_to_active_or_backoff(
+            ClusterEvent::new(EventResource::VolumeAttachment, action),
+            None,
+            None,
+        );
+    }
+}
+
 /// Whole-list rebuild, same trade `handle_pdb_event` makes: few objects,
 /// rarely change, and `VolumeBinding` reads the whole set per pod anyway.
 fn handle_csi_storage_capacity_event(
@@ -903,11 +953,9 @@ fn workload_stream_hiccup<K>(
 
 /// Run the watches until they stop.
 ///
-/// Only the informers the enabled plugins actually asked for are started —
-/// Pod and Node unconditionally, everything else because some plugin named
-/// that resource in `events_to_register()`. On a cluster with no
-/// PersistentVolumes that is two watches rather than nine, and it is both the
-/// parity behaviour and the footprint behaviour.
+/// Every default-profile informer is started unconditionally. This matches
+/// upstream's shared informer factory and avoids a late profile/config change
+/// creating a cache that never observed the resource's earlier state.
 pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow::Result<()> {
     let mut mirror = Mirror::default();
     let mut pdb_mirror: HashMap<String, Pdb> = HashMap::new();
@@ -935,6 +983,7 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
     let mut csi_nodes = watch_csi_nodes(&client);
     let mut csi_drivers = watch_csi_drivers(&client);
     let mut csi_storage_capacities = watch_csi_storage_capacities(&client);
+    let mut volume_attachments = watch_volume_attachments(&client);
     let mut csc_mirror: HashMap<String, CsiStorageCapacity> = HashMap::new();
     // One per watch: a relist is per stream, so sharing a sweep between two
     // of them would let one watch's InitDone delete the other's objects.
@@ -943,6 +992,7 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
     let mut sc_sweep = RelistSweep::default();
     let mut csi_node_sweep = RelistSweep::default();
     let mut csi_driver_sweep = RelistSweep::default();
+    let mut volume_attachment_sweep = RelistSweep::default();
     let mut claim_sweep = RelistSweep::default();
     let mut device_class_sweep = RelistSweep::default();
     let mut slice_sweep = RelistSweep::default();
@@ -972,6 +1022,7 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
     let mut csi_node_failures: u32 = 0;
     let mut csi_driver_failures: u32 = 0;
     let mut csc_failures: u32 = 0;
+    let mut volume_attachment_failures: u32 = 0;
     let mut claim_failures: u32 = 0;
     let mut device_class_failures: u32 = 0;
     let mut slice_failures: u32 = 0;
@@ -1150,6 +1201,13 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
                         &mut csc_sweep,
                         &targets,
                     );
+                }
+            },
+            event = volume_attachments.next() => {
+                if workload_stream_hiccup(&event, "volumeattachment", &mut volume_attachment_failures) {
+                    volume_attachments = watch_volume_attachments(&client);
+                } else if let Some(Ok(ev)) = event {
+                    handle_volume_attachment_event(ev, &mut volume_attachment_sweep, &targets);
                 }
             },
             event = resource_claims.next() => {

@@ -35,4 +35,5 @@ pub use pod::{
 pub use snapshot::{Cache, Snapshot, WorkloadSelector};
 pub use storage::{
     CsiDriverInfo, CsiNodeInfo, PvInfo, PvcInfo, StorageCapacityInfo, StorageClassInfo,
+    VolumeAttachmentInfo,
 };

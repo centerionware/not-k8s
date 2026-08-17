@@ -35,10 +35,16 @@ impl Plugin for NodeUnschedulable {
         // An uncordon is projected as a taint-class change (see
         // events::node_action_types, which folds spec.unschedulable into
         // UPDATE_NODE_TAINT precisely so this subscription catches it).
-        vec![ClusterEventWithHint::always(ClusterEvent::new(
-            EventResource::Node,
-            ActionType::ADD | ActionType::UPDATE_NODE_TAINT,
-        ))]
+        vec![
+            ClusterEventWithHint::always(ClusterEvent::new(
+                EventResource::Node,
+                ActionType::ADD | ActionType::UPDATE_NODE_TAINT,
+            )),
+            ClusterEventWithHint::always(ClusterEvent::new(
+                EventResource::Pod,
+                ActionType::UPDATE_POD_TOLERATION,
+            )),
+        ]
     }
 }
 

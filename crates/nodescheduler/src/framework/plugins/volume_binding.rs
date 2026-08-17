@@ -166,6 +166,14 @@ impl Plugin for VolumeBinding {
 /// exercise it directly in a test.
 fn events_impl() -> Vec<ClusterEventWithHint> {
     vec![
+        // A node appearing, or its topology labels changing, can satisfy a
+        // PV's nodeAffinity / a StorageClass's allowedTopologies.  The queue
+        // already diffs Node updates, so ordinary status heartbeats never
+        // reach this subscription.
+        ClusterEventWithHint::always(ClusterEvent::new(
+            EventResource::Node,
+            ActionType::ADD | ActionType::UPDATE_NODE_LABEL,
+        )),
         // The overwhelmingly common resolution: the PVC this pod is waiting
         // on finishes binding, or newly appears.
         ClusterEventWithHint::always(ClusterEvent::new(
@@ -177,8 +185,18 @@ fn events_impl() -> Vec<ClusterEventWithHint> {
             ActionType::ADD | ActionType::UPDATE,
         )),
         // A StorageClass appearing is what un-stalls a pod rejected for
-        // naming one that did not exist yet.
-        ClusterEventWithHint::always(ClusterEvent::new(EventResource::StorageClass, ActionType::ADD)),
+        // naming one that did not exist yet. allowedTopologies is mutable,
+        // so an update can also make a previously impossible node fit.
+        ClusterEventWithHint::always(ClusterEvent::new(
+            EventResource::StorageClass,
+            ActionType::ADD | ActionType::UPDATE,
+        )),
+        // Disabling a driver's storage-capacity tracking removes the
+        // capacity constraint immediately; this is an Update-only API path.
+        ClusterEventWithHint::always(ClusterEvent::new(
+            EventResource::CsiDriver,
+            ActionType::UPDATE,
+        )),
         ClusterEventWithHint::always(ClusterEvent::new(
             EventResource::CsiStorageCapacity,
             ActionType::ADD | ActionType::UPDATE,
@@ -398,6 +416,42 @@ fn pre_filter_impl(
                     None,
                 );
             };
+
+            if pvc.phase == "Lost" {
+                return (
+                    Status::unresolvable(
+                        NAME,
+                        format!(
+                            "persistentvolumeclaim {pvc_name:?} bound to non-existent persistentvolume {:?}",
+                            pvc.volume_name.as_deref().unwrap_or("")
+                        ),
+                    ),
+                    None,
+                );
+            }
+            if pvc.deleting {
+                return (
+                    Status::unresolvable(
+                        NAME,
+                        format!("persistentvolumeclaim {pvc_name:?} is being deleted"),
+                    ),
+                    None,
+                );
+            }
+            if pod.ephemeral_pvc_names.iter().any(|name| name == pvc_name)
+                && pvc.controller_owner_uid.as_deref() != Some(pod.uid.as_str())
+            {
+                return (
+                    Status::unresolvable(
+                        NAME,
+                        format!(
+                            "PVC {}/{} was not created for pod {}/{} (pod is not owner)",
+                            pvc.namespace, pvc.name, pod.namespace, pod.name
+                        ),
+                    ),
+                    None,
+                );
+            }
 
             if pvc.bound {
                 let affinity = pvc

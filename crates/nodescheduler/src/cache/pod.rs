@@ -400,14 +400,13 @@ pub struct PodInfo {
     pub container_count: usize,
     /// PVC names this pod mounts, for the phase-4 volume plugins.
     pub pvc_names: Vec<String>,
+    /// Subset of `pvc_names` derived from generic ephemeral volumes. Their
+    /// deterministic `<pod>-<volume>` claims must be controller-owned by this
+    /// exact Pod UID before any scheduler plugin may use them.
+    pub ephemeral_pvc_names: Vec<String>,
     /// The five in-tree volume sources `VolumeRestrictions` still checks for
     /// conflicts — see [`LegacyVolumeId`].
     pub legacy_volumes: Vec<LegacyVolumeId>,
-    /// Driver names of this pod's ephemeral inline CSI volumes (`spec.volumes[].csi`,
-    /// not a PVC). `NodeVolumeLimits` counts these against the same per-driver
-    /// per-node ceiling as PVC-backed volumes — a driver has no way to tell
-    /// the two apart once attached.
-    pub csi_ephemeral_drivers: Vec<String>,
     /// `spec.resourceClaims`, for DRA — one entry per pod-claim, naming
     /// either an already-existing `ResourceClaim` or a template to generate
     /// one from.
@@ -585,16 +584,24 @@ impl PodInfo {
                 .iter()
                 .flatten()
                 .filter_map(|v| {
-                    v.persistent_volume_claim.as_ref().map(|p| p.claim_name.clone())
+                    v.persistent_volume_claim
+                        .as_ref()
+                        .map(|p| p.claim_name.clone())
+                        .or_else(|| {
+                            v.ephemeral
+                                .as_ref()
+                                .map(|_| format!("{}-{}", meta.name.as_deref().unwrap_or_default(), v.name))
+                        })
                 })
                 .collect(),
-            legacy_volumes: spec.volumes.iter().flatten().filter_map(legacy_volume_id).collect(),
-            csi_ephemeral_drivers: spec
+            ephemeral_pvc_names: spec
                 .volumes
                 .iter()
                 .flatten()
-                .filter_map(|v| v.csi.as_ref().map(|c| c.driver.clone()))
+                .filter(|v| v.ephemeral.is_some())
+                .map(|v| format!("{}-{}", meta.name.as_deref().unwrap_or_default(), v.name))
                 .collect(),
+            legacy_volumes: spec.volumes.iter().flatten().filter_map(legacy_volume_id).collect(),
             resource_claims: spec
                 .resource_claims
                 .iter()

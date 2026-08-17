@@ -59,12 +59,21 @@ impl Plugin for VolumeZone {
     }
 
     fn events_to_register(&self) -> Vec<ClusterEventWithHint> {
-        // A rejection here changes only if the PVC ends up bound to a
-        // different PV, or a PV's labels change (a real but rare edit).
+        // This is the v1.33 VolumeZone event contract. Node updates are
+        // narrowed to label changes, so kubelet status heartbeats remain a
+        // zero-work path.
         vec![
             ClusterEventWithHint::always(ClusterEvent::new(
+                EventResource::StorageClass,
+                ActionType::ADD,
+            )),
+            ClusterEventWithHint::always(ClusterEvent::new(
+                EventResource::Node,
+                ActionType::ADD | ActionType::UPDATE_NODE_LABEL,
+            )),
+            ClusterEventWithHint::always(ClusterEvent::new(
                 EventResource::PersistentVolumeClaim,
-                ActionType::UPDATE,
+                ActionType::ADD | ActionType::UPDATE,
             )),
             ClusterEventWithHint::always(ClusterEvent::new(
                 EventResource::PersistentVolume,

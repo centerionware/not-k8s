@@ -17,7 +17,9 @@
 use k8s_openapi::api::core::v1::{
     NodeSelector, PersistentVolume, PersistentVolumeClaim, TopologySelectorTerm,
 };
-use k8s_openapi::api::storage::v1::{CSIDriver, CSINode, CSIStorageCapacity, StorageClass};
+use k8s_openapi::api::storage::v1::{
+    CSIDriver, CSINode, CSIStorageCapacity, StorageClass, VolumeAttachment,
+};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use std::collections::BTreeMap;
 
@@ -75,6 +77,11 @@ pub struct PvInfo {
     /// non-CSI (legacy in-tree) source — those never count against a CSI
     /// driver's per-node limit.
     pub csi_driver: Option<String>,
+    /// `spec.csi.volumeHandle`, paired with `csi_driver` to form the unique
+    /// identity NodeVolumeLimits counts. PVCs are mounts; handles are
+    /// attachable volumes, and several PVC/pod references to one handle must
+    /// consume one slot rather than several.
+    pub csi_volume_handle: Option<String>,
     /// `status.phase`. A static-PV match (`volume_binding.rs`) only
     /// considers a non-pre-bound PV usable when this is `"Available"` — a
     /// `Released`/`Failed`/`Pending` PV binding successfully would either
@@ -125,7 +132,8 @@ impl PvInfo {
                 .unwrap_or_default(),
             node_affinity: spec.node_affinity.and_then(|na| na.required).map(Box::new),
             labels: pv.metadata.labels.clone().unwrap_or_default(),
-            csi_driver: spec.csi.map(|c| c.driver),
+            csi_driver: spec.csi.as_ref().map(|c| c.driver.clone()),
+            csi_volume_handle: spec.csi.map(|c| c.volume_handle),
             phase: pv.status.as_ref().and_then(|s| s.phase.clone()).unwrap_or_default(),
             volume_mode: spec.volume_mode.unwrap_or_else(|| "Filesystem".to_string()),
             volume_attributes_class_name: spec.volume_attributes_class_name,
@@ -158,6 +166,13 @@ pub struct PvcInfo {
     /// Existing delayed-binding decision. On a retry, upstream only permits
     /// this node and continues provisioning instead of rematching static PVs.
     pub selected_node: Option<String>,
+    /// `status.phase`, used for the special Lost rejection before any bind
+    /// work is attempted.
+    pub phase: String,
+    pub deleting: bool,
+    /// UID of the controller owner reference, if any. Generic ephemeral
+    /// volumes may only consume the deterministic PVC created for this Pod.
+    pub controller_owner_uid: Option<String>,
 }
 
 impl PvcInfo {
@@ -197,6 +212,32 @@ impl PvcInfo {
             volume_mode: spec.volume_mode.unwrap_or_else(|| "Filesystem".to_string()),
             volume_attributes_class_name: spec.volume_attributes_class_name,
             selected_node: annotations.get(SELECTED_NODE_ANNOTATION).cloned(),
+            phase: pvc.status.as_ref().and_then(|s| s.phase.clone()).unwrap_or_default(),
+            deleting: pvc.metadata.deletion_timestamp.is_some(),
+            controller_owner_uid: pvc
+                .metadata
+                .owner_references
+                .as_ref()
+                .and_then(|owners| owners.iter().find(|owner| owner.controller == Some(true)))
+                .map(|owner| owner.uid.clone()),
+        }
+    }
+}
+
+/// The only VolumeAttachment fields NodeVolumeLimits reads.
+#[derive(Clone, Debug, Default)]
+pub struct VolumeAttachmentInfo {
+    pub node_name: String,
+    pub attacher: String,
+    pub pv_name: Option<String>,
+}
+
+impl VolumeAttachmentInfo {
+    pub fn from_api(attachment: &VolumeAttachment) -> Self {
+        Self {
+            node_name: attachment.spec.node_name.clone(),
+            attacher: attachment.spec.attacher.clone(),
+            pv_name: attachment.spec.source.persistent_volume_name.clone(),
         }
     }
 }

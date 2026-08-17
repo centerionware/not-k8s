@@ -206,11 +206,15 @@ fn different_disks_never_conflict() {
 }
 
 #[test]
-fn it_wakes_only_on_an_assigned_pod_delete() {
+fn it_registers_the_upstream_event_contract() {
     let events = VolumeRestrictions.events_to_register();
-    let deleted = ClusterEvent::new(EventResource::AssignedPod, ActionType::DELETE);
-    let added = ClusterEvent::new(EventResource::AssignedPod, ActionType::ADD);
-
-    assert!(events.iter().any(|e| e.event.matches(&deleted)));
-    assert!(!events.iter().any(|e| e.event.matches(&added)));
+    let registered: Vec<_> = events.into_iter().map(|e| e.event).collect();
+    assert_eq!(
+        registered,
+        vec![
+            ClusterEvent::new(EventResource::AssignedPod, ActionType::DELETE),
+            ClusterEvent::new(EventResource::Node, ActionType::ADD),
+            ClusterEvent::new(EventResource::PersistentVolumeClaim, ActionType::ADD),
+        ]
+    );
 }

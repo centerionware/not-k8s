@@ -101,6 +101,8 @@ pub struct Snapshot {
     /// Keyed by driver name.
     pub csi_drivers: Arc<HashMap<String, CsiDriverInfo>>,
     pub storage_capacities: Arc<Vec<StorageCapacityInfo>>,
+    /// Keyed by VolumeAttachment object name.
+    pub volume_attachments: Arc<HashMap<String, super::VolumeAttachmentInfo>>,
 
     /// Phase 5's DRA objects, copied wholesale for the same reason as
     /// Phase 4's storage objects — see `storage.rs`'s module header.
@@ -260,6 +262,7 @@ pub struct Cache {
     csi_nodes: Arc<HashMap<String, CsiNodeInfo>>,
     csi_drivers: Arc<HashMap<String, CsiDriverInfo>>,
     storage_capacities: Arc<Vec<StorageCapacityInfo>>,
+    volume_attachments: Arc<HashMap<String, super::VolumeAttachmentInfo>>,
 
     resource_claims: Arc<HashMap<String, RawResourceClaim>>,
     device_classes: Arc<HashMap<String, RawDeviceClass>>,
@@ -499,6 +502,22 @@ impl Cache {
         self.generation += 1;
     }
 
+    pub fn upsert_volume_attachment(
+        &mut self,
+        name: String,
+        attachment: super::VolumeAttachmentInfo,
+    ) -> bool {
+        let added = !self.volume_attachments.contains_key(&name);
+        Arc::make_mut(&mut self.volume_attachments).insert(name, attachment);
+        self.generation += 1;
+        added
+    }
+
+    pub fn remove_volume_attachment(&mut self, name: &str) {
+        Arc::make_mut(&mut self.volume_attachments).remove(name);
+        self.generation += 1;
+    }
+
     pub fn upsert_resource_claim(&mut self, key: String, claim: RawResourceClaim) -> bool {
         let added = !self.resource_claims.contains_key(&key);
         Arc::make_mut(&mut self.resource_claims).insert(key, claim);
@@ -603,6 +622,7 @@ impl Cache {
         snapshot.csi_nodes = self.csi_nodes.clone();
         snapshot.csi_drivers = self.csi_drivers.clone();
         snapshot.storage_capacities = self.storage_capacities.clone();
+        snapshot.volume_attachments = self.volume_attachments.clone();
         snapshot.resource_claims = self.resource_claims.clone();
         snapshot.device_classes = self.device_classes.clone();
         snapshot.resource_slices = self.resource_slices.clone();

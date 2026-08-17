@@ -252,10 +252,16 @@ outright; unbound `WaitForFirstConsumer` PVCs are checked against
 `CSIStorageCapacity`; an already-bound PV's `nodeAffinity` is enforced;
 `PreBind` writes `volume.kubernetes.io/selected-node` and waits for the PVC
 watch to report `Bound`).
-The PV/PVC/StorageClass/CSINode/CSIDriver/CSIStorageCapacity informers all
+The PV/PVC/StorageClass/CSINode/CSIDriver/CSIStorageCapacity/VolumeAttachment informers all
 start unconditionally now, the same as Pod/Node — see "Informers" below for
 what that changes about the footprint claim. The reference CSI driver the
 e2e harness already installs (`e2e-full-setup.sh`) is what proves this.
+
+`NodeVolumeLimits` counts unique CSI `(driver, volumeHandle)` identities, so
+several pods using one volume consume one slot, and includes lingering
+`VolumeAttachment` objects after a pod disappears. Generic ephemeral volumes
+use their controller-owned `<pod>-<volume>` PVC; direct inline CSI volumes are
+not attachable and do not consume this limit.
 
 `VolumeBinding` also matches a `PersistentVolumeClaim` against an
 already-existing, unclaimed `PersistentVolume` (a static PV — matched by
