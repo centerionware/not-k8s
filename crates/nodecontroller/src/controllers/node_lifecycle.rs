@@ -56,9 +56,9 @@ pub enum LifecycleTaint {
 /// The pure decision: what taint should this Node carry right now?
 ///
 /// `lease_stale` is "has this Node's heartbeat Lease gone longer than the
-/// grace period without renewing" — computed by the caller (the governor
-/// firing a wheel entry, or a fresh renewal proving the opposite), not read
-/// from a clock in here. `ready_status` is the Node's own self-reported
+/// grace period without renewing" — computed by the caller (the timing-wheel
+/// scheduler firing an entry, or a fresh renewal proving the opposite), not
+/// read from a clock in here. `ready_status` is the Node's own self-reported
 /// `Ready` condition (`"True"`/`"False"`/`"Unknown"`/absent).
 ///
 /// Staleness wins over a self-reported status: once a Node stops

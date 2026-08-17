@@ -377,9 +377,9 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 
     // Discovery commonly returns dozens of kinds. Starting every dynamic
     // watcher at once recreates the same apiserver burst that controller
-    // startup pacing avoids for the typed controllers. Admit one stream at
+    // startup admission uses for the typed controllers. Admit one stream at
     // a time; a watch remains in `combined` after its initial list, so this
-    // only paces admission and does not serialize steady-state event
+    // only limits startup fan-out and does not serialize steady-state event
     // handling. GC convergence is deliberately allowed to take seconds at
     // startup rather than competing with CSI, nodelet, and user requests.
     let mut pending_streams = streams.into_iter();

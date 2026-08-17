@@ -213,7 +213,7 @@ mod tests {
         w.insert(1, start + Duration::from_millis(50)).unwrap();
         w.insert(2, start + Duration::from_millis(150)).unwrap();
         w.insert(3, start + Duration::from_millis(250)).unwrap();
-        // One big jump, as if the governor was starved for a while.
+        // One big jump, as if the scheduler was delayed for a while.
         let mut due = w.advance(start + Duration::from_millis(300));
         due.sort();
         assert_eq!(due, vec![1, 2, 3]);
