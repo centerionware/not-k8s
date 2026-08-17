@@ -141,27 +141,20 @@ fn wall_to_instant(target_wall: Timestamp, now_wall: Timestamp, now_instant: Ins
 
 async fn reconcile(
     api: &Api<Node>,
-    node_name: &str,
+    node: &Node,
     ready_status: Option<&str>,
     lease_stale: bool,
     source: &str,
-) {
+) -> Option<Vec<Taint>> {
+    let node_name = node.name_any();
     let desired = desired_taint(ready_status, lease_stale);
-    let node = match api.get_opt(node_name).await {
-        Ok(Some(n)) => n,
-        Ok(None) => return, // gone; nothing to taint
-        Err(e) => {
-            tracing::warn!(node = %node_name, error = ?e, "failed to read Node for lifecycle reconcile");
-            return;
-        }
-    };
     let existing = node
         .spec
         .as_ref()
         .and_then(|s| s.taints.clone())
         .unwrap_or_default();
     if current_lifecycle_taint(&existing) == desired {
-        return; // already correct — no patch, no log noise on every tick
+        return None; // already correct — no patch, no log noise on every tick
     }
     let new_taints = apply_desired_taint(&existing, desired);
     // `source` names which of the three call sites (node-handler, lease-
@@ -182,7 +175,7 @@ async fn reconcile(
         existing_taints = existing.len(),
         "updating node-lifecycle taint"
     );
-    let patch = serde_json::json!({ "spec": { "taints": new_taints } });
+    let patch = serde_json::json!({ "spec": { "taints": new_taints.clone() } });
     if let Err(e) = api
         .patch(
             node_name,
@@ -192,12 +185,24 @@ async fn reconcile(
         .await
     {
         tracing::warn!(node = %node_name, error = ?e, "failed to patch node-lifecycle taint — will retry on the next event");
+        return None;
     }
+    Some(new_taints)
 }
 
 struct NodeLiveness {
+    /// The shared Node watch is the source of truth for the fields this
+    /// controller owns. Lease renewals and timer-wheel checks must not turn
+    /// into a GET storm just to rediscover this already-cached object.
+    node: Node,
     ready_status: Option<String>,
     last_renew: Option<Timestamp>,
+}
+
+fn update_cached_taints(cache: &mut HashMap<String, NodeLiveness>, name: &str, taints: Vec<Taint>) {
+    if let Some(state) = cache.get_mut(name) {
+        state.node.spec.get_or_insert_with(Default::default).taints = Some(taints);
+    }
 }
 
 pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
@@ -234,8 +239,17 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                         let name = node.name_any();
                         let status = ready_condition_status(&node);
                         let stale = is_stale(&cache, &name, cfg.node_monitor_grace_period, cfg.jitter_fraction);
-                        cache.entry(name.clone()).or_insert(NodeLiveness { ready_status: None, last_renew: None }).ready_status = status.clone();
-                        reconcile(&node_api, &name, status.as_deref(), stale, "node-handler").await;
+                        let entry = cache.entry(name.clone()).or_insert_with(|| NodeLiveness {
+                            node: node.clone(),
+                            ready_status: None,
+                            last_renew: None,
+                        });
+                        entry.node = node;
+                        entry.ready_status = status.clone();
+                        let cached_node = entry.node.clone();
+                        if let Some(taints) = reconcile(&node_api, &cached_node, status.as_deref(), stale, "node-handler").await {
+                            update_cached_taints(&mut cache, &name, taints);
+                        }
                     }
                     Some(Ok(Event::Delete(node))) => {
                         let name = node.name_any();
@@ -268,9 +282,15 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                                 tracing::warn!(node = %name, error = ?e, "couldn't schedule node-lifecycle recheck");
                             }
                         }
-                        let entry = cache.entry(name.clone()).or_insert(NodeLiveness { ready_status: None, last_renew: None });
+                        let Some(entry) = cache.get_mut(&name) else {
+                            // The Node watch will populate the cache and
+                            // perform the first reconciliation. Do not issue
+                            // a compensating GET from this heartbeat path.
+                            continue;
+                        };
                         entry.last_renew = renew;
                         let status = entry.ready_status.clone();
+                        let cached_node = entry.node.clone();
                         // Recompute staleness from the renewTime this event
                         // actually carried — do NOT assume "false" just
                         // because an Apply event arrived. Found live in CI:
@@ -290,7 +310,9 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                         // relist of a stale one now correctly computes
                         // stale=true and leaves the taint alone.
                         let lease_stale = is_stale(&cache, &name, cfg.node_monitor_grace_period, cfg.jitter_fraction);
-                        reconcile(&node_api, &name, status.as_deref(), lease_stale, "lease-handler").await;
+                        if let Some(taints) = reconcile(&node_api, &cached_node, status.as_deref(), lease_stale, "lease-handler").await {
+                            update_cached_taints(&mut cache, &name, taints);
+                        }
                     }
                     Some(Ok(Event::Delete(_) | Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "lease watch error in node-lifecycle-controller"),
@@ -303,8 +325,8 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                 if due.is_empty() { continue; }
                 let budget = governor.budget();
                 let tick_started = crate::pacing::process_cpu_time();
-                let mut deferred = Vec::new();
-                for (index, name) in due.iter().enumerate() {
+                    let mut deferred = Vec::new();
+                    for (index, name) in due.iter().enumerate() {
                     // Decide whether this item fits before doing its network
                     // reconciliation. The first item is allowed even when it
                     // costs more than the budget, matching the pure pacing
@@ -316,12 +338,16 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                         deferred.extend(due[index..].iter().cloned());
                         break;
                     }
-                    let status = cache.get(name).and_then(|s| s.ready_status.clone());
+                    let Some(state) = cache.get(name) else { continue };
+                    let status = state.ready_status.clone();
+                    let cached_node = state.node.clone();
                     // A renewal can have arrived after this key overflowed
                     // into the deferred queue. Recompute from the cache so a
                     // stale wheel entry cannot taint a live Node.
                     if is_stale(&cache, name, cfg.node_monitor_grace_period, cfg.jitter_fraction) {
-                        reconcile(&node_api, name, status.as_deref(), true, "wheel-tick").await;
+                        if let Some(taints) = reconcile(&node_api, &cached_node, status.as_deref(), true, "wheel-tick").await {
+                            update_cached_taints(&mut cache, name, taints);
+                        }
                     }
                 }
                 governor.requeue_overflow(deferred);
