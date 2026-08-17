@@ -1,125 +1,43 @@
-commit: a9df12ac7fc2e4f3916693967becff5df50149ce
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31995039529
-timestamp (UTC): 2026-08-17T04:48:04Z
+commit: 82ff40d2f8c0883dec7f339b123d5f42f472b706
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32007057470
+timestamp (UTC): 2026-08-17T07:52:03Z
 shard: 4/5
-exit code: 0
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786941655
-==> 235 test(s) registered total (before sharding); running now...
-==> Shard 4/5: 44 test(s) selected
-▶ test_ttl_after_finished_controller_deletes_expired_jobs
-  ✔ PASS (17s)
-▶ test_a_failing_component_says_why_before_it_exits
-  ✔ PASS (0s)
-▶ test_daemonset_places_a_pod_directly
-  ✔ PASS (33s)
-▶ test_datastore_creates_a_key_only_if_absent
-  ✔ PASS (0s)
-▶ test_datastore_survives_a_restart_with_its_data
-  ✔ PASS (0s)
-▶ test_apiserver_watch_delivers_through_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13446/environ: Permission denied
-  ✔ PASS (8s)
-▶ test_the_cluster_keeps_serving_when_a_follower_dies
-    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
-  ○ SKIP (0s)
-▶ test_a_partitioned_leader_steps_down_and_the_majority_elects_another
-    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
-  ○ SKIP (0s)
-▶ test_plugin_registry_watches_for_device_plugins_too
-  ✔ PASS (0s)
-▶ test_disruption_controller_computes_pdb_status
-  ✔ PASS (33s)
-▶ test_pod_exceeding_its_active_deadline_is_terminated
-  ✔ PASS (45s)
-▶ test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
-  ✔ PASS (40s)
-▶ test_prestop_hook_runs_before_termination
-  ✔ PASS (19s)
-▶ test_native_sidecar_container_restarts_on_crash
-  ✔ PASS (5s)
-▶ test_restart_policy_never_exit_zero_is_succeeded
-  ✔ PASS (3s)
-▶ test_container_status_container_id_has_a_runtime_scheme_prefix
-  ✔ PASS (2s)
-▶ test_image_pull_policy_never_fails_when_image_is_absent
-  ✔ PASS (42s)
-▶ test_host_network_pod_needs_no_explicit_port_mapping
-  ✔ PASS (3s)
-▶ test_node_reports_hugepages_capacity_when_reserved
-  ✔ PASS (1s)
-▶ test_pod_resources_socket_is_created_on_a_cri_node
-  ✔ PASS (0s)
-▶ test_startup_probe_gates_liveness_and_readiness
-  ✔ PASS (7s)
-▶ test_metrics_resource_returns_real_pod_usage
-  ✔ PASS (3s)
-▶ test_memory_limit_is_enforced_via_cgroup
-  ✔ PASS (2s)
-▶ test_env_resource_field_ref_reports_the_containers_own_limits
-  ✔ PASS (4s)
-▶ test_scheduler_honours_a_node_selector_that_matches
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
-▶ test_scheduler_holds_the_leader_lease
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
-▶ test_scheduler_does_not_preempt_when_policy_forbids_it
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
-▶ test_container_status_reports_resolved_user
-  ✔ PASS (2s)
-▶ test_proc_mount_default_masks_proc_kcore
-  ✔ PASS (3s)
-▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
-==> WARNING: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership, got '3000 5000' — this runtime may not implement Merge's image-group-membership resolution (a newer-than-usual runc feature); not failing outright since nodelet itself only passes the policy through to CRI unchanged
-  ✔ PASS (2s)
-▶ test_clusterip_is_reachable_from_inside_a_pod
-  ✔ PASS (6s)
-▶ test_session_affinity_pins_a_client_to_one_backend
-  ✔ PASS (5s)
-▶ test_kubectl_exec_runs_a_command_and_returns_its_output
-  ✔ PASS (3s)
-▶ test_configmap_volume_updates_live_without_pod_restart
-Warning: resource configmaps/cm-live-update-cm is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
-  ✔ PASS (3s)
-▶ test_host_aliases_are_written_to_etc_hosts
-  ✔ PASS (3s)
-▶ test_fsgroup_chowns_materialized_volumes
-  ✔ PASS (3s)
-▶ test_recursive_read_only_still_mounts_read_only_normally
-  ✔ PASS (3s)
-▶ test_host_path_directory_or_create_creates_a_missing_directory
-  ✔ PASS (2s)
-▶ test_config_dir_merges_files_in_filename_order
-  ✔ PASS (2s)
-▶ test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down
-Warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.
-  ✔ PASS (14s)
-▶ test_a_pending_pod_recovers_after_the_node_failure_is_fixed
-==> stopping containerd so every sandbox creation fails...
-==> starting containerd again — nothing touches the Pod, so only nodelet's own retry can recover it...
-  ✔ PASS (36s)
-▶ test_client_certificate_authentication_works
-.........+.+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+......+.+..+............+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+...+....+..+...+......+.......+.....+..........+.....+..................+.......+...+.....+.+....................+.+..+.+.........+..+...+................+..+.........+...+...............+.+..+...+.+...........+...+......+...+.+......+.....+.............+.....+......+....+...+...+..+.......+......+..+.........+...+...............+.+......+........+......+.+.....+...+.+............+.....+...+......+.........+.......+...+..+.......+..+......+.......+......+..+.........+.........+...............+....+........+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-......+.........+.....+......+.......+...+..+...+.............+.....+..........+......+...+.....+.......+...+.....+......+.+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+............+........+.......+......+.........+..+......+....+.....+....+.........+......+.....+....+..+.+...+..............+...+...............+...+.+...+...........+......+.+..+.+..+....+...+.....+...+....+......+..+............+...............+....+.........+..+.............+.......................+............+.............+...+.....+.+.....+...+.............+...+..+....+......+........+...............+....+..+.+..+.......+...+...............+.....+......+................+........+.......+.....+.+.....+.........+.............+.....+.+.........+..+....+.....+.+...+...+..+...+..........+.........+......+.....+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
------
-..+................+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..........+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+..........+..+..........+..+...............+....+......+...+..+.........+..........+.....+.......+.....+.......+.....+...+....+...+...........+.+.....+.+.........+.....+.+...+..+...+.+...........+.............+.....+....+..+.+.........+........+...+.......+.....+......................+.....+..................+.......+.........+..+.......+.....+.+..+....+...+..+....+............+...............+..+.......+........+.+..+...+.+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+..+.+..+....+........+.......+.....+.+........+....+..+...+...+.......+......+.....+.......+.........+...+...+..................+.........+........+.......+..+.+.................+.+......+...+..+......+....+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+..+................+......+...+........+.........+.+.....+...+....+...+..+.+......+...+......+..+...+............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
------
-Certificate request self-signature ok
-subject=CN = alice, O = system:masters
-...+......+..........+...+........+...+....+...............+...+..+............+......+.........+.+.....+....+...+......+..+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+......+..+...+....+..+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+........+.+.....+...............+...+.......+...+.....+.............+...+.........+.....+.............+........+......+.+.....+....+...+......+..+.........+.........................+........+...+...................+.....+.+.....+...+.....................+......+.......+.....+...............+...+...+................+.....+................+............+............+.....+...............+.+..+..........+.....+.+......+........+.+..+.........+.........+.........+......+.......+..+...+...+.+...+......+.........+........+.........+...+......+....+.....+......+..........+......+......+...+......+........+...+.........+...................+......+..............+.+...........+...+....+.....+.......+......+........+....+..+...+...+..........+............+..+.+..+............+.....................+...+.+.........+......+.....+.+...+..+...+....+........+....+...+...+.....+.........+.+...+..+.............+..+...+.+........+.+..+.............+......+........+...+...+......+...+..........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-.+.......+........+.+.....+.+...+...............+...+...+.....+.+.....+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+..........+..+......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+..........+...+........+.+.....+.+..+...+...+....+.....+............+.+...+.........+..+.+.........+..............+.........+.......+...+...+........+.+......+..+...+.........+.+.....+...+.+.....+................+..+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
------
-  ✔ PASS (3s)
-▶ test_static_pod_creates_a_mirror_pod
-  ✔ PASS (72s)
-▶ test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host
-    (skip: this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case; a multi-node host needs the manual cross-provider check below instead)
-  ○ SKIP (0s)
+==> Test namespace: not-k8s-e2e-1786952926
+==> 219 test(s) registered total (before sharding); running now...
+==> Shard 4/5: 41 test(s) selected
+▶ test_scheduler_leaves_a_gated_pod_alone
+  ✔ PASS (11s)
+▶ test_scheduler_wakes_a_pending_pod_on_a_real_event
+  ✔ PASS (76s)
+▶ test_scheduler_honours_topology_spread
+  ✔ PASS (11s)
+▶ test_scheduler_claims_a_static_wait_for_first_consumer_volume
+==> FATAL: timed out after 90s waiting for: sched-static-pod to run from its static volume
+  ✘ FAIL (96s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 17 07:51:42 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:42.392075Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:42 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:42.410412Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:47 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:47.364858Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:47 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:47.393838Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:47 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:47.414753Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:47 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:47.432401Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:52 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:52.389835Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:52 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:52.416543Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:52 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:52.437152Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:52 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:52.454930Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:57 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:57.413929Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:57 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:57.437687Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:57 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:57.460001Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:51:57 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:57.477202Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:52:01 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:52:01.314060Z  INFO node status pushed
 
 ════════════════════════════════════════
-Results: 38 passed, 0 failed, 6 skipped
+Results: 3 passed, 1 failed, 0 skipped
+Failed:
+  - test_scheduler_claims_a_static_wait_for_first_consumer_volume
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786941655...
+==> Cleaning up test namespace not-k8s-e2e-1786952926...
