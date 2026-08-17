@@ -48,17 +48,18 @@ test_namespace_controller_deletes_contents_before_finalizing() {
     _namespace_controller_cleanup_ns="$ns"
     trap _namespace_controller_cleanup EXIT
 
-    apply_manifest <<EOF
+    kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Namespace
 metadata:
   name: $ns
----
+EOF
+
+    kubectl apply --namespace="$ns" -f - <<EOF
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: must-be-cleaned
-  namespace: $ns
 data:
   proof: namespace-controller
 EOF
