@@ -1,14 +1,13 @@
 # lib/test/cases/nftables_rebuild_established_conns.sh — nodeproxy's
-# conntrack preservation across a ruleset replacement. The nodeproxy also
-# emits an explicit established-state fast path; this test verifies that the
-# complete behavior survives a real replacement on the target kernel.
+# conntrack preservation across a ruleset replacement. NAT rules only select
+# the first packet; this test verifies that conntrack preserves the complete
+# flow across a real replacement on the target kernel.
 # github.com/centerionware/not-k8s/issues/30: a burst of Service/
 # EndpointSlice events (e.g. a Deployment scaling up N pods) rebuilds the
 # whole nftables table once per event — real TCP resets were observed on
 # long-lived pod-to-apiserver connections held open across one of those
-# rebuilds (CoreDNS's own watch to the apiserver, concretely), because an
-# already-established connection's conntrack NAT state wasn't preserved
-# across the wholesale chain replace. This proves a long-lived,
+# rebuilds (CoreDNS's own watch to the apiserver, concretely). This proves a
+# long-lived,
 # real in-cluster HTTPS connection survives a real burst of unrelated
 # Service churn, from inside a pod (the same path CoreDNS/any in-cluster
 # client uses — nodeproxy's ClusterIP DNAT), not just that routing
