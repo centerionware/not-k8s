@@ -20,9 +20,11 @@
 //! directory"` and never becomes a working client — no error surfaced to
 //! the Pod's own status (it starts and stays Running), just a client that
 //! can never actually reach the apiserver. `csi_pvc.sh`/`csi_attach.sh`'s
-//! PVCs sat `Pending` forever with **zero** provisioning events, not a
-//! `persistentvolume-binder-controller` bug at all — this was the actual
-//! root cause. Nodelet's own logs carried the same
+//! PVCs initially sat `Pending` forever with **zero** provisioning events.
+//! This was one necessary fix, but not the final Group G root cause: once the
+//! sidecar became a healthy client, live testing exposed the binder's missing
+//! dynamic-provisioning and bind-completion annotations. Nodelet's own logs
+//! carried the same
 //! `WARN projected volume: failed to fetch ConfigMap source
 //! configmap=kube-root-ca.crt` for every Pod's own default token the whole
 //! time, previously dismissed as cosmetic since most workloads in this

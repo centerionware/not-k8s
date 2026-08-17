@@ -59,8 +59,20 @@ EOF
     wait_until 30 "PVC $pvc reports Bound" \
         bash -c "[[ \"\$(kctl get pvc '$pvc' -o jsonpath='{.status.phase}')\" == 'Bound' ]]"
 
+    wait_until 30 "PVC $pvc publishes the bound volume's capacity and access modes" \
+        bash -c "[[ \"\$(kctl get pvc '$pvc' -o jsonpath='{.status.capacity.storage}')\" == '10Mi' ]] && [[ \"\$(kctl get pvc '$pvc' -o jsonpath='{.status.accessModes[0]}')\" == 'ReadWriteOnce' ]]"
+
+    wait_until 30 "PVC $pvc publishes the scheduler's bind-completed barrier" \
+        bash -c "[[ \"\$(kctl get pvc '$pvc' -o jsonpath='{.metadata.annotations.pv\\.kubernetes\\.io/bind-completed}')\" == 'yes' ]]"
+
+    wait_until 30 "PVC $pvc records that the controller selected its volume" \
+        bash -c "[[ \"\$(kctl get pvc '$pvc' -o jsonpath='{.metadata.annotations.pv\\.kubernetes\\.io/bound-by-controller}')\" == 'yes' ]]"
+
     wait_until 30 "PV $pv reports Bound" \
         bash -c "[[ \"\$(kctl get pv '$pv' -o jsonpath='{.status.phase}')\" == 'Bound' ]]"
+
+    wait_until 30 "PV $pv records that the controller claimed it" \
+        bash -c "[[ \"\$(kctl get pv '$pv' -o jsonpath='{.metadata.annotations.pv\\.kubernetes\\.io/bound-by-controller}')\" == 'yes' ]]"
 
     wait_until 30 "pv-protection-controller adds the pv-protection finalizer" \
         bash -c "kctl get pv '$pv' -o jsonpath='{.metadata.finalizers}' | grep -q pv-protection"

@@ -14,8 +14,10 @@
 //! external-provisioner deliberately ignores an unannotated PVC; this write
 //! is what asks it to call CSI `CreateVolume`. It then creates a new PV with
 //! `spec.claimRef` already pointing at the PVC, and this controller finishes
-//! the handshake by setting `pvc.spec.volumeName` and both objects' phase to
-//! `Bound`. For `WaitForFirstConsumer`, the provisioner annotation is held
+//! the handshake by setting `pvc.spec.volumeName`, both objects' phase to
+//! `Bound`, and finally the `pv.kubernetes.io/bind-completed` publication
+//! barrier required by kube-scheduler's VolumeBinding plugin. For
+//! `WaitForFirstConsumer`, the provisioner annotation is held
 //! until the scheduler has written `volume.kubernetes.io/selected-node`,
 //! matching upstream's ordering.
 //!
@@ -50,7 +52,8 @@ use crate::workqueue::KeyedWorkQueue;
 use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
-    ObjectReference, PersistentVolume, PersistentVolumeClaim, PersistentVolumeStatus,
+    ObjectReference, PersistentVolume, PersistentVolumeClaim, PersistentVolumeClaimStatus,
+    PersistentVolumeStatus,
 };
 use k8s_openapi::api::storage::v1::StorageClass;
 use kube::api::{Api, Patch, PatchParams};
@@ -60,12 +63,21 @@ use std::collections::HashMap;
 
 const STORAGE_PROVISIONER_ANNOTATION: &str = "volume.kubernetes.io/storage-provisioner";
 const SELECTED_NODE_ANNOTATION: &str = "volume.kubernetes.io/selected-node";
+const BIND_COMPLETED_ANNOTATION: &str = "pv.kubernetes.io/bind-completed";
+const BOUND_BY_CONTROLLER_ANNOTATION: &str = "pv.kubernetes.io/bound-by-controller";
 
-fn is_bound(pvc: &PersistentVolumeClaim) -> bool {
-    pvc.spec
+fn is_fully_bound(pvc: &PersistentVolumeClaim) -> bool {
+    let has_volume = pvc
+        .spec
         .as_ref()
-        .and_then(|s| s.volume_name.as_ref())
-        .is_some()
+        .and_then(|s| s.volume_name.as_deref())
+        .is_some_and(|name| !name.is_empty());
+    let bind_completed = pvc
+        .metadata
+        .annotations
+        .as_ref()
+        .is_some_and(|annotations| annotations.contains_key(BIND_COMPLETED_ANNOTATION));
+    has_volume && bind_completed
 }
 
 fn access_modes_satisfy(pv: &PersistentVolume, pvc: &PersistentVolumeClaim) -> bool {
@@ -201,7 +213,7 @@ async fn reconcile_claim(
     // The shared PVC informer already delivered the current object. Do not
     // turn every watch event into a second GET; that was both redundant and
     // a major source of request bursts during initial synchronization.
-    if is_bound(pvc) {
+    if is_fully_bound(pvc) {
         return;
     }
     let Some(pv) = pv_for_claim(pvc, pvs).cloned() else {
@@ -226,7 +238,10 @@ async fn reconcile_claim(
         // Include the resourceVersion read above in the patch. A concurrent
         // claimant then gets a 409 instead of overwriting the first claim.
         let patch = serde_json::json!({
-            "metadata": { "resourceVersion": pv.metadata.resource_version.clone() },
+            "metadata": {
+                "resourceVersion": pv.metadata.resource_version.clone(),
+                "annotations": { (BOUND_BY_CONTROLLER_ANNOTATION): "yes" }
+            },
             "spec": { "claimRef": claim_ref }
         });
         match pv_api
@@ -246,7 +261,26 @@ async fn reconcile_claim(
         }
     }
 
-    let pvc_patch = serde_json::json!({ "spec": { "volumeName": pv_name } });
+    // Upstream records whether the controller selected this volume in the
+    // same object update that writes spec.volumeName. BindCompleted is
+    // deliberately *not* included yet: kube-scheduler treats that annotation
+    // as the publication barrier, so it must be the last successful write.
+    let controller_selected_volume = pvc
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.volume_name.as_deref())
+        .is_none_or(str::is_empty);
+    let mut binding_annotations = serde_json::Map::new();
+    if controller_selected_volume {
+        binding_annotations.insert(
+            BOUND_BY_CONTROLLER_ANNOTATION.to_string(),
+            serde_json::Value::String("yes".to_string()),
+        );
+    }
+    let pvc_patch = serde_json::json!({
+        "metadata": { "annotations": binding_annotations },
+        "spec": { "volumeName": pv_name }
+    });
     if let Err(e) = pvc_api
         .patch(&name, &PatchParams::default(), &Patch::Merge(&pvc_patch))
         .await
@@ -254,12 +288,19 @@ async fn reconcile_claim(
         tracing::warn!(namespace = %namespace, pvc = %name, pv = %pv_name, error = ?e, "failed to set PersistentVolumeClaim.spec.volumeName");
         return;
     }
-    let status_patch = serde_json::json!({ "status": { "phase": "Bound" } });
+    let pvc_status = PersistentVolumeClaimStatus {
+        access_modes: pv.spec.as_ref().and_then(|spec| spec.access_modes.clone()),
+        capacity: pv.spec.as_ref().and_then(|spec| spec.capacity.clone()),
+        phase: Some("Bound".to_string()),
+        ..pvc.status.clone().unwrap_or_default()
+    };
+    let status_patch = serde_json::json!({ "status": pvc_status });
     if let Err(e) = pvc_api
         .patch_status(&name, &PatchParams::default(), &Patch::Merge(&status_patch))
         .await
     {
         tracing::warn!(namespace = %namespace, pvc = %name, error = ?e, "failed to set PersistentVolumeClaim status to Bound");
+        return;
     }
     let pv_status = PersistentVolumeStatus {
         phase: Some("Bound".to_string()),
@@ -275,6 +316,30 @@ async fn reconcile_claim(
         .await
     {
         tracing::warn!(pv = %pv_name, error = ?e, "failed to set PersistentVolume status to Bound");
+        return;
+    }
+
+    // kube-scheduler deliberately does not treat spec.volumeName or even a
+    // Bound phase as proof that the controller-side handshake is complete.
+    // Publish AnnBindCompleted only after every preceding binding write has
+    // succeeded. `is_fully_bound` keys off the same marker, so a crash before
+    // this point causes the next event to resume rather than abandon a
+    // partially completed binding.
+    let completed_patch = serde_json::json!({
+        "metadata": {
+            "annotations": { (BIND_COMPLETED_ANNOTATION): "yes" }
+        }
+    });
+    if let Err(e) = pvc_api
+        .patch(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&completed_patch),
+        )
+        .await
+    {
+        tracing::warn!(namespace = %namespace, pvc = %name, error = ?e, "failed to publish PersistentVolumeClaim bind completion");
+        return;
     }
     tracing::info!(namespace = %namespace, pvc = %name, pv = %pv_name, "persistentvolume-binder-controller bound a PersistentVolumeClaim");
 }
@@ -405,6 +470,19 @@ mod tests {
             provisioner_for_claim(&claim, &classes),
             Some("hostpath.csi.k8s.io")
         );
+    }
+
+    #[test]
+    fn scheduler_only_sees_a_claim_as_fully_bound_after_the_completion_barrier() {
+        let mut claim = claim_for_class("fast");
+        claim.spec.as_mut().unwrap().volume_name = Some("pv-a".to_string());
+        assert!(!is_fully_bound(&claim));
+
+        claim.metadata.annotations = Some(BTreeMap::from([(
+            BIND_COMPLETED_ANNOTATION.to_string(),
+            "yes".to_string(),
+        )]));
+        assert!(is_fully_bound(&claim));
     }
 
     fn pvc(name: &str, class: &str, modes: &[&str]) -> PersistentVolumeClaim {

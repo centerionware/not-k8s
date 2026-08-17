@@ -444,7 +444,11 @@ are implemented and e2e-verified.
   external provisioner deliberately ignores the claim until this annotation
   exists. For `WaitForFirstConsumer`, that write waits for the scheduler's
   `volume.kubernetes.io/selected-node` annotation. Once the provisioner
-  creates a PV with `spec.claimRef`, this controller finishes the handshake.
+  creates a PV with `spec.claimRef`, this controller writes the PV/PVC binding
+  state and publishes `pv.kubernetes.io/bind-completed` last. That annotation
+  is a real synchronization barrier: kube-scheduler's VolumeBinding plugin
+  classifies an Immediate claim as unbound without it even when
+  `spec.volumeName` and `status.phase=Bound` are already present.
   Load-bearing in practice
   despite the plan's original Tier 2 label: this project's own `csi_pvc.sh`/
   `csi_attach.sh` e2e tests gate on `PVC.status.phase == Bound`, which
@@ -459,10 +463,13 @@ are implemented and e2e-verified.
   binder to Kubernetes 1.33's `provisionClaimOperationExternal` found the
   missing transition above. The previous implementation returned when no PV
   existed, which is exactly where upstream annotates the PVC to wake the
-  external provisioner. A driver-independent e2e assertion now checks that
-  annotation directly in `storage_lifecycle_controllers.sh`; the existing
-  real `csi_pvc.sh`/`csi_attach.sh` tests remain the end-to-end gate. **Do not
-  call the dynamic path verified until those targeted tests pass in CI.**
+  external provisioner. The first post-fix CSI run then exposed the second
+  missing upstream transition: provisioning and PVC phase binding succeeded,
+  but kube-scheduler rejected the claim until the binder also published
+  `bind-completed`. Driver-independent e2e assertions now check both contracts
+  directly in `storage_lifecycle_controllers.sh`; the existing real
+  `csi_pvc.sh`/`csi_attach.sh` tests remain the end-to-end gate. **Do not call
+  the dynamic path verified until those targeted tests pass in CI.**
 - `pv-protection-controller` / `pvc-protection-controller`
   (`crates/nodecontroller/src/controllers/storage_protection.rs`,
   **implemented**): the standard finalizer-based "don't let this disappear
