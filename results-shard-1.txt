@@ -1,47 +1,144 @@
 commit: 82ff40d2f8c0883dec7f339b123d5f42f472b706
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32007057470
-timestamp (UTC): 2026-08-17T07:52:39Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32007145261
+timestamp (UTC): 2026-08-17T08:02:52Z
 shard: 1/5
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786952969
+==> Test namespace: not-k8s-e2e-1786953063
 ==> 219 test(s) registered total (before sharding); running now...
 ==> Shard 1/5: 48 test(s) selected
+▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
+  ✔ PASS (35s)
+▶ test_dynamic_csi_registration_actually_registered_the_driver
+  ✔ PASS (0s)
+▶ test_csi_ephemeral_inline_volume_is_mounted
+  ✔ PASS (3s)
+▶ test_node_reports_volumes_in_use_for_a_csi_volume
+  ✔ PASS (62s)
+▶ test_plugin_registry_watches_for_dra_drivers_too
+  ✔ PASS (1s)
 ▶ test_dra_claim_is_allocated_and_reserved_for_the_pod
   ✔ PASS (3s)
 ▶ test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen
   ✔ PASS (43s)
+▶ test_tls_bootstrap_issues_a_real_client_certificate
+  ✔ PASS (6s)
+▶ test_node_allocatable_cgroup_exists_and_is_capped
+  ✔ PASS (0s)
+▶ test_datastore_round_trips_a_key_over_grpc
+  ✔ PASS (0s)
+▶ test_datastore_replays_missed_events_to_a_late_watcher
+  ✔ PASS (10s)
+▶ test_datastore_refuses_a_malformed_cluster_spec
+  ✔ PASS (0s)
+▶ test_cluster_elects_a_single_leader
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_a_minority_refuses_writes_rather_than_inventing_them
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_upgrade_straight_to_a_multi_member_cluster_is_refused
+    (skip: needs root to create network namespaces — this needs real network namespaces)
+  ○ SKIP (0s)
+▶ test_device_plugin_preferred_allocation_and_prestart
+==> installing grpcio/grpcio-tools for the fake device plugin...
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
+  ✔ PASS (152s)
+▶ test_kubectl_debug_adds_and_starts_an_ephemeral_container
+  ✔ PASS (4s)
+▶ test_eviction_soft_grace_period_manual_procedure
+    (skip: proving the soft-threshold grace period (round 101 — a pod isn't evicted the instant a looser *soft* threshold is crossed, only once it's stayed continuously crossed for NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS) needs artificial pressure sustained across multiple ticks, harder to orchestrate reliably here than the base eviction procedure above. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_SOFT_THRESHOLD_BYTES set just above current MemAvailable (so MemoryPressure's soft signal trips immediately) but NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES (the hard one) left at its normal, much-lower default, and NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS set to something short like 20, (3) apply a BestEffort pod, (4) confirm it is NOT evicted before the grace period elapses but IS evicted (phase Failed/reason Evicted) once NODELET_EVICTION_CHECK_SECS ticks have accumulated past NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS of continuous soft pressure, (5) restore normal thresholds and restart nodelet. The pure decision logic itself (eviction::pressure_action_due()) is already covered by cargo test's eviction_tests/pressure_action_due.rs — this only proves the live wiring end to end.)
+  ○ SKIP (0s)
+▶ test_prestop_hook_runs_before_termination
+  ✔ PASS (19s)
+▶ test_native_sidecar_container_restarts_on_crash
+  ✔ PASS (5s)
+▶ test_restart_policy_never_exit_zero_is_succeeded
+  ✔ PASS (3s)
+▶ test_container_status_container_id_has_a_runtime_scheme_prefix
+  ✔ PASS (3s)
+▶ test_image_pull_policy_never_fails_when_image_is_absent
+  ✔ PASS (40s)
+▶ test_host_network_pod_needs_no_explicit_port_mapping
+  ✔ PASS (3s)
+▶ test_node_status_reports_runtime_handlers
+  ✔ PASS (1s)
+▶ test_liveness_probe_failure_restarts_the_container
+  ✔ PASS (40s)
+▶ test_grpc_probe_gates_readiness_against_a_real_grpc_server
+  ✔ PASS (7s)
+▶ test_memory_limit_is_enforced_via_cgroup
+  ✔ PASS (3s)
+▶ test_env_resource_field_ref_reports_the_containers_own_limits
+  ✔ PASS (4s)
 ▶ test_scheduler_honours_a_node_selector_that_matches
   ✔ PASS (1s)
 ▶ test_scheduler_holds_the_leader_lease
   ✔ PASS (8s)
 ▶ test_scheduler_does_not_preempt_when_policy_forbids_it
-  ✔ PASS (53s)
+  ✔ PASS (78s)
+▶ test_without_read_only_root_filesystem_writes_succeed
+  ✔ PASS (3s)
+▶ test_host_users_volume_ownership_translation_is_correct
+  ✔ PASS (3s)
+▶ test_sysctls_are_applied_to_the_sandbox
+  ✔ PASS (3s)
+▶ test_nodeproxy_runs_as_its_own_service_separate_from_nodelet
+  ✔ PASS (0s)
+▶ test_deleting_a_service_removes_its_rules
+  ✔ PASS (3s)
+▶ test_stats_summary_returns_real_pod_usage
+  ✔ PASS (4s)
+▶ test_kubectl_port_forward_reaches_a_real_container_port
+  ✔ PASS (7s)
+▶ test_topology_manager_restricted_spread_manual_note
+    (skip: proving restricted policy's spread() fallback (round 20 — each provider placed on its own best NUMA node independently when no single node satisfies everyone) needs real multi-NUMA hardware where a CPU request and a device/memory request can only individually be satisfied on *different* nodes. Manual spot-check: with NODELET_TOPOLOGY_MANAGER_POLICY=restricted, create a Guaranteed pod whose exclusive-CPU request only fits node 0's remaining capacity and whose device-plugin/memory request only fits node 1's — the pod should reach Running (unlike single-numa-node, which would reject it) with nodelet logging 'no single NUMA node satisfies every request together; spreading each across its own best node'; the container's cpuset.cpus should land on node 0's CPUs and cpuset.mems (if a memory request was involved) on node 1.)
+  ○ SKIP (0s)
+▶ test_projected_volume_merges_configmap_and_downward_api
+  ✔ PASS (3s)
+▶ test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs
+  ✔ PASS (3s)
+▶ test_mount_propagation_host_to_container_sees_a_new_host_mount
+  ✔ PASS (3s)
+▶ test_recursive_read_only_if_possible_tracks_the_runtime_handlers_own_capability
+  ✔ PASS (3s)
+▶ test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
+  ✔ PASS (4s)
+▶ test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down
+Warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.
+  ✔ PASS (15s)
+▶ test_a_pending_pod_recovers_after_the_node_failure_is_fixed
+==> stopping containerd so every sandbox creation fails...
+==> starting containerd again — nothing touches the Pod, so only nodelet's own retry can recover it...
+  ✔ PASS (37s)
 ▶ test_scheduler_schedules_a_pod_an_http_extender_approves
 ==> FATAL: timed out after 60s waiting for: sched-extender-accept to be bound to a node
-  ✘ FAIL (79s, exit 1)
+  ✘ FAIL (82s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 17 07:50:17 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:50:17.882973Z  INFO CreateContainer succeeded container=c container_id=958a03f6df0d1e9df4e505fb72a4565a49a4200998870d11e81f8d8076b29724
-    Aug 17 07:50:26 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:50:26.571011Z  INFO CreateContainer succeeded container=c container_id=5b9ec8f416c40300a6fa986ab21cab868cde5cc26bdc10212de6b62c87e86e21
-    Aug 17 07:50:48 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:50:48.063504Z  INFO torn down pod=not-k8s-e2e-1786952969/sched-selector
-    Aug 17 07:50:48 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:50:48.076575Z  WARN failed to write pod status pod=not-k8s-e2e-1786952969/sched-selector error=ApiError: pods "sched-selector" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"sched-selector\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "sched-selector", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 17 07:50:48 runnervmzvulz run-nodelet.sh[16262]: Caused by:
-    Aug 17 07:50:48 runnervmzvulz run-nodelet.sh[16262]:     pods "sched-selector" not found: NotFound
-    Aug 17 07:50:48 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:50:48.079776Z  INFO torn down pod=not-k8s-e2e-1786952969/sched-selector
-    Aug 17 07:51:08 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:51:08.324821Z  INFO node status pushed
-    Aug 17 07:51:17 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:51:17.306012Z  INFO torn down pod=not-k8s-e2e-1786952969/sched-nopreempt-low
-    Aug 17 07:51:17 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:51:17.320072Z  WARN failed to write pod status pod=not-k8s-e2e-1786952969/sched-nopreempt-low error=ApiError: pods "sched-nopreempt-low" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"sched-nopreempt-low\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "sched-nopreempt-low", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 17 07:51:17 runnervmzvulz run-nodelet.sh[16262]: Caused by:
-    Aug 17 07:51:17 runnervmzvulz run-nodelet.sh[16262]:     pods "sched-nopreempt-low" not found: NotFound
-    Aug 17 07:51:17 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:51:17.322913Z  INFO torn down pod=not-k8s-e2e-1786952969/sched-nopreempt-low
-    Aug 17 07:52:08 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:52:08.370209Z  INFO node status pushed
-    Aug 17 07:52:37 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:52:37.113044Z  INFO CreateContainer succeeded container=c container_id=62c305f4baf0c8737f1ee2e166016e2cbfab6eb154f87bea8586f0f22368317b
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.122864Z  INFO torn down pod=not-k8s-e2e-1786953063/hostusers-ownership-check
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.127124Z  INFO torn down pod=not-k8s-e2e-1786953063/cpu-manager-check-a
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.152292Z  INFO torn down pod=not-k8s-e2e-1786953063/stats-check
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.160750Z  INFO torn down pod=not-k8s-e2e-1786953063/recursive-readonly-capability-check
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.165164Z  INFO torn down pod=not-k8s-e2e-1786953063/port-forward-check
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.169026Z  INFO torn down pod=not-k8s-e2e-1786953063/hostusers-ownership-check
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.169883Z  INFO torn down pod=not-k8s-e2e-1786953063/cpu-manager-check-b
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.172873Z  INFO torn down pod=not-k8s-e2e-1786953063/projected-vol
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.176495Z  INFO torn down pod=not-k8s-e2e-1786953063/cpu-manager-check-a
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.177416Z  INFO torn down pod=not-k8s-e2e-1786953063/svc-deleted-a
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.181915Z  INFO torn down pod=not-k8s-e2e-1786953063/empty-dir-hugepages
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.184006Z  INFO torn down pod=not-k8s-e2e-1786953063/hostusers-ownership-check
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.184049Z  INFO torn down pod=not-k8s-e2e-1786953063/stats-check
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.185519Z  INFO torn down pod=not-k8s-e2e-1786953063/recursive-readonly-capability-check
+    Aug 17 08:02:40 runnervmzvulz run-nodelet.sh[35932]: 2026-08-17T08:02:40.189170Z  INFO torn down pod=not-k8s-e2e-1786953063/sysctls-check
 
 ════════════════════════════════════════
-Results: 5 passed, 1 failed, 0 skipped
+Results: 42 passed, 1 failed, 5 skipped
 Failed:
   - test_scheduler_schedules_a_pod_an_http_extender_approves
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786952969...
+==> Cleaning up test namespace not-k8s-e2e-1786953063...
