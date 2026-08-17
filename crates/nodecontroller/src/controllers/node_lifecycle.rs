@@ -178,7 +178,7 @@ async fn reconcile(
     let patch = serde_json::json!({ "spec": { "taints": new_taints.clone() } });
     if let Err(e) = api
         .patch(
-            node_name,
+            &node_name,
             &kube::api::PatchParams::default(),
             &kube::api::Patch::Merge(&patch),
         )
