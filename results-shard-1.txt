@@ -1,16 +1,47 @@
-commit: 899654153f6c93574694b4323052a43e66e1ac83
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31998373256
-timestamp (UTC): 2026-08-17T05:41:30Z
+commit: 82ff40d2f8c0883dec7f339b123d5f42f472b706
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32007057470
+timestamp (UTC): 2026-08-17T07:52:39Z
 shard: 1/5
-exit code: 0
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786945249
-==> 236 test(s) registered total (before sharding); running now...
-==> Shard 1/5: 52 test(s) selected
-▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
-  ✔ PASS (40s)
+==> Test namespace: not-k8s-e2e-1786952969
+==> 219 test(s) registered total (before sharding); running now...
+==> Shard 1/5: 48 test(s) selected
+▶ test_dra_claim_is_allocated_and_reserved_for_the_pod
+  ✔ PASS (3s)
+▶ test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen
+  ✔ PASS (43s)
+▶ test_scheduler_honours_a_node_selector_that_matches
+  ✔ PASS (1s)
+▶ test_scheduler_holds_the_leader_lease
+  ✔ PASS (8s)
+▶ test_scheduler_does_not_preempt_when_policy_forbids_it
+  ✔ PASS (53s)
+▶ test_scheduler_schedules_a_pod_an_http_extender_approves
+==> FATAL: timed out after 60s waiting for: sched-extender-accept to be bound to a node
+  ✘ FAIL (79s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 17 07:50:17 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:50:17.882973Z  INFO CreateContainer succeeded container=c container_id=958a03f6df0d1e9df4e505fb72a4565a49a4200998870d11e81f8d8076b29724
+    Aug 17 07:50:26 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:50:26.571011Z  INFO CreateContainer succeeded container=c container_id=5b9ec8f416c40300a6fa986ab21cab868cde5cc26bdc10212de6b62c87e86e21
+    Aug 17 07:50:48 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:50:48.063504Z  INFO torn down pod=not-k8s-e2e-1786952969/sched-selector
+    Aug 17 07:50:48 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:50:48.076575Z  WARN failed to write pod status pod=not-k8s-e2e-1786952969/sched-selector error=ApiError: pods "sched-selector" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"sched-selector\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "sched-selector", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 17 07:50:48 runnervmzvulz run-nodelet.sh[16262]: Caused by:
+    Aug 17 07:50:48 runnervmzvulz run-nodelet.sh[16262]:     pods "sched-selector" not found: NotFound
+    Aug 17 07:50:48 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:50:48.079776Z  INFO torn down pod=not-k8s-e2e-1786952969/sched-selector
+    Aug 17 07:51:08 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:51:08.324821Z  INFO node status pushed
+    Aug 17 07:51:17 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:51:17.306012Z  INFO torn down pod=not-k8s-e2e-1786952969/sched-nopreempt-low
+    Aug 17 07:51:17 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:51:17.320072Z  WARN failed to write pod status pod=not-k8s-e2e-1786952969/sched-nopreempt-low error=ApiError: pods "sched-nopreempt-low" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"sched-nopreempt-low\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "sched-nopreempt-low", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
+    Aug 17 07:51:17 runnervmzvulz run-nodelet.sh[16262]: Caused by:
+    Aug 17 07:51:17 runnervmzvulz run-nodelet.sh[16262]:     pods "sched-nopreempt-low" not found: NotFound
+    Aug 17 07:51:17 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:51:17.322913Z  INFO torn down pod=not-k8s-e2e-1786952969/sched-nopreempt-low
+    Aug 17 07:52:08 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:52:08.370209Z  INFO node status pushed
+    Aug 17 07:52:37 runnervmzvulz run-nodelet.sh[16262]: 2026-08-17T07:52:37.113044Z  INFO CreateContainer succeeded container=c container_id=62c305f4baf0c8737f1ee2e166016e2cbfab6eb154f87bea8586f0f22368317b
 
 ════════════════════════════════════════
-Results: 1 passed, 0 failed, 0 skipped
+Results: 5 passed, 1 failed, 0 skipped
+Failed:
+  - test_scheduler_schedules_a_pod_an_http_extender_approves
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786945249...
+==> Cleaning up test namespace not-k8s-e2e-1786952969...
