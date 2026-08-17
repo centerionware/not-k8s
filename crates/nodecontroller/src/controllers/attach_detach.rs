@@ -68,6 +68,7 @@
 //! coverage (`csi_attach.sh`) currently inherits.
 
 use anyhow::Result;
+use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Pod};
 use k8s_openapi::api::storage::v1::{
@@ -222,6 +223,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pvcs: HashMap<String, PersistentVolumeClaim> = HashMap::new();
     let mut pvs: HashMap<String, PersistentVolume> = HashMap::new();
     let mut vas: HashMap<String, VolumeAttachment> = HashMap::new();
+    let queue: KeyedWorkQueue<()> = KeyedWorkQueue::default();
 
     let va_api: Api<VolumeAttachment> = Api::all(client.clone());
 
@@ -231,39 +233,39 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut va_stream = crate::watch::watch_volume_attachments(&client);
 
     loop {
-        let dirty = tokio::select! {
+        tokio::select! {
             ev = pod_stream.next() => match ev {
-                Some(Ok(Event::Apply(p))) | Some(Ok(Event::InitApply(p))) => { pods.insert(ns_key(&p), p); true }
-                Some(Ok(Event::Delete(p))) => { pods.remove(&ns_key(&p)); true }
-                Some(Ok(Event::Init | Event::InitDone)) => false,
-                Some(Err(e)) => { tracing::warn!(error = ?e, "pod watch error in attach-detach-controller"); false }
+                Some(Ok(Event::Apply(p))) | Some(Ok(Event::InitApply(p))) => { pods.insert(ns_key(&p), p); queue.enqueue(()); }
+                Some(Ok(Event::Delete(p))) => { pods.remove(&ns_key(&p)); queue.enqueue(()); }
+                Some(Ok(Event::Init | Event::InitDone)) => {}
+                Some(Err(e)) => { tracing::warn!(error = ?e, "pod watch error in attach-detach-controller"); }
                 None => return Ok(()),
             },
             ev = pvc_stream.next() => match ev {
-                Some(Ok(Event::Apply(c))) | Some(Ok(Event::InitApply(c))) => { pvcs.insert(ns_key(&c), c); true }
-                Some(Ok(Event::Delete(c))) => { pvcs.remove(&ns_key(&c)); true }
-                Some(Ok(Event::Init | Event::InitDone)) => false,
-                Some(Err(e)) => { tracing::warn!(error = ?e, "pvc watch error in attach-detach-controller"); false }
+                Some(Ok(Event::Apply(c))) | Some(Ok(Event::InitApply(c))) => { pvcs.insert(ns_key(&c), c); queue.enqueue(()); }
+                Some(Ok(Event::Delete(c))) => { pvcs.remove(&ns_key(&c)); queue.enqueue(()); }
+                Some(Ok(Event::Init | Event::InitDone)) => {}
+                Some(Err(e)) => { tracing::warn!(error = ?e, "pvc watch error in attach-detach-controller"); }
                 None => return Ok(()),
             },
             ev = pv_stream.next() => match ev {
-                Some(Ok(Event::Apply(v))) | Some(Ok(Event::InitApply(v))) => { pvs.insert(v.name_any(), v); true }
-                Some(Ok(Event::Delete(v))) => { pvs.remove(&v.name_any()); true }
-                Some(Ok(Event::Init | Event::InitDone)) => false,
-                Some(Err(e)) => { tracing::warn!(error = ?e, "pv watch error in attach-detach-controller"); false }
+                Some(Ok(Event::Apply(v))) | Some(Ok(Event::InitApply(v))) => { pvs.insert(v.name_any(), v); queue.enqueue(()); }
+                Some(Ok(Event::Delete(v))) => { pvs.remove(&v.name_any()); queue.enqueue(()); }
+                Some(Ok(Event::Init | Event::InitDone)) => {}
+                Some(Err(e)) => { tracing::warn!(error = ?e, "pv watch error in attach-detach-controller"); }
                 None => return Ok(()),
             },
             ev = va_stream.next() => match ev {
-                Some(Ok(Event::Apply(v))) | Some(Ok(Event::InitApply(v))) => { vas.insert(v.name_any(), v); true }
-                Some(Ok(Event::Delete(v))) => { vas.remove(&v.name_any()); true }
-                Some(Ok(Event::Init | Event::InitDone)) => false,
-                Some(Err(e)) => { tracing::warn!(error = ?e, "volumeattachment watch error in attach-detach-controller"); false }
+                Some(Ok(Event::Apply(v))) | Some(Ok(Event::InitApply(v))) => { vas.insert(v.name_any(), v); queue.enqueue(()); }
+                Some(Ok(Event::Delete(v))) => { vas.remove(&v.name_any()); queue.enqueue(()); }
+                Some(Ok(Event::Init | Event::InitDone)) => {}
+                Some(Err(e)) => { tracing::warn!(error = ?e, "volumeattachment watch error in attach-detach-controller"); }
                 None => return Ok(()),
             },
+            _ = queue.pop() => {
+                reconcile(&va_api, &pods, &pvcs, &pvs, &vas).await;
+            }
         };
-        if dirty {
-            reconcile(&va_api, &pods, &pvcs, &pvs, &vas).await;
-        }
     }
 }
 
