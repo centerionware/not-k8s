@@ -14,6 +14,9 @@ use std::sync::Arc;
 
 type Result<T> = std::result::Result<T, ExecutionError>;
 const PREFIX: &str = "__notk8s_quantity:";
+/// Keep malformed or adversarial quantities from forcing an unbounded BigInt
+/// allocation while still accepting every practical Kubernetes quantity.
+const MAX_EXPONENT_MAGNITUDE: u32 = 4096;
 
 pub fn install(ctx: &mut Context) {
     ctx.add_function("quantity", quantity);
@@ -69,6 +72,9 @@ fn parse(raw: &str) -> Option<BigRational> {
         .unwrap_or((raw, BigRational::from_integer(BigInt::from(1))));
 
     let (mantissa, exponent) = split_exponent(number)?;
+    if exponent.unsigned_abs() > MAX_EXPONENT_MAGNITUDE {
+        return None;
+    }
     let negative = mantissa.starts_with('-');
     let unsigned = mantissa
         .strip_prefix('-')
@@ -224,6 +230,14 @@ mod tests {
         assert_eq!(eval(r#"quantity("1Gi").asInteger()"#), Value::Int(1_073_741_824));
         assert_eq!(eval(r#"quantity("1e3").asInteger()"#), Value::Int(1000));
         assert_eq!(eval(r#"quantity("1m").isInteger()"#), Value::Bool(false));
+    }
+
+    #[test]
+    fn exponent_magnitude_is_finite_and_handles_i32_min() {
+        assert!(parse("1e4096").is_some());
+        assert!(parse("1e4097").is_none());
+        assert!(parse("1e-4097").is_none());
+        assert!(parse("1e-2147483648").is_none());
     }
 
     #[test]

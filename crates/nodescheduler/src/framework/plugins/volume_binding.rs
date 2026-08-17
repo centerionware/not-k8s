@@ -353,6 +353,9 @@ fn resolve_by_node_with_used(
     snapshot: &Snapshot,
     used_by_node: &mut HashMap<String, HashSet<String>>,
 ) -> HashMap<String, String> {
+    // This deliberately remains greedy, matching upstream's
+    // `findMatchingVolume` pass: each claim takes the first eligible PV on a
+    // node, rather than backtracking across claims to find a global matching.
     let mut by_node = HashMap::new();
     for node in snapshot.nodes() {
         let used = used_by_node.entry(node.name.clone()).or_default();

@@ -265,18 +265,21 @@ struct RelistSweep {
     /// Keys seen since the current `Init`. Empty when not relisting.
     seen: std::collections::HashSet<String>,
     relisting: bool,
+    relist_changed: bool,
 }
 
 impl RelistSweep {
     fn begin(&mut self) {
         self.seen.clear();
         self.relisting = true;
+        self.relist_changed = false;
     }
 
     fn observe(&mut self, key: &str) {
         self.known.insert(key.to_string());
         if self.relisting {
             self.seen.insert(key.to_string());
+            self.relist_changed = true;
         }
     }
 
@@ -296,6 +299,10 @@ impl RelistSweep {
         }
         self.seen.clear();
         gone
+    }
+
+    fn take_relist_changed(&mut self) -> bool {
+        std::mem::take(&mut self.relist_changed)
     }
 }
 
@@ -422,7 +429,19 @@ fn watch_resource_slices(client: &Client) -> BoxStream<'static, watcher::Result<
     watcher(Api::<ResourceSlice>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
-fn handle_resource_claim_event(ev: Event<ResourceClaim>, sweep: &mut RelistSweep, targets: &WatchTargets) {
+fn handle_cached_event<T, K, U, R>(
+    ev: Event<T>,
+    sweep: &mut RelistSweep,
+    targets: &WatchTargets,
+    resource: EventResource,
+    key_of: K,
+    mut upsert: U,
+    mut remove: R,
+) where
+    K: Fn(&T) -> String,
+    U: FnMut(&mut Cache, String, T) -> bool,
+    R: FnMut(&mut Cache, &str),
+{
     let mut cache = targets.cache.lock().unwrap();
     let action = match ev {
         Event::Init => {
@@ -432,293 +451,99 @@ fn handle_resource_claim_event(ev: Event<ResourceClaim>, sweep: &mut RelistSweep
         Event::InitDone => {
             let gone = sweep.finish();
             for key in &gone {
-                cache.remove_resource_claim(&key);
+                remove(&mut cache, key);
             }
-            if gone.is_empty() { None } else { Some(ActionType::DELETE) }
+            (!gone.is_empty()).then_some(ActionType::DELETE)
         }
-        Event::InitApply(c) | Event::Apply(c) => {
-            let key = c.key();
+        Event::InitApply(object) | Event::Apply(object) => {
+            let key = key_of(&object);
             sweep.observe(&key);
-            Some(if cache.upsert_resource_claim(key, c) {
+            Some(if upsert(&mut cache, key, object) {
                 ActionType::ADD
             } else {
                 ActionType::UPDATE
             })
         }
-        Event::Delete(c) => {
-            let key = c.key();
+        Event::Delete(object) => {
+            let key = key_of(&object);
             sweep.forget(&key);
-            cache.remove_resource_claim(&key);
+            remove(&mut cache, &key);
             Some(ActionType::DELETE)
         }
     };
     drop(cache);
     if let Some(action) = action {
         targets.queue.move_all_to_active_or_backoff(
-            ClusterEvent::new(EventResource::ResourceClaim, action),
+            ClusterEvent::new(resource, action),
             None,
             None,
         );
     }
+}
+
+fn handle_resource_claim_event(ev: Event<ResourceClaim>, sweep: &mut RelistSweep, targets: &WatchTargets) {
+    handle_cached_event(ev, sweep, targets, EventResource::ResourceClaim, |c| c.key(),
+        |cache, key, c| cache.upsert_resource_claim(key, c),
+        |cache, key| cache.remove_resource_claim(key));
 }
 
 fn handle_device_class_event(ev: Event<DeviceClass>, sweep: &mut RelistSweep, targets: &WatchTargets) {
-    let mut cache = targets.cache.lock().unwrap();
-    let action = match ev {
-        Event::Init => {
-            sweep.begin();
-            None
-        }
-        Event::InitDone => {
-            let gone = sweep.finish();
-            for key in &gone {
-                cache.remove_device_class(&key);
-            }
-            if gone.is_empty() { None } else { Some(ActionType::DELETE) }
-        }
-        Event::InitApply(c) | Event::Apply(c) => {
-            let name = c.metadata.name.clone().unwrap_or_default();
-            sweep.observe(&name);
-            Some(if cache.upsert_device_class(name, c) {
-                ActionType::ADD
-            } else {
-                ActionType::UPDATE
-            })
-        }
-        Event::Delete(c) => {
-            let name = c.metadata.name.clone().unwrap_or_default();
-            sweep.forget(&name);
-            cache.remove_device_class(&name);
-            Some(ActionType::DELETE)
-        }
-    };
-    drop(cache);
-    if let Some(action) = action {
-        targets.queue.move_all_to_active_or_backoff(
-            ClusterEvent::new(EventResource::DeviceClass, action),
-            None,
-            None,
-        );
-    }
+    handle_cached_event(ev, sweep, targets, EventResource::DeviceClass,
+        |c| c.metadata.name.clone().unwrap_or_default(),
+        |cache, name, c| cache.upsert_device_class(name, c),
+        |cache, name| cache.remove_device_class(name));
 }
 
 fn handle_resource_slice_event(ev: Event<ResourceSlice>, sweep: &mut RelistSweep, targets: &WatchTargets) {
-    let mut cache = targets.cache.lock().unwrap();
-    let action = match ev {
-        Event::Init => {
-            sweep.begin();
-            None
-        }
-        Event::InitDone => {
-            let gone = sweep.finish();
-            for key in &gone {
-                cache.remove_resource_slice(&key);
-            }
-            if gone.is_empty() { None } else { Some(ActionType::DELETE) }
-        }
-        Event::InitApply(s) | Event::Apply(s) => {
-            let name = s.metadata.name.clone().unwrap_or_default();
-            sweep.observe(&name);
-            Some(if cache.upsert_resource_slice(name, s) {
-                ActionType::ADD
-            } else {
-                ActionType::UPDATE
-            })
-        }
-        Event::Delete(s) => {
-            let name = s.metadata.name.clone().unwrap_or_default();
-            sweep.forget(&name);
-            cache.remove_resource_slice(&name);
-            Some(ActionType::DELETE)
-        }
-    };
-    drop(cache);
-    if let Some(action) = action {
-        targets.queue.move_all_to_active_or_backoff(
-            ClusterEvent::new(EventResource::ResourceSlice, action),
-            None,
-            None,
-        );
-    }
+    handle_cached_event(ev, sweep, targets, EventResource::ResourceSlice,
+        |s| s.metadata.name.clone().unwrap_or_default(),
+        |cache, name, s| cache.upsert_resource_slice(name, s),
+        |cache, name| cache.remove_resource_slice(name));
 }
 
 fn handle_pv_event(ev: Event<Pv>, sweep: &mut RelistSweep, targets: &WatchTargets) {
-    let mut cache = targets.cache.lock().unwrap();
-    let action = match ev {
-        Event::Init => { sweep.begin(); None }
-        Event::InitDone => {
-            let gone = sweep.finish();
-            for key in &gone {
-                cache.remove_pv(&key);
-            }
-            (!gone.is_empty()).then_some(ActionType::DELETE)
-        }
-        Event::InitApply(pv) | Event::Apply(pv) => {
-            let name = pv.metadata.name.clone().unwrap_or_default();
-            sweep.observe(&name);
-            Some(if cache.upsert_pv(name, crate::cache::PvInfo::from_api(&pv)) {
-                ActionType::ADD
-            } else {
-                ActionType::UPDATE
-            })
-        }
-        Event::Delete(pv) => {
-            let name = pv.metadata.name.clone().unwrap_or_default();
-            sweep.forget(&name);
-            cache.remove_pv(&name);
-            Some(ActionType::DELETE)
-        }
-    };
-    drop(cache);
-    if let Some(action) = action {
-        targets.queue.move_all_to_active_or_backoff(
-            ClusterEvent::new(EventResource::PersistentVolume, action), None, None,
-        );
-    }
+    handle_cached_event(ev, sweep, targets, EventResource::PersistentVolume,
+        |pv| pv.metadata.name.clone().unwrap_or_default(),
+        |cache, name, pv| cache.upsert_pv(name, crate::cache::PvInfo::from_api(&pv)),
+        |cache, name| cache.remove_pv(name));
 }
 
 fn handle_pvc_event(ev: Event<Pvc>, sweep: &mut RelistSweep, targets: &WatchTargets) {
-    let mut cache = targets.cache.lock().unwrap();
-    let action = match ev {
-        Event::Init => { sweep.begin(); None }
-        Event::InitDone => {
-            let gone = sweep.finish();
-            for key in &gone {
-                cache.remove_pvc(&key);
-                targets.pvc_bindings.observe(&key, false);
-            }
-            (!gone.is_empty()).then_some(ActionType::DELETE)
-        }
-        Event::InitApply(pvc) | Event::Apply(pvc) => {
+    let bindings = targets.pvc_bindings.clone();
+    let update_bindings = bindings.clone();
+    handle_cached_event(ev, sweep, targets, EventResource::PersistentVolumeClaim,
+        |pvc| format!("{}/{}", pvc.metadata.namespace.clone().unwrap_or_default(), pvc.metadata.name.clone().unwrap_or_default()),
+        move |cache, key, pvc| {
             let info = crate::cache::PvcInfo::from_api(&pvc);
-            let key = info.key();
-            let fully_bound = info.bound;
-            sweep.observe(&key);
-            let added = cache.upsert_pvc(key.clone(), info);
-            targets.pvc_bindings.observe(&key, fully_bound);
-            Some(if added { ActionType::ADD } else { ActionType::UPDATE })
-        }
-        Event::Delete(pvc) => {
-            let ns = pvc.metadata.namespace.clone().unwrap_or_default();
-            let name = pvc.metadata.name.clone().unwrap_or_default();
-            let key = format!("{ns}/{name}");
-            sweep.forget(&key);
-            cache.remove_pvc(&key);
-            targets.pvc_bindings.observe(&key, false);
-            Some(ActionType::DELETE)
-        }
-    };
-    drop(cache);
-    if let Some(action) = action {
-        targets.queue.move_all_to_active_or_backoff(
-            ClusterEvent::new(EventResource::PersistentVolumeClaim, action), None, None,
-        );
-    }
+            let added = cache.upsert_pvc(key.clone(), info.clone());
+            update_bindings.observe(&key, info.bound);
+            added
+        },
+        move |cache, key| {
+            cache.remove_pvc(key);
+            bindings.observe(key, false);
+        });
 }
 
 fn handle_storage_class_event(ev: Event<Sc>, sweep: &mut RelistSweep, targets: &WatchTargets) {
-    let mut cache = targets.cache.lock().unwrap();
-    let action = match ev {
-        Event::Init => { sweep.begin(); None }
-        Event::InitDone => {
-            let gone = sweep.finish();
-            for key in &gone {
-                cache.remove_storage_class(&key);
-            }
-            (!gone.is_empty()).then_some(ActionType::DELETE)
-        }
-        Event::InitApply(sc) | Event::Apply(sc) => {
-            let name = sc.metadata.name.clone().unwrap_or_default();
-            sweep.observe(&name);
-            Some(if cache.upsert_storage_class(name, crate::cache::StorageClassInfo::from_api(&sc)) {
-                ActionType::ADD
-            } else {
-                ActionType::UPDATE
-            })
-        }
-        Event::Delete(sc) => {
-            let name = sc.metadata.name.clone().unwrap_or_default();
-            sweep.forget(&name);
-            cache.remove_storage_class(&name);
-            Some(ActionType::DELETE)
-        }
-    };
-    drop(cache);
-    if let Some(action) = action {
-        targets.queue.move_all_to_active_or_backoff(
-            ClusterEvent::new(EventResource::StorageClass, action), None, None,
-        );
-    }
+    handle_cached_event(ev, sweep, targets, EventResource::StorageClass,
+        |sc| sc.metadata.name.clone().unwrap_or_default(),
+        |cache, name, sc| cache.upsert_storage_class(name, crate::cache::StorageClassInfo::from_api(&sc)),
+        |cache, name| cache.remove_storage_class(name));
 }
 
 fn handle_csi_node_event(ev: Event<CsiNode>, sweep: &mut RelistSweep, targets: &WatchTargets) {
-    let mut cache = targets.cache.lock().unwrap();
-    let action = match ev {
-        Event::Init => { sweep.begin(); None }
-        Event::InitDone => {
-            let gone = sweep.finish();
-            for key in &gone {
-                cache.remove_csi_node(&key);
-            }
-            (!gone.is_empty()).then_some(ActionType::DELETE)
-        }
-        Event::InitApply(n) | Event::Apply(n) => {
-            let name = n.metadata.name.clone().unwrap_or_default();
-            sweep.observe(&name);
-            Some(if cache.upsert_csi_node(name, crate::cache::CsiNodeInfo::from_api(&n)) {
-                ActionType::ADD
-            } else {
-                ActionType::UPDATE
-            })
-        }
-        Event::Delete(n) => {
-            let name = n.metadata.name.clone().unwrap_or_default();
-            sweep.forget(&name);
-            cache.remove_csi_node(&name);
-            Some(ActionType::DELETE)
-        }
-    };
-    drop(cache);
-    if let Some(action) = action {
-        targets.queue.move_all_to_active_or_backoff(
-            ClusterEvent::new(EventResource::CsiNode, action), None, None,
-        );
-    }
+    handle_cached_event(ev, sweep, targets, EventResource::CsiNode,
+        |n| n.metadata.name.clone().unwrap_or_default(),
+        |cache, name, n| cache.upsert_csi_node(name, crate::cache::CsiNodeInfo::from_api(&n)),
+        |cache, name| cache.remove_csi_node(name));
 }
 
 fn handle_csi_driver_event(ev: Event<CsiDriver>, sweep: &mut RelistSweep, targets: &WatchTargets) {
-    let mut cache = targets.cache.lock().unwrap();
-    let action = match ev {
-        Event::Init => { sweep.begin(); None }
-        Event::InitDone => {
-            let gone = sweep.finish();
-            for key in &gone {
-                cache.remove_csi_driver(&key);
-            }
-            (!gone.is_empty()).then_some(ActionType::DELETE)
-        }
-        Event::InitApply(d) | Event::Apply(d) => {
-            let name = d.metadata.name.clone().unwrap_or_default();
-            sweep.observe(&name);
-            Some(if cache.upsert_csi_driver(name, crate::cache::CsiDriverInfo::from_api(&d)) {
-                ActionType::ADD
-            } else {
-                ActionType::UPDATE
-            })
-        }
-        Event::Delete(d) => {
-            let name = d.metadata.name.clone().unwrap_or_default();
-            sweep.forget(&name);
-            cache.remove_csi_driver(&name);
-            Some(ActionType::DELETE)
-        }
-    };
-    drop(cache);
-    if let Some(action) = action {
-        targets.queue.move_all_to_active_or_backoff(
-            ClusterEvent::new(EventResource::CsiDriver, action), None, None,
-        );
-    }
+    handle_cached_event(ev, sweep, targets, EventResource::CsiDriver,
+        |d| d.metadata.name.clone().unwrap_or_default(),
+        |cache, name, d| cache.upsert_csi_driver(name, crate::cache::CsiDriverInfo::from_api(&d)),
+        |cache, name| cache.remove_csi_driver(name));
 }
 
 fn handle_volume_attachment_event(
@@ -726,43 +551,10 @@ fn handle_volume_attachment_event(
     sweep: &mut RelistSweep,
     targets: &WatchTargets,
 ) {
-    let mut cache = targets.cache.lock().unwrap();
-    let action = match ev {
-        Event::Init => { sweep.begin(); None }
-        Event::InitDone => {
-            let gone = sweep.finish();
-            for key in &gone {
-                cache.remove_volume_attachment(key);
-            }
-            (!gone.is_empty()).then_some(ActionType::DELETE)
-        }
-        Event::InitApply(attachment) | Event::Apply(attachment) => {
-            let name = attachment.metadata.name.clone().unwrap_or_default();
-            sweep.observe(&name);
-            Some(if cache.upsert_volume_attachment(
-                name,
-                crate::cache::VolumeAttachmentInfo::from_api(&attachment),
-            ) {
-                ActionType::ADD
-            } else {
-                ActionType::UPDATE
-            })
-        }
-        Event::Delete(attachment) => {
-            let name = attachment.metadata.name.clone().unwrap_or_default();
-            sweep.forget(&name);
-            cache.remove_volume_attachment(&name);
-            Some(ActionType::DELETE)
-        }
-    };
-    drop(cache);
-    if let Some(action) = action {
-        targets.queue.move_all_to_active_or_backoff(
-            ClusterEvent::new(EventResource::VolumeAttachment, action),
-            None,
-            None,
-        );
-    }
+    handle_cached_event(ev, sweep, targets, EventResource::VolumeAttachment,
+        |a| a.metadata.name.clone().unwrap_or_default(),
+        |cache, name, a| cache.upsert_volume_attachment(name, crate::cache::VolumeAttachmentInfo::from_api(&a)),
+        |cache, name| cache.remove_volume_attachment(name));
 }
 
 /// Whole-list rebuild, same trade `handle_pdb_event` makes: few objects,
@@ -773,34 +565,37 @@ fn handle_csi_storage_capacity_event(
     sweep: &mut RelistSweep,
     targets: &WatchTargets,
 ) {
-    let action = match ev {
+    let (action, rebuild) = match ev {
         Event::Init => {
             sweep.begin();
-            None
+            (None, false)
         }
         Event::InitDone => {
             let gone = sweep.finish();
             for key in &gone {
                 mirror.remove(key);
             }
-            (!gone.is_empty()).then_some(ActionType::DELETE)
+            ((!gone.is_empty()).then_some(ActionType::DELETE), true)
         }
         Event::InitApply(c) | Event::Apply(c) => {
             let key = c.metadata.name.clone().unwrap_or_default();
+            let rebuild = !sweep.relisting;
             sweep.observe(&key);
             let added = mirror.insert(key, c).is_none();
-            Some(if added { ActionType::ADD } else { ActionType::UPDATE })
+            (Some(if added { ActionType::ADD } else { ActionType::UPDATE }), rebuild)
         }
         Event::Delete(c) => {
             let key = c.metadata.name.clone().unwrap_or_default();
             sweep.forget(&key);
             mirror.remove(&key);
-            Some(ActionType::DELETE)
+            (Some(ActionType::DELETE), true)
         }
     };
-    let rebuilt: Vec<crate::cache::StorageCapacityInfo> =
-        mirror.values().map(crate::cache::StorageCapacityInfo::from_api).collect();
-    targets.cache.lock().unwrap().set_storage_capacities(rebuilt);
+    if rebuild {
+        let rebuilt: Vec<crate::cache::StorageCapacityInfo> =
+            mirror.values().map(crate::cache::StorageCapacityInfo::from_api).collect();
+        targets.cache.lock().unwrap().set_storage_capacities(rebuilt);
+    }
     if let Some(action) = action {
         targets.queue.move_all_to_active_or_backoff(
             ClusterEvent::new(EventResource::CsiStorageCapacity, action), None, None,
@@ -859,6 +654,49 @@ fn handle_workload_event<K, F>(
     }
 }
 
+fn handle_namespace_event(ev: Event<Ns>, sweep: &mut RelistSweep, targets: &WatchTargets) {
+    let mut cache = targets.cache.lock().unwrap();
+    let action = match ev {
+        Event::Init => {
+            sweep.begin();
+            None
+        }
+        Event::InitDone => {
+            let gone = sweep.finish();
+            for name in &gone {
+                cache.remove_namespace(name);
+            }
+            (!gone.is_empty()).then_some(ActionType::DELETE)
+        }
+        Event::InitApply(ns) | Event::Apply(ns) => {
+            let name = ns.name_any();
+            sweep.observe(&name);
+            Some(if cache.upsert_namespace(
+                &name,
+                ns.metadata.labels.clone().unwrap_or_default(),
+            ) {
+                ActionType::ADD
+            } else {
+                ActionType::UPDATE
+            })
+        }
+        Event::Delete(ns) => {
+            let name = ns.name_any();
+            sweep.forget(&name);
+            cache.remove_namespace(&name);
+            Some(ActionType::DELETE)
+        }
+    };
+    drop(cache);
+    if let Some(action) = action {
+        targets.queue.move_all_to_active_or_backoff(
+            ClusterEvent::new(EventResource::Namespace, action),
+            None,
+            None,
+        );
+    }
+}
+
 /// Mirror PodDisruptionBudgets for preemption.
 ///
 /// A whole-list rebuild per event rather than an incremental mirror: PDBs are
@@ -882,13 +720,14 @@ fn handle_pdb_event(
             for key in &gone {
                 mirror.remove(key);
             }
-            !gone.is_empty()
+            !gone.is_empty() || sweep.take_relist_changed()
         }
         Event::InitApply(p) | Event::Apply(p) => {
             let key = format!("{}/{}", p.namespace().unwrap_or_default(), p.name_any());
+            let relisting = sweep.relisting;
             sweep.observe(&key);
             mirror.insert(key, p);
-            true
+            !relisting
         }
         Event::Delete(p) => {
             let key = format!("{}/{}", p.namespace().unwrap_or_default(), p.name_any());
@@ -899,8 +738,13 @@ fn handle_pdb_event(
     };
     let rebuilt: Vec<crate::preempt::PdbState> =
         mirror.values().map(crate::preempt::PdbState::from_api).collect();
-    *targets.budgets.lock().unwrap() = rebuilt;
-    if changed {
+    let differs = {
+        let mut budgets = targets.budgets.lock().unwrap();
+        let differs = *budgets != rebuilt;
+        *budgets = rebuilt;
+        differs
+    };
+    if changed && differs {
         // PDB state is consulted only by preemption, not by a Filter plugin,
         // so there is no rejecting plugin name through which the ordinary
         // hint registry can route this event. PDBs change rarely; activating
@@ -1057,48 +901,7 @@ pub async fn run(client: Client, targets: WatchTargets, cfg: &Config) -> anyhow:
                 }
             },
             event = namespaces.next() => match event {
-                Some(Ok(ev)) => {
-                    let mut cache = targets.cache.lock().unwrap();
-                    let action = match ev {
-                        Event::Init => {
-                            namespace_sweep.begin();
-                            None
-                        }
-                        Event::InitDone => {
-                            let gone = namespace_sweep.finish();
-                            for name in &gone {
-                                cache.remove_namespace(name);
-                            }
-                            (!gone.is_empty()).then_some(ActionType::DELETE)
-                        }
-                        Event::InitApply(ns) | Event::Apply(ns) => {
-                            let name = ns.name_any();
-                            namespace_sweep.observe(&name);
-                            Some(if cache.upsert_namespace(
-                                &name,
-                                ns.metadata.labels.clone().unwrap_or_default(),
-                            ) {
-                                ActionType::ADD
-                            } else {
-                                ActionType::UPDATE
-                            })
-                        }
-                        Event::Delete(ns) => {
-                            let name = ns.name_any();
-                            namespace_sweep.forget(&name);
-                            cache.remove_namespace(&name);
-                            Some(ActionType::DELETE)
-                        }
-                    };
-                    drop(cache);
-                    if let Some(action) = action {
-                        targets.queue.move_all_to_active_or_backoff(
-                            ClusterEvent::new(EventResource::Namespace, action),
-                            None,
-                            None,
-                        );
-                    }
-                }
+                Some(Ok(ev)) => handle_namespace_event(ev, &mut namespace_sweep, &targets),
                 Some(Err(e)) => {
                     // No sleep: `namespaces` is `.backoff(...)`-wrapped and
                     // paces its own retries — see `WatchBackoffPolicy`.
@@ -1451,8 +1254,6 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, sweep: &mut RelistSweep
                     // preempt a second victim set for the same pod.
                     if let Some(node) = &info.nominated_node_name {
                         targets.nominator.lock().unwrap().nominate(info.clone(), node);
-                    } else {
-                        targets.nominator.lock().unwrap().remove(&info.uid);
                     }
                     // A first sighting is an arrival; anything else is an
                     // edit. Conflating them is a hot loop — see

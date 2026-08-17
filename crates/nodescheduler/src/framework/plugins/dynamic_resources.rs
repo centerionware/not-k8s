@@ -116,6 +116,10 @@ pub const NAME: &str = "DynamicResources";
 /// key both the allocated-elsewhere check and the assume cache use.
 type DeviceId = (String, String, String);
 
+/// Bound one node's structured-allocation search. A pathological selector
+/// must make that node fail allocation, not consume the scheduler forever.
+const MAX_ALLOCATION_BRANCHES: usize = 100_000;
+
 fn device_id(r: &RawDeviceRequestAllocationResult) -> DeviceId {
     (r.driver.clone(), r.pool.clone(), r.device.clone())
 }
@@ -556,6 +560,7 @@ fn allocate_claims_on_node(
     if claims.is_empty() {
         return Some(Vec::new());
     }
+    let mut branch_budget = MAX_ALLOCATION_BRANCHES;
     allocate_request(
         0,
         0,
@@ -567,6 +572,7 @@ fn allocate_claims_on_node(
         constraint_states(&claims[0].constraints),
         Vec::new(),
         Vec::new(),
+        &mut branch_budget,
     )
 }
 
@@ -591,6 +597,7 @@ fn allocate_request(
     constraint_state: Vec<ConstraintState>,
     out: Vec<RawDeviceRequestAllocationResult>,
     completed: Vec<Vec<RawDeviceRequestAllocationResult>>,
+    branch_budget: &mut usize,
 ) -> Option<Vec<Vec<RawDeviceRequestAllocationResult>>> {
     let claim = &claims[claim_index];
     if request_index == claim.requests.len() {
@@ -611,6 +618,7 @@ fn allocate_request(
             constraint_states(&claims[next_claim].constraints),
             Vec::new(),
             completed,
+            branch_budget,
         );
     }
 
@@ -619,16 +627,22 @@ fn allocate_request(
         let Some(class) = device_classes.get(eff.device_class_name.as_str()) else { continue };
         let mut selectors = eff.selectors.clone();
         selectors.extend(class.spec.selectors.clone().unwrap_or_default());
+        // CEL/device selector evaluation is independent of the partial
+        // allocation being explored, so compute the candidate list once per
+        // alternative instead of repeating it at every recursion depth.
+        let matching_indices: Vec<usize> = candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, c)| {
+                device_matches(&selectors, &c.driver, &c.basic, &claim.compiled).then_some(index)
+            })
+            .collect();
 
         if eff.all_devices {
             // AllocationMode=All has a predetermined set: every selectable,
             // currently available device. It cannot skip one merely because
             // doing so would make a cross-request constraint easier.
-            let all: Vec<&Candidate> = candidates
-                .iter()
-                .filter(|c| device_matches(&selectors, &c.driver, &c.basic, &claim.compiled))
-                .collect();
-            if all.is_empty() {
+            if matching_indices.is_empty() {
                 continue;
             }
 
@@ -636,7 +650,12 @@ fn allocate_request(
             let mut next_states = constraint_state.clone();
             let mut next_out = out.clone();
             let mut valid = true;
-            for c in all {
+            for index in matching_indices {
+                if *branch_budget == 0 {
+                    return None;
+                }
+                *branch_budget -= 1;
+                let c = &candidates[index];
                 let id = (c.driver.clone(), c.pool.clone(), c.name.clone());
                 // "All" is a predetermined set of every selectable device.
                 // If even one is busy, the request fails; silently omitting
@@ -666,6 +685,7 @@ fn allocate_request(
                     next_states,
                     next_out,
                     completed.clone(),
+                    branch_budget,
                 ) {
                     return Some(solution);
                 }
@@ -677,7 +697,7 @@ fn allocate_request(
             claim_index,
             request_index,
             eff,
-            &selectors,
+            &matching_indices,
             0,
             eff.count,
             claims,
@@ -688,6 +708,7 @@ fn allocate_request(
             constraint_state.clone(),
             out.clone(),
             completed.clone(),
+            branch_budget,
         ) {
             return Some(solution);
         }
@@ -700,7 +721,7 @@ fn allocate_exact(
     claim_index: usize,
     request_index: usize,
     eff: &EffectiveRequest,
-    selectors: &[crate::cache::dra::RawDeviceSelector],
+    matching_indices: &[usize],
     candidate_start: usize,
     remaining: usize,
     claims: &[ClaimAllocationInput],
@@ -711,6 +732,7 @@ fn allocate_exact(
     constraint_states: Vec<ConstraintState>,
     out: Vec<RawDeviceRequestAllocationResult>,
     completed: Vec<Vec<RawDeviceRequestAllocationResult>>,
+    branch_budget: &mut usize,
 ) -> Option<Vec<Vec<RawDeviceRequestAllocationResult>>> {
     if remaining == 0 {
         return allocate_request(
@@ -724,16 +746,18 @@ fn allocate_exact(
             constraint_states,
             out,
             completed,
+            branch_budget,
         );
     }
 
-    let claim = &claims[claim_index];
-    for (index, c) in candidates.iter().enumerate().skip(candidate_start) {
+    for (position, index) in matching_indices.iter().enumerate().skip(candidate_start) {
+        if *branch_budget == 0 {
+            return None;
+        }
+        *branch_budget -= 1;
+        let c = &candidates[*index];
         let id = (c.driver.clone(), c.pool.clone(), c.name.clone());
         if !eff.admin_access && (excluded.contains(&id) || picked.contains(&id)) {
-            continue;
-        }
-        if !device_matches(selectors, &c.driver, &c.basic, &claim.compiled) {
             continue;
         }
 
@@ -752,8 +776,8 @@ fn allocate_exact(
             claim_index,
             request_index,
             eff,
-            selectors,
-            index + 1,
+            matching_indices,
+            position + 1,
             remaining - 1,
             claims,
             device_classes,
@@ -763,6 +787,7 @@ fn allocate_exact(
             next_states,
             next_out,
             completed.clone(),
+            branch_budget,
         ) {
             return Some(solution);
         }
@@ -827,14 +852,25 @@ fn allocation_config(
     }
 
     for config in &claim.config {
-        let applies = config.requests.is_empty()
-            || selected_names.iter().any(|(top, selected)| {
-                config.requests.iter().any(|configured| configured == top || configured == selected)
-            });
+        let requests = if config.requests.is_empty() {
+            Vec::new()
+        } else {
+            config
+                .requests
+                .iter()
+                .filter_map(|configured| {
+                    selected_names
+                        .iter()
+                        .find(|(top, selected)| top == configured || selected == configured)
+                        .map(|(_, selected)| selected.clone())
+                })
+                .collect()
+        };
+        let applies = config.requests.is_empty() || !requests.is_empty();
         if applies {
             out.push(RawDeviceAllocationConfiguration {
                 source: "FromClaim".to_string(),
-                requests: config.requests.clone(),
+                requests,
                 opaque: config.opaque.clone(),
             });
         }
@@ -1201,7 +1237,7 @@ impl DynamicResources {
         if let Some(assumed) = self.assumed_by_pod.lock().unwrap().remove(pod_uid) {
             let mut devices = self.assumed_devices.lock().unwrap();
             for a in &assumed {
-                for d in &a.new_devices {
+                for d in a.new_devices.iter().filter(|d| !d.admin_access) {
                     devices.remove(&device_id(d));
                 }
             }

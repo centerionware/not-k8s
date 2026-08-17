@@ -35,6 +35,7 @@
 use crate::cache::{NodeInfo, PodInfo, Snapshot};
 use crate::preempt::Candidate;
 use crate::framework::MAX_NODE_SCORE;
+use base64::Engine;
 
 /// Upstream's `extenderv1.MaxExtenderPriority` — an extender's own score
 /// scale, `[0, 10]`, distinct from a plugin's `[0, MAX_NODE_SCORE]` one. See
@@ -222,35 +223,10 @@ fn parse_go_duration(raw: &str) -> anyhow::Result<Duration> {
 }
 
 fn decode_base64(raw: &str) -> anyhow::Result<Vec<u8>> {
-    fn value(byte: u8) -> Option<u8> {
-        match byte {
-            b'A'..=b'Z' => Some(byte - b'A'),
-            b'a'..=b'z' => Some(byte - b'a' + 26),
-            b'0'..=b'9' => Some(byte - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
-    let compact: Vec<u8> = raw.bytes().filter(|byte| !byte.is_ascii_whitespace()).collect();
-    if compact.len() % 4 != 0 {
-        anyhow::bail!("base64 data length is not a multiple of four");
-    }
-    let mut out = Vec::with_capacity(compact.len() / 4 * 3);
-    for chunk in compact.chunks_exact(4) {
-        let a = value(chunk[0]).ok_or_else(|| anyhow::anyhow!("invalid base64 data"))?;
-        let b = value(chunk[1]).ok_or_else(|| anyhow::anyhow!("invalid base64 data"))?;
-        let c = if chunk[2] == b'=' { 0 } else { value(chunk[2]).ok_or_else(|| anyhow::anyhow!("invalid base64 data"))? };
-        let d = if chunk[3] == b'=' { 0 } else { value(chunk[3]).ok_or_else(|| anyhow::anyhow!("invalid base64 data"))? };
-        out.push((a << 2) | (b >> 4));
-        if chunk[2] != b'=' {
-            out.push((b << 4) | (c >> 2));
-        }
-        if chunk[3] != b'=' {
-            out.push((c << 6) | d);
-        }
-    }
-    Ok(out)
+    let compact: String = raw.chars().filter(|ch| !ch.is_ascii_whitespace()).collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(compact)
+        .map_err(|error| anyhow::anyhow!("invalid base64 data: {error}"))
 }
 
 /// Parse `NODESCHEDULER_EXTENDERS_JSON` into configs this crate can act on.
@@ -310,7 +286,10 @@ pub fn parse_extenders(raw: &str) -> anyhow::Result<Vec<ExtenderConfig>> {
                 })?;
                 if parsed.is_zero() { Duration::from_secs(5) } else { parsed }
             }
-            None => Duration::from_secs(r.http_timeout_seconds.unwrap_or(5)),
+            None => match r.http_timeout_seconds.unwrap_or(5) {
+                0 => Duration::from_secs(5),
+                seconds => Duration::from_secs(seconds),
+            },
         };
         let tls_config = r.tls_config.map(|tls| -> anyhow::Result<ExtenderTlsConfig> {
             Ok(ExtenderTlsConfig {
@@ -587,9 +566,13 @@ impl Extender {
             }
             let has_ca = tls.ca_data.as_ref().is_some_and(|data| !data.is_empty())
                 || !tls.ca_file.is_empty();
-            builder = builder.danger_accept_invalid_certs(
-                tls.insecure || (config.enable_https && !has_ca),
-            );
+            if config.enable_https && !has_ca && !tls.insecure {
+                anyhow::bail!(
+                    "HTTPS extender {:?} requires tlsConfig.caData/caFile or tlsConfig.insecure=true",
+                    config.url_prefix
+                );
+            }
+            builder = builder.danger_accept_invalid_certs(tls.insecure);
             let ca = if let Some(data) = tls.ca_data.as_ref().filter(|data| !data.is_empty()) {
                 Some(data.clone())
             } else if !tls.ca_file.is_empty() {
@@ -634,10 +617,6 @@ impl Extender {
                 (None, None) => {}
                 _ => anyhow::bail!("extender TLS client authentication requires both certificate and key"),
             }
-        } else if config.enable_https {
-            // This surprising upstream behavior is deliberate: enableHTTPS
-            // with no explicit CA disables verification.
-            builder = builder.danger_accept_invalid_certs(true);
         }
         let client = builder
             .build()

@@ -26,7 +26,7 @@
 //! unfairness rather than a bug.
 
 use k8s_openapi::api::core::v1::{
-    Affinity, NodeSelector, Pod, PodSchedulingGate, Toleration, TopologySpreadConstraint,
+    Affinity, NodeSelector, Pod, PodSchedulingGate, Toleration, TopologySpreadConstraint, Volume,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use std::collections::BTreeMap;
@@ -510,6 +510,13 @@ impl PodInfo {
         r
     }
 
+    fn ephemeral_claim_name(pod_name: &str, volume: &Volume) -> Option<String> {
+        volume
+            .ephemeral
+            .as_ref()
+            .map(|_| format!("{pod_name}-{}", volume.name))
+    }
+
     /// Project an API pod.
     pub fn from_pod(pod: &Pod, queued_at: k8s_openapi::jiff::Timestamp) -> Self {
         let spec = pod.spec.clone().unwrap_or_default();
@@ -587,11 +594,7 @@ impl PodInfo {
                     v.persistent_volume_claim
                         .as_ref()
                         .map(|p| p.claim_name.clone())
-                        .or_else(|| {
-                            v.ephemeral
-                                .as_ref()
-                                .map(|_| format!("{}-{}", meta.name.as_deref().unwrap_or_default(), v.name))
-                        })
+                        .or_else(|| Self::ephemeral_claim_name(meta.name.as_deref().unwrap_or_default(), v))
                 })
                 .collect(),
             ephemeral_pvc_names: spec
@@ -599,7 +602,7 @@ impl PodInfo {
                 .iter()
                 .flatten()
                 .filter(|v| v.ephemeral.is_some())
-                .map(|v| format!("{}-{}", meta.name.as_deref().unwrap_or_default(), v.name))
+                .filter_map(|v| Self::ephemeral_claim_name(meta.name.as_deref().unwrap_or_default(), v))
                 .collect(),
             legacy_volumes: spec.volumes.iter().flatten().filter_map(legacy_volume_id).collect(),
             resource_claims: spec

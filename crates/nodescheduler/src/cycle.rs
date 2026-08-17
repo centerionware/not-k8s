@@ -605,7 +605,7 @@ impl Scheduler {
                         state,
                     );
                 }
-                total.1 = total.1.saturating_add(*score * weight);
+                total.1 = total.1.saturating_add(score.saturating_mul(weight));
             }
         }
 
@@ -693,16 +693,7 @@ impl Scheduler {
         }
 
         if rejected.is_none() {
-            for plugin in &registry.filter {
-                if state.filter_skipped(plugin.name()) {
-                    continue;
-                }
-                let status = plugin.filter(state, pod, node);
-                if !status.is_success() && !status.is_skip() {
-                    rejected = Some(status);
-                    break;
-                }
-            }
+            rejected = Self::run_filters(registry, state, pod, node);
         }
 
         for (plugin_index, nominee_index) in added_nominees.into_iter().rev() {
@@ -714,6 +705,24 @@ impl Scheduler {
             }
         }
         rejected
+    }
+
+    /// Apply the ordinary Filter plugins once. Both the sequential path
+    /// (which also installs nominated-pod extension state) and the parallel
+    /// path use this same status/skip handling.
+    fn run_filters(
+        registry: &Registry,
+        state: &CycleState,
+        pod: &PodInfo,
+        node: &NodeInfo,
+    ) -> Option<Status> {
+        registry.filter.iter().find_map(|plugin| {
+            if state.filter_skipped(plugin.name()) {
+                return None;
+            }
+            let status = plugin.filter(state, pod, node);
+            (!status.is_success() && !status.is_skip()).then_some(status)
+        })
     }
 
     /// Sweep nodes until enough are feasible, starting where the last cycle
@@ -764,27 +773,18 @@ impl Scheduler {
                 .collect();
 
             for wave in ordered.chunks(self.parallelism) {
+                let allowed_wave: Vec<Arc<NodeInfo>> = wave
+                    .iter()
+                    .filter(|node| allowed.as_ref().is_none_or(|set| set.contains(node.name.as_str())))
+                    .cloned()
+                    .collect();
                 let results: Vec<Option<Status>> = self.workers.install(|| {
-                    wave.par_iter()
-                        .map(|node| {
-                            if allowed.as_ref().is_some_and(|set| !set.contains(node.name.as_str())) {
-                                return None;
-                            }
-                            registry.filter.iter().find_map(|plugin| {
-                                if state.filter_skipped(plugin.name()) {
-                                    return None;
-                                }
-                                let status = plugin.filter(state, pod, node);
-                                (!status.is_success() && !status.is_skip()).then_some(status)
-                            })
-                        })
+                    allowed_wave.par_iter()
+                        .map(|node| Self::run_filters(registry, state, pod, node))
                         .collect()
                 });
                 processed += wave.len();
-                for (node, rejected) in wave.iter().zip(results) {
-                    if allowed.as_ref().is_some_and(|set| !set.contains(node.name.as_str())) {
-                        continue;
-                    }
+                for (node, rejected) in allowed_wave.iter().zip(results) {
                     match rejected {
                         None => feasible.push(node.clone()),
                         Some(status) => statuses.record(node.name.clone(), status),
@@ -813,9 +813,7 @@ impl Scheduler {
             match rejected {
                 None => {
                     feasible.push(node.clone());
-                    if feasible.len() >= wanted {
-                        break;
-                    }
+                    if feasible.len() >= wanted { break; }
                 }
                 Some(status) => statuses.record(node.name.clone(), status),
             }

@@ -208,6 +208,9 @@ impl BackoffQueue {
     /// cycle. The queue-owned fairness and attempt fields stay with the old
     /// entry, while its heap key stays byte-for-byte unchanged.
     pub fn update(&mut self, updated: &Arc<PodInfo>) -> bool {
+        if !self.contains(&updated.uid) {
+            return false;
+        }
         let mut found = false;
         let entries: Vec<Entry> = std::mem::take(&mut self.heap)
             .into_vec()

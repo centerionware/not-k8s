@@ -124,9 +124,32 @@ fn tls_server_name_rewrites_sni_but_preserves_the_endpoint_host_header() {
 }
 
 #[test]
+fn https_without_a_ca_requires_explicit_insecure_mode() {
+    let config = parse_extenders(
+        r#"[{"urlPrefix":"https://ext","filterVerb":"filter","enableHTTPS":true,"tlsConfig":{}}]"#,
+    )
+    .unwrap()
+    .remove(0);
+    let error = match Extender::new(config) {
+        Ok(_) => panic!("missing CA must not silently disable HTTPS verification"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("caData/caFile") && error.contains("insecure=true"), "{error}");
+}
+
+#[test]
 fn a_zero_upstream_timeout_gets_the_five_second_default() {
     let cfg = parse_extenders(
         r#"[{"urlPrefix":"http://ext","filterVerb":"filter","httpTimeout":"0s"}]"#,
+    )
+    .unwrap();
+    assert_eq!(cfg[0].http_timeout, Duration::from_secs(5));
+}
+
+#[test]
+fn a_zero_legacy_upstream_timeout_gets_the_five_second_default() {
+    let cfg = parse_extenders(
+        r#"[{"urlPrefix":"http://ext","filterVerb":"filter","httpTimeoutSeconds":0}]"#,
     )
     .unwrap();
     assert_eq!(cfg[0].http_timeout, Duration::from_secs(5));

@@ -184,6 +184,41 @@ fn allocation_copies_selected_class_and_claim_configuration_for_the_driver() {
 }
 
 #[test]
+fn allocation_maps_claim_configuration_to_selected_first_available_name() {
+    let class = class_with_cel("gpu.example.com", "true");
+    let classes = HashMap::from([("gpu.example.com", &class)]);
+    let claim = ClaimAllocationInput {
+        requests: vec![RawDeviceRequest {
+            name: "req".to_string(),
+            exactly: None,
+            first_available: Some(vec![crate::cache::dra::RawDeviceSubRequest {
+                name: "fast".to_string(),
+                device_class_name: Some("gpu.example.com".to_string()),
+                selectors: None,
+                allocation_mode: None,
+                count: Some(1),
+            }]),
+        }],
+        constraints: Vec::new(),
+        config: vec![RawDeviceClaimConfiguration {
+            requests: vec!["req".to_string()],
+            opaque: None,
+        }],
+        compiled: CompiledSelectors::new(),
+    };
+    let selected = vec![RawDeviceRequestAllocationResult {
+        request: "req/fast".to_string(),
+        driver: "gpu.example.com".to_string(),
+        pool: "pool".to_string(),
+        device: "gpu-0".to_string(),
+        admin_access: false,
+    }];
+
+    let config = allocation_config(&claim, &selected, &classes);
+    assert_eq!(config[0].requests, vec!["req/fast"]);
+}
+
+#[test]
 fn a_claim_whose_class_selector_matches_nothing_is_rejected() {
     let mut cache = Cache::new();
     cache.upsert_node(&api_node("n1"));
@@ -525,7 +560,8 @@ fn a_capacity_selector_uses_exact_quantity_arithmetic() {
 
     let p = pod_with_claim("ns", "gpu", "claim");
     let mut state = CycleState::default();
-    pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
+    let (status, _) = pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
+    assert!(status.is_success());
     assert!(filter_impl(&state, &p, snapshot.node("n1").unwrap()).is_success());
 }
 

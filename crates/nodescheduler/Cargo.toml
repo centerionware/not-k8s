@@ -47,6 +47,7 @@ path = "src/lib.rs"
 # this crate already uses everywhere else, and `default-features = false`
 # drops what an extender call never needs (cookies, multipart, native-tls).
 [dependencies]
+base64 = "0.22"
 tokio = { workspace = true }
 kube = { workspace = true }
 k8s-openapi = { workspace = true }

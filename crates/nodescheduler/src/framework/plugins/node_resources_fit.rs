@@ -216,7 +216,7 @@ impl FilterPlugin for NodeResourcesFit {
                 );
                 return Status::unschedulable(NAME, format!("Insufficient {name}"));
             }
-            if used.saturating_add(want) > allocatable {
+            if want > allocatable.saturating_sub(used) {
                 // At debug rather than info: this fires on every rejected
                 // pod on a busy cluster, same volume class as the
                 // unschedulable log line itself. But without the actual
@@ -411,6 +411,13 @@ mod tests {
         let p = pod_wanting(1000, 0);
         let n = node_with(2000, 0, 1000, 0);
         assert!(NodeResourcesFit::default().filter(&state_for(&p), &p, &n).is_success());
+    }
+
+    #[test]
+    fn overflowing_committed_plus_request_is_rejected_even_at_max_capacity() {
+        let p = pod_wanting(1, 0);
+        let n = node_with(i64::MAX, 0, i64::MAX, 0);
+        assert!(!NodeResourcesFit::default().filter(&state_for(&p), &p, &n).is_success());
     }
 
     #[test]

@@ -147,7 +147,7 @@ pub fn violates_pdb(
 }
 
 /// A PodDisruptionBudget, projected to what preemption needs.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PdbState {
     pub namespace: String,
     pub selector: Option<k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector>,
@@ -172,11 +172,15 @@ impl PdbState {
             namespace: pdb.metadata.namespace.clone().unwrap_or_default(),
             selector: pdb.spec.as_ref().and_then(|s| s.selector.clone()),
             disruptions_allowed: status.as_ref().map(|s| s.disruptions_allowed).unwrap_or(0),
-            already_disrupted: status
-                .as_ref()
-                .and_then(|s| s.disrupted_pods.as_ref())
-                .map(|m| m.keys().cloned().collect())
-                .unwrap_or_default(),
+            already_disrupted: {
+                let mut pods: Vec<String> = status
+                    .as_ref()
+                    .and_then(|s| s.disrupted_pods.as_ref())
+                    .map(|m| m.keys().cloned().collect())
+                    .unwrap_or_default();
+                pods.sort();
+                pods
+            },
         }
     }
 }
@@ -242,8 +246,7 @@ where
     // The gate: with every removable pod gone, does the preemptor fit? If not,
     // this node cannot be made to work and *nothing on it should die* — the
     // check that stops preemption evicting pods for a pod it still cannot
-    // place. A node where the preemptor already fits needs no victims and
-    // falls out of the reprieve loop below with an empty list.
+    // place.
     let all_removed: Vec<&PodInfo> = potential.clone();
     if !fits(&all_removed) {
         return None;
@@ -289,6 +292,10 @@ where
                 pdb_violations += 1;
             }
         }
+    }
+
+    if victims.is_empty() {
+        return None;
     }
 
     Some(Victims {

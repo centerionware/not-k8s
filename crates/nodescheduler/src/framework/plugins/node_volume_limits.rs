@@ -135,15 +135,20 @@ fn attached_volumes_by_node(snapshot: &Snapshot) -> HashMap<String, HashMap<Stri
         let Some(handle) = pv.csi_volume_handle.as_ref().filter(|handle| !handle.is_empty()) else {
             continue;
         };
-        if attachment.attacher.is_empty() {
+        let driver = pv
+            .csi_driver
+            .as_deref()
+            .filter(|driver| !driver.is_empty())
+            .unwrap_or(attachment.attacher.as_str());
+        if driver.is_empty() {
             continue;
         }
         by_node
             .entry(attachment.node_name.clone())
             .or_insert_with(HashMap::new)
             .insert(
-                format!("{}/{handle}", attachment.attacher),
-                attachment.attacher.clone(),
+                format!("{driver}/{handle}"),
+                driver.to_string(),
             );
     }
     by_node
