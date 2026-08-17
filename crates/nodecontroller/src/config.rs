@@ -94,7 +94,7 @@ pub struct Config {
     /// no controller CPU while still occupying apiserver concurrency.
     pub api_request_interval: Duration,
     /// Maximum number of shared informer watches allowed to perform their
-    /// initial LIST/watch-list concurrently. This is startup backpressure,
+    /// initial LIST concurrently. This is startup backpressure,
     /// not a cap on steady-state watches: a permit is returned after that
     /// resource's initial snapshot is complete.
     pub watch_startup_concurrency: usize,

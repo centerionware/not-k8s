@@ -46,12 +46,11 @@ pub const NODE_LEASE_NAMESPACE: &str = "kube-node-lease";
 const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
 const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Shared informer startup admission. A watch-list is one long-running API
-/// request, but its initial snapshot can make the apiserver do substantial
-/// work. Keeping only a small number of snapshots in flight prevents all
-/// controller domains from becoming ready in one synchronized burst. The
-/// permit is released at InitDone, so this does not serialize steady-state
-/// watches or event delivery.
+/// Shared informer startup admission. An initial LIST can make the apiserver
+/// do substantial work. Keeping only a small number of snapshots in flight
+/// prevents all controller domains from becoming ready in one synchronized
+/// burst. The permit is released at InitDone, so this does not serialize
+/// steady-state watches or event delivery.
 static WATCH_STARTUP_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 pub fn configure_startup_concurrency(limit: usize) {
@@ -64,17 +63,15 @@ fn startup_semaphore() -> Arc<Semaphore> {
         .clone()
 }
 
-/// Use Kubernetes' streaming-list form for every controller watch. The
-/// default ListWatch strategy performs a separate LIST and then a WATCH;
-/// nodecontroller has many controllers (and several watch the same resource
-/// kind), so starting them all that way creates a large, synchronized burst
-/// of apiserver requests. Streaming lists carry the initial objects through
-/// the watch itself, preserving the same Init/InitApply/InitDone sequence while
-/// removing that extra request. This is also the path used by the reference
-/// CSI provisioner in the real e2e setup, so the apiservers we support already
-/// advertise the required feature.
+/// Use the ordinary LIST-then-WATCH strategy for controller informers. A
+/// streaming list saves one request, but its long-running watch-list request
+/// also competes for the small apiserver's long-running request seats during
+/// startup. The bounded semaphore already spaces the short initial LISTs, and
+/// the normal watch is established only after its snapshot has completed. The
+/// shared subscription still exposes the same Init/InitApply/InitDone API to
+/// controllers.
 fn watch_config() -> watcher::Config {
-    watcher::Config::default().streaming_lists()
+    watcher::Config::default()
 }
 
 fn watch_backoff(consecutive_failures: u32) -> std::time::Duration {

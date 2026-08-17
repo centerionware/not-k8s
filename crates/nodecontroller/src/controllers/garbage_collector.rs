@@ -343,11 +343,11 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 stream
             } else {
                 let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
-                // Discovery can yield dozens of resource kinds. Use one
-                // streaming-list request per kind rather than a synchronized
-                // LIST+WATCH burst that competes with ordinary apiserver
-                // clients (notably CSI sidecars) during startup.
-                watcher(api, watcher::Config::default().streaming_lists()).boxed()
+                // Discovery can yield dozens of resource kinds. Admit one
+                // ordinary LIST+WATCH at a time below; keeping the initial
+                // LIST short avoids holding a long-running watch-list request
+                // while CSI sidecars are trying to establish their own.
+                watcher(api, watcher::Config::default()).boxed()
             };
             let stream = stream
                 .map(move |ev| (key_for_stream.clone(), ev))
