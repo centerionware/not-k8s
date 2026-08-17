@@ -22,6 +22,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use std::collections::BTreeMap;
 
 const BETA_STORAGE_CLASS_ANNOTATION: &str = "volume.beta.kubernetes.io/storage-class";
+const SELECTED_NODE_ANNOTATION: &str = "volume.kubernetes.io/selected-node";
 
 /// Published by the PV binder only after the PVC/PV binding transaction is
 /// complete. kube-scheduler uses this as the completion barrier instead of
@@ -54,6 +55,10 @@ pub struct PvInfo {
     pub capacity_bytes: i64,
     /// `spec.claimRef`, if this PV is bound or pre-bound to a claim.
     pub claim_ref: Option<(String, String)>,
+    /// Whether `spec.claimRef` existed even if it was malformed and omitted a
+    /// namespace or name. Upstream treats any such reference as claimed, not
+    /// as a free volume.
+    pub claim_ref_present: bool,
     /// `spec.claimRef.uid`, kept separately because a deleted-and-recreated
     /// PVC with the same namespace/name is not the claim this PV was bound
     /// to. An empty UID is the user-prebound form upstream permits.
@@ -94,6 +99,7 @@ impl PvInfo {
     pub fn from_api(pv: &PersistentVolume) -> Self {
         let spec = pv.spec.clone().unwrap_or_default();
         let annotations = pv.metadata.annotations.clone().unwrap_or_default();
+        let claim_ref_present = spec.claim_ref.is_some();
         PvInfo {
             name: pv.metadata.name.clone().unwrap_or_default(),
             access_modes: spec.access_modes.unwrap_or_default(),
@@ -106,6 +112,7 @@ impl PvInfo {
             claim_ref: spec.claim_ref.as_ref().and_then(|r| {
                 Some((r.namespace.clone()?, r.name.clone()?))
             }),
+            claim_ref_present,
             claim_ref_uid: spec
                 .claim_ref
                 .as_ref()
@@ -148,6 +155,9 @@ pub struct PvcInfo {
     /// require this to equal the candidate PV's own mode.
     pub volume_mode: String,
     pub volume_attributes_class_name: Option<String>,
+    /// Existing delayed-binding decision. On a retry, upstream only permits
+    /// this node and continues provisioning instead of rematching static PVs.
+    pub selected_node: Option<String>,
 }
 
 impl PvcInfo {
@@ -186,6 +196,7 @@ impl PvcInfo {
             bound,
             volume_mode: spec.volume_mode.unwrap_or_else(|| "Filesystem".to_string()),
             volume_attributes_class_name: spec.volume_attributes_class_name,
+            selected_node: annotations.get(SELECTED_NODE_ANNOTATION).cloned(),
         }
     }
 }
@@ -305,10 +316,13 @@ mod tests {
 
     #[test]
     fn storage_projection_keeps_claim_identity_and_legacy_class_precedence() {
-        let annotations = Some(BTreeMap::from([(
-            BETA_STORAGE_CLASS_ANNOTATION.to_string(),
-            "legacy-class".to_string(),
-        )]));
+        let annotations = Some(BTreeMap::from([
+            (
+                BETA_STORAGE_CLASS_ANNOTATION.to_string(),
+                "legacy-class".to_string(),
+            ),
+            (SELECTED_NODE_ANNOTATION.to_string(), "worker-1".to_string()),
+        ]));
         let pv = PersistentVolume {
             metadata: ObjectMeta { annotations: annotations.clone(), ..Default::default() },
             spec: Some(PersistentVolumeSpec {
@@ -340,9 +354,11 @@ mod tests {
 
         let projected_pv = PvInfo::from_api(&pv);
         let projected_pvc = PvcInfo::from_api(&pvc);
+        assert!(projected_pv.claim_ref_present);
         assert_eq!(projected_pv.claim_ref_uid.as_deref(), Some("claim-uid"));
         assert_eq!(projected_pvc.uid, "claim-uid");
         assert_eq!(projected_pv.storage_class_name, "legacy-class");
         assert_eq!(projected_pvc.storage_class_name.as_deref(), Some("legacy-class"));
+        assert_eq!(projected_pvc.selected_node.as_deref(), Some("worker-1"));
     }
 }

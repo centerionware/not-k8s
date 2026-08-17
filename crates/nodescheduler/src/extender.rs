@@ -125,7 +125,9 @@ pub struct RawExtenderConfig {
     pub preempt_verb: Option<String>,
     #[serde(default)]
     pub tls_config: Option<RawExtenderTlsConfig>,
-    #[serde(default)]
+    // serde's mechanical camelCase spelling is `enableHttps`, but the
+    // Kubernetes config API preserves the initialism as `enableHTTPS`.
+    #[serde(default, rename = "enableHTTPS", alias = "enableHttps")]
     pub enable_https: bool,
     #[serde(default = "default_weight")]
     pub weight: i64,

@@ -99,11 +99,20 @@ enum PvcConstraint {
     /// case every node is correctly `Unschedulable`, the same as an empty
     /// `by_node` in `DynamicResources`'s `ClaimPlan::Allocate`.
     Static { pvc_key: String, by_node: HashMap<String, String> },
+    /// Delayed binding with neither a matching static PV nor a provisioner.
+    /// This is a Filter rejection upstream (not a PreFilter rejection), and
+    /// no amount of pod preemption can change it.
+    NoMatch,
     /// Unbound, `WaitForFirstConsumer`. Empty `allowed_topologies` means no
     /// restriction. `capacity` is `None` when the driver does not opt into
     /// capacity tracking (`CSIDriver.spec.storageCapacity`) — in that case
     /// the node is assumed to have room, the same as upstream.
-    Delayed { allowed_topologies: Vec<TopologySelectorTerm>, capacity: Option<Vec<StorageCapacityInfo>>, requested_bytes: i64 },
+    Delayed {
+        allowed_topologies: Vec<TopologySelectorTerm>,
+        capacity: Option<Vec<StorageCapacityInfo>>,
+        requested_bytes: i64,
+        selected_node: Option<String>,
+    },
 }
 
 struct WantedPvcs(Vec<PvcConstraint>);
@@ -200,14 +209,16 @@ fn topology_allows(terms: &[TopologySelectorTerm], labels: &std::collections::BT
 /// mode present, enough capacity, and the PVC's own `selector` (if any)
 /// satisfied by the PV's labels.
 fn static_matches(pvc: &crate::cache::storage::PvcInfo, pv: &crate::cache::storage::PvInfo) -> bool {
-    let claimed_by_someone_else = pv.claim_ref.as_ref().is_some_and(|(ns, name)| {
-        ns != &pvc.namespace
-            || name != &pvc.name
-            || pv
-                .claim_ref_uid
-                .as_ref()
-                .is_some_and(|uid| uid != &pvc.uid)
-    });
+    let has_claim_ref = pv.claim_ref_present || pv.claim_ref.is_some();
+    let claimed_by_someone_else = has_claim_ref
+        && pv.claim_ref.as_ref().is_none_or(|(ns, name)| {
+            ns != &pvc.namespace
+                || name != &pvc.name
+                || pv
+                    .claim_ref_uid
+                    .as_ref()
+                    .is_some_and(|uid| uid != &pvc.uid)
+        });
     if claimed_by_someone_else {
         return false;
     }
@@ -224,7 +235,7 @@ fn static_matches(pvc: &crate::cache::storage::PvcInfo, pv: &crate::cache::stora
                 .as_ref()
                 .is_none_or(|uid| uid == &pvc.uid)
     });
-    if !pre_bound_to_us && pv.phase != "Available" {
+    if pv.capacity_bytes < pvc.requested_bytes {
         return false;
     }
     if pv.volume_mode != pvc.volume_mode {
@@ -239,13 +250,20 @@ fn static_matches(pvc: &crate::cache::storage::PvcInfo, pv: &crate::cache::stora
     if pv.deleting {
         return false;
     }
+    // A user-prebound PV wins before the ordinary Available/class/access-mode
+    // and selector checks in upstream's FindMatchingVolume. Capacity,
+    // volumeMode, the feature gate, deletion and node affinity still apply;
+    // those are intentionally checked on both sides of this return.
+    if pre_bound_to_us {
+        return true;
+    }
+    if pv.phase != "Available" {
+        return false;
+    }
     if pv.storage_class_name != pvc.storage_class_name.as_deref().unwrap_or("") {
         return false;
     }
     if !pvc.requested_access_modes.iter().all(|m| pv.access_modes.iter().any(|a| a == m)) {
-        return false;
-    }
-    if pv.capacity_bytes < pvc.requested_bytes {
         return false;
     }
     if let Some(sel) = &pvc.selector {
@@ -304,14 +322,33 @@ fn find_static_candidates(pvc: &crate::cache::storage::PvcInfo, snapshot: &Snaps
 /// candidate wins per node; which one is arbitrary among ties, the same way
 /// `allocate_on_node`'s device picks are.
 fn resolve_by_node(candidates: &[StaticCandidate], snapshot: &Snapshot) -> HashMap<String, String> {
+    resolve_by_node_with_used(candidates, snapshot, &mut HashMap::new())
+}
+
+/// The multi-claim form of [`resolve_by_node`]. A pod's separate PVCs must
+/// receive separate PVs on each candidate node; upstream adds every match to
+/// an excluded set before matching the next claim. Keeping that set per node
+/// matters because node affinity can make the valid assignment differ from
+/// one node to another.
+fn resolve_by_node_with_used(
+    candidates: &[StaticCandidate],
+    snapshot: &Snapshot,
+    used_by_node: &mut HashMap<String, HashSet<String>>,
+) -> HashMap<String, String> {
     let mut by_node = HashMap::new();
     for node in snapshot.nodes() {
+        let used = used_by_node.entry(node.name.clone()).or_default();
         if let Some(c) = candidates.iter().find(|c| {
-            c.node_affinity
-                .as_ref()
-                .is_none_or(|sel| crate::framework::plugins::node_affinity::matches_node_selector(sel, node))
+            !used.contains(&c.pv_name)
+                && c
+                    .node_affinity
+                    .as_ref()
+                    .is_none_or(|sel| {
+                        crate::framework::plugins::node_affinity::matches_node_selector(sel, node)
+                    })
         }) {
             by_node.insert(node.name.clone(), c.pv_name.clone());
+            used.insert(c.pv_name.clone());
         }
     }
     by_node
@@ -340,10 +377,24 @@ fn pre_filter_impl(
     excluded_pvs: &HashSet<String>,
 ) -> (Status, Option<Vec<String>>) {
     let mut wanted = Vec::new();
-        for pvc_name in &pod.pvc_names {
+    let mut pvc_names = pod.pvc_names.clone();
+    // Upstream matches smaller claims first, which leaves large PVs available
+    // for claims that actually need them. Name is a deterministic tie-break
+    // for projections whose requested sizes are equal.
+    pvc_names.sort_by(|a, b| {
+        let requested = |name: &str| {
+            snapshot
+                .pvc(&pod.namespace, name)
+                .map(|pvc| pvc.requested_bytes)
+                .unwrap_or(i64::MAX)
+        };
+        requested(a).cmp(&requested(b)).then_with(|| a.cmp(b))
+    });
+    let mut used_by_node: HashMap<String, HashSet<String>> = HashMap::new();
+        for pvc_name in &pvc_names {
             let Some(pvc) = snapshot.pvc(&pod.namespace, pvc_name) else {
                 return (
-                    Status::unschedulable(NAME, format!("persistentvolumeclaim {pvc_name:?} not found")),
+                    Status::unresolvable(NAME, format!("persistentvolumeclaim {pvc_name:?} not found")),
                     None,
                 );
             };
@@ -362,9 +413,14 @@ fn pre_filter_impl(
             // order (see the module header). Only when nothing existing
             // matches does storage-class-driven dynamic provisioning get
             // considered at all.
-            let candidates = find_static_candidates(pvc, snapshot, excluded_pvs);
+            let candidates = if pvc.selected_node.is_none() {
+                find_static_candidates(pvc, snapshot, excluded_pvs)
+            } else {
+                Vec::new()
+            };
             if !candidates.is_empty() {
-                let by_node = resolve_by_node(&candidates, snapshot);
+                let by_node =
+                    resolve_by_node_with_used(&candidates, snapshot, &mut used_by_node);
                 wanted.push(PvcConstraint::Static { pvc_key: pvc.key(), by_node });
                 continue;
             }
@@ -374,7 +430,7 @@ fn pre_filter_impl(
                 // provisioning to paper over, since the claim has already
                 // committed to that one volume.
                 return (
-                    Status::unschedulable(NAME, "persistentvolumeclaim names a PersistentVolume that is not ready or does not match it"),
+                    Status::unresolvable(NAME, "persistentvolumeclaim names a PersistentVolume that is not ready or does not match it"),
                     None,
                 );
             }
@@ -389,7 +445,7 @@ fn pre_filter_impl(
             };
             let Some(sc) = snapshot.storage_class(sc_name) else {
                 return (
-                    Status::unschedulable(NAME, format!("storageclass {sc_name:?} not found")),
+                    Status::error(NAME, format!("storageclass {sc_name:?} not found")),
                     None,
                 );
             };
@@ -401,6 +457,10 @@ fn pre_filter_impl(
                     Status::unresolvable(NAME, "pod has unbound immediate PersistentVolumeClaims"),
                     None,
                 );
+            }
+            if sc.provisioner.is_empty() || sc.provisioner == "kubernetes.io/no-provisioner" {
+                wanted.push(PvcConstraint::NoMatch);
+                continue;
             }
 
             let capacity = snapshot
@@ -419,6 +479,7 @@ fn pre_filter_impl(
                 allowed_topologies: sc.allowed_topologies.clone(),
                 capacity,
                 requested_bytes: pvc.requested_bytes,
+                selected_node: pvc.selected_node.clone(),
             });
         }
 
@@ -450,14 +511,31 @@ fn filter_impl(state: &CycleState, _pod: &PodInfo, node: &NodeInfo) -> Status {
                     }
                 }
                 PvcConstraint::Bound(None) => {}
+                PvcConstraint::NoMatch => {
+                    return Status::unresolvable(
+                        NAME,
+                        "node(s) did not find available persistent volumes to bind",
+                    );
+                }
                 PvcConstraint::Static { by_node, .. } => {
                     if !by_node.contains_key(&node.name) {
-                        return Status::unschedulable(NAME, "node(s) had no matching PersistentVolume for this node's topology");
+                        return Status::unresolvable(NAME, "node(s) had no matching PersistentVolume for this node's topology");
                     }
                 }
-                PvcConstraint::Delayed { allowed_topologies, capacity, requested_bytes } => {
+                PvcConstraint::Delayed {
+                    allowed_topologies,
+                    capacity,
+                    requested_bytes,
+                    selected_node,
+                } => {
+                    if selected_node.as_ref().is_some_and(|selected| selected != &node.name) {
+                        return Status::unresolvable(
+                            NAME,
+                            "node(s) did not match the node selected for volume provisioning",
+                        );
+                    }
                     if !topology_allows(allowed_topologies, &node.labels) {
-                        return Status::unschedulable(NAME, "node(s) had volume topology conflict");
+                        return Status::unresolvable(NAME, "node(s) had volume topology conflict");
                     }
                     if let Some(capacities) = capacity {
                         let available: i64 = capacities
@@ -476,7 +554,7 @@ fn filter_impl(state: &CycleState, _pod: &PodInfo, node: &NodeInfo) -> Status {
                             .max()
                             .unwrap_or(0);
                         if available < *requested_bytes {
-                            return Status::unschedulable(NAME, "node(s) did not have enough free storage");
+                            return Status::unresolvable(NAME, "node(s) did not have enough free storage");
                         }
                     }
                 }
