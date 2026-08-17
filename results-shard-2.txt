@@ -1,61 +1,21 @@
-commit: b8a213ab0f5771ee4d76fbd2a172c5b4676c4c81
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31997469097
-timestamp (UTC): 2026-08-17T05:28:12Z
+commit: 899654153f6c93574694b4323052a43e66e1ac83
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31998373256
+timestamp (UTC): 2026-08-17T05:41:30Z
 shard: 2/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786944303
+==> Test namespace: not-k8s-e2e-1786945219
 ==> 236 test(s) registered total (before sharding); running now...
 ==> Shard 2/5: 52 test(s) selected
 ▶ test_pod_mounts_a_persistent_volume_claim
-==> FATAL: pod never reached Running with a PVC volume mounted — check nodelet's server logs for 'failed to mount CSI volume' or 'no CSI driver configured'
-  ✘ FAIL (90s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 17 05:26:33 runnervmzvulz run-nodelet.sh[15202]: 2026-08-17T05:26:33.920977Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 17 05:26:33 runnervmzvulz run-nodelet.sh[15202]: Caused by:
-    Aug 17 05:26:33 runnervmzvulz run-nodelet.sh[15202]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (73c6fbb9-174a-462f-b6c0-7e62ff9152af) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (73c6fbb9-174a-462f-b6c0-7e62ff9152af) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 17 05:26:33 runnervmzvulz run-nodelet.sh[15202]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (73c6fbb9-174a-462f-b6c0-7e62ff9152af) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 17 05:26:34 runnervmzvulz run-nodelet.sh[15202]: 2026-08-17T05:26:34.015019Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
-    Aug 17 05:26:34 runnervmzvulz run-nodelet.sh[15202]: 2026-08-17T05:26:34.211637Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 17 05:26:34 runnervmzvulz run-nodelet.sh[15202]: Caused by:
-    Aug 17 05:26:34 runnervmzvulz run-nodelet.sh[15202]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (d25bde9b-e135-41a5-838b-3c2d9711aafb) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (d25bde9b-e135-41a5-838b-3c2d9711aafb) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 17 05:26:34 runnervmzvulz run-nodelet.sh[15202]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (d25bde9b-e135-41a5-838b-3c2d9711aafb) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 17 05:26:34 runnervmzvulz run-nodelet.sh[15202]: 2026-08-17T05:26:34.250236Z  INFO CreateContainer succeeded container=plugin container_id=258477d7dc025bba36d9ba8f81e502785e1594101c6d4349937480119bb70df1
-    Aug 17 05:26:35 runnervmzvulz run-nodelet.sh[15202]: 2026-08-17T05:26:35.022475Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 17 05:26:35 runnervmzvulz run-nodelet.sh[15202]: Caused by:
-    Aug 17 05:26:35 runnervmzvulz run-nodelet.sh[15202]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (d25bde9b-e135-41a5-838b-3c2d9711aafb) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (d25bde9b-e135-41a5-838b-3c2d9711aafb) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 17 05:26:35 runnervmzvulz run-nodelet.sh[15202]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (d25bde9b-e135-41a5-838b-3c2d9711aafb) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 17 05:26:35 runnervmzvulz run-nodelet.sh[15202]: 2026-08-17T05:26:35.052306Z  INFO CreateContainer succeeded container=plugin container_id=310bbc6c49e011ffe5a559bf3808af14f2834188cf8112c60b4aefb30b5b7856
+==> WARNING: Node.status.volumesInUse has no kubernetes.io/csi/ entry while a CSI volume is mounted — check mounted_csi_volumes()/csi_unique_volume_name() wiring in runtime/cri.rs and node.rs (round 34; not failing the test outright since the exact naming scheme is unvalidated against a real attach/detach controller)
+  ✔ PASS (35s)
 ▶ test_pod_uses_a_raw_block_volume
-==> FATAL: pod never reached Running with a raw block volumeDevice — check nodelet's logs for 'failed to mount CSI volume' or build_devices()/ResolvedVolume::BlockDevice wiring in runtime/cri/volumes_pure.rs
-  ✘ FAIL (93s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]: Caused by:
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (d4d75d3e-8cf2-4479-832a-2958b22ea2bd) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (d4d75d3e-8cf2-4479-832a-2958b22ea2bd) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (d4d75d3e-8cf2-4479-832a-2958b22ea2bd) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]: 2026-08-17T05:28:08.490532Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]: Caused by:
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (d4d75d3e-8cf2-4479-832a-2958b22ea2bd) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (d4d75d3e-8cf2-4479-832a-2958b22ea2bd) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (d4d75d3e-8cf2-4479-832a-2958b22ea2bd) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]: 2026-08-17T05:28:08.597330Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]: Caused by:
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (d4d75d3e-8cf2-4479-832a-2958b22ea2bd) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (d4d75d3e-8cf2-4479-832a-2958b22ea2bd) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (d4d75d3e-8cf2-4479-832a-2958b22ea2bd) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]: 2026-08-17T05:28:08.700559Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]: Caused by:
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (d4d75d3e-8cf2-4479-832a-2958b22ea2bd) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (d4d75d3e-8cf2-4479-832a-2958b22ea2bd) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 17 05:28:08 runnervmzvulz run-nodelet.sh[15202]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (d4d75d3e-8cf2-4479-832a-2958b22ea2bd) does not match the UID in record. The object might have been deleted and then recreated: Conflict
+  ✔ PASS (34s)
 ▶ test_pv_binder_requests_dynamic_provisioning_from_the_storage_class
   ✔ PASS (1s)
 
 ════════════════════════════════════════
-Results: 1 passed, 2 failed, 0 skipped
-Failed:
-  - test_pod_mounts_a_persistent_volume_claim
-  - test_pod_uses_a_raw_block_volume
+Results: 3 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786944303...
+==> Cleaning up test namespace not-k8s-e2e-1786945219...
