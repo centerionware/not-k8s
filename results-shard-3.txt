@@ -1,14 +1,7 @@
-commit: bb0555d4b8170909fc36eade676278e1768690e7
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/31980322843
-timestamp (UTC): 2026-08-16T23:56:14Z
+commit: dfdacc8422330239f26ea502a4b63f9e8d665c42
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/31981022446
+timestamp (UTC): 2026-08-17T00:10:29Z
 shard: 3/5
-exit code: 0
+exit code: unknown
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786924573
-==> 235 test(s) registered total (before sharding); running now...
-==> Shard 3/5: 44 test(s) selected
-
-════════════════════════════════════════
-Results: 0 passed, 0 failed, 0 skipped
-════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786924573...
+(no results captured — the run failed before test-e2e.sh could produce output)
