@@ -161,9 +161,13 @@ fn millis_env(name: &str, default: Duration) -> Result<Duration> {
 fn list_env(name: &str) -> Vec<String> {
     var(name)
         .into_iter()
-        .flat_map(|value| value.split(',').map(str::trim))
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(|item| item.trim().to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        })
         .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
         .collect()
 }
 
