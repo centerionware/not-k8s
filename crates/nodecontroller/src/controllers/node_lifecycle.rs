@@ -199,6 +199,29 @@ struct NodeLiveness {
     last_renew: Option<Timestamp>,
 }
 
+fn merge_cached_lifecycle_taints(node: &mut Node, cached: Option<&Node>) {
+    let Some(cached) = cached else { return };
+    let cached_owned: Vec<Taint> = cached
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.taints.as_ref())
+        .into_iter()
+        .flatten()
+        .filter(|taint| taint.key == NOT_READY_TAINT_KEY || taint.key == UNREACHABLE_TAINT_KEY)
+        .cloned()
+        .collect();
+    let spec = node.spec.get_or_insert_with(Default::default);
+    let mut merged = spec
+        .taints
+        .take()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|taint| taint.key != NOT_READY_TAINT_KEY && taint.key != UNREACHABLE_TAINT_KEY)
+        .collect::<Vec<_>>();
+    merged.extend(cached_owned);
+    spec.taints = Some(merged);
+}
+
 fn update_cached_taints(cache: &mut HashMap<String, NodeLiveness>, name: &str, taints: Vec<Taint>) {
     if let Some(state) = cache.get_mut(name) {
         state.node.spec.get_or_insert_with(Default::default).taints = Some(taints);
@@ -239,6 +262,8 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                         let name = node.name_any();
                         let status = ready_condition_status(&node);
                         let stale = is_stale(&cache, &name, cfg.node_monitor_grace_period, cfg.jitter_fraction);
+                        let mut node = node;
+                        merge_cached_lifecycle_taints(&mut node, cache.get(&name).map(|state| &state.node));
                         let entry = cache.entry(name.clone()).or_insert_with(|| NodeLiveness {
                             node: node.clone(),
                             ready_status: None,
