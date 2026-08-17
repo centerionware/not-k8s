@@ -1,133 +1,37 @@
-commit: 82ff40d2f8c0883dec7f339b123d5f42f472b706
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32007145261
-timestamp (UTC): 2026-08-17T07:59:26Z
+commit: 374ddef6334c132d46c44ef87dc85c88b058053d
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32061077421
+timestamp (UTC): 2026-08-17T19:41:18Z
 shard: 5/5
-exit code: 0
+exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786953010
-==> 219 test(s) registered total (before sharding); running now...
-==> Shard 5/5: 41 test(s) selected
-▶ test_a_failing_component_says_why_before_it_exits
-  ✔ PASS (0s)
-▶ test_datastore_serves_the_etcd_status_rpc
-  ✔ PASS (0s)
-▶ test_datastore_streams_watch_events_as_they_happen
-  ✔ PASS (2s)
-▶ test_datastore_refuses_a_cluster_it_cannot_be_part_of
-  ✔ PASS (0s)
-▶ test_apiserver_state_survives_a_datastore_restart
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13783/environ: Permission denied
-  ✔ PASS (19s)
-▶ test_the_cluster_survives_the_leader_being_killed
-    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
-  ○ SKIP (0s)
-▶ test_upgrade_a_populated_single_member_into_a_one_member_cluster
-    (skip: needs root to create network namespaces — this needs real network namespaces)
-  ○ SKIP (0s)
-▶ test_device_plugin_health_transition_updates_allocated_resources_status
-==> installing grpcio/grpcio-tools for the fake device plugin...
-WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
-==> generating gRPC stubs from the vendored proto files...
-==> starting the fake device plugin (resource=fake.example.com/testdevice)...
-==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (147s)
-▶ test_set_hostname_as_fqdn_reports_the_full_fqdn
-  ✔ PASS (3s)
-▶ test_eviction_exceeds_requests_tiebreak_manual_procedure
-    (skip: proving the exceeds-requests comparator step (round 99 — pick_eviction_candidate() ranks a pod whose usage exceeds its own memory request ahead of one that doesn't, within a QoS class, before even priority) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with the SAME spec.priority, one whose container actually consumes more memory than it requested (e.g. requests: {memory: 16Mi} but the process allocates 100Mi) and one that stays within its request, force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the pod exceeding its own request is evicted first even if the other pod's absolute usage is higher — proof the exceeds-requests step is real, not just a documented no-op. The pure ranking logic itself (exceeds_memory_requests(), and that it now sits ahead of priority in eviction_rank()) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end.)
-  ○ SKIP (0s)
-▶ test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed
-  ✔ PASS (38s)
-▶ test_poststart_hook_runs_after_container_start
-  ✔ PASS (3s)
-▶ test_native_sidecar_container_starts_before_app_container_and_keeps_running
-  ✔ PASS (3s)
-▶ test_crash_loop_backoff_reports_waiting_reason_and_last_state
-  ✔ PASS (2s)
-▶ test_termination_message_path_is_read_back_into_container_status
-  ✔ PASS (2s)
-▶ test_container_status_reports_a_real_image_id
-  ✔ PASS (3s)
-▶ test_host_port_publishes_the_container_on_the_nodes_own_ip
-  ✔ PASS (3s)
-▶ test_node_reports_a_real_kernel_and_os_image
-  ✔ PASS (0s)
-▶ test_readiness_probe_gates_ready_condition
-  ✔ PASS (7s)
-▶ test_http_get_readiness_probe_against_a_real_server
-  ✔ PASS (3s)
-▶ test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set
-  ✔ PASS (6s)
-▶ test_in_place_resize_updates_memory_limit_without_restarting
-  ✔ PASS (3s)
-▶ test_guaranteed_pod_gets_the_protected_oom_score
-  ✔ PASS (3s)
-▶ test_scheduler_honours_a_node_selector_that_matches_nothing
-  ✔ PASS (11s)
-▶ test_scheduler_ignores_pods_for_another_scheduler
-  ✔ PASS (12s)
-▶ test_scheduler_preempts_a_lower_priority_pod
-  ✔ PASS (69s)
-▶ test_read_only_root_filesystem_is_enforced
-  ✔ PASS (2s)
-▶ test_host_users_false_volume_still_reads_and_writes_normally
-  ✔ PASS (3s)
-▶ test_host_pid_sees_host_processes
-  ✔ PASS (3s)
-▶ test_service_with_no_endpoints_does_not_wedge_the_ruleset
-table inet not_k8s_svc {
-	chain prerouting {
-		type nat hook prerouting priority dstnat; policy accept;
-		ip daddr 10.43.9.200 tcp dport 80 dnat ip to 10.42.0.23:8080
-		ip daddr 10.43.40.169 tcp dport 80 dnat ip to 10.42.0.23:8080
-		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.75:6443
-		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.2:53
-		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.2:53
-		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.2:9153
-	}
-
-	chain output {
-		type nat hook output priority dstnat; policy accept;
-		ip daddr 10.43.9.200 tcp dport 80 dnat ip to 10.42.0.23:8080
-		ip daddr 10.43.40.169 tcp dport 80 dnat ip to 10.42.0.23:8080
-		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.75:6443
-		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.2:53
-		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.2:53
-		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.2:9153
-	}
-
-	chain postrouting {
-		type nat hook postrouting priority srcnat; policy accept;
-		ct status dnat masquerade
-	}
-}
-  ✔ PASS (4s)
-▶ test_losing_every_backend_removes_the_dnat_rule
-  ✔ PASS (33s)
-▶ test_kubectl_attach_streams_the_containers_stdout
-==> WARNING: kubectl attach didn't show streamed output within 20s (may still be buffering)
-  ✔ PASS (43s)
-▶ test_topology_manager_cross_provider_alignment_manual_note
-    (skip: proving CPU-and-device alignment (not just non-rejection) needs either real multi-socket/multi-NUMA hardware or a device plugin reporting TopologyInfo pointing at a specific NUMA node — not something this suite can set up. Manual spot-check on real multi-NUMA hardware: deploy a device plugin whose devices report differing NUMA affinity, request both an exclusive CPU and one of those devices in the same Guaranteed pod, then compare the container's cpuset.cpus (see cpu_manager.sh for how to find it) against which NUMA node the allocated device actually sits on — they should be the same node. Also try NODELET_TOPOLOGY_MANAGER_POLICY=single-numa-node with a deliberately unsatisfiable combination (e.g. requesting more exclusive CPUs than any single node has) and confirm the pod stays Pending with a 'Topology Manager: no single NUMA node can satisfy' error logged, rather than starting misaligned.)
-  ○ SKIP (0s)
-▶ test_sub_path_expr_expands_a_downward_api_env_var
-  ✔ PASS (3s)
-▶ test_empty_dir_medium_memory_is_backed_by_tmpfs
-  ✔ PASS (3s)
-▶ test_mount_propagation_host_to_container_still_mounts_normally
-  ✔ PASS (2s)
-▶ test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too
-  ✔ PASS (3s)
-▶ test_config_dir_merges_files_in_filename_order
-  ✔ PASS (2s)
-▶ test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection
-  ✔ PASS (35s)
-▶ test_static_pod_creates_a_mirror_pod
-  ✔ PASS (72s)
-▶ test_the_node_still_reconciles_pods_after_an_apiserver_restart
-  ✔ PASS (7s)
+==> Test namespace: not-k8s-e2e-1786995596
+==> 238 test(s) registered total (before sharding); running now...
+==> Shard 5/5: 44 test(s) selected
+▶ test_scheduler_schedules_a_pod_an_http_extender_approves
+==> FATAL: timed out after 60s waiting for: sched-extender-accept to be bound to a node
+  ✘ FAIL (79s, exit 1)
+  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
+  [diag] node taints: 
+  [diag] nodelet tail:
+    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.258809Z ERROR failed with status 503 Service Unavailable
+    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.259753Z ERROR failed with status 503 Service Unavailable
+    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.357069Z ERROR failed with status 503 Service Unavailable
+    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.359827Z ERROR failed with status 503 Service Unavailable
+    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.359926Z ERROR failed with status 503 Service Unavailable
+    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.507617Z ERROR failed with status 503 Service Unavailable
+    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.509272Z ERROR failed with status 503 Service Unavailable
+    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.509711Z ERROR failed with status 503 Service Unavailable
+    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.841950Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 349 (361)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.844507Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 349 (361)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 17 19:39:14 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:14.845533Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 349 (361)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
+    Aug 17 19:39:40 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:40.757687Z  INFO CreateContainer succeeded container=coredns container_id=79e83c11221f07cb073a497a2af8ae599c06aa84dd647f507863f4ec0a066d2a
+    Aug 17 19:39:46 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:39:46.732811Z  INFO CreateContainer succeeded container=busybox container_id=9b20d2f0bca6f320f075a92738f75f380b481f4a3c8b8a6f58378106b5bffd0f
+    Aug 17 19:40:09 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:40:09.115407Z  INFO node status pushed
+    Aug 17 19:41:09 runnervmzvulz run-nodelet.sh[15569]: 2026-08-17T19:41:09.158016Z  INFO node status pushed
 
 ════════════════════════════════════════
-Results: 37 passed, 0 failed, 4 skipped
+Results: 0 passed, 1 failed, 0 skipped
+Failed:
+  - test_scheduler_schedules_a_pod_an_http_extender_approves
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786953010...
+==> Cleaning up test namespace not-k8s-e2e-1786995596...
