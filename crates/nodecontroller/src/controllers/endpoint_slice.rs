@@ -190,7 +190,7 @@ async fn reconcile_service(
         // Not (or no longer) ours — if we previously created a slice for
         // it (e.g. its selector was just cleared), drop it.
         let _ = slice_api
-            .delete(&slice_name(name), &Default::default())
+            .delete(&slice_name(&name), &Default::default())
             .await;
         return;
     }
@@ -207,7 +207,7 @@ async fn reconcile_service(
 
     let matching: Vec<&Pod> = pod_cache
         .values()
-        .filter(|p| p.namespace().as_deref() == Some(namespace))
+        .filter(|p| p.namespace().as_deref() == Some(namespace.as_str()))
         .filter(|p| {
             selector_matches(
                 &selector,
@@ -247,7 +247,7 @@ async fn reconcile_service(
         endpoints,
         ports: Some(ports),
         metadata: ObjectMeta {
-            name: Some(slice_name(name)),
+            name: Some(slice_name(&name)),
             namespace: Some(namespace.to_string()),
             labels: Some(labels),
             owner_references: Some(vec![owner]),
@@ -278,7 +278,7 @@ async fn reconcile_service(
     // pattern nodelet's own node registration uses).
     if let Err(e) = slice_api
         .patch(
-            &slice_name(name),
+            &slice_name(&name),
             &PatchParams::apply(MANAGED_BY_VALUE).force(),
             &Patch::Apply(&slice),
         )
@@ -360,7 +360,6 @@ fn pod_key(pod: &Pod) -> String {
 /// namespace's Service count, not the whole cluster's.
 fn enqueue_affected_services(
     namespace: &str,
-    _pod_labels: &BTreeMap<String, String>,
     services: &HashMap<String, Service>,
     queue: &KeyedWorkQueue<String>,
 ) {

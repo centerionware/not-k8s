@@ -239,7 +239,7 @@ async fn reconcile_replica_set(
 
     let owned: Vec<&Pod> = pod_cache
         .values()
-        .filter(|p| p.namespace().as_deref() == Some(namespace))
+        .filter(|p| p.namespace().as_deref() == Some(namespace.as_str()))
         .filter(|p| owned_by(p, &rs_uid))
         .collect();
     let live: Vec<&&Pod> = owned
@@ -343,7 +343,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         let ns = ns_of(&pod);
                         note_pod_event(&mut expectations, &pod);
                         pods.insert(format!("{ns}/{}", pod.name_any()), pod);
-                        for (key, rs) in replica_sets.iter().filter(|(_, rs)| ns_of(rs) == ns) {
+                        for (key, rs) in replica_sets.iter().filter(|(_, rs)| ns_of(*rs) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }
@@ -351,7 +351,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         let ns = ns_of(&pod);
                         note_pod_event(&mut expectations, &pod);
                         pods.remove(&format!("{ns}/{}", pod.name_any()));
-                        for (key, rs) in replica_sets.iter().filter(|(_, rs)| ns_of(rs) == ns) {
+                        for (key, rs) in replica_sets.iter().filter(|(_, rs)| ns_of(*rs) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }

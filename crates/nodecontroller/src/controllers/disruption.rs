@@ -87,7 +87,7 @@ async fn reconcile_pdb(client: &Client, pdb: &PodDisruptionBudget, pods: &HashMa
 
     let matching: Vec<&Pod> = pods
         .values()
-        .filter(|p| p.namespace().as_deref() == Some(namespace))
+        .filter(|p| p.namespace().as_deref() == Some(namespace.as_str()))
         .filter(|p| {
             p.metadata.labels.as_ref().is_some_and(|l| {
                 crate::controllers::replica_set::label_selector_matches(selector, l)
@@ -145,14 +145,14 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pod))) | Some(Ok(Event::InitApply(pod))) => {
                         let ns = ns_of(&pod);
                         pods.insert(format!("{ns}/{}", pod.name_any()), pod);
-                        for (key, pdb) in pdbs.iter().filter(|(_, pdb)| ns_of(pdb) == ns) {
+                        for (key, pdb) in pdbs.iter().filter(|(_, pdb)| ns_of(*pdb) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
                         pods.remove(&format!("{ns}/{}", pod.name_any()));
-                        for (key, pdb) in pdbs.iter().filter(|(_, pdb)| ns_of(pdb) == ns) {
+                        for (key, pdb) in pdbs.iter().filter(|(_, pdb)| ns_of(*pdb) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }

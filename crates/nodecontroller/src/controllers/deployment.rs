@@ -251,7 +251,7 @@ async fn reconcile_deployment(client: &Client, d: &Deployment, rs_cache: &HashMa
 
     let mut owned: Vec<&ReplicaSet> = rs_cache
         .values()
-        .filter(|rs| rs.namespace().as_deref() == Some(namespace))
+        .filter(|rs| rs.namespace().as_deref() == Some(namespace.as_str()))
         .filter(|rs| owned_by(rs, &d_uid))
         .collect();
     owned.sort_by_key(|rs| rs.metadata.creation_timestamp.clone().map(|t| t.0));
@@ -374,14 +374,14 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(rs))) | Some(Ok(Event::InitApply(rs))) => {
                         let ns = ns_of(&rs);
                         replica_sets.insert(format!("{ns}/{}", rs.name_any()), rs);
-                        for (key, d) in deployments.iter().filter(|(_, d)| ns_of(d) == ns) {
+                        for (key, d) in deployments.iter().filter(|(_, d)| ns_of(*d) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(rs))) => {
                         let ns = ns_of(&rs);
                         replica_sets.remove(&format!("{ns}/{}", rs.name_any()));
-                        for (key, d) in deployments.iter().filter(|(_, d)| ns_of(d) == ns) {
+                        for (key, d) in deployments.iter().filter(|(_, d)| ns_of(*d) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }

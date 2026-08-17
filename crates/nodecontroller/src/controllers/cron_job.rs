@@ -317,7 +317,7 @@ fn enqueue_owned_cronjobs(
 ) {
     for (key, cj) in cron_jobs {
         if cj.namespace() == job.namespace()
-            && cj.uid().is_some_and(|uid| owned_by(job, uid))
+            && cj.uid().is_some_and(|uid| owned_by(job, &uid))
         {
             queue.enqueue(key.clone());
         }

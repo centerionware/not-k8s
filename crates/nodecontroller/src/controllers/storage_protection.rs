@@ -103,7 +103,7 @@ async fn reconcile_pvc(client: &Client, pvc: &PersistentVolumeClaim, pods: &Hash
         return;
     }
 
-    if pvc_in_use(namespace, name, pods) || !has_finalizer(&pvc.metadata.finalizers, PVC_PROTECTION_FINALIZER) {
+    if pvc_in_use(&namespace, &name, pods) || !has_finalizer(&pvc.metadata.finalizers, PVC_PROTECTION_FINALIZER) {
         return;
     }
     let remaining = without_finalizer(&pvc.metadata.finalizers, PVC_PROTECTION_FINALIZER);
@@ -134,14 +134,14 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pod))) | Some(Ok(Event::InitApply(pod))) => {
                         let ns = ns_of(&pod);
                         pods.insert(format!("{ns}/{}", pod.name_any()), pod);
-                        for (key, pvc) in pvcs.iter().filter(|(_, pvc)| ns_of(pvc) == ns) {
+                        for (key, pvc) in pvcs.iter().filter(|(_, pvc)| ns_of(*pvc) == ns) {
                             queue.enqueue(format!("pvc:{key}"));
                         }
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
                         pods.remove(&format!("{ns}/{}", pod.name_any()));
-                        for (key, pvc) in pvcs.iter().filter(|(_, pvc)| ns_of(pvc) == ns) {
+                        for (key, pvc) in pvcs.iter().filter(|(_, pvc)| ns_of(*pvc) == ns) {
                             queue.enqueue(format!("pvc:{key}"));
                         }
                     }
