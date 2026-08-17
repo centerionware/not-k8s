@@ -1,22 +1,106 @@
 commit: 82ff40d2f8c0883dec7f339b123d5f42f472b706
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32007057470
-timestamp (UTC): 2026-08-17T07:49:33Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32007145261
+timestamp (UTC): 2026-08-17T07:52:38Z
 shard: 3/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786952934
+==> Test namespace: not-k8s-e2e-1786952971
 ==> 219 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 41 test(s) selected
+▶ test_combined_binary_rejects_an_unknown_component
+    (skip: no combined binary here (split layout))
+  ○ SKIP (0s)
+▶ test_credential_provider_config_unset_by_default
+  ✔ PASS (0s)
+▶ test_datastore_enforces_compare_and_swap
+  ✔ PASS (0s)
+▶ test_datastore_expires_a_lease_and_its_keys
+  ✔ PASS (3s)
+▶ test_apiserver_crud_round_trips_through_nodestore
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13581/environ: Permission denied
+Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
+  ✔ PASS (5s)
+▶ test_a_follower_forwards_writes_to_the_leader
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_the_cluster_tolerates_a_slow_link
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_plugin_registry_watches_for_device_plugins_too
+  ✔ PASS (0s)
+▶ test_custom_dns_config_reaches_resolv_conf
+  ✔ PASS (3s)
+▶ test_eviction_manual_procedure
+    (skip: triggering real eviction safely needs either an artificially-low pressure threshold or actually exhausting a resource — neither is something this suite does to a live node automatically. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES set just above current MemAvailable (forces MemoryPressure=True without real exhaustion), (3) apply a BestEffort pod and a Guaranteed pod, (4) within NODELET_EVICTION_CHECK_SECS (default 10s) confirm the BestEffort pod gets phase Failed/reason Evicted and is deleted, while the Guaranteed pod is untouched, (5) restore the normal threshold and restart nodelet.)
+  ○ SKIP (0s)
+▶ test_pod_exceeding_an_empty_dir_size_limit_is_evicted
+  ✔ PASS (37s)
+▶ test_basic_pod_runs
+  ✔ PASS (3s)
+▶ test_crashing_container_restarts_and_increments_restart_count
+  ✔ PASS (5s)
+▶ test_exited_container_reports_terminated_state_with_exit_code
+  ✔ PASS (2s)
+▶ test_pod_status_reports_qos_class
+  ✔ PASS (3s)
+▶ test_node_reports_hugepages_capacity_when_reserved
+  ✔ PASS (0s)
+▶ test_pod_resources_socket_is_created_on_a_cri_node
+  ✔ PASS (0s)
+▶ test_startup_probe_gates_liveness_and_readiness
+  ✔ PASS (7s)
+▶ test_metrics_resource_returns_real_pod_usage
+  ✔ PASS (3s)
+▶ test_no_swap_default_disables_swap_via_cgroup
+  ✔ PASS (3s)
+▶ test_besteffort_pod_gets_no_cgroup_limit
+  ✔ PASS (2s)
 ▶ test_scheduler_places_an_ordinary_pod
   ✔ PASS (3s)
 ▶ test_scheduler_respects_a_taint_and_its_toleration
   ✔ PASS (3s)
 ▶ test_scheduler_honours_pod_affinity
-  ✔ PASS (31s)
+  ✔ PASS (19s)
 ▶ test_scheduler_schedules_pods_that_get_default_spread_constraints
-  ✔ PASS (0s)
+  ✔ PASS (1s)
+▶ test_container_status_reports_recursive_read_only
+  ✔ PASS (3s)
+▶ test_proc_mount_unmasked_leaves_proc_kcore_readable
+==> WARNING: expected /proc/kcore to be readable (non-zero bytes) under procMount: Unmasked, got 0 -- check proc_mount_paths()'s Unmasked branch in runtime/cri/resources.rs; not failing outright since this depends on the CRI runtime actually honoring an explicitly-empty masked_paths the same way it honors a populated one
+  ✔ PASS (2s)
+▶ test_containers_get_isolated_pid_namespaces_by_default
+  ✔ PASS (3s)
+▶ test_clusterip_service_routes_to_its_backend_pod
+  ✔ PASS (3s)
+▶ test_a_pod_reaching_its_own_service_gets_hairpin_masquerade
+  ✔ PASS (3s)
+▶ test_headless_service_programs_no_rules_and_does_not_break_others
+  ✔ PASS (3s)
+▶ test_kubectl_logs_follow_streams_new_output
+  ✔ PASS (5s)
+▶ test_configmap_volume_updates_live_without_pod_restart
+Warning: resource configmaps/cm-live-update-cm is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
+  ✔ PASS (3s)
+▶ test_host_aliases_are_written_to_etc_hosts
+  ✔ PASS (3s)
+▶ test_fsgroup_chowns_materialized_volumes
+  ✔ PASS (2s)
+▶ test_recursive_read_only_still_mounts_read_only_normally
+  ✔ PASS (3s)
+▶ test_host_path_directory_or_create_creates_a_missing_directory
+  ✔ PASS (3s)
+▶ test_config_file_sets_a_value_env_did_not_override
+  ✔ PASS (1s)
+▶ test_image_gc_removes_unreferenced_images_above_the_watermark
+  ✔ PASS (35s)
+▶ test_log_rotation_creates_a_rotated_file
+==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1786952971_log-rotation_0956d3ad-c36f-4596-a143-575e48af6580 (log_rotate_interval, default 10s)...
+  ✔ PASS (11s)
+▶ test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host
+    (skip: this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case; a multi-node host needs the manual cross-provider check below instead)
+  ○ SKIP (0s)
 
 ════════════════════════════════════════
-Results: 4 passed, 0 failed, 0 skipped
+Results: 36 passed, 0 failed, 5 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786952934...
+==> Cleaning up test namespace not-k8s-e2e-1786952971...
