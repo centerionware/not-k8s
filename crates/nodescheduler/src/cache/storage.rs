@@ -21,6 +21,8 @@ use k8s_openapi::api::storage::v1::{CSIDriver, CSINode, CSIStorageCapacity, Stor
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use std::collections::BTreeMap;
 
+const BETA_STORAGE_CLASS_ANNOTATION: &str = "volume.beta.kubernetes.io/storage-class";
+
 /// Published by the PV binder only after the PVC/PV binding transaction is
 /// complete. kube-scheduler uses this as the completion barrier instead of
 /// trusting a status field that can be observed between writes.
@@ -52,6 +54,10 @@ pub struct PvInfo {
     pub capacity_bytes: i64,
     /// `spec.claimRef`, if this PV is bound or pre-bound to a claim.
     pub claim_ref: Option<(String, String)>,
+    /// `spec.claimRef.uid`, kept separately because a deleted-and-recreated
+    /// PVC with the same namespace/name is not the claim this PV was bound
+    /// to. An empty UID is the user-prebound form upstream permits.
+    pub claim_ref_uid: Option<String>,
     pub storage_class_name: String,
     /// `spec.nodeAffinity.required` — the hard constraint `VolumeBinding`'s
     /// Filter checks a candidate node against.
@@ -76,11 +82,18 @@ pub struct PvInfo {
     /// PV to a `Filesystem` claim (or the reverse) fails at mount time, not
     /// at match time, so nothing before `PreBind` would ever catch it.
     pub volume_mode: String,
+    /// Kubernetes 1.33 leaves VolumeAttributesClass disabled by default. In
+    /// that mode upstream refuses any PV carrying this field rather than
+    /// silently binding it without the feature's semantics.
+    pub volume_attributes_class_name: Option<String>,
+    /// A terminating PV is never a static-binding candidate.
+    pub deleting: bool,
 }
 
 impl PvInfo {
     pub fn from_api(pv: &PersistentVolume) -> Self {
         let spec = pv.spec.clone().unwrap_or_default();
+        let annotations = pv.metadata.annotations.clone().unwrap_or_default();
         PvInfo {
             name: pv.metadata.name.clone().unwrap_or_default(),
             access_modes: spec.access_modes.unwrap_or_default(),
@@ -93,12 +106,23 @@ impl PvInfo {
             claim_ref: spec.claim_ref.as_ref().and_then(|r| {
                 Some((r.namespace.clone()?, r.name.clone()?))
             }),
-            storage_class_name: spec.storage_class_name.unwrap_or_default(),
+            claim_ref_uid: spec
+                .claim_ref
+                .as_ref()
+                .and_then(|reference| reference.uid.clone())
+                .filter(|uid| !uid.is_empty()),
+            storage_class_name: annotations
+                .get(BETA_STORAGE_CLASS_ANNOTATION)
+                .cloned()
+                .or(spec.storage_class_name)
+                .unwrap_or_default(),
             node_affinity: spec.node_affinity.and_then(|na| na.required).map(Box::new),
             labels: pv.metadata.labels.clone().unwrap_or_default(),
             csi_driver: spec.csi.map(|c| c.driver),
             phase: pv.status.as_ref().and_then(|s| s.phase.clone()).unwrap_or_default(),
             volume_mode: spec.volume_mode.unwrap_or_else(|| "Filesystem".to_string()),
+            volume_attributes_class_name: spec.volume_attributes_class_name,
+            deleting: pv.metadata.deletion_timestamp.is_some(),
         }
     }
 }
@@ -108,6 +132,7 @@ impl PvInfo {
 pub struct PvcInfo {
     pub namespace: String,
     pub name: String,
+    pub uid: String,
     pub storage_class_name: Option<String>,
     /// `spec.volumeName` — set once bound (or pre-bound by an admin/user
     /// pointing a claim at a specific PV).
@@ -122,6 +147,7 @@ pub struct PvcInfo {
     /// `PvInfo::volume_mode`'s doc comment for why a static match must
     /// require this to equal the candidate PV's own mode.
     pub volume_mode: String,
+    pub volume_attributes_class_name: Option<String>,
 }
 
 impl PvcInfo {
@@ -135,6 +161,7 @@ impl PvcInfo {
 
     pub fn from_api(pvc: &PersistentVolumeClaim) -> Self {
         let spec = pvc.spec.clone().unwrap_or_default();
+        let annotations = pvc.metadata.annotations.clone().unwrap_or_default();
         let requested_bytes = spec
             .resources
             .as_ref()
@@ -147,13 +174,18 @@ impl PvcInfo {
         PvcInfo {
             namespace: pvc.metadata.namespace.clone().unwrap_or_default(),
             name: pvc.metadata.name.clone().unwrap_or_default(),
-            storage_class_name: spec.storage_class_name,
+            uid: pvc.metadata.uid.clone().unwrap_or_default(),
+            storage_class_name: annotations
+                .get(BETA_STORAGE_CLASS_ANNOTATION)
+                .cloned()
+                .or(spec.storage_class_name),
             volume_name,
             requested_access_modes: spec.access_modes.unwrap_or_default(),
             requested_bytes,
             selector: spec.selector,
             bound,
             volume_mode: spec.volume_mode.unwrap_or_else(|| "Filesystem".to_string()),
+            volume_attributes_class_name: spec.volume_attributes_class_name,
         }
     }
 }
@@ -237,7 +269,10 @@ impl StorageCapacityInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k8s_openapi::api::core::v1::{PersistentVolumeClaimSpec, PersistentVolumeClaimStatus};
+    use k8s_openapi::api::core::v1::{
+        ObjectReference, PersistentVolumeClaimSpec, PersistentVolumeClaimStatus,
+        PersistentVolumeSpec,
+    };
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
     fn pvc(volume_name: Option<&str>, completed: bool, phase: Option<&str>) -> PersistentVolumeClaim {
@@ -266,5 +301,48 @@ mod tests {
     fn volume_name_and_completion_annotation_are_the_publication_barrier() {
         assert!(pvc_is_fully_bound(&pvc(Some("pv"), true, None)));
         assert!(!pvc_is_fully_bound(&pvc(None, true, Some("Bound"))));
+    }
+
+    #[test]
+    fn storage_projection_keeps_claim_identity_and_legacy_class_precedence() {
+        let annotations = Some(BTreeMap::from([(
+            BETA_STORAGE_CLASS_ANNOTATION.to_string(),
+            "legacy-class".to_string(),
+        )]));
+        let pv = PersistentVolume {
+            metadata: ObjectMeta { annotations: annotations.clone(), ..Default::default() },
+            spec: Some(PersistentVolumeSpec {
+                claim_ref: Some(ObjectReference {
+                    namespace: Some("ns".to_string()),
+                    name: Some("claim".to_string()),
+                    uid: Some("claim-uid".to_string()),
+                    ..Default::default()
+                }),
+                storage_class_name: Some("spec-class".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let pvc = PersistentVolumeClaim {
+            metadata: ObjectMeta {
+                namespace: Some("ns".to_string()),
+                name: Some("claim".to_string()),
+                uid: Some("claim-uid".to_string()),
+                annotations,
+                ..Default::default()
+            },
+            spec: Some(PersistentVolumeClaimSpec {
+                storage_class_name: Some("spec-class".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let projected_pv = PvInfo::from_api(&pv);
+        let projected_pvc = PvcInfo::from_api(&pvc);
+        assert_eq!(projected_pv.claim_ref_uid.as_deref(), Some("claim-uid"));
+        assert_eq!(projected_pvc.uid, "claim-uid");
+        assert_eq!(projected_pv.storage_class_name, "legacy-class");
+        assert_eq!(projected_pvc.storage_class_name.as_deref(), Some("legacy-class"));
     }
 }

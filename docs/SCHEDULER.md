@@ -265,10 +265,10 @@ considered, matching upstream's own priority order. Two pods that could both
 claim the same free static PV is a real scarce-resource race, the same shape
 `DynamicResources`' device assume cache exists for — `Reserve` tentatively
 marks the PV it picked, `Unreserve`/`PostBind` release the mark. `PreBind`
-writes `PersistentVolumeClaim.spec.volumeName` for a static claim (the
-built-in PV binder controller completes the actual bind, including
-`PersistentVolume.spec.claimRef`, from that alone) instead of the
-`selected-node` annotation dynamic provisioning uses. See
+writes `PersistentVolume.spec.claimRef` and upstream's
+`pv.kubernetes.io/bound-by-controller` marker for a static claim; the built-in
+PV binder controller completes the reciprocal `PVC.spec.volumeName` update.
+Dynamic provisioning instead receives the `selected-node` annotation. See
 `volume_binding.rs`'s module header for the full accounting.
 
 **Phase 5 — DRA, profiles, extenders.**

@@ -1136,6 +1136,96 @@ EOF
 }
 register_test test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen csi_dra
 
+test_scheduler_claims_a_static_wait_for_first_consumer_volume() {
+    _require_nodescheduler
+    if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
+
+    local class="sched-static-wfc" pv="sched-static-pv"
+    local claim="sched-static-claim" pod="sched-static-pod"
+    kctl delete pod "$pod" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    kctl delete pvc "$claim" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete pv "$pv" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete storageclass "$class" --ignore-not-found >/dev/null 2>&1 || true
+
+    # The no-provisioner + WaitForFirstConsumer combination is deliberate:
+    # the controller-manager cannot bind this static PV before a scheduler
+    # chooses a node. This therefore exercises nodescheduler's static-PV
+    # Reserve/PreBind path rather than passing because the claim was already
+    # Bound when the pod entered the queue.
+    apply_manifest <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: $class
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: $pv
+spec:
+  capacity:
+    storage: 64Mi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: $class
+  hostPath:
+    path: /tmp/notk8s-scheduler-static-pv
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: $claim
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: $class
+  resources:
+    requests:
+      storage: 32Mi
+EOF
+
+    sleep 5
+    assert_eq "$(kctl get pvc "$claim" -o jsonpath='{.status.phase}')" "Pending" \
+        "a static WaitForFirstConsumer claim must wait for a scheduling decision"
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $pod
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "echo static-ok >/data/proof && sleep 300"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: $claim
+EOF
+
+    wait_until 90 "$pod to run from its static volume" pod_is_phase "$pod" Running \
+        || die "nodescheduler did not complete the static PV/PVC binding path"
+    assert_eq "$(kubectl get pv "$pv" -o jsonpath='{.spec.claimRef.name}')" "$claim" \
+        "VolumeBinding PreBind must prebind the PV to the selected claim"
+    assert_eq "$(kubectl get pv "$pv" -o jsonpath='{.metadata.annotations.pv\.kubernetes\.io/bound-by-controller}')" "yes" \
+        "a scheduler-created static prebind must carry upstream's bound-by-controller marker"
+    assert_eq "$(kctl get pvc "$claim" -o jsonpath='{.spec.volumeName}')" "$pv" \
+        "the PV binder must publish the scheduler's static PV choice back to the PVC"
+    assert_eq "$(kctl get pvc "$claim" -o jsonpath='{.status.phase}')" "Bound" \
+        "the PV binder must observe and complete nodescheduler's static choice"
+
+    delete_pod_and_pvc "$pod" "$claim"
+    kubectl delete pv "$pv" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    kubectl delete storageclass "$class" --ignore-not-found >/dev/null 2>&1 || true
+}
+register_test test_scheduler_claims_a_static_wait_for_first_consumer_volume
+
 test_scheduler_enforces_read_write_once_pod_exclusivity() {
     _require_nodescheduler
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi

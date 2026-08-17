@@ -31,11 +31,10 @@
 //!     `WaitForFirstConsumer` is checked against that class's
 //!     `allowedTopologies` and, when the driver opts into capacity
 //!     tracking, `CSIStorageCapacity`;
-//!   * `PreBind` writes either `PersistentVolumeClaim.spec.volumeName` (a
-//!     static claim — the built-in PV binder controller completes the actual
-//!     bind, including `PersistentVolume.spec.claimRef`, from that alone,
-//!     the same controller this project's stripped control plane already
-//!     runs) or the `volume.kubernetes.io/selected-node` annotation (dynamic
+//!   * `PreBind` writes either `PersistentVolume.spec.claimRef` plus
+//!     `pv.kubernetes.io/bound-by-controller` (a static claim, exactly the
+//!     update upstream's volume binder makes) or the
+//!     `volume.kubernetes.io/selected-node` annotation (dynamic
 //!     provisioning, telling the external provisioner which node to
 //!     provision for), then waits for the PVC watch to report
 //!     `status.phase == "Bound"` either way. The timeout is only a failure
@@ -201,8 +200,14 @@ fn topology_allows(terms: &[TopologySelectorTerm], labels: &std::collections::BT
 /// mode present, enough capacity, and the PVC's own `selector` (if any)
 /// satisfied by the PV's labels.
 fn static_matches(pvc: &crate::cache::storage::PvcInfo, pv: &crate::cache::storage::PvInfo) -> bool {
-    let claimed_by_someone_else =
-        pv.claim_ref.as_ref().is_some_and(|(ns, name)| ns != &pvc.namespace || name != &pvc.name);
+    let claimed_by_someone_else = pv.claim_ref.as_ref().is_some_and(|(ns, name)| {
+        ns != &pvc.namespace
+            || name != &pvc.name
+            || pv
+                .claim_ref_uid
+                .as_ref()
+                .is_some_and(|uid| uid != &pvc.uid)
+    });
     if claimed_by_someone_else {
         return false;
     }
@@ -211,11 +216,27 @@ fn static_matches(pvc: &crate::cache::storage::PvcInfo, pv: &crate::cache::stora
     // with no claimant yet must be Available: Released/Failed/Pending would
     // either never actually complete a bind or hand the pod storage the PV
     // controller itself no longer considers fit for reuse.
-    let pre_bound_to_us = pv.claim_ref.as_ref().is_some_and(|(ns, name)| ns == &pvc.namespace && name == &pvc.name);
+    let pre_bound_to_us = pv.claim_ref.as_ref().is_some_and(|(ns, name)| {
+        ns == &pvc.namespace
+            && name == &pvc.name
+            && pv
+                .claim_ref_uid
+                .as_ref()
+                .is_none_or(|uid| uid == &pvc.uid)
+    });
     if !pre_bound_to_us && pv.phase != "Available" {
         return false;
     }
     if pv.volume_mode != pvc.volume_mode {
+        return false;
+    }
+    // VolumeAttributesClass is Beta but disabled by default at Kubernetes
+    // 1.33. Upstream's default scheduler therefore refuses a PV carrying one
+    // instead of binding it while ignoring the gated semantics.
+    if pv.volume_attributes_class_name.is_some() {
+        return false;
+    }
+    if pv.deleting {
         return false;
     }
     if pv.storage_class_name != pvc.storage_class_name.as_deref().unwrap_or("") {
@@ -558,38 +579,90 @@ impl crate::framework::PostBindPlugin for VolumeBinding {
 }
 
 impl VolumeBinding {
-    /// A static claim: point the PVC at the specific PV `Reserve` picked and
-    /// await the watch-observed `Bound`. Setting `spec.volumeName` is the
-    /// whole write this
-    /// side needs — the built-in PV binder controller (part of this
-    /// project's stripped control plane, same as upstream's) observes a PVC
-    /// naming a specific, matching, unclaimed PV and completes the bind
-    /// itself, including `PersistentVolume.spec.claimRef`.
+    /// A static claim: prebind the PV to the PVC exactly as upstream does,
+    /// then await the watch-observed `Bound`. The PV binder controller
+    /// completes the reciprocal `PVC.spec.volumeName` update.
     async fn bind_static_pvc(&self, pod: &PodInfo, pvc_name: &str, pv_name: &str) -> Result<(), Status> {
-        use k8s_openapi::api::core::v1::PersistentVolumeClaim;
-        use kube::api::{Api, Patch, PatchParams};
+        use k8s_openapi::api::core::v1::{ObjectReference, PersistentVolume, PersistentVolumeClaim};
+        use kube::api::{Api, PostParams};
 
-        let api: Api<PersistentVolumeClaim> = Api::namespaced(self.client.clone(), &pod.namespace);
+        let pvc_api: Api<PersistentVolumeClaim> =
+            Api::namespaced(self.client.clone(), &pod.namespace);
+        let pv_api: Api<PersistentVolume> = Api::all(self.client.clone());
         let waiter = self.pvc_bindings.subscribe(format!("{}/{}", pod.namespace, pvc_name));
 
-        let current = api
+        let current = pvc_api
             .get(pvc_name)
             .await
             .map_err(|e| Status::error(NAME, format!("reading persistentvolumeclaim {pvc_name:?}: {e}")))?;
         if crate::cache::storage::pvc_is_fully_bound(&current) {
             return Ok(());
         }
+        if current
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.volume_name.as_deref())
+            .is_some_and(|name| !name.is_empty() && name != pv_name)
+        {
+            return Err(Status::unschedulable(
+                NAME,
+                format!(
+                    "persistentvolumeclaim {pvc_name:?} became prebound to a different persistentvolume"
+                ),
+            ));
+        }
 
-        let already_named = current.spec.as_ref().and_then(|s| s.volume_name.as_deref()) == Some(pv_name);
-        if !already_named {
-            let patch = serde_json::json!({ "spec": { "volumeName": pv_name } });
-            api.patch(
-                pvc_name,
-                &PatchParams { field_manager: Some("nodescheduler".to_string()), ..Default::default() },
-                &Patch::Merge(patch),
-            )
+        let mut pv = pv_api
+            .get(pv_name)
             .await
-            .map_err(|e| Status::error(NAME, format!("claiming persistentvolume {pv_name:?} for persistentvolumeclaim {pvc_name:?}: {e}")))?;
+            .map_err(|e| Status::error(NAME, format!("reading persistentvolume {pv_name:?}: {e}")))?;
+        let existing_ref = pv.spec.as_ref().and_then(|spec| spec.claim_ref.as_ref());
+        let should_set_bound_by_controller = existing_ref.is_none();
+        let names_this_claim = existing_ref.is_some_and(|reference| {
+            reference.namespace.as_deref() == Some(pod.namespace.as_str())
+                && reference.name.as_deref() == Some(pvc_name)
+        });
+        let uid_this_claim = existing_ref
+            .and_then(|reference| reference.uid.as_deref())
+            .is_none_or(|uid| current.metadata.uid.as_deref() == Some(uid));
+        if existing_ref.is_some() && (!names_this_claim || !uid_this_claim) {
+            return Err(Status::unschedulable(
+                NAME,
+                format!("persistentvolume {pv_name:?} was claimed by another persistentvolumeclaim"),
+            ));
+        }
+
+        let already_prebound = names_this_claim
+            && existing_ref.and_then(|reference| reference.uid.as_deref())
+                == current.metadata.uid.as_deref();
+        if !already_prebound {
+            let spec = pv.spec.get_or_insert_with(Default::default);
+            spec.claim_ref = Some(ObjectReference {
+                api_version: Some("v1".to_string()),
+                kind: Some("PersistentVolumeClaim".to_string()),
+                name: Some(pvc_name.to_string()),
+                namespace: Some(pod.namespace.clone()),
+                uid: current.metadata.uid.clone(),
+                resource_version: current.metadata.resource_version.clone(),
+                ..Default::default()
+            });
+            if should_set_bound_by_controller {
+                pv.metadata
+                    .annotations
+                    .get_or_insert_with(Default::default)
+                    .insert("pv.kubernetes.io/bound-by-controller".to_string(), "yes".to_string());
+            }
+            pv_api
+                .replace(pv_name, &PostParams::default(), &pv)
+                .await
+                .map_err(|e| {
+                    Status::error(
+                        NAME,
+                        format!(
+                            "claiming persistentvolume {pv_name:?} for persistentvolumeclaim {pvc_name:?}: {e}"
+                        ),
+                    )
+                })?;
         }
 
         self.wait_until_bound(waiter, pvc_name).await

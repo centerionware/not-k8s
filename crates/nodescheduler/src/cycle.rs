@@ -869,6 +869,7 @@ mod tests;
 // the part that needs the registry.
 
 /// What a preemption attempt concluded.
+#[derive(Debug)]
 pub struct PreemptionOutcome {
     /// The node promised to the preemptor.
     pub nominated_node: String,
