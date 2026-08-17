@@ -127,6 +127,35 @@ _reorder_env_reconfiguring_tests_last() {
     TESTS_REGISTERED=("${normal[@]}" "${deferred[@]}")
 }
 
+# Apply the same only-filter and shard assignment that a real run uses, but
+# without executing any test.  CI uses this during its cheap planning job so
+# an empty shard never boots a cluster merely to discover that it has no work.
+_select_tests_for_run() {
+    if [[ -n "${SHARD_TOTAL:-}" ]]; then
+        _filter_shard "$SHARD_INDEX" "$SHARD_TOTAL"
+        log "Shard $SHARD_INDEX/$SHARD_TOTAL: ${#TESTS_REGISTERED[@]} test(s) selected"
+    fi
+
+    if [[ -n "$ONLY_PATTERN" ]]; then
+        local -a only_patterns=()
+        IFS=',' read -ra only_patterns <<< "$ONLY_PATTERN"
+        local -a kept=()
+        local name pattern matched
+        for name in "${TESTS_REGISTERED[@]}"; do
+            matched=false
+            for pattern in "${only_patterns[@]}"; do
+                if [[ "$name" == *"$pattern"* ]]; then
+                    matched=true
+                    break
+                fi
+            done
+            [[ "$matched" == true ]] && kept+=("$name")
+        done
+        TESTS_REGISTERED=("${kept[@]}")
+    fi
+    _reorder_env_reconfiguring_tests_last
+}
+
 # Round 124: how many of the shards actually install the real CSI/DRA
 # reference drivers (e2e-full-setup.sh). Fixed and small on purpose, NOT
 # "however many shards happen to draw a csi_dra test" — plain round-robin
@@ -187,11 +216,7 @@ _filter_shard() {
 }
 
 run_all_registered_tests() {
-    if [[ -n "${SHARD_TOTAL:-}" ]]; then
-        _filter_shard "$SHARD_INDEX" "$SHARD_TOTAL"
-        log "Shard $SHARD_INDEX/$SHARD_TOTAL: ${#TESTS_REGISTERED[@]} test(s) selected"
-    fi
-    _reorder_env_reconfiguring_tests_last
+    _select_tests_for_run
     # NOTK8S_E2E_MAX_FAILURES stops the whole run once this many tests
     # have failed, instead of always running every remaining test —
     # unset/0 means unlimited (the historical, still-default local
@@ -205,26 +230,7 @@ run_all_registered_tests() {
     # signal is enough to start root-causing; more than that is waste,
     # not thoroughness.
     local max_failures="${NOTK8S_E2E_MAX_FAILURES:-0}"
-    # ONLY_PATTERN may be a comma-separated list (round 123) — lets one CI
-    # dispatch cover several known-failing tests back to back instead of
-    # one dispatch per test, without giving up substring matching (each
-    # comma-separated piece is still matched the same way a bare
-    # --only=<substring> always has been). A test matching ANY piece runs.
-    local -a only_patterns=()
-    if [[ -n "$ONLY_PATTERN" ]]; then
-        IFS=',' read -ra only_patterns <<< "$ONLY_PATTERN"
-    fi
     for name in "${TESTS_REGISTERED[@]}"; do
-        if ((${#only_patterns[@]} > 0)); then
-            local matched=false
-            for p in "${only_patterns[@]}"; do
-                if [[ "$name" == *"$p"* ]]; then
-                    matched=true
-                    break
-                fi
-            done
-            [[ "$matched" == false ]] && continue
-        fi
         run_test "$name"
         if [[ "$max_failures" -gt 0 && "$TESTS_FAILED" -ge "$max_failures" ]]; then
             warn "stopping early: $TESTS_FAILED failures reached NOTK8S_E2E_MAX_FAILURES=$max_failures (${#TESTS_REGISTERED[@]} tests registered total, not all of them ran) — see the failures above/print_summary below for what's already known, rather than burning time re-discovering the same root cause across the rest of the suite."
