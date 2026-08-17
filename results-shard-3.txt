@@ -1,10 +1,10 @@
-commit: 4182e1fb52726c2cb940c7625dd5622e81b8a0c8
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32066557934
-timestamp (UTC): 2026-08-17T20:43:26Z
+commit: 76467bc559e384438128737666e52ce51ec9dd0d
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32072469509
+timestamp (UTC): 2026-08-17T21:57:12Z
 shard: 3/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786999190
+==> Test namespace: not-k8s-e2e-1787003501
 ==> 238 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 45 test(s) selected
 ▶ test_cronjob_controller_creates_a_job_on_schedule
@@ -17,9 +17,9 @@ exit code: 0
 ▶ test_datastore_expires_a_lease_and_its_keys
   ✔ PASS (1s)
 ▶ test_apiserver_crud_round_trips_through_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11898/environ: Permission denied
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13784/environ: Permission denied
 Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
-  ✔ PASS (6s)
+  ✔ PASS (5s)
 ▶ test_a_follower_forwards_writes_to_the_leader
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
@@ -45,45 +45,41 @@ Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-app
 ▶ test_crash_loop_backoff_reports_waiting_reason_and_last_state
   ✔ PASS (3s)
 ▶ test_termination_message_path_is_read_back_into_container_status
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_container_status_reports_a_real_image_id
   ✔ PASS (3s)
 ▶ test_namespace_controller_deletes_contents_before_finalizing
     (skip: nodecontroller isn't running here — deploy with --controller-manager=nodecontroller to exercise namespace finalization)
   ○ SKIP (0s)
 ▶ test_node_status_reports_runtime_handlers
-  ✔ PASS (1s)
+  ✔ PASS (0s)
 ▶ test_liveness_probe_failure_restarts_the_container
-  ✔ PASS (40s)
+  ✔ PASS (41s)
 ▶ test_grpc_probe_gates_readiness_against_a_real_grpc_server
   ✔ PASS (7s)
 ▶ test_replicaset_creates_and_scales_pods
     (skip: nodecontroller isn't running here — deploy with --controller-manager=nodecontroller to exercise these)
   ○ SKIP (0s)
 ▶ test_besteffort_pod_gets_the_certain_death_oom_score
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_scheduler_leaves_a_gated_pod_alone
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (11s)
 ▶ test_scheduler_wakes_a_pending_pod_on_a_real_event
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (81s)
 ▶ test_scheduler_honours_topology_spread
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (11s)
 ▶ test_scheduler_claims_a_static_wait_for_first_consumer_volume
-    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
-  ○ SKIP (0s)
+  ✔ PASS (7s)
 ▶ test_run_as_user_is_applied
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 ▶ test_host_users_false_gets_a_real_user_namespace
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_share_process_namespace_puts_every_container_in_one_pid_namespace
   ✔ PASS (3s)
 ▶ test_nodeport_service_is_reachable_on_the_node_ip
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 ▶ test_multiple_backends_actually_share_traffic
-  (distribution: a=16 b=24 of 40)
+  (distribution: a=24 b=16 of 40)
   (kernel has nft_numgen — expecting the native map form)
   ✔ PASS (6s)
 ▶ test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion
@@ -95,15 +91,15 @@ Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-app
 ▶ test_downward_api_volume_writes_pod_metadata
   ✔ PASS (3s)
 ▶ test_host_aliases_still_work_under_host_users_false
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_fsgroup_never_applies_to_hostpath_volumes
-  ✔ PASS (4s)
+  ✔ PASS (5s)
 ▶ test_recursive_read_only_if_possible_falls_back_without_erroring
   ✔ PASS (3s)
 ▶ test_host_path_directory_type_rejects_a_nonexistent_path
   ✔ PASS (3s)
 ▶ test_config_file_precedence_a_real_env_var_still_wins
-  ✔ PASS (2s)
+  ✔ PASS (1s)
 ▶ test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull
 ==> generating htpasswd auth for the local test registry...
 Unable to find image 'httpd:2.4-alpine' locally
@@ -115,20 +111,20 @@ e5ad846ecbb8: Pulling fs layer
 71af8d887193: Pulling fs layer
 5e8b95221646: Pulling fs layer
 ec6419fed67b: Pulling fs layer
-71af8d887193: Waiting
 5e8b95221646: Waiting
 ec6419fed67b: Waiting
-4f4fb700ef54: Verifying Checksum
-4f4fb700ef54: Download complete
+71af8d887193: Waiting
 f0c9ed0cf49e: Verifying Checksum
 f0c9ed0cf49e: Download complete
 e5ad846ecbb8: Verifying Checksum
 e5ad846ecbb8: Download complete
+4f4fb700ef54: Verifying Checksum
+4f4fb700ef54: Download complete
 f0c9ed0cf49e: Pull complete
-ec6419fed67b: Verifying Checksum
-ec6419fed67b: Download complete
 e5ad846ecbb8: Pull complete
 4f4fb700ef54: Pull complete
+ec6419fed67b: Verifying Checksum
+ec6419fed67b: Download complete
 5e8b95221646: Verifying Checksum
 5e8b95221646: Download complete
 71af8d887193: Verifying Checksum
@@ -150,15 +146,16 @@ bbbdd6c6894b: Pulling fs layer
 6d464ea18732: Waiting
 bbbdd6c6894b: Verifying Checksum
 bbbdd6c6894b: Download complete
-8e82f80af0de: Verifying Checksum
-8e82f80af0de: Download complete
 44cf07d57ee4: Verifying Checksum
 44cf07d57ee4: Download complete
-3493bf46cdec: Verifying Checksum
-3493bf46cdec: Download complete
-6d464ea18732: Download complete
+8e82f80af0de: Verifying Checksum
+8e82f80af0de: Download complete
 44cf07d57ee4: Pull complete
 bbbdd6c6894b: Pull complete
+6d464ea18732: Verifying Checksum
+6d464ea18732: Download complete
+3493bf46cdec: Verifying Checksum
+3493bf46cdec: Download complete
 8e82f80af0de: Pull complete
 3493bf46cdec: Pull complete
 6d464ea18732: Pull complete
@@ -173,7 +170,7 @@ Configure a credential helper to remove this warning. See
 https://docs.docker.com/go/credential-store/
 
 ==> writing the fake credential-provider binary and config...
-  ✔ PASS (8s)
+  ✔ PASS (12s)
 ▶ test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers
     (skip: nodecontroller isn't running here — deploy with --controller-manager=nodecontroller to exercise these)
   ○ SKIP (0s)
@@ -186,6 +183,6 @@ https://docs.docker.com/go/credential-store/
   ○ SKIP (0s)
 
 ════════════════════════════════════════
-Results: 31 passed, 0 failed, 14 skipped
+Results: 35 passed, 0 failed, 10 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786999190...
+==> Cleaning up test namespace not-k8s-e2e-1787003501...
