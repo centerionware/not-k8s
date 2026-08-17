@@ -1,39 +1,18 @@
-commit: 79a20e2a74c06b56d09ef75445dfde382146f541
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32011977482
-timestamp (UTC): 2026-08-17T08:52:38Z
+commit: 12c81b2f8b6c2022b736c8188e15a6d84f40e4bd
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32013248996
+timestamp (UTC): 2026-08-17T09:08:20Z
 shard: 3/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786956723
+==> Test namespace: not-k8s-e2e-1786957695
 ==> 237 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 45 test(s) selected
 ▶ test_namespace_controller_deletes_contents_before_finalizing
-==> WARNING: apply_manifest: kubectl apply failed — likely to surface downstream as a misleading 'pod never reached Running' instead of this real error: namespace/namespace-controller-16907-23670 created
-error: the namespace from the provided object "namespace-controller-16907-23670" does not match the namespace "not-k8s-e2e-1786956723". You must pass '--namespace=namespace-controller-16907-23670' to perform this operation.
-==> FATAL: timed out after 30s waiting for: namespace contents exist before deletion
-  ✘ FAIL (32s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 17 08:51:38 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:38.362085Z ERROR failed with status 503 Service Unavailable
-    Aug 17 08:51:38 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:38.500588Z ERROR failed with status 503 Service Unavailable
-    Aug 17 08:51:38 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:38.503111Z ERROR failed with status 503 Service Unavailable
-    Aug 17 08:51:38 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:38.506063Z ERROR failed with status 503 Service Unavailable
-    Aug 17 08:51:38 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:38.677501Z ERROR failed with status 503 Service Unavailable
-    Aug 17 08:51:38 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:38.679095Z ERROR failed with status 503 Service Unavailable
-    Aug 17 08:51:38 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:38.683116Z ERROR failed with status 503 Service Unavailable
-    Aug 17 08:51:39 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:39.001556Z ERROR failed with status 503 Service Unavailable
-    Aug 17 08:51:39 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:39.003990Z ERROR failed with status 503 Service Unavailable
-    Aug 17 08:51:39 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:39.008083Z  WARN secret watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 284 (292)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 17 08:51:39 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:39.962032Z  WARN configmap watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 284 (292)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 17 08:51:39 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:39.963219Z  WARN pod watch error; watcher will retry error=WatchError(Status { status: Some(Failure), code: 410, message: "too old resource version: 284 (292)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Expired", details: None })
-    Aug 17 08:51:58 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:51:58.298527Z  INFO CreateContainer succeeded container=busybox container_id=e49b16219706766f0bb83dd7947b966b5ccce12a6a5c8b511ae4a2fa9ceeca7c
-    Aug 17 08:52:00 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:52:00.306766Z  INFO CreateContainer succeeded container=coredns container_id=2df6cdae76157195db56face2a5504269d86efe698107c62f4588f8baaec264e
-    Aug 17 08:52:32 runnervmzvulz run-nodelet.sh[15353]: 2026-08-17T08:52:32.850462Z  INFO node status pushed
+namespace/namespace-controller-16765-27183 created
+configmap/must-be-cleaned created
+  ✔ PASS (3s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
-Failed:
-  - test_namespace_controller_deletes_contents_before_finalizing
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786956723...
+==> Cleaning up test namespace not-k8s-e2e-1786957695...
