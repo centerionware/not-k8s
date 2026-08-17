@@ -75,6 +75,7 @@ pub mod k8s_time;
 pub mod pacing;
 pub mod watch;
 pub mod wheel;
+pub mod workqueue;
 
 use anyhow::{Context, Result};
 use std::future::Future;
@@ -119,6 +120,7 @@ pub async fn run() -> Result<()> {
     install_crypto_provider();
 
     let cfg = config::Config::from_env()?;
+    watch::configure_startup_concurrency(cfg.watch_startup_concurrency);
     // All controllers, leader election, shared informers, and reconcile
     // writes use this one client. A single async rate gate at this boundary
     // prevents a controller startup or event fan-out from creating a burst

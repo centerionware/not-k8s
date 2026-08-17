@@ -377,18 +377,21 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 
     // Discovery commonly returns dozens of kinds. Starting every dynamic
     // watcher at once recreates the same apiserver burst that controller
-    // startup pacing avoids for the typed controllers. Keep a small active
-    // set and admit one more stream periodically; a watch remains in
-    // `combined` after its initial list, so this only paces admission and
-    // does not serialize steady-state event handling.
+    // startup pacing avoids for the typed controllers. Admit one stream at
+    // a time; a watch remains in `combined` after its initial list, so this
+    // only paces admission and does not serialize steady-state event
+    // handling. GC convergence is deliberately allowed to take seconds at
+    // startup rather than competing with CSI, nodelet, and user requests.
     let mut pending_streams = streams.into_iter();
     let mut combined = select_all(Vec::new());
-    for _ in 0..4 {
-        if let Some(stream) = pending_streams.next() {
-            combined.push(stream);
-        }
+    if let Some(stream) = pending_streams.next() {
+        combined.push(stream);
     }
-    let mut admit = tokio::time::interval(std::time::Duration::from_millis(250));
+    let admission_period = std::time::Duration::from_secs(1);
+    let mut admit = tokio::time::interval_at(
+        tokio::time::Instant::now() + admission_period,
+        admission_period,
+    );
 
     loop {
         tokio::select! {

@@ -150,14 +150,24 @@ is intentionally separate from `NODECONTROLLER_CPU_BUDGET_PERCENT`: network
 waits consume apiserver concurrency but are not CPU work, so a CPU percentage
 cannot by itself bound HTTP request bursts.
 
+Initial informer snapshots have a second, independent admission limit:
+`NODECONTROLLER_WATCH_STARTUP_CONCURRENCY` defaults to 2. A shared watch holds
+one permit only until its `InitDone` snapshot boundary, then returns it while
+the live watch remains active. Garbage collection admits its dynamically
+discovered kinds at one stream per second for the same reason. This limits the
+expensive startup work (and its response fan-out) without disabling a
+controller domain or imposing a permanent cap on required steady-state
+watches.
+
 The timer governor is currently the hard budget for the node-lifecycle
 polling wheel; the event controllers remain async and are protected at the
-shared API boundary. A future controller that needs high-cardinality burst
-coalescing should add a keyed, rate-limited work queue rather than calling a
-network reconcile once for every duplicate event. That distinction is
-deliberate: request admission makes the present implementation safe on a
-small control plane, while a work queue is the next optimization for
-reducing redundant decisions and writes.
+shared API boundary. High-cardinality event controllers use
+`workqueue::KeyedWorkQueue` as they are migrated, starting with the PV binder:
+watch handlers update the cache and enqueue a key, while one async worker
+reconciles the latest cached object. This removes duplicate GET/patch cycles
+from a burst without blocking a Tokio worker. Controllers not yet migrated to
+that queue must not add direct network reconciliation to a watch callback; the
+queue is the required next step for them.
 
 Implemented in `crates/nodecontroller/src/wheel.rs` (the timing wheel —
 insert/cancel/advance as plain functions over a struct, no I/O, pure and

@@ -59,6 +59,7 @@
 //! comparison available (see above) there's no meaningful ordering to rank
 //! candidates by anyway.
 
+use crate::workqueue::KeyedWorkQueue;
 use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
@@ -236,6 +237,7 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pvs: HashMap<String, PersistentVolume> = HashMap::new();
     let mut claims: HashMap<(String, String), PersistentVolumeClaim> = HashMap::new();
+    let queue = KeyedWorkQueue::default();
 
     let mut pv_stream = crate::watch::watch_persistent_volumes(&client);
     let mut pvc_stream = crate::watch::watch_persistent_volume_claims(&client);
@@ -247,7 +249,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pv))) | Some(Ok(Event::InitApply(pv))) => {
                         pvs.insert(pv.name_any(), pv);
                         for pvc in claims.values() {
-                            reconcile_claim(&client, pvc, &mut pvs).await;
+                            queue.enqueue((ns_of(pvc), pvc.name_any()));
                         }
                     }
                     Some(Ok(Event::Delete(pv))) => { pvs.remove(&pv.name_any()); }
@@ -262,12 +264,17 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         let ns = ns_of(&pvc);
                         let name = pvc.name_any();
                         claims.insert((ns, name), pvc.clone());
-                        reconcile_claim(&client, &pvc, &mut pvs).await;
+                        queue.enqueue((ns_of(&pvc), pvc.name_any()));
                     }
                     Some(Ok(Event::Delete(pvc))) => { claims.remove(&(ns_of(&pvc), pvc.name_any())); }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "pvc watch error in persistentvolume-binder-controller"),
                     None => return Ok(()),
+                }
+            }
+            key = queue.pop() => {
+                if let Some(pvc) = claims.get(&key).cloned() {
+                    reconcile_claim(&client, &pvc, &mut pvs).await;
                 }
             }
         }

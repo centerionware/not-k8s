@@ -93,6 +93,11 @@ pub struct Config {
     /// is separate from the CPU budget: an async request can consume almost
     /// no controller CPU while still occupying apiserver concurrency.
     pub api_request_interval: Duration,
+    /// Maximum number of shared informer watches allowed to perform their
+    /// initial LIST/watch-list concurrently. This is startup backpressure,
+    /// not a cap on steady-state watches: a permit is returned after that
+    /// resource's initial snapshot is complete.
+    pub watch_startup_concurrency: usize,
 
     /// Explicit override for both the CA cert and key path — both `None`
     /// (the default) means "search `defaults::CSR_SIGNING_CA_CANDIDATES`
@@ -121,6 +126,7 @@ impl Default for Config {
             cpu_budget_percent: defaults::CPU_BUDGET_PERCENT,
             jitter_fraction: defaults::JITTER_FRACTION,
             api_request_interval: Duration::from_millis(100),
+            watch_startup_concurrency: 2,
             csr_signing_ca_cert_path: None,
             csr_signing_ca_key_path: None,
         }
@@ -218,6 +224,10 @@ impl Config {
                 "NODECONTROLLER_API_REQUEST_INTERVAL_MILLIS",
                 d.api_request_interval,
             )?,
+            watch_startup_concurrency: parse_env(
+                "NODECONTROLLER_WATCH_STARTUP_CONCURRENCY",
+                d.watch_startup_concurrency,
+            )?,
             csr_signing_ca_cert_path: var("NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH"),
             csr_signing_ca_key_path: var("NODECONTROLLER_CSR_SIGNING_CA_KEY_PATH"),
         };
@@ -251,6 +261,9 @@ impl Config {
         }
         if self.api_request_interval.is_zero() {
             bail!("NODECONTROLLER_API_REQUEST_INTERVAL_MILLIS must be at least 1.");
+        }
+        if self.watch_startup_concurrency == 0 {
+            bail!("NODECONTROLLER_WATCH_STARTUP_CONCURRENCY must be at least 1.");
         }
         if self.csr_signing_ca_cert_path.is_some() != self.csr_signing_ca_key_path.is_some() {
             bail!(
@@ -319,6 +332,7 @@ impl Config {
             tick_period_ms = self.tick_period.as_millis() as u64,
             cpu_budget_percent = self.cpu_budget_percent,
             api_request_interval_ms = self.api_request_interval.as_millis() as u64,
+            watch_startup_concurrency = self.watch_startup_concurrency,
             disabled_controllers = ?self.disabled_controllers,
             "nodecontroller starting"
         );
@@ -352,6 +366,13 @@ mod tests {
     fn rejects_a_zero_api_request_interval() {
         let mut cfg = Config::default();
         cfg.api_request_interval = Duration::ZERO;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_zero_watch_startup_concurrency() {
+        let mut cfg = Config::default();
+        cfg.watch_startup_concurrency = 0;
         assert!(cfg.validate().is_err());
     }
 

@@ -33,7 +33,7 @@ use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex, OnceLock};
-use tokio::sync::{broadcast, watch as ready_watch};
+use tokio::sync::{broadcast, watch as ready_watch, Semaphore};
 
 /// Same namespace nodelet's own heartbeat Lease lives in
 /// (`crates/nodelet/src/node.rs`'s `LEASE_NS`) — this is upstream's real
@@ -45,6 +45,24 @@ pub const NODE_LEASE_NAMESPACE: &str = "kube-node-lease";
 
 const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
 const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Shared informer startup admission. A watch-list is one long-running API
+/// request, but its initial snapshot can make the apiserver do substantial
+/// work. Keeping only a small number of snapshots in flight prevents all
+/// controller domains from becoming ready in one synchronized burst. The
+/// permit is released at InitDone, so this does not serialize steady-state
+/// watches or event delivery.
+static WATCH_STARTUP_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+pub fn configure_startup_concurrency(limit: usize) {
+    let _ = WATCH_STARTUP_SEMAPHORE.set(Arc::new(Semaphore::new(limit.max(1))));
+}
+
+fn startup_semaphore() -> Arc<Semaphore> {
+    WATCH_STARTUP_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(2)))
+        .clone()
+}
 
 /// Use Kubernetes' streaming-list form for every controller watch. The
 /// default ListWatch strategy performs a separate LIST and then a WATCH;
@@ -117,6 +135,10 @@ where
 
         let task_shared = shared.clone();
         tokio::spawn(async move {
+            let mut startup_permit = Some(startup_semaphore()
+                .acquire_owned()
+                .await
+                .expect("nodecontroller watch startup semaphore was closed"));
             let stream = watcher(api, watch_config()).backoff(WatchBackoffPolicy::default());
             futures::pin_mut!(stream);
             while let Some(result) = stream.next().await {
@@ -125,8 +147,15 @@ where
                     continue;
                 };
 
+                let initial_done = matches!(&event, Event::InitDone);
                 task_shared.apply(&event);
                 let _ = task_shared.events.send(event);
+                if initial_done && startup_permit.is_some() {
+                    // Only the initial snapshot is admission-controlled. The
+                    // live watch remains active after this point, like an
+                    // upstream shared informer.
+                    drop(startup_permit.take());
+                }
             }
             tracing::warn!("shared nodecontroller watch ended");
         });
