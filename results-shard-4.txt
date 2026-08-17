@@ -1,43 +1,200 @@
 commit: 82ff40d2f8c0883dec7f339b123d5f42f472b706
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32007057470
-timestamp (UTC): 2026-08-17T07:52:03Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32007145261
+timestamp (UTC): 2026-08-17T07:58:39Z
 shard: 4/5
 exit code: 1
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786952926
+==> Test namespace: not-k8s-e2e-1786952954
 ==> 219 test(s) registered total (before sharding); running now...
 ==> Shard 4/5: 41 test(s) selected
+▶ test_installed_component_binaries_are_runnable_whatever_the_layout
+  ✔ PASS (0s)
+▶ test_datastore_creates_a_key_only_if_absent
+  ✔ PASS (0s)
+▶ test_datastore_survives_a_restart_with_its_data
+  ✔ PASS (0s)
+▶ test_apiserver_watch_delivers_through_nodestore
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/13584/environ: Permission denied
+  ✔ PASS (9s)
+▶ test_the_cluster_keeps_serving_when_a_follower_dies
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_a_partitioned_leader_steps_down_and_the_majority_elects_another
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_device_plugin_advertises_capacity_and_allocates_into_a_container
+==> installing grpcio/grpcio-tools for the fake device plugin...
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
+==> generating gRPC stubs from the vendored proto files...
+==> starting the fake device plugin (resource=fake.example.com/testdevice)...
+==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
+  ✔ PASS (104s)
+▶ test_spec_hostname_overrides_the_container_hostname
+  ✔ PASS (3s)
+▶ test_eviction_priority_tiebreak_manual_procedure
+    (skip: proving priority-based tiebreaking (round 26 — pick_eviction_candidate() ranks by spec.priority within a QoS class before falling back to usage) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with different PriorityClasses (e.g. a low-priority one and a high-priority one, or set spec.priority directly), force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the LOWER-priority pod is evicted first even if the higher-priority pod is using more memory — proof priority wins the tiebreak before usage does, matching real kubelet's rankMemoryPressure ordering. The pure ranking logic itself (priority beats usage, QoS class still outranks priority) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end.)
+  ○ SKIP (0s)
+▶ test_pod_teardown_actually_removes_the_sandbox
+  ✔ PASS (34s)
+▶ test_graceful_node_shutdown_manual_note
+    (skip: graceful node shutdown needs a real systemd-logind PrepareForShutdown signal, which only happens on an actual host shutdown/reboot — not something this suite triggers automatically. Manual spot-check: set NODELET_SHUTDOWN_GRACE_PERIOD_SECS (and optionally NODELET_SHUTDOWN_GRACE_PERIOD_CRITICAL_SECS) on nodelet, run 'loginctl list-inhibitors' and confirm nodelet holds a 'shutdown'/'delay' entry, apply a few test pods, then 'systemctl poweroff' (or 'reboot') the node and watch nodelet's logs for 'terminating pods' before the box actually goes down — non-critical pods (no system-node-critical/system-cluster-critical priorityClassName) should get preStop + termination before critical ones, all within NODELET_SHUTDOWN_GRACE_PERIOD_SECS total.)
+  ○ SKIP (0s)
+▶ test_init_containers_run_before_app_container
+  ✔ PASS (6s)
+▶ test_crash_loop_backoff_throttles_immediate_restarts
+  ✔ PASS (23s)
+▶ test_lifecycle_stop_signal_is_honored_by_the_runtime
+    (skip: no /var/lib/nodelet/pods/a32cba0d-5756-4972-8915-ac24200b6856/volumes/shared/signal.txt appeared after pod deletion — the runtime may not honor CRI's ContainerConfig.stop_signal (sent plain SIGTERM instead of the configured SIGUSR1, so the trap never fired); check runtime/cri/container_create.rs's stop_signal wiring if this is unexpected on a runtime version known to support it)
+  ○ SKIP (93s)
+▶ test_pod_condition_reports_observed_generation
+  ✔ PASS (2s)
+▶ test_pressure_conditions_are_present_and_normally_false
+  ✔ PASS (1s)
+▶ test_pod_resources_grpc_query_returns_real_data
+  ✔ PASS (2s)
+▶ test_startup_probe_failure_past_threshold_restarts_the_container
+  ✔ PASS (34s)
+▶ test_metrics_cadvisor_returns_real_container_usage
+  ✔ PASS (2s)
+▶ test_besteffort_pod_gets_the_certain_death_oom_score
+  ✔ PASS (3s)
 ▶ test_scheduler_leaves_a_gated_pod_alone
-  ✔ PASS (11s)
+  ✔ PASS (10s)
 ▶ test_scheduler_wakes_a_pending_pod_on_a_real_event
-  ✔ PASS (76s)
+  ✔ PASS (71s)
 ▶ test_scheduler_honours_topology_spread
   ✔ PASS (11s)
 ▶ test_scheduler_claims_a_static_wait_for_first_consumer_volume
 ==> FATAL: timed out after 90s waiting for: sched-static-pod to run from its static volume
-  ✘ FAIL (96s, exit 1)
+  ✘ FAIL (97s, exit 1)
   [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
   [diag] node taints: 
   [diag] nodelet tail:
-    Aug 17 07:51:42 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:42.392075Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:42 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:42.410412Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:47 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:47.364858Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:47 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:47.393838Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:47 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:47.414753Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:47 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:47.432401Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:52 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:52.389835Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:52 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:52.416543Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:52 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:52.437152Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:52 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:52.454930Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:57 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:57.413929Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:57 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:57.437687Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:57 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:57.460001Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:51:57 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:51:57.477202Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 07:52:01 runnervmzvulz run-nodelet.sh[15473]: 2026-08-17T07:52:01.314060Z  INFO node status pushed
+    Aug 17 07:57:24 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:24.134323Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:24 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:24.146900Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:28 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:28.809388Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:29 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:29.010938Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:29 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:29.154653Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:29 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:29.167260Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:33 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:33.106461Z  INFO node status pushed
+    Aug 17 07:57:33 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:33.830925Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:34 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:34.030936Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:34 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:34.174584Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:34 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:34.186264Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:38 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:38.852487Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:39 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:39.050754Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:39 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:39.194543Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+    Aug 17 07:57:39 runnervmzvulz run-nodelet.sh[15388]: 2026-08-17T07:57:39.206056Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+▶ test_run_as_user_is_applied
+  ✔ PASS (3s)
+▶ test_host_users_false_gets_a_real_user_namespace
+  ✔ PASS (2s)
+▶ test_share_process_namespace_puts_every_container_in_one_pid_namespace
+  ✔ PASS (3s)
+▶ test_nodeport_service_is_reachable_on_the_node_ip
+  ✔ PASS (3s)
+▶ test_multiple_backends_actually_share_traffic
+  (distribution: a=22 b=18 of 40)
+  (kernel has nft_numgen — expecting the native map form)
+  ✔ PASS (5s)
+▶ test_kubectl_exec_runs_a_command_and_returns_its_output
+  ✔ PASS (3s)
+▶ test_downward_api_volume_writes_pod_metadata
+  ✔ PASS (2s)
+▶ test_host_aliases_still_work_under_host_users_false
+  ✔ PASS (3s)
+▶ test_fsgroup_never_applies_to_hostpath_volumes
+  ✔ PASS (4s)
+▶ test_recursive_read_only_if_possible_falls_back_without_erroring
+  ✔ PASS (3s)
+▶ test_host_path_directory_type_rejects_a_nonexistent_path
+  ✔ PASS (2s)
+▶ test_config_file_precedence_a_real_env_var_still_wins
+  ✔ PASS (1s)
+▶ test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull
+==> generating htpasswd auth for the local test registry...
+Unable to find image 'httpd:2.4-alpine' locally
+2.4-alpine: Pulling from library/httpd
+55afa1ecc21d: Already exists
+f0c9ed0cf49e: Pulling fs layer
+e5ad846ecbb8: Pulling fs layer
+4f4fb700ef54: Pulling fs layer
+71af8d887193: Pulling fs layer
+5e8b95221646: Pulling fs layer
+ec6419fed67b: Pulling fs layer
+71af8d887193: Waiting
+5e8b95221646: Waiting
+ec6419fed67b: Waiting
+f0c9ed0cf49e: Verifying Checksum
+f0c9ed0cf49e: Download complete
+e5ad846ecbb8: Verifying Checksum
+e5ad846ecbb8: Download complete
+4f4fb700ef54: Verifying Checksum
+4f4fb700ef54: Download complete
+f0c9ed0cf49e: Pull complete
+e5ad846ecbb8: Pull complete
+4f4fb700ef54: Pull complete
+ec6419fed67b: Verifying Checksum
+ec6419fed67b: Download complete
+71af8d887193: Verifying Checksum
+71af8d887193: Download complete
+5e8b95221646: Verifying Checksum
+5e8b95221646: Download complete
+71af8d887193: Pull complete
+5e8b95221646: Pull complete
+ec6419fed67b: Pull complete
+Digest: sha256:1b766f17b84026429b7cb243317b142921b24432336e798bc881c43f45ed9567
+Status: Downloaded newer image for httpd:2.4-alpine
+==> starting a local auth-required registry:2 on port 5001...
+Unable to find image 'registry:2' locally
+2: Pulling from library/registry
+44cf07d57ee4: Pulling fs layer
+bbbdd6c6894b: Pulling fs layer
+8e82f80af0de: Pulling fs layer
+3493bf46cdec: Pulling fs layer
+6d464ea18732: Pulling fs layer
+3493bf46cdec: Waiting
+6d464ea18732: Waiting
+bbbdd6c6894b: Verifying Checksum
+bbbdd6c6894b: Download complete
+44cf07d57ee4: Verifying Checksum
+44cf07d57ee4: Download complete
+8e82f80af0de: Verifying Checksum
+8e82f80af0de: Download complete
+3493bf46cdec: Verifying Checksum
+3493bf46cdec: Download complete
+44cf07d57ee4: Pull complete
+6d464ea18732: Verifying Checksum
+6d464ea18732: Download complete
+bbbdd6c6894b: Pull complete
+8e82f80af0de: Pull complete
+3493bf46cdec: Pull complete
+6d464ea18732: Pull complete
+Digest: sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+Status: Downloaded newer image for registry:2
+==> pointing containerd at localhost:5001 as an insecure (http) registry...
+==> pushing alpine:3.20 into the local registry as localhost:5001/cred-provider-check:1...
+WARNING! Using --password via the CLI is insecure. Use --password-stdin.
+
+WARNING! Your credentials are stored unencrypted in '/home/runner/.docker/config.json'.
+Configure a credential helper to remove this warning. See
+https://docs.docker.com/go/credential-store/
+
+==> writing the fake credential-provider binary and config...
+  ✔ PASS (12s)
+▶ test_memory_manager_pins_guaranteed_containers_to_a_numa_node
+  ✔ PASS (4s)
+▶ test_limited_swap_gives_burstable_pods_proportional_swap
+  ✔ PASS (6s)
+▶ test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart
+  ✔ PASS (3s)
+▶ test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host
+    (skip: this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case (align() alone should already satisfy it, spread() never needs to trigger))
+  ○ SKIP (0s)
 
 ════════════════════════════════════════
-Results: 3 passed, 1 failed, 0 skipped
+Results: 34 passed, 1 failed, 6 skipped
 Failed:
   - test_scheduler_claims_a_static_wait_for_first_consumer_volume
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786952926...
+==> Cleaning up test namespace not-k8s-e2e-1786952954...
