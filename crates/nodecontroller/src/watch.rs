@@ -27,7 +27,12 @@ use k8s_openapi::api::storage::v1::VolumeAttachment;
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
-use kube::{Api, Client};
+use kube::{Api, Client, Resource, ResourceExt};
+use serde::de::DeserializeOwned;
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::sync::{Arc, Mutex, OnceLock};
+use tokio::sync::{broadcast, watch as ready_watch};
 
 /// Same namespace nodelet's own heartbeat Lease lives in
 /// (`crates/nodelet/src/node.rs`'s `LEASE_NS`) — this is upstream's real
@@ -83,90 +88,219 @@ impl Backoff for WatchBackoffPolicy {
     }
 }
 
-pub fn watch_nodes(client: &Client) -> BoxStream<'static, watcher::Result<Event<Node>>> {
-    let api: Api<Node> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
+/// One apiserver watch shared by every controller that consumes the same
+/// resource kind. Upstream controller-manager gets this property from its
+/// shared informer factories; without it, every nodecontroller module that
+/// needs Pods, Nodes, PVCs, and so on opens another long-lived watch. The
+/// duplicate watches were harmless against a large apiserver but exhausted
+/// the small k3s control plane's watch/concurrency budget in e2e, causing the
+/// CSI provisioner's four watches to receive HTTP 429/Retry-After responses.
+struct SharedWatch<T> {
+    objects: Mutex<HashMap<String, T>>,
+    ready: ready_watch::Sender<bool>,
+    events: broadcast::Sender<Event<T>>,
 }
+
+impl<T> SharedWatch<T>
+where
+    T: Resource + ResourceExt + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
+{
+    fn new(api: Api<T>) -> Arc<Self> {
+        let (ready, _) = ready_watch::channel(false);
+        let (events, _) = broadcast::channel(512);
+        let shared = Arc::new(Self {
+            objects: Mutex::new(HashMap::new()),
+            ready,
+            events,
+        });
+
+        let task_shared = shared.clone();
+        tokio::spawn(async move {
+            let mut stream = watcher(api, watch_config()).backoff(WatchBackoffPolicy::default());
+            while let Some(result) = stream.next().await {
+                let Ok(event) = result else {
+                    tracing::warn!("shared nodecontroller watch received an error; kube-rs will retry it");
+                    continue;
+                };
+
+                task_shared.apply(&event);
+                let _ = task_shared.events.send(event);
+            }
+            tracing::warn!("shared nodecontroller watch ended");
+        });
+
+        shared
+    }
+
+    fn object_key(object: &T) -> String {
+        format!("{}/{}", object.namespace().unwrap_or_default(), object.name_any())
+    }
+
+    fn apply(&self, event: &Event<T>) {
+        match event {
+            Event::Init => {
+                self.objects.lock().expect("shared watch object store poisoned").clear();
+                let _ = self.ready.send(false);
+            }
+            Event::InitApply(object) | Event::Apply(object) => {
+                self.objects
+                    .lock()
+                    .expect("shared watch object store poisoned")
+                    .insert(Self::object_key(object), object.clone());
+            }
+            Event::Delete(object) => {
+                self.objects
+                    .lock()
+                    .expect("shared watch object store poisoned")
+                    .remove(&Self::object_key(object));
+            }
+            Event::InitDone => {
+                let _ = self.ready.send(true);
+            }
+        }
+    }
+
+    fn subscribe(self: &Arc<Self>) -> BoxStream<'static, watcher::Result<Event<T>>> {
+        let subscription = SharedSubscription {
+            shared: self.clone(),
+            ready: self.ready.subscribe(),
+            events: self.events.subscribe(),
+            phase: SubscriptionPhase::NeedSnapshot,
+            initial: Vec::new(),
+            initial_index: 0,
+        };
+        futures::stream::unfold(subscription, |mut subscription| async move {
+            subscription.next_event().await.map(|event| (Ok(event), subscription))
+        })
+        .boxed()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SubscriptionPhase {
+    NeedSnapshot,
+    Init,
+    InitApply,
+    InitDone,
+    Live,
+}
+
+struct SharedSubscription<T>
+where
+    T: Resource + ResourceExt + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
+{
+    shared: Arc<SharedWatch<T>>,
+    ready: ready_watch::Receiver<bool>,
+    events: broadcast::Receiver<Event<T>>,
+    phase: SubscriptionPhase,
+    initial: Vec<T>,
+    initial_index: usize,
+}
+
+impl<T> SharedSubscription<T>
+where
+    T: Resource + ResourceExt + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
+{
+    async fn next_event(&mut self) -> Option<Event<T>> {
+        loop {
+            match self.phase {
+                SubscriptionPhase::NeedSnapshot => {
+                    if !*self.ready.borrow() {
+                        self.ready.changed().await.ok()?;
+                        continue;
+                    }
+
+                    self.initial = self
+                        .shared
+                        .objects
+                        .lock()
+                        .expect("shared watch object store poisoned")
+                        .values()
+                        .cloned()
+                        .collect();
+                    self.initial_index = 0;
+                    while self.events.try_recv().is_ok() {}
+                    self.phase = SubscriptionPhase::Init;
+                }
+                SubscriptionPhase::Init => {
+                    self.phase = if self.initial.is_empty() {
+                        SubscriptionPhase::InitDone
+                    } else {
+                        SubscriptionPhase::InitApply
+                    };
+                    return Some(Event::Init);
+                }
+                SubscriptionPhase::InitApply => {
+                    let object = self.initial.get(self.initial_index)?.clone();
+                    self.initial_index += 1;
+                    if self.initial_index == self.initial.len() {
+                        self.phase = SubscriptionPhase::InitDone;
+                    }
+                    return Some(Event::InitApply(object));
+                }
+                SubscriptionPhase::InitDone => {
+                    self.phase = SubscriptionPhase::Live;
+                    return Some(Event::InitDone);
+                }
+                SubscriptionPhase::Live => match self.events.recv().await {
+                    Ok(event) => return Some(event),
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        self.phase = SubscriptionPhase::NeedSnapshot;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return None,
+                },
+            }
+        }
+    }
+}
+
+macro_rules! shared_watch {
+    ($name:ident, $static_name:ident, $resource:ty) => {
+        pub fn $name(client: &Client) -> BoxStream<'static, watcher::Result<Event<$resource>>> {
+            static $static_name: OnceLock<Arc<SharedWatch<$resource>>> = OnceLock::new();
+            $static_name
+                .get_or_init(|| SharedWatch::new(Api::all(client.clone())))
+                .subscribe()
+        }
+    };
+}
+
+shared_watch!(watch_nodes, SHARED_NODES, Node);
 
 pub fn watch_node_leases(client: &Client) -> BoxStream<'static, watcher::Result<Event<Lease>>> {
     let api: Api<Lease> = Api::namespaced(client.clone(), NODE_LEASE_NAMESPACE);
     watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
-pub fn watch_namespaces(client: &Client) -> BoxStream<'static, watcher::Result<Event<Namespace>>> {
-    let api: Api<Namespace> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_namespaces, SHARED_NAMESPACES, Namespace);
 
-pub fn watch_services(client: &Client) -> BoxStream<'static, watcher::Result<Event<Service>>> {
-    let api: Api<Service> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_services, SHARED_SERVICES, Service);
 
-pub fn watch_pods(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pod>>> {
-    let api: Api<Pod> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_pods, SHARED_PODS, Pod);
 
-pub fn watch_resource_quotas(client: &Client) -> BoxStream<'static, watcher::Result<Event<ResourceQuota>>> {
-    let api: Api<ResourceQuota> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_resource_quotas, SHARED_RESOURCE_QUOTAS, ResourceQuota);
 
-pub fn watch_replica_sets(client: &Client) -> BoxStream<'static, watcher::Result<Event<ReplicaSet>>> {
-    let api: Api<ReplicaSet> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_replica_sets, SHARED_REPLICA_SETS, ReplicaSet);
 
-pub fn watch_deployments(client: &Client) -> BoxStream<'static, watcher::Result<Event<Deployment>>> {
-    let api: Api<Deployment> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_deployments, SHARED_DEPLOYMENTS, Deployment);
 
-pub fn watch_daemon_sets(client: &Client) -> BoxStream<'static, watcher::Result<Event<DaemonSet>>> {
-    let api: Api<DaemonSet> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_daemon_sets, SHARED_DAEMON_SETS, DaemonSet);
 
-pub fn watch_stateful_sets(client: &Client) -> BoxStream<'static, watcher::Result<Event<StatefulSet>>> {
-    let api: Api<StatefulSet> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_stateful_sets, SHARED_STATEFUL_SETS, StatefulSet);
 
-pub fn watch_jobs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Job>>> {
-    let api: Api<Job> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_jobs, SHARED_JOBS, Job);
 
-pub fn watch_cron_jobs(client: &Client) -> BoxStream<'static, watcher::Result<Event<CronJob>>> {
-    let api: Api<CronJob> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_cron_jobs, SHARED_CRON_JOBS, CronJob);
 
-pub fn watch_persistent_volume_claims(client: &Client) -> BoxStream<'static, watcher::Result<Event<PersistentVolumeClaim>>> {
-    let api: Api<PersistentVolumeClaim> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_persistent_volume_claims, SHARED_PVCS, PersistentVolumeClaim);
 
-pub fn watch_persistent_volumes(client: &Client) -> BoxStream<'static, watcher::Result<Event<PersistentVolume>>> {
-    let api: Api<PersistentVolume> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_persistent_volumes, SHARED_PVS, PersistentVolume);
 
-pub fn watch_volume_attachments(client: &Client) -> BoxStream<'static, watcher::Result<Event<VolumeAttachment>>> {
-    let api: Api<VolumeAttachment> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_volume_attachments, SHARED_VOLUME_ATTACHMENTS, VolumeAttachment);
 
-pub fn watch_certificate_signing_requests(client: &Client) -> BoxStream<'static, watcher::Result<Event<CertificateSigningRequest>>> {
-    let api: Api<CertificateSigningRequest> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_certificate_signing_requests, SHARED_CSRS, CertificateSigningRequest);
 
-pub fn watch_pod_disruption_budgets(client: &Client) -> BoxStream<'static, watcher::Result<Event<PodDisruptionBudget>>> {
-    let api: Api<PodDisruptionBudget> = Api::all(client.clone());
-    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
-}
+shared_watch!(watch_pod_disruption_budgets, SHARED_PDBS, PodDisruptionBudget);
 
 #[cfg(test)]
 mod tests {
