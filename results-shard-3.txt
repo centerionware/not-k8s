@@ -1,37 +1,16 @@
-commit: 374ddef6334c132d46c44ef87dc85c88b058053d
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32061077421
-timestamp (UTC): 2026-08-17T19:41:32Z
+commit: 0c454a4d9594e0dae683d195914e5c46f3e2ea22
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32064762219
+timestamp (UTC): 2026-08-17T20:20:53Z
 shard: 3/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786995593
+==> Test namespace: not-k8s-e2e-1786998043
 ==> 238 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 45 test(s) selected
 ▶ test_scheduler_claims_a_static_wait_for_first_consumer_volume
-==> FATAL: timed out after 90s waiting for: sched-static-pod to run from its static volume
-  ✘ FAIL (97s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 17 19:41:10 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:10.489460Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:10 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:10.506387Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:10 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:10.521405Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:15 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:15.452599Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:15 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:15.512651Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:15 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:15.530237Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:15 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:15.544648Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:20 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:20.476704Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:20 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:20.536062Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:20 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:20.554276Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:20 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:20.569004Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:25 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:25.500504Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:25 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:25.559973Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:25 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:25.577923Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
-    Aug 17 19:41:25 runnervmzvulz run-nodelet.sh[15564]: 2026-08-17T19:41:25.592235Z  WARN bound PersistentVolume has no .spec.csi source (an in-tree volume type isn't supported) claim=sched-static-claim volume=sched-static-pv
+  ✔ PASS (9s)
 
 ════════════════════════════════════════
-Results: 0 passed, 1 failed, 0 skipped
-Failed:
-  - test_scheduler_claims_a_static_wait_for_first_consumer_volume
+Results: 1 passed, 0 failed, 0 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786995593...
+==> Cleaning up test namespace not-k8s-e2e-1786998043...
