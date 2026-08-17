@@ -232,17 +232,38 @@ fn pod_requesting_cpu(cpu: &str) -> Pod {
 }
 
 #[test]
-fn quantity_millis_multiplies_before_truncating() {
-    // The bug: casting to i64 before multiplying by 1000 zeroed out any
-    // fractional-core value.
-    assert_eq!(quantity_millis("0.5"), 500);
-    assert_eq!(quantity_millis("1.5"), 1500);
-}
-
-#[test]
 fn a_fractional_core_scale_down_sets_the_bit() {
     let old = pod_requesting_cpu("0.9");
     let new = pod_requesting_cpu("0.5");
+    assert!(pod_action_types(&old, &new).contains(ActionType::UPDATE_POD_SCALE_DOWN));
+}
+
+#[test]
+fn scale_down_compares_the_sum_across_all_containers() {
+    let pod = |requests: &[&str]| Pod {
+        spec: Some(PodSpec {
+            containers: requests
+                .iter()
+                .enumerate()
+                .map(|(index, cpu)| k8s_openapi::api::core::v1::Container {
+                    name: format!("c{index}"),
+                    resources: Some(k8s_openapi::api::core::v1::ResourceRequirements {
+                        requests: Some(BTreeMap::from([(
+                            "cpu".to_string(),
+                            Quantity((*cpu).to_string()),
+                        )])),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let old = pod(&["500m", "500m"]);
+    let new = pod(&["0", "600m"]);
+
     assert!(pod_action_types(&old, &new).contains(ActionType::UPDATE_POD_SCALE_DOWN));
 }
 

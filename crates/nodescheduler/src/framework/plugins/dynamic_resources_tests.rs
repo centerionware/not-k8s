@@ -377,7 +377,7 @@ fn a_template_claim_must_be_controlled_by_the_pod_that_references_it() {
 
     assert_eq!(
         status.code,
-        crate::framework::Code::UnschedulableAndUnresolvable
+        crate::framework::status::Code::UnschedulableAndUnresolvable
     );
     assert!(status.reasons[0].contains("pod is not owner"));
 }

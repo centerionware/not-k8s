@@ -36,6 +36,36 @@ fn a_bind_only_extender_is_a_valid_upstream_configuration() {
 }
 
 #[test]
+fn more_than_one_bind_extender_is_rejected_like_upstream() {
+    let err = parse_extenders(
+        r#"[{"urlPrefix":"http://a","bindVerb":"bind"},{"urlPrefix":"http://b","bindVerb":"bind"}]"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("only one"), "{err}");
+}
+
+#[test]
+fn a_prioritizer_requires_a_positive_weight() {
+    let err = parse_extenders(
+        r#"[{"urlPrefix":"http://ext","prioritizeVerb":"score","weight":0}]"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("positive weight"), "{err}");
+}
+
+#[test]
+fn empty_verbs_mean_the_extension_is_not_implemented() {
+    let cfg = parse_extenders(
+        r#"[{"urlPrefix":"http://ext","filterVerb":"","bindVerb":"bind"}]"#,
+    )
+    .unwrap();
+    assert_eq!(cfg[0].filter_verb, None);
+    assert_eq!(cfg[0].bind_verb.as_deref(), Some("bind"));
+}
+
+#[test]
 fn a_preempt_verb_is_refused_by_name_rather_than_silently_ignored() {
     let err = parse_extenders(
         r#"[{"urlPrefix":"http://ext","filterVerb":"filter","preemptVerb":"preempt"}]"#,
@@ -63,6 +93,19 @@ fn managed_resources_parses_into_plain_names() {
     )
     .unwrap();
     assert_eq!(cfgs[0].managed_resources, vec!["example.com/gpu".to_string()]);
+}
+
+#[test]
+fn a_managed_resource_cannot_belong_to_two_extenders() {
+    let err = parse_extenders(
+        r#"[
+            {"urlPrefix":"http://a","filterVerb":"filter","managedResources":[{"name":"example.com/gpu"}]},
+            {"urlPrefix":"http://b","filterVerb":"filter","managedResources":[{"name":"example.com/gpu"}]}
+        ]"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("more than one extender"), "{err}");
 }
 
 #[test]

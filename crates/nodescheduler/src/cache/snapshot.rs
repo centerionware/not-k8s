@@ -65,6 +65,10 @@ pub struct Snapshot {
     /// find the few that matter.
     pub nodes_with_pods_with_affinity: Vec<Arc<NodeInfo>>,
     pub nodes_with_pods_with_required_anti_affinity: Vec<Arc<NodeInfo>>,
+    /// Cluster-wide image spread, maintained incrementally when Node status
+    /// changes. `ImageLocality` must use every node in the snapshot here,
+    /// not merely the feasible subset handed to `PreScore`.
+    pub(crate) image_node_counts: Arc<HashMap<String, i64>>,
     /// The highest generation any node in this snapshot carries. The walk
     /// stops when it reaches a node at or below this.
     generation: u64,
@@ -260,6 +264,10 @@ pub struct Cache {
     resource_claims: Arc<HashMap<String, RawResourceClaim>>,
     device_classes: Arc<HashMap<String, RawDeviceClass>>,
     resource_slices: Arc<HashMap<String, RawResourceSlice>>,
+    /// Number of Nodes advertising each image name. Node updates are rare
+    /// compared with Pod scheduling cycles, so maintaining this at the event
+    /// boundary avoids rescanning the cluster for every Pod.
+    image_node_counts: Arc<HashMap<String, i64>>,
 }
 
 impl Cache {
@@ -297,12 +305,32 @@ impl Cache {
             return;
         };
         let gen = self.next_generation();
+        let previous_images = self
+            .nodes
+            .get(&name)
+            .map(|n| n.images.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
         let mut info = self
             .nodes
             .get(&name)
             .map(|n| (**n).clone())
             .unwrap_or_default();
         info.update_from_node(node, gen);
+        let next_images = info.images.keys().cloned().collect::<Vec<_>>();
+        if previous_images != next_images {
+            let counts = Arc::make_mut(&mut self.image_node_counts);
+            for image in previous_images {
+                if let Some(count) = counts.get_mut(&image) {
+                    *count -= 1;
+                    if *count == 0 {
+                        counts.remove(&image);
+                    }
+                }
+            }
+            for image in next_images {
+                *counts.entry(image).or_default() += 1;
+            }
+        }
         info.api_object = preserve_api_object.then(|| Box::new(node.clone()));
         self.nodes.insert(name.clone(), Arc::new(info));
         self.touch(&name);
@@ -313,6 +341,15 @@ impl Cache {
     /// come back elsewhere.
     pub fn remove_node(&mut self, name: &str) {
         if let Some(node) = self.nodes.remove(name) {
+            let counts = Arc::make_mut(&mut self.image_node_counts);
+            for image in node.images.keys() {
+                if let Some(count) = counts.get_mut(image) {
+                    *count -= 1;
+                    if *count == 0 {
+                        counts.remove(image);
+                    }
+                }
+            }
             for pod in &node.pods {
                 self.pod_locations.remove(&pod.uid);
             }
@@ -569,6 +606,7 @@ impl Cache {
         snapshot.resource_claims = self.resource_claims.clone();
         snapshot.device_classes = self.device_classes.clone();
         snapshot.resource_slices = self.resource_slices.clone();
+        snapshot.image_node_counts = self.image_node_counts.clone();
         if reorder_needed {
             snapshot.nodes = zone_round_robin(&snapshot.by_name);
             snapshot.node_positions = snapshot

@@ -579,7 +579,7 @@ fn allocate_request(
     candidates: &[Candidate],
     excluded: &HashSet<DeviceId>,
     picked: HashSet<DeviceId>,
-    constraint_states: Vec<ConstraintState>,
+    constraint_state: Vec<ConstraintState>,
     out: Vec<RawDeviceRequestAllocationResult>,
     completed: Vec<Vec<RawDeviceRequestAllocationResult>>,
 ) -> Option<Vec<Vec<RawDeviceRequestAllocationResult>>> {
@@ -624,7 +624,7 @@ fn allocate_request(
             }
 
             let mut next_picked = picked.clone();
-            let mut next_states = constraint_states.clone();
+            let mut next_states = constraint_state.clone();
             let mut next_out = out.clone();
             let mut valid = true;
             for c in all {
@@ -676,7 +676,7 @@ fn allocate_request(
             candidates,
             excluded,
             picked.clone(),
-            constraint_states.clone(),
+            constraint_state.clone(),
             out.clone(),
             completed.clone(),
         ) {

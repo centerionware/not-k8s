@@ -340,6 +340,23 @@ impl crate::framework::FilterPlugin for ErrorOnOneNode {
     }
 }
 
+struct InvalidNormalizedScore;
+
+impl crate::framework::Plugin for InvalidNormalizedScore {
+    fn name(&self) -> &'static str { "InvalidNormalizedScore" }
+}
+
+impl crate::framework::ScorePlugin for InvalidNormalizedScore {
+    fn score(
+        &self,
+        _state: &CycleState,
+        _pod: &PodInfo,
+        _node: &crate::cache::NodeInfo,
+    ) -> Result<i64, Status> {
+        Ok(MAX_NODE_SCORE + 1)
+    }
+}
+
 #[tokio::test]
 async fn a_filter_error_aborts_the_cycle_even_when_another_node_passes() {
     let registry = Registry {
@@ -363,6 +380,34 @@ async fn a_filter_error_aborts_the_cycle_even_when_another_node_passes() {
         .schedule_one(&registry, &[], &pod_wanting_milli_cpu(1), &snapshot, &mut rng)
         .await;
     assert!(matches!(outcome, CycleOutcome::Error { .. }));
+}
+
+#[tokio::test]
+async fn an_out_of_range_normalized_score_aborts_instead_of_being_clamped() {
+    let registry = Registry {
+        score: vec![Box::new(InvalidNormalizedScore)],
+        ..Default::default()
+    };
+    let mut cache = Cache::new();
+    cache.upsert_node(&Node {
+        metadata: ObjectMeta { name: Some("a".to_string()), ..Default::default() },
+        ..Default::default()
+    });
+    cache.upsert_node(&Node {
+        metadata: ObjectMeta { name: Some("b".to_string()), ..Default::default() },
+        ..Default::default()
+    });
+    let snapshot = cache.snapshot();
+    let mut sched = Scheduler::new(100, 2, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = sched
+        .schedule_one(&registry, &[], &pod_wanting_milli_cpu(1), &snapshot, &mut rng)
+        .await;
+    match outcome {
+        CycleOutcome::Error { reason } => assert!(reason.contains("outside [0, 100]"), "{reason}"),
+        other => panic!("invalid plugin score must abort the cycle, got {other:?}"),
+    }
 }
 
 #[tokio::test]

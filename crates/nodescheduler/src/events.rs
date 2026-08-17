@@ -295,54 +295,14 @@ pub fn pod_action_types(old: &Pod, new: &Pod) -> ActionType {
 
 /// Whether any container's requests got smaller.
 fn pod_requests_decreased(old: &Pod, new: &Pod) -> bool {
-    let old_r = pod_request_totals(old);
-    let new_r = pod_request_totals(new);
+    let old_r = crate::cache::pod::pod_requests(old);
+    let new_r = crate::cache::pod::pod_requests(new);
     // A key the new spec dropped entirely is a decrease too — from whatever
     // it was to zero — the same as a key whose value shrank.
-    old_r.iter().any(|(k, old_v)| match new_r.get(k) {
-        Some(new_v) => quantity_millis(new_v) < quantity_millis(old_v),
-        None => true,
-    })
-}
-
-fn pod_request_totals(pod: &Pod) -> BTreeMap<String, String> {
-    let mut out: BTreeMap<String, String> = BTreeMap::new();
-    let Some(spec) = pod.spec.as_ref() else {
-        return out;
-    };
-    for c in &spec.containers {
-        let Some(req) = c.resources.as_ref().and_then(|r| r.requests.as_ref()) else {
-            continue;
-        };
-        for (k, v) in req {
-            // Only used for a "did it shrink" comparison, so the last writer
-            // per key is fine — a real sum lives in cache::pod.
-            out.insert(k.clone(), v.0.clone());
-        }
-    }
-    out
-}
-
-/// Coarse quantity parse, good enough for "is this smaller than that".
-///
-/// The real resource arithmetic lives in `cache::pod`; this exists only so a
-/// scale-down can be detected without pulling that in, and deliberately
-/// returns `None`-like 0 on anything it cannot read rather than guessing.
-fn quantity_millis(q: &str) -> i64 {
-    let q = q.trim();
-    if let Some(num) = q.strip_suffix('m') {
-        return num.parse::<i64>().unwrap_or(0);
-    }
-    let (num, mult) = match q {
-        _ if q.ends_with("Ki") => (&q[..q.len() - 2], 1024_i64),
-        _ if q.ends_with("Mi") => (&q[..q.len() - 2], 1024 * 1024),
-        _ if q.ends_with("Gi") => (&q[..q.len() - 2], 1024 * 1024 * 1024),
-        _ => (q, 1),
-    };
-    // Multiply by 1000 *before* truncating to i64 — casting first zeroed out
-    // any fractional-core value (0.5 -> 0, 1.5 -> 1000), so a scale-down
-    // like 0.9 -> 0.5 compared 0 < 0 and was never detected.
-    num.parse::<f64>().map(|n| (n * mult as f64 * 1000.0) as i64).unwrap_or(0)
+    old_r
+        .names()
+        .into_iter()
+        .any(|name| new_r.get(&name) < old_r.get(&name))
 }
 
 /// Did anything a scheduler could plausibly care about change, beyond the

@@ -221,6 +221,14 @@ where
     // Partition by PDB, then order each part by importance.
     potential.sort_by(|a, b| more_important(a, b));
 
+    // Upstream refuses a preemption candidate with zero victims. Reaching
+    // this path means the node was rejected earlier; if removing no pod
+    // changes its state, nominating it cannot make progress (an extender-only
+    // rejection is the common case) and would loop forever.
+    if potential.is_empty() {
+        return None;
+    }
+
     let mut violating: Vec<&PodInfo> = Vec::new();
     let mut non_violating: Vec<&PodInfo> = Vec::new();
     for p in &potential {

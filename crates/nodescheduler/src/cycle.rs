@@ -306,6 +306,11 @@ impl Scheduler {
         }
 
         let mut state = CycleState::default();
+        // ImageLocality's upstream implementation reads the full scheduler
+        // snapshot from its framework handle during Score. Preserve that
+        // contract even though later filtering passes only feasible nodes to
+        // PreScore; the summary itself is maintained at Node-watch time.
+        crate::framework::plugins::image_locality::prepare_state(&mut state, snapshot);
 
         // ── PreFilter ───────────────────────────────────────────────────
         let mut restricted: Option<Vec<String>> = None;
@@ -354,11 +359,20 @@ impl Scheduler {
         // score, stop at one" short-circuit (`registry.score.is_empty()`)
         // would strand an extender-only prioritizer at a single candidate
         // before it ever got a say.
-        let any_prioritizer = extenders.iter().any(|e| e.config.prioritize_verb.is_some());
+        let has_extender_filter_or_scoring = extenders.iter().any(|e| {
+            e.config.filter_verb.is_some() || e.config.prioritize_verb.is_some()
+        });
 
         // ── Filter ──────────────────────────────────────────────────────
         let (feasible, node_statuses, processed) =
-            self.find_feasible_nodes(registry, &mut state, pod, snapshot, restricted.as_deref(), any_prioritizer);
+            self.find_feasible_nodes(
+                registry,
+                &mut state,
+                pod,
+                snapshot,
+                restricted.as_deref(),
+                has_extender_filter_or_scoring,
+            );
 
         self.next_start_node_index =
             advance_start_index(self.next_start_node_index, processed, snapshot.num_nodes());
@@ -449,6 +463,7 @@ impl Scheduler {
         // extender configures `prioritizeVerb` — `any_prioritizer` above is
         // exactly what let `find_feasible_nodes` collect more than one
         // candidate in the first place.
+        let any_prioritizer = extenders.iter().any(|e| e.config.prioritize_verb.is_some());
         if feasible.len() == 1 || (registry.score.is_empty() && !any_prioritizer) {
             return (CycleOutcome::Scheduled { node: feasible[0].name.clone() }, state);
         }
@@ -488,9 +503,21 @@ impl Scheduler {
             }
             let weight = plugin.weight();
             for (total, score) in totals.iter_mut().zip(raw.iter()) {
-                // Clamp before weighting: a plugin whose normalize is wrong
-                // must not be able to swamp every other plugin's contribution.
-                total.1 += (*score).clamp(0, MAX_NODE_SCORE) * weight;
+                // Upstream rejects an invalid normalized score as a framework
+                // error. Silently clamping it can select a different node and
+                // hides a broken plugin configuration.
+                if !(0..=MAX_NODE_SCORE).contains(score) {
+                    return (
+                        CycleOutcome::Error {
+                            reason: format!(
+                                "plugin {:?} returned score {score} outside [0, {MAX_NODE_SCORE}] after normalizing",
+                                plugin.name()
+                            ),
+                        },
+                        state,
+                    );
+                }
+                total.1 = total.1.saturating_add(*score * weight);
             }
         }
 
@@ -506,25 +533,28 @@ impl Scheduler {
         // pod still gets placed using whatever scores plugins and any other
         // extenders already produced.
         let refs: Vec<&NodeInfo> = feasible.iter().map(|n| n.as_ref()).collect();
-        for extender in extenders {
-            if !extender.config.applies_to(pod) {
-                continue; // managedResources set, and pod requests none of them
-            }
-            match extender.prioritize(pod, &refs).await {
+        let calls = extenders
+            .iter()
+            .filter(|extender| extender.config.applies_to(pod))
+            .map(|extender| {
+                let refs = refs.as_slice();
+                async move { (extender, extender.prioritize(pod, refs).await) }
+            });
+        for (extender, result) in futures::future::join_all(calls).await {
+            match result {
                 Ok(Some(scores)) => {
                     for (host, score) in scores {
                         if let Some(total) = totals.iter_mut().find(|(n, _)| *n == host) {
-                            total.1 += score;
+                            total.1 = total.1.saturating_add(score);
                         }
                     }
                 }
                 Ok(None) => {} // this extender has no prioritizeVerb configured
                 Err(e) => {
-                    if extender.config.ignorable {
-                        tracing::warn!(extender = %extender.config.url_prefix, error = %e, "ignorable extender prioritize call failed; continuing without it");
-                    } else {
-                        return (CycleOutcome::Error { reason: e.to_string() }, state);
-                    }
+                    // Upstream ignores Prioritize failures for every extender,
+                    // irrespective of `ignorable`; Filter and preemption are
+                    // the phases where that flag controls fatality.
+                    tracing::warn!(extender = %extender.config.url_prefix, error = %e, "extender prioritize call failed; continuing without its score");
                 }
             }
         }
@@ -552,11 +582,11 @@ impl Scheduler {
         pod: &PodInfo,
         snapshot: &Snapshot,
         restricted: Option<&[String]>,
-        any_prioritizer: bool,
+        has_extender_filter_or_scoring: bool,
     ) -> (Vec<Arc<NodeInfo>>, NodeToStatus, usize) {
         let all = snapshot.nodes();
         let num_all = all.len();
-        let wanted = if registry.score.is_empty() && !any_prioritizer {
+        let wanted = if registry.score.is_empty() && !has_extender_filter_or_scoring {
             // With nothing to compare on, the first feasible node is as good
             // as the best one, so stop at one. An extender's own
             // `prioritizeVerb` counts as "something to compare on" even when

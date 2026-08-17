@@ -222,6 +222,18 @@ fn a_pod_at_equal_priority_is_never_a_victim() {
 }
 
 #[test]
+fn a_node_with_no_lower_priority_victim_is_not_a_preemption_candidate() {
+    // This can happen when an HTTP extender, rather than an in-tree Filter,
+    // rejected the node. Nominating it with an empty victim list makes no
+    // progress and retries the same failed placement indefinitely.
+    let node = node_with(Vec::new(), 1000);
+    let p = preemptor(100, 100);
+    let mut budgets = Vec::new();
+
+    assert!(select_victims_on_node(&p, &node, &mut budgets, |_| true).is_none());
+}
+
+#[test]
 fn the_least_important_pod_is_taken_first() {
     // Two candidates, only one needs to go: the lower-priority one.
     let node = node_with(vec![victim("important", 50, 0, 500), victim("minor", 1, 0, 500)], 1000);

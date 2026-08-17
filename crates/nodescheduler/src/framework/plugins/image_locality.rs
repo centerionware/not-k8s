@@ -29,10 +29,11 @@
 //! `MAX_CONTAINER_THRESHOLD` (1000 MB) are capped, so one enormous image
 //! cannot swamp every other consideration.
 
-use crate::cache::{NodeInfo, PodInfo};
+use crate::cache::{NodeInfo, PodInfo, Snapshot};
 use crate::framework::status::Status;
-use crate::framework::{CycleState, Plugin, PreScorePlugin, ScorePlugin, MAX_NODE_SCORE};
+use crate::framework::{CycleState, Plugin, ScorePlugin, MAX_NODE_SCORE};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub const NAME: &str = "ImageLocality";
 
@@ -41,15 +42,11 @@ const MIN_THRESHOLD: i64 = 23 * 1024 * 1024;
 /// Per-container cap, so one huge image cannot dominate the whole score.
 const MAX_CONTAINER_THRESHOLD: i64 = 1000 * 1024 * 1024;
 
-/// Captured once per cycle for the spread ratio. `NodeInfo::images`'
-/// `ImageState::num_nodes` is always `1` (a per-node projection has no way
-/// to know the cluster-wide count on its own) — `image_node_counts` is the
-/// real cluster-wide count, computed here from the actual feasible node set
-/// `PreScore` is handed, the same one `Snapshot::nodes_with_image` would
-/// answer for the whole cluster.
+/// Captured once per cycle for the spread ratio. This is an `Arc` clone of
+/// the cache's incrementally maintained summary, so preparing it is O(1).
 struct PreScoreState {
     total_nodes: i64,
-    image_node_counts: HashMap<String, i64>,
+    image_node_counts: Arc<HashMap<String, i64>>,
 }
 
 pub struct ImageLocality;
@@ -61,17 +58,17 @@ impl Plugin for ImageLocality {
     // A pure scorer: it never rejects, so nothing can be stranded by it.
 }
 
-impl PreScorePlugin for ImageLocality {
-    fn pre_score(&self, state: &mut CycleState, _pod: &PodInfo, nodes: &[&NodeInfo]) -> Status {
-        let mut image_node_counts: HashMap<String, i64> = HashMap::new();
-        for node in nodes {
-            for image in node.images.keys() {
-                *image_node_counts.entry(image.clone()).or_default() += 1;
-            }
-        }
-        state.write(NAME, PreScoreState { total_nodes: nodes.len() as i64, image_node_counts });
-        Status::success()
-    }
+/// Upstream reads this through the scheduler framework's snapshot handle in
+/// `Score`. Our framework keeps the snapshot out of plugin signatures, so
+/// the cycle writes the same immutable data into CycleState once instead.
+pub(crate) fn prepare_state(state: &mut CycleState, snapshot: &Snapshot) {
+    state.write(
+        NAME,
+        PreScoreState {
+            total_nodes: snapshot.num_nodes() as i64,
+            image_node_counts: snapshot.image_node_counts.clone(),
+        },
+    );
 }
 
 impl ScorePlugin for ImageLocality {
@@ -91,7 +88,9 @@ impl ScorePlugin for ImageLocality {
                 .copied()
                 .unwrap_or(1)
                 .clamp(1, total_nodes);
-            sum += present.size_bytes * spread / total_nodes;
+            let contribution = (present.size_bytes as f64 * spread as f64 / total_nodes as f64)
+                as i64;
+            sum = sum.saturating_add(contribution);
         }
 
         Ok(scaled_image_score(sum, pod.container_count))
@@ -143,12 +142,23 @@ mod tests {
         p
     }
 
-    /// Runs the real `PreScore` over `nodes` — the cluster-wide count each
-    /// test wants (`image_node_counts`) comes from how many of `nodes`
-    /// actually hold the image, not a hand-set fixture field.
+    /// Builds the same cluster-wide summary the cache maintains at Node-watch
+    /// time. Tests use this helper because they intentionally bypass Cache.
     fn state_after_prescore(nodes: &[&NodeInfo]) -> CycleState {
+        let mut counts = HashMap::new();
+        for node in nodes {
+            for image in node.images.keys() {
+                *counts.entry(image.clone()).or_default() += 1;
+            }
+        }
         let mut s = CycleState::default();
-        ImageLocality.pre_score(&mut s, &pod("p"), nodes);
+        s.write(
+            NAME,
+            PreScoreState {
+                total_nodes: nodes.len() as i64,
+                image_node_counts: Arc::new(counts),
+            },
+        );
         s
     }
 
@@ -256,7 +266,7 @@ mod tests {
         let mut state = CycleState::default();
         state.write(
             NAME,
-            PreScoreState { total_nodes: 3, image_node_counts: HashMap::from([("app:v1".to_string(), 99)]) },
+            PreScoreState { total_nodes: 3, image_node_counts: Arc::new(HashMap::from([("app:v1".to_string(), 99)])) },
         );
 
         let score = ImageLocality.score(&state, &p, &n).unwrap();
@@ -265,10 +275,9 @@ mod tests {
 
     #[test]
     fn prescore_records_the_cluster_size_the_ratio_needs() {
-        let mut state = CycleState::default();
         let a = node("a");
         let b = node("b");
-        ImageLocality.pre_score(&mut state, &pod("p"), &[&a, &b]);
+        let state = state_after_prescore(&[&a, &b]);
 
         assert_eq!(state.read::<PreScoreState>(NAME).map(|s| s.total_nodes), Some(2));
     }
@@ -278,8 +287,7 @@ mod tests {
         let a = node_holding("a", &[("app:v1", 500 * MB)]);
         let b = node_holding("b", &[("app:v1", 500 * MB)]);
         let c = node("c");
-        let mut state = CycleState::default();
-        ImageLocality.pre_score(&mut state, &pod("p"), &[&a, &b, &c]);
+        let state = state_after_prescore(&[&a, &b, &c]);
 
         assert_eq!(
             state.read::<PreScoreState>(NAME).and_then(|s| s.image_node_counts.get("app:v1")).copied(),

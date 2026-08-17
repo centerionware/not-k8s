@@ -33,12 +33,9 @@ use std::sync::Arc;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ImageState {
     pub size_bytes: i64,
-    /// Always `1` here — a single node's own projection has no way to know
-    /// the cluster-wide count. `image_locality.rs`'s `pre_score` computes
-    /// the real cluster-wide count itself (from the feasible node set
-    /// `PreScore` is handed) rather than reading this field; kept for the
-    /// shape symmetry with upstream's own per-node `ImageStateSummary` and
-    /// because test fixtures still construct it directly.
+    /// Kept for fixture/source-shape compatibility. The authoritative
+    /// cluster-wide count lives in `Snapshot::image_node_counts`, because a
+    /// per-node projection cannot update every other Node cheaply.
     pub num_nodes: i64,
 }
 

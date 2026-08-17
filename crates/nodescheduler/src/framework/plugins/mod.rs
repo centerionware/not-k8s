@@ -203,7 +203,6 @@ pub fn default_registry(
         pre_score: vec![
             Box::new(taint_toleration::TaintToleration),
             Box::new(node_affinity::NodeAffinity::default()),
-            Box::new(image_locality::ImageLocality),
             Box::new(resources_fit.clone()),
             Box::new(
                 node_resources_balanced_allocation::NodeResourcesBalancedAllocation::default(),

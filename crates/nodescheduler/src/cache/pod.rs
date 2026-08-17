@@ -528,7 +528,7 @@ impl PodInfo {
         let mut host_ports = Vec::new();
         let mut images = Vec::new();
         for c in spec.containers.iter().chain(spec.init_containers.iter().flatten()) {
-            images.push(c.image.clone().unwrap_or_default());
+            images.push(normalized_image_name(&c.image.clone().unwrap_or_default()));
             for p in c.ports.iter().flatten() {
                 // hostPort 0 means "unset", not "port zero".
                 let Some(hp) = p.host_port else { continue };
@@ -636,6 +636,17 @@ impl PodInfo {
     }
 }
 
+/// Match kube-scheduler's CRI image-name normalization: a reference without
+/// a tag after its final slash implicitly means `:latest`. A registry port
+/// (`registry:5000/image`) is not itself an image tag.
+fn normalized_image_name(name: &str) -> String {
+    let needs_latest = match name.rfind(':') {
+        None => true,
+        Some(colon) => name.rfind('/').is_some_and(|slash| colon <= slash),
+    };
+    if needs_latest { format!("{name}:latest") } else { name.to_string() }
+}
+
 /// Pull a [`LegacyVolumeId`] out of a pod's volume source, if it is one of
 /// the five kinds `VolumeRestrictions` still checks. Every other volume type
 /// — including every CSI volume, which is what this project's own reference
@@ -687,24 +698,90 @@ pub fn pod_requests(pod: &Pod) -> Resources {
         return Resources::default();
     };
 
+    // InPlacePodVerticalScaling is GA and enabled in 1.33. During a resize,
+    // scheduling must reserve the maximum of desired, actually applied, and
+    // allocated resources so neither an unfinished scale-up nor a deferred
+    // scale-down makes the node look artificially empty. If kubelet declared
+    // the resize infeasible, upstream stops considering the unattainable new
+    // spec and uses max(actual, allocated) instead.
+    let resize_infeasible = pod
+        .status
+        .as_ref()
+        .and_then(|status| status.conditions.as_ref())
+        .into_iter()
+        .flatten()
+        .any(|condition| {
+            condition.type_ == "PodResizePending" && condition.reason.as_deref() == Some("Infeasible")
+        });
+    let statuses: BTreeMap<&str, &k8s_openapi::api::core::v1::ContainerStatus> = pod
+        .status
+        .as_ref()
+        .into_iter()
+        .flat_map(|status| {
+            status
+                .container_statuses
+                .iter()
+                .flatten()
+                .chain(status.init_container_statuses.iter().flatten())
+        })
+        .map(|status| (status.name.as_str(), status))
+        .collect();
+
+    let effective = |container: &k8s_openapi::api::core::v1::Container,
+                     use_status: bool| {
+        let desired = container
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.requests.as_ref())
+            .map(Resources::from_quantities)
+            .unwrap_or_default();
+        if !use_status {
+            return desired;
+        }
+        let Some(status) = statuses.get(container.name.as_str()) else {
+            return desired;
+        };
+        if status.resources.is_none() {
+            return desired;
+        }
+        let actual = status
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.requests.as_ref())
+            .map(Resources::from_quantities)
+            .unwrap_or_default();
+        let allocated = status
+            .allocated_resources
+            .as_ref()
+            .map(Resources::from_quantities)
+            .unwrap_or_default();
+        let mut result = if resize_infeasible { actual.clone() } else { desired };
+        result.max_with(&actual);
+        result.max_with(&allocated);
+        result
+    };
+
     let mut sum = Resources::default();
     for c in &spec.containers {
-        if let Some(req) = c.resources.as_ref().and_then(|r| r.requests.as_ref()) {
-            sum.add(&Resources::from_quantities(req));
-        }
+        sum.add(&effective(c, true));
     }
 
+    let mut restartable_init_sum = Resources::default();
     let mut init_max = Resources::default();
     for c in spec.init_containers.iter().flatten() {
-        let Some(req) = c.resources.as_ref().and_then(|r| r.requests.as_ref()) else {
-            continue;
-        };
-        let r = Resources::from_quantities(req);
-        if c.restart_policy.as_deref() == Some("Always") {
+        let restartable = c.restart_policy.as_deref() == Some("Always");
+        let r = effective(c, restartable);
+        let mut phase = r.clone();
+        if restartable {
             sum.add(&r);
+            restartable_init_sum.add(&r);
+            phase = restartable_init_sum.clone();
         } else {
-            init_max.max_with(&r);
+            // Every earlier restartable init container is still running while
+            // this ordinary init container executes.
+            phase.add(&restartable_init_sum);
         }
+        init_max.max_with(&phase);
     }
 
     sum.max_with(&init_max);

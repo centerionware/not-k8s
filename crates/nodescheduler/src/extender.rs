@@ -18,13 +18,9 @@
 //!
 //! # What this does not implement
 //!
-//! An extender's `bindVerb` (taking over `Bind` from `DefaultBinder`) and
-//! its preemption verb are refused at config-parse time — `Config::from_env`
-//! errors naming the field, rather than silently accepting a config it would
-//! ignore. Both are exceptionally rare in real deployments (most extenders
-//! that exist at all only implement Filter/Prioritize), and getting them
-//! silently wrong — a bind that never happens, or a preemption decision the
-//! extender never saw — is a worse failure mode than refusing to start.
+//! An extender's `bindVerb` is supported and runs before framework Bind
+//! plugins, exactly like upstream. The preemption verb and custom TLS config
+//! are still refused at config-parse time rather than silently ignored.
 //!
 //! # Pod/Node fidelity
 //!
@@ -133,14 +129,30 @@ fn default_timeout_seconds() -> u64 {
     5
 }
 
-/// Parse `NODESCHEDULER_EXTENDERS_JSON` into configs this crate can act on —
-/// refusing `bindVerb`/`preemptVerb`/`tlsConfig` by name rather than
-/// silently ignoring them, per this module's header.
+/// Parse `NODESCHEDULER_EXTENDERS_JSON` into configs this crate can act on.
 pub fn parse_extenders(raw: &str) -> anyhow::Result<Vec<ExtenderConfig>> {
     let parsed: Vec<RawExtenderConfig> = serde_json::from_str(raw)
         .map_err(|e| anyhow::anyhow!("NODESCHEDULER_EXTENDERS_JSON is not a valid extender array: {e}"))?;
+    let binders = parsed
+        .iter()
+        .filter(|r| r.bind_verb.as_deref().is_some_and(|verb| !verb.is_empty()))
+        .count();
+    if binders > 1 {
+        anyhow::bail!(
+            "NODESCHEDULER_EXTENDERS_JSON has {binders} extenders implementing bindVerb; upstream permits only one"
+        );
+    }
+    let mut managed = std::collections::HashSet::new();
     let mut out = Vec::with_capacity(parsed.len());
-    for r in parsed {
+    for mut r in parsed {
+        // The upstream config types use strings where an empty value means
+        // "extension not implemented". `Option<String>` preserves the
+        // useful missing/present distinction during serde, then normalizes
+        // the empty spelling here to the same runtime meaning.
+        r.filter_verb = r.filter_verb.filter(|verb| !verb.is_empty());
+        r.prioritize_verb = r.prioritize_verb.filter(|verb| !verb.is_empty());
+        r.bind_verb = r.bind_verb.filter(|verb| !verb.is_empty());
+        r.preempt_verb = r.preempt_verb.filter(|verb| !verb.is_empty());
         if r.preempt_verb.is_some() {
             anyhow::bail!(
                 "extender {:?} sets preemptVerb, which this scheduler does not implement — \
@@ -163,6 +175,21 @@ pub fn parse_extenders(raw: &str) -> anyhow::Result<Vec<ExtenderConfig>> {
                  called for anything.",
                 r.url_prefix
             );
+        }
+        if r.prioritize_verb.is_some() && r.weight <= 0 {
+            anyhow::bail!(
+                "extender {:?} has prioritizeVerb but weight={} — upstream requires a positive weight",
+                r.url_prefix,
+                r.weight,
+            );
+        }
+        for resource in &r.managed_resources {
+            if !managed.insert(resource.name.clone()) {
+                anyhow::bail!(
+                    "managed resource {:?} is listed by more than one extender",
+                    resource.name,
+                );
+            }
         }
         out.push(ExtenderConfig {
             url_prefix: r.url_prefix,
@@ -358,6 +385,15 @@ impl Extender {
             // would make a `FailedNodes`-only response a no-op.
             Vec::new()
         };
+        let supplied: std::collections::HashSet<&str> =
+            nodes.iter().map(|node| node.name.as_str()).collect();
+        if let Some(name) = passed.iter().find(|name| !supplied.contains(name.as_str())) {
+            anyhow::bail!(
+                "extender {:?} claims filtered node {:?}, which was not in its input node list",
+                self.config.url_prefix,
+                name,
+            );
+        }
 
         Ok(Some(FilterOutcome {
             passed,
@@ -394,7 +430,13 @@ impl Extender {
         Ok(Some(
             result
                 .into_iter()
-                .map(|h| (h.host, h.score * self.config.weight * (MAX_NODE_SCORE / MAX_EXTENDER_PRIORITY)))
+                .map(|h| {
+                    let score = h
+                        .score
+                        .saturating_mul(self.config.weight)
+                        .saturating_mul(MAX_NODE_SCORE / MAX_EXTENDER_PRIORITY);
+                    (h.host, score)
+                })
                 .collect(),
         ))
     }
