@@ -819,13 +819,30 @@ impl Scheduler {
             .lock()
             .unwrap()
             .nominated_node(&pod.uid)
-            .map(str::to_string);
+            .map(str::to_string)
+            .or_else(|| pod.nominated_node_name.clone());
         let draining = nominated
             .as_deref()
             .and_then(|n| snapshot.node(n))
-            .map(|n| n.pods.iter().any(|p| p.priority < pod.priority))
+            .map(|n| {
+                n.pods
+                    .iter()
+                    .any(|p| p.priority < pod.priority && p.terminating_by_preemption)
+            })
             .unwrap_or(false);
-        if eligible_to_preempt(pod.preemption_policy.as_deref(), draining, false).is_err() {
+        let nominated_unresolvable = nominated
+            .as_deref()
+            .and_then(|node| node_statuses.for_node(node))
+            .is_some_and(|status| {
+                status.code == crate::framework::status::Code::UnschedulableAndUnresolvable
+            });
+        if eligible_to_preempt(
+            pod.preemption_policy.as_deref(),
+            draining,
+            nominated_unresolvable,
+        )
+        .is_err()
+        {
             return Ok(None);
         }
 

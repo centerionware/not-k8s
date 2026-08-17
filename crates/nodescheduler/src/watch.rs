@@ -1361,6 +1361,9 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, sweep: &mut RelistSweep
                     // It may have been queued before it was placed — by us, or
                     // by another scheduler that got there first.
                     targets.queue.remove(&info.uid);
+                    // A real binding completes any prior nomination. This is
+                    // also needed when another scheduler wins the bind race.
+                    targets.nominator.lock().unwrap().remove(&info.uid);
                     // The informer delivering the real bound object is what
                     // `cache/assume.rs`'s doc comment calls "superseded by
                     // fact" — this is that moment. A pod this instance never
@@ -1384,6 +1387,15 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, sweep: &mut RelistSweep
                     }
                 }
                 PodRoute::Queue => {
+                    // Reconstruct nominations from persisted Pod status on
+                    // every relist and update. Without this, restarting the
+                    // scheduler forgets already-promised capacity and can
+                    // preempt a second victim set for the same pod.
+                    if let Some(node) = &info.nominated_node_name {
+                        targets.nominator.lock().unwrap().nominate(info.clone(), node);
+                    } else {
+                        targets.nominator.lock().unwrap().remove(&info.uid);
+                    }
                     // A first sighting is an arrival; anything else is an
                     // edit. Conflating them is a hot loop — see
                     // SchedulingQueue::update, which this exists to call.
@@ -1421,6 +1433,8 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, sweep: &mut RelistSweep
                     }
                 }
                 PodRoute::Ignore => {
+                    targets.queue.remove(&info.uid);
+                    targets.nominator.lock().unwrap().remove(&info.uid);
                     // An unplaced pod we are deliberately not touching,
                     // because another scheduler's profile owns it. Logged
                     // because "ignored" and "never arrived" are

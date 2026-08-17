@@ -436,6 +436,12 @@ pub struct PodInfo {
     pub attempts: u32,
     /// Set by preemption; the node this pod has been promised.
     pub nominated_node_name: Option<String>,
+    /// The pod is being terminated by scheduler preemption. Upstream only
+    /// suppresses a second preemption attempt while a lower-priority pod on
+    /// the nominated node has both a deletion timestamp and the
+    /// `DisruptionTarget=True, reason=PreemptionByScheduler` condition; an
+    /// unrelated user deletion must not hold the preemptor back.
+    pub terminating_by_preemption: bool,
     /// Existing PodScheduled condition, retained so reporting can preserve
     /// lastTransitionTime when the status remains False. Upstream changes
     /// that timestamp only when the condition status actually transitions.
@@ -624,6 +630,18 @@ impl PodInfo {
                 .status
                 .as_ref()
                 .and_then(|s| s.nominated_node_name.clone()),
+            terminating_by_preemption: meta.deletion_timestamp.is_some()
+                && pod
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_ref())
+                    .into_iter()
+                    .flatten()
+                    .any(|condition| {
+                        condition.type_ == "DisruptionTarget"
+                            && condition.status == "True"
+                            && condition.reason.as_deref() == Some("PreemptionByScheduler")
+                    }),
             pod_scheduled_condition: pod
                 .status
                 .as_ref()

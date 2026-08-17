@@ -76,8 +76,34 @@ impl ExtenderConfig {
     /// Whether this extender should be consulted for `pod` at all — see
     /// `managed_resources`'s doc comment.
     pub fn applies_to(&self, pod: &PodInfo) -> bool {
-        self.managed_resources.is_empty()
-            || self.managed_resources.iter().any(|r| pod.requests.extended.contains_key(r))
+        if self.managed_resources.is_empty() {
+            return true;
+        }
+        // Upstream's IsInterested checks both requests and limits on regular
+        // and init containers. Admission normally copies an extended-resource
+        // limit into requests, but the extender contract must remain correct
+        // for objects which bypassed or predate that defaulting.
+        if let Some(api) = &pod.api_object {
+            if let Some(spec) = &api.spec {
+                let interested = spec
+                    .containers
+                    .iter()
+                    .chain(spec.init_containers.iter().flatten())
+                    .filter_map(|container| container.resources.as_ref())
+                    .flat_map(|resources| {
+                        resources
+                            .requests
+                            .iter()
+                            .flatten()
+                            .chain(resources.limits.iter().flatten())
+                    })
+                    .any(|(resource, _)| self.managed_resources.contains(resource));
+                if interested {
+                    return true;
+                }
+            }
+        }
+        self.managed_resources.iter().any(|r| pod.requests.extended.contains_key(r))
     }
 }
 
@@ -778,7 +804,10 @@ impl Extender {
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("calling extender {url:?}: {e}"))?;
-        if !resp.status().is_success() {
+        // Upstream accepts exactly HTTP 200. A 201/204 response is not an
+        // extender result and attempting to decode it would change which
+        // failures are ignorable at the caller.
+        if resp.status() != reqwest::StatusCode::OK {
             anyhow::bail!("extender {url:?} returned HTTP {}", resp.status());
         }
         resp.json::<T>()

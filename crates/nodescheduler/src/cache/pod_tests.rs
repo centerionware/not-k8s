@@ -420,6 +420,28 @@ fn the_scheduler_name_defaults_to_default_scheduler() {
 }
 
 #[test]
+fn only_scheduler_preemption_termination_is_projected_as_draining() {
+    let preempted: Pod = serde_json::from_value(serde_json::json!({
+        "metadata": {"deletionTimestamp": "2026-08-17T00:00:00Z"},
+        "status": {"conditions": [{
+            "type": "DisruptionTarget",
+            "status": "True",
+            "reason": "PreemptionByScheduler"
+        }]}
+    }))
+    .unwrap();
+    assert!(PodInfo::from_pod(&preempted, k8s_openapi::jiff::Timestamp::now())
+        .terminating_by_preemption);
+
+    let user_deleted: Pod = serde_json::from_value(serde_json::json!({
+        "metadata": {"deletionTimestamp": "2026-08-17T00:00:00Z"}
+    }))
+    .unwrap();
+    assert!(!PodInfo::from_pod(&user_deleted, k8s_openapi::jiff::Timestamp::now())
+        .terminating_by_preemption);
+}
+
+#[test]
 fn image_names_follow_cri_implicit_latest_normalization() {
     assert_eq!(normalized_image_name("busybox"), "busybox:latest");
     assert_eq!(normalized_image_name("library/busybox"), "library/busybox:latest");

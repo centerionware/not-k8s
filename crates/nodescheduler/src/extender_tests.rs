@@ -164,6 +164,26 @@ fn an_extender_with_managed_resources_only_applies_to_a_pod_requesting_one() {
 }
 
 #[test]
+fn managed_resource_interest_includes_container_limits_like_upstream() {
+    let cfgs = parse_extenders(
+        r#"[{"urlPrefix":"http://ext","filterVerb":"filter",
+             "managedResources":[{"name":"example.com/gpu"}]}]"#,
+    )
+    .unwrap();
+    let api: Pod = serde_json::from_value(serde_json::json!({
+        "spec": {"containers": [{
+            "name": "c",
+            "resources": {"limits": {"example.com/gpu": "1"}}
+        }]}
+    }))
+    .unwrap();
+    let mut pod = PodInfo::from_pod(&api, k8s_openapi::jiff::Timestamp::now());
+    // Preserve the exact object just as the watch does when extenders exist.
+    pod.api_object = Some(Box::new(api));
+    assert!(cfgs[0].applies_to(&pod));
+}
+
+#[test]
 fn an_extender_with_neither_verb_is_refused() {
     let err = parse_extenders(r#"[{"urlPrefix":"http://ext"}]"#).unwrap_err().to_string();
     assert!(err.contains("neither filterVerb nor prioritizeVerb"), "{err}");

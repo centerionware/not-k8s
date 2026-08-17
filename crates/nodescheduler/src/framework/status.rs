@@ -168,6 +168,13 @@ impl NodeToStatus {
             .collect()
     }
 
+    /// The most recent verdict recorded for one node. Filter normally writes
+    /// exactly once per node; extenders may replace it, and the last writer is
+    /// the verdict the cycle ultimately acted on.
+    pub fn for_node(&self, node: &str) -> Option<&Status> {
+        self.per_node.iter().rev().find(|(name, _)| name == node).map(|(_, status)| status)
+    }
+
     /// The plugins that rejected this pod anywhere — the set whose registered
     /// events can requeue it. Missing an entry here is a silent stall, so
     /// this is deliberately the union across all nodes rather than the
