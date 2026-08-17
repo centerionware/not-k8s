@@ -1,22 +1,145 @@
 commit: 4182e1fb52726c2cb940c7625dd5622e81b8a0c8
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32065548898
-timestamp (UTC): 2026-08-17T20:31:31Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32066557934
+timestamp (UTC): 2026-08-17T20:44:27Z
 shard: 4/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1786998564
+==> Test namespace: not-k8s-e2e-1786999180
 ==> 238 test(s) registered total (before sharding); running now...
 ==> Shard 4/5: 45 test(s) selected
+▶ test_ttl_after_finished_controller_deletes_expired_jobs
+    (skip: nodecontroller isn't running here — deploy with --controller-manager=nodecontroller (which also disables k3s's own controller manager) to exercise these)
+  ○ SKIP (0s)
+▶ test_a_failing_component_says_why_before_it_exits
+  ✔ PASS (0s)
+▶ test_daemonset_places_a_pod_directly
+    (skip: nodecontroller isn't running here — deploy with --controller-manager=nodecontroller (which also disables k3s's own controller manager) to exercise these)
+  ○ SKIP (0s)
+▶ test_datastore_creates_a_key_only_if_absent
+  ✔ PASS (1s)
+▶ test_datastore_survives_a_restart_with_its_data
+  ✔ PASS (0s)
+▶ test_apiserver_watch_delivers_through_nodestore
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11826/environ: Permission denied
+  ✔ PASS (8s)
+▶ test_the_cluster_keeps_serving_when_a_follower_dies
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_a_partitioned_leader_steps_down_and_the_majority_elects_another
+    (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
+  ○ SKIP (0s)
+▶ test_plugin_registry_watches_for_device_plugins_too
+  ✔ PASS (0s)
+▶ test_disruption_controller_computes_pdb_status
+    (skip: nodecontroller isn't running here — deploy with --controller-manager=nodecontroller to exercise these)
+  ○ SKIP (0s)
+▶ test_pod_exceeding_its_active_deadline_is_terminated
+  ✔ PASS (38s)
+▶ test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
+  ✔ PASS (40s)
+▶ test_prestop_hook_runs_before_termination
+  ✔ PASS (20s)
+▶ test_native_sidecar_container_restarts_on_crash
+  ✔ PASS (5s)
+▶ test_restart_policy_never_exit_zero_is_succeeded
+  ✔ PASS (2s)
+▶ test_container_status_container_id_has_a_runtime_scheme_prefix
+  ✔ PASS (3s)
+▶ test_image_pull_policy_never_fails_when_image_is_absent
+  ✔ PASS (40s)
+▶ test_host_port_publishes_the_container_on_the_nodes_own_ip
+  ✔ PASS (3s)
+▶ test_node_is_ready_with_capacity_advertised
+  ✔ PASS (1s)
+▶ test_node_status_images_reflects_a_real_pulled_image
+  ✔ PASS (3s)
+▶ test_liveness_probes_own_grace_period_overrides_the_pods
+  ✔ PASS (13s)
+▶ test_grpc_probe_leaves_pod_not_ready_against_the_wrong_port
+  ✔ PASS (15s)
+▶ test_resourcequota_used_pods_tracks_actual_pod_count
+    (skip: nodecontroller isn't running here — deploy with --controller-manager=nodecontroller (which also disables k3s's own controller manager) to exercise these)
+  ○ SKIP (0s)
+▶ test_in_place_resize_updates_memory_limit_without_restarting
+  ✔ PASS (6s)
+▶ test_guaranteed_pod_gets_the_protected_oom_score
+  ✔ PASS (3s)
 ▶ test_scheduler_honours_a_node_selector_that_matches_nothing
-  ✔ PASS (11s)
+    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
+  ○ SKIP (0s)
 ▶ test_scheduler_ignores_pods_for_another_scheduler
-  ✔ PASS (12s)
+    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
+  ○ SKIP (0s)
 ▶ test_scheduler_preempts_a_lower_priority_pod
-  ✔ PASS (67s)
+    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
+  ○ SKIP (0s)
+▶ test_read_only_root_filesystem_is_enforced
+  ✔ PASS (3s)
+▶ test_host_users_false_volume_still_reads_and_writes_normally
+  ✔ PASS (2s)
+▶ test_host_pid_sees_host_processes
+  ✔ PASS (3s)
+▶ test_service_with_no_endpoints_does_not_wedge_the_ruleset
+table inet not_k8s_svc {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.2:53
+		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.2:53
+		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.2:9153
+		ip daddr 10.43.74.171 tcp dport 80 dnat ip to 10.42.0.21:8080
+		ip daddr 10.43.153.214 tcp dport 80 dnat ip to 10.42.0.21:8080
+		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.32:6443
+	}
+
+	chain output {
+		type nat hook output priority dstnat; policy accept;
+		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.2:53
+		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.2:53
+		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.2:9153
+		ip daddr 10.43.74.171 tcp dport 80 dnat ip to 10.42.0.21:8080
+		ip daddr 10.43.153.214 tcp dport 80 dnat ip to 10.42.0.21:8080
+		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.32:6443
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		ct status dnat masquerade
+	}
+}
+  ✔ PASS (4s)
+▶ test_losing_every_backend_removes_the_dnat_rule
+  ✔ PASS (34s)
+▶ test_statefulset_creates_ordinal_pods_and_scales_down_highest_first
+    (skip: nodecontroller isn't running here — deploy with --controller-manager=nodecontroller to exercise these)
+  ○ SKIP (0s)
+▶ test_pv_binder_requests_dynamic_provisioning_from_the_storage_class
+    (skip: nodecontroller isn't running here — deploy with --controller-manager=nodecontroller (which also disables k3s's own controller manager) to exercise these)
+  ○ SKIP (0s)
+▶ test_kubectl_port_forward_reaches_a_real_container_port
+  ✔ PASS (7s)
+▶ test_topology_manager_cross_provider_alignment_manual_note
+    (skip: proving CPU-and-device alignment (not just non-rejection) needs either real multi-socket/multi-NUMA hardware or a device plugin reporting TopologyInfo pointing at a specific NUMA node — not something this suite can set up. Manual spot-check on real multi-NUMA hardware: deploy a device plugin whose devices report differing NUMA affinity, request both an exclusive CPU and one of those devices in the same Guaranteed pod, then compare the container's cpuset.cpus (see cpu_manager.sh for how to find it) against which NUMA node the allocated device actually sits on — they should be the same node. Also try NODELET_TOPOLOGY_MANAGER_POLICY=single-numa-node with a deliberately unsatisfiable combination (e.g. requesting more exclusive CPUs than any single node has) and confirm the pod stays Pending with a 'Topology Manager: no single NUMA node can satisfy' error logged, rather than starting misaligned.)
+  ○ SKIP (0s)
+▶ test_sub_path_expr_expands_a_downward_api_env_var
+  ✔ PASS (3s)
+▶ test_empty_dir_medium_memory_is_backed_by_tmpfs
+  ✔ PASS (3s)
+▶ test_mount_propagation_host_to_container_still_mounts_normally
+  ✔ PASS (2s)
+▶ test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too
+  ✔ PASS (3s)
+▶ test_config_dir_merges_files_in_filename_order
+  ✔ PASS (2s)
+▶ test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down
+Warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.
+  ✔ PASS (14s)
 ▶ test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection
-  ✔ PASS (36s)
+    (skip: nodescheduler isn't running here — deploy with --scheduler=nodescheduler (which also disables k3s's own scheduler) to exercise these)
+  ○ SKIP (0s)
+▶ test_the_node_still_reconciles_pods_after_an_apiserver_restart
+  ✔ PASS (6s)
 
 ════════════════════════════════════════
-Results: 4 passed, 0 failed, 0 skipped
+Results: 32 passed, 0 failed, 13 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1786998564...
+==> Cleaning up test namespace not-k8s-e2e-1786999180...
