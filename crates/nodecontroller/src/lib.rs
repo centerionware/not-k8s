@@ -85,10 +85,19 @@ use std::time::Duration;
 /// opening their long-lived watches; starting all of those futures in one
 /// `try_join!` made the CSI sidecars' own watches receive HTTP 429/Retry-After
 /// responses on the small k3s control planes used by the e2e suite.
-async fn start_controller<F>(name: &'static str, slot: u64, controller: F) -> Result<()>
+async fn start_controller<F>(
+    cfg: &config::Config,
+    name: &'static str,
+    slot: u64,
+    controller: F,
+) -> Result<()>
 where
     F: Future<Output = Result<()>>,
 {
+    if cfg.controller_disabled(name) {
+        tracing::info!(controller = name, "nodecontroller controller disabled by configuration");
+        return Ok(());
+    }
     const START_SPACING: Duration = Duration::from_millis(500);
     tokio::time::sleep(START_SPACING * slot as u32).await;
     tracing::debug!(controller = name, slot, "starting nodecontroller controller");
@@ -124,26 +133,26 @@ pub async fn run() -> Result<()> {
     node_leaderelection::run_as_leader(client.clone(), &election_cfg, || async move {
         tracing::info!("nodecontroller is now leading — starting all controllers");
         tokio::try_join!(
-            start_controller("node-ipam", 0, controllers::node_ipam::run(client.clone(), &cfg)),
-            start_controller("node-lifecycle", 1, controllers::node_lifecycle::run(client.clone(), &cfg)),
-            start_controller("service-account", 2, controllers::service_account::run(client.clone(), &cfg)),
-            start_controller("endpoint-slice", 3, controllers::endpoint_slice::run(client.clone(), &cfg)),
-            start_controller("resource-quota", 4, controllers::resource_quota::run(client.clone(), &cfg)),
-            start_controller("replica-set", 5, controllers::replica_set::run(client.clone(), &cfg)),
-            start_controller("deployment", 6, controllers::deployment::run(client.clone(), &cfg)),
-            start_controller("daemon-set", 7, controllers::daemon_set::run(client.clone(), &cfg)),
-            start_controller("stateful-set", 8, controllers::stateful_set::run(client.clone(), &cfg)),
-            start_controller("garbage-collector", 9, controllers::garbage_collector::run(client.clone(), &cfg)),
-            start_controller("job", 10, controllers::job::run(client.clone(), &cfg)),
-            start_controller("cron-job", 11, controllers::cron_job::run(client.clone(), &cfg)),
-            start_controller("ttl-after-finished", 12, controllers::ttl_after_finished::run(client.clone(), &cfg)),
-            start_controller("attach-detach", 13, controllers::attach_detach::run(client.clone(), &cfg)),
-            start_controller("pv-binder", 14, controllers::pv_binder::run(client.clone(), &cfg)),
-            start_controller("storage-protection", 15, controllers::storage_protection::run(client.clone(), &cfg)),
-            start_controller("root-ca-publisher", 16, controllers::root_ca_publisher::run(client.clone(), &cfg)),
-            start_controller("resource-claim", 17, controllers::resource_claim::run(client.clone(), &cfg)),
-            start_controller("csr", 18, controllers::csr::run(client.clone(), &cfg)),
-            start_controller("disruption", 19, controllers::disruption::run(client.clone(), &cfg)),
+            start_controller(&cfg, "node-ipam", 0, controllers::node_ipam::run(client.clone(), &cfg)),
+            start_controller(&cfg, "node-lifecycle", 1, controllers::node_lifecycle::run(client.clone(), &cfg)),
+            start_controller(&cfg, "service-account", 2, controllers::service_account::run(client.clone(), &cfg)),
+            start_controller(&cfg, "endpoint-slice", 3, controllers::endpoint_slice::run(client.clone(), &cfg)),
+            start_controller(&cfg, "resource-quota", 4, controllers::resource_quota::run(client.clone(), &cfg)),
+            start_controller(&cfg, "replica-set", 5, controllers::replica_set::run(client.clone(), &cfg)),
+            start_controller(&cfg, "deployment", 6, controllers::deployment::run(client.clone(), &cfg)),
+            start_controller(&cfg, "daemon-set", 7, controllers::daemon_set::run(client.clone(), &cfg)),
+            start_controller(&cfg, "stateful-set", 8, controllers::stateful_set::run(client.clone(), &cfg)),
+            start_controller(&cfg, "garbage-collector", 9, controllers::garbage_collector::run(client.clone(), &cfg)),
+            start_controller(&cfg, "job", 10, controllers::job::run(client.clone(), &cfg)),
+            start_controller(&cfg, "cron-job", 11, controllers::cron_job::run(client.clone(), &cfg)),
+            start_controller(&cfg, "ttl-after-finished", 12, controllers::ttl_after_finished::run(client.clone(), &cfg)),
+            start_controller(&cfg, "attach-detach", 13, controllers::attach_detach::run(client.clone(), &cfg)),
+            start_controller(&cfg, "pv-binder", 14, controllers::pv_binder::run(client.clone(), &cfg)),
+            start_controller(&cfg, "storage-protection", 15, controllers::storage_protection::run(client.clone(), &cfg)),
+            start_controller(&cfg, "root-ca-publisher", 16, controllers::root_ca_publisher::run(client.clone(), &cfg)),
+            start_controller(&cfg, "resource-claim", 17, controllers::resource_claim::run(client.clone(), &cfg)),
+            start_controller(&cfg, "csr", 18, controllers::csr::run(client.clone(), &cfg)),
+            start_controller(&cfg, "disruption", 19, controllers::disruption::run(client.clone(), &cfg)),
         )?;
         Ok(())
     })

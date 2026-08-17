@@ -73,6 +73,10 @@ pub struct Config {
     pub cluster_cidr: String,
     pub node_cidr_mask_size: u8,
     pub node_monitor_grace_period: Duration,
+    /// Controller names listed in `NODECONTROLLER_DISABLED_CONTROLLERS` are
+    /// not started. This is primarily an operator/debugging escape hatch for
+    /// narrowing a live controller-manager failure; the default is empty.
+    pub disabled_controllers: Vec<String>,
 
     pub leader_elect: bool,
     pub lease_duration: Duration,
@@ -101,6 +105,7 @@ impl Default for Config {
             node_monitor_grace_period: Duration::from_secs(
                 defaults::NODE_MONITOR_GRACE_PERIOD_SECONDS,
             ),
+            disabled_controllers: Vec::new(),
             leader_elect: true,
             lease_duration: Duration::from_secs(defaults::LEASE_DURATION_SECONDS),
             renew_deadline: Duration::from_secs(defaults::RENEW_DEADLINE_SECONDS),
@@ -153,6 +158,15 @@ fn millis_env(name: &str, default: Duration) -> Result<Duration> {
     )?))
 }
 
+fn list_env(name: &str) -> Vec<String> {
+    var(name)
+        .into_iter()
+        .flat_map(|value| value.split(',').map(str::trim))
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
 impl Config {
     pub fn from_env() -> Result<Self> {
         let d = Config::default();
@@ -167,6 +181,7 @@ impl Config {
                 "NODECONTROLLER_NODE_MONITOR_GRACE_PERIOD_SECONDS",
                 d.node_monitor_grace_period,
             )?,
+            disabled_controllers: list_env("NODECONTROLLER_DISABLED_CONTROLLERS"),
             leader_elect: parse_env("NODECONTROLLER_LEADER_ELECT", d.leader_elect)?,
             lease_duration: secs_env(
                 "NODECONTROLLER_LEADER_LEASE_DURATION_SECONDS",
@@ -274,6 +289,10 @@ impl Config {
         }
     }
 
+    pub fn controller_disabled(&self, name: &str) -> bool {
+        self.disabled_controllers.iter().any(|disabled| disabled == name)
+    }
+
     fn log_summary(&self) {
         tracing::info!(
             cluster_cidr = %self.cluster_cidr,
@@ -283,6 +302,7 @@ impl Config {
             lease = %format!("{}/{}", self.lease_namespace, self.lease_name),
             tick_period_ms = self.tick_period.as_millis() as u64,
             cpu_budget_percent = self.cpu_budget_percent,
+            disabled_controllers = ?self.disabled_controllers,
             "nodecontroller starting"
         );
     }
@@ -316,5 +336,13 @@ mod tests {
         let mut cfg = Config::default();
         cfg.renew_deadline = cfg.lease_duration;
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn recognizes_disabled_controllers() {
+        let mut cfg = Config::default();
+        cfg.disabled_controllers.push("garbage-collector".to_string());
+        assert!(cfg.controller_disabled("garbage-collector"));
+        assert!(!cfg.controller_disabled("pv-binder"));
     }
 }

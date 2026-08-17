@@ -55,6 +55,10 @@ on:
         default: nodestore
         type: choice
         options: [nodestore, none]
+      nodecontroller_disabled_controllers:
+        description: 'Optional comma-separated nodecontroller names to disable for diagnosis (for example garbage-collector); leave empty for the normal controller set.'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -204,6 +208,7 @@ jobs:
           # "leave off for a full-suite run" reasoning — see this input's
           # own description above.
           CONTROLLER_MANAGER: ${{ inputs.controller_manager || 'none' }}
+          NODECONTROLLER_DISABLED_CONTROLLERS: ${{ inputs.nodecontroller_disabled_controllers || '' }}
           # Picked up by nodescheduler-service.sh's env forwarding — only
           # written into the installed unit when non-empty, so leaving
           # debug_scheduler_log off reproduces exactly today's behaviour
