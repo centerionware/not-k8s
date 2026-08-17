@@ -36,6 +36,7 @@
 //! relied upon yet.
 
 use anyhow::Result;
+use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Pod, Service, ServicePort};
 use k8s_openapi::api::discovery::v1::{Endpoint, EndpointConditions, EndpointPort, EndpointSlice};
@@ -178,30 +179,14 @@ pub fn is_managed(service: &Service) -> bool {
 
 async fn reconcile_service(
     client: &Client,
-    namespace: &str,
-    name: &str,
+    service: &Service,
     pod_cache: &HashMap<String, Pod>,
 ) {
-    let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
-    let slice_api: Api<EndpointSlice> = Api::namespaced(client.clone(), namespace);
+    let namespace = service.namespace().unwrap_or_default();
+    let name = service.name_any();
+    let slice_api: Api<EndpointSlice> = Api::namespaced(client.clone(), &namespace);
 
-    let service = match svc_api.get_opt(name).await {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            // Gone — remove any slice we own for it (no GC controller to
-            // do this via ownerReferences yet, see this module's header).
-            let _ = slice_api
-                .delete(&slice_name(name), &Default::default())
-                .await;
-            return;
-        }
-        Err(e) => {
-            tracing::warn!(namespace = %namespace, service = %name, error = ?e, "failed to read Service for endpointslice reconcile");
-            return;
-        }
-    };
-
-    if !is_managed(&service) {
+    if !is_managed(service) {
         // Not (or no longer) ours — if we previously created a slice for
         // it (e.g. its selector was just cleared), drop it.
         let _ = slice_api
@@ -306,8 +291,9 @@ async fn reconcile_service(
 }
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
-    let mut services: HashMap<(String, String), ()> = HashMap::new();
+    let mut services: HashMap<String, Service> = HashMap::new();
     let mut pods: HashMap<String, Pod> = HashMap::new();
+    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
 
     let mut svc_stream = crate::watch::watch_services(&client);
     let mut pod_stream = crate::watch::watch_pods(&client);
@@ -319,18 +305,16 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(svc))) | Some(Ok(Event::InitApply(svc))) => {
                         let ns = svc.namespace().unwrap_or_default();
                         let name = svc.name_any();
-                        if is_managed(&svc) {
-                            services.insert((ns.clone(), name.clone()), ());
-                        } else {
-                            services.remove(&(ns.clone(), name.clone()));
-                        }
-                        reconcile_service(&client, &ns, &name, &pods).await;
+                        let key = format!("{ns}/{name}");
+                        services.insert(key.clone(), svc);
+                        queue.enqueue(key);
                     }
                     Some(Ok(Event::Delete(svc))) => {
                         let ns = svc.namespace().unwrap_or_default();
                         let name = svc.name_any();
-                        services.remove(&(ns.clone(), name.clone()));
-                        reconcile_service(&client, &ns, &name, &pods).await;
+                        services.remove(&format!("{ns}/{name}"));
+                        let slice_api: Api<EndpointSlice> = Api::namespaced(client.clone(), &ns);
+                        let _ = slice_api.delete(&slice_name(&name), &Default::default()).await;
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "service watch error in endpointslice-controller"),
@@ -343,17 +327,22 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         let ns = pod.namespace().unwrap_or_default();
                         let labels = pod.metadata.labels.clone().unwrap_or_default();
                         pods.insert(pod_key(&pod), pod);
-                        reconcile_affected_services(&client, &ns, &labels, &services, &pods).await;
+                        enqueue_affected_services(&ns, &services, &queue);
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = pod.namespace().unwrap_or_default();
                         let labels = pod.metadata.labels.clone().unwrap_or_default();
                         pods.remove(&pod_key(&pod));
-                        reconcile_affected_services(&client, &ns, &labels, &services, &pods).await;
+                        enqueue_affected_services(&ns, &services, &queue);
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "pod watch error in endpointslice-controller"),
                     None => return Ok(()),
+                }
+            }
+            key = queue.pop() => {
+                if let Some(service) = services.get(&key).cloned() {
+                    reconcile_service(&client, &service, &pods).await;
                 }
             }
         }
@@ -369,16 +358,15 @@ fn pod_key(pod: &Pod) -> String {
 /// field on the Pod), so this recomputes every candidate in the same
 /// namespace against the current cache. Simple and correct; scoped to one
 /// namespace's Service count, not the whole cluster's.
-async fn reconcile_affected_services(
-    client: &Client,
+fn enqueue_affected_services(
     namespace: &str,
     _pod_labels: &BTreeMap<String, String>,
-    services: &HashMap<(String, String), ()>,
-    pods: &HashMap<String, Pod>,
+    services: &HashMap<String, Service>,
+    queue: &KeyedWorkQueue<String>,
 ) {
-    for (ns, name) in services.keys() {
-        if ns == namespace {
-            reconcile_service(client, ns, name, pods).await;
+    for (key, service) in services {
+        if service.namespace().as_deref() == Some(namespace) {
+            queue.enqueue(key.clone());
         }
     }
 }

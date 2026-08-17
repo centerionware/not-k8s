@@ -4,7 +4,7 @@
 //! Read `docs/CONTROLLER_MANAGER.md` first: it's the scope (every group,
 //! upstream's `NewControllerDescriptors()` as source of truth, not the
 //! reference docs page) and the polling architecture (`wheel.rs` +
-//! `pacing.rs`) this crate is built around. Group A (node lifecycle),
+//! `wheel.rs`) this crate is built around. Group A (node lifecycle),
 //! Group B (service routing, `endpointslice-controller`), the object-count
 //! slice of Group D (`resourcequota-controller`), and all four workload
 //! controllers of Group E (`replicaset-controller`/`deployment-controller`/
@@ -72,7 +72,6 @@ pub mod controllers;
 pub mod cron_schedule;
 pub mod jitter;
 pub mod k8s_time;
-pub mod pacing;
 pub mod watch;
 pub mod wheel;
 pub mod workqueue;
@@ -82,9 +81,9 @@ use std::future::Future;
 
 /// Start one controller unless its diagnostic switch is set.
 ///
-/// Request pacing belongs at the shared client boundary, not here. Sleeping
-/// each controller by a fixed slot only spaces the first poll of each future;
-/// it does not bound the LISTs, watches, or reconcile writes that follow.
+/// Controllers are started together; informer startup admission and keyed
+/// work queues provide the actual backpressure boundaries rather than fixed
+/// sleeps or a process-wide request limiter.
 async fn start_controller<F>(cfg: &config::Config, name: &'static str, controller: F) -> Result<()>
 where
     F: Future<Output = Result<()>>,
@@ -121,19 +120,16 @@ pub async fn run() -> Result<()> {
 
     let cfg = config::Config::from_env()?;
     watch::configure_startup_concurrency(cfg.watch_startup_concurrency);
-    // All controllers, leader election, shared informers, and reconcile
-    // writes use this one client. A single async rate gate at this boundary
-    // prevents a controller startup or event fan-out from creating a burst
-    // of HTTP requests. The limit is on request starts, not on Tokio worker
-    // time: waiting is a pending future, and a response body (including a
-    // long-running watch) is never held by a CPU-budget permit.
+    // Election and controller traffic use separate clients. Controller
+    // writes are bounded by informer caches and keyed work queues; the
+    // controller client is deliberately not globally rate-limited, so one
+    // slow controller cannot add latency to unrelated event-driven work.
     let kube_config = kube::Config::infer().await.context("loading apiserver configuration")?;
     let election_client = kube::client::ClientBuilder::try_from(kube_config.clone())
         .context("building apiserver client")?
         .build();
     let client = kube::client::ClientBuilder::try_from(kube_config)
-        .context("building rate-limited controller apiserver client")?
-        .with_layer(&tower::limit::RateLimitLayer::new(1, cfg.api_request_interval))
+        .context("building controller apiserver client")?
         .build();
 
     let election_cfg = cfg.election();

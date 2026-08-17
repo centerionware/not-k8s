@@ -40,6 +40,7 @@
 //! before Group D's minimum slice — a real, known gap, not new to this file.
 
 use anyhow::Result;
+use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{ReplicaSet, ReplicaSetStatus};
 use k8s_openapi::api::core::v1::Pod;
@@ -225,22 +226,14 @@ fn build_pod(rs: &ReplicaSet, name: &str) -> Option<Pod> {
 
 async fn reconcile_replica_set(
     client: &Client,
-    namespace: &str,
-    name: &str,
+    rs: &ReplicaSet,
     pod_cache: &HashMap<String, Pod>,
     expectations: &mut Expectations,
 ) {
-    let rs_api: Api<ReplicaSet> = Api::namespaced(client.clone(), namespace);
-    let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
-
-    let rs = match rs_api.get_opt(name).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return, // gone — its Pods are Group D's job, see this file's module doc
-        Err(e) => {
-            tracing::warn!(namespace = %namespace, replicaset = %name, error = ?e, "failed to read ReplicaSet for reconcile");
-            return;
-        }
-    };
+    let namespace = ns_of(rs);
+    let name = rs.name_any();
+    let rs_api: Api<ReplicaSet> = Api::namespaced(client.clone(), &namespace);
+    let pod_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
     let Some(rs_uid) = rs.uid() else { return };
     let desired = rs.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
 
@@ -275,7 +268,7 @@ async fn reconcile_replica_set(
         else {
             break;
         };
-        let Some(pod) = build_pod(&rs, &pod_name) else {
+        let Some(pod) = build_pod(rs, &pod_name) else {
             tracing::warn!(namespace = %namespace, replicaset = %name, "ReplicaSet has no pod template — cannot create Pods");
             break;
         };
@@ -321,7 +314,7 @@ async fn reconcile_replica_set(
     if rs.status.as_ref() != Some(&status) {
         let patch = serde_json::json!({ "status": status });
         if let Err(e) = rs_api
-            .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
             .await
         {
             tracing::warn!(namespace = %namespace, replicaset = %name, error = ?e, "failed to patch ReplicaSet status");
@@ -335,9 +328,9 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
-    let mut replica_sets: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
+    let mut replica_sets: HashMap<String, ReplicaSet> = HashMap::new();
     let mut expectations: Expectations = HashMap::new();
+    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut rs_stream = crate::watch::watch_replica_sets(&client);
@@ -350,16 +343,16 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         let ns = ns_of(&pod);
                         note_pod_event(&mut expectations, &pod);
                         pods.insert(format!("{ns}/{}", pod.name_any()), pod);
-                        for (rs_ns, rs_name) in replica_sets.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_replica_set(&client, rs_ns, rs_name, &pods, &mut expectations).await;
+                        for (key, rs) in replica_sets.iter().filter(|(_, rs)| ns_of(rs) == ns) {
+                            queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
                         note_pod_event(&mut expectations, &pod);
                         pods.remove(&format!("{ns}/{}", pod.name_any()));
-                        for (rs_ns, rs_name) in replica_sets.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_replica_set(&client, rs_ns, rs_name, &pods, &mut expectations).await;
+                        for (key, rs) in replica_sets.iter().filter(|(_, rs)| ns_of(rs) == ns) {
+                            queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
@@ -372,17 +365,24 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(rs))) | Some(Ok(Event::InitApply(rs))) => {
                         let ns = ns_of(&rs);
                         let name = rs.name_any();
-                        replica_sets.insert((ns.clone(), name.clone()));
-                        reconcile_replica_set(&client, &ns, &name, &pods, &mut expectations).await;
+                        let key = format!("{ns}/{name}");
+                        replica_sets.insert(key.clone(), rs);
+                        queue.enqueue(key);
                     }
                     Some(Ok(Event::Delete(rs))) => {
-                        let key = (ns_of(&rs), rs.name_any());
-                        replica_sets.remove(&key);
-                        expectations.remove(&key);
+                        let ns = ns_of(&rs);
+                        let name = rs.name_any();
+                        replica_sets.remove(&format!("{ns}/{name}"));
+                        expectations.remove(&(ns, name));
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "replicaset watch error in replicaset-controller"),
                     None => return Ok(()),
+                }
+            }
+            key = queue.pop() => {
+                if let Some(rs) = replica_sets.get(&key).cloned() {
+                    reconcile_replica_set(&client, &rs, &pods, &mut expectations).await;
                 }
             }
         }

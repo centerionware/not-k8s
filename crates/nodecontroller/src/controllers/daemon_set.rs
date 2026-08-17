@@ -51,6 +51,7 @@
 //! same simplification `replica_set.rs` documents).
 
 use anyhow::Result;
+use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{DaemonSet, DaemonSetStatus};
 use k8s_openapi::api::core::v1::{Node, Pod, Taint, Toleration};
@@ -211,22 +212,14 @@ fn build_pod(ds: &DaemonSet, node_name: &str, hash: &str) -> Option<Pod> {
 
 async fn reconcile_daemon_set(
     client: &Client,
-    namespace: &str,
-    name: &str,
+    ds: &DaemonSet,
     node_cache: &HashMap<String, Node>,
     pod_cache: &HashMap<String, Pod>,
 ) {
-    let ds_api: Api<DaemonSet> = Api::namespaced(client.clone(), namespace);
-    let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
-
-    let ds = match ds_api.get_opt(name).await {
-        Ok(Some(ds)) => ds,
-        Ok(None) => return, // gone — Group D's job, see module doc pattern elsewhere in this crate
-        Err(e) => {
-            tracing::warn!(namespace = %namespace, daemonset = %name, error = ?e, "failed to read DaemonSet for reconcile");
-            return;
-        }
-    };
+    let namespace = ns_of(ds);
+    let name = ds.name_any();
+    let ds_api: Api<DaemonSet> = Api::namespaced(client.clone(), &namespace);
+    let pod_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
     let Some(ds_uid) = ds.uid() else { return };
     let Some(spec) = ds.spec.as_ref() else { return };
     let node_selector = spec
@@ -250,7 +243,7 @@ async fn reconcile_daemon_set(
 
     let owned: Vec<&Pod> = pod_cache
         .values()
-        .filter(|p| p.namespace().as_deref() == Some(namespace))
+        .filter(|p| p.namespace().as_deref() == Some(namespace.as_str()))
         .filter(|p| owned_by(p, &ds_uid))
         .collect();
 
@@ -362,7 +355,7 @@ async fn reconcile_daemon_set(
     if ds.status.as_ref() != Some(&status) {
         let patch = serde_json::json!({ "status": status });
         if let Err(e) = ds_api
-            .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
             .await
         {
             tracing::warn!(namespace = %namespace, daemonset = %name, error = ?e, "failed to patch DaemonSet status");
@@ -377,8 +370,8 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut nodes: HashMap<String, Node> = HashMap::new();
     let mut pods: HashMap<String, Pod> = HashMap::new();
-    let mut daemon_sets: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
+    let mut daemon_sets: HashMap<String, DaemonSet> = HashMap::new();
+    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
 
     let mut node_stream = crate::watch::watch_nodes(&client);
     let mut pod_stream = crate::watch::watch_pods(&client);
@@ -390,14 +383,14 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 match ev {
                     Some(Ok(Event::Apply(n))) | Some(Ok(Event::InitApply(n))) => {
                         nodes.insert(n.name_any(), n);
-                        for (ns, name) in daemon_sets.clone() {
-                            reconcile_daemon_set(&client, &ns, &name, &nodes, &pods).await;
+                        for key in daemon_sets.keys() {
+                            queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(n))) => {
                         nodes.remove(&n.name_any());
-                        for (ns, name) in daemon_sets.clone() {
-                            reconcile_daemon_set(&client, &ns, &name, &nodes, &pods).await;
+                        for key in daemon_sets.keys() {
+                            queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
@@ -410,15 +403,15 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pod))) | Some(Ok(Event::InitApply(pod))) => {
                         let ns = ns_of(&pod);
                         pods.insert(format!("{ns}/{}", pod.name_any()), pod);
-                        for (ds_ns, ds_name) in daemon_sets.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_daemon_set(&client, ds_ns, ds_name, &nodes, &pods).await;
+                        for (key, ds) in daemon_sets.iter().filter(|(_, ds)| ns_of(ds) == ns) {
+                            queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
                         pods.remove(&format!("{ns}/{}", pod.name_any()));
-                        for (ds_ns, ds_name) in daemon_sets.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_daemon_set(&client, ds_ns, ds_name, &nodes, &pods).await;
+                        for (key, ds) in daemon_sets.iter().filter(|(_, ds)| ns_of(ds) == ns) {
+                            queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
@@ -431,15 +424,21 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(ds))) | Some(Ok(Event::InitApply(ds))) => {
                         let ns = ns_of(&ds);
                         let name = ds.name_any();
-                        daemon_sets.insert((ns.clone(), name.clone()));
-                        reconcile_daemon_set(&client, &ns, &name, &nodes, &pods).await;
+                        let key = format!("{ns}/{name}");
+                        daemon_sets.insert(key.clone(), ds);
+                        queue.enqueue(key);
                     }
                     Some(Ok(Event::Delete(ds))) => {
-                        daemon_sets.remove(&(ns_of(&ds), ds.name_any()));
+                        daemon_sets.remove(&format!("{}/{}", ns_of(&ds), ds.name_any()));
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "daemonset watch error in daemonset-controller"),
                     None => return Ok(()),
+                }
+            }
+            key = queue.pop() => {
+                if let Some(ds) = daemon_sets.get(&key).cloned() {
+                    reconcile_daemon_set(&client, &ds, &nodes, &pods).await;
                 }
             }
         }

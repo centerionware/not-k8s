@@ -22,6 +22,7 @@
 //! mechanism instead of two.
 
 use anyhow::Result;
+use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::watcher::Event;
@@ -40,16 +41,16 @@ fn without_finalizer(finalizers: &Option<Vec<String>>, target: &str) -> Vec<Stri
     finalizers.as_ref().into_iter().flatten().filter(|f| f.as_str() != target).cloned().collect()
 }
 
-async fn reconcile_pv(client: &Client, name: &str, pvcs: &std::collections::HashSet<(String, String)>) {
+async fn reconcile_pv(client: &Client, pv: &PersistentVolume, pvcs: &HashMap<String, PersistentVolumeClaim>) {
+    let name = pv.name_any();
     let api: Api<PersistentVolume> = Api::all(client.clone());
-    let Ok(Some(pv)) = api.get_opt(name).await else { return };
 
     if pv.metadata.deletion_timestamp.is_none() {
         if !has_finalizer(&pv.metadata.finalizers, PV_PROTECTION_FINALIZER) {
             let mut finalizers = pv.metadata.finalizers.clone().unwrap_or_default();
             finalizers.push(PV_PROTECTION_FINALIZER.to_string());
             let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
-            if let Err(e) = api.patch(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+            if let Err(e) = api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch)).await {
                 tracing::warn!(pv = %name, error = ?e, "failed to add pv-protection finalizer");
             }
         }
@@ -67,14 +68,14 @@ async fn reconcile_pv(client: &Client, name: &str, pvcs: &std::collections::Hash
     let in_use = claim_ref.is_some_and(|r| {
         let ns = r.namespace.clone().unwrap_or_default();
         let name = r.name.clone().unwrap_or_default();
-        pvcs.contains(&(ns, name))
+        pvcs.contains_key(&format!("{ns}/{name}"))
     });
     if in_use || !has_finalizer(&pv.metadata.finalizers, PV_PROTECTION_FINALIZER) {
         return;
     }
     let remaining = without_finalizer(&pv.metadata.finalizers, PV_PROTECTION_FINALIZER);
     let patch = serde_json::json!({ "metadata": { "finalizers": remaining } });
-    if let Err(e) = api.patch(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+    if let Err(e) = api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch)).await {
         tracing::warn!(pv = %name, error = ?e, "failed to remove pv-protection finalizer");
     }
 }
@@ -85,16 +86,17 @@ fn pvc_in_use(namespace: &str, name: &str, pods: &HashMap<String, Pod>) -> bool 
     })
 }
 
-async fn reconcile_pvc(client: &Client, namespace: &str, name: &str, pods: &HashMap<String, Pod>) {
-    let api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
-    let Ok(Some(pvc)) = api.get_opt(name).await else { return };
+async fn reconcile_pvc(client: &Client, pvc: &PersistentVolumeClaim, pods: &HashMap<String, Pod>) {
+    let namespace = ns_of(pvc);
+    let name = pvc.name_any();
+    let api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), &namespace);
 
     if pvc.metadata.deletion_timestamp.is_none() {
         if !has_finalizer(&pvc.metadata.finalizers, PVC_PROTECTION_FINALIZER) {
             let mut finalizers = pvc.metadata.finalizers.clone().unwrap_or_default();
             finalizers.push(PVC_PROTECTION_FINALIZER.to_string());
             let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
-            if let Err(e) = api.patch(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+            if let Err(e) = api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch)).await {
                 tracing::warn!(namespace = %namespace, pvc = %name, error = ?e, "failed to add pvc-protection finalizer");
             }
         }
@@ -106,7 +108,7 @@ async fn reconcile_pvc(client: &Client, namespace: &str, name: &str, pods: &Hash
     }
     let remaining = without_finalizer(&pvc.metadata.finalizers, PVC_PROTECTION_FINALIZER);
     let patch = serde_json::json!({ "metadata": { "finalizers": remaining } });
-    if let Err(e) = api.patch(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+    if let Err(e) = api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch)).await {
         tracing::warn!(namespace = %namespace, pvc = %name, error = ?e, "failed to remove pvc-protection finalizer");
     }
 }
@@ -117,8 +119,9 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
-    let mut pvcs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-    let mut pvs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut pvcs: HashMap<String, PersistentVolumeClaim> = HashMap::new();
+    let mut pvs: HashMap<String, PersistentVolume> = HashMap::new();
+    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut pvc_stream = crate::watch::watch_persistent_volume_claims(&client);
@@ -131,15 +134,15 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pod))) | Some(Ok(Event::InitApply(pod))) => {
                         let ns = ns_of(&pod);
                         pods.insert(format!("{ns}/{}", pod.name_any()), pod);
-                        for (pvc_ns, pvc_name) in pvcs.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_pvc(&client, pvc_ns, pvc_name, &pods).await;
+                        for (key, pvc) in pvcs.iter().filter(|(_, pvc)| ns_of(pvc) == ns) {
+                            queue.enqueue(format!("pvc:{key}"));
                         }
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
                         pods.remove(&format!("{ns}/{}", pod.name_any()));
-                        for (pvc_ns, pvc_name) in pvcs.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_pvc(&client, pvc_ns, pvc_name, &pods).await;
+                        for (key, pvc) in pvcs.iter().filter(|(_, pvc)| ns_of(pvc) == ns) {
+                            queue.enqueue(format!("pvc:{key}"));
                         }
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
@@ -152,17 +155,19 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pvc))) | Some(Ok(Event::InitApply(pvc))) => {
                         let ns = ns_of(&pvc);
                         let name = pvc.name_any();
-                        pvcs.insert((ns.clone(), name.clone()));
-                        reconcile_pvc(&client, &ns, &name, &pods).await;
+                        let key = format!("{ns}/{name}");
+                        pvcs.insert(key.clone(), pvc);
+                        queue.enqueue(format!("pvc:{key}"));
                     }
                     Some(Ok(Event::Delete(pvc))) => {
-                        pvcs.remove(&(ns_of(&pvc), pvc.name_any()));
+                        let key = format!("{}/{}", ns_of(&pvc), pvc.name_any());
+                        pvcs.remove(&key);
                         // A PV being deleted might have been waiting on
                         // exactly this PVC — re-check every PV's
                         // finalizer now that it's gone, not just the ones
                         // that happen to fire their own watch event.
-                        for name in pvs.clone() {
-                            reconcile_pv(&client, &name, &pvcs).await;
+                        for name in pvs.keys() {
+                            queue.enqueue(format!("pv:{name}"));
                         }
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
@@ -174,13 +179,24 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 match ev {
                     Some(Ok(Event::Apply(pv))) | Some(Ok(Event::InitApply(pv))) => {
                         let name = pv.name_any();
-                        pvs.insert(name.clone());
-                        reconcile_pv(&client, &name, &pvcs).await;
+                        pvs.insert(name.clone(), pv);
+                        queue.enqueue(format!("pv:{name}"));
                     }
                     Some(Ok(Event::Delete(pv))) => { pvs.remove(&pv.name_any()); }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "pv watch error in storage-protection"),
                     None => return Ok(()),
+                }
+            }
+            key = queue.pop() => {
+                if let Some(name) = key.strip_prefix("pv:") {
+                    if let Some(pv) = pvs.get(name).cloned() {
+                        reconcile_pv(&client, &pv, &pvcs).await;
+                    }
+                } else if let Some(name) = key.strip_prefix("pvc:") {
+                    if let Some(pvc) = pvcs.get(name).cloned() {
+                        reconcile_pvc(&client, &pvc, &pods).await;
+                    }
                 }
             }
         }

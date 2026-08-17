@@ -46,7 +46,7 @@ here cannot be eliminated, only made efficient** — the honest goal is not
 its one irreducible timer (leader-election renewal), generalized to
 everything in this crate that has the same shape.
 
-### The mechanism: a CPU-targeted governor over a wheel + a heap
+### The mechanism: informer caches, keyed queues, and a small timer wheel
 
 `nodescheduler`'s backoff queue already proved the base pattern this
 crate builds on (`SCHEDULER.md`'s table, `flushBackoffQCompleted` row):
@@ -83,38 +83,21 @@ PDB/quota resync, ttl-after-finished, the GC safety-net relist. This is a
 deliberate two-tier choice, not "wheel everywhere" — see the table below
 for which structure each group actually uses.
 
-**2. A CPU-work budget per tick, enforced by the same governor that owns
-both structures.** Bounding wakeup count alone still allows a
-thundering-herd burst (a control-plane restart re-arming every node's
-check at once; a healed network partition un-tainting hundreds of nodes
-in the same tick) to spike a core to 100% draining a large batch of
-simultaneously-due entries in one pass. The fix is the same one real-time
-game loops use for "more work became due this frame than the frame
-budget allows": a **fixed tick period** (default 100ms) with a **CPU-time
-budget per tick**, default target **0.3–1% of one core**
-(`NODECONTROLLER_CPU_BUDGET_PERCENT`). Each tick drains due entries from
-the wheel/heap while cumulative measured processing time stays under
-budget; anything left over when the budget is hit waits for the next
-tick rather than blocking the loop — bounded added latency under a
-burst, in exchange for a CPU ceiling on the timer work, which is the right trade for a
-background daemon (unlike a renderer, where a missed frame is directly
-user-visible — that distinction is *why* this transfers only partially:
-see below). Both the wheel and the heap feed this one governor; it is
-what actually caps the cost of processing what's due, not just how often
-the process wakes up.
+**2. Event controllers do not use a process-wide CPU or request-rate
+governor.** Each informer updates a local cache and enqueues an object key
+into a deduplicating `KeyedWorkQueue`; a bounded worker reconciles the latest
+cached object. A burst therefore produces at most one pending key and one
+reconcile per controller at a time, while unrelated controllers remain
+independent. Network waits are ordinary async waits, and writes are not
+delayed by an arbitrary global sleep. This is the same cache/lister →
+workqueue → worker boundary used by upstream client-go.
 
-**What deliberately does not transfer from game-loop design**: spin-wait
-hybrid timing for sub-millisecond frame-lock precision. That technique
-exists in game/audio engines because visual/audio smoothness is the
-literal product; nothing here has a perceptual deadline, and spin-waiting
-would itself burn the CPU budget this mechanism exists to protect.
-`sleep_until`'s ordinary precision (sub-ms to low-ms, whatever tokio's
-own timer wheel gives for free) is already enough — noted explicitly so
-a future contributor doesn't "improve" this into a spin-loop.
+The event workers remain fully asynchronous: waiting on the apiserver does
+not block a Tokio worker. The queue is the backpressure boundary; it is not a
+sleep loop and it does not impose a process-wide CPU target.
 
 **3. Jitter on insert, so correlated deadlines don't bunch up in the
-first place.** The budget governor caps the *cost* of a burst once it
-happens; the cheaper fix is not creating the burst at all. Node
+first place.** Node
 heartbeats are correlated by construction (every node renews on the same
 period), so their expiry checks naturally land in near-identical wheel
 slots; a batch of Pods created together (a Deployment scale-up) inherits
@@ -123,9 +106,8 @@ random jitter — a few percent of the deadline's own interval, the same
 reason upstream jitters kubelet's own sync loop — so correlated entries
 fan out across nearby slots instead of stacking into one. This is what
 keeps *steady-state* load flat over time rather than sawtoothing every
-`node-monitor-period`; the tick budget from (2) is then only the backstop
-for the bursts jitter can't fully absorb (a genuine mass event, not
-routine correlated renewal).
+`node-monitor-period`; the wheel is only the backstop for genuinely
+time-driven silence detection, not a polling mechanism for object state.
 
 ### Shared informer snapshots and API admission
 
@@ -139,16 +121,11 @@ resource. One underlying watch is shared by every controller that consumes a
 given built-in kind, including garbage collection where the typed watch is
 available.
 
-All controller traffic uses one rate-limited client, with a default minimum
-interval of 100ms between request starts
-(`NODECONTROLLER_API_REQUEST_INTERVAL_MILLIS`). The limiter is a Tower async
-`poll_ready` gate: it suspends the request future, never blocks a Tokio
-worker, and limits request admission rather than holding a permit for the
-lifetime of a watch response. Leader-election traffic uses its own
-unthrottled client so a full reconcile queue cannot delay lease renewal. This
-is intentionally separate from `NODECONTROLLER_CPU_BUDGET_PERCENT`: network
-waits consume apiserver concurrency but are not CPU work, so a CPU percentage
-cannot by itself bound HTTP request bursts.
+Controller traffic uses an ordinary async client. There is no process-wide
+request-rate limiter: queue deduplication and bounded workers control
+reconcile fan-out without adding latency to unrelated controllers. Leader
+election still uses a separate client so lease renewal cannot be coupled to a
+controller's cache or reconcile state.
 
 Initial informer snapshots have a second, independent admission limit:
 `NODECONTROLLER_WATCH_STARTUP_CONCURRENCY` defaults to 2. A shared watch holds
@@ -159,32 +136,19 @@ expensive startup work (and its response fan-out) without disabling a
 controller domain or imposing a permanent cap on required steady-state
 watches.
 
-The timer governor is currently the hard budget for the node-lifecycle
-polling wheel; the event controllers remain async and are protected at the
-shared API boundary. High-cardinality event controllers use
-`workqueue::KeyedWorkQueue` as they are migrated, starting with the PV binder:
-watch handlers update the cache and enqueue a key, while one async worker
+All event-driven controllers now use `workqueue::KeyedWorkQueue`: watch
+handlers update the cache and enqueue a key, while one async worker
 reconciles the latest cached object. This removes duplicate GET/patch cycles
-from a burst without blocking a Tokio worker. Controllers not yet migrated to
-that queue must not add direct network reconciliation to a watch callback; the
-queue is the required next step for them.
+from a burst without blocking a Tokio worker. The remaining timers are the
+small node-lifecycle timing wheel and controllers whose semantics require a
+clock, such as CronJob scheduling and terminal-object cleanup.
 
-Implemented in `crates/nodecontroller/src/wheel.rs` (the timing wheel —
-insert/cancel/advance as plain functions over a struct, no I/O, pure and
-unit-tested standalone, same discipline `SCHEDULER.md` enforces for the
-scheduling cycle) and `crates/nodecontroller/src/pacing.rs` (the tick/
-budget governor — `Governor<K>` owns one wheel plus a deferred-overflow
-queue; the low-cardinality heap variant for Groups D/F/G/I/J doesn't exist
-yet, since nothing in the implemented Group A needs it — additive when a
-heap-shaped controller actually lands). Falsifiable, not just asserted:
-now that Group A (node-lifecycle, the wheel's first real consumer) has
-landed, extend `deploy/measure.sh`'s per-second CPU sampling (already used
-for the nodelet-vs-kubelet profiling system) to nodecontroller, checked
-both at idle and under a synthetic thundering-herd e2e case — stop several
-nodes' kubelets at once so their heartbeat expiries land in the same
-tick, confirm CPU stays pinned near the configured budget instead of
-spiking, and confirm the resulting taints still land within one tick
-period of budget-driven delay rather than being unboundedly late.
+Implemented in `crates/nodecontroller/src/watch.rs`,
+`crates/nodecontroller/src/workqueue.rs`, and
+`crates/nodecontroller/src/wheel.rs`. The watch layer shares informer-like
+snapshots, the queue coalesces keys, and the wheel handles only silence
+deadlines. Startup admission remains bounded because initial LIST fan-out is
+an independent concern from steady-state event processing.
 
 ### Which groups actually need this, and which don't
 
@@ -200,7 +164,7 @@ picks wheel vs. heap per the cardinality rule in the section above:
 | B: service routing | No | — | pure event (Service/Pod/EndpointSlice watch) |
 | C: identity/namespace | No | — | pure event |
 | D: garbage-collector | Mostly no | Partially — safety-net relist | heap, long period (upstream: 30min), insurance against a missed/dropped watch event, not routine |
-| D: resourcequota | Mostly no | Partially — usage resync | heap, coalesced, not per-quota-object |
+| D: resourcequota | No | — | informer cache + keyed queue |
 | D: podgc | Yes — "has this terminated Pod aged out" | Yes | **wheel** (one entry per terminated Pod) |
 | E: workload controllers (RS/Deploy/DS/STS) | No | — | pure event |
 | F: job/cronjob | Partially — CronJob's schedule itself is time-driven | Yes, for CronJob only | heap: one entry per CronJob, next fire time (low cardinality, no reschedule churn) |
@@ -211,11 +175,10 @@ picks wheel vs. heap per the cardinality rule in the section above:
 | I: CSR signing/approving | No | — | pure event |
 | I: CSR cleaner | Yes — age-based | Yes | **wheel** (one entry per CSR) |
 | J: HPA | Yes — external metrics API is pull-only by construction, no push source exists | Yes, fully | heap: one entry per HPA, `syncPeriod` (upstream default 15s) |
-| J: disruption (PDB) | Small — status recompute resync | Partially | heap, coalesced |
+| J: disruption (PDB) | No | — | informer cache + keyed queue |
 
 The wheel/heap entries above are the *entire* polling surface of this
-component, all drained through the one timer-work governor — if a
-future controller implementation reaches for `tokio::time::interval`
+component; event controllers must not reach for `tokio::time::interval`
 outside this mechanism, that is the same kind of regression
 `SCHEDULER.md` flags for its own timers: "if it ever fires, that's a bug
 report, not a routine event" applies here too, just to a different,

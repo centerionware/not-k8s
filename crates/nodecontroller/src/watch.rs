@@ -21,7 +21,7 @@ use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet}
 use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::coordination::v1::Lease;
-use k8s_openapi::api::core::v1::{Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, ResourceQuota, Service};
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, ResourceQuota, Service, ServiceAccount};
 use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use k8s_openapi::api::storage::v1::VolumeAttachment;
 use kube::runtime::utils::{Backoff, WatchStreamExt};
@@ -29,6 +29,8 @@ use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client, Resource, ResourceExt};
 use kube::api::{DynamicObject, TypeMeta};
+use kube::core::GroupVersionKind;
+use kube::discovery::ApiResource;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -329,6 +331,10 @@ pub fn watch_node_leases(client: &Client) -> BoxStream<'static, watcher::Result<
 
 shared_watch!(watch_namespaces, SHARED_NAMESPACES, Namespace);
 
+shared_watch!(watch_service_accounts, SHARED_SERVICE_ACCOUNTS, ServiceAccount);
+
+shared_watch!(watch_config_maps, SHARED_CONFIG_MAPS, ConfigMap);
+
 shared_watch!(watch_services, SHARED_SERVICES, Service);
 
 shared_watch!(watch_pods, SHARED_PODS, Pod);
@@ -356,6 +362,15 @@ shared_watch!(watch_volume_attachments, SHARED_VOLUME_ATTACHMENTS, VolumeAttachm
 shared_watch!(watch_certificate_signing_requests, SHARED_CSRS, CertificateSigningRequest);
 
 shared_watch!(watch_pod_disruption_budgets, SHARED_PDBS, PodDisruptionBudget);
+
+pub fn watch_resource_claim_templates(
+    client: &Client,
+) -> BoxStream<'static, watcher::Result<Event<DynamicObject>>> {
+    let gvk = GroupVersionKind::gvk("resource.k8s.io", "v1", "ResourceClaimTemplate");
+    let resource = ApiResource::from_gvk(&gvk);
+    let api: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
+}
 
 /// Return the shared typed watch for a built-in namespaced resource in the
 /// shape the generic garbage collector consumes. Keeping this conversion

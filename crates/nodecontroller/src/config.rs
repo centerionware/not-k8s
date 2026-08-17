@@ -36,15 +36,9 @@ mod defaults {
     pub const LEASE_NAME: &str = "kube-controller-manager";
     pub const LEASE_NAMESPACE: &str = "kube-system";
 
-    /// The pacing governor's tick period — see docs/CONTROLLER_MANAGER.md's
-    /// "CPU-budgeted governor" section. 100ms: coarse enough that the
-    /// governor's own bookkeeping is negligible next to the budget it's
-    /// enforcing, fine enough that a burst is smoothed over sub-second time
-    /// rather than visibly stalling.
+    /// Node-lifecycle wheel tick period. This drives only the silence-detection
+    /// timer; event controllers do not poll on this cadence.
     pub const TICK_PERIOD_MILLIS: u64 = 100;
-    /// Target CPU spend per tick, as a percent of one core. Mid-point of
-    /// the stated 0.3-1% target range.
-    pub const CPU_BUDGET_PERCENT: f64 = 0.6;
     /// Fraction of a deadline's own interval to jitter by on insert, so
     /// correlated deadlines (every Node renews on the same period) don't
     /// land in the same wheel slot. Matches the reasoning kubelet's own
@@ -87,12 +81,7 @@ pub struct Config {
     pub holder_identity: String,
 
     pub tick_period: Duration,
-    pub cpu_budget_percent: f64,
     pub jitter_fraction: f64,
-    /// Minimum interval between controller-client HTTP request starts. This
-    /// is separate from the CPU budget: an async request can consume almost
-    /// no controller CPU while still occupying apiserver concurrency.
-    pub api_request_interval: Duration,
     /// Maximum number of shared informer watches allowed to perform their
     /// initial LIST concurrently. This is startup backpressure,
     /// not a cap on steady-state watches: a permit is returned after that
@@ -123,9 +112,7 @@ impl Default for Config {
             lease_namespace: defaults::LEASE_NAMESPACE.to_string(),
             holder_identity: default_holder_identity(),
             tick_period: Duration::from_millis(defaults::TICK_PERIOD_MILLIS),
-            cpu_budget_percent: defaults::CPU_BUDGET_PERCENT,
             jitter_fraction: defaults::JITTER_FRACTION,
-            api_request_interval: Duration::from_millis(100),
             watch_startup_concurrency: 2,
             csr_signing_ca_cert_path: None,
             csr_signing_ca_key_path: None,
@@ -215,15 +202,7 @@ impl Config {
                 .unwrap_or(d.lease_namespace),
             holder_identity: var("NODECONTROLLER_HOLDER_IDENTITY").unwrap_or(d.holder_identity),
             tick_period: millis_env("NODECONTROLLER_TICK_PERIOD_MILLIS", d.tick_period)?,
-            cpu_budget_percent: parse_env(
-                "NODECONTROLLER_CPU_BUDGET_PERCENT",
-                d.cpu_budget_percent,
-            )?,
             jitter_fraction: parse_env("NODECONTROLLER_JITTER_FRACTION", d.jitter_fraction)?,
-            api_request_interval: millis_env(
-                "NODECONTROLLER_API_REQUEST_INTERVAL_MILLIS",
-                d.api_request_interval,
-            )?,
             watch_startup_concurrency: parse_env(
                 "NODECONTROLLER_WATCH_STARTUP_CONCURRENCY",
                 d.watch_startup_concurrency,
@@ -244,12 +223,6 @@ impl Config {
                 self.node_cidr_mask_size
             );
         }
-        if self.cpu_budget_percent <= 0.0 || self.cpu_budget_percent > 100.0 {
-            bail!(
-                "NODECONTROLLER_CPU_BUDGET_PERCENT must be >0 and <=100, got {}.",
-                self.cpu_budget_percent
-            );
-        }
         if !(0.0..1.0).contains(&self.jitter_fraction) {
             bail!(
                 "NODECONTROLLER_JITTER_FRACTION must be >=0 and <1, got {}.",
@@ -258,9 +231,6 @@ impl Config {
         }
         if self.tick_period.is_zero() {
             bail!("NODECONTROLLER_TICK_PERIOD_MILLIS must be at least 1.");
-        }
-        if self.api_request_interval.is_zero() {
-            bail!("NODECONTROLLER_API_REQUEST_INTERVAL_MILLIS must be at least 1.");
         }
         if self.watch_startup_concurrency == 0 {
             bail!("NODECONTROLLER_WATCH_STARTUP_CONCURRENCY must be at least 1.");
@@ -330,8 +300,6 @@ impl Config {
             leader_elect = self.leader_elect,
             lease = %format!("{}/{}", self.lease_namespace, self.lease_name),
             tick_period_ms = self.tick_period.as_millis() as u64,
-            cpu_budget_percent = self.cpu_budget_percent,
-            api_request_interval_ms = self.api_request_interval.as_millis() as u64,
             watch_startup_concurrency = self.watch_startup_concurrency,
             disabled_controllers = ?self.disabled_controllers,
             "nodecontroller starting"
@@ -352,20 +320,6 @@ mod tests {
     fn rejects_an_out_of_range_mask_size() {
         let mut cfg = Config::default();
         cfg.node_cidr_mask_size = 33;
-        assert!(cfg.validate().is_err());
-    }
-
-    #[test]
-    fn rejects_a_non_positive_cpu_budget() {
-        let mut cfg = Config::default();
-        cfg.cpu_budget_percent = 0.0;
-        assert!(cfg.validate().is_err());
-    }
-
-    #[test]
-    fn rejects_a_zero_api_request_interval() {
-        let mut cfg = Config::default();
-        cfg.api_request_interval = Duration::ZERO;
         assert!(cfg.validate().is_err());
     }
 

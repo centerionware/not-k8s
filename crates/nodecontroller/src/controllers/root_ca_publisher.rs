@@ -53,16 +53,21 @@
 //! Namespace watch event re-checks every known namespace), not blocked.
 
 use anyhow::{Context, Result};
+use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::ConfigMap;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, PostParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub const CONFIGMAP_NAME: &str = "kube-root-ca.crt";
 const CA_KEY: &str = "ca.crt";
+
+fn is_terminating(ns: &k8s_openapi::api::core::v1::Namespace) -> bool {
+    ns.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Terminating")
+}
 
 /// Reads the CA bundle from the ambient kubeconfig's current-context
 /// cluster entry — inline `certificate-authority-data` (base64) preferred,
@@ -92,17 +97,15 @@ fn load_root_ca_pem() -> Result<Option<Vec<u8>>> {
     Ok(None)
 }
 
-async fn reconcile_namespace(client: &Client, namespace: &str, ca_pem: &str) {
+async fn reconcile_namespace(
+    client: &Client,
+    namespace: &str,
+    ca_pem: &str,
+    configmaps: &HashMap<String, ConfigMap>,
+) {
     let api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-    match api.get_opt(CONFIGMAP_NAME).await {
-        Ok(Some(existing)) => {
-            if existing.data.as_ref().and_then(|d| d.get(CA_KEY)).map(String::as_str) == Some(ca_pem) {
-                return;
-            }
-        }
-        Ok(None) => {}
-        Err(e) => {
-            tracing::warn!(namespace = %namespace, error = ?e, "failed to read kube-root-ca.crt ConfigMap for reconcile");
+    if let Some(existing) = configmaps.get(&format!("{namespace}/{CONFIGMAP_NAME}")) {
+        if existing.data.as_ref().and_then(|d| d.get(CA_KEY)).map(String::as_str) == Some(ca_pem) {
             return;
         }
     }
@@ -136,15 +139,47 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     };
     let ca_pem = String::from_utf8(ca_bytes).context("cluster CA data is not valid UTF-8 PEM")?;
 
+    let mut namespaces: HashMap<String, k8s_openapi::api::core::v1::Namespace> = HashMap::new();
+    let mut configmaps: HashMap<String, ConfigMap> = HashMap::new();
+    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
     let mut ns_stream = crate::watch::watch_namespaces(&client);
+    let mut cm_stream = crate::watch::watch_config_maps(&client);
     loop {
-        match ns_stream.next().await {
-            Some(Ok(Event::Apply(ns))) | Some(Ok(Event::InitApply(ns))) => {
-                reconcile_namespace(&client, &ns.name_any(), &ca_pem).await;
+        tokio::select! {
+            ev = ns_stream.next() => match ev {
+                Some(Ok(Event::Apply(ns))) | Some(Ok(Event::InitApply(ns))) => {
+                    let name = ns.name_any();
+                    namespaces.insert(name.clone(), ns);
+                    queue.enqueue(name);
+                }
+                Some(Ok(Event::Delete(ns))) => { namespaces.remove(&ns.name_any()); }
+                Some(Ok(Event::Init | Event::InitDone)) => {}
+                Some(Err(e)) => tracing::warn!(error = ?e, "namespace watch error in root-ca-cert-publisher-controller"),
+                None => return Ok(()),
+            },
+            ev = cm_stream.next() => match ev {
+                Some(Ok(Event::Apply(cm))) | Some(Ok(Event::InitApply(cm))) => {
+                    let ns = cm.namespace().unwrap_or_default();
+                    let key = format!("{ns}/{}", cm.name_any());
+                    configmaps.insert(key, cm.clone());
+                    if cm.name_any() == CONFIGMAP_NAME { queue.enqueue(ns); }
+                }
+                Some(Ok(Event::Delete(cm))) => {
+                    let ns = cm.namespace().unwrap_or_default();
+                    configmaps.remove(&format!("{ns}/{}", cm.name_any()));
+                    if cm.name_any() == CONFIGMAP_NAME { queue.enqueue(ns); }
+                }
+                Some(Ok(Event::Init | Event::InitDone)) => {}
+                Some(Err(e)) => tracing::warn!(error = ?e, "ConfigMap watch error in root-ca-cert-publisher-controller"),
+                None => return Ok(()),
+            },
+            namespace = queue.pop() => {
+                if let Some(ns) = namespaces.get(&namespace) {
+                    if !is_terminating(ns) {
+                        reconcile_namespace(&client, &namespace, &ca_pem, &configmaps).await;
+                    }
+                }
             }
-            Some(Ok(Event::Delete(_) | Event::Init | Event::InitDone)) => {}
-            Some(Err(e)) => tracing::warn!(error = ?e, "namespace watch error in root-ca-cert-publisher-controller"),
-            None => return Ok(()),
         }
     }
 }

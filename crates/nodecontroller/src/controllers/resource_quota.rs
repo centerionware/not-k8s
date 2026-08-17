@@ -40,6 +40,7 @@ use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use crate::workqueue::KeyedWorkQueue;
 
 const SUPPORTED_KEYS: &[&str] = &["pods", "services"];
 
@@ -76,26 +77,19 @@ pub fn compute_used(
 
 async fn reconcile_quota(
     client: &Client,
-    namespace: &str,
-    name: &str,
+    quota: &ResourceQuota,
     pods: &HashMap<String, HashSet<String>>,
     services: &HashMap<String, HashSet<String>>,
 ) {
-    let api: Api<ResourceQuota> = Api::namespaced(client.clone(), namespace);
-    let quota = match api.get_opt(name).await {
-        Ok(Some(q)) => q,
-        Ok(None) => return, // gone
-        Err(e) => {
-            tracing::warn!(namespace = %namespace, quota = %name, error = ?e, "failed to read ResourceQuota for reconcile");
-            return;
-        }
-    };
+    let namespace = ns_of(quota);
+    let name = quota.name_any();
+    let api: Api<ResourceQuota> = Api::namespaced(client.clone(), &namespace);
     let hard = quota.spec.as_ref().and_then(|s| s.hard.as_ref());
     let Some(hard) = hard else { return };
     let hard_keys: Vec<String> = hard.keys().cloned().collect();
 
-    let pod_count = pods.get(namespace).map(|s| s.len()).unwrap_or(0);
-    let service_count = services.get(namespace).map(|s| s.len()).unwrap_or(0);
+    let pod_count = pods.get(&namespace).map(|s| s.len()).unwrap_or(0);
+    let service_count = services.get(&namespace).map(|s| s.len()).unwrap_or(0);
     let used = compute_used(&hard_keys, pod_count, service_count);
 
     if quota.status.as_ref().and_then(|s| s.used.as_ref()) == Some(&used) {
@@ -104,7 +98,7 @@ async fn reconcile_quota(
 
     let patch = serde_json::json!({ "status": { "used": used, "hard": hard } });
     if let Err(e) = api
-        .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
         .await
     {
         tracing::warn!(namespace = %namespace, quota = %name, error = ?e, "failed to patch ResourceQuota status");
@@ -118,7 +112,8 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, HashSet<String>> = HashMap::new();
     let mut services: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut quotas: HashSet<(String, String)> = HashSet::new();
+    let mut quotas: HashMap<String, ResourceQuota> = HashMap::new();
+    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut svc_stream = crate::watch::watch_services(&client);
@@ -135,12 +130,12 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         } else if let Some(set) = pods.get_mut(&ns) {
                             set.remove(&p.name_any());
                         }
-                        reconcile_namespace_quotas(&client, &ns, &quotas, &pods, &services).await;
+                        enqueue_namespace_quotas(&ns, &quotas, &queue);
                     }
                     Some(Ok(Event::Delete(p))) => {
                         let ns = ns_of(&p);
                         if let Some(set) = pods.get_mut(&ns) { set.remove(&p.name_any()); }
-                        reconcile_namespace_quotas(&client, &ns, &quotas, &pods, &services).await;
+                        enqueue_namespace_quotas(&ns, &quotas, &queue);
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "pod watch error in resourcequota-controller"),
@@ -152,12 +147,12 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(s))) | Some(Ok(Event::InitApply(s))) => {
                         let ns = ns_of(&s);
                         services.entry(ns.clone()).or_default().insert(s.name_any());
-                        reconcile_namespace_quotas(&client, &ns, &quotas, &pods, &services).await;
+                        enqueue_namespace_quotas(&ns, &quotas, &queue);
                     }
                     Some(Ok(Event::Delete(s))) => {
                         let ns = ns_of(&s);
                         if let Some(set) = services.get_mut(&ns) { set.remove(&s.name_any()); }
-                        reconcile_namespace_quotas(&client, &ns, &quotas, &pods, &services).await;
+                        enqueue_namespace_quotas(&ns, &quotas, &queue);
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "service watch error in resourcequota-controller"),
@@ -169,31 +164,34 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(q))) | Some(Ok(Event::InitApply(q))) => {
                         let ns = ns_of(&q);
                         let name = q.name_any();
-                        quotas.insert((ns.clone(), name.clone()));
-                        reconcile_quota(&client, &ns, &name, &pods, &services).await;
+                        quotas.insert(format!("{ns}/{name}"), q);
+                        queue.enqueue(format!("{ns}/{name}"));
                     }
                     Some(Ok(Event::Delete(q))) => {
-                        quotas.remove(&(ns_of(&q), q.name_any()));
+                        quotas.remove(&format!("{}/{}", ns_of(&q), q.name_any()));
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "resourcequota watch error in resourcequota-controller"),
                     None => return Ok(()),
                 }
             }
+            key = queue.pop() => {
+                if let Some(quota) = quotas.get(&key).cloned() {
+                    reconcile_quota(&client, &quota, &pods, &services).await;
+                }
+            }
         }
     }
 }
 
-async fn reconcile_namespace_quotas(
-    client: &Client,
+fn enqueue_namespace_quotas(
     namespace: &str,
-    quotas: &HashSet<(String, String)>,
-    pods: &HashMap<String, HashSet<String>>,
-    services: &HashMap<String, HashSet<String>>,
+    quotas: &HashMap<String, ResourceQuota>,
+    queue: &KeyedWorkQueue<String>,
 ) {
-    for (ns, name) in quotas {
-        if ns == namespace {
-            reconcile_quota(client, ns, name, pods, services).await;
+    for (key, quota) in quotas {
+        if ns_of(quota) == namespace {
+            queue.enqueue(key.clone());
         }
     }
 }

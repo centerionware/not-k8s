@@ -59,6 +59,7 @@
 //! ("reconcile decided the outcome").
 
 use anyhow::Result;
+use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{Job, JobCondition};
 use k8s_openapi::api::core::v1::Pod;
@@ -193,22 +194,14 @@ fn skip_job(job: &Job) -> bool {
 
 async fn reconcile_job(
     client: &Client,
-    namespace: &str,
-    name: &str,
+    job: &Job,
     pod_cache: &HashMap<String, Pod>,
 ) {
-    let job_api: Api<Job> = Api::namespaced(client.clone(), namespace);
-    let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
-
-    let job = match job_api.get_opt(name).await {
-        Ok(Some(j)) => j,
-        Ok(None) => return, // gone — its Pods are garbage-collector-controller's job
-        Err(e) => {
-            tracing::warn!(namespace = %namespace, job = %name, error = ?e, "failed to read Job for reconcile");
-            return;
-        }
-    };
-    if skip_job(&job) {
+    let namespace = ns_of(job);
+    let name = job.name_any();
+    let job_api: Api<Job> = Api::namespaced(client.clone(), &namespace);
+    let pod_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
+    if skip_job(job) {
         return;
     }
     let Some(job_uid) = job.uid() else { return };
@@ -216,7 +209,7 @@ async fn reconcile_job(
 
     let owned: Vec<&Pod> = pod_cache
         .values()
-        .filter(|p| p.namespace().as_deref() == Some(namespace))
+        .filter(|p| p.namespace().as_deref() == Some(namespace.as_str()))
         .filter(|p| owned_by(p, &job_uid))
         .collect();
     let live: Vec<&&Pod> = owned
@@ -351,7 +344,7 @@ async fn reconcile_job(
     if !status_matches {
         let patch = serde_json::json!({ "status": status });
         if let Err(e) = job_api
-            .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
             .await
         {
             tracing::warn!(namespace = %namespace, job = %name, error = ?e, "failed to patch Job status");
@@ -378,7 +371,7 @@ async fn reconcile_job(
                     .collect();
                 let patch = serde_json::json!({ "metadata": { "finalizers": remaining } });
                 if let Err(e) = job_api
-                    .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+                    .patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
                     .await
                 {
                     tracing::warn!(namespace = %namespace, job = %name, error = ?e, "failed to strip job-tracking finalizer from finished Job");
@@ -394,7 +387,8 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
-    let mut jobs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let mut jobs: HashMap<String, Job> = HashMap::new();
+    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut job_stream = crate::watch::watch_jobs(&client);
@@ -406,15 +400,15 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pod))) | Some(Ok(Event::InitApply(pod))) => {
                         let ns = ns_of(&pod);
                         pods.insert(format!("{ns}/{}", pod.name_any()), pod);
-                        for (job_ns, job_name) in jobs.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_job(&client, job_ns, job_name, &pods).await;
+                        for (key, job) in jobs.iter().filter(|(_, job)| ns_of(job) == ns) {
+                            queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
                         pods.remove(&format!("{ns}/{}", pod.name_any()));
-                        for (job_ns, job_name) in jobs.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_job(&client, job_ns, job_name, &pods).await;
+                        for (key, job) in jobs.iter().filter(|(_, job)| ns_of(job) == ns) {
+                            queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
@@ -427,15 +421,21 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(job))) | Some(Ok(Event::InitApply(job))) => {
                         let ns = ns_of(&job);
                         let name = job.name_any();
-                        jobs.insert((ns.clone(), name.clone()));
-                        reconcile_job(&client, &ns, &name, &pods).await;
+                        let key = format!("{ns}/{name}");
+                        jobs.insert(key.clone(), job);
+                        queue.enqueue(key);
                     }
                     Some(Ok(Event::Delete(job))) => {
-                        jobs.remove(&(ns_of(&job), job.name_any()));
+                        jobs.remove(&format!("{}/{}", ns_of(&job), job.name_any()));
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "job watch error in job-controller"),
                     None => return Ok(()),
+                }
+            }
+            key = queue.pop() => {
+                if let Some(job) = jobs.get(&key).cloned() {
+                    reconcile_job(&client, &job, &pods).await;
                 }
             }
         }

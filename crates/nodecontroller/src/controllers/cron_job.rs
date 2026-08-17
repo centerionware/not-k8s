@@ -40,6 +40,7 @@
 //! reasonable, if not byte-identical, survivor set).
 
 use crate::cron_schedule::Schedule;
+use crate::workqueue::KeyedWorkQueue;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
@@ -124,24 +125,17 @@ fn build_job(cj: &CronJob, scheduled: DateTime<Utc>) -> Job {
     }
 }
 
-async fn reconcile_cron_job(client: &Client, namespace: &str, name: &str, job_cache: &HashMap<String, Job>) {
-    let cj_api: Api<CronJob> = Api::namespaced(client.clone(), namespace);
-    let job_api: Api<Job> = Api::namespaced(client.clone(), namespace);
-
-    let cj = match cj_api.get_opt(name).await {
-        Ok(Some(c)) => c,
-        Ok(None) => return, // gone — its Jobs are garbage-collector-controller's job
-        Err(e) => {
-            tracing::warn!(namespace = %namespace, cronjob = %name, error = ?e, "failed to read CronJob for reconcile");
-            return;
-        }
-    };
+async fn reconcile_cron_job(client: &Client, cj: &CronJob, job_cache: &HashMap<String, Job>) {
+    let namespace = ns_of(cj);
+    let name = cj.name_any();
+    let cj_api: Api<CronJob> = Api::namespaced(client.clone(), &namespace);
+    let job_api: Api<Job> = Api::namespaced(client.clone(), &namespace);
     let Some(cj_uid) = cj.uid() else { return };
     let spec = cj.spec.clone().unwrap_or_default();
 
     let owned: Vec<&Job> = job_cache
         .values()
-        .filter(|j| j.namespace().as_deref() == Some(namespace))
+        .filter(|j| j.namespace().as_deref() == Some(namespace.as_str()))
         .filter(|j| owned_by(j, &cj_uid))
         .collect();
     let active: Vec<&&Job> = owned.iter().filter(|j| !job_is_terminal(j)).collect();
@@ -174,7 +168,7 @@ async fn reconcile_cron_job(client: &Client, namespace: &str, name: &str, job_ca
                         true
                     };
                     if create && within_deadline(next, now, spec.starting_deadline_seconds) {
-                        let job = build_job(&cj, next);
+                        let job = build_job(cj, next);
                         match job_api.create(&PostParams::default(), &job).await {
                             Ok(_) => {
                                 status.last_schedule_time = Some(crate::k8s_time::from_chrono(next));
@@ -225,7 +219,7 @@ async fn reconcile_cron_job(client: &Client, namespace: &str, name: &str, job_ca
 
     if cj.status.as_ref() != Some(&status) {
         let patch = serde_json::json!({ "status": status });
-        if let Err(e) = cj_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+        if let Err(e) = cj_api.patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch)).await {
             tracing::warn!(namespace = %namespace, cronjob = %name, error = ?e, "failed to patch CronJob status");
         }
     }
@@ -258,7 +252,8 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut jobs: HashMap<String, Job> = HashMap::new();
-    let mut cron_jobs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let mut cron_jobs: HashMap<String, CronJob> = HashMap::new();
+    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
 
     let mut job_stream = crate::watch::watch_jobs(&client);
     let mut cj_stream = crate::watch::watch_cron_jobs(&client);
@@ -271,11 +266,13 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 match ev {
                     Some(Ok(Event::Apply(job))) | Some(Ok(Event::InitApply(job))) => {
                         let ns = ns_of(&job);
-                        jobs.insert(format!("{ns}/{}", job.name_any()), job);
+                        jobs.insert(format!("{ns}/{}", job.name_any()), job.clone());
+                        enqueue_owned_cronjobs(&job, &cron_jobs, &queue);
                     }
                     Some(Ok(Event::Delete(job))) => {
                         let ns = ns_of(&job);
                         jobs.remove(&format!("{ns}/{}", job.name_any()));
+                        enqueue_owned_cronjobs(&job, &cron_jobs, &queue);
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "job watch error in cronjob-controller"),
@@ -287,11 +284,12 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(cj))) | Some(Ok(Event::InitApply(cj))) => {
                         let ns = ns_of(&cj);
                         let name = cj.name_any();
-                        cron_jobs.insert((ns.clone(), name.clone()));
-                        reconcile_cron_job(&client, &ns, &name, &jobs).await;
+                        let key = format!("{ns}/{name}");
+                        cron_jobs.insert(key.clone(), cj);
+                        queue.enqueue(key);
                     }
                     Some(Ok(Event::Delete(cj))) => {
-                        cron_jobs.remove(&(ns_of(&cj), cj.name_any()));
+                        cron_jobs.remove(&format!("{}/{}", ns_of(&cj), cj.name_any()));
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "cronjob watch error in cronjob-controller"),
@@ -299,10 +297,29 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 }
             }
             _ = ticker.tick() => {
-                for (ns, name) in cron_jobs.clone() {
-                    reconcile_cron_job(&client, &ns, &name, &jobs).await;
+                for key in cron_jobs.keys() {
+                    queue.enqueue(key.clone());
                 }
             }
+            key = queue.pop() => {
+                if let Some(cj) = cron_jobs.get(&key).cloned() {
+                    reconcile_cron_job(&client, &cj, &jobs).await;
+                }
+            }
+        }
+    }
+}
+
+fn enqueue_owned_cronjobs(
+    job: &Job,
+    cron_jobs: &HashMap<String, CronJob>,
+    queue: &KeyedWorkQueue<String>,
+) {
+    for (key, cj) in cron_jobs {
+        if cj.namespace() == job.namespace()
+            && cj.uid().is_some_and(|uid| owned_by(job, uid))
+        {
+            queue.enqueue(key.clone());
         }
     }
 }

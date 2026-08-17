@@ -28,9 +28,10 @@
 //! One entry per Node, rescheduled on every renewal (once per
 //! `node-monitor-period`, cluster-wide) — the exact shape
 //! `docs/CONTROLLER_MANAGER.md` names as the reason a `BinaryHeap` isn't
-//! the right structure here. See `pacing::Governor` and `wheel::TimingWheel`.
+//! the right structure here: `wheel::TimingWheel`.
 
-use crate::pacing::Governor;
+use crate::jitter::jitter;
+use crate::wheel::{InsertError, TimingWheel};
 use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Node, Taint};
@@ -228,6 +229,26 @@ fn update_cached_taints(cache: &mut HashMap<String, NodeLiveness>, name: &str, t
     }
 }
 
+fn insert_jittered(
+    wheel: &mut TimingWheel<String>,
+    key: String,
+    base_deadline: Instant,
+    interval: Duration,
+    jitter_fraction: f64,
+    sample: f64,
+) -> Result<(), InsertError> {
+    let jittered = jitter(interval, jitter_fraction, sample);
+    let delta = jittered.as_secs_f64() - interval.as_secs_f64();
+    let deadline = if delta >= 0.0 {
+        base_deadline + Duration::from_secs_f64(delta)
+    } else {
+        base_deadline
+            .checked_sub(Duration::from_secs_f64(-delta))
+            .unwrap_or(base_deadline)
+    };
+    wheel.insert(key, deadline)
+}
+
 pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
     let node_api: Api<Node> = Api::all(client.clone());
     let mut cache: HashMap<String, NodeLiveness> = HashMap::new();
@@ -240,14 +261,7 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
         .mul_f64(1.0 + cfg.jitter_fraction)
         + cfg.tick_period;
     let slot_count = (horizon.as_nanos() / cfg.tick_period.as_nanos().max(1)).max(1) as u64 + 1;
-    let mut governor: Governor<String> = Governor::new(
-        slot_count,
-        cfg.tick_period,
-        Instant::now(),
-        cfg.tick_period,
-        cfg.cpu_budget_percent,
-        cfg.jitter_fraction,
-    );
+    let mut wheel: TimingWheel<String> = TimingWheel::new(slot_count, cfg.tick_period, Instant::now());
 
     let mut nodes = crate::watch::watch_nodes(&client);
     let mut leases = crate::watch::watch_node_leases(&client);
@@ -279,7 +293,7 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Delete(node))) => {
                         let name = node.name_any();
                         cache.remove(&name);
-                        governor.cancel(&name);
+                        wheel.cancel(&name);
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "node watch error in node-lifecycle-controller"),
@@ -298,11 +312,13 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                                 .seconds(cfg.node_monitor_grace_period.as_secs() as i64);
                             let deadline_instant = wall_to_instant(deadline_wall, now_wall, now_instant);
                             let sample = rand::thread_rng().gen_range(-1.0..=1.0);
-                            if let Err(e) = governor.insert_jittered(
+                            if let Err(e) = insert_jittered(
+                                &mut wheel,
                                 name.clone(),
                                 deadline_instant,
                                 cfg.node_monitor_grace_period,
                                 sample,
+                                cfg.jitter_fraction,
                             ) {
                                 tracing::warn!(node = %name, error = ?e, "couldn't schedule node-lifecycle recheck");
                             }
@@ -346,36 +362,21 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
             }
             _ = ticks.tick() => {
                 let now = Instant::now();
-                let due = governor.due_this_tick(now);
+                let due = wheel.advance(now);
                 if due.is_empty() { continue; }
-                let budget = governor.budget();
-                let tick_started = crate::pacing::process_cpu_time();
-                    let mut deferred = Vec::new();
-                    for (index, name) in due.iter().enumerate() {
-                    // Decide whether this item fits before doing its network
-                    // reconciliation. The first item is allowed even when it
-                    // costs more than the budget, matching the pure pacing
-                    // partition's progress guarantee; the remaining suffix
-                    // waits for the next tick.
-                    if index > 0
-                        && crate::pacing::process_cpu_time().saturating_sub(tick_started) >= budget
-                    {
-                        deferred.extend(due[index..].iter().cloned());
-                        break;
-                    }
-                    let Some(state) = cache.get(name) else { continue };
+                for name in due {
+                    let Some(state) = cache.get(&name) else { continue };
                     let status = state.ready_status.clone();
                     let cached_node = state.node.clone();
-                    // A renewal can have arrived after this key overflowed
-                    // into the deferred queue. Recompute from the cache so a
-                    // stale wheel entry cannot taint a live Node.
-                    if is_stale(&cache, name, cfg.node_monitor_grace_period, cfg.jitter_fraction) {
+                    // A renewal can have arrived after this key was placed
+                    // in the wheel. Recompute from the cache so a stale
+                    // wheel entry cannot taint a live Node.
+                    if is_stale(&cache, &name, cfg.node_monitor_grace_period, cfg.jitter_fraction) {
                         if let Some(taints) = reconcile(&node_api, &cached_node, status.as_deref(), true, "wheel-tick").await {
-                            update_cached_taints(&mut cache, name, taints);
+                            update_cached_taints(&mut cache, &name, taints);
                         }
                     }
                 }
-                governor.requeue_overflow(deferred);
             }
         }
     }
@@ -389,7 +390,7 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
 /// `jitter_fraction` **must** match the wheel's own — this is the second
 /// real bug found live in CI on the same test, after the relist one: the
 /// wheel fires on a *jittered* deadline (as early as
-/// `grace_period * (1 - jitter_fraction)`, see `pacing::Governor`'s own
+/// `grace_period * (1 - jitter_fraction)`, see the wheel's jittered
 /// insert), but this function was comparing against the full, unjittered
 /// `grace_period`. In the ~jitter-fraction-wide window between those two
 /// thresholds, the wheel had already (correctly, by its own schedule)

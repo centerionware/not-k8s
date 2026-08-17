@@ -52,6 +52,7 @@
 //! PVC-dependent path in this project has today.
 
 use anyhow::Result;
+use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{StatefulSet, StatefulSetStatus};
 use k8s_openapi::api::core::v1::{
@@ -260,6 +261,7 @@ async fn ensure_pvcs_for_ordinal(
     namespace: &str,
     sts: &StatefulSet,
     ordinal: i32,
+    pvc_cache: &HashMap<String, PersistentVolumeClaim>,
 ) {
     let Some(templates) = sts
         .spec
@@ -274,13 +276,8 @@ async fn ensure_pvcs_for_ordinal(
             continue;
         };
         let name = pvc.name_any();
-        match pvc_api.get_opt(&name).await {
-            Ok(Some(_)) => continue, // already exists — never recreated/deleted by this controller
-            Ok(None) => {}
-            Err(e) => {
-                tracing::warn!(namespace = %namespace, pvc = %name, error = ?e, "failed to check for existing StatefulSet PVC");
-                continue;
-            }
+        if pvc_cache.contains_key(&format!("{namespace}/{name}")) {
+            continue; // already exists — never recreated/deleted by this controller
         }
         if let Err(e) = pvc_api.create(&PostParams::default(), &pvc).await {
             if !matches!(&e, kube::Error::Api(status) if status.is_already_exists()) {
@@ -292,21 +289,14 @@ async fn ensure_pvcs_for_ordinal(
 
 async fn reconcile_stateful_set(
     client: &Client,
-    namespace: &str,
-    name: &str,
+    sts: &StatefulSet,
     pod_cache: &HashMap<String, Pod>,
+    pvc_cache: &HashMap<String, PersistentVolumeClaim>,
 ) {
-    let sts_api: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
-    let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
-
-    let sts = match sts_api.get_opt(name).await {
-        Ok(Some(sts)) => sts,
-        Ok(None) => return,
-        Err(e) => {
-            tracing::warn!(namespace = %namespace, statefulset = %name, error = ?e, "failed to read StatefulSet for reconcile");
-            return;
-        }
-    };
+    let namespace = ns_of(sts);
+    let name = sts.name_any();
+    let sts_api: Api<StatefulSet> = Api::namespaced(client.clone(), &namespace);
+    let pod_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
     let Some(sts_uid) = sts.uid() else { return };
     let Some(spec) = sts.spec.as_ref() else {
         return;
@@ -317,7 +307,7 @@ async fn reconcile_stateful_set(
 
     let owned: Vec<&Pod> = pod_cache
         .values()
-        .filter(|p| p.namespace().as_deref() == Some(namespace))
+        .filter(|p| p.namespace().as_deref() == Some(namespace.as_str()))
         .filter(|p| owned_by(p, &sts_uid))
         .collect();
 
@@ -343,8 +333,8 @@ async fn reconcile_stateful_set(
         .collect();
 
     for ordinal in ordinals_to_create(desired, &existing, &ready, parallel) {
-        ensure_pvcs_for_ordinal(client, namespace, &sts, ordinal).await;
-        let Some(pod) = build_pod(&sts, ordinal, &hash) else {
+        ensure_pvcs_for_ordinal(client, &namespace, sts, ordinal, pvc_cache).await;
+        let Some(pod) = build_pod(sts, ordinal, &hash) else {
             tracing::warn!(namespace = %namespace, statefulset = %name, "StatefulSet has no pod template — cannot create Pods");
             break;
         };
@@ -424,7 +414,7 @@ async fn reconcile_stateful_set(
     if sts.status.as_ref() != Some(&status) {
         let patch = serde_json::json!({ "status": status });
         if let Err(e) = sts_api
-            .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
             .await
         {
             tracing::warn!(namespace = %namespace, statefulset = %name, error = ?e, "failed to patch StatefulSet status");
@@ -438,10 +428,12 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
-    let mut stateful_sets: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
+    let mut pvcs: HashMap<String, PersistentVolumeClaim> = HashMap::new();
+    let mut stateful_sets: HashMap<String, StatefulSet> = HashMap::new();
+    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
 
     let mut pod_stream = crate::watch::watch_pods(&client);
+    let mut pvc_stream = crate::watch::watch_persistent_volume_claims(&client);
     let mut sts_stream = crate::watch::watch_stateful_sets(&client);
 
     loop {
@@ -451,19 +443,40 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pod))) | Some(Ok(Event::InitApply(pod))) => {
                         let ns = ns_of(&pod);
                         pods.insert(format!("{ns}/{}", pod.name_any()), pod);
-                        for (s_ns, s_name) in stateful_sets.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_stateful_set(&client, s_ns, s_name, &pods).await;
+                        for (key, sts) in stateful_sets.iter().filter(|(_, sts)| ns_of(sts) == ns) {
+                            queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
                         pods.remove(&format!("{ns}/{}", pod.name_any()));
-                        for (s_ns, s_name) in stateful_sets.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_stateful_set(&client, s_ns, s_name, &pods).await;
+                        for (key, sts) in stateful_sets.iter().filter(|(_, sts)| ns_of(sts) == ns) {
+                            queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "pod watch error in statefulset-controller"),
+                    None => return Ok(()),
+                }
+            }
+            ev = pvc_stream.next() => {
+                match ev {
+                    Some(Ok(Event::Apply(pvc))) | Some(Ok(Event::InitApply(pvc))) => {
+                        let ns = ns_of(&pvc);
+                        pvcs.insert(format!("{ns}/{}", pvc.name_any()), pvc);
+                        for (key, sts) in stateful_sets.iter().filter(|(_, sts)| ns_of(sts) == ns) {
+                            queue.enqueue(key.clone());
+                        }
+                    }
+                    Some(Ok(Event::Delete(pvc))) => {
+                        let ns = ns_of(&pvc);
+                        pvcs.remove(&format!("{ns}/{}", pvc.name_any()));
+                        for (key, sts) in stateful_sets.iter().filter(|(_, sts)| ns_of(sts) == ns) {
+                            queue.enqueue(key.clone());
+                        }
+                    }
+                    Some(Ok(Event::Init | Event::InitDone)) => {}
+                    Some(Err(e)) => tracing::warn!(error = ?e, "PVC watch error in statefulset-controller"),
                     None => return Ok(()),
                 }
             }
@@ -472,15 +485,21 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(sts))) | Some(Ok(Event::InitApply(sts))) => {
                         let ns = ns_of(&sts);
                         let name = sts.name_any();
-                        stateful_sets.insert((ns.clone(), name.clone()));
-                        reconcile_stateful_set(&client, &ns, &name, &pods).await;
+                        let key = format!("{ns}/{name}");
+                        stateful_sets.insert(key.clone(), sts);
+                        queue.enqueue(key);
                     }
                     Some(Ok(Event::Delete(sts))) => {
-                        stateful_sets.remove(&(ns_of(&sts), sts.name_any()));
+                        stateful_sets.remove(&format!("{}/{}", ns_of(&sts), sts.name_any()));
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "statefulset watch error in statefulset-controller"),
                     None => return Ok(()),
+                }
+            }
+            key = queue.pop() => {
+                if let Some(sts) = stateful_sets.get(&key).cloned() {
+                    reconcile_stateful_set(&client, &sts, &pods, &pvcs).await;
                 }
             }
         }

@@ -19,12 +19,14 @@
 //! actually missing).
 
 use anyhow::Result;
+use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Namespace, ServiceAccount};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, PostParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
+use std::collections::HashMap;
 
 const DEFAULT_SA_NAME: &str = "default";
 
@@ -32,15 +34,14 @@ fn is_terminating(ns: &Namespace) -> bool {
     ns.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Terminating")
 }
 
-async fn ensure_default_service_account(client: &Client, ns: &str) {
+async fn ensure_default_service_account(
+    client: &Client,
+    ns: &str,
+    service_accounts: &HashMap<String, ServiceAccount>,
+) {
     let api: Api<ServiceAccount> = Api::namespaced(client.clone(), ns);
-    match api.get_opt(DEFAULT_SA_NAME).await {
-        Ok(Some(_)) => return, // already there — the common case, every reconcile after the first
-        Ok(None) => {}
-        Err(e) => {
-            tracing::warn!(namespace = %ns, error = ?e, "failed to check for the default ServiceAccount");
-            return;
-        }
+    if service_accounts.contains_key(&format!("{ns}/{DEFAULT_SA_NAME}")) {
+        return; // already there — the common case, every reconcile after the first
     }
     let sa = ServiceAccount {
         metadata: ObjectMeta {
@@ -60,20 +61,47 @@ async fn ensure_default_service_account(client: &Client, ns: &str) {
 }
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
+    let mut namespaces: HashMap<String, Namespace> = HashMap::new();
+    let mut service_accounts: HashMap<String, ServiceAccount> = HashMap::new();
+    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
     let mut stream = crate::watch::watch_namespaces(&client);
-    while let Some(ev) = stream.next().await {
-        match ev {
-            Ok(Event::Apply(ns)) | Ok(Event::InitApply(ns)) => {
-                if is_terminating(&ns) {
-                    continue;
+    let mut sa_stream = crate::watch::watch_service_accounts(&client);
+    loop {
+        tokio::select! {
+            ev = stream.next() => match ev {
+                Some(Ok(Event::Apply(ns))) | Some(Ok(Event::InitApply(ns))) => {
+                    let name = ns.name_any();
+                    namespaces.insert(name.clone(), ns);
+                    queue.enqueue(name);
                 }
-                ensure_default_service_account(&client, &ns.name_any()).await;
+                Some(Ok(Event::Delete(ns))) => { namespaces.remove(&ns.name_any()); }
+                Some(Ok(Event::Init | Event::InitDone)) => {}
+                Some(Err(e)) => tracing::warn!(error = ?e, "namespace watch error in serviceaccount-controller"),
+                None => return Ok(()),
+            },
+            ev = sa_stream.next() => match ev {
+                Some(Ok(Event::Apply(sa))) | Some(Ok(Event::InitApply(sa))) => {
+                    let ns = sa.namespace().unwrap_or_default();
+                    service_accounts.insert(format!("{ns}/{}", sa.name_any()), sa);
+                }
+                Some(Ok(Event::Delete(sa))) => {
+                    let ns = sa.namespace().unwrap_or_default();
+                    service_accounts.remove(&format!("{ns}/{}", sa.name_any()));
+                    if sa.name_any() == DEFAULT_SA_NAME { queue.enqueue(ns); }
+                }
+                Some(Ok(Event::Init | Event::InitDone)) => {}
+                Some(Err(e)) => tracing::warn!(error = ?e, "serviceaccount watch error in serviceaccount-controller"),
+                None => return Ok(()),
+            },
+            ns = queue.pop() => {
+                if let Some(namespace) = namespaces.get(&ns) {
+                    if !is_terminating(namespace) {
+                        ensure_default_service_account(&client, &ns, &service_accounts).await;
+                    }
+                }
             }
-            Ok(Event::Delete(_) | Event::Init | Event::InitDone) => {}
-            Err(e) => tracing::warn!(error = ?e, "namespace watch error in serviceaccount-controller"),
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]

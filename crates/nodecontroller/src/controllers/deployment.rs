@@ -59,6 +59,7 @@
 //! controller cleaning up after itself, not GC).
 
 use anyhow::Result;
+use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentStatus, ReplicaSet, ReplicaSetSpec};
 use k8s_openapi::api::core::v1::PodTemplateSpec;
@@ -235,18 +236,11 @@ async fn scale_replica_set(rs_api: &Api<ReplicaSet>, name: &str, replicas: i32) 
     }
 }
 
-async fn reconcile_deployment(client: &Client, namespace: &str, name: &str, rs_cache: &HashMap<String, ReplicaSet>) {
-    let d_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-    let rs_api: Api<ReplicaSet> = Api::namespaced(client.clone(), namespace);
-
-    let d = match d_api.get_opt(name).await {
-        Ok(Some(d)) => d,
-        Ok(None) => return, // gone — its ReplicaSets are Group D's job, see module doc
-        Err(e) => {
-            tracing::warn!(namespace = %namespace, deployment = %name, error = ?e, "failed to read Deployment for reconcile");
-            return;
-        }
-    };
+async fn reconcile_deployment(client: &Client, d: &Deployment, rs_cache: &HashMap<String, ReplicaSet>) {
+    let namespace = ns_of(d);
+    let name = d.name_any();
+    let d_api: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
+    let rs_api: Api<ReplicaSet> = Api::namespaced(client.clone(), &namespace);
     let Some(d_uid) = d.uid() else { return };
     let Some(spec) = d.spec.as_ref() else { return };
     if spec.paused == Some(true) {
@@ -273,28 +267,16 @@ async fn reconcile_deployment(client: &Client, namespace: &str, name: &str, rs_c
             // Always created at 0 — RollingUpdate scales it up incrementally
             // below; Recreate only scales it up once old ReplicaSets are
             // drained, handled in the `is_recreate` branch further down.
-            let Some(new) = build_new_replica_set(&d, &hash, 0) else { return };
+            let Some(new) = build_new_replica_set(d, &hash, 0) else { return };
             match rs_api.create(&PostParams::default(), &new).await {
                 Ok(created) => {
                     new_rs_owned = created;
                     &new_rs_owned
                 }
-                // A concurrent reconcile (this one racing itself, or the
-                // watch cache not having caught up yet) already created
-                // the same deterministically-named RS — fetch the real
-                // object rather than erroring the whole reconcile away.
-                Err(kube::Error::Api(ref status)) if status.is_already_exists() => {
-                    match rs_api.get(&new.name_any()).await {
-                        Ok(existing) => {
-                            new_rs_owned = existing;
-                            &new_rs_owned
-                        }
-                        Err(e) => {
-                            tracing::warn!(namespace = %namespace, deployment = %name, error = ?e, "failed to fetch already-existing new ReplicaSet for deployment-controller");
-                            return;
-                        }
-                    }
-                }
+                // The shared ReplicaSet informer will deliver the object
+                // that won this create race. Do not issue a compensating GET
+                // here: that turns a normal cache-lag race into an API burst.
+                Err(kube::Error::Api(ref status)) if status.is_already_exists() => return,
                 Err(e) => {
                     tracing::warn!(namespace = %namespace, deployment = %name, error = ?e, "failed to create new ReplicaSet for deployment-controller");
                     return;
@@ -307,7 +289,7 @@ async fn reconcile_deployment(client: &Client, namespace: &str, name: &str, rs_c
     let old_total: i32 = old.iter().map(|rs| rs_replicas(rs)).sum();
     let old_available: i32 = old.iter().map(|rs| rs_available(rs)).sum();
 
-    if is_recreate(&d) {
+    if is_recreate(d) {
         // Scale every old RS to 0 first; only scale the new one up once
         // none of them report any Pods left (see module doc: RS-status
         // granularity, not real per-Pod wait).
@@ -371,7 +353,7 @@ async fn reconcile_deployment(client: &Client, namespace: &str, name: &str, rs_c
     };
     if d.status.as_ref() != Some(&status) {
         let patch = serde_json::json!({ "status": status });
-        if let Err(e) = d_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+        if let Err(e) = d_api.patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch)).await {
             tracing::warn!(namespace = %namespace, deployment = %name, error = ?e, "failed to patch Deployment status");
         }
     }
@@ -379,7 +361,8 @@ async fn reconcile_deployment(client: &Client, namespace: &str, name: &str, rs_c
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut replica_sets: HashMap<String, ReplicaSet> = HashMap::new();
-    let mut deployments: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let mut deployments: HashMap<String, Deployment> = HashMap::new();
+    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
 
     let mut rs_stream = crate::watch::watch_replica_sets(&client);
     let mut d_stream = crate::watch::watch_deployments(&client);
@@ -391,15 +374,15 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(rs))) | Some(Ok(Event::InitApply(rs))) => {
                         let ns = ns_of(&rs);
                         replica_sets.insert(format!("{ns}/{}", rs.name_any()), rs);
-                        for (d_ns, d_name) in deployments.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_deployment(&client, d_ns, d_name, &replica_sets).await;
+                        for (key, d) in deployments.iter().filter(|(_, d)| ns_of(d) == ns) {
+                            queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(rs))) => {
                         let ns = ns_of(&rs);
                         replica_sets.remove(&format!("{ns}/{}", rs.name_any()));
-                        for (d_ns, d_name) in deployments.iter().filter(|(n, _)| *n == ns) {
-                            reconcile_deployment(&client, d_ns, d_name, &replica_sets).await;
+                        for (key, d) in deployments.iter().filter(|(_, d)| ns_of(d) == ns) {
+                            queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
@@ -412,15 +395,21 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(d))) | Some(Ok(Event::InitApply(d))) => {
                         let ns = ns_of(&d);
                         let name = d.name_any();
-                        deployments.insert((ns.clone(), name.clone()));
-                        reconcile_deployment(&client, &ns, &name, &replica_sets).await;
+                        let key = format!("{ns}/{name}");
+                        deployments.insert(key.clone(), d);
+                        queue.enqueue(key);
                     }
                     Some(Ok(Event::Delete(d))) => {
-                        deployments.remove(&(ns_of(&d), d.name_any()));
+                        deployments.remove(&format!("{}/{}", ns_of(&d), d.name_any()));
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "deployment watch error in deployment-controller"),
                     None => return Ok(()),
+                }
+            }
+            key = queue.pop() => {
+                if let Some(d) = deployments.get(&key).cloned() {
+                    reconcile_deployment(&client, &d, &replica_sets).await;
                 }
             }
         }

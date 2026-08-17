@@ -70,6 +70,7 @@
 //! than upstream's slightly different windows per outcome.
 
 use anyhow::{Context, Result};
+use crate::workqueue::KeyedWorkQueue;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use k8s_openapi::api::certificates::v1::{
@@ -330,16 +331,9 @@ async fn approve(client: &Client, name: &str, existing: &[CertificateSigningRequ
     }
 }
 
-async fn reconcile_csr(client: &Client, ca: &Option<SigningCa>, name: &str) {
+async fn reconcile_csr(client: &Client, ca: &Option<SigningCa>, csr: &CertificateSigningRequest) {
+    let name = csr.name_any();
     let api: Api<CertificateSigningRequest> = Api::all(client.clone());
-    let csr = match api.get_opt(name).await {
-        Ok(Some(c)) => c,
-        Ok(None) => return,
-        Err(e) => {
-            tracing::warn!(csr = %name, error = ?e, "failed to read CertificateSigningRequest for reconcile");
-            return;
-        }
-    };
     if csr.spec.signer_name != KUBELET_CLIENT_SIGNER {
         return;
     }
@@ -365,7 +359,7 @@ async fn reconcile_csr(client: &Client, ca: &Option<SigningCa>, name: &str) {
                 CsrSubject::default()
             });
         if should_auto_approve(&csr.spec.signer_name, &groups, &usages, &subject) {
-            approve(client, name, &conditions).await;
+            approve(client, &name, &conditions).await;
         }
         return;
     }
@@ -386,7 +380,7 @@ async fn reconcile_csr(client: &Client, ca: &Option<SigningCa>, name: &str) {
             let status_patch =
                 serde_json::json!({ "status": { "certificate": base64_pem(&cert_pem) } });
             if let Err(e) = api
-                .patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch))
+                .patch_status(&name, &PatchParams::default(), &Patch::Merge(&status_patch))
                 .await
             {
                 tracing::warn!(csr = %name, error = ?e, "failed to patch issued certificate onto CertificateSigningRequest");
@@ -444,6 +438,7 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
     }
 
     let mut csrs: HashMap<String, CertificateSigningRequest> = HashMap::new();
+    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
     let mut stream = crate::watch::watch_certificate_signing_requests(&client);
     let mut ticker = tokio::time::interval(TICK_PERIOD);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -455,7 +450,7 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(csr))) | Some(Ok(Event::InitApply(csr))) => {
                         let name = csr.name_any();
                         csrs.insert(name.clone(), csr);
-                        reconcile_csr(&client, &ca, &name).await;
+                        queue.enqueue(name);
                     }
                     Some(Ok(Event::Delete(csr))) => { csrs.remove(&csr.name_any()); }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
@@ -465,6 +460,11 @@ pub async fn run(client: Client, cfg: &crate::config::Config) -> Result<()> {
             }
             _ = ticker.tick() => {
                 sweep_cleanup(&client, &csrs).await;
+            }
+            name = queue.pop() => {
+                if let Some(csr) = csrs.get(&name).cloned() {
+                    reconcile_csr(&client, &ca, &csr).await;
+                }
             }
         }
     }
