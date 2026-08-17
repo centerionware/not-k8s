@@ -9,8 +9,8 @@
 //!
 //! # How it works (event-driven, no polling, no explicit graph walk)
 //!
-//! One dynamic watch per discovered resource kind, all funneled into a
-//! single event loop that tracks two things purely from watch events: which
+//! One watch per discovered resource kind, all funneled into a single event
+//! loop that tracks two things purely from watch events: which
 //! UIDs currently exist, and — for every object that *has* an
 //! `ownerReference` — a reverse index from each owner's UID to its
 //! children. When an owner's Delete event arrives, every child in its
@@ -330,13 +330,26 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             }
             let key = gvk_key(&ar);
             resources.insert(key.clone(), ar.clone());
-            let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
             let key_for_stream = key.clone();
-            // Discovery can yield dozens of resource kinds. Use one
-            // streaming-list request per kind rather than a synchronized
-            // LIST+WATCH burst that competes with ordinary apiserver clients
-            // (notably CSI sidecars) during startup.
-            let stream = watcher(api, watcher::Config::default().streaming_lists())
+            // Known built-in kinds already have a shared typed watch feeding
+            // their ordinary controller(s). Reuse that watch here rather
+            // than opening a second dynamic watch for the garbage collector;
+            // the small k3s apiserver otherwise spends its watch/concurrency
+            // budget on duplicate Pod/PVC/Deployment/etc. streams and can
+            // reject CSI's own initial watches with Retry-After.
+            let stream = if let Some(stream) =
+                crate::watch::watch_dynamic_resource(&client, &ar.api_version, &ar.kind)
+            {
+                stream
+            } else {
+                let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
+                // Discovery can yield dozens of resource kinds. Use one
+                // streaming-list request per kind rather than a synchronized
+                // LIST+WATCH burst that competes with ordinary apiserver
+                // clients (notably CSI sidecars) during startup.
+                watcher(api, watcher::Config::default().streaming_lists()).boxed()
+            };
+            let stream = stream
                 .map(move |ev| (key_for_stream.clone(), ev))
                 .boxed();
             streams.push(stream);

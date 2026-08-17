@@ -28,6 +28,7 @@ use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client, Resource, ResourceExt};
+use kube::api::{DynamicObject, TypeMeta};
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -255,6 +256,33 @@ where
     }
 }
 
+fn as_dynamic<T>(object: T) -> DynamicObject
+where
+    T: Resource<DynamicType = ()> + ResourceExt,
+{
+    DynamicObject {
+        types: Some(TypeMeta {
+            api_version: T::api_version(&()).to_string(),
+            kind: T::kind(&()).to_string(),
+        }),
+        metadata: object.meta().clone(),
+        data: serde_json::Value::Null,
+    }
+}
+
+fn dynamic_event<T>(event: Event<T>) -> Event<DynamicObject>
+where
+    T: Resource<DynamicType = ()> + ResourceExt,
+{
+    match event {
+        Event::Apply(object) => Event::Apply(as_dynamic(object)),
+        Event::Delete(object) => Event::Delete(as_dynamic(object)),
+        Event::Init => Event::Init,
+        Event::InitApply(object) => Event::InitApply(as_dynamic(object)),
+        Event::InitDone => Event::InitDone,
+    }
+}
+
 macro_rules! shared_watch {
     ($name:ident, $static_name:ident, $resource:ty) => {
         pub fn $name(client: &Client) -> BoxStream<'static, watcher::Result<Event<$resource>>> {
@@ -302,6 +330,37 @@ shared_watch!(watch_volume_attachments, SHARED_VOLUME_ATTACHMENTS, VolumeAttachm
 shared_watch!(watch_certificate_signing_requests, SHARED_CSRS, CertificateSigningRequest);
 
 shared_watch!(watch_pod_disruption_budgets, SHARED_PDBS, PodDisruptionBudget);
+
+/// Return the shared typed watch for a built-in namespaced resource in the
+/// shape the generic garbage collector consumes. Keeping this conversion
+/// here lets GC reuse the same underlying watch as the typed controllers
+/// instead of opening a second dynamic watch for the same GVK.
+pub fn watch_dynamic_resource(
+    client: &Client,
+    api_version: &str,
+    kind: &str,
+) -> Option<BoxStream<'static, watcher::Result<Event<DynamicObject>>>> {
+    macro_rules! dynamic_shared {
+        ($watch:ident) => {
+            Some($watch(client).map(|event| event.map(dynamic_event)).boxed())
+        };
+    }
+
+    match (api_version, kind) {
+        ("v1", "Pod") => dynamic_shared!(watch_pods),
+        ("v1", "PersistentVolumeClaim") => dynamic_shared!(watch_persistent_volume_claims),
+        ("v1", "ResourceQuota") => dynamic_shared!(watch_resource_quotas),
+        ("v1", "Service") => dynamic_shared!(watch_services),
+        ("apps/v1", "DaemonSet") => dynamic_shared!(watch_daemon_sets),
+        ("apps/v1", "Deployment") => dynamic_shared!(watch_deployments),
+        ("apps/v1", "ReplicaSet") => dynamic_shared!(watch_replica_sets),
+        ("apps/v1", "StatefulSet") => dynamic_shared!(watch_stateful_sets),
+        ("batch/v1", "CronJob") => dynamic_shared!(watch_cron_jobs),
+        ("batch/v1", "Job") => dynamic_shared!(watch_jobs),
+        ("policy/v1", "PodDisruptionBudget") => dynamic_shared!(watch_pod_disruption_budgets),
+        _ => None,
+    }
+}
 
 #[cfg(test)]
 mod tests {
