@@ -44,7 +44,7 @@ use tokio::net::TcpStream;
 use kube::api::{Api, ListParams};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tonic::transport::{Channel, Endpoint, Uri};
@@ -163,6 +163,13 @@ pub struct CriRuntime {
     // their contents have to be fetched from the apiserver and written to
     // disk ourselves before a container that mounts them can start.
     client: kube::Client,
+    /// Shared informer-style cache of Services used to inject service-link
+    /// environment variables. Listing every Service on every pod reconcile
+    /// made a status/watch event pay an apiserver round trip even when the
+    /// container was already running; under nodecontroller's full watch and
+    /// controller workload that became a visible pod-start latency tax. The
+    /// cache is kept current by one watch, rather than a TTL.
+    service_cache: Arc<RwLock<env::ServiceCache>>,
     /// This node's name — needed to match this node's `VolumeAttachment`
     /// objects (`spec.nodeName`) when waiting on a CSI attach (see
     /// `resolve_csi_source()`).
@@ -547,6 +554,8 @@ impl CriRuntime {
         // own doc comment for the full story.
         let device_plugins = Arc::new(crate::device_plugins::DevicePlugins::new(tx.clone()));
         let dra = Arc::new(crate::dra::DraDrivers::new());
+        let service_cache = Arc::new(RwLock::new(env::ServiceCache::default()));
+        tokio::spawn(env::service_cache_loop(client.clone(), service_cache.clone()));
         // Dynamic CSI driver / device plugin / DRA driver discovery: watches
         // plugin_registry_path for a plugin's registrar socket, same
         // protocol real kubelet's own plugin watcher speaks (see
@@ -565,6 +574,7 @@ impl CriRuntime {
             rt,
             img,
             client,
+            service_cache,
             node_name,
             cluster_dns,
             cluster_domain,
