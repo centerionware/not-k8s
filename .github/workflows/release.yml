@@ -121,7 +121,10 @@ jobs:
           - shard: 5
             needs_drivers: false
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Keep the release gate aligned with the standalone e2e workflow.  The
+    # custom controller-manager path is slower than k3s's bundled one under
+    # the full CSI/DRA workload and can exceed forty minutes on a shard.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
