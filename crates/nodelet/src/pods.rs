@@ -723,12 +723,19 @@ impl PodController {
             info!(pod = %format!("{ns}/{name}"), "torn down");
 
             let api: Api<Pod> = Api::namespaced(client, &ns);
+            let Some(uid) = uid_for_delete else {
+                warn!(
+                    pod = %format!("{ns}/{name}"),
+                    "skipping final pod delete because the teardown event had no UID"
+                );
+                return;
+            };
             // The old Pod may have been force-deleted and recreated under the
             // same name while its detached runtime teardown was in flight.
             // Never let this old task delete that replacement object.
             let dp = DeleteParams {
                 grace_period_seconds: Some(0),
-                preconditions: uid_for_delete.map(|uid| Preconditions {
+                preconditions: Some(Preconditions {
                     uid: Some(uid),
                     resource_version: None,
                 }),
