@@ -1,10 +1,10 @@
-commit: 660574ce57f167e13355fb327414687ea3ea09df
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32094368350
-timestamp (UTC): 2026-08-18T03:21:50Z
+commit: 321d7fa2bdbf8ea314656142f77442690570372d
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32096657840
+timestamp (UTC): 2026-08-18T03:59:40Z
 shard: 5/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1787022738
+==> Test namespace: not-k8s-e2e-1787025013
 ==> 238 test(s) registered total (before sharding); running now...
 ==> Shard 5/5: 44 test(s) selected
 ▶ test_tls_bootstrap_issues_a_real_client_certificate
@@ -12,27 +12,27 @@ exit code: 0
 ▶ test_node_allocatable_cgroup_exists_and_is_capped
   ✔ PASS (0s)
 ▶ test_datastore_serves_the_etcd_status_rpc
-  ✔ PASS (1s)
+  ✔ PASS (0s)
 ▶ test_datastore_streams_watch_events_as_they_happen
   ✔ PASS (2s)
 ▶ test_datastore_refuses_a_cluster_it_cannot_be_part_of
   ✔ PASS (0s)
 ▶ test_apiserver_state_survives_a_datastore_restart
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11529/environ: Permission denied
-  ✔ PASS (7s)
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11384/environ: Permission denied
+  ✔ PASS (8s)
 ▶ test_the_cluster_survives_the_leader_being_killed
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
 ▶ test_upgrade_a_populated_single_member_into_a_one_member_cluster
     (skip: needs root to create network namespaces — this needs real network namespaces)
-  ○ SKIP (1s)
+  ○ SKIP (0s)
 ▶ test_device_plugin_advertises_capacity_and_allocates_into_a_container
 ==> installing grpcio/grpcio-tools for the fake device plugin...
 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (103s)
+  ✔ PASS (105s)
 ▶ test_custom_dns_config_reaches_resolv_conf
   ✔ PASS (3s)
 ▶ test_eviction_manual_procedure
@@ -42,27 +42,27 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
   ✔ PASS (34s)
 ▶ test_unreferenced_image_is_not_removed_below_the_watermark
 ==>     waiting through at least one NODELET_GC_INTERVAL_SECS cycle (default 300s) to confirm busybox:1.36.1 survives it...
-  ✔ PASS (97s)
+  ✔ PASS (96s)
 ▶ test_termination_grace_period_is_honored_not_instant
-  ✔ PASS (12s)
+  ✔ PASS (11s)
 ▶ test_init_container_failure_blocks_app_container_under_restart_policy_never
   ✔ PASS (3s)
 ▶ test_restart_policy_never_exit_nonzero_is_failed
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_pod_status_reports_host_ips_plural
   ✔ PASS (3s)
 ▶ test_image_pull_policy_if_not_present_skips_the_registry_round_trip
-  ✔ PASS (38s)
+  ✔ PASS (37s)
 ▶ test_host_network_pod_needs_no_explicit_port_mapping
   ✔ PASS (3s)
 ▶ test_node_reports_hugepages_capacity_when_reserved
-  ✔ PASS (1s)
-▶ test_pod_resources_socket_is_created_on_a_cri_node
   ✔ PASS (0s)
+▶ test_pod_resources_socket_is_created_on_a_cri_node
+  ✔ PASS (1s)
 ▶ test_startup_probe_gates_liveness_and_readiness
   ✔ PASS (7s)
 ▶ test_metrics_resource_returns_real_pod_usage
-  ✔ PASS (4s)
+  ✔ PASS (3s)
 ▶ test_memory_limit_is_enforced_via_cgroup
   ✔ PASS (3s)
 ▶ test_env_resource_field_ref_reports_the_containers_own_limits
@@ -72,44 +72,44 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ▶ test_scheduler_holds_the_leader_lease
   ✔ PASS (8s)
 ▶ test_scheduler_does_not_preempt_when_policy_forbids_it
-  ✔ PASS (81s)
+  ✔ PASS (84s)
 ▶ test_without_read_only_root_filesystem_writes_succeed
   ✔ PASS (3s)
 ▶ test_host_users_volume_ownership_translation_is_correct
-  ✔ PASS (4s)
+  ✔ PASS (3s)
 ▶ test_sysctls_are_applied_to_the_sandbox
   ✔ PASS (3s)
 ▶ test_nodeproxy_runs_as_its_own_service_separate_from_nodelet
   ✔ PASS (0s)
 ▶ test_deleting_a_service_removes_its_rules
-  ✔ PASS (5s)
+  ✔ PASS (4s)
 ▶ test_statefulset_with_a_volume_claim_template_creates_an_accepted_pod
   ✔ PASS (1s)
 ▶ test_kubectl_logs_returns_real_output
-  ✔ PASS (4s)
+  ✔ PASS (3s)
 ▶ test_endpointslice_is_produced_for_a_selected_pod
-  ✔ PASS (37s)
+  ✔ PASS (36s)
 ▶ test_topology_manager_restricted_spread_manual_note
     (skip: proving restricted policy's spread() fallback (round 20 — each provider placed on its own best NUMA node independently when no single node satisfies everyone) needs real multi-NUMA hardware where a CPU request and a device/memory request can only individually be satisfied on *different* nodes. Manual spot-check: with NODELET_TOPOLOGY_MANAGER_POLICY=restricted, create a Guaranteed pod whose exclusive-CPU request only fits node 0's remaining capacity and whose device-plugin/memory request only fits node 1's — the pod should reach Running (unlike single-numa-node, which would reject it) with nodelet logging 'no single NUMA node satisfies every request together; spreading each across its own best node'; the container's cpuset.cpus should land on node 0's CPUs and cpuset.mems (if a memory request was involved) on node 1.)
   ○ SKIP (0s)
 ▶ test_projected_volume_merges_configmap_and_downward_api
-  ✔ PASS (3s)
-▶ test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs
   ✔ PASS (4s)
+▶ test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs
+  ✔ PASS (3s)
 ▶ test_mount_propagation_host_to_container_sees_a_new_host_mount
   ✔ PASS (3s)
 ▶ test_recursive_read_only_if_possible_tracks_the_runtime_handlers_own_capability
   ✔ PASS (4s)
 ▶ test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores
-  ✔ PASS (5s)
+  ✔ PASS (4s)
 ▶ test_a_pending_pod_recovers_after_the_node_failure_is_fixed
 ==> stopping containerd so every sandbox creation fails...
 ==> starting containerd again — nothing touches the Pod, so only nodelet's own retry can recover it...
-  ✔ PASS (36s)
+  ✔ PASS (37s)
 ▶ test_scheduler_schedules_a_pod_an_http_extender_approves
-  ✔ PASS (35s)
+  ✔ PASS (32s)
 
 ════════════════════════════════════════
 Results: 40 passed, 0 failed, 4 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1787022738...
+==> Cleaning up test namespace not-k8s-e2e-1787025013...
