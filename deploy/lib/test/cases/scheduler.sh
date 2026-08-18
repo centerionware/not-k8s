@@ -1302,7 +1302,10 @@ EOF
     assert_contains "$(kubectl get events -n "$TEST_NAMESPACE" --field-selector involvedObject.name="$second" -o jsonpath='{.items[*].message}' 2>/dev/null)" \
         "ReadWriteOncePod" "the pod must say why, not just sit Pending"
 
-    delete_pod_if_exists "$first"
+    # The scheduler drops the holder from its cache on the actual DELETE
+    # event, not when deletionTimestamp is set. Wait for that event before
+    # asserting that the replacement can use the RWOP claim.
+    delete_pod_and_wait_gone "$first"
     wait_until 60 "$second to be bound to a node" _pod_is_bound "$second" \
         || die "freeing the ReadWriteOncePod claim never got the second pod scheduled"
 
