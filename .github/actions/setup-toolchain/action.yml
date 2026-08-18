@@ -8,7 +8,7 @@ runs:
       shell: bash
       run: |
         set -e
-        export FORCE_SOURCE_BUILD=0 WITH_CRI=1
+        export FORCE_SOURCE_BUILD=0 WITH_CRI=1 NOTK8S_RUSTUP_FIRST=1
         export WORK_DIR="$GITHUB_WORKSPACE/.bootstrap"
         export TOOLCHAIN_DIR="$WORK_DIR/toolchain"
         export SRC_DIR="$WORK_DIR/src"

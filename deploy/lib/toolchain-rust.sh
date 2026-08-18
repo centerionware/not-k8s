@@ -48,19 +48,8 @@ cargo_is_new_enough() {
     (( minor >= MIN_CARGO_MINOR ))
 }
 
-ensure_rust() {
-    if cargo_is_new_enough; then
-        log "Rust present and new enough: $(cargo --version)"
-        return 0
-    fi
-    if command -v cargo &>/dev/null; then
-        warn "Found $(cargo --version) but this project needs >=1.$MIN_CARGO_MINOR — looking for a newer one."
-    fi
-
-    pkg_install "rust" "cargo rustc" "cargo rustc" "rust" "cargo" "cargo rustc" "rust" \
-        && cargo_is_new_enough && { log "Rust installed via $PKG_MGR: $(cargo --version)"; return 0; }
-
-    local target; target="$(RUSTUP_TARGET_MAP)"
+install_rust_via_rustup() {
+    local target="$1"
     [[ -n "$target" ]] || die "No known rustup target for arch '$ARCH'. \
 There is no way to build rustc from nothing but a C compiler for an \
 unsupported architecture — the only real path is mrustc \
@@ -78,4 +67,26 @@ official prebuilt rustc — see the mrustc note above."
     export PATH="$CARGO_HOME/bin:$PATH"
     command -v cargo &>/dev/null || die "rustup ran but cargo is still not on PATH."
     log "Rust installed via rustup: $(cargo --version)"
+}
+
+ensure_rust() {
+    if cargo_is_new_enough; then
+        log "Rust present and new enough: $(cargo --version)"
+        return 0
+    fi
+    if command -v cargo &>/dev/null; then
+        warn "Found $(cargo --version) but this project needs >=1.$MIN_CARGO_MINOR — looking for a newer one."
+    fi
+
+    local target; target="$(RUSTUP_TARGET_MAP)"
+    if [[ "${NOTK8S_RUSTUP_FIRST:-0}" -eq 1 ]]; then
+        log "Rustup-first mode enabled; skipping the distro package manager."
+        install_rust_via_rustup "$target"
+        return 0
+    fi
+
+    pkg_install "rust" "cargo rustc" "cargo rustc" "rust" "cargo" "cargo rustc" "rust" \
+        && cargo_is_new_enough && { log "Rust installed via $PKG_MGR: $(cargo --version)"; return 0; }
+
+    install_rust_via_rustup "$target"
 }

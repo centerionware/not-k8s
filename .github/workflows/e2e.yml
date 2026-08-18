@@ -202,7 +202,7 @@ jobs:
         # secure_path would otherwise hide it from the root bootstrap and
         # make the bootstrap fall back to an unbounded apt Rust install on
         # runners where the system package is absent or stale.
-        run: sudo -E env "PATH=$PATH" ./deploy/bootstrap-source.sh --with-cri --proxy=${{ inputs.proxy || 'nodeproxy' }}
+        run: sudo -E env "PATH=$PATH" NOTK8S_RUSTUP_FIRST=1 ./deploy/bootstrap-source.sh --with-cri --proxy=${{ inputs.proxy || 'nodeproxy' }}
 
       - name: Install misc e2e prerequisites (hugepages, grpcurl)
         # Round 124: split out of e2e-full-setup.sh — these aren't
