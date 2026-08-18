@@ -1,20 +1,7 @@
 commit: 1045b493f85c20e31f43bb0e8a676b843f649bdf
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32084538402
-timestamp (UTC): 2026-08-18T00:37:11Z
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32085238629
+timestamp (UTC): 2026-08-18T01:18:07Z
 shard: 2/5
-exit code: 0
+exit code: unknown
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1787013247
-==> 238 test(s) registered total (before sharding); running now...
-==> Shard 2/5: 52 test(s) selected
-▶ test_scheduler_enforces_read_write_once_pod_exclusivity
-  ✔ PASS (93s)
-▶ test_crash_loop_backoff_throttles_immediate_restarts
-  ✔ PASS (38s)
-▶ test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set
-  ✔ PASS (52s)
-
-════════════════════════════════════════
-Results: 3 passed, 0 failed, 0 skipped
-════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1787013247...
+(no results captured — the run failed before test-e2e.sh could produce output)
