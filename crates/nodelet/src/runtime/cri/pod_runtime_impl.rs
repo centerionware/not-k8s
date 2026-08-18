@@ -270,6 +270,13 @@ impl PodRuntime for CriRuntime {
 
     async fn remove_pod(&self, pod: &Pod) -> Result<()> {
         let id = pod_id(pod);
+        // Teardown runs on its own task so a long grace period cannot block
+        // unrelated Pod events, but it must still serialize with a replacement
+        // Pod using the same namespace/name. Otherwise the old teardown can
+        // remove the replacement sandbox or clean up state belonging to its
+        // new UID.
+        let lock = self.pod_ensure_lock(&format!("{}/{}", id.namespace, id.name));
+        let _remove_guard = lock.lock().await;
         if let Some((sandbox_id, _state)) = self.find_sandbox(&id.namespace, &id.name).await? {
             let grace = termination_grace_seconds(pod);
             self.graceful_stop_containers(&sandbox_id, pod, grace).await;
@@ -569,5 +576,4 @@ pub(crate) fn rotate_log_file(path: &std::path::Path, max_files: u32) -> std::io
     std::fs::rename(path, rotated(1))?;
     Ok(())
 }
-
 

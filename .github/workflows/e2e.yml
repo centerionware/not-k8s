@@ -135,7 +135,11 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.shards) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # The nodecontroller full suite can legitimately exceed the old 40-minute
+    # cap while it drains the sharded CSI/DRA workload.  Let a genuinely
+    # stalled runner time out without cutting off a slow but still progressing
+    # shard.
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

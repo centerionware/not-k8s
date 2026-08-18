@@ -1,4 +1,76 @@
 use super::*;
+use futures::StreamExt;
+use kube::runtime::utils::{Backoff, WatchStreamExt};
+use kube::runtime::watcher::{self, Event};
+use kube::ResourceExt;
+
+#[derive(Default)]
+struct ServiceWatchBackoff {
+    failures: u32,
+}
+
+impl Iterator for ServiceWatchBackoff {
+    type Item = Duration;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.failures = self.failures.saturating_add(1);
+        let shift = (self.failures - 1).min(4);
+        Some(Duration::from_millis(500 * (1u64 << shift)).min(Duration::from_secs(5)))
+    }
+}
+
+impl Backoff for ServiceWatchBackoff {
+    fn reset(&mut self) {
+        self.failures = 0;
+    }
+}
+
+/// The Service informer used by CRI service-link injection. This is a small
+/// local cache rather than a second API abstraction: nodelet only needs the
+/// current Service objects to derive the environment map at container
+/// creation time.
+#[derive(Default)]
+pub(crate) struct ServiceCache {
+    pub(crate) services: HashMap<String, Service>,
+    pub(crate) ready: bool,
+}
+
+fn service_cache_key(service: &Service) -> String {
+    format!("{}/{}", service.namespace().unwrap_or_default(), service.name_any())
+}
+
+/// Keep service-link inputs current without making every pod reconcile issue
+/// a cluster-wide LIST. During the initial snapshot the resolver falls back
+/// to one ordinary LIST, so a pod that arrives before the watch is ready does
+/// not lose its service environment.
+pub(crate) async fn service_cache_loop(client: kube::Client, cache: Arc<RwLock<ServiceCache>>) {
+    let api: Api<Service> = Api::all(client);
+    let mut stream = watcher::watcher(api, watcher::Config::default())
+        .backoff(ServiceWatchBackoff::default())
+        .boxed();
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(Event::Init) => {
+                let mut state = cache.write().unwrap();
+                state.services.clear();
+                state.ready = false;
+            }
+            Ok(Event::InitApply(service)) | Ok(Event::Apply(service)) => {
+                cache.write().unwrap().services.insert(service_cache_key(&service), service);
+            }
+            Ok(Event::Delete(service)) => {
+                cache.write().unwrap().services.remove(&service_cache_key(&service));
+            }
+            Ok(Event::InitDone) => {
+                cache.write().unwrap().ready = true;
+            }
+            Err(error) => {
+                tracing::warn!(error = ?error, "service-link Service watch error; watcher will retry");
+            }
+        }
+    }
+    tracing::warn!("service-link Service watch ended");
+}
 
 /// Real kubelet's `resourceFieldRef` output format (round 44; found in
 /// round 35's re-audit): the raw value (millicores for CPU, bytes for
@@ -460,6 +532,17 @@ pub(crate) fn pod_field_value(pod: &Pod, field_path: &str) -> Option<String> {
 
 impl CriRuntime {
     pub(crate) async fn resolve_service_env(&self, namespace: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+        {
+            let cache = self.service_cache.read().unwrap();
+            if cache.ready {
+                let services: Vec<Service> = cache.services.values().cloned().collect();
+                return Ok(service_env_vars(&services, namespace));
+            }
+        }
+
+        // The watch's initial LIST is still in flight. Preserve the old
+        // correctness behavior for this short startup window; once InitDone
+        // arrives, every later reconcile uses the cache above.
         let api: Api<Service> = Api::all(self.client.clone());
         let services = api.list(&ListParams::default()).await.context("listing Services")?;
         Ok(service_env_vars(&services.items, namespace))
