@@ -140,9 +140,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up build toolchain
-        uses: ./.github/actions/setup-toolchain
-
       - name: Build and deploy not-k8s (real containerd/CRI runtime)
         # Debug profile: this stage only needs a correct binary, not an
         # optimized one — see release.yml's own e2e job for why.
@@ -198,11 +195,7 @@ jobs:
           # debug_scheduler_log off reproduces exactly today's behaviour
           # (run-nodescheduler.sh's own RUST_LOG=info default applies).
           RUST_LOG: ${{ inputs.debug_scheduler_log && 'nodescheduler=debug' || '' }}
-        # setup-toolchain puts the runner's known-good cargo on PATH. sudo's
-        # secure_path would otherwise hide it from the root bootstrap and
-        # make the bootstrap fall back to an unbounded apt Rust install on
-        # runners where the system package is absent or stale.
-        run: sudo -E env "PATH=$PATH" NOTK8S_RUSTUP_FIRST=1 ./deploy/bootstrap-source.sh --with-cri --proxy=${{ inputs.proxy || 'nodeproxy' }}
+        run: sudo -E ./deploy/bootstrap-source.sh --with-cri --proxy=${{ inputs.proxy || 'nodeproxy' }}
 
       - name: Install misc e2e prerequisites (hugepages, grpcurl)
         # Round 124: split out of e2e-full-setup.sh — these aren't
