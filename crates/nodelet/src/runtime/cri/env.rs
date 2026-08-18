@@ -45,7 +45,7 @@ fn service_cache_key(service: &Service) -> String {
 /// not lose its service environment.
 pub(crate) async fn service_cache_loop(client: kube::Client, cache: Arc<RwLock<ServiceCache>>) {
     let api: Api<Service> = Api::all(client);
-    let mut stream = watcher(api, watcher::Config::default())
+    let mut stream = watcher::watcher(api, watcher::Config::default())
         .backoff(ServiceWatchBackoff::default())
         .boxed();
     while let Some(item) = stream.next().await {
