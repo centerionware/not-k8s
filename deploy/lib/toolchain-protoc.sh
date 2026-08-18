@@ -8,6 +8,12 @@ ensure_protoc() {
         return 0
     fi
 
+    # bootstrap-source.sh creates these, but the CI composite setup action
+    # deliberately only creates its log directory. The package path normally
+    # hides that difference; an apt timeout exposes it when either fallback
+    # needs to write under SRC_DIR or TOOLCHAIN_DIR.
+    mkdir -p "$WORK_DIR" "$TOOLCHAIN_DIR" "$TOOLCHAIN_DIR/bin" "$SRC_DIR" "$LOG_DIR"
+
     pkg_install "protoc" "protobuf-compiler" "protobuf-compiler" "protobuf" "protobuf" "protobuf-devel" "protobuf" \
         && command -v protoc &>/dev/null && return 0
 
