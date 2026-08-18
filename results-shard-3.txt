@@ -1,14 +1,14 @@
-commit: 321d7fa2bdbf8ea314656142f77442690570372d
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32096657840
-timestamp (UTC): 2026-08-18T03:59:44Z
+commit: 244d1c89ca80452ac8a1a10d0fee3ca05080e0fd
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32099786320
+timestamp (UTC): 2026-08-18T04:50:52Z
 shard: 3/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1787025023
+==> Test namespace: not-k8s-e2e-1787028078
 ==> 238 test(s) registered total (before sharding); running now...
 ==> Shard 3/5: 45 test(s) selected
 ▶ test_cronjob_controller_creates_a_job_on_schedule
-  ✔ PASS (41s)
+  ✔ PASS (52s)
 ▶ test_installed_component_binaries_are_runnable_whatever_the_layout
   ✔ PASS (0s)
 ▶ test_datastore_enforces_compare_and_swap
@@ -16,7 +16,7 @@ exit code: 0
 ▶ test_datastore_expires_a_lease_and_its_keys
   ✔ PASS (1s)
 ▶ test_apiserver_crud_round_trips_through_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11467/environ: Permission denied
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11416/environ: Permission denied
 Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
   ✔ PASS (7s)
 ▶ test_a_follower_forwards_writes_to_the_leader
@@ -26,40 +26,40 @@ Warning: resource configmaps/probe is missing the kubectl.kubernetes.io/last-app
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
 ▶ test_deployment_creates_replicaset_and_rolls_update
-  ✔ PASS (65s)
+  ✔ PASS (66s)
 ▶ test_allocated_resources_status_absent_without_device_resources
   ✔ PASS (3s)
 ▶ test_kubectl_debug_adds_and_starts_an_ephemeral_container
-  ✔ PASS (6s)
+  ✔ PASS (5s)
 ▶ test_eviction_soft_grace_period_manual_procedure
     (skip: proving the soft-threshold grace period (round 101 — a pod isn't evicted the instant a looser *soft* threshold is crossed, only once it's stayed continuously crossed for NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS) needs artificial pressure sustained across multiple ticks, harder to orchestrate reliably here than the base eviction procedure above. Manual procedure: (1) note this node's available memory, (2) restart nodelet with NODELET_MEMORY_PRESSURE_SOFT_THRESHOLD_BYTES set just above current MemAvailable (so MemoryPressure's soft signal trips immediately) but NODELET_MEMORY_PRESSURE_THRESHOLD_BYTES (the hard one) left at its normal, much-lower default, and NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS set to something short like 20, (3) apply a BestEffort pod, (4) confirm it is NOT evicted before the grace period elapses but IS evicted (phase Failed/reason Evicted) once NODELET_EVICTION_CHECK_SECS ticks have accumulated past NODELET_EVICTION_SOFT_GRACE_PERIOD_SECS of continuous soft pressure, (5) restore normal thresholds and restart nodelet. The pure decision logic itself (eviction::pressure_action_due()) is already covered by cargo test's eviction_tests/pressure_action_due.rs — this only proves the live wiring end to end.)
   ○ SKIP (0s)
 ▶ test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed
-  ✔ PASS (37s)
+  ✔ PASS (38s)
 ▶ test_poststart_hook_runs_after_container_start
   ✔ PASS (3s)
 ▶ test_native_sidecar_container_starts_before_app_container_and_keeps_running
   ✔ PASS (3s)
 ▶ test_crash_loop_backoff_reports_waiting_reason_and_last_state
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_termination_message_path_is_read_back_into_container_status
   ✔ PASS (3s)
 ▶ test_container_status_reports_a_real_image_id
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 ▶ test_namespace_controller_deletes_contents_before_finalizing
-namespace/namespace-controller-20110-27162 created
+namespace/namespace-controller-20173-30428 created
 configmap/must-be-cleaned created
   ✔ PASS (5s)
 ▶ test_node_status_reports_runtime_handlers
-  ✔ PASS (1s)
+  ✔ PASS (0s)
 ▶ test_liveness_probe_failure_restarts_the_container
-  ✔ PASS (41s)
+  ✔ PASS (42s)
 ▶ test_grpc_probe_gates_readiness_against_a_real_grpc_server
   ✔ PASS (7s)
 ▶ test_replicaset_creates_and_scales_pods
-  ✔ PASS (66s)
+  ✔ PASS (65s)
 ▶ test_besteffort_pod_gets_the_certain_death_oom_score
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_scheduler_leaves_a_gated_pod_alone
   ✔ PASS (12s)
 ▶ test_scheduler_wakes_a_pending_pod_on_a_real_event
@@ -69,15 +69,15 @@ configmap/must-be-cleaned created
 ▶ test_scheduler_claims_a_static_wait_for_first_consumer_volume
   ✔ PASS (13s)
 ▶ test_run_as_user_is_applied
-  ✔ PASS (4s)
-▶ test_host_users_false_gets_a_real_user_namespace
   ✔ PASS (3s)
+▶ test_host_users_false_gets_a_real_user_namespace
+  ✔ PASS (4s)
 ▶ test_share_process_namespace_puts_every_container_in_one_pid_namespace
   ✔ PASS (3s)
 ▶ test_nodeport_service_is_reachable_on_the_node_ip
   ✔ PASS (4s)
 ▶ test_multiple_backends_actually_share_traffic
-  (distribution: a=20 b=20 of 40)
+  (distribution: a=17 b=23 of 40)
   (kernel has nft_numgen — expecting the native map form)
   ✔ PASS (7s)
 ▶ test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion
@@ -86,13 +86,13 @@ configmap/must-be-cleaned created
 ==> WARNING: kubectl attach didn't show streamed output within 20s (may still be buffering)
   ✔ PASS (43s)
 ▶ test_downward_api_volume_writes_pod_metadata
-  ✔ PASS (4s)
-▶ test_host_aliases_still_work_under_host_users_false
   ✔ PASS (3s)
+▶ test_host_aliases_still_work_under_host_users_false
+  ✔ PASS (4s)
 ▶ test_fsgroup_never_applies_to_hostpath_volumes
   ✔ PASS (5s)
 ▶ test_recursive_read_only_if_possible_falls_back_without_erroring
-  ✔ PASS (4s)
+  ✔ PASS (3s)
 ▶ test_host_path_directory_type_rejects_a_nonexistent_path
   ✔ PASS (3s)
 ▶ test_config_file_precedence_a_real_env_var_still_wins
@@ -108,14 +108,13 @@ e5ad846ecbb8: Pulling fs layer
 71af8d887193: Pulling fs layer
 5e8b95221646: Pulling fs layer
 ec6419fed67b: Pulling fs layer
-71af8d887193: Waiting
 5e8b95221646: Waiting
 ec6419fed67b: Waiting
+71af8d887193: Waiting
+4f4fb700ef54: Verifying Checksum
 4f4fb700ef54: Download complete
-e5ad846ecbb8: Verifying Checksum
-e5ad846ecbb8: Download complete
-f0c9ed0cf49e: Verifying Checksum
 f0c9ed0cf49e: Download complete
+e5ad846ecbb8: Download complete
 f0c9ed0cf49e: Pull complete
 e5ad846ecbb8: Pull complete
 4f4fb700ef54: Pull complete
@@ -139,16 +138,19 @@ bbbdd6c6894b: Pulling fs layer
 3493bf46cdec: Pulling fs layer
 6d464ea18732: Pulling fs layer
 3493bf46cdec: Waiting
+6d464ea18732: Waiting
+bbbdd6c6894b: Verifying Checksum
 bbbdd6c6894b: Download complete
+44cf07d57ee4: Verifying Checksum
 44cf07d57ee4: Download complete
 8e82f80af0de: Verifying Checksum
 8e82f80af0de: Download complete
-3493bf46cdec: Verifying Checksum
-3493bf46cdec: Download complete
-6d464ea18732: Verifying Checksum
-6d464ea18732: Download complete
 44cf07d57ee4: Pull complete
 bbbdd6c6894b: Pull complete
+6d464ea18732: Verifying Checksum
+6d464ea18732: Download complete
+3493bf46cdec: Verifying Checksum
+3493bf46cdec: Download complete
 8e82f80af0de: Pull complete
 3493bf46cdec: Pull complete
 6d464ea18732: Pull complete
@@ -163,18 +165,18 @@ Configure a credential helper to remove this warning. See
 https://docs.docker.com/go/credential-store/
 
 ==> writing the fake credential-provider binary and config...
-  ✔ PASS (9s)
+  ✔ PASS (12s)
 ▶ test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers
   ✔ PASS (43s)
 ▶ test_limited_swap_gives_burstable_pods_proportional_swap
   ✔ PASS (7s)
 ▶ test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 ▶ test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host
     (skip: this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case (align() alone should already satisfy it, spread() never needs to trigger))
-  ○ SKIP (1s)
+  ○ SKIP (0s)
 
 ════════════════════════════════════════
 Results: 41 passed, 0 failed, 4 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1787025023...
+==> Cleaning up test namespace not-k8s-e2e-1787028078...
