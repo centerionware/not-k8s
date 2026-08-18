@@ -1,14 +1,14 @@
-commit: cec6c5c8b1db09b9b5ca3ac5b4d3fc5a886979da
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32099860240
-timestamp (UTC): 2026-08-18T04:52:32Z
+commit: 623b51a51222d07c4d3c6e79f2f3e0a1bd6c5607
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32105328714
+timestamp (UTC): 2026-08-18T06:18:54Z
 shard: 4/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1787028132
-==> 238 test(s) registered total (before sharding); running now...
+==> Test namespace: not-k8s-e2e-1787033279
+==> 239 test(s) registered total (before sharding); running now...
 ==> Shard 4/5: 45 test(s) selected
 ▶ test_ttl_after_finished_controller_deletes_expired_jobs
-  ✔ PASS (13s)
+  ✔ PASS (7s)
 ▶ test_a_failing_component_says_why_before_it_exits
   ✔ PASS (0s)
 ▶ test_daemonset_places_a_pod_directly
@@ -16,10 +16,10 @@ exit code: 0
 ▶ test_datastore_creates_a_key_only_if_absent
   ✔ PASS (0s)
 ▶ test_datastore_survives_a_restart_with_its_data
-  ✔ PASS (0s)
+  ✔ PASS (1s)
 ▶ test_apiserver_watch_delivers_through_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11325/environ: Permission denied
-  ✔ PASS (9s)
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11343/environ: Permission denied
+  ✔ PASS (10s)
 ▶ test_the_cluster_keeps_serving_when_a_follower_dies
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
@@ -31,19 +31,19 @@ exit code: 0
 ▶ test_disruption_controller_computes_pdb_status
   ✔ PASS (34s)
 ▶ test_pod_exceeding_its_active_deadline_is_terminated
-  ✔ PASS (38s)
+  ✔ PASS (37s)
 ▶ test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
-  ✔ PASS (41s)
+  ✔ PASS (42s)
 ▶ test_prestop_hook_runs_before_termination
-  ✔ PASS (20s)
+  ✔ PASS (18s)
 ▶ test_native_sidecar_container_restarts_on_crash
-  ✔ PASS (5s)
+  ✔ PASS (6s)
 ▶ test_restart_policy_never_exit_zero_is_succeeded
   ✔ PASS (3s)
 ▶ test_container_status_container_id_has_a_runtime_scheme_prefix
-  ✔ PASS (2s)
+  ✔ PASS (3s)
 ▶ test_image_pull_policy_never_fails_when_image_is_absent
-  ✔ PASS (41s)
+  ✔ PASS (42s)
 ▶ test_host_port_publishes_the_container_on_the_nodes_own_ip
   ✔ PASS (3s)
 ▶ test_node_is_ready_with_capacity_advertised
@@ -51,23 +51,23 @@ exit code: 0
 ▶ test_node_status_images_reflects_a_real_pulled_image
   ✔ PASS (3s)
 ▶ test_liveness_probes_own_grace_period_overrides_the_pods
-  ✔ PASS (13s)
+  ✔ PASS (14s)
 ▶ test_grpc_probe_leaves_pod_not_ready_against_the_wrong_port
   ✔ PASS (15s)
 ▶ test_resourcequota_used_pods_tracks_actual_pod_count
   ✔ PASS (34s)
 ▶ test_in_place_resize_updates_memory_limit_without_restarting
-  ✔ PASS (4s)
+  ✔ PASS (7s)
 ▶ test_guaranteed_pod_gets_the_protected_oom_score
   ✔ PASS (3s)
 ▶ test_scheduler_honours_a_node_selector_that_matches_nothing
-  ✔ PASS (10s)
+  ✔ PASS (11s)
 ▶ test_scheduler_ignores_pods_for_another_scheduler
   ✔ PASS (13s)
 ▶ test_scheduler_preempts_a_lower_priority_pod
-  ✔ PASS (70s)
+  ✔ PASS (71s)
 ▶ test_read_only_root_filesystem_is_enforced
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 ▶ test_host_users_false_volume_still_reads_and_writes_normally
   ✔ PASS (3s)
 ▶ test_host_pid_sees_host_processes
@@ -76,22 +76,22 @@ exit code: 0
 table inet not_k8s_svc {
 	chain prerouting {
 		type nat hook prerouting priority dstnat; policy accept;
-		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.245:6443
+		ip daddr 10.43.67.25 tcp dport 80 dnat ip to 10.42.0.30:8080
+		ip daddr 10.43.238.226 tcp dport 80 dnat ip to 10.42.0.30:8080
+		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.46:6443
 		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.3:53
 		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.3:53
 		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.3:9153
-		ip daddr 10.43.172.97 tcp dport 80 dnat ip to 10.42.0.29:8080
-		ip daddr 10.43.133.25 tcp dport 80 dnat ip to 10.42.0.29:8080
 	}
 
 	chain output {
 		type nat hook output priority dstnat; policy accept;
-		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.245:6443
+		ip daddr 10.43.67.25 tcp dport 80 dnat ip to 10.42.0.30:8080
+		ip daddr 10.43.238.226 tcp dport 80 dnat ip to 10.42.0.30:8080
+		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.46:6443
 		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.3:53
 		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.3:53
 		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.3:9153
-		ip daddr 10.43.172.97 tcp dport 80 dnat ip to 10.42.0.29:8080
-		ip daddr 10.43.133.25 tcp dport 80 dnat ip to 10.42.0.29:8080
 	}
 
 	chain postrouting {
@@ -99,37 +99,37 @@ table inet not_k8s_svc {
 		ct status dnat masquerade
 	}
 }
-  ✔ PASS (4s)
+  ✔ PASS (5s)
 ▶ test_losing_every_backend_removes_the_dnat_rule
-  ✔ PASS (34s)
+  ✔ PASS (35s)
 ▶ test_statefulset_creates_ordinal_pods_and_scales_down_highest_first
   ✔ PASS (76s)
 ▶ test_pv_binder_requests_dynamic_provisioning_from_the_storage_class
-  ✔ PASS (1s)
+  ✔ PASS (2s)
 ▶ test_kubectl_port_forward_reaches_a_real_container_port
-  ✔ PASS (8s)
-▶ test_topology_manager_cross_provider_alignment_manual_note
-    (skip: proving CPU-and-device alignment (not just non-rejection) needs either real multi-socket/multi-NUMA hardware or a device plugin reporting TopologyInfo pointing at a specific NUMA node — not something this suite can set up. Manual spot-check on real multi-NUMA hardware: deploy a device plugin whose devices report differing NUMA affinity, request both an exclusive CPU and one of those devices in the same Guaranteed pod, then compare the container's cpuset.cpus (see cpu_manager.sh for how to find it) against which NUMA node the allocated device actually sits on — they should be the same node. Also try NODELET_TOPOLOGY_MANAGER_POLICY=single-numa-node with a deliberately unsatisfiable combination (e.g. requesting more exclusive CPUs than any single node has) and confirm the pod stays Pending with a 'Topology Manager: no single NUMA node can satisfy' error logged, rather than starting misaligned.)
-  ○ SKIP (0s)
-▶ test_sub_path_expr_expands_a_downward_api_env_var
+  ✔ PASS (7s)
+▶ test_downward_api_volume_writes_pod_metadata
   ✔ PASS (3s)
-▶ test_empty_dir_medium_memory_is_backed_by_tmpfs
+▶ test_host_aliases_still_work_under_host_users_false
+  ✔ PASS (4s)
+▶ test_fsgroup_never_applies_to_hostpath_volumes
+  ✔ PASS (35s)
+▶ test_recursive_read_only_if_possible_falls_back_without_erroring
   ✔ PASS (3s)
-▶ test_mount_propagation_host_to_container_still_mounts_normally
-  ✔ PASS (3s)
-▶ test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too
+▶ test_host_path_directory_type_rejects_a_nonexistent_path
   ✔ PASS (3s)
 ▶ test_config_dir_merges_files_in_filename_order
   ✔ PASS (2s)
 ▶ test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down
 Warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.
-  ✔ PASS (16s)
+  ✔ PASS (14s)
 ▶ test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection
   ✔ PASS (43s)
-▶ test_the_node_still_reconciles_pods_after_an_apiserver_restart
-  ✔ PASS (6s)
+▶ test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host
+    (skip: this host either has no NUMA info at all or has more than one NUMA node — this test specifically covers the single-node case (align() alone should already satisfy it, spread() never needs to trigger))
+  ○ SKIP (1s)
 
 ════════════════════════════════════════
 Results: 42 passed, 0 failed, 3 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1787028132...
+==> Cleaning up test namespace not-k8s-e2e-1787033279...
