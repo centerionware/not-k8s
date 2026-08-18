@@ -14,7 +14,11 @@ Sources: [Kubernetes Components](https://kubernetes.io/docs/concepts/overview/co
 
 **Confirmed genuinely NOT kubelet's job** (someone else's component, not a
 nodelet gap):
-- Pod scheduling/binding decisions → **kube-scheduler**.
+- Pod scheduling/binding decisions → **kube-scheduler**, or the separate
+  `nodescheduler` replacement in this repository. They remain outside
+  nodelet's parity surface; the replacement's Kubernetes v1.33 default-profile
+  contract, event sources, and live gates are tracked in
+  [`SCHEDULER.md`](SCHEDULER.md), not inferred from this kubelet checklist.
 - etcd storage, Raft quorum, peer election → **etcd**.
 - ReplicaSet/Deployment/StatefulSet/Job/CronJob/HPA control loops → **kube-controller-manager**.
 - Node lifecycle taints after missed heartbeats, cloud taint lifecycle → **kube-controller-manager** (nodelet already correctly does the one thing that *is* its job here: clearing the `node.cloudprovider.kubernetes.io/uninitialized` taint on itself — see `node.rs::clear_cloudprovider_taint`).

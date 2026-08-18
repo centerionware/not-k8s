@@ -14,6 +14,17 @@ run_and_verify() {
     log "Starting nodelet (runtime=$NODELET_RUNTIME)..."
     install_nodelet_service
 
+    # bootstrap-source.sh must add nodelet's kubelet-serving CA to the
+    # apiserver after nodelet has generated it. That operation deliberately
+    # restarts k3s. Do it before starting the controller manager and the other
+    # apiserver clients: otherwise every one of nodecontroller's independent
+    # watches is cut at once, all relists together after 503/410 responses,
+    # and a sidecar that starts during that recovery window can be left with a
+    # permanently starved watch. Starting these clients after the planned
+    # restart keeps the restart a one-client recovery instead of a cluster-
+    # wide watch storm.
+    enable_kubelet_certificate_authority_trust
+
     # nodeproxy is a separate service with no ordering relationship to
     # nodelet — it only needs the apiserver. --proxy=none skips it entirely
     # (something else owns ClusterIP/NodePort routing on this node), and
@@ -57,6 +68,23 @@ run_and_verify() {
         remove_nodescheduler_service
     fi
 
+    # nodecontroller, same shape and the same "not wanted means removed"
+    # reasoning as nodescheduler above — a host that gets
+    # --controller-manager=none after a previous
+    # --controller-manager=nodecontroller run would otherwise keep ours
+    # tainting Nodes/allocating podCIDRs alongside the k3s one this run just
+    # re-enabled, the same double-writer race the flag exists to prevent.
+    #
+    # No --with-cri condition either, for the same reason nodescheduler has
+    # none: node lifecycle/podCIDR/GC are control-plane decisions, not
+    # runtime-dependent ones.
+    if want_nodecontroller; then
+        log "Starting nodecontroller (node lifecycle/podCIDR/GC; k3s's own kube-controller-manager is disabled)..."
+        install_nodecontroller_service
+    else
+        remove_nodecontroller_service
+    fi
+
     log "Waiting for the node to register..."
     for i in $(seq 1 20); do
         if kubectl get nodes --no-headers 2>/dev/null | grep -q .; then
@@ -68,10 +96,32 @@ run_and_verify() {
 
     wait_for_flannel_subnet
 
+    # Non-fatal, matching the "kubectl get nodes" check above: this is a
+    # smoke test, not a hard gate on the rest of this script (or, for
+    # bootstrap-source.sh as a whole, on anything downstream of it — a
+    # CI e2e run that deploys with CONTROLLER_MANAGER=nodecontroller and
+    # then wants to run its own test suite must not have that suite skipped
+    # outright just because this one demo pod couldn't apply).
+    #
+    # CONTROLLER_MANAGER=nodecontroller is a real, expected case where it
+    # fails: nodecontroller is Group A only today (docs/CONTROLLER_MANAGER.md)
+    # — no serviceaccount-controller, so a fresh namespace's "default"
+    # ServiceAccount never gets created, and the apiserver's ServiceAccount
+    # admission plugin then rejects any pod that doesn't name one explicitly
+    # (this demo pod doesn't). Confirmed live in CI (e2e.yml): with k3s's
+    # real controller-manager this succeeds every time; disabled in favor of
+    # nodecontroller, it fails every time, consistently — a real gap, not a
+    # flake, and named here so it isn't mistaken for one later.
     log "Applying demo pod..."
-    kubectl apply -f "$REPO_ROOT/deploy/demo-pod.yaml"
-    sleep 3
-    kubectl get pods -o wide
+    if kubectl apply -f "$REPO_ROOT/deploy/demo-pod.yaml"; then
+        sleep 3
+        kubectl get pods -o wide
+    else
+        warn "demo pod failed to apply."
+        if want_nodecontroller; then
+            warn "CONTROLLER_MANAGER=nodecontroller is active: this is the expected shape of a known, documented gap, not a flake — nodecontroller doesn't implement serviceaccount-controller yet (docs/CONTROLLER_MANAGER.md, Group C), so this namespace's 'default' ServiceAccount was never created and the apiserver's ServiceAccount admission plugin rejected the pod. A pod naming an explicit serviceAccountName (or one in a namespace whose default ServiceAccount predates disabling k3s's controller-manager) is unaffected."
+        fi
+    fi
 
     log "Done. Logs: journalctl -u nodelet -f"
     log "Tear everything down with: $0 --cleanup"

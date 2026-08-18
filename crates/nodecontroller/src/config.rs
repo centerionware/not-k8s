@@ -1,0 +1,347 @@
+//! Configuration, read from `NODECONTROLLER_*`.
+//!
+//! Everything has a default, so the binary runs with no configuration at all
+//! — same rule as `nodescheduler`'s and `nodeproxy`'s config. Defaults are
+//! upstream kube-controller-manager's own defaults (node monitor grace
+//! period, node CIDR mask size, lease timings) or, where this project has
+//! already made that choice for the rest of the control plane
+//! (`--cluster-cidr=10.42.0.0/16` in `deploy/setup-control-plane.sh`), the
+//! same value — a controller manager that allocates pod CIDRs out of a
+//! different range than the rest of the cluster expects is not a
+//! replacement for it.
+
+use anyhow::{bail, Result};
+use std::time::Duration;
+
+mod defaults {
+    /// Matches `deploy/setup-control-plane.sh`'s `CLUSTER_CIDR` default —
+    /// see this module's own doc comment for why these two must agree.
+    pub const CLUSTER_CIDR: &str = "10.42.0.0/16";
+    /// Upstream's `--node-cidr-mask-size` default for an IPv4 cluster CIDR.
+    pub const NODE_CIDR_MASK_SIZE: u8 = 24;
+    /// Upstream's `--node-monitor-grace-period`: how long a Node may go
+    /// without a heartbeat before node-lifecycle taints it.
+    pub const NODE_MONITOR_GRACE_PERIOD_SECONDS: u64 = 40;
+
+    pub const LEASE_DURATION_SECONDS: u64 = 15;
+    pub const RENEW_DEADLINE_SECONDS: u64 = 10;
+    pub const RETRY_PERIOD_SECONDS: u64 = 2;
+    /// Upstream's own lease name/namespace for kube-controller-manager —
+    /// reused deliberately rather than inventing a new one: operator
+    /// tooling that already reads `kube-system/kube-controller-manager`'s
+    /// Lease to see who's active keeps working unmodified. Safe to share
+    /// the name because this project always pairs
+    /// `CONTROLLER_MANAGER=nodecontroller` with k3s's own
+    /// `--disable-controller-manager` — the two are never both live.
+    pub const LEASE_NAME: &str = "kube-controller-manager";
+    pub const LEASE_NAMESPACE: &str = "kube-system";
+
+    /// Node-lifecycle wheel tick period. This drives only the silence-detection
+    /// timer; event controllers do not poll on this cadence.
+    pub const TICK_PERIOD_MILLIS: u64 = 100;
+    /// Fraction of a deadline's own interval to jitter by on insert, so
+    /// correlated deadlines (every Node renews on the same period) don't
+    /// land in the same wheel slot. Matches the reasoning kubelet's own
+    /// sync loop jitter uses.
+    pub const JITTER_FRACTION: f64 = 0.05;
+
+    /// Well-known `(cert, key)` path pairs for a cluster CA, tried in order
+    /// when `NODECONTROLLER_CSR_SIGNING_CA_{CERT,KEY}_PATH` aren't set —
+    /// the one real external dependency `docs/CONTROLLER_MANAGER.md`'s
+    /// Group I section flags: `certificatesigningrequest-signing-controller`
+    /// needs the CA *key*, not just the cert every other controller already
+    /// gets via the ambient kubeconfig. Only k3s's own layout today (this
+    /// project's only supported control plane so far, confirmed as a live
+    /// path by the unmerged, profiling-only
+    /// `upstream-kube-apiserver-controller-manager` branch, which had to
+    /// source it from exactly this directory) — kept as a *list*, not a
+    /// single hardcoded default, since a future non-k3s control plane needs
+    /// a different path without this becoming a bigger refactor: add its
+    /// pair here.
+    pub const CSR_SIGNING_CA_CANDIDATES: &[(&str, &str)] =
+        &[("/var/lib/rancher/k3s/server/tls/server-ca.crt", "/var/lib/rancher/k3s/server/tls/server-ca.key")];
+}
+
+#[derive(Clone, Debug)]
+pub struct Config {
+    pub cluster_cidr: String,
+    pub node_cidr_mask_size: u8,
+    pub node_monitor_grace_period: Duration,
+    /// Controller names listed in `NODECONTROLLER_DISABLED_CONTROLLERS` are
+    /// not started. This is primarily an operator/debugging escape hatch for
+    /// narrowing a live controller-manager failure; the default is empty.
+    pub disabled_controllers: Vec<String>,
+
+    pub leader_elect: bool,
+    pub lease_duration: Duration,
+    pub renew_deadline: Duration,
+    pub retry_period: Duration,
+    pub lease_name: String,
+    pub lease_namespace: String,
+    pub holder_identity: String,
+
+    pub tick_period: Duration,
+    pub jitter_fraction: f64,
+    /// Maximum number of shared informer watches allowed to perform their
+    /// initial LIST concurrently. This is startup backpressure,
+    /// not a cap on steady-state watches: a permit is returned after that
+    /// resource's initial snapshot is complete.
+    pub watch_startup_concurrency: usize,
+
+    /// Explicit override for both the CA cert and key path — both `None`
+    /// (the default) means "search `defaults::CSR_SIGNING_CA_CANDIDATES`
+    /// instead," see `csr_signing_ca_candidates()`.
+    pub csr_signing_ca_cert_path: Option<String>,
+    pub csr_signing_ca_key_path: Option<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            cluster_cidr: defaults::CLUSTER_CIDR.to_string(),
+            node_cidr_mask_size: defaults::NODE_CIDR_MASK_SIZE,
+            node_monitor_grace_period: Duration::from_secs(
+                defaults::NODE_MONITOR_GRACE_PERIOD_SECONDS,
+            ),
+            disabled_controllers: Vec::new(),
+            leader_elect: true,
+            lease_duration: Duration::from_secs(defaults::LEASE_DURATION_SECONDS),
+            renew_deadline: Duration::from_secs(defaults::RENEW_DEADLINE_SECONDS),
+            retry_period: Duration::from_secs(defaults::RETRY_PERIOD_SECONDS),
+            lease_name: defaults::LEASE_NAME.to_string(),
+            lease_namespace: defaults::LEASE_NAMESPACE.to_string(),
+            holder_identity: default_holder_identity(),
+            tick_period: Duration::from_millis(defaults::TICK_PERIOD_MILLIS),
+            jitter_fraction: defaults::JITTER_FRACTION,
+            watch_startup_concurrency: 2,
+            csr_signing_ca_cert_path: None,
+            csr_signing_ca_key_path: None,
+        }
+    }
+}
+
+fn default_holder_identity() -> String {
+    let host = std::env::var("HOSTNAME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    format!("{host}_{}", std::process::id())
+}
+
+/// Read `name`, treating an empty value as unset — a service manager
+/// routinely exports a variable with no value, and a strict parse failing on
+/// that would refuse to start over an effectively-unset knob.
+fn var(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
+fn parse_env<T: std::str::FromStr>(name: &str, default: T) -> Result<T>
+where
+    T::Err: std::fmt::Display,
+{
+    match var(name) {
+        None => Ok(default),
+        Some(v) => v.parse::<T>().map_err(|e| anyhow::anyhow!("{name}={v}: {e}")),
+    }
+}
+
+fn secs_env(name: &str, default: Duration) -> Result<Duration> {
+    Ok(Duration::from_secs(parse_env::<u64>(name, default.as_secs())?))
+}
+
+fn millis_env(name: &str, default: Duration) -> Result<Duration> {
+    Ok(Duration::from_millis(parse_env::<u64>(
+        name,
+        default.as_millis() as u64,
+    )?))
+}
+
+fn list_env(name: &str) -> Vec<String> {
+    var(name)
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(|item| item.trim().to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+impl Config {
+    pub fn from_env() -> Result<Self> {
+        let d = Config::default();
+
+        let cfg = Config {
+            cluster_cidr: var("NODECONTROLLER_CLUSTER_CIDR").unwrap_or(d.cluster_cidr),
+            node_cidr_mask_size: parse_env(
+                "NODECONTROLLER_NODE_CIDR_MASK_SIZE",
+                d.node_cidr_mask_size,
+            )?,
+            node_monitor_grace_period: secs_env(
+                "NODECONTROLLER_NODE_MONITOR_GRACE_PERIOD_SECONDS",
+                d.node_monitor_grace_period,
+            )?,
+            disabled_controllers: list_env("NODECONTROLLER_DISABLED_CONTROLLERS"),
+            leader_elect: parse_env("NODECONTROLLER_LEADER_ELECT", d.leader_elect)?,
+            lease_duration: secs_env(
+                "NODECONTROLLER_LEADER_LEASE_DURATION_SECONDS",
+                d.lease_duration,
+            )?,
+            renew_deadline: secs_env(
+                "NODECONTROLLER_LEADER_RENEW_DEADLINE_SECONDS",
+                d.renew_deadline,
+            )?,
+            retry_period: secs_env(
+                "NODECONTROLLER_LEADER_RETRY_PERIOD_SECONDS",
+                d.retry_period,
+            )?,
+            lease_name: var("NODECONTROLLER_LEADER_LEASE_NAME").unwrap_or(d.lease_name),
+            lease_namespace: var("NODECONTROLLER_LEADER_LEASE_NAMESPACE")
+                .unwrap_or(d.lease_namespace),
+            holder_identity: var("NODECONTROLLER_HOLDER_IDENTITY").unwrap_or(d.holder_identity),
+            tick_period: millis_env("NODECONTROLLER_TICK_PERIOD_MILLIS", d.tick_period)?,
+            jitter_fraction: parse_env("NODECONTROLLER_JITTER_FRACTION", d.jitter_fraction)?,
+            watch_startup_concurrency: parse_env(
+                "NODECONTROLLER_WATCH_STARTUP_CONCURRENCY",
+                d.watch_startup_concurrency,
+            )?,
+            csr_signing_ca_cert_path: var("NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH"),
+            csr_signing_ca_key_path: var("NODECONTROLLER_CSR_SIGNING_CA_KEY_PATH"),
+        };
+
+        cfg.validate()?;
+        cfg.log_summary();
+        Ok(cfg)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if !(1..=32).contains(&self.node_cidr_mask_size) {
+            bail!(
+                "NODECONTROLLER_NODE_CIDR_MASK_SIZE must be 1-32, got {}.",
+                self.node_cidr_mask_size
+            );
+        }
+        if !(0.0..1.0).contains(&self.jitter_fraction) {
+            bail!(
+                "NODECONTROLLER_JITTER_FRACTION must be >=0 and <1, got {}.",
+                self.jitter_fraction
+            );
+        }
+        if self.tick_period.is_zero() {
+            bail!("NODECONTROLLER_TICK_PERIOD_MILLIS must be at least 1.");
+        }
+        if self.watch_startup_concurrency == 0 {
+            bail!("NODECONTROLLER_WATCH_STARTUP_CONCURRENCY must be at least 1.");
+        }
+        if self.csr_signing_ca_cert_path.is_some() != self.csr_signing_ca_key_path.is_some() {
+            bail!(
+                "NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH and NODECONTROLLER_CSR_SIGNING_CA_KEY_PATH \
+                 must be set together or not at all — setting only one would silently pair an \
+                 explicit override with a well-known-candidate fallback for the other."
+            );
+        }
+        if self.leader_elect {
+            if self.renew_deadline >= self.lease_duration {
+                bail!(
+                    "NODECONTROLLER_LEADER_RENEW_DEADLINE_SECONDS ({}s) must be less than \
+                     NODECONTROLLER_LEADER_LEASE_DURATION_SECONDS ({}s), or this instance would \
+                     still believe it holds a lease another has already taken.",
+                    self.renew_deadline.as_secs(),
+                    self.lease_duration.as_secs()
+                );
+            }
+            if self.retry_period >= self.renew_deadline {
+                bail!(
+                    "NODECONTROLLER_LEADER_RETRY_PERIOD_SECONDS ({}s) must be less than \
+                     NODECONTROLLER_LEADER_RENEW_DEADLINE_SECONDS ({}s), or a single failed \
+                     renewal would lose the lease with no attempt to retry it.",
+                    self.retry_period.as_secs(),
+                    self.renew_deadline.as_secs()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// `(cert path, key path)` pairs to try, in order, for the CSR-signing
+    /// CA — the explicit env-var override alone if set (validated in
+    /// `validate()` to be all-or-nothing), otherwise every well-known
+    /// candidate in `defaults::CSR_SIGNING_CA_CANDIDATES`.
+    pub fn csr_signing_ca_candidates(&self) -> Vec<(String, String)> {
+        if let (Some(cert), Some(key)) = (&self.csr_signing_ca_cert_path, &self.csr_signing_ca_key_path) {
+            return vec![(cert.clone(), key.clone())];
+        }
+        defaults::CSR_SIGNING_CA_CANDIDATES.iter().map(|(c, k)| (c.to_string(), k.to_string())).collect()
+    }
+
+    pub fn election(&self) -> node_leaderelection::ElectionConfig {
+        node_leaderelection::ElectionConfig {
+            enabled: self.leader_elect,
+            lease_name: self.lease_name.clone(),
+            lease_namespace: self.lease_namespace.clone(),
+            holder_identity: self.holder_identity.clone(),
+            lease_duration: self.lease_duration,
+            renew_deadline: self.renew_deadline,
+            retry_period: self.retry_period,
+        }
+    }
+
+    pub fn controller_disabled(&self, name: &str) -> bool {
+        self.disabled_controllers.iter().any(|disabled| disabled == name)
+    }
+
+    fn log_summary(&self) {
+        tracing::info!(
+            cluster_cidr = %self.cluster_cidr,
+            node_cidr_mask_size = self.node_cidr_mask_size,
+            node_monitor_grace_period_secs = self.node_monitor_grace_period.as_secs(),
+            leader_elect = self.leader_elect,
+            lease = %format!("{}/{}", self.lease_namespace, self.lease_name),
+            tick_period_ms = self.tick_period.as_millis() as u64,
+            watch_startup_concurrency = self.watch_startup_concurrency,
+            disabled_controllers = ?self.disabled_controllers,
+            "nodecontroller starting"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_validate() {
+        assert!(Config::default().validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_an_out_of_range_mask_size() {
+        let mut cfg = Config::default();
+        cfg.node_cidr_mask_size = 33;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_zero_watch_startup_concurrency() {
+        let mut cfg = Config::default();
+        cfg.watch_startup_concurrency = 0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_leader_election_timings_that_invert() {
+        let mut cfg = Config::default();
+        cfg.renew_deadline = cfg.lease_duration;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn recognizes_disabled_controllers() {
+        let mut cfg = Config::default();
+        cfg.disabled_controllers.push("garbage-collector".to_string());
+        assert!(cfg.controller_disabled("garbage-collector"));
+        assert!(!cfg.controller_disabled("pv-binder"));
+    }
+}

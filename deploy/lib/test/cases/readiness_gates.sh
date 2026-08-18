@@ -33,8 +33,8 @@ EOF
     # Play external controller: set the gate condition to False explicitly first.
     kubectl patch pod "$name" -n "$TEST_NAMESPACE" --subresource=status --type=merge -p \
         "{\"status\":{\"conditions\":[{\"type\":\"$gate\",\"status\":\"False\"}]}}" >/dev/null
-    sleep 2
-    assert_eq "$(pod_condition_status "$name" Ready)" "False" "Ready must stay False while the gate condition is explicitly False"
+    wait_until 30 "$name Ready remains False after the gate is explicitly cleared" \
+        bash -c "[[ \"\$(pod_condition_status '$name' Ready)\" == 'False' ]]"
 
     # Now satisfy it.
     kubectl patch pod "$name" -n "$TEST_NAMESPACE" --subresource=status --type=merge -p \

@@ -188,6 +188,15 @@ fn a_node_where_the_preemptor_cannot_fit_even_empty_yields_no_victims() {
 }
 
 #[test]
+fn a_node_where_every_candidate_is_reprieved_yields_no_victims() {
+    let node = node_with(vec![victim("a", 0, 0, 100)], 1000);
+    let p = preemptor(100, 100);
+    let mut budgets: Vec<PdbState> = vec![];
+
+    assert!(select_victims_on_node(&p, &node, &mut budgets, |_| true).is_none());
+}
+
+#[test]
 fn only_the_pods_actually_needed_become_victims() {
     // Three removable pods, but freeing one is enough. Declaring all three
     // victims would work and would be catastrophic.
@@ -219,6 +228,18 @@ fn a_pod_at_equal_priority_is_never_a_victim() {
 
     let fits = cpu_fits(&node, &p);
     assert!(select_victims_on_node(&p, &node, &mut budgets, fits).is_none());
+}
+
+#[test]
+fn a_node_with_no_lower_priority_victim_is_not_a_preemption_candidate() {
+    // This can happen when an HTTP extender, rather than an in-tree Filter,
+    // rejected the node. Nominating it with an empty victim list makes no
+    // progress and retries the same failed placement indefinitely.
+    let node = node_with(Vec::new(), 1000);
+    let p = preemptor(100, 100);
+    let mut budgets = Vec::new();
+
+    assert!(select_victims_on_node(&p, &node, &mut budgets, |_| true).is_none());
 }
 
 #[test]

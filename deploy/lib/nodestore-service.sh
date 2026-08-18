@@ -169,8 +169,11 @@ EOF
     # instead of what this run just built. Same trap nodelet.service hit.
     systemctl restart nodestore.service
     sleep 3
-    systemctl is-active --quiet nodestore.service \
-        || warn "nodestore.service didn't come up cleanly — check: journalctl -u nodestore -n 50"
+    if ! systemctl is-active --quiet nodestore.service; then
+        warn "nodestore.service didn't come up cleanly — dumping its status and journal before the readiness wait"
+        systemctl status nodestore.service --no-pager -l 2>&1 || true
+        journalctl -u nodestore.service --no-pager -n 80 2>&1 || true
+    fi
 }
 
 install_nodestore_service_openrc() {

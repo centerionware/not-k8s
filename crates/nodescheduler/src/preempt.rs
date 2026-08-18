@@ -147,7 +147,7 @@ pub fn violates_pdb(
 }
 
 /// A PodDisruptionBudget, projected to what preemption needs.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PdbState {
     pub namespace: String,
     pub selector: Option<k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector>,
@@ -172,11 +172,15 @@ impl PdbState {
             namespace: pdb.metadata.namespace.clone().unwrap_or_default(),
             selector: pdb.spec.as_ref().and_then(|s| s.selector.clone()),
             disruptions_allowed: status.as_ref().map(|s| s.disruptions_allowed).unwrap_or(0),
-            already_disrupted: status
-                .as_ref()
-                .and_then(|s| s.disrupted_pods.as_ref())
-                .map(|m| m.keys().cloned().collect())
-                .unwrap_or_default(),
+            already_disrupted: {
+                let mut pods: Vec<String> = status
+                    .as_ref()
+                    .and_then(|s| s.disrupted_pods.as_ref())
+                    .map(|m| m.keys().cloned().collect())
+                    .unwrap_or_default();
+                pods.sort();
+                pods
+            },
         }
     }
 }
@@ -221,6 +225,14 @@ where
     // Partition by PDB, then order each part by importance.
     potential.sort_by(|a, b| more_important(a, b));
 
+    // Upstream refuses a preemption candidate with zero victims. Reaching
+    // this path means the node was rejected earlier; if removing no pod
+    // changes its state, nominating it cannot make progress (an extender-only
+    // rejection is the common case) and would loop forever.
+    if potential.is_empty() {
+        return None;
+    }
+
     let mut violating: Vec<&PodInfo> = Vec::new();
     let mut non_violating: Vec<&PodInfo> = Vec::new();
     for p in &potential {
@@ -234,8 +246,7 @@ where
     // The gate: with every removable pod gone, does the preemptor fit? If not,
     // this node cannot be made to work and *nothing on it should die* — the
     // check that stops preemption evicting pods for a pod it still cannot
-    // place. A node where the preemptor already fits needs no victims and
-    // falls out of the reprieve loop below with an empty list.
+    // place.
     let all_removed: Vec<&PodInfo> = potential.clone();
     if !fits(&all_removed) {
         return None;
@@ -283,6 +294,10 @@ where
         }
     }
 
+    if victims.is_empty() {
+        return None;
+    }
+
     Some(Victims {
         // Namespaced key, not bare name — two pods on the same node can
         // legitimately share a name across namespaces, and a bare name
@@ -305,6 +320,34 @@ pub struct Candidate {
     /// means the most important thing being killed is at least the youngest
     /// of its kind.
     pub latest_start_of_highest: Option<k8s_openapi::jiff::Timestamp>,
+}
+
+impl Candidate {
+    /// Rebuild the upstream tiebreak metadata whenever an extender replaces
+    /// a candidate's victim set.
+    pub fn from_victims(node: &NodeInfo, victims: Victims) -> Self {
+        let victim_pods: Vec<&PodInfo> = node
+            .pods
+            .iter()
+            .filter(|pod| victims.pods.contains(&pod.key()))
+            .map(|pod| pod.as_ref())
+            .collect();
+        let highest = victim_pods.iter().map(|pod| pod.priority).max().unwrap_or(0);
+        Candidate {
+            node: node.name.clone(),
+            highest_victim_priority: highest,
+            sum_victim_priorities: victim_pods
+                .iter()
+                .map(|pod| pod.priority as i64)
+                .sum(),
+            latest_start_of_highest: victim_pods
+                .iter()
+                .filter(|pod| pod.priority == highest)
+                .map(|pod| pod_start_time(pod))
+                .max(),
+            victims,
+        }
+    }
 }
 
 /// Upstream's `pickOneNodeForPreemption`: six tiebreaks, in order.

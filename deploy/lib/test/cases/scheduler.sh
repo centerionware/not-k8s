@@ -1136,6 +1136,103 @@ EOF
 }
 register_test test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen csi_dra
 
+test_scheduler_claims_a_static_wait_for_first_consumer_volume() {
+    _require_nodescheduler
+
+    local class="sched-static-wfc" pv="sched-static-pv"
+    local claim="sched-static-claim" pod="sched-static-pod"
+    kctl delete pod "$pod" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    kctl delete pvc "$claim" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete pv "$pv" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete storageclass "$class" --ignore-not-found >/dev/null 2>&1 || true
+
+    # The no-provisioner + WaitForFirstConsumer combination is deliberate:
+    # the controller-manager cannot bind this static PV before a scheduler
+    # chooses a node. This therefore exercises nodescheduler's static-PV
+    # Reserve/PreBind path rather than passing because the claim was already
+    # Bound when the pod entered the queue.
+    apply_manifest <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: $class
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: $pv
+spec:
+  capacity:
+    storage: 64Mi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: $class
+  hostPath:
+    path: /tmp/notk8s-scheduler-static-pv
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: $claim
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: $class
+  resources:
+    requests:
+      storage: 32Mi
+EOF
+
+    sleep 5
+    assert_eq "$(kctl get pvc "$claim" -o jsonpath='{.status.phase}')" "Pending" \
+        "a static WaitForFirstConsumer claim must wait for a scheduling decision"
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $pod
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sh", "-c", "echo static-ok >/data/proof && sleep 300"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: $claim
+EOF
+
+    # This is a scheduler/storage-controller assertion, not a kubelet volume
+    # mount assertion. The nodelet deliberately supports PV-backed CSI only;
+    # an in-tree hostPath PV is useful here because it needs no external
+    # driver, but nodelet must not be expected to mount it. CSI-backed pod
+    # startup is covered by csi_pvc.sh.
+    wait_until 60 "$pod to be bound to a node" _pod_is_bound "$pod" \
+        || die "nodescheduler did not choose a node for the static PV/PVC"
+    wait_until 60 "$claim to become Bound" bash -c \
+        "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound" \
+        || die "nodescheduler did not complete the static PV/PVC binding path"
+    assert_eq "$(kubectl get pv "$pv" -o jsonpath='{.spec.claimRef.name}')" "$claim" \
+        "VolumeBinding PreBind must prebind the PV to the selected claim"
+    assert_eq "$(kubectl get pv "$pv" -o jsonpath='{.metadata.annotations.pv\.kubernetes\.io/bound-by-controller}')" "yes" \
+        "a scheduler-created static prebind must carry upstream's bound-by-controller marker"
+    assert_eq "$(kctl get pvc "$claim" -o jsonpath='{.spec.volumeName}')" "$pv" \
+        "the PV binder must publish the scheduler's static PV choice back to the PVC"
+    assert_eq "$(kctl get pvc "$claim" -o jsonpath='{.status.phase}')" "Bound" \
+        "the PV binder must observe and complete nodescheduler's static choice"
+
+    delete_pod_and_pvc "$pod" "$claim"
+    kubectl delete pv "$pv" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    kubectl delete storageclass "$class" --ignore-not-found >/dev/null 2>&1 || true
+}
+register_test test_scheduler_claims_a_static_wait_for_first_consumer_volume
+
 test_scheduler_enforces_read_write_once_pod_exclusivity() {
     _require_nodescheduler
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
@@ -1205,7 +1302,14 @@ EOF
     assert_contains "$(kubectl get events -n "$TEST_NAMESPACE" --field-selector involvedObject.name="$second" -o jsonpath='{.items[*].message}' 2>/dev/null)" \
         "ReadWriteOncePod" "the pod must say why, not just sit Pending"
 
+    # The scheduler drops the holder from its cache on the actual DELETE
+    # event, not when deletionTimestamp is set. CSI teardown must also finish
+    # before nodelet removes that object. Under full-suite load the reference
+    # attacher has taken just over two minutes to release the holder, so a
+    # 90-second helper budget can fail even though the scheduler wakes and
+    # binds the replacement correctly.
     delete_pod_if_exists "$first"
+    wait_until 240 "$first gone" pod_gone "$first"
     wait_until 60 "$second to be bound to a node" _pod_is_bound "$second" \
         || die "freeing the ReadWriteOncePod claim never got the second pod scheduled"
 
@@ -1248,13 +1352,11 @@ _fake_extender_setup() { # sets FEXT_* globals; skips if python3 is missing
 # extender that never echoes back a survivor is read as nobody passing"
 # case a real extender.go was checked against.
 #
-# The field names below are upstream's own JSON struct tags, transcribed
-# individually: `pod`, `nodes`, `nodenames`, `failedNodes`, `error`. They are
-# deliberately NOT a single naming convention, because upstream's are not
-# either. This file previously used PascalCase throughout and so did
-# extender.rs, which meant the two agreed with each other and neither agreed
-# with Kubernetes — the test passed against a protocol no real extender
-# speaks. Writing the real spelling here is what makes this test evidence.
+# Upstream's extender/v1 structs have no JSON tags. Go's encoding/json emits
+# their exported field names verbatim: Pod, Nodes, NodeNames, FailedNodes,
+# Error. Keeping this fake byte-compatible matters; otherwise the fake and
+# Rust implementation can agree with each other while both reject real
+# extenders.
 import sys, json, http.server, socketserver
 
 port, control_file, log_file = int(sys.argv[1]), sys.argv[2], sys.argv[3]
@@ -1266,9 +1368,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         args = json.loads(self.rfile.read(length))
-        pod_name = (args.get("pod") or {}).get("metadata", {}).get("name", "")
-        node_items = ((args.get("nodes") or {}).get("items")) or []
-        node_items = node_items or [{"metadata": {"name": n}} for n in (args.get("nodenames") or [])]
+        pod_name = (args.get("Pod") or {}).get("metadata", {}).get("name", "")
+        node_items = ((args.get("Nodes") or {}).get("items")) or []
+        node_items = node_items or [{"metadata": {"name": n}} for n in (args.get("NodeNames") or [])]
         node_names = [n.get("metadata", {}).get("name", "") for n in node_items]
         with open(log_file, "a") as f:
             f.write(f"{self.path} pod={pod_name} nodes={','.join(node_names)}\n")
@@ -1281,11 +1383,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path.endswith("/filter"):
             if verdict.startswith("reject:"):
                 reason = verdict[len("reject:"):]
-                result = {"failedNodes": {n: reason for n in node_names}}
+                result = {"FailedNodes": {n: reason for n in node_names}}
             else:
-                result = {"nodenames": node_names}
+                result = {"NodeNames": node_names}
         else:
-            result = {"error": f"fake extender has no verb {self.path}"}
+            result = {"Error": f"fake extender has no verb {self.path}"}
 
         payload = json.dumps(result).encode()
         self.send_response(200)
@@ -1329,7 +1431,7 @@ test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection() {
     # process as `[{a:b}]`, silently invalid JSON) — `\"` is how a literal
     # quote survives into the child's environment.
     local json_env
-    json_env='NODESCHEDULER_EXTENDERS_JSON=[{\"urlPrefix\":\"http://127.0.0.1:'"$FEXT_PORT"'\",\"filterVerb\":\"filter\"}]'
+    json_env='NODESCHEDULER_EXTENDERS_JSON=[{\"urlPrefix\":\"http://127.0.0.1:'"$FEXT_PORT"'\",\"filterVerb\":\"filter\",\"nodeCacheCapable\":true}]'
     nodescheduler_restart_with_env "$json_env"
 
     local pod="sched-extender-reject"
@@ -1381,7 +1483,7 @@ test_scheduler_schedules_a_pod_an_http_extender_approves() {
     # process as `[{a:b}]`, silently invalid JSON) — `\"` is how a literal
     # quote survives into the child's environment.
     local json_env
-    json_env='NODESCHEDULER_EXTENDERS_JSON=[{\"urlPrefix\":\"http://127.0.0.1:'"$FEXT_PORT"'\",\"filterVerb\":\"filter\"}]'
+    json_env='NODESCHEDULER_EXTENDERS_JSON=[{\"urlPrefix\":\"http://127.0.0.1:'"$FEXT_PORT"'\",\"filterVerb\":\"filter\",\"nodeCacheCapable\":true}]'
     nodescheduler_restart_with_env "$json_env"
 
     local pod="sched-extender-accept"

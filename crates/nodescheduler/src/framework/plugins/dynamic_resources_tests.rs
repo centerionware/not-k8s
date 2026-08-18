@@ -1,13 +1,13 @@
 use super::*;
 use crate::cache::dra::{
-    RawBasicDevice, RawCelSelector, RawDevice, RawDeviceAttribute, RawDeviceClassSpec,
-    RawDeviceRequest, RawDeviceSelector, RawResourceClaimSpec, RawResourcePool,
-    RawResourceSliceSpec,
+    RawBasicDevice, RawCelSelector, RawDevice, RawDeviceAttribute, RawDeviceClassConfiguration,
+    RawDeviceClassSpec, RawDeviceClaimConfiguration, RawDeviceRequest, RawDeviceSelector,
+    RawOpaqueDeviceConfiguration, RawResourceClaimSpec, RawResourcePool, RawResourceSliceSpec,
 };
-use crate::cache::{Cache, RawDeviceClass, RawResourceClaim, RawResourceSlice};
+use crate::cache::{Cache, PodClaimRef, RawDeviceClass, RawResourceClaim, RawResourceSlice};
 use crate::framework::plugins::testutil::pod;
 use k8s_openapi::api::core::v1::Node as ApiNode;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 
 fn api_node(name: &str) -> ApiNode {
     ApiNode { metadata: ObjectMeta { name: Some(name.to_string()), ..Default::default() }, ..Default::default() }
@@ -22,6 +22,7 @@ fn class_with_cel(name: &str, expr: &str) -> RawDeviceClass {
         metadata: ObjectMeta { name: Some(name.to_string()), ..Default::default() },
         spec: RawDeviceClassSpec {
             selectors: Some(vec![RawDeviceSelector { cel: Some(RawCelSelector { expression: expr.to_string() }) }]),
+            config: None,
         },
     }
 }
@@ -43,6 +44,7 @@ fn unbound_claim(namespace: &str, name: &str, class: &str, count: i64) -> RawRes
                     first_available: None,
                 }]),
                 constraints: None,
+                config: None,
             }),
         },
         status: None,
@@ -84,6 +86,21 @@ fn pod_with_claim(namespace: &str, pod_claim_name: &str, claim_name: &str) -> Po
     p
 }
 
+fn pod_with_claims(namespace: &str, claims: &[(&str, &str)]) -> PodInfo {
+    let mut p = pod("p");
+    p.namespace = namespace.to_string();
+    p.uid = "uid-p".to_string();
+    p.resource_claims = claims
+        .iter()
+        .map(|(pod_claim_name, claim_name)| PodClaimRef {
+            name: (*pod_claim_name).to_string(),
+            resource_claim_name: Some((*claim_name).to_string()),
+            resource_claim_template_name: None,
+        })
+        .collect();
+    p
+}
+
 fn no_excluded() -> HashSet<DeviceId> {
     HashSet::new()
 }
@@ -115,6 +132,90 @@ fn a_claim_with_a_satisfiable_class_selector_is_allocated_on_a_matching_node() {
 
     let n = snapshot.node("n1").unwrap().as_ref().clone();
     assert!(filter_impl(&state, &p, &n).is_success());
+}
+
+#[test]
+fn allocation_copies_selected_class_and_claim_configuration_for_the_driver() {
+    let mut class = class_with_cel("gpu.example.com", "true");
+    class.spec.config = Some(vec![RawDeviceClassConfiguration {
+        opaque: Some(RawOpaqueDeviceConfiguration {
+            driver: "gpu.example.com".to_string(),
+            parameters: serde_json::json!({"profile":"class-default"}),
+        }),
+    }]);
+    let classes = HashMap::from([("gpu.example.com", &class)]);
+    let claim = ClaimAllocationInput {
+        requests: vec![RawDeviceRequest {
+            name: "req".to_string(),
+            exactly: Some(crate::cache::dra::RawExactDeviceRequest {
+                device_class_name: Some("gpu.example.com".to_string()),
+                selectors: None,
+                allocation_mode: None,
+                count: Some(1),
+                admin_access: None,
+            }),
+            first_available: None,
+        }],
+        constraints: Vec::new(),
+        config: vec![RawDeviceClaimConfiguration {
+            requests: vec!["req".to_string()],
+            opaque: Some(RawOpaqueDeviceConfiguration {
+                driver: "gpu.example.com".to_string(),
+                parameters: serde_json::json!({"profile":"pod-specific"}),
+            }),
+        }],
+        compiled: CompiledSelectors::new(),
+    };
+    let selected = vec![RawDeviceRequestAllocationResult {
+        request: "req".to_string(),
+        driver: "gpu.example.com".to_string(),
+        pool: "pool".to_string(),
+        device: "gpu-0".to_string(),
+        admin_access: false,
+    }];
+
+    let config = allocation_config(&claim, &selected, &classes);
+    assert_eq!(config.len(), 2);
+    assert_eq!(config[0].source, "FromClass");
+    assert_eq!(config[0].requests, vec!["req"]);
+    assert_eq!(config[1].source, "FromClaim");
+    assert_eq!(config[1].requests, vec!["req"]);
+    assert_eq!(config[1].opaque.as_ref().unwrap().parameters["profile"], "pod-specific");
+}
+
+#[test]
+fn allocation_maps_claim_configuration_to_selected_first_available_name() {
+    let class = class_with_cel("gpu.example.com", "true");
+    let classes = HashMap::from([("gpu.example.com", &class)]);
+    let claim = ClaimAllocationInput {
+        requests: vec![RawDeviceRequest {
+            name: "req".to_string(),
+            exactly: None,
+            first_available: Some(vec![crate::cache::dra::RawDeviceSubRequest {
+                name: "fast".to_string(),
+                device_class_name: Some("gpu.example.com".to_string()),
+                selectors: None,
+                allocation_mode: None,
+                count: Some(1),
+            }]),
+        }],
+        constraints: Vec::new(),
+        config: vec![RawDeviceClaimConfiguration {
+            requests: vec!["req".to_string()],
+            opaque: None,
+        }],
+        compiled: CompiledSelectors::new(),
+    };
+    let selected = vec![RawDeviceRequestAllocationResult {
+        request: "req/fast".to_string(),
+        driver: "gpu.example.com".to_string(),
+        pool: "pool".to_string(),
+        device: "gpu-0".to_string(),
+        admin_access: false,
+    }];
+
+    let config = allocation_config(&claim, &selected, &classes);
+    assert_eq!(config[0].requests, vec!["req/fast"]);
 }
 
 #[test]
@@ -158,6 +259,214 @@ fn a_request_for_more_devices_than_exist_is_rejected() {
 
     let n = snapshot.node("n1").unwrap().as_ref().clone();
     assert!(!filter_impl(&state, &p, &n).is_success());
+}
+
+#[test]
+fn allocation_backtracks_when_an_early_valid_pick_is_needed_by_a_later_request() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1"));
+    cache.upsert_device_class("broad".to_string(), class_with_cel("broad", "true"));
+    cache.upsert_device_class(
+        "narrow".to_string(),
+        class_with_cel(
+            "narrow",
+            r#"device.attributes["gpu.example.com"].kind == "narrow""#,
+        ),
+    );
+
+    let mut slice = slice_with_devices("gpu.example.com", "n1", &["only-narrow", "broad-only"]);
+    let devices = slice.spec.devices.as_mut().unwrap();
+    devices[0].basic.attributes = Some(std::collections::BTreeMap::from([(
+        "kind".to_string(),
+        RawDeviceAttribute {
+            bool: None,
+            int: None,
+            string: Some("narrow".to_string()),
+            version: None,
+        },
+    )]));
+    devices[1].basic.attributes = Some(std::collections::BTreeMap::from([(
+        "kind".to_string(),
+        RawDeviceAttribute {
+            bool: None,
+            int: None,
+            string: Some("broad".to_string()),
+            version: None,
+        },
+    )]));
+    cache.upsert_resource_slice("s1".to_string(), slice);
+
+    let exact = |name: &str, class: &str| RawDeviceRequest {
+        name: name.to_string(),
+        exactly: Some(crate::cache::dra::RawExactDeviceRequest {
+            device_class_name: Some(class.to_string()),
+            selectors: None,
+            allocation_mode: None,
+            count: Some(1),
+            admin_access: None,
+        }),
+        first_available: None,
+    };
+    let claim = RawResourceClaim {
+        metadata: claim_meta("ns", "claim"),
+        spec: RawResourceClaimSpec {
+            devices: Some(crate::cache::dra::RawDeviceClaim {
+                // The broad request sees only-narrow first. A greedy pass
+                // consumes it and incorrectly rejects the narrow request;
+                // upstream rolls that choice back and uses broad-only.
+                requests: Some(vec![exact("broad", "broad"), exact("narrow", "narrow")]),
+                constraints: None,
+                config: None,
+            }),
+        },
+        status: None,
+    };
+    cache.upsert_resource_claim("ns/claim".to_string(), claim);
+    let snapshot = cache.snapshot();
+
+    let p = pod_with_claim("ns", "gpu", "claim");
+    let mut state = CycleState::default();
+    let (status, _) = pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
+    assert!(status.is_success());
+    assert!(filter_impl(&state, &p, snapshot.node("n1").unwrap()).is_success());
+
+    let wanted = state.read::<WantedClaims>(NAME).unwrap();
+    let ClaimPlan::Allocate { by_node, .. } = &wanted.0[0] else { panic!("expected allocation") };
+    let allocation = by_node.get("n1").unwrap();
+    assert_eq!(allocation.devices[0].device, "broad-only");
+    assert_eq!(allocation.devices[1].device, "only-narrow");
+}
+
+#[test]
+fn allocation_is_exclusive_and_backtracks_across_separate_claims() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1"));
+    cache.upsert_device_class("broad".to_string(), class_with_cel("broad", "true"));
+    cache.upsert_device_class(
+        "narrow".to_string(),
+        class_with_cel(
+            "narrow",
+            r#"device.attributes["gpu.example.com"].kind == "narrow""#,
+        ),
+    );
+
+    let mut slice =
+        slice_with_devices("gpu.example.com", "n1", &["only-narrow", "broad-only"]);
+    slice.spec.devices.as_mut().unwrap()[0].basic.attributes = Some(
+        std::collections::BTreeMap::from([(
+            "kind".to_string(),
+            RawDeviceAttribute {
+                bool: None,
+                int: None,
+                string: Some("narrow".to_string()),
+                version: None,
+            },
+        )]),
+    );
+    slice.spec.devices.as_mut().unwrap()[1].basic.attributes = Some(
+        std::collections::BTreeMap::from([(
+            "kind".to_string(),
+            RawDeviceAttribute {
+                bool: None,
+                int: None,
+                string: Some("broad".to_string()),
+                version: None,
+            },
+        )]),
+    );
+    cache.upsert_resource_slice("s1".to_string(), slice);
+    cache.upsert_resource_claim(
+        "ns/broad-claim".to_string(),
+        unbound_claim("ns", "broad-claim", "broad", 1),
+    );
+    cache.upsert_resource_claim(
+        "ns/narrow-claim".to_string(),
+        unbound_claim("ns", "narrow-claim", "narrow", 1),
+    );
+
+    let snapshot = cache.snapshot();
+    let p = pod_with_claims(
+        "ns",
+        &[("broad", "broad-claim"), ("narrow", "narrow-claim")],
+    );
+    let mut state = CycleState::default();
+    let (status, _) = pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
+    assert!(status.is_success());
+    assert!(filter_impl(&state, &p, snapshot.node("n1").unwrap()).is_success());
+
+    let wanted = state.read::<WantedClaims>(NAME).unwrap();
+    let ClaimPlan::Allocate { by_node: broad, .. } = &wanted.0[0] else {
+        panic!("expected Allocate")
+    };
+    let ClaimPlan::Allocate { by_node: narrow, .. } = &wanted.0[1] else {
+        panic!("expected Allocate")
+    };
+    assert_eq!(broad["n1"].devices[0].device, "broad-only");
+    assert_eq!(narrow["n1"].devices[0].device, "only-narrow");
+}
+
+#[test]
+fn two_separate_claims_cannot_receive_the_same_exclusive_device() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1"));
+    cache.upsert_device_class("gpu".to_string(), class_with_cel("gpu", "true"));
+    cache.upsert_resource_slice(
+        "s1".to_string(),
+        slice_with_devices("gpu.example.com", "n1", &["only-device"]),
+    );
+    cache.upsert_resource_claim(
+        "ns/claim-a".to_string(),
+        unbound_claim("ns", "claim-a", "gpu", 1),
+    );
+    cache.upsert_resource_claim(
+        "ns/claim-b".to_string(),
+        unbound_claim("ns", "claim-b", "gpu", 1),
+    );
+
+    let snapshot = cache.snapshot();
+    let p = pod_with_claims("ns", &[("a", "claim-a"), ("b", "claim-b")]);
+    let mut state = CycleState::default();
+    pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
+    assert!(
+        !filter_impl(&state, &p, snapshot.node("n1").unwrap()).is_success(),
+        "one exclusive device cannot satisfy two claims from the same pod"
+    );
+}
+
+#[test]
+fn a_template_claim_must_be_controlled_by_the_pod_that_references_it() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1"));
+    cache.upsert_device_class("gpu".to_string(), class_with_cel("gpu", "true"));
+    cache.upsert_resource_slice(
+        "s1".to_string(),
+        slice_with_devices("gpu.example.com", "n1", &["gpu-0"]),
+    );
+    let mut claim = unbound_claim("ns", "generated", "gpu", 1);
+    claim.metadata.owner_references = Some(vec![OwnerReference {
+        api_version: "v1".to_string(),
+        kind: "Pod".to_string(),
+        name: "some-other-pod".to_string(),
+        uid: "some-other-uid".to_string(),
+        controller: Some(true),
+        block_owner_deletion: None,
+    }]);
+    cache.upsert_resource_claim("ns/generated".to_string(), claim);
+
+    let snapshot = cache.snapshot();
+    let mut p = pod_with_claim("ns", "gpu", "generated");
+    p.resource_claims[0].resource_claim_name = None;
+    p.resource_claims[0].resource_claim_template_name = Some("gpu-template".to_string());
+    p.resource_claim_statuses
+        .insert("gpu".to_string(), Some("generated".to_string()));
+    let mut state = CycleState::default();
+    let (status, _) = pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
+
+    assert_eq!(
+        status.code,
+        crate::framework::status::Code::UnschedulableAndUnresolvable
+    );
+    assert!(status.reasons[0].contains("pod is not owner"));
 }
 
 #[test]
@@ -219,6 +528,41 @@ fn a_device_attribute_selector_filters_correctly() {
     pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
     let n = snapshot.node("n1").unwrap().as_ref().clone();
     assert!(filter_impl(&state, &p, &n).is_success(), "exactly one device (\"big\") should satisfy the selector");
+}
+
+#[test]
+fn a_capacity_selector_uses_exact_quantity_arithmetic() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1"));
+    cache.upsert_device_class("gpu.example.com".to_string(), class_with_cel("gpu.example.com", "true"));
+    let mut slice = slice_with_devices("gpu.example.com", "n1", &["precise"]);
+    slice.spec.devices.as_mut().unwrap()[0].basic.capacity = Some(
+        std::collections::BTreeMap::from([(
+            "memory".to_string(),
+            crate::cache::dra::RawDeviceCapacity {
+                value: k8s_openapi::apimachinery::pkg::api::resource::Quantity(
+                    "9007199254740993".to_string(),
+                ),
+            },
+        )]),
+    );
+    cache.upsert_resource_slice("s1".to_string(), slice);
+
+    let mut claim = unbound_claim("ns", "claim", "gpu.example.com", 1);
+    claim.spec.devices.as_mut().unwrap().requests.as_mut().unwrap()[0]
+        .exactly.as_mut().unwrap().selectors = Some(vec![RawDeviceSelector {
+            cel: Some(RawCelSelector {
+                expression: r#"device.capacity["gpu.example.com"].memory.isGreaterThan(quantity("9007199254740992"))"#.to_string(),
+            }),
+        }]);
+    cache.upsert_resource_claim("ns/claim".to_string(), claim);
+    let snapshot = cache.snapshot();
+
+    let p = pod_with_claim("ns", "gpu", "claim");
+    let mut state = CycleState::default();
+    let (status, _) = pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
+    assert!(status.is_success());
+    assert!(filter_impl(&state, &p, snapshot.node("n1").unwrap()).is_success());
 }
 
 #[test]
@@ -308,7 +652,7 @@ fn allocation_mode_all_takes_every_matching_device() {
 
     let wanted = state.read::<WantedClaims>(NAME).unwrap();
     let ClaimPlan::Allocate { by_node, .. } = &wanted.0[0] else { panic!("expected Allocate") };
-    assert_eq!(by_node.get("n1").unwrap().len(), 2, "'All' must take every matching device, not just one");
+    assert_eq!(by_node.get("n1").unwrap().devices.len(), 2, "'All' must take every matching device, not just one");
 }
 
 #[test]
@@ -337,6 +681,32 @@ fn allocation_mode_all_fails_when_nothing_matches() {
     pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
     let n = snapshot.node("n1").unwrap().as_ref().clone();
     assert!(!filter_impl(&state, &p, &n).is_success(), "'All' with zero matches must not trivially succeed");
+}
+
+#[test]
+fn allocation_mode_all_fails_when_one_of_the_matching_devices_is_busy() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1"));
+    cache.upsert_device_class("gpu.example.com".to_string(), class_with_cel("gpu.example.com", "true"));
+    cache.upsert_resource_slice(
+        "s1".to_string(),
+        slice_with_devices("gpu.example.com", "n1", &["gpu-0", "gpu-1"]),
+    );
+    let mut claim = unbound_claim("ns", "claim", "gpu.example.com", 1);
+    claim.spec.devices.as_mut().unwrap().requests.as_mut().unwrap()[0]
+        .exactly.as_mut().unwrap().allocation_mode = Some("All".to_string());
+    cache.upsert_resource_claim("ns/claim".to_string(), claim);
+    let snapshot = cache.snapshot();
+    let mut excluded = no_excluded();
+    excluded.insert(("gpu.example.com".to_string(), "n1".to_string(), "gpu-0".to_string()));
+
+    let p = pod_with_claim("ns", "gpu", "claim");
+    let mut state = CycleState::default();
+    pre_filter_impl(&mut state, &p, &snapshot, &excluded);
+    assert!(
+        !filter_impl(&state, &p, snapshot.node("n1").unwrap()).is_success(),
+        "All means every matching device, not every matching device that happens to be free"
+    );
 }
 
 #[test]
@@ -371,6 +741,7 @@ fn first_available_falls_through_to_a_later_subrequest() {
                     ]),
                 }]),
                 constraints: None,
+                config: None,
             }),
         },
         status: None,
@@ -387,7 +758,7 @@ fn first_available_falls_through_to_a_later_subrequest() {
 
     let wanted = state.read::<WantedClaims>(NAME).unwrap();
     let ClaimPlan::Allocate { by_node, .. } = &wanted.0[0] else { panic!("expected Allocate") };
-    assert_eq!(by_node.get("n1").unwrap()[0].request, "req/fallback", "the fallback subrequest's own name must be recorded");
+    assert_eq!(by_node.get("n1").unwrap().devices[0].request, "req/fallback", "the fallback subrequest's own name must be recorded");
 }
 
 #[test]
@@ -441,6 +812,7 @@ fn a_match_attribute_constraint_rejects_a_device_set_with_different_values() {
                     match_attribute: Some("gpu.example.com/numa".to_string()),
                     requests: vec![],
                 }]),
+                config: None,
             }),
         },
         status: None,
@@ -506,6 +878,7 @@ fn a_match_attribute_constraint_admits_a_consistent_device_set() {
                     match_attribute: Some("gpu.example.com/numa".to_string()),
                     requests: vec![],
                 }]),
+                config: None,
             }),
         },
         status: None,
@@ -554,8 +927,8 @@ fn per_device_node_selection_scopes_each_device_to_its_own_node() {
 
     let wanted = state.read::<WantedClaims>(NAME).unwrap();
     let ClaimPlan::Allocate { by_node, .. } = &wanted.0[0] else { panic!("expected Allocate") };
-    assert_eq!(by_node.get("n1").unwrap()[0].device, "gpu-on-n1");
-    assert_eq!(by_node.get("n2").unwrap()[0].device, "gpu-on-n2");
+    assert_eq!(by_node.get("n1").unwrap().devices[0].device, "gpu-on-n1");
+    assert_eq!(by_node.get("n2").unwrap().devices[0].device, "gpu-on-n2");
 }
 
 #[test]
@@ -699,9 +1072,21 @@ fn post_filter_leaves_a_claim_alone_if_some_node_can_actually_reach_it() {
 #[test]
 fn it_wakes_on_the_events_that_can_progress_a_stuck_claim() {
     let events = events_impl();
-    let claim_added = ClusterEvent::new(EventResource::ResourceClaim, ActionType::ADD);
-    let slice_added = ClusterEvent::new(EventResource::ResourceSlice, ActionType::ADD);
-
-    assert!(events.iter().any(|e| e.event.matches(&claim_added)));
-    assert!(events.iter().any(|e| e.event.matches(&slice_added)));
+    let got: Vec<(EventResource, ActionType)> = events
+        .iter()
+        .map(|event| (event.event.resource, event.event.action))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (EventResource::Node, ActionType::ADD | ActionType::UPDATE_NODE_LABEL),
+            (EventResource::ResourceClaim, ActionType::ADD | ActionType::UPDATE),
+            (EventResource::ResourceSlice, ActionType::ADD | ActionType::UPDATE),
+            (EventResource::DeviceClass, ActionType::ADD | ActionType::UPDATE),
+            (
+                EventResource::UnschedulablePod,
+                ActionType::UPDATE_POD_GENERATED_RESOURCE_CLAIM,
+            ),
+        ]
+    );
 }

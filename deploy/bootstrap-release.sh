@@ -3,7 +3,7 @@
 # binary instead of compiling from source on-device.
 #
 # This is the seam nodelet-build.sh's own doc comment already described:
-# build_nodelet() checks $NOTK8S_NODELET_PREBUILT before ever touching
+# build_nodelet() checks $NOTK8S_COMBINED_PREBUILT before ever touching
 # cargo/rustc, and just installs that binary instead. This script's whole
 # job is populating that variable from a real release asset, then handing
 # off to bootstrap-source.sh for everything else (k3s control plane,
@@ -17,11 +17,12 @@
 #       bootstrap-source.sh flag — passed through verbatim]
 #
 #   --tag=vX.Y.Z   Install a specific release instead of the latest one.
-#   --layout=combined  Fetch the single multi-call `notk8s` binary (every
-#                  component in one file, ~5MB smaller than the separate
-#                  pair on aarch64) instead of one binary per component.
+#   --layout=combined  Fetch the single multi-call `notk8s` binary (the
+#                  default release path: every component in one file,
+#                  ~5MB smaller than the separate pair on aarch64).
 #                  Passed through to bootstrap-source.sh as well, which
 #                  installs it with a bin/<component> symlink per component.
+#   --layout=split     Opt into fetching one release binary per component.
 #
 # Release assets are expected to be named
 # <binary>-<version>-linux-<arch>-<profile>, where <binary> is nodelet,
@@ -42,7 +43,18 @@ REPO="${NOTK8S_RELEASE_REPO:-centerionware/not-k8s}"
 TAG=""
 PASSTHROUGH_ARGS=()
 
-LAYOUT="${NOTK8S_BUILD_LAYOUT:-split}"
+# A release install runs the complete not-k8s stack from the combined asset.
+# Source builds retain their split default for component-level iteration;
+# this entry point is the optimized, no-toolchain release path.
+LAYOUT="${NOTK8S_BUILD_LAYOUT:-combined}"
+
+# The combined release contains every applet. Enable every replacement by
+# default too, so bootstrap-source.sh links and starts all of them and
+# disables the corresponding bundled k3s control-plane processes. Explicit
+# command-line flags still override these environment defaults downstream.
+export DATASTORE="${DATASTORE:-nodestore}"
+export SCHEDULER="${SCHEDULER:-nodescheduler}"
+export CONTROLLER_MANAGER="${CONTROLLER_MANAGER:-nodecontroller}"
 
 for arg in "$@"; do
     case "$arg" in
@@ -157,6 +169,22 @@ if [[ "$WANT_PROXY" -eq 1 ]]; then
     export NOTK8S_NODEPROXY_PREBUILT="$nodeproxy_prebuilt"
 fi
 
+# The mirror image of --proxy=none for the control-plane datastore: the
+# default release path enables nodestore, and an explicit split-layout
+# install needs its matching prebuilt asset too. The combined path returned
+# above before this block already contains nodestore in the one binary.
+WANT_DATASTORE=0
+[[ "${DATASTORE:-none}" == "nodestore" ]] && WANT_DATASTORE=1
+for arg in "${PASSTHROUGH_ARGS[@]}"; do
+    [[ "$arg" == "--datastore=nodestore" ]] && WANT_DATASTORE=1
+    [[ "$arg" == "--datastore=none" ]] && WANT_DATASTORE=0
+done
+if [[ "$WANT_DATASTORE" -eq 1 ]]; then
+    nodestore_prebuilt="$(download_release_binary nodestore)" \
+        || die "Couldn't download the 'nodestore' binary for this release. Drop --datastore=nodestore to leave storage to k3s's bundled kine."
+    export NOTK8S_NODESTORE_PREBUILT="$nodestore_prebuilt"
+fi
+
 # The mirror image of --proxy=none: nodescheduler is opt-IN, so it is fetched
 # only when asked for. It has to be fetched when asked for, though — the split
 # layout refuses to mix prebuilt and from-source components (see
@@ -177,6 +205,19 @@ if [[ "$WANT_SCHEDULER" -eq 1 ]]; then
     nodescheduler_prebuilt="$(download_release_binary nodescheduler)" \
         || die "Couldn't download the 'nodescheduler' binary for this release. Drop --scheduler=nodescheduler to leave pod placement to the kube-scheduler k3s runs itself."
     export NOTK8S_NODESCHEDULER_PREBUILT="$nodescheduler_prebuilt"
+fi
+
+# Same opt-IN shape as nodescheduler above, for the same reason.
+WANT_CONTROLLER_MANAGER=0
+[[ "${CONTROLLER_MANAGER:-none}" == "nodecontroller" ]] && WANT_CONTROLLER_MANAGER=1
+for arg in "${PASSTHROUGH_ARGS[@]}"; do
+    [[ "$arg" == "--controller-manager=nodecontroller" ]] && WANT_CONTROLLER_MANAGER=1
+    [[ "$arg" == "--controller-manager=none" ]] && WANT_CONTROLLER_MANAGER=0
+done
+if [[ "$WANT_CONTROLLER_MANAGER" -eq 1 ]]; then
+    nodecontroller_prebuilt="$(download_release_binary nodecontroller)" \
+        || die "Couldn't download the 'nodecontroller' binary for this release. Drop --controller-manager=nodecontroller to leave node lifecycle/podCIDR/GC to the kube-controller-manager k3s runs itself."
+    export NOTK8S_NODECONTROLLER_PREBUILT="$nodecontroller_prebuilt"
 fi
 
 rm -f "$RELEASE_JSON"

@@ -128,6 +128,117 @@ resolve_ip_family() {
     export NOTK8S_CLUSTER_CIDR="$CLUSTER_CIDR" NOTK8S_SERVICE_CIDR="$SERVICE_CIDR"
 }
 
+# apt-get has its own per-connection timeouts, but those do not cover every
+# way an apt invocation can wedge (for example, a stalled child process or a
+# package-manager lock). Keep the whole operation bounded as well. The value
+# is intentionally configurable for slow edge links, while the default is
+# short enough that a bootstrap can get to its fallback mirror promptly.
+_apt_timeout_seconds() {
+    local timeout_seconds="${NOTK8S_APT_TIMEOUT_SECONDS:-120}"
+    if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+        warn "Ignoring invalid NOTK8S_APT_TIMEOUT_SECONDS='$timeout_seconds'; using 120 seconds."
+        timeout_seconds=120
+    fi
+    printf '%s\n' "$timeout_seconds"
+}
+
+# Rewrite only the distribution mirrors we know how to fail over. The
+# replacement is deliberately done on a temporary copy of the source files;
+# a bootstrap must not modify the host's apt configuration just because one
+# mirror was unavailable.
+_apt_rewrite_sources() {
+    local source_file="$1"
+    sed \
+        -e 's#azure\.archive\.ubuntu\.com#notk8s-alt-ubuntu#g' \
+        -e 's#archive\.ubuntu\.com#azure.archive.ubuntu.com#g' \
+        -e 's#notk8s-alt-ubuntu#archive.ubuntu.com#g' \
+        -e 's#security\.ubuntu\.com#archive.ubuntu.com#g' \
+        -e 's#deb\.debian\.org#notk8s-alt-debian#g' \
+        -e 's#security\.debian\.org#notk8s-alt-debian#g' \
+        -e 's#notk8s-alt-debian#ftp.de.debian.org#g' \
+        "$source_file"
+}
+
+# Echo a temporary apt source-parts directory when a known mirror was
+# rewritten, or return 1 when this host uses a source format/mirror for which
+# we do not have a safe alternate. Handles both classic .list files and the
+# deb822 .sources format used by current Ubuntu runners.
+_apt_alternate_sources() {
+    local base_dir="${WORK_DIR:-}"
+    [[ -n "$base_dir" && -d "$base_dir" ]] || return 1
+
+    local alternate_dir source_file alternate_file changed=0
+    alternate_dir="$(mktemp -d "$base_dir/apt-sources.XXXXXX")" || return 1
+    : > "$alternate_dir/sources.list"
+
+    if [[ -f /etc/apt/sources.list ]]; then
+        _apt_rewrite_sources /etc/apt/sources.list > "$alternate_dir/sources.list" \
+            || { rm -rf -- "$alternate_dir"; return 1; }
+        cmp -s /etc/apt/sources.list "$alternate_dir/sources.list" || changed=1
+    fi
+
+    for source_file in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+        [[ -f "$source_file" ]] || continue
+        alternate_file="$alternate_dir/$(basename "$source_file")"
+        _apt_rewrite_sources "$source_file" > "$alternate_file" \
+            || { rm -rf -- "$alternate_dir"; return 1; }
+        cmp -s "$source_file" "$alternate_file" || changed=1
+    done
+
+    if [[ "$changed" -eq 0 ]]; then
+        rm -rf -- "$alternate_dir"
+        return 1
+    fi
+    printf '%s\n' "$alternate_dir"
+}
+
+# _apt_run <source-dir-or-empty> <update|install> <package-spec> <timeout>
+# Keep this in one helper so update and install get exactly the same network
+# and process-level bounds. The package spec is the space-separated form used
+# by all existing pkg_install call sites.
+_apt_run() {
+    local source_dir="$1" action="$2" package_spec="$3" timeout_seconds="$4"
+    local -a timeout_cmd=() sudo_cmd=() apt_options=() package_args=()
+
+    if command -v timeout &>/dev/null; then
+        timeout_cmd=(timeout --signal=TERM --kill-after=10s "${timeout_seconds}s")
+    else
+        # The apt Acquire timeouts below still bound network connections, but
+        # without coreutils' timeout command a non-network apt hang cannot be
+        # interrupted. All supported apt environments normally have it.
+        warn "'timeout' is unavailable; apt network operations will use per-connection bounds only."
+    fi
+    [[ -n "$SUDO" ]] && sudo_cmd=("$SUDO")
+    apt_options=(
+        -o Acquire::Retries=1
+        -o Acquire::http::Timeout=20
+        -o Acquire::https::Timeout=20
+        -o DPkg::Lock::Timeout=20
+    )
+    if [[ -n "$source_dir" ]]; then
+        apt_options+=(
+            -o "Dir::Etc::sourcelist=$source_dir/sources.list"
+            -o "Dir::Etc::sourceparts=$source_dir"
+        )
+    fi
+
+    case "$action" in
+        update)
+            "${timeout_cmd[@]}" "${sudo_cmd[@]}" apt-get \
+                "${apt_options[@]}" update -qq -y >>"$LOG_DIR/pkg.log" 2>&1
+            ;;
+        install)
+            read -r -a package_args <<< "$package_spec"
+            "${timeout_cmd[@]}" "${sudo_cmd[@]}" apt-get \
+                "${apt_options[@]}" install -qq -y "${package_args[@]}" \
+                >>"$LOG_DIR/pkg.log" 2>&1
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+}
+
 # pkg_install <logical-name> <apt-pkg> <dnf-pkg> <pacman-pkg> <apk-pkg> <zypper-pkg> <xbps-pkg>
 # Best-effort: returns 0 on apparent success, 1 if no package manager could be used.
 # Every successful install is appended to $WORK_DIR/pkg_installs.log as
@@ -143,8 +254,29 @@ pkg_install() {
     case "$PKG_MGR" in
         apt)
             pkgs="$apt"
-            $SUDO apt-get update -qq -y >>"$LOG_DIR/pkg.log" 2>&1 || true
-            $SUDO apt-get install -qq -y $apt >>"$LOG_DIR/pkg.log" 2>&1 && ok=0 || ok=1
+            local apt_timeout first_status=0 alt_sources=""
+            apt_timeout="$(_apt_timeout_seconds)"
+            if _apt_run "" update "" "$apt_timeout" \
+                && _apt_run "" install "$apt" "$apt_timeout"; then
+                ok=0
+            else
+                first_status=$?
+                if [[ "$first_status" -eq 124 ]]; then
+                    warn "apt '$name' timed out after ${apt_timeout}s; retrying with an alternate mirror."
+                else
+                    warn "apt '$name' failed (exit $first_status); retrying with an alternate mirror."
+                fi
+                if alt_sources="$(_apt_alternate_sources)"; then
+                    log "Retrying apt '$name' with an alternate distribution mirror."
+                    if _apt_run "$alt_sources" update "" "$apt_timeout" \
+                        && _apt_run "$alt_sources" install "$apt" "$apt_timeout"; then
+                        ok=0
+                    fi
+                    rm -rf -- "$alt_sources"
+                else
+                    warn "No supported alternate apt mirror was found; continuing with the normal fallback path."
+                fi
+            fi
             ;;
         dnf)    pkgs="$dnf";    $SUDO dnf install -y -q $dnf >>"$LOG_DIR/pkg.log" 2>&1 && ok=0 || ok=1 ;;
         yum)    pkgs="$dnf";    $SUDO yum install -y -q $dnf >>"$LOG_DIR/pkg.log" 2>&1 && ok=0 || ok=1 ;;

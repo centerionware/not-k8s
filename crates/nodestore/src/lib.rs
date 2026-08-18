@@ -49,8 +49,25 @@ use anyhow::{Context, Result};
 use std::sync::Arc;
 use tracing::info;
 
+/// Install rustls' default CryptoProvider, unless something already did.
+///
+/// rustls 0.23 stopped silently picking one. The combined `notk8s` binary
+/// links several components that all use rustls, so feature unification can
+/// leave more than one provider available and make the first TLS builder
+/// panic. Split binaries do not expose that because each component links a
+/// smaller dependency graph. Select the ring provider at the component
+/// boundary so both layouts have identical startup behaviour.
+fn install_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("installing default rustls CryptoProvider (no other provider was installed a moment ago)");
+    }
+}
+
 /// Run the datastore until it stops. Only returns on a fatal condition.
 pub async fn run() -> Result<()> {
+    install_crypto_provider();
     let cfg = config::Config::from_env().context("loading configuration")?;
     serve(cfg).await
 }

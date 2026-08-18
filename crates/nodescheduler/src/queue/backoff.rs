@@ -201,6 +201,35 @@ impl BackoffQueue {
         self.heap.iter().any(|e| e.pod.uid == uid)
     }
 
+    /// Replace a pod's API projection without changing its deadline.
+    ///
+    /// Labels, requests, affinity, gates, and PVC references are scheduling
+    /// inputs, so an edit received during backoff must be visible to the next
+    /// cycle. The queue-owned fairness and attempt fields stay with the old
+    /// entry, while its heap key stays byte-for-byte unchanged.
+    pub fn update(&mut self, updated: &Arc<PodInfo>) -> bool {
+        if !self.contains(&updated.uid) {
+            return false;
+        }
+        let mut found = false;
+        let entries: Vec<Entry> = std::mem::take(&mut self.heap)
+            .into_vec()
+            .into_iter()
+            .map(|mut entry| {
+                if entry.pod.uid == updated.uid {
+                    let mut merged = (**updated).clone();
+                    merged.queued_at = entry.pod.queued_at;
+                    merged.attempts = entry.pod.attempts;
+                    entry.pod = Arc::new(merged);
+                    found = true;
+                }
+                entry
+            })
+            .collect();
+        self.heap = entries.into_iter().collect();
+        found
+    }
+
     pub fn len(&self) -> usize {
         self.heap.len()
     }
@@ -304,6 +333,23 @@ mod tests {
             .map(|p| p.name.clone())
             .collect();
         assert_eq!(names, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn an_update_replaces_the_pod_without_moving_its_deadline() {
+        let mut q = BackoffQueue::new(DEFAULT_POD_INITIAL_BACKOFF, DEFAULT_POD_MAX_BACKOFF);
+        let at = Instant::now() + Duration::from_secs(7);
+        let mut original = (*test_pod("p", 1, 0)).clone();
+        original.attempts = 4;
+        q.push_at(Arc::new(original), at);
+
+        let updated = test_pod("p", 99, 0);
+        assert!(q.update(&updated));
+        assert_eq!(q.next_expiry(), Some(at));
+
+        let popped = q.pop_expired(at);
+        assert_eq!(popped[0].priority, 99);
+        assert_eq!(popped[0].attempts, 4);
     }
 
     #[test]

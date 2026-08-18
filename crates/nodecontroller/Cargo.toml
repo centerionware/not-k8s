@@ -1,0 +1,76 @@
+[package]
+name = "nodecontroller"
+description = "kube-controller-manager's job: node lifecycle, workload controllers, GC, done event-driven where possible"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "nodecontroller"
+path = "src/main.rs"
+
+[lib]
+name = "nodecontroller"
+path = "src/lib.rs"
+
+# Same minimal dependency set as nodescheduler/nodeproxy: this component is a
+# pure apiserver client. No `cri` feature, no tonic/prost/zbus, no dependency
+# on nodeproxy's nftables tree — see CLAUDE.md's crate-isolation rule.
+#
+# `rand`, `chrono`, and `base64` are the three additions over
+# nodescheduler's own list. `rand` is scoped to exactly one job: jitter on
+# timing-wheel insert (see docs/CONTROLLER_MANAGER.md's "Jitter on insert"
+# section) so correlated deadlines — every Node renews on the same
+# node-monitor-period — don't bunch into the same wheel slot. `chrono` is
+# what k8s-openapi's own `Time` newtype wraps (`chrono::DateTime<Utc>`) —
+# needed once a controller sets a status timestamp itself (Job's
+# `startTime`/`completionTime`, CronJob's `lastScheduleTime`) rather than
+# only reading one back. `base64` decodes a kubeconfig's inline
+# `certificate-authority-data`, the same pattern nodelet's own
+# `bootstrap.rs` already uses — `root_ca_publisher.rs` needs it to read the
+# cluster CA it publishes into every namespace. `http` builds the raw
+# requests `resource_claim.rs` needs for `resource.k8s.io` (not
+# k8s-openapi-typed until its "v1_34" schema feature — see CLAUDE.md),
+# the same escape hatch nodelet's own `claims.rs` already uses. `rcgen`
+# (already a nodelet dependency, for CSR *generation* on the bootstrap
+# client side) is reused here for CSR *signing* — `csr.rs`'s
+# certificatesigningrequest-signing-controller; the `x509-parser` feature
+# is what `CertificateParams::from_ca_cert_pem` (loading an existing CA
+# rather than generating a new one) needs. `p256` is a one-purpose
+# conversion helper `csr.rs` needs alongside rcgen: k3s's own generated CA
+# key is SEC1 ("EC PRIVATE KEY") PEM, and rcgen's default `ring` crypto
+# backend only parses PKCS#8 ("PRIVATE KEY") — confirmed live in CI
+# (`CouldNotParseKeyPair`). Switching rcgen itself to its `aws_lc_rs`
+# backend would fix this too, but pulls in a C/C++ build dependency this
+# project's own memory-constrained build hosts (see CLAUDE.md) don't need
+# to pay for just to reformat one key file; `p256` is pure Rust.
+[dependencies]
+tokio = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+libc = "0.2"
+rustls = { workspace = true }
+rand = "0.8"
+chrono = { workspace = true }
+base64 = "0.22"
+http = "1"
+rcgen = { version = "0.13", features = ["x509-parser"] }
+p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+# CSR subject validation (`csr.rs`'s `parse_csr_subject`) needs to read the
+# Common Name / Organization back out of a CSR's own x509 request. rcgen's
+# `DnValue` (what `DistinguishedName::get` returns) has no `Display`/
+# `ToString` impl — it's write-only from this crate's perspective — so
+# reading a subject back out goes through `x509-parser` directly instead
+# (already pulled in transitively by rcgen's own `x509-parser` feature, so
+# this adds no new dependency to the tree, just makes it nameable). `pem`
+# decodes the CSR's PEM envelope to the DER bytes x509-parser needs.
+x509-parser = "0.16"
+pem = "3"
+node-leaderelection = { path = "../node-leaderelection" }

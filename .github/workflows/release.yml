@@ -39,30 +39,25 @@ jobs:
           # nodescheduler: no features either — it is a pure apiserver
           # client, so there is no cri/mock split to select.
           cargo build -p nodescheduler
+          # nodecontroller: same reasoning as nodescheduler — a pure
+          # apiserver client, no cri/mock split.
+          cargo build -p nodecontroller
           # The combined single-binary layout (crates/notk8s) links all of
-          # the above into one executable. Built here purely so a break in
-          # it fails this stage rather than the much later build-release
-          # one — the e2e stage below still deploys the split binaries.
+          # the above into one executable. The release E2E path below uses
+          # this combined artifact as its default deployment binary.
           cargo build --features cri -p notk8s
-      # Round 124: the e2e stage's own "Build and deploy" step used to
-      # redo this exact build itself, on every one of its (now 5, see
-      # below) parallel shards — the same debug binary compiled 6 times
-      # total (once here, 5 more downstream) for zero difference in the
-      # result. Uploading it once here and downloading it in each e2e
-      # shard (nodelet-build.sh's existing NOTK8S_NODELET_PREBUILT seam
-      # — this was already built for exactly this, just not wired into CI
-      # until now) turns that into 1 build + 5 downloads. 1-day retention:
+      # Upload the combined binary once and download it in each e2e shard.
+      # This keeps the release gate on the same single-binary path the
+      # release installer uses, rather than silently testing separate
+      # component executables. 1-day retention:
       # only ever needed for the few minutes until every e2e shard has
       # consumed it — see the cleanup-artifact job below, which deletes it
       # outright the moment they all finish rather than waiting even that
       # long.
       - uses: actions/upload-artifact@v4
         with:
-          name: nodelet-debug-binary
-          path: |
-            target/debug/nodelet
-            target/debug/nodeproxy
-            target/debug/nodescheduler
+          name: notk8s-debug-binary
+          path: target/debug/notk8s
           retention-days: 1
       - name: cargo test (both feature sets)
         # Under sudo: some tests (nodeproxy's svc.rs nft_check() ones) open
@@ -82,6 +77,8 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p nodeproxy
           sudo -E env "PATH=$PATH" cargo test -p nodestore
           sudo -E env "PATH=$PATH" cargo test -p nodescheduler
+          sudo -E env "PATH=$PATH" cargo test -p node-leaderelection
+          sudo -E env "PATH=$PATH" cargo test -p nodecontroller
           sudo -E env "PATH=$PATH" cargo test -p notk8s
 
   # ── Stage 2: full e2e suite, real CSI + DRA reference drivers ─────────
@@ -124,48 +121,40 @@ jobs:
           - shard: 5
             needs_drivers: false
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Keep the release gate aligned with the standalone e2e workflow.  The
+    # custom controller-manager path is slower than k3s's bundled one under
+    # the full CSI/DRA workload and can exceed forty minutes on a shard.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
         with:
-          name: nodelet-debug-binary
+          name: notk8s-debug-binary
           path: dist-bin
 
       - name: Build and deploy not-k8s (real containerd/CRI runtime)
-        # NOTK8S_NODELET_PREBUILT (nodelet-build.sh) skips rebuilding
-        # entirely — build-and-test already built and uploaded this exact
-        # binary once above; every shard just installs it.
+        # NOTK8S_COMBINED_PREBUILT is the complete release binary: every
+        # enabled component is an applet selected through its bin/<component>
+        # symlink, and every shard installs this exact binary without a
+        # toolchain or per-component rebuild.
         #
-        # SCHEDULER is deliberately NOT set here. All five phases
-        # (docs/SCHEDULER.md) are implemented now — this is no longer a
-        # "phase 1 only" gap — but the release gate still tests what a
-        # release actually ships *by default*: k3s's own bundled scheduler,
-        # since SCHEDULER is opt-in at deploy time
-        # (bootstrap-source.sh/bootstrap-release.sh), not the default.
-        #
-        # An earlier version of this comment claimed a SCHEDULER=nodescheduler
-        # run had turned up "still-open failures outside cases/scheduler.sh
-        # (CSI attach timing, cpu-manager)". That attribution was wrong, and
-        # measuring it settled the question: the same two CSI tests
-        # (test_pod_with_an_attach_required_pvc_waits_for_volumeattachment and
-        # test_node_reports_volumes_in_use_for_a_csi_volume) fail identically
-        # on main with k3s's own scheduler placing the pods, and cpu-manager
-        # passes in both. They are a nodelet gap — the Node carries no
-        # volumes.kubernetes.io/controller-managed-attach-detach annotation, so
-        # kube-controller-manager's AttachDetachController never adds it to its
-        # desired state of world and no VolumeAttachment is ever created — and
-        # they are tracked separately from this component.
-        # cases/scheduler.sh self-skips here, and its own coverage comes from
-        # a targeted dispatch instead —
-        # `gh workflow run e2e.yml -f scheduler=nodescheduler -f only=scheduler`.
+        # The release gate deliberately uses every not-k8s replacement. k3s
+        # supplies only the apiserver; nodestore replaces kine,
+        # nodescheduler replaces kube-scheduler, nodecontroller replaces
+        # kube-controller-manager, and nodeproxy/nodelet replace the node
+        # side. Isolation against bundled k3s components belongs in a
+        # targeted e2e.yml dispatch, not in the release gate.
         env:
-          NOTK8S_NODELET_PREBUILT: ${{ github.workspace }}/dist-bin/nodelet
-          NOTK8S_NODEPROXY_PREBUILT: ${{ github.workspace }}/dist-bin/nodeproxy
+          NOTK8S_COMBINED_PREBUILT: ${{ github.workspace }}/dist-bin/notk8s
         run: |
-          chmod +x "$NOTK8S_NODELET_PREBUILT" "$NOTK8S_NODEPROXY_PREBUILT"
-          sudo -E ./deploy/bootstrap-source.sh --with-cri
+          chmod +x "$NOTK8S_COMBINED_PREBUILT"
+          sudo -E ./deploy/bootstrap-source.sh --with-cri \
+            --layout=combined \
+            --proxy=nodeproxy \
+            --datastore=nodestore \
+            --scheduler=nodescheduler \
+            --controller-manager=nodecontroller
 
       - name: Make the kubeconfig readable
         # Split out from "Install reference CSI + DRA drivers" (round
@@ -230,7 +219,7 @@ jobs:
   # cleanup so it still runs. Not load-bearing (retention-days: 1 on the
   # upload already bounds the worst case) — just no reason to let it sit
   # around for its full day when this job can delete it in a few seconds.
-  cleanup-nodelet-artifact:
+  cleanup-notk8s-artifact:
     needs: e2e
     if: always()
     runs-on: ubuntu-latest
@@ -254,9 +243,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           artifact_id="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
-              --jq '.artifacts[] | select(.name=="nodelet-debug-binary") | .id')"
+              --jq '.artifacts[] | select(.name=="notk8s-debug-binary") | .id')"
           if [[ -z "$artifact_id" ]]; then
-            echo "no nodelet-debug-binary artifact found for this run — nothing to clean up"
+            echo "no notk8s-debug-binary artifact found for this run — nothing to clean up"
             exit 0
           fi
           if ! gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$artifact_id"; then
@@ -407,12 +396,20 @@ jobs:
           cargo build -p nodescheduler $TARGET_FLAG
           # shellcheck disable=SC2086
           cargo build --release -p nodescheduler $TARGET_FLAG
+          # nodecontroller: same reasoning as nodescheduler immediately
+          # above — round 124's #28 fix for nodescheduler missing from
+          # this exact stage is the reason this entry exists here at all,
+          # not just in build-and-test's earlier debug-only build.
+          # shellcheck disable=SC2086
+          cargo build -p nodecontroller $TARGET_FLAG
+          # shellcheck disable=SC2086
+          cargo build --release -p nodecontroller $TARGET_FLAG
           # notk8s: the combined single-binary layout — every component in
           # one executable, sharing one copy of the dependency tree they
           # have in common instead of one copy each (~12MB vs ~17MB for the
-          # pair on aarch64). Published alongside the separate binaries, not
-          # instead of them: bootstrap-release.sh --layout=combined fetches
-          # this asset, the default still fetches the per-component ones.
+          # pair on aarch64). Published alongside separate binaries for
+          # explicit split-layout installs; the release default uses this
+          # asset.
           # --features cri for the same reason nodelet gets it — the
           # combined binary has to be able to do everything the separate
           # ones can.
@@ -528,8 +525,8 @@ jobs:
       - name: Append the asset guide
         # A release carries three binaries per arch/profile now (nodelet,
         # nodeproxy, notk8s), which is a genuine "which one do I want?"
-        # question rather than a naming detail — answer it in the release
-        # body instead of making people find docs/ARCHITECTURE.md first.
+        # question rather than a naming detail — document the combined
+        # default and the explicit split opt-in in the release body.
         run: |
           cat > asset-guide.md <<'GUIDE'
 
@@ -549,12 +546,13 @@ jobs:
             aarch64. Same components, same processes, same services, same
             environment variables.
 
-          The installer defaults to the separate binaries; add
-          `--layout=combined` for the single one:
+          The installer defaults to the combined binary. Add
+          `--layout=split` only when separate component executables are
+          explicitly required:
 
           ```bash
           curl -fsSL https://raw.githubusercontent.com/centerionware/not-k8s/install-scripts/install.sh \
-            | bash -s -- --with-cri --layout=combined
+            | bash -s -- --with-cri
           ```
 
           `release` is the optimized build for real deployments; `debug` is

@@ -26,7 +26,7 @@
 //! unfairness rather than a bug.
 
 use k8s_openapi::api::core::v1::{
-    Affinity, NodeSelector, Pod, PodSchedulingGate, Toleration, TopologySpreadConstraint,
+    Affinity, NodeSelector, Pod, PodSchedulingGate, Toleration, TopologySpreadConstraint, Volume,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use std::collections::BTreeMap;
@@ -371,6 +371,10 @@ impl LegacyVolumeId {
 /// The scheduler's view of a pod.
 #[derive(Clone, Debug, Default)]
 pub struct PodInfo {
+    /// Full object retained only when an HTTP extender is configured. The
+    /// default path keeps this `None`, preserving the projection's memory
+    /// advantage; extenders receive the exact API object upstream sends.
+    pub api_object: Option<Box<Pod>>,
     pub namespace: String,
     pub name: String,
     pub uid: String,
@@ -396,14 +400,13 @@ pub struct PodInfo {
     pub container_count: usize,
     /// PVC names this pod mounts, for the phase-4 volume plugins.
     pub pvc_names: Vec<String>,
+    /// Subset of `pvc_names` derived from generic ephemeral volumes. Their
+    /// deterministic `<pod>-<volume>` claims must be controller-owned by this
+    /// exact Pod UID before any scheduler plugin may use them.
+    pub ephemeral_pvc_names: Vec<String>,
     /// The five in-tree volume sources `VolumeRestrictions` still checks for
     /// conflicts — see [`LegacyVolumeId`].
     pub legacy_volumes: Vec<LegacyVolumeId>,
-    /// Driver names of this pod's ephemeral inline CSI volumes (`spec.volumes[].csi`,
-    /// not a PVC). `NodeVolumeLimits` counts these against the same per-driver
-    /// per-node ceiling as PVC-backed volumes — a driver has no way to tell
-    /// the two apart once attached.
-    pub csi_ephemeral_drivers: Vec<String>,
     /// `spec.resourceClaims`, for DRA — one entry per pod-claim, naming
     /// either an already-existing `ResourceClaim` or a template to generate
     /// one from.
@@ -432,6 +435,16 @@ pub struct PodInfo {
     pub attempts: u32,
     /// Set by preemption; the node this pod has been promised.
     pub nominated_node_name: Option<String>,
+    /// The pod is being terminated by scheduler preemption. Upstream only
+    /// suppresses a second preemption attempt while a lower-priority pod on
+    /// the nominated node has both a deletion timestamp and the
+    /// `DisruptionTarget=True, reason=PreemptionByScheduler` condition; an
+    /// unrelated user deletion must not hold the preemptor back.
+    pub terminating_by_preemption: bool,
+    /// Existing PodScheduled condition, retained so reporting can preserve
+    /// lastTransitionTime when the status remains False. Upstream changes
+    /// that timestamp only when the condition status actually transitions.
+    pub pod_scheduled_condition: Option<k8s_openapi::api::core::v1::PodCondition>,
 }
 
 /// A weighted preferred node-affinity term, flattened out of the API shape so
@@ -497,6 +510,13 @@ impl PodInfo {
         r
     }
 
+    fn ephemeral_claim_name(pod_name: &str, volume: &Volume) -> Option<String> {
+        volume
+            .ephemeral
+            .as_ref()
+            .map(|_| format!("{pod_name}-{}", volume.name))
+    }
+
     /// Project an API pod.
     pub fn from_pod(pod: &Pod, queued_at: k8s_openapi::jiff::Timestamp) -> Self {
         let spec = pod.spec.clone().unwrap_or_default();
@@ -520,7 +540,7 @@ impl PodInfo {
         let mut host_ports = Vec::new();
         let mut images = Vec::new();
         for c in spec.containers.iter().chain(spec.init_containers.iter().flatten()) {
-            images.push(c.image.clone().unwrap_or_default());
+            images.push(normalized_image_name(&c.image.clone().unwrap_or_default()));
             for p in c.ports.iter().flatten() {
                 // hostPort 0 means "unset", not "port zero".
                 let Some(hp) = p.host_port else { continue };
@@ -536,6 +556,7 @@ impl PodInfo {
         }
 
         PodInfo {
+            api_object: None,
             namespace: meta.namespace.clone().unwrap_or_default(),
             name: meta.name.clone().unwrap_or_default(),
             uid: meta.uid.clone().unwrap_or_default(),
@@ -570,16 +591,20 @@ impl PodInfo {
                 .iter()
                 .flatten()
                 .filter_map(|v| {
-                    v.persistent_volume_claim.as_ref().map(|p| p.claim_name.clone())
+                    v.persistent_volume_claim
+                        .as_ref()
+                        .map(|p| p.claim_name.clone())
+                        .or_else(|| Self::ephemeral_claim_name(meta.name.as_deref().unwrap_or_default(), v))
                 })
                 .collect(),
-            legacy_volumes: spec.volumes.iter().flatten().filter_map(legacy_volume_id).collect(),
-            csi_ephemeral_drivers: spec
+            ephemeral_pvc_names: spec
                 .volumes
                 .iter()
                 .flatten()
-                .filter_map(|v| v.csi.as_ref().map(|c| c.driver.clone()))
+                .filter(|v| v.ephemeral.is_some())
+                .filter_map(|v| Self::ephemeral_claim_name(meta.name.as_deref().unwrap_or_default(), v))
                 .collect(),
+            legacy_volumes: spec.volumes.iter().flatten().filter_map(legacy_volume_id).collect(),
             resource_claims: spec
                 .resource_claims
                 .iter()
@@ -615,8 +640,39 @@ impl PodInfo {
                 .status
                 .as_ref()
                 .and_then(|s| s.nominated_node_name.clone()),
+            terminating_by_preemption: meta.deletion_timestamp.is_some()
+                && pod
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_ref())
+                    .into_iter()
+                    .flatten()
+                    .any(|condition| {
+                        condition.type_ == "DisruptionTarget"
+                            && condition.status == "True"
+                            && condition.reason.as_deref() == Some("PreemptionByScheduler")
+                    }),
+            pod_scheduled_condition: pod
+                .status
+                .as_ref()
+                .and_then(|s| s.conditions.as_ref())
+                .into_iter()
+                .flatten()
+                .find(|condition| condition.type_ == "PodScheduled")
+                .cloned(),
         }
     }
+}
+
+/// Match kube-scheduler's CRI image-name normalization: a reference without
+/// a tag after its final slash implicitly means `:latest`. A registry port
+/// (`registry:5000/image`) is not itself an image tag.
+fn normalized_image_name(name: &str) -> String {
+    let needs_latest = match name.rfind(':') {
+        None => true,
+        Some(colon) => name.rfind('/').is_some_and(|slash| colon <= slash),
+    };
+    if needs_latest { format!("{name}:latest") } else { name.to_string() }
 }
 
 /// Pull a [`LegacyVolumeId`] out of a pod's volume source, if it is one of
@@ -670,24 +726,90 @@ pub fn pod_requests(pod: &Pod) -> Resources {
         return Resources::default();
     };
 
+    // InPlacePodVerticalScaling is GA and enabled in 1.33. During a resize,
+    // scheduling must reserve the maximum of desired, actually applied, and
+    // allocated resources so neither an unfinished scale-up nor a deferred
+    // scale-down makes the node look artificially empty. If kubelet declared
+    // the resize infeasible, upstream stops considering the unattainable new
+    // spec and uses max(actual, allocated) instead.
+    let resize_infeasible = pod
+        .status
+        .as_ref()
+        .and_then(|status| status.conditions.as_ref())
+        .into_iter()
+        .flatten()
+        .any(|condition| {
+            condition.type_ == "PodResizePending" && condition.reason.as_deref() == Some("Infeasible")
+        });
+    let statuses: BTreeMap<&str, &k8s_openapi::api::core::v1::ContainerStatus> = pod
+        .status
+        .as_ref()
+        .into_iter()
+        .flat_map(|status| {
+            status
+                .container_statuses
+                .iter()
+                .flatten()
+                .chain(status.init_container_statuses.iter().flatten())
+        })
+        .map(|status| (status.name.as_str(), status))
+        .collect();
+
+    let effective = |container: &k8s_openapi::api::core::v1::Container,
+                     use_status: bool| {
+        let desired = container
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.requests.as_ref())
+            .map(Resources::from_quantities)
+            .unwrap_or_default();
+        if !use_status {
+            return desired;
+        }
+        let Some(status) = statuses.get(container.name.as_str()) else {
+            return desired;
+        };
+        if status.resources.is_none() {
+            return desired;
+        }
+        let actual = status
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.requests.as_ref())
+            .map(Resources::from_quantities)
+            .unwrap_or_default();
+        let allocated = status
+            .allocated_resources
+            .as_ref()
+            .map(Resources::from_quantities)
+            .unwrap_or_default();
+        let mut result = if resize_infeasible { actual.clone() } else { desired };
+        result.max_with(&actual);
+        result.max_with(&allocated);
+        result
+    };
+
     let mut sum = Resources::default();
     for c in &spec.containers {
-        if let Some(req) = c.resources.as_ref().and_then(|r| r.requests.as_ref()) {
-            sum.add(&Resources::from_quantities(req));
-        }
+        sum.add(&effective(c, true));
     }
 
+    let mut restartable_init_sum = Resources::default();
     let mut init_max = Resources::default();
     for c in spec.init_containers.iter().flatten() {
-        let Some(req) = c.resources.as_ref().and_then(|r| r.requests.as_ref()) else {
-            continue;
-        };
-        let r = Resources::from_quantities(req);
-        if c.restart_policy.as_deref() == Some("Always") {
+        let restartable = c.restart_policy.as_deref() == Some("Always");
+        let r = effective(c, restartable);
+        let mut phase = r.clone();
+        if restartable {
             sum.add(&r);
+            restartable_init_sum.add(&r);
+            phase = restartable_init_sum.clone();
         } else {
-            init_max.max_with(&r);
+            // Every earlier restartable init container is still running while
+            // this ordinary init container executes.
+            phase.add(&restartable_init_sum);
         }
+        init_max.max_with(&phase);
     }
 
     sum.max_with(&init_max);

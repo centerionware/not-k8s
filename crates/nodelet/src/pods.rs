@@ -19,7 +19,7 @@ use k8s_openapi::api::core::v1::{
     ResourceStatus, Secret, Volume, VolumeMountStatus,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
+use kube::api::{DeleteParams, ListParams, Patch, PatchParams, Preconditions};
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -676,6 +676,7 @@ impl PodController {
         let runtime = self.runtime.clone();
         let client = self.client.clone();
         let torn_down = self.torn_down.clone();
+        let uid_for_delete = uid.clone();
         tokio::spawn(async move {
             // Released only once the work is actually over, whatever the
             // outcome. Releasing at spawn time would re-open the guard for
@@ -722,10 +723,27 @@ impl PodController {
             info!(pod = %format!("{ns}/{name}"), "torn down");
 
             let api: Api<Pod> = Api::namespaced(client, &ns);
-            let dp = DeleteParams { grace_period_seconds: Some(0), ..Default::default() };
+            let Some(uid) = uid_for_delete else {
+                warn!(
+                    pod = %format!("{ns}/{name}"),
+                    "skipping final pod delete because the teardown event had no UID"
+                );
+                return;
+            };
+            // The old Pod may have been force-deleted and recreated under the
+            // same name while its detached runtime teardown was in flight.
+            // Never let this old task delete that replacement object.
+            let dp = DeleteParams {
+                grace_period_seconds: Some(0),
+                preconditions: Some(Preconditions {
+                    uid: Some(uid),
+                    resource_version: None,
+                }),
+                ..Default::default()
+            };
             match api.delete(&name, &dp).await {
                 Ok(_) => {}
-                Err(kube::Error::Api(e)) if e.code == 404 => {}
+                Err(kube::Error::Api(e)) if e.code == 404 || e.code == 409 => {}
                 Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "final delete of pod object failed"),
             }
         });
@@ -794,9 +812,27 @@ pub(crate) async fn write_status(
         debug!(pod = %format!("{ns}/{name}"), "skipped unchanged pod status patch");
         return Ok(());
     }
-    let patch = serde_json::json!({ "status": status });
-    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
+    // Conditions are a merge-keyed list on PodStatus. Use a strategic merge
+    // patch so this write updates only the conditions nodelet owns; a stale
+    // GET must not replace a readiness-gate condition an external controller
+    // set between that GET and this PATCH. The foreign conditions are still
+    // carried in `status` for readiness computation and pure status tests,
+    // but must not be sent back as stale values here.
+    let patch_status = nodelet_owned_status_patch(&status);
+    let patch = serde_json::json!({ "status": patch_status });
+    api.patch_status(name, &PatchParams::default(), &Patch::Strategic(patch)).await?;
     Ok(())
+}
+
+/// Strip conditions owned by external controllers from the status payload
+/// nodelet sends. Strategic merge then preserves those conditions atomically
+/// even if the `prev` Pod used to compute this status is stale.
+fn nodelet_owned_status_patch(status: &PodStatus) -> PodStatus {
+    let mut patch = status.clone();
+    if let Some(conditions) = patch.conditions.as_mut() {
+        conditions.retain(|condition| OWNED_CONDITION_TYPES.contains(&condition.type_.as_str()));
+    }
+    patch
 }
 
 /// Return whether merging `desired` into the stored PodStatus would change

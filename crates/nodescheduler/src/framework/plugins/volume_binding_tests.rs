@@ -63,6 +63,59 @@ fn an_unbound_pvc_naming_no_storage_class_blocks_the_pod_outright() {
 }
 
 #[test]
+fn a_lost_or_terminating_pvc_is_rejected_before_binding() {
+    for pvc in [
+        PvcInfo {
+            namespace: "ns".to_string(),
+            name: "claim".to_string(),
+            phase: "Lost".to_string(),
+            volume_name: Some("gone".to_string()),
+            ..Default::default()
+        },
+        PvcInfo {
+            namespace: "ns".to_string(),
+            name: "claim".to_string(),
+            deleting: true,
+            ..Default::default()
+        },
+    ] {
+        let mut cache = Cache::new();
+        cache.upsert_pvc("ns/claim".to_string(), pvc);
+        let mut state = CycleState::default();
+        let (status, _) = pre_filter_impl(
+            &mut state,
+            &pod_with_pvc("ns", "claim"),
+            &cache.snapshot(),
+            &no_excluded(),
+        );
+        assert!(!status.is_success());
+        assert!(!status.code.is_resolvable_by_preemption());
+    }
+}
+
+#[test]
+fn a_generic_ephemeral_claim_must_be_owned_by_this_pod_uid() {
+    let mut cache = Cache::new();
+    cache.upsert_pvc(
+        "ns/p-cache".to_string(),
+        PvcInfo {
+            namespace: "ns".to_string(),
+            name: "p-cache".to_string(),
+            controller_owner_uid: Some("someone-else".to_string()),
+            ..Default::default()
+        },
+    );
+    let mut p = pod_with_pvc("ns", "p-cache");
+    p.uid = "this-pod".to_string();
+    p.ephemeral_pvc_names = vec!["p-cache".to_string()];
+    let mut state = CycleState::default();
+    let (status, _) =
+        pre_filter_impl(&mut state, &p, &cache.snapshot(), &no_excluded());
+    assert!(!status.is_success());
+    assert!(status.reasons[0].contains("pod is not owner"));
+}
+
+#[test]
 fn an_unbound_pvc_on_an_immediate_storage_class_blocks_the_pod_outright() {
     let mut cache = Cache::new();
     cache.upsert_storage_class(
@@ -109,6 +162,32 @@ fn a_wait_for_first_consumer_pvc_with_no_topology_restriction_fits_any_node() {
 }
 
 #[test]
+fn a_no_provisioner_class_with_no_static_pv_rejects_without_preemption() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    cache.upsert_storage_class(
+        "local".to_string(),
+        wfc_class("local", "kubernetes.io/no-provisioner"),
+    );
+    cache.upsert_pvc(
+        "ns/claim".to_string(),
+        PvcInfo {
+            namespace: "ns".to_string(),
+            name: "claim".to_string(),
+            storage_class_name: Some("local".to_string()),
+            ..Default::default()
+        },
+    );
+    let snapshot = cache.snapshot();
+    let p = pod_with_pvc("ns", "claim");
+    let mut state = CycleState::default();
+    assert!(pre_filter_impl(&mut state, &p, &snapshot, &no_excluded()).0.is_success());
+    let status = filter_impl(&state, &p, snapshot.node("n1").unwrap());
+    assert!(!status.is_success());
+    assert!(!status.code.is_resolvable_by_preemption());
+}
+
+#[test]
 fn a_node_outside_the_storage_classs_allowed_topology_is_rejected() {
     let mut cache = Cache::new();
     cache.upsert_node(&api_node("n1", &[("topology.kubernetes.io/zone", "west")]));
@@ -137,7 +216,63 @@ fn a_node_outside_the_storage_classs_allowed_topology_is_rejected() {
     let n = snapshot.node("n1").unwrap().as_ref().clone();
     let status = filter_impl(&state, &p, &n);
     assert!(!status.is_success());
+    assert!(!status.code.is_resolvable_by_preemption());
     assert!(status.reasons[0].contains("topology"));
+}
+
+#[test]
+fn a_retry_honours_the_node_already_selected_for_dynamic_provisioning() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("selected", &[]));
+    cache.upsert_node(&api_node("other", &[]));
+    cache.upsert_storage_class("wfc".to_string(), wfc_class("wfc", "disk.example.com"));
+    cache.upsert_pvc(
+        "ns/claim".to_string(),
+        PvcInfo {
+            namespace: "ns".to_string(),
+            name: "claim".to_string(),
+            storage_class_name: Some("wfc".to_string()),
+            selected_node: Some("selected".to_string()),
+            ..Default::default()
+        },
+    );
+    let snapshot = cache.snapshot();
+    let p = pod_with_pvc("ns", "claim");
+    let mut state = CycleState::default();
+    assert!(pre_filter_impl(&mut state, &p, &snapshot, &no_excluded()).0.is_success());
+
+    assert!(filter_impl(&state, &p, snapshot.node("selected").unwrap()).is_success());
+    let rejected = filter_impl(&state, &p, snapshot.node("other").unwrap());
+    assert!(!rejected.is_success());
+    assert!(!rejected.code.is_resolvable_by_preemption());
+}
+
+#[test]
+fn a_selected_node_continues_provisioning_instead_of_rematching_a_new_static_pv() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("selected", &[]));
+    cache.upsert_storage_class("wfc".to_string(), wfc_class("wfc", "disk.example.com"));
+    let mut pv = matching_pv("appeared-later", 10);
+    pv.storage_class_name = "wfc".to_string();
+    cache.upsert_pv("appeared-later".to_string(), pv);
+    cache.upsert_pvc(
+        "ns/claim".to_string(),
+        PvcInfo {
+            namespace: "ns".to_string(),
+            name: "claim".to_string(),
+            storage_class_name: Some("wfc".to_string()),
+            selected_node: Some("selected".to_string()),
+            requested_access_modes: vec!["ReadWriteOnce".to_string()],
+            requested_bytes: 10,
+            ..Default::default()
+        },
+    );
+    let snapshot = cache.snapshot();
+    let p = pod_with_pvc("ns", "claim");
+    let mut state = CycleState::default();
+    assert!(pre_filter_impl(&mut state, &p, &snapshot, &no_excluded()).0.is_success());
+    let wanted = state.read::<WantedPvcs>(NAME).unwrap();
+    assert!(matches!(wanted.0[0], PvcConstraint::Delayed { .. }));
 }
 
 #[test]
@@ -282,6 +417,114 @@ fn a_matching_unclaimed_static_pv_is_preferred_over_dynamic_provisioning() {
 }
 
 #[test]
+fn the_smallest_sufficient_static_pv_is_selected_deterministically() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    cache.upsert_pv("large".to_string(), matching_pv("large", 100));
+    cache.upsert_pv("small".to_string(), matching_pv("small", 10));
+    cache.upsert_pv("medium".to_string(), matching_pv("medium", 50));
+    cache.upsert_pvc("ns/claim".to_string(), pvc_wanting("ns", "claim", 10));
+    let snapshot = cache.snapshot();
+
+    let candidates = find_static_candidates(snapshot.pvc("ns", "claim").unwrap(), &snapshot, &no_excluded());
+    let by_node = resolve_by_node(&candidates, &snapshot);
+    assert_eq!(by_node.get("n1").map(String::as_str), Some("small"));
+}
+
+#[test]
+fn two_claims_in_one_pod_cannot_both_reserve_the_same_static_pv() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    cache.upsert_pv("only".to_string(), matching_pv("only", 10));
+    cache.upsert_pvc("ns/a".to_string(), pvc_wanting("ns", "a", 10));
+    cache.upsert_pvc("ns/b".to_string(), pvc_wanting("ns", "b", 10));
+    let snapshot = cache.snapshot();
+    let mut p = pod_with_pvc("ns", "a");
+    p.pvc_names.push("b".to_string());
+    let mut state = CycleState::default();
+
+    let (status, _) = pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
+    assert!(status.is_success());
+    let node = snapshot.node("n1").unwrap();
+    let rejected = filter_impl(&state, &p, node);
+    assert!(
+        !rejected.is_success(),
+        "one PV cannot satisfy two distinct PVCs in the same pod"
+    );
+    assert!(!rejected.code.is_resolvable_by_preemption());
+}
+
+#[test]
+fn two_claims_receive_two_distinct_static_pvs() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    cache.upsert_pv("small".to_string(), matching_pv("small", 10));
+    cache.upsert_pv("large".to_string(), matching_pv("large", 20));
+    cache.upsert_pvc("ns/a".to_string(), pvc_wanting("ns", "a", 10));
+    cache.upsert_pvc("ns/b".to_string(), pvc_wanting("ns", "b", 10));
+    let snapshot = cache.snapshot();
+    let mut p = pod_with_pvc("ns", "a");
+    p.pvc_names.push("b".to_string());
+    let mut state = CycleState::default();
+
+    let (status, _) = pre_filter_impl(&mut state, &p, &snapshot, &no_excluded());
+    assert!(status.is_success());
+    let node = snapshot.node("n1").unwrap();
+    assert!(filter_impl(&state, &p, node).is_success());
+    let picked = reserve_impl(state.read::<WantedPvcs>(NAME).unwrap(), "n1").unwrap();
+    let unique: HashSet<_> = picked.values().collect();
+    assert_eq!(picked.len(), 2);
+    assert_eq!(unique.len(), 2);
+}
+
+#[test]
+fn a_pv_prebound_to_the_claim_wins_even_when_a_smaller_volume_is_free() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    cache.upsert_pv("small".to_string(), matching_pv("small", 10));
+    let mut prebound = matching_pv("prebound", 100);
+    prebound.claim_ref = Some(("ns".to_string(), "claim".to_string()));
+    cache.upsert_pv("prebound".to_string(), prebound);
+    cache.upsert_pvc("ns/claim".to_string(), pvc_wanting("ns", "claim", 10));
+    let snapshot = cache.snapshot();
+
+    let candidates = find_static_candidates(snapshot.pvc("ns", "claim").unwrap(), &snapshot, &no_excluded());
+    let by_node = resolve_by_node(&candidates, &snapshot);
+    assert_eq!(by_node.get("n1").map(String::as_str), Some("prebound"));
+}
+
+#[test]
+fn a_user_prebound_pv_bypasses_ordinary_class_access_mode_and_selector_checks() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    let mut prebound = matching_pv("prebound", 100);
+    prebound.claim_ref = Some(("ns".to_string(), "claim".to_string()));
+    prebound.phase = "Bound".to_string();
+    prebound.storage_class_name = "different-class".to_string();
+    prebound.access_modes.clear();
+    cache.upsert_pv("prebound".to_string(), prebound);
+    let mut pvc = pvc_wanting("ns", "claim", 10);
+    pvc.storage_class_name = Some("wanted-class".to_string());
+    pvc.selector = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+        match_labels: Some(std::collections::BTreeMap::from([(
+            "tier".to_string(),
+            "gold".to_string(),
+        )])),
+        match_expressions: None,
+    });
+    cache.upsert_pvc("ns/claim".to_string(), pvc);
+    let snapshot = cache.snapshot();
+
+    let candidates = find_static_candidates(
+        snapshot.pvc("ns", "claim").unwrap(),
+        &snapshot,
+        &no_excluded(),
+    );
+    let by_node = resolve_by_node(&candidates, &snapshot);
+    assert_eq!(by_node.get("n1").map(String::as_str), Some("prebound"));
+}
+
+#[test]
 fn a_static_pv_too_small_is_not_a_candidate() {
     let mut cache = Cache::new();
     cache.upsert_node(&api_node("n1", &[]));
@@ -343,6 +586,88 @@ fn a_static_pv_already_claimed_by_another_pvc_is_not_a_candidate() {
     let mut state = CycleState::default();
     let (status, _) = pre_filter_impl(&mut state, &pod_with_pvc("ns", "claim"), &snapshot, &no_excluded());
     assert!(status.reasons[0].contains("unbound immediate"), "a PV claimed by a different PersistentVolumeClaim is not free");
+}
+
+#[test]
+fn a_static_pv_with_a_malformed_but_present_claim_ref_is_not_treated_as_free() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    let mut pv = matching_pv("pv-1", 10);
+    pv.claim_ref_present = true;
+    cache.upsert_pv("pv-1".to_string(), pv);
+    cache.upsert_pvc("ns/claim".to_string(), pvc_wanting("ns", "claim", 10));
+    let snapshot = cache.snapshot();
+    let mut state = CycleState::default();
+    let (status, _) = pre_filter_impl(
+        &mut state,
+        &pod_with_pvc("ns", "claim"),
+        &snapshot,
+        &no_excluded(),
+    );
+    assert!(status.reasons[0].contains("unbound immediate"));
+}
+
+#[test]
+fn a_static_pv_claimed_by_an_old_incarnation_of_the_same_pvc_is_not_a_candidate() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    let mut pv = matching_pv("pv-1", 10);
+    pv.claim_ref = Some(("ns".to_string(), "claim".to_string()));
+    pv.claim_ref_uid = Some("deleted-pvc-uid".to_string());
+    cache.upsert_pv("pv-1".to_string(), pv);
+    let mut pvc = pvc_wanting("ns", "claim", 10);
+    pvc.uid = "new-pvc-uid".to_string();
+    cache.upsert_pvc("ns/claim".to_string(), pvc);
+    let snapshot = cache.snapshot();
+    let mut state = CycleState::default();
+    let (status, _) = pre_filter_impl(
+        &mut state,
+        &pod_with_pvc("ns", "claim"),
+        &snapshot,
+        &no_excluded(),
+    );
+    assert!(
+        status.reasons[0].contains("unbound immediate"),
+        "namespace/name equality cannot override a mismatched claimRef UID"
+    );
+}
+
+#[test]
+fn a_terminating_static_pv_is_not_a_candidate() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    let mut pv = matching_pv("pv-1", 10);
+    pv.deleting = true;
+    cache.upsert_pv("pv-1".to_string(), pv);
+    cache.upsert_pvc("ns/claim".to_string(), pvc_wanting("ns", "claim", 10));
+    let snapshot = cache.snapshot();
+    let mut state = CycleState::default();
+    let (status, _) = pre_filter_impl(
+        &mut state,
+        &pod_with_pvc("ns", "claim"),
+        &snapshot,
+        &no_excluded(),
+    );
+    assert!(status.reasons[0].contains("unbound immediate"));
+}
+
+#[test]
+fn a_static_pv_using_the_disabled_volume_attributes_class_feature_is_not_a_candidate() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    let mut pv = matching_pv("pv-1", 10);
+    pv.volume_attributes_class_name = Some("fast-iops".to_string());
+    cache.upsert_pv("pv-1".to_string(), pv);
+    cache.upsert_pvc("ns/claim".to_string(), pvc_wanting("ns", "claim", 10));
+    let snapshot = cache.snapshot();
+    let mut state = CycleState::default();
+    let (status, _) = pre_filter_impl(
+        &mut state,
+        &pod_with_pvc("ns", "claim"),
+        &snapshot,
+        &no_excluded(),
+    );
+    assert!(status.reasons[0].contains("unbound immediate"));
 }
 
 #[test]
@@ -474,9 +799,29 @@ fn reserve_errors_if_the_winning_node_has_no_usable_candidate() {
 #[test]
 fn it_wakes_on_the_events_that_can_actually_progress_binding() {
     let events = events_impl();
-    let pvc_updated = ClusterEvent::new(EventResource::PersistentVolumeClaim, ActionType::UPDATE);
-    let sc_added = ClusterEvent::new(EventResource::StorageClass, ActionType::ADD);
+    let registered: Vec<_> = events.into_iter().map(|e| e.event).collect();
 
-    assert!(events.iter().any(|e| e.event.matches(&pvc_updated)));
-    assert!(events.iter().any(|e| e.event.matches(&sc_added)));
+    assert_eq!(
+        registered,
+        vec![
+            ClusterEvent::new(EventResource::Node, ActionType::ADD | ActionType::UPDATE_NODE_LABEL),
+            ClusterEvent::new(
+                EventResource::PersistentVolumeClaim,
+                ActionType::ADD | ActionType::UPDATE,
+            ),
+            ClusterEvent::new(
+                EventResource::PersistentVolume,
+                ActionType::ADD | ActionType::UPDATE,
+            ),
+            ClusterEvent::new(
+                EventResource::StorageClass,
+                ActionType::ADD | ActionType::UPDATE,
+            ),
+            ClusterEvent::new(EventResource::CsiDriver, ActionType::UPDATE),
+            ClusterEvent::new(
+                EventResource::CsiStorageCapacity,
+                ActionType::ADD | ActionType::UPDATE,
+            ),
+        ]
+    );
 }

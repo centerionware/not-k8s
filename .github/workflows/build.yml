@@ -106,13 +106,37 @@ jobs:
           else
             echo "crates/nodescheduler not present on this ref — skipping its tests."
           fi
+          if [[ -d crates/node-leaderelection ]]; then
+            sudo -E env "PATH=$PATH" cargo test -p node-leaderelection
+          else
+            echo "crates/node-leaderelection not present on this ref — skipping its tests."
+          fi
+          if [[ -d crates/nodecontroller ]]; then
+            sudo -E env "PATH=$PATH" cargo test -p nodecontroller
+          else
+            echo "crates/nodecontroller not present on this ref — skipping its tests."
+          fi
           # Same guard, same reason: the combined-binary crate postdates
-          # both of the above.
+          # all of the above.
           if [[ -d crates/notk8s ]]; then
             sudo -E env "PATH=$PATH" cargo test -p notk8s
           else
             echo "crates/notk8s not present on this ref — skipping its tests."
           fi
+
+      # Cargo resolves a changed workspace manifest before compiling. Preserve
+      # that exact lockfile as a tiny artifact so contributors on constrained
+      # hosts can commit it without running a local toolchain merely to copy
+      # CI's resolution. This also prevents a branch from repeatedly testing
+      # an uncommitted dependency graph.
+      - name: Upload resolved Cargo.lock
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
+          retention-days: 7
 
   build:
     strategy:
@@ -296,6 +320,14 @@ jobs:
                 cargo build $1 -p nodescheduler $TARGET_FLAG
               else
                 echo "crates/nodescheduler not present on this ref — skipping it."
+              fi
+              # nodecontroller: no features either, same reason as
+              # nodescheduler above — a pure apiserver client. Same guard.
+              if [[ -d crates/nodecontroller ]]; then
+                # shellcheck disable=SC2086
+                cargo build $1 -p nodecontroller $TARGET_FLAG
+              else
+                echo "crates/nodecontroller not present on this ref — skipping it."
               fi
             fi
             # The combined layout: one binary containing every component

@@ -422,6 +422,10 @@ fn it_registers_exactly_the_events_that_can_unstick_a_rejected_pod() {
                 ActionType::ADD | ActionType::DELETE | ActionType::UPDATE_POD_LABEL
             ),
             (EventResource::Node, ActionType::ADD | ActionType::UPDATE_NODE_LABEL),
+            (
+                EventResource::Namespace,
+                ActionType::ADD | ActionType::DELETE | ActionType::UPDATE,
+            ),
         ]
     );
 }

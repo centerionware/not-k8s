@@ -88,10 +88,11 @@ struct FitState {
     pod_count_delta: i64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct NodeResourcesFit {
     pub strategy: ScoringStrategy,
     pub weights: ResourceWeights,
+    pub ignored_resources: std::collections::HashSet<String>,
 }
 
 impl Plugin for NodeResourcesFit {
@@ -188,7 +189,7 @@ impl FilterPlugin for NodeResourcesFit {
         // dry-run add/remove the same way the resource checks below are —
         // otherwise evicting a victim could never unstick a node rejected
         // for being at its pod-count limit specifically.
-        let committed_pod_count = node.pod_count() + fit.pod_count_delta;
+        let committed_pod_count = node.pod_count().saturating_add(fit.pod_count_delta);
         if node.allocatable_pods > 0 && committed_pod_count >= node.allocatable_pods {
             return Status::unschedulable(NAME, "Too many pods");
         }
@@ -198,6 +199,9 @@ impl FilterPlugin for NodeResourcesFit {
         committed.sub(&fit.freed);
 
         for name in fit.requests.names() {
+            if self.ignored_resources.contains(&name) {
+                continue;
+            }
             let want = fit.requests.get(&name);
             let allocatable = node.allocatable.get(&name);
             let used = committed.get(&name);
@@ -212,7 +216,7 @@ impl FilterPlugin for NodeResourcesFit {
                 );
                 return Status::unschedulable(NAME, format!("Insufficient {name}"));
             }
-            if used + want > allocatable {
+            if want > allocatable.saturating_sub(used) {
                 // At debug rather than info: this fires on every rejected
                 // pod on a busy cluster, same volume class as the
                 // unschedulable log line itself. But without the actual
@@ -254,7 +258,12 @@ fn utilisation(requested: i64, allocatable: i64) -> i64 {
     if allocatable <= 0 {
         return MAX_NODE_SCORE;
     }
-    ((requested * 100) / allocatable).clamp(0, MAX_NODE_SCORE)
+    // Memory and huge-page quantities can legitimately be large enough that
+    // multiplying an i64 byte count by 100 overflows before division. Go's
+    // scheduler avoids that by converting to float64; i128 keeps the same
+    // integer result without either overflow or precision loss.
+    (((requested as i128) * 100 / (allocatable as i128))
+        .clamp(0, MAX_NODE_SCORE as i128)) as i64
 }
 
 impl ScorePlugin for NodeResourcesFit {
@@ -275,7 +284,8 @@ impl ScorePlugin for NodeResourcesFit {
             // Scoring counts what the node already has PLUS this pod: the
             // question is "how good would this node be *after* placing it",
             // not "how good is it now".
-            let requested = node.non_zero_requested.get(name) + non_zero.get(name);
+            let requested =
+                node.non_zero_requested.get(name).saturating_add(non_zero.get(name));
             let util = utilisation(requested, allocatable);
 
             let resource_score = match &self.strategy {
@@ -285,8 +295,9 @@ impl ScorePlugin for NodeResourcesFit {
                     interpolate_shape(shape, util)
                 }
             };
-            weighted_sum += resource_score * weight;
-            total_weight += weight;
+            weighted_sum = weighted_sum
+                .saturating_add(resource_score.saturating_mul(*weight));
+            total_weight = total_weight.saturating_add(*weight);
         }
 
         if total_weight == 0 {
@@ -403,6 +414,13 @@ mod tests {
     }
 
     #[test]
+    fn overflowing_committed_plus_request_is_rejected_even_at_max_capacity() {
+        let p = pod_wanting(1, 0);
+        let n = node_with(i64::MAX, 0, i64::MAX, 0);
+        assert!(!NodeResourcesFit::default().filter(&state_for(&p), &p, &n).is_success());
+    }
+
+    #[test]
     fn a_node_at_its_pod_ceiling_is_rejected_before_any_resource_is_checked() {
         let p = pod_wanting(1, 0);
         let mut n = node_with(2000, 0, 0, 0);
@@ -499,6 +517,7 @@ mod tests {
         let plugin = NodeResourcesFit {
             strategy: ScoringStrategy::LeastAllocated,
             weights: ResourceWeights(vec![("cpu".to_string(), 1)]),
+            ..Default::default()
         };
         let state = state_for(&p);
 
@@ -516,6 +535,7 @@ mod tests {
         let plugin = NodeResourcesFit {
             strategy: ScoringStrategy::MostAllocated,
             weights: ResourceWeights(vec![("cpu".to_string(), 1)]),
+            ..Default::default()
         };
         let state = state_for(&p);
 
@@ -531,6 +551,7 @@ mod tests {
         let plugin = NodeResourcesFit {
             strategy: ScoringStrategy::LeastAllocated,
             weights: ResourceWeights(vec![("cpu".to_string(), 1)]),
+            ..Default::default()
         };
         let n = node_with(1000, 0, 0, 0);
 
@@ -549,6 +570,7 @@ mod tests {
         let plugin = NodeResourcesFit {
             strategy: ScoringStrategy::LeastAllocated,
             weights: ResourceWeights(vec![("cpu".to_string(), 1)]),
+            ..Default::default()
         };
         let p = pod("no-requests");
         let n = node_with(1000, 0, 0, 0);
@@ -565,6 +587,7 @@ mod tests {
         let plugin = NodeResourcesFit {
             strategy: ScoringStrategy::LeastAllocated,
             weights: ResourceWeights(vec![("cpu".to_string(), 1)]),
+            ..Default::default()
         };
         let p = pod_wanting(0, 0);
         let n = node_with(1000, 0, 5000, 0);

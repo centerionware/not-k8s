@@ -220,12 +220,12 @@ impl SchedulingQueue {
             }
         }
 
-        // Serving backoff: deliberately left alone rather than replaced. The
-        // heap is ordered by expiry, and re-inserting would either reset that
-        // expiry — reopening the loop above — or need the old deadline read
-        // back out. The stored object is at most one backoff period stale
-        // (10s at the ceiling), which no scheduling decision is sensitive to.
-        if self.backoff.lock().unwrap().contains(&pod.uid) {
+        // Serving backoff: replace the payload while preserving the exact
+        // expiry. Pod spec is scheduling input, so stale labels, resources,
+        // affinity, or PVC references can produce a decision about an object
+        // that no longer exists. BackoffQueue owns the deadline and performs
+        // the replacement without restarting it.
+        if self.backoff.lock().unwrap().update(&pod) {
             return;
         }
 

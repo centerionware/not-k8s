@@ -36,8 +36,8 @@ mod defaults {
     pub const RETRY_PERIOD_SECONDS: u64 = 2;
     pub const LEASE_NAME: &str = "kube-scheduler";
     pub const LEASE_NAMESPACE: &str = "kube-system";
-    /// `VolumeBinding`'s `bindTimeoutSeconds` — how long `PreBind` polls a
-    /// PVC for `Bound` before giving up. Upstream's default.
+    /// `VolumeBinding`'s `bindTimeoutSeconds` — how long `PreBind` waits for
+    /// the PVC watch to report `Bound` before giving up. Upstream's default.
     pub const VOLUME_BIND_TIMEOUT_SECONDS: u64 = 600;
 }
 

@@ -175,7 +175,14 @@ async fn handle_request(
             // "Tell me where you are." apiserver uses this to advance its
             // bookmarks without waiting for real traffic — answering it is
             // what keeps an idle cluster's watch cache from looking stalled.
-            // watch_id -1 marks a broadcast progress response, per etcd.
+            // Reconcile first: the store revision can be ahead of the
+            // broadcast receiver when this request wins the select, and
+            // advertising that revision before replaying it would let the
+            // client skip a real event. An explicit progress request covers
+            // every watcher, so etcd uses -1 for the broadcast response.
+            if !resync(api, watchers, tx).await {
+                return false;
+            }
             let revision = api.current_revision().unwrap_or(0);
             tx.send(Ok(pb::WatchResponse {
                 header: api.header(revision),

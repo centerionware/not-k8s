@@ -7,7 +7,8 @@
 
 use super::*;
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, Pod, PodSpec, ResourceRequirements,
+    Container, ContainerPort, ContainerStatus, Pod, PodSpec, PodStatus,
+    ResourceRequirements,
 };
 
 fn q(s: &str) -> Quantity {
@@ -246,6 +247,57 @@ fn a_sidecar_counts_toward_the_sum_because_it_runs_alongside() {
 }
 
 #[test]
+fn prior_sidecars_count_during_each_later_init_container() {
+    let mut sidecar = container("sidecar", Some("300m"), None);
+    sidecar.restart_policy = Some("Always".to_string());
+    let pod = Pod {
+        spec: Some(PodSpec {
+            containers: vec![container("main", Some("100m"), None)],
+            init_containers: Some(vec![
+                sidecar,
+                container("ordinary-init", Some("800m"), None),
+            ]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        pod_requests(&pod).milli_cpu,
+        1100,
+        "the ordinary init runs while the 300m restartable init is still alive"
+    );
+}
+
+#[test]
+fn in_place_resize_reserves_the_largest_desired_actual_or_allocated_request() {
+    let pod = Pod {
+        spec: Some(PodSpec {
+            containers: vec![container("main", Some("100m"), None)],
+            ..Default::default()
+        }),
+        status: Some(PodStatus {
+            container_statuses: Some(vec![ContainerStatus {
+                name: "main".to_string(),
+                resources: Some(ResourceRequirements {
+                    requests: Some(BTreeMap::from([("cpu".to_string(), q("200m"))])),
+                    ..Default::default()
+                }),
+                allocated_resources: Some(BTreeMap::from([(
+                    "cpu".to_string(),
+                    q("300m"),
+                )])),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    assert_eq!(pod_requests(&pod).milli_cpu, 300);
+}
+
+#[test]
 fn pod_overhead_is_added_on_top() {
     let pod = Pod {
         spec: Some(PodSpec {
@@ -365,4 +417,35 @@ fn the_scheduler_name_defaults_to_default_scheduler() {
         PodInfo::from_pod(&pod, k8s_openapi::jiff::Timestamp::now()).scheduler_name,
         "default-scheduler"
     );
+}
+
+#[test]
+fn only_scheduler_preemption_termination_is_projected_as_draining() {
+    let preempted: Pod = serde_json::from_value(serde_json::json!({
+        "metadata": {"deletionTimestamp": "2026-08-17T00:00:00Z"},
+        "status": {"conditions": [{
+            "type": "DisruptionTarget",
+            "status": "True",
+            "reason": "PreemptionByScheduler"
+        }]}
+    }))
+    .unwrap();
+    assert!(PodInfo::from_pod(&preempted, k8s_openapi::jiff::Timestamp::now())
+        .terminating_by_preemption);
+
+    let user_deleted: Pod = serde_json::from_value(serde_json::json!({
+        "metadata": {"deletionTimestamp": "2026-08-17T00:00:00Z"}
+    }))
+    .unwrap();
+    assert!(!PodInfo::from_pod(&user_deleted, k8s_openapi::jiff::Timestamp::now())
+        .terminating_by_preemption);
+}
+
+#[test]
+fn image_names_follow_cri_implicit_latest_normalization() {
+    assert_eq!(normalized_image_name("busybox"), "busybox:latest");
+    assert_eq!(normalized_image_name("library/busybox"), "library/busybox:latest");
+    assert_eq!(normalized_image_name("registry:5000/busybox"), "registry:5000/busybox:latest");
+    assert_eq!(normalized_image_name("registry:5000/busybox:v1"), "registry:5000/busybox:v1");
+    assert_eq!(normalized_image_name("busybox@sha256:abcd"), "busybox@sha256:abcd");
 }

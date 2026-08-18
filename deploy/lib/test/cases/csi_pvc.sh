@@ -5,6 +5,29 @@
 # listed in the running nodelet's NODELET_CSI_DRIVERS — skips cleanly
 # without both. Set TEST_CSI_STORAGE_CLASS to exercise this for real.
 
+_skip_or_fail_dynamic_pvc() {
+    local message="$1"
+    # With the reference driver installed, a custom controller deployment is
+    # an intentional end-to-end assertion, not an optional capability. Keep
+    # the historical skip for ad-hoc runs without our controller or without a
+    # real provisioner, but do not let a broken nodecontroller path report a
+    # green run merely because the harness treats skips as success.
+    local custom_controller=0
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl is-active --quiet nodecontroller.service 2>/dev/null \
+            && systemctl show k3s.service -p ExecStart --value 2>/dev/null \
+                | grep -q -- '--disable-controller-manager' \
+            && custom_controller=1
+    elif pgrep -x nodecontroller >/dev/null 2>&1 \
+        && ps -eo args= 2>/dev/null | grep -q '[k]3s.*--disable-controller-manager'; then
+        custom_controller=1
+    fi
+    if (( custom_controller )); then
+        die "$message — dynamic CSI provisioning is required when testing nodecontroller"
+    fi
+    skip_test "$message"
+}
+
 test_pod_mounts_a_persistent_volume_claim() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     if [[ -z "${TEST_CSI_STORAGE_CLASS:-}" ]]; then
@@ -28,8 +51,39 @@ spec:
 EOF
 
     if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
+        # Diagnose before skipping, not just skip silently — a PVC never
+        # binding can mean "no provisioner installed" (the expected, benign
+        # skip reason) or a real regression in the provisioner's own path
+        # (e.g. github.com/centerionware/not-k8s/issues/30's TCP-reset
+        # investigation: the provisioner's own watch to the apiserver is
+        # exactly the kind of long-lived connection that bug would hit).
+        # Capturing this here is the only way to tell those apart after the
+        # fact — the reference driver's own pod is gone once the ephemeral
+        # CI runner tears down.
+        echo "=== PVC $claim describe ==="
+        kubectl describe pvc "$claim" -n "$TEST_NAMESPACE" 2>&1
+        echo "=== all pods, every namespace (looking for the provisioner) ==="
+        kubectl get pods --all-namespaces -o wide 2>&1
+        # Found by name substring, not a guessed label — a first attempt at
+        # this diagnostic used `-l app=csi-hostpathplugin` and got "No
+        # resources found" despite the StatefulSet itself creating fine, so
+        # the real label clearly isn't that. Name substring survives label
+        # changes in the reference driver's own manifests.
+        local prov_pod prov_ns
+        prov_pod="$(kubectl get pods --all-namespaces --no-headers 2>/dev/null | grep -i csi-hostpathplugin | head -1 | awk '{print $2}')"
+        prov_ns="$(kubectl get pods --all-namespaces --no-headers 2>/dev/null | grep -i csi-hostpathplugin | head -1 | awk '{print $1}')"
+        if [[ -n "$prov_pod" ]]; then
+            echo "=== provisioner pod describe ($prov_ns/$prov_pod) ==="
+            kubectl describe pod "$prov_pod" -n "$prov_ns" 2>&1
+            echo "=== provisioner sidecar logs (csi-provisioner, tail 80) ==="
+            kubectl logs "$prov_pod" -n "$prov_ns" -c csi-provisioner --tail=80 2>&1
+        else
+            echo "=== no pod matching 'csi-hostpathplugin' found anywhere — driver never scheduled at all ==="
+        fi
+        echo "=== events for $claim ==="
+        kubectl get events -n "$TEST_NAMESPACE" --field-selector "involvedObject.name=$claim" 2>&1
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS); not something nodelet itself does (see docs/GAP_CLOSURE.md's out-of-scope notes)"
+        _skip_or_fail_dynamic_pvc "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS); not something nodelet itself does (see docs/GAP_CLOSURE.md's out-of-scope notes) — see the diagnostic dump printed above for why, before assuming it's the benign case"
     fi
 
     apply_manifest <<EOF
@@ -164,7 +218,7 @@ EOF
 
     if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_BLOCK_STORAGE_CLASS ($TEST_CSI_BLOCK_STORAGE_CLASS)"
+        _skip_or_fail_dynamic_pvc "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_BLOCK_STORAGE_CLASS ($TEST_CSI_BLOCK_STORAGE_CLASS)"
     fi
 
     apply_manifest <<EOF
@@ -240,7 +294,7 @@ spec:
 EOF
     if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
+        _skip_or_fail_dynamic_pvc "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
     fi
 
     apply_manifest <<EOF
@@ -359,7 +413,7 @@ spec:
 EOF
     if ! try_wait_until 90 bash -c "kubectl get pvc '$claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         kubectl delete pvc "$claim" -n "$TEST_NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        skip_test "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
+        _skip_or_fail_dynamic_pvc "PVC '$claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
     fi
 
     local pv_name
@@ -372,7 +426,13 @@ EOF
         skip_test "first pod never reached Running with a PVC + fsGroup volume mounted"
     fi
     delete_pod_if_exists "$first"
-    wait_until 120 "$first gone" pod_gone "$first"
+    # Full-suite CSI teardown can take longer than the ordinary pod grace
+    # period: the nodelet must unpublish/unstage the volume before it removes
+    # the Pod object, and the reference attacher may take a few reconciliation
+    # rounds to release its VolumeAttachment. This was observed completing at
+    # about 220s in shard 2, so 120s was a false test timeout rather than a
+    # failed fsGroup assertion.
+    wait_until 240 "$first gone" pod_gone "$first"
     # Round 123 (found live in CI): starting pod2 right after pod1's own
     # object is gone raced the external-attacher's real detach — nodelet's
     # own log showed "driver requires attach but no matching

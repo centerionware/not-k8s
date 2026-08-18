@@ -30,32 +30,129 @@ fn filter_and_prioritize_with_explicit_fields_all_parse() {
 }
 
 #[test]
-fn a_bind_verb_is_refused_by_name_rather_than_silently_ignored() {
-    let err =
-        parse_extenders(r#"[{"urlPrefix":"http://ext","filterVerb":"filter","bindVerb":"bind"}]"#)
-            .unwrap_err()
-            .to_string();
-    assert!(err.contains("bindVerb"), "{err}");
+fn a_bind_only_extender_is_a_valid_upstream_configuration() {
+    let cfg = parse_extenders(r#"[{"urlPrefix":"http://ext","bindVerb":"bind"}]"#).unwrap();
+    assert_eq!(cfg[0].bind_verb.as_deref(), Some("bind"));
 }
 
 #[test]
-fn a_preempt_verb_is_refused_by_name_rather_than_silently_ignored() {
+fn more_than_one_bind_extender_is_rejected_like_upstream() {
     let err = parse_extenders(
+        r#"[{"urlPrefix":"http://a","bindVerb":"bind"},{"urlPrefix":"http://b","bindVerb":"bind"}]"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("only one"), "{err}");
+}
+
+#[test]
+fn a_prioritizer_requires_a_positive_weight() {
+    let err = parse_extenders(
+        r#"[{"urlPrefix":"http://ext","prioritizeVerb":"score","weight":0}]"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("positive weight"), "{err}");
+}
+
+#[test]
+fn empty_verbs_mean_the_extension_is_not_implemented() {
+    let cfg = parse_extenders(
+        r#"[{"urlPrefix":"http://ext","filterVerb":"","bindVerb":"bind"}]"#,
+    )
+    .unwrap();
+    assert_eq!(cfg[0].filter_verb, None);
+    assert_eq!(cfg[0].bind_verb.as_deref(), Some("bind"));
+}
+
+#[test]
+fn a_preempt_verb_is_supported() {
+    let cfg = parse_extenders(
         r#"[{"urlPrefix":"http://ext","filterVerb":"filter","preemptVerb":"preempt"}]"#,
     )
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("preemptVerb"), "{err}");
+    .unwrap();
+    assert_eq!(cfg[0].preempt_verb.as_deref(), Some("preempt"));
 }
 
 #[test]
-fn a_tls_config_is_refused_by_name_rather_than_silently_ignored() {
-    let err = parse_extenders(
-        r#"[{"urlPrefix":"https://ext","filterVerb":"filter","tlsConfig":{"insecure":true}}]"#,
+fn node_cache_preemption_uses_upstreams_pascal_case_uid_shape() {
+    let args = ExtenderPreemptionArgs {
+        pod: Pod::default(),
+        node_name_to_victims: None,
+        node_name_to_meta_victims: Some(BTreeMap::from([(
+            "node-a".to_string(),
+            WireMetaVictims {
+                pods: vec![WireMetaPod { uid: "victim-uid".to_string() }],
+                num_pdb_violations: 1,
+            },
+        )])),
+    };
+    let value = serde_json::to_value(args).unwrap();
+    assert_eq!(
+        value["NodeNameToMetaVictims"]["node-a"]["Pods"][0]["UID"],
+        "victim-uid"
+    );
+    assert!(value.get("NodeNameToVictims").is_none());
+}
+
+#[test]
+fn upstream_tls_config_and_duration_fields_parse() {
+    let cfg = parse_extenders(
+        r#"[{"urlPrefix":"https://ext","filterVerb":"filter","enableHTTPS":true,
+             "httpTimeout":"1m30.5s","tlsConfig":{"insecure":true,"caData":"UEVN"}}]"#,
     )
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("tlsConfig"), "{err}");
+    .unwrap();
+    assert!(cfg[0].enable_https);
+    assert_eq!(cfg[0].http_timeout, Duration::from_millis(90_500));
+    let tls = cfg[0].tls_config.as_ref().unwrap();
+    assert!(tls.insecure);
+    assert_eq!(tls.ca_data.as_deref(), Some(b"PEM".as_slice()));
+}
+
+#[test]
+fn tls_server_name_rewrites_sni_but_preserves_the_endpoint_host_header() {
+    let config = parse_extenders(
+        r#"[{"urlPrefix":"https://127.0.0.1:9443/base","filterVerb":"filter",
+             "enableHTTPS":true,
+             "tlsConfig":{"insecure":true,"serverName":"extender.internal"}}]"#,
+    )
+    .unwrap()
+    .remove(0);
+    let extender = Extender::new(config).unwrap();
+    assert_eq!(extender.request_url_prefix, "https://extender.internal:9443/base");
+    assert_eq!(extender.original_host_header.as_deref(), Some("127.0.0.1:9443"));
+}
+
+#[test]
+fn https_without_a_ca_requires_explicit_insecure_mode() {
+    let config = parse_extenders(
+        r#"[{"urlPrefix":"https://ext","filterVerb":"filter","enableHTTPS":true,"tlsConfig":{}}]"#,
+    )
+    .unwrap()
+    .remove(0);
+    let error = match Extender::new(config) {
+        Ok(_) => panic!("missing CA must not silently disable HTTPS verification"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("caData/caFile") && error.contains("insecure=true"), "{error}");
+}
+
+#[test]
+fn a_zero_upstream_timeout_gets_the_five_second_default() {
+    let cfg = parse_extenders(
+        r#"[{"urlPrefix":"http://ext","filterVerb":"filter","httpTimeout":"0s"}]"#,
+    )
+    .unwrap();
+    assert_eq!(cfg[0].http_timeout, Duration::from_secs(5));
+}
+
+#[test]
+fn a_zero_legacy_upstream_timeout_gets_the_five_second_default() {
+    let cfg = parse_extenders(
+        r#"[{"urlPrefix":"http://ext","filterVerb":"filter","httpTimeoutSeconds":0}]"#,
+    )
+    .unwrap();
+    assert_eq!(cfg[0].http_timeout, Duration::from_secs(5));
 }
 
 #[test]
@@ -66,6 +163,19 @@ fn managed_resources_parses_into_plain_names() {
     )
     .unwrap();
     assert_eq!(cfgs[0].managed_resources, vec!["example.com/gpu".to_string()]);
+}
+
+#[test]
+fn a_managed_resource_cannot_belong_to_two_extenders() {
+    let err = parse_extenders(
+        r#"[
+            {"urlPrefix":"http://a","filterVerb":"filter","managedResources":[{"name":"example.com/gpu"}]},
+            {"urlPrefix":"http://b","filterVerb":"filter","managedResources":[{"name":"example.com/gpu"}]}
+        ]"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("more than one extender"), "{err}");
 }
 
 #[test]
@@ -88,6 +198,26 @@ fn an_extender_with_managed_resources_only_applies_to_a_pod_requesting_one() {
     let mut gpu_pod = crate::framework::plugins::testutil::pod("p");
     gpu_pod.requests.extended.insert("example.com/gpu".to_string(), 1);
     assert!(cfgs[0].applies_to(&gpu_pod));
+}
+
+#[test]
+fn managed_resource_interest_includes_container_limits_like_upstream() {
+    let cfgs = parse_extenders(
+        r#"[{"urlPrefix":"http://ext","filterVerb":"filter",
+             "managedResources":[{"name":"example.com/gpu"}]}]"#,
+    )
+    .unwrap();
+    let api: Pod = serde_json::from_value(serde_json::json!({
+        "spec": {"containers": [{
+            "name": "c",
+            "resources": {"limits": {"example.com/gpu": "1"}}
+        }]}
+    }))
+    .unwrap();
+    let mut pod = PodInfo::from_pod(&api, k8s_openapi::jiff::Timestamp::now());
+    // Preserve the exact object just as the watch does when extenders exist.
+    pod.api_object = Some(Box::new(api));
+    assert!(cfgs[0].applies_to(&pod));
 }
 
 #[test]
@@ -136,16 +266,11 @@ fn node_to_api_carries_name_labels_and_taints() {
 // ── The wire field names ─────────────────────────────────────────────────
 //
 // These pin the exact JSON spellings from upstream's
-// `k8s.io/kube-scheduler/extender/v1` struct tags. They exist because the
-// original code derived all three types' names from
-// `rename_all = "PascalCase"`, which is wrong for every field, and the e2e
-// fake extender had been written to match the wrong spelling — so nothing in
-// the suite would have caught it. Asserting on the serialized/deserialized
-// JSON rather than on the structs is the point: the bug was entirely in the
-// mapping, and only the mapping.
+// `k8s.io/kube-scheduler/extender/v1` structs. They have no JSON tags, so Go's
+// encoding/json uses the exported PascalCase field names verbatim.
 
 #[test]
-fn extender_args_serializes_upstreams_lowercase_field_names() {
+fn extender_args_serializes_upstreams_exported_go_field_names() {
     let args = ExtenderArgs {
         pod: Pod::default(),
         nodes: None,
@@ -153,29 +278,26 @@ fn extender_args_serializes_upstreams_lowercase_field_names() {
     };
     let v: serde_json::Value = serde_json::to_value(&args).unwrap();
 
-    assert!(v.get("pod").is_some(), "upstream's tag is `pod`, not `Pod`: {v}");
-    // Not `NodeNames`, and not `nodeNames` either — upstream's tag really is
-    // the word-break-free `nodenames`.
+    assert!(v.get("Pod").is_some(), "upstream's untagged Go field is `Pod`: {v}");
     assert_eq!(
-        v.get("nodenames").and_then(|n| n.as_array()).map(|a| a.len()),
+        v.get("NodeNames").and_then(|n| n.as_array()).map(|a| a.len()),
         Some(2),
-        "upstream's tag is `nodenames`: {v}"
+        "upstream's untagged Go field is `NodeNames`: {v}"
     );
     assert!(
-        v.get("nodes").is_none(),
+        v.get("Nodes").is_none(),
         "an absent NodeList must be omitted, not serialized as null: {v}"
     );
 }
 
 #[test]
 fn a_filter_reply_in_upstreams_spelling_decodes() {
-    // Byte for byte what a real extender returns — `nodenames`, `failedNodes`,
-    // `failedAndUnresolvableNodes`. Under the old PascalCase mapping every one
-    // of these read as absent, so a rejection looked like an empty result.
+    // Byte for byte what encoding/json emits for upstream's untagged Go
+    // structs.
     let raw = r#"{
-        "nodenames": ["keep-me"],
-        "failedNodes": {"rejected": "not enough widgets"},
-        "failedAndUnresolvableNodes": {"hopeless": "no widgets at all"}
+        "NodeNames": ["keep-me"],
+        "FailedNodes": {"rejected": "not enough widgets"},
+        "FailedAndUnresolvableNodes": {"hopeless": "no widgets at all"}
     }"#;
     let parsed: ExtenderFilterResult = serde_json::from_str(raw).unwrap();
 
@@ -194,7 +316,7 @@ fn a_prioritize_reply_in_upstreams_spelling_decodes() {
     // reply that fails to decode is an error, not a missing score, so a
     // non-ignorable extender took the whole scheduling cycle down with it.
     let scores: Vec<HostPriority> =
-        serde_json::from_str(r#"[{"host":"node-a","score":7},{"host":"node-b","score":0}]"#)
+        serde_json::from_str(r#"[{"Host":"node-a","Score":7},{"Host":"node-b","Score":0}]"#)
             .unwrap();
 
     assert_eq!(scores.len(), 2);

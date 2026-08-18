@@ -203,9 +203,30 @@ if [[ "${SCHEDULER:-none}" == "nodescheduler" ]]; then
     echo "    (Until nodescheduler is running, new pods stay Pending. That is expected, not a hang.)"
 fi
 
+# ── Our controller manager instead of k3s's ─────────────────────────────────
+#
+# Same two-halves-of-one-switch pairing as SCHEDULER above:
+# CONTROLLER_MANAGER=nodecontroller means crates/nodecontroller is installed
+# as its own service and does the node-lifecycle-tainting/podCIDR-
+# allocating/GC-ing, so k3s must stop running its own kube-controller-manager
+# in-process. Two active controller managers is a race for every object each
+# writes (Node taints, podCIDR, owner-ref GC), not a redundant pair — the
+# same reasoning SCHEDULER_ARG documents above.
+#
+# Deliberately not defaulted on, for the same reason: with CONTROLLER_MANAGER
+# unset this expands to nothing and the control plane is exactly what every
+# release so far shipped.
+CONTROLLER_MANAGER_ARG=""
+if [[ "${CONTROLLER_MANAGER:-none}" == "nodecontroller" ]]; then
+    CONTROLLER_MANAGER_ARG="--disable-controller-manager"
+    echo "==> CONTROLLER_MANAGER=nodecontroller — disabling k3s's own kube-controller-manager; ours will do node lifecycle/podCIDR/GC."
+    echo "    (Until nodecontroller is running, new Nodes get no podCIDR and stale Nodes get no lifecycle taint. Expected, not a hang.)"
+fi
+
 export INSTALL_K3S_EXEC="server \
     --disable-agent \
     $SCHEDULER_ARG \
+    $CONTROLLER_MANAGER_ARG \
     --disable traefik \
     --disable servicelb \
     --disable local-storage \
@@ -225,17 +246,14 @@ echo "==> Starting k3s with INSTALL_K3S_EXEC:"
 echo "    $INSTALL_K3S_EXEC"
 echo ""
 
-# Recorded before the (re)start so the controller-manager wait below can
-# tell "a new process won leader election" apart from "the same process
-# that already held it renewed on schedule" — see that wait's own comment
-# for why the distinction matters. holderIdentity is `<hostname>_<uuid>`,
-# a fresh uuid per process even on the same host (confirmed live: two
-# consecutive holders on the same node had different uuids) — renewTime
-# is NOT usable for this, it advances every ~2s under the *old* holder too,
-# right up until the moment it actually stops, so it is satisfied
-# immediately regardless of whether a new process has taken over yet.
-OLD_CM_HOLDER="$(k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get lease kube-controller-manager -n kube-system \
-    -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || true)"
+# Capture the old holder before the (re)start. This is only meaningful when
+# k3s's bundled controller-manager remains enabled; nodecontroller mode has no
+# kube-controller-manager Lease to wait for.
+OLD_CM_HOLDER=""
+if [[ "${CONTROLLER_MANAGER:-none}" != "nodecontroller" ]]; then
+    OLD_CM_HOLDER="$(k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get lease kube-controller-manager -n kube-system \
+        -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || true)"
+fi
 
 # If k3s was already installed, we still need to ensure the service is running
 # with the correct flags.  The installer script handles both fresh install and
@@ -290,26 +308,30 @@ echo ""
 # unreachable/missing Lease (RBAC, k3s version skew) warns and moves on
 # rather than blocking every deployment on a healthz check nothing else
 # here depends on.
-echo "==> Waiting for this restart's kube-controller-manager to win leader election..."
-MAX_WAIT=60
-WAITED=0
-CM_READY=0
-while (( WAITED < MAX_WAIT )); do
-    NEW_CM_HOLDER="$(k3s kubectl --kubeconfig="$KUBECONFIG" get lease kube-controller-manager -n kube-system \
-        -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || true)"
-    if [[ -n "$NEW_CM_HOLDER" && "$NEW_CM_HOLDER" != "$OLD_CM_HOLDER" ]]; then
-        CM_READY=1
-        break
-    fi
-    sleep 2
-    WAITED=$((WAITED + 2))
-    echo "    ... waited ${WAITED}s"
-done
-
-if (( CM_READY == 1 )); then
-    echo "==> kube-controller-manager is up and leading (waited ${WAITED}s)."
+if [[ "${CONTROLLER_MANAGER:-none}" == "nodecontroller" ]]; then
+    echo "==> k3s kube-controller-manager is disabled; skipping its Lease readiness wait."
 else
-    echo "WARNING: kube-controller-manager's Lease did not change holder within ${MAX_WAIT}s — proceeding anyway, but AttachDetachController (and other controllers) may still be relisting. Check: journalctl -u k3s" >&2
+    echo "==> Waiting for this restart's kube-controller-manager to win leader election..."
+    MAX_WAIT=60
+    WAITED=0
+    CM_READY=0
+    while (( WAITED < MAX_WAIT )); do
+        NEW_CM_HOLDER="$(k3s kubectl --kubeconfig="$KUBECONFIG" get lease kube-controller-manager -n kube-system \
+            -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || true)"
+        if [[ -n "$NEW_CM_HOLDER" && "$NEW_CM_HOLDER" != "$OLD_CM_HOLDER" ]]; then
+            CM_READY=1
+            break
+        fi
+        sleep 2
+        WAITED=$((WAITED + 2))
+        echo "    ... waited ${WAITED}s"
+    done
+
+    if (( CM_READY == 1 )); then
+        echo "==> kube-controller-manager is up and leading (waited ${WAITED}s)."
+    else
+        echo "WARNING: kube-controller-manager's Lease did not change holder within ${MAX_WAIT}s — proceeding anyway, but AttachDetachController (and other controllers) may still be relisting. Check: journalctl -u k3s" >&2
+    fi
 fi
 echo ""
 
