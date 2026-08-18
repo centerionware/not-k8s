@@ -1303,9 +1303,13 @@ EOF
         "ReadWriteOncePod" "the pod must say why, not just sit Pending"
 
     # The scheduler drops the holder from its cache on the actual DELETE
-    # event, not when deletionTimestamp is set. Wait for that event before
-    # asserting that the replacement can use the RWOP claim.
-    delete_pod_and_wait_gone "$first"
+    # event, not when deletionTimestamp is set. CSI teardown must also finish
+    # before nodelet removes that object. Under full-suite load the reference
+    # attacher has taken just over two minutes to release the holder, so a
+    # 90-second helper budget can fail even though the scheduler wakes and
+    # binds the replacement correctly.
+    delete_pod_if_exists "$first"
+    wait_until 240 "$first gone" pod_gone "$first"
     wait_until 60 "$second to be bound to a node" _pod_is_bound "$second" \
         || die "freeing the ReadWriteOncePod claim never got the second pod scheduled"
 

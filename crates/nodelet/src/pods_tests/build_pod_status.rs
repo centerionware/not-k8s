@@ -648,6 +648,19 @@ fn a_foreign_condition_is_carried_forward_into_the_new_conditions_array() {
 }
 
 #[test]
+fn status_patch_sends_only_nodelet_owned_conditions() {
+    // The apiserver must merge this strategic patch with the current status;
+    // sending a stale foreign condition here would reintroduce the race where
+    // nodelet overwrites an external readiness-gate update.
+    let prev = PodStatus { conditions: Some(vec![foreign_condition("www.example.com/feature", "True")]), ..Default::default() };
+    let status = bps("10.0.0.1", &running_status(), Some(&prev));
+    let patch = nodelet_owned_status_patch(&status);
+    let conditions = patch.conditions.as_ref().unwrap();
+    assert!(conditions.iter().all(|condition| OWNED_CONDITION_TYPES.contains(&condition.type_.as_str())));
+    assert!(!conditions.iter().any(|condition| condition.type_ == "www.example.com/feature"));
+}
+
+#[test]
 fn nodelet_owned_condition_types_are_not_duplicated_from_prev() {
     // prev's own "Ready"/"ContainersReady"/etc. entries must not also get
     // copied into `foreign_conditions` alongside the freshly computed ones.

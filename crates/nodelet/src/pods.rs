@@ -794,9 +794,27 @@ pub(crate) async fn write_status(
         debug!(pod = %format!("{ns}/{name}"), "skipped unchanged pod status patch");
         return Ok(());
     }
-    let patch = serde_json::json!({ "status": status });
-    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
+    // Conditions are a merge-keyed list on PodStatus. Use a strategic merge
+    // patch so this write updates only the conditions nodelet owns; a stale
+    // GET must not replace a readiness-gate condition an external controller
+    // set between that GET and this PATCH. The foreign conditions are still
+    // carried in `status` for readiness computation and pure status tests,
+    // but must not be sent back as stale values here.
+    let patch_status = nodelet_owned_status_patch(&status);
+    let patch = serde_json::json!({ "status": patch_status });
+    api.patch_status(name, &PatchParams::default(), &Patch::Strategic(patch)).await?;
     Ok(())
+}
+
+/// Strip conditions owned by external controllers from the status payload
+/// nodelet sends. Strategic merge then preserves those conditions atomically
+/// even if the `prev` Pod used to compute this status is stale.
+fn nodelet_owned_status_patch(status: &PodStatus) -> PodStatus {
+    let mut patch = status.clone();
+    if let Some(conditions) = patch.conditions.as_mut() {
+        conditions.retain(|condition| OWNED_CONDITION_TYPES.contains(&condition.type_.as_str()));
+    }
+    patch
 }
 
 /// Return whether merging `desired` into the stored PodStatus would change
