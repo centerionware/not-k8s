@@ -19,7 +19,7 @@ use k8s_openapi::api::core::v1::{
     ResourceStatus, Secret, Volume, VolumeMountStatus,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
+use kube::api::{DeleteParams, ListParams, Patch, PatchParams, Preconditions};
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -676,6 +676,7 @@ impl PodController {
         let runtime = self.runtime.clone();
         let client = self.client.clone();
         let torn_down = self.torn_down.clone();
+        let uid_for_delete = uid.clone();
         tokio::spawn(async move {
             // Released only once the work is actually over, whatever the
             // outcome. Releasing at spawn time would re-open the guard for
@@ -722,10 +723,20 @@ impl PodController {
             info!(pod = %format!("{ns}/{name}"), "torn down");
 
             let api: Api<Pod> = Api::namespaced(client, &ns);
-            let dp = DeleteParams { grace_period_seconds: Some(0), ..Default::default() };
+            // The old Pod may have been force-deleted and recreated under the
+            // same name while its detached runtime teardown was in flight.
+            // Never let this old task delete that replacement object.
+            let dp = DeleteParams {
+                grace_period_seconds: Some(0),
+                preconditions: uid_for_delete.map(|uid| Preconditions {
+                    uid: Some(uid),
+                    resource_version: None,
+                }),
+                ..Default::default()
+            };
             match api.delete(&name, &dp).await {
                 Ok(_) => {}
-                Err(kube::Error::Api(e)) if e.code == 404 => {}
+                Err(kube::Error::Api(e)) if e.code == 404 || e.code == 409 => {}
                 Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "final delete of pod object failed"),
             }
         });

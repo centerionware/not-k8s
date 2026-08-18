@@ -197,21 +197,24 @@ pub struct CriRuntime {
     /// CRI container-died event that can independently re-trigger the main
     /// reconcile loop's own `ensure_pod()` concurrently with
     /// `restart_and_reensure()`'s direct one. Without serialization, two
-    /// concurrent `ensure_pod()` calls for the same pod both compute the
+    /// Concurrent pod lifecycle operations for the same name both compute the
     /// identical `attempt` number (`restart_count()`, unchanged since
     /// neither has succeeded yet) and race on `CreateContainer`, which
     /// containerd correctly rejects with "failed to reserve container
     /// name ... is reserved for <the other one>" — confirmed live: a
     /// liveness-triggered restart repeatedly hit exactly this, never
     /// actually recreating the container within the test's own 60s
-    /// timeout. Keyed by "namespace/name" (not sandbox id, which doesn't
-    /// exist yet on the very first `ensure_pod()` call) — matches the key
-    /// shape every `warn!` log line in this area already uses. Entries are
-    /// never removed (a small, bounded amount of memory per pod that's
-    /// ever existed on this node — same simplification `restart_counts`/
-    /// `restart_backoff` already make, cleaned up implicitly by node
-    /// reboot, not worth the bookkeeping to prune per-pod-deletion for a
-    /// single empty `Mutex<()>` each).
+    /// timeout. The same lock also serializes detached teardown with a new
+    /// `ensure_pod()` for a deleted-and-recreated namespace/name; without
+    /// that, old teardown can remove the replacement's sandbox or leave
+    /// UID-bound projected-token state referring to the old Pod. Keyed by
+    /// "namespace/name" (not sandbox id, which doesn't exist yet on the
+    /// very first `ensure_pod()` call) — matches the key shape every
+    /// `warn!` log line in this area already uses. Entries are never removed
+    /// (a small, bounded amount of memory per pod that's ever existed on this
+    /// node — same simplification `restart_counts`/`restart_backoff` already
+    /// make, cleaned up implicitly by node reboot, not worth the bookkeeping
+    /// to prune per-pod-deletion for a single empty `Mutex<()>` each).
     pod_ensure_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// `sandbox_id -> pod uid`, same reason/lifecycle as `restart_policies`
     /// (event-driven `status()` only gets namespace+name, no `Pod` object)
@@ -625,9 +628,9 @@ impl CriRuntime {
         self.recursive_read_only_handlers.get(handler).copied().unwrap_or(false)
     }
 
-    /// The per-pod async lock `ensure_pod()` holds for its whole duration —
-    /// see `pod_ensure_locks`'s own doc comment for why. `key` is
-    /// `"namespace/name"`.
+    /// The per-pod async lifecycle lock held for the whole duration of
+    /// `ensure_pod()` or `remove_pod()` — see `pod_ensure_locks`'s own doc
+    /// comment for why. `key` is `"namespace/name"`.
     pub(crate) fn pod_ensure_lock(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.pod_ensure_locks.lock().unwrap().entry(key.to_string()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
     }

@@ -108,3 +108,47 @@ EOF
 }
 
 register_test test_a_slow_terminating_pod_does_not_stall_another_pods_creation
+
+test_a_recreated_pod_survives_the_old_pods_detached_teardown() {
+    if ! node_uses_cri_runtime; then
+        skip_test "needs the cri runtime — the mock one has no real StopContainer to wait on"
+    fi
+
+    local name="term-recreate" grace=20
+    trap 'delete_pod_if_exists "$name"' EXIT
+
+    # Force-removing the old API object while its kubelet teardown is still
+    # honoring the original grace period is the real-world same-name race:
+    # StatefulSet replacement and manual force-delete can both do this.
+    _slow_terminating_pod "$name" "$grace"
+    wait_until 90 "$name Running before recreation" pod_is_phase "$name" Running
+    kctl delete pod "$name" --grace-period="$grace" --wait=false >/dev/null 2>&1 \
+        || die "could not start graceful deletion of $name"
+    sleep 5
+    kctl delete pod "$name" --grace-period=0 --force --wait=false >/dev/null 2>&1 \
+        || die "could not force-delete the old $name object"
+    wait_until 30 "$name gone before recreation" pod_gone "$name"
+
+    apply_manifest <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+spec:
+  containers:
+    - name: app
+      image: $TEST_IMAGE
+      command: ["sleep", "3600"]
+EOF
+    wait_until 90 "$name replacement Running" pod_is_phase "$name" Running
+
+    # The old teardown and its final API delete must now be finished. Without
+    # the UID-guarded delete, it can remove this new object by name after it
+    # has already reached Running.
+    sleep $((grace + 5))
+    if ! pod_is_phase "$name" Running; then
+        die "replacement pod disappeared or left Running after the old pod's detached teardown completed"
+    fi
+}
+
+register_test test_a_recreated_pod_survives_the_old_pods_detached_teardown
