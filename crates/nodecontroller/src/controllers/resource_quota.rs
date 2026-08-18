@@ -33,6 +33,7 @@
 //! exactly what this controller does and doesn't track, not a wrong number.
 
 use anyhow::Result;
+use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Pod, ResourceQuota, Service};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
@@ -40,7 +41,7 @@ use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use crate::workqueue::KeyedWorkQueue;
+use std::time::Duration;
 
 const SUPPORTED_KEYS: &[&str] = &["pods", "services"];
 
@@ -80,12 +81,12 @@ async fn reconcile_quota(
     quota: &ResourceQuota,
     pods: &HashMap<String, HashSet<String>>,
     services: &HashMap<String, HashSet<String>>,
-) {
+) -> bool {
     let namespace = ns_of(quota);
     let name = quota.name_any();
     let api: Api<ResourceQuota> = Api::namespaced(client.clone(), &namespace);
     let hard = quota.spec.as_ref().and_then(|s| s.hard.as_ref());
-    let Some(hard) = hard else { return };
+    let Some(hard) = hard else { return true };
     let hard_keys: Vec<String> = hard.keys().cloned().collect();
 
     let pod_count = pods.get(&namespace).map(|s| s.len()).unwrap_or(0);
@@ -93,15 +94,19 @@ async fn reconcile_quota(
     let used = compute_used(&hard_keys, pod_count, service_count);
 
     if quota.status.as_ref().and_then(|s| s.used.as_ref()) == Some(&used) {
-        return; // already correct
+        return true; // already correct
     }
 
     let patch = serde_json::json!({ "status": { "used": used, "hard": hard } });
-    if let Err(e) = api
+    match api
         .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
         .await
     {
-        tracing::warn!(namespace = %namespace, quota = %name, error = ?e, "failed to patch ResourceQuota status");
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(namespace = %namespace, quota = %name, error = ?e, "failed to patch ResourceQuota status; will retry");
+            false
+        }
     }
 }
 
@@ -177,7 +182,15 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             }
             key = queue.pop() => {
                 if let Some(quota) = quotas.get(&key).cloned() {
-                    reconcile_quota(&client, &quota, &pods, &services).await;
+                    if !reconcile_quota(&client, &quota, &pods, &services).await {
+                        // A transient apiserver failure must not lose the only
+                        // notification for this quota. The normal controller
+                        // contract is to keep retrying a failed reconcile.
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        if quotas.contains_key(&key) {
+                            queue.enqueue(key);
+                        }
+                    }
                 }
             }
         }
@@ -199,6 +212,26 @@ fn enqueue_namespace_quotas(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k8s_openapi::api::core::v1::PodStatus;
+
+    #[test]
+    fn terminal_pods_do_not_count_toward_pod_quota() {
+        let mut succeeded = Pod::default();
+        succeeded.status = Some(PodStatus {
+            phase: Some("Succeeded".to_string()),
+            ..Default::default()
+        });
+        let mut failed = Pod::default();
+        failed.status = Some(PodStatus {
+            phase: Some("Failed".to_string()),
+            ..Default::default()
+        });
+        let pending = Pod::default();
+
+        assert!(!counts_toward_pod_quota(&succeeded));
+        assert!(!counts_toward_pod_quota(&failed));
+        assert!(counts_toward_pod_quota(&pending));
+    }
 
     #[test]
     fn tracks_pods_and_services_when_both_are_requested() {

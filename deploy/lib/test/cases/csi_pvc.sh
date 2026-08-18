@@ -426,7 +426,13 @@ EOF
         skip_test "first pod never reached Running with a PVC + fsGroup volume mounted"
     fi
     delete_pod_if_exists "$first"
-    wait_until 120 "$first gone" pod_gone "$first"
+    # Full-suite CSI teardown can take longer than the ordinary pod grace
+    # period: the nodelet must unpublish/unstage the volume before it removes
+    # the Pod object, and the reference attacher may take a few reconciliation
+    # rounds to release its VolumeAttachment. This was observed completing at
+    # about 220s in shard 2, so 120s was a false test timeout rather than a
+    # failed fsGroup assertion.
+    wait_until 240 "$first gone" pod_gone "$first"
     # Round 123 (found live in CI): starting pod2 right after pod1's own
     # object is gone raced the external-attacher's real detach — nodelet's
     # own log showed "driver requires attach but no matching
