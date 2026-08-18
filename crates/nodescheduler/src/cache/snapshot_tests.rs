@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::cache::pod::{PodInfo, Resources};
-use k8s_openapi::api::core::v1::Node;
+use k8s_openapi::api::core::v1::{ContainerImage, Node, NodeStatus};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
 fn node(name: &str) -> Node {
@@ -28,6 +28,20 @@ fn node_in_zone(name: &str, zone: &str) -> Node {
             )])),
             ..Default::default()
         },
+        ..Default::default()
+    }
+}
+
+fn node_with_images(name: &str, images: &[&str]) -> Node {
+    Node {
+        metadata: ObjectMeta { name: Some(name.to_string()), ..Default::default() },
+        status: Some(NodeStatus {
+            images: Some(vec![ContainerImage {
+                names: Some(images.iter().map(|image| image.to_string()).collect()),
+                size_bytes: Some(100),
+            }]),
+            ..Default::default()
+        }),
         ..Default::default()
     }
 }
@@ -83,6 +97,26 @@ fn a_snapshot_taken_twice_with_no_changes_does_nothing() {
     for (a, b) in first.iter().zip(snap.nodes()) {
         assert!(Arc::ptr_eq(a, b));
     }
+}
+
+#[test]
+fn image_spread_is_maintained_on_node_add_update_and_delete() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&node_with_images("a", &["app:v1", "sidecar:v1"]));
+    cache.upsert_node(&node_with_images("b", &["app:v1"]));
+    let mut snap = cache.snapshot();
+    assert_eq!(snap.nodes_with_image("app:v1"), 2);
+    assert_eq!(snap.image_node_counts.get("app:v1"), Some(&2));
+
+    cache.upsert_node(&node_with_images("b", &["replacement:v1"]));
+    cache.update_snapshot(&mut snap);
+    assert_eq!(snap.image_node_counts.get("app:v1"), Some(&1));
+    assert_eq!(snap.image_node_counts.get("replacement:v1"), Some(&1));
+
+    cache.remove_node("a");
+    cache.update_snapshot(&mut snap);
+    assert!(!snap.image_node_counts.contains_key("app:v1"));
+    assert!(!snap.image_node_counts.contains_key("sidecar:v1"));
 }
 
 #[test]

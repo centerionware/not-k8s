@@ -83,6 +83,7 @@ pub fn classify_failure(status: &Status) -> BindOutcome {
 /// to observe or unwind this pod's Reserve state.
 pub async fn bind_one(
     registry: &Registry,
+    extenders: &[crate::extender::Extender],
     mut state: CycleState,
     pod: Arc<PodInfo>,
     node: String,
@@ -104,17 +105,35 @@ pub async fn bind_one(
     // ── Bind ────────────────────────────────────────────────────────────
     // The first plugin that does not decline handles it; the rest are skipped.
     let mut bound = false;
-    for plugin in &registry.bind {
-        let status = plugin.bind(&pod, &node).await;
-        if status.is_skip() {
+    for extender in extenders {
+        if !extender.config.applies_to(&pod) {
             continue;
         }
-        if !status.is_success() {
-            crate::cycle::run_unreserve(registry, &mut state, &pod, &node);
-            return classify_failure(&status);
+        match extender.bind(&pod, &node).await {
+            Ok(Some(())) => {
+                bound = true;
+                break;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                crate::cycle::run_unreserve(registry, &mut state, &pod, &node);
+                return BindOutcome::Failed { reason: error.to_string() };
+            }
         }
-        bound = true;
-        break;
+    }
+    if !bound {
+        for plugin in &registry.bind {
+            let status = plugin.bind(&pod, &node).await;
+            if status.is_skip() {
+                continue;
+            }
+            if !status.is_success() {
+                crate::cycle::run_unreserve(registry, &mut state, &pod, &node);
+                return classify_failure(&status);
+            }
+            bound = true;
+            break;
+        }
     }
 
     if !bound {
@@ -162,6 +181,16 @@ pub fn handle_outcome(
             tracing::info!(pod = %pod.key(), %reason, "binding cycle rejected the pod");
             release(&pod, assumed, cache);
             queue.add_unschedulable(pod, plugins.clone(), Vec::new());
+
+            // A scheduling rejection releases the same assumed node
+            // capacity as an internal failure. Other pods parked because
+            // that capacity looked occupied need the same explicit wake-up;
+            // there may be no API object mutation to do it for us.
+            queue.move_all_to_active_or_backoff(
+                ClusterEvent::new(EventResource::AssignedPod, ActionType::DELETE),
+                None,
+                None,
+            );
         }
         BindOutcome::Failed { reason } => {
             tracing::warn!(pod = %pod.key(), %reason, "binding cycle failed; requeueing");

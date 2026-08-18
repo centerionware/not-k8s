@@ -65,6 +65,10 @@ pub struct Snapshot {
     /// find the few that matter.
     pub nodes_with_pods_with_affinity: Vec<Arc<NodeInfo>>,
     pub nodes_with_pods_with_required_anti_affinity: Vec<Arc<NodeInfo>>,
+    /// Cluster-wide image spread, maintained incrementally when Node status
+    /// changes. `ImageLocality` must use every node in the snapshot here,
+    /// not merely the feasible subset handed to `PreScore`.
+    pub(crate) image_node_counts: Arc<HashMap<String, i64>>,
     /// The highest generation any node in this snapshot carries. The walk
     /// stops when it reaches a node at or below this.
     generation: u64,
@@ -97,6 +101,8 @@ pub struct Snapshot {
     /// Keyed by driver name.
     pub csi_drivers: Arc<HashMap<String, CsiDriverInfo>>,
     pub storage_capacities: Arc<Vec<StorageCapacityInfo>>,
+    /// Keyed by VolumeAttachment object name.
+    pub volume_attachments: Arc<HashMap<String, super::VolumeAttachmentInfo>>,
 
     /// Phase 5's DRA objects, copied wholesale for the same reason as
     /// Phase 4's storage objects — see `storage.rs`'s module header.
@@ -256,10 +262,15 @@ pub struct Cache {
     csi_nodes: Arc<HashMap<String, CsiNodeInfo>>,
     csi_drivers: Arc<HashMap<String, CsiDriverInfo>>,
     storage_capacities: Arc<Vec<StorageCapacityInfo>>,
+    volume_attachments: Arc<HashMap<String, super::VolumeAttachmentInfo>>,
 
     resource_claims: Arc<HashMap<String, RawResourceClaim>>,
     device_classes: Arc<HashMap<String, RawDeviceClass>>,
     resource_slices: Arc<HashMap<String, RawResourceSlice>>,
+    /// Number of Nodes advertising each image name. Node updates are rare
+    /// compared with Pod scheduling cycles, so maintaining this at the event
+    /// boundary avoids rescanning the cluster for every Pod.
+    image_node_counts: Arc<HashMap<String, i64>>,
 }
 
 impl Cache {
@@ -283,16 +294,47 @@ impl Cache {
 
     /// Add or update a node, preserving the pods already committed to it.
     pub fn upsert_node(&mut self, node: &k8s_openapi::api::core::v1::Node) {
+        self.upsert_node_with_api_object(node, false);
+    }
+
+    /// Add/update a node and optionally retain the full API object for HTTP
+    /// extenders. The default cache path remains projection-only.
+    pub fn upsert_node_with_api_object(
+        &mut self,
+        node: &k8s_openapi::api::core::v1::Node,
+        preserve_api_object: bool,
+    ) {
         let Some(name) = node.metadata.name.clone() else {
             return;
         };
         let gen = self.next_generation();
+        let previous_images = self
+            .nodes
+            .get(&name)
+            .map(|n| n.images.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
         let mut info = self
             .nodes
             .get(&name)
             .map(|n| (**n).clone())
             .unwrap_or_default();
         info.update_from_node(node, gen);
+        let next_images = info.images.keys().cloned().collect::<Vec<_>>();
+        if previous_images != next_images {
+            let counts = Arc::make_mut(&mut self.image_node_counts);
+            for image in previous_images {
+                if let Some(count) = counts.get_mut(&image) {
+                    *count -= 1;
+                    if *count == 0 {
+                        counts.remove(&image);
+                    }
+                }
+            }
+            for image in next_images {
+                *counts.entry(image).or_default() += 1;
+            }
+        }
+        info.api_object = preserve_api_object.then(|| Box::new(node.clone()));
         self.nodes.insert(name.clone(), Arc::new(info));
         self.touch(&name);
     }
@@ -302,6 +344,15 @@ impl Cache {
     /// come back elsewhere.
     pub fn remove_node(&mut self, name: &str) {
         if let Some(node) = self.nodes.remove(name) {
+            let counts = Arc::make_mut(&mut self.image_node_counts);
+            for image in node.images.keys() {
+                if let Some(count) = counts.get_mut(image) {
+                    *count -= 1;
+                    if *count == 0 {
+                        counts.remove(image);
+                    }
+                }
+            }
             for pod in &node.pods {
                 self.pod_locations.remove(&pod.uid);
             }
@@ -359,9 +410,11 @@ impl Cache {
         self.touch(node_name);
     }
 
-    pub fn upsert_namespace(&mut self, name: &str, labels: BTreeMap<String, String>) {
+    pub fn upsert_namespace(&mut self, name: &str, labels: BTreeMap<String, String>) -> bool {
+        let added = !self.namespaces.contains_key(name);
         Arc::make_mut(&mut self.namespaces).insert(name.to_string(), labels);
         self.generation += 1;
+        added
     }
 
     pub fn remove_namespace(&mut self, name: &str) {
@@ -382,9 +435,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_pv(&mut self, name: String, pv: PvInfo) {
+    pub fn upsert_pv(&mut self, name: String, pv: PvInfo) -> bool {
+        let added = !self.pvs.contains_key(&name);
         Arc::make_mut(&mut self.pvs).insert(name, pv);
         self.generation += 1;
+        added
     }
 
     pub fn remove_pv(&mut self, name: &str) {
@@ -392,9 +447,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_pvc(&mut self, key: String, pvc: PvcInfo) {
+    pub fn upsert_pvc(&mut self, key: String, pvc: PvcInfo) -> bool {
+        let added = !self.pvcs.contains_key(&key);
         Arc::make_mut(&mut self.pvcs).insert(key, pvc);
         self.generation += 1;
+        added
     }
 
     pub fn remove_pvc(&mut self, key: &str) {
@@ -402,9 +459,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_storage_class(&mut self, name: String, sc: StorageClassInfo) {
+    pub fn upsert_storage_class(&mut self, name: String, sc: StorageClassInfo) -> bool {
+        let added = !self.storage_classes.contains_key(&name);
         Arc::make_mut(&mut self.storage_classes).insert(name, sc);
         self.generation += 1;
+        added
     }
 
     pub fn remove_storage_class(&mut self, name: &str) {
@@ -412,9 +471,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_csi_node(&mut self, node_name: String, info: CsiNodeInfo) {
+    pub fn upsert_csi_node(&mut self, node_name: String, info: CsiNodeInfo) -> bool {
+        let added = !self.csi_nodes.contains_key(&node_name);
         Arc::make_mut(&mut self.csi_nodes).insert(node_name, info);
         self.generation += 1;
+        added
     }
 
     pub fn remove_csi_node(&mut self, node_name: &str) {
@@ -422,9 +483,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_csi_driver(&mut self, name: String, info: CsiDriverInfo) {
+    pub fn upsert_csi_driver(&mut self, name: String, info: CsiDriverInfo) -> bool {
+        let added = !self.csi_drivers.contains_key(&name);
         Arc::make_mut(&mut self.csi_drivers).insert(name, info);
         self.generation += 1;
+        added
     }
 
     pub fn remove_csi_driver(&mut self, name: &str) {
@@ -439,9 +502,27 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_resource_claim(&mut self, key: String, claim: RawResourceClaim) {
+    pub fn upsert_volume_attachment(
+        &mut self,
+        name: String,
+        attachment: super::VolumeAttachmentInfo,
+    ) -> bool {
+        let added = !self.volume_attachments.contains_key(&name);
+        Arc::make_mut(&mut self.volume_attachments).insert(name, attachment);
+        self.generation += 1;
+        added
+    }
+
+    pub fn remove_volume_attachment(&mut self, name: &str) {
+        Arc::make_mut(&mut self.volume_attachments).remove(name);
+        self.generation += 1;
+    }
+
+    pub fn upsert_resource_claim(&mut self, key: String, claim: RawResourceClaim) -> bool {
+        let added = !self.resource_claims.contains_key(&key);
         Arc::make_mut(&mut self.resource_claims).insert(key, claim);
         self.generation += 1;
+        added
     }
 
     pub fn remove_resource_claim(&mut self, key: &str) {
@@ -449,9 +530,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_device_class(&mut self, name: String, class: RawDeviceClass) {
+    pub fn upsert_device_class(&mut self, name: String, class: RawDeviceClass) -> bool {
+        let added = !self.device_classes.contains_key(&name);
         Arc::make_mut(&mut self.device_classes).insert(name, class);
         self.generation += 1;
+        added
     }
 
     pub fn remove_device_class(&mut self, name: &str) {
@@ -459,9 +542,11 @@ impl Cache {
         self.generation += 1;
     }
 
-    pub fn upsert_resource_slice(&mut self, name: String, slice: RawResourceSlice) {
+    pub fn upsert_resource_slice(&mut self, name: String, slice: RawResourceSlice) -> bool {
+        let added = !self.resource_slices.contains_key(&name);
         Arc::make_mut(&mut self.resource_slices).insert(name, slice);
         self.generation += 1;
+        added
     }
 
     pub fn remove_resource_slice(&mut self, name: &str) {
@@ -537,9 +622,11 @@ impl Cache {
         snapshot.csi_nodes = self.csi_nodes.clone();
         snapshot.csi_drivers = self.csi_drivers.clone();
         snapshot.storage_capacities = self.storage_capacities.clone();
+        snapshot.volume_attachments = self.volume_attachments.clone();
         snapshot.resource_claims = self.resource_claims.clone();
         snapshot.device_classes = self.device_classes.clone();
         snapshot.resource_slices = self.resource_slices.clone();
+        snapshot.image_node_counts = self.image_node_counts.clone();
         if reorder_needed {
             snapshot.nodes = zone_round_robin(&snapshot.by_name);
             snapshot.node_positions = snapshot

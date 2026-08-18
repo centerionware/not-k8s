@@ -1,6 +1,6 @@
 use super::*;
-use crate::cache::{Cache, CsiNodeInfo, PvInfo, PvcInfo};
-use crate::framework::plugins::testutil::{node, pod};
+use crate::cache::{Cache, CsiNodeInfo, PvInfo, PvcInfo, VolumeAttachmentInfo};
+use crate::framework::plugins::testutil::pod;
 use k8s_openapi::api::core::v1::Node as ApiNode;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use std::sync::Arc;
@@ -20,7 +20,12 @@ fn bound_pvc(namespace: &str, name: &str, pv: &str) -> PvcInfo {
 }
 
 fn csi_pv(name: &str, driver: &str) -> PvInfo {
-    PvInfo { name: name.to_string(), csi_driver: Some(driver.to_string()), ..Default::default() }
+    PvInfo {
+        name: name.to_string(),
+        csi_driver: Some(driver.to_string()),
+        csi_volume_handle: Some(format!("handle-{name}")),
+        ..Default::default()
+    }
 }
 
 fn cluster(csi_node_limit: Option<i32>, placed: &[(&str, Arc<PodInfo>)]) -> Snapshot {
@@ -120,13 +125,18 @@ fn a_node_at_its_reported_ceiling_rejects_one_more() {
 
 #[test]
 fn a_driver_with_no_reported_ceiling_is_unbounded() {
-    let snapshot = cluster(None, &[]);
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1"));
+    let mut drivers = std::collections::BTreeMap::new();
+    drivers.insert("disk.example.com".to_string(), None);
+    cache.upsert_csi_node("n1".to_string(), CsiNodeInfo { drivers });
+    cache.upsert_pv("pv".to_string(), csi_pv("pv", "disk.example.com"));
+    cache.upsert_pvc("ns/claim".to_string(), bound_pvc("ns", "claim", "pv"));
+    let snapshot = cache.snapshot();
     let mut p = pod("incoming");
     p.namespace = "ns".to_string();
     p.uid = "uid".to_string();
-    // No PVC resolution needed for this test's assertion — an ephemeral
-    // volume alone exercises the "registered, no count" path.
-    p.csi_ephemeral_drivers = vec!["disk.example.com".to_string()];
+    p.pvc_names = vec!["claim".to_string()];
 
     let mut state = CycleState::default();
     NodeVolumeLimits.pre_filter(&mut state, &p, &snapshot);
@@ -138,12 +148,14 @@ fn a_driver_with_no_reported_ceiling_is_unbounded() {
 fn a_node_with_no_csi_node_at_all_enforces_nothing() {
     let mut cache = Cache::new();
     cache.upsert_node(&api_node("bare"));
+    cache.upsert_pv("pv".to_string(), csi_pv("pv", "disk.example.com"));
+    cache.upsert_pvc("ns/claim".to_string(), bound_pvc("ns", "claim", "pv"));
     let snapshot = cache.snapshot();
 
     let mut p = pod("incoming");
     p.namespace = "ns".to_string();
     p.uid = "uid".to_string();
-    p.csi_ephemeral_drivers = vec!["disk.example.com".to_string()];
+    p.pvc_names = vec!["claim".to_string()];
 
     let mut state = CycleState::default();
     NodeVolumeLimits.pre_filter(&mut state, &p, &snapshot);
@@ -157,8 +169,60 @@ fn it_wakes_on_the_events_that_can_actually_change_the_answer() {
     let deleted = ClusterEvent::new(EventResource::AssignedPod, ActionType::DELETE);
     let pvc_updated = ClusterEvent::new(EventResource::PersistentVolumeClaim, ActionType::UPDATE);
     let csi_node_added = ClusterEvent::new(EventResource::CsiNode, ActionType::ADD);
+    let attachment_deleted = ClusterEvent::new(EventResource::VolumeAttachment, ActionType::DELETE);
 
     assert!(events.iter().any(|e| e.event.matches(&deleted)));
     assert!(events.iter().any(|e| e.event.matches(&pvc_updated)));
     assert!(events.iter().any(|e| e.event.matches(&csi_node_added)));
+    assert!(events.iter().any(|e| e.event.matches(&attachment_deleted)));
+}
+
+#[test]
+fn one_csi_handle_mounted_by_two_pods_consumes_one_slot() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1"));
+    let mut drivers = std::collections::BTreeMap::new();
+    drivers.insert("disk.example.com".to_string(), Some(1));
+    cache.upsert_csi_node("n1".to_string(), CsiNodeInfo { drivers });
+    cache.upsert_pv("shared".to_string(), csi_pv("shared", "disk.example.com"));
+    cache.upsert_pvc("ns/existing".to_string(), bound_pvc("ns", "existing", "shared"));
+    cache.upsert_pvc("ns/incoming".to_string(), bound_pvc("ns", "incoming", "shared"));
+    cache.add_pod(pod_with_pvc("holder", "holder-uid", "existing"));
+    let snapshot = cache.snapshot();
+    let mut incoming = pod("incoming");
+    incoming.namespace = "ns".to_string();
+    incoming.uid = "incoming-uid".to_string();
+    incoming.pvc_names = vec!["incoming".to_string()];
+    let mut state = CycleState::default();
+    NodeVolumeLimits.pre_filter(&mut state, &incoming, &snapshot);
+    let node = snapshot.node("n1").unwrap();
+    assert!(NodeVolumeLimits.filter(&state, &incoming, node).is_success());
+}
+
+#[test]
+fn a_lingering_volume_attachment_consumes_a_slot() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1"));
+    let mut drivers = std::collections::BTreeMap::new();
+    drivers.insert("disk.example.com".to_string(), Some(1));
+    cache.upsert_csi_node("n1".to_string(), CsiNodeInfo { drivers });
+    cache.upsert_pv("attached".to_string(), csi_pv("attached", "disk.example.com"));
+    cache.upsert_volume_attachment(
+        "va".to_string(),
+        VolumeAttachmentInfo {
+            node_name: "n1".to_string(),
+            attacher: "disk.example.com".to_string(),
+            pv_name: Some("attached".to_string()),
+        },
+    );
+    cache.upsert_pv("new".to_string(), csi_pv("new", "disk.example.com"));
+    cache.upsert_pvc("ns/new".to_string(), bound_pvc("ns", "new", "new"));
+    let snapshot = cache.snapshot();
+    let mut incoming = pod("incoming");
+    incoming.namespace = "ns".to_string();
+    incoming.pvc_names = vec!["new".to_string()];
+    let mut state = CycleState::default();
+    NodeVolumeLimits.pre_filter(&mut state, &incoming, &snapshot);
+    let node = snapshot.node("n1").unwrap();
+    assert!(!NodeVolumeLimits.filter(&state, &incoming, node).is_success());
 }

@@ -136,11 +136,22 @@ fn a_multi_zone_pv_label_is_membership_not_equality() {
 }
 
 #[test]
-fn it_wakes_on_pvc_and_pv_changes() {
+fn it_registers_the_upstream_event_contract() {
     let events = VolumeZone.events_to_register();
-    let pvc_updated = ClusterEvent::new(EventResource::PersistentVolumeClaim, ActionType::UPDATE);
-    let pv_added = ClusterEvent::new(EventResource::PersistentVolume, ActionType::ADD);
-
-    assert!(events.iter().any(|e| e.event.matches(&pvc_updated)));
-    assert!(events.iter().any(|e| e.event.matches(&pv_added)));
+    let registered: Vec<_> = events.into_iter().map(|e| e.event).collect();
+    assert_eq!(
+        registered,
+        vec![
+            ClusterEvent::new(EventResource::StorageClass, ActionType::ADD),
+            ClusterEvent::new(EventResource::Node, ActionType::ADD | ActionType::UPDATE_NODE_LABEL),
+            ClusterEvent::new(
+                EventResource::PersistentVolumeClaim,
+                ActionType::ADD | ActionType::UPDATE,
+            ),
+            ClusterEvent::new(
+                EventResource::PersistentVolume,
+                ActionType::ADD | ActionType::UPDATE,
+            ),
+        ]
+    );
 }

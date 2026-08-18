@@ -21,15 +21,15 @@ on:
         required: false
         default: ''
       layout:
-        description: 'Which build layout to deploy and test against: split (separate per-component binaries, the default everywhere) or combined (the single multi-call notk8s binary).'
+        description: 'Which build layout to deploy and test against: combined (the single multi-call notk8s binary, the release default) or split (separate per-component binaries, for layout isolation).'
         required: false
-        default: split
+        default: combined
         type: choice
         options: [split, combined]
       scheduler:
-        description: 'Which scheduler places pods: none (k3s bundled kube-scheduler, the shipped default) or nodescheduler (ours, which also passes --disable-scheduler to k3s). Only cases/scheduler.sh needs ours, and it self-skips without it. Leave as none for a full-suite run — see the comment on the deploy step.'
+        description: 'Which scheduler places pods: nodescheduler (the not-k8s scheduler, which also passes --disable-scheduler to k3s) or none (k3s bundled kube-scheduler, for isolation only). Full-suite runs use nodescheduler.'
         required: false
-        default: none
+        default: nodescheduler
         type: choice
         options: [none, nodescheduler]
       debug_scheduler_log:
@@ -38,9 +38,9 @@ on:
         default: false
         type: boolean
       controller_manager:
-        description: 'Which controller manager runs the suite: none (k3s bundled kube-controller-manager, the shipped default) or nodecontroller (ours, which also passes --disable-controller-manager to k3s). nodecontroller implements the controller domains documented in docs/CONTROLLER_MANAGER.md, including node lifecycle/PodCIDR, workload controllers, garbage collection, ServiceAccounts, quotas, and storage helpers; use it to exercise those implementations, while cases outside that scope should self-skip.'
+        description: 'Which controller manager runs the suite: nodecontroller (the not-k8s controller manager, which also passes --disable-controller-manager to k3s) or none (k3s bundled kube-controller-manager, for isolation only). Full-suite runs use nodecontroller.'
         required: false
-        default: none
+        default: nodecontroller
         type: choice
         options: [none, nodecontroller]
       proxy:
@@ -169,45 +169,21 @@ jobs:
         # Set DATASTORE=none to run this suite against bundled kine instead,
         # which is what isolates a nodelet regression from a datastore one.
         #
-        # SCHEDULER is deliberately NOT defaulted on, unlike DATASTORE above,
-        # and the difference is feature completeness rather than confidence.
+        # The default E2E stack uses every not-k8s replacement. k3s supplies
+        # only the apiserver; its bundled scheduler and controller manager are
+        # disabled by bootstrap-source.sh when these values are selected.
+        # This makes an unfiltered run test the shipped stack rather than
+        # silently substituting k3s implementations for components this
+        # project owns.
         #
-        # nodestore implements the whole etcd v3 surface the apiserver uses,
-        # so turning it on makes every test in this suite an additional
-        # assertion about it — strictly more coverage. nodescheduler is
-        # phase 1 (docs/SCHEDULER.md): no VolumeBinding, no DynamicResources,
-        # no PodTopologySpread, no InterPodAffinity, no preemption. Turning it
-        # on for the *full* suite therefore makes a phase-1 component the gate
-        # for phase-4 and phase-5 tests, which cannot pass and are not
-        # supposed to:
-        #
-        #   * a WaitForFirstConsumer PVC is never provisioned, because the
-        #     VolumeBinding plugin is what writes
-        #     volume.kubernetes.io/selected-node at PreBind;
-        #   * a ResourceClaim is never allocated, because the DynamicResources
-        #     plugin is what writes status.allocation and reservedFor before
-        #     the Binding (see docs/GAP_CLOSURE.md — that is the scheduler's
-        #     job, not kubelet's);
-        #   * anti-affinity and spread constraints are simply not evaluated,
-        #     so pods that ought to be rejected get placed.
-        #
-        # So: run the full suite against the shipped default, and dispatch
-        # scheduler coverage explicitly —
-        #
-        #   gh workflow run e2e.yml -f scheduler=nodescheduler -f only=scheduler
-        #
-        # Flip the default here once phases 4 and 5 land, at which point the
-        # "every pod-creating test also asserts our placement" property
-        # genuinely holds.
+        # Set scheduler=none or controller_manager=none only for an explicit
+        # isolation run against the bundled k3s implementation.
         env:
           NOTK8S_BUILD_PROFILE: debug
-          NOTK8S_BUILD_LAYOUT: ${{ inputs.layout || 'split' }}
+          NOTK8S_BUILD_LAYOUT: ${{ inputs.layout || 'combined' }}
           DATASTORE: ${{ inputs.datastore || 'nodestore' }}
-          SCHEDULER: ${{ inputs.scheduler || 'none' }}
-          # Same two-halves-of-one-switch pairing as SCHEDULER, same
-          # "leave off for a full-suite run" reasoning — see this input's
-          # own description above.
-          CONTROLLER_MANAGER: ${{ inputs.controller_manager || 'none' }}
+          SCHEDULER: ${{ inputs.scheduler || 'nodescheduler' }}
+          CONTROLLER_MANAGER: ${{ inputs.controller_manager || 'nodecontroller' }}
           NODECONTROLLER_DISABLED_CONTROLLERS: ${{ inputs.nodecontroller_disabled_controllers || '' }}
           # Picked up by nodescheduler-service.sh's env forwarding — only
           # written into the installed unit when non-empty, so leaving

@@ -90,6 +90,13 @@ async fn write_condition(
     nominated_node: Option<&str>,
 ) -> anyhow::Result<()> {
     let now = k8s_openapi::jiff::Timestamp::now().to_string();
+    let last_transition_time = pod
+        .pod_scheduled_condition
+        .as_ref()
+        .filter(|condition| condition.status == "False")
+        .and_then(|condition| condition.last_transition_time.as_ref())
+        .map(|time| time.0.to_string())
+        .unwrap_or(now);
 
     let mut status = serde_json::json!({
         "conditions": [{
@@ -100,7 +107,7 @@ async fn write_condition(
             // swapping them breaks the tools silently.
             "reason": "Unschedulable",
             "message": reason,
-            "lastTransitionTime": now,
+            "lastTransitionTime": last_transition_time,
         }]
     });
 

@@ -19,7 +19,8 @@
 
 use crate::cache::{NodeInfo, PodInfo};
 use crate::framework::status::Status;
-use crate::framework::{CycleState, FilterPlugin, Plugin};
+use crate::events::{ActionType, ClusterEvent, EventResource};
+use crate::framework::{ClusterEventWithHint, CycleState, FilterPlugin, Plugin};
 
 pub const NAME: &str = "NodeName";
 
@@ -30,10 +31,14 @@ impl Plugin for NodeName {
         NAME
     }
 
-    // Deliberately nothing. There is no cluster event that makes a wrongly
-    // named node right — the pod's `spec.nodeName` is immutable, so a pod
-    // rejected by this plugin on every node is permanently unschedulable and
-    // waking it would only burn cycles re-deciding that.
+    fn events_to_register(&self) -> Vec<ClusterEventWithHint> {
+        // The requested node may not exist yet. No Node update can rename an
+        // existing object, so Add is the sole useful event (v1.33 contract).
+        vec![ClusterEventWithHint::always(ClusterEvent::new(
+            EventResource::Node,
+            ActionType::ADD,
+        ))]
+    }
 }
 
 impl FilterPlugin for NodeName {
@@ -82,10 +87,9 @@ mod tests {
     }
 
     #[test]
-    fn it_registers_no_events_because_nothing_can_ever_help() {
-        // The one legitimate empty set among the rejecting plugins:
-        // spec.nodeName is immutable, so a pod rejected everywhere by it stays
-        // rejected and waking it would only burn cycles.
-        assert!(NodeName.events_to_register().is_empty());
+    fn it_wakes_when_the_requested_node_appears() {
+        let events = NodeName.events_to_register();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, ClusterEvent::new(EventResource::Node, ActionType::ADD));
     }
 }

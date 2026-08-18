@@ -37,6 +37,7 @@ pub mod events;
 pub mod extender;
 pub mod framework;
 pub mod preempt;
+pub mod pvc_binding;
 pub mod queue;
 pub mod report;
 pub mod watch;
@@ -88,6 +89,7 @@ pub async fn run() -> Result<()> {
 /// and one `PreEnqueue` chain across all of them correct: they are
 /// byte-for-byte the same plugin set, just answering to different names.
 async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<()> {
+    let pvc_bindings = pvc_binding::PvcBindingTracker::default();
     // Shared, because the binding cycle runs on its own task and needs the
     // same plugin set the scheduling cycle used.
     let registries: HashMap<String, Arc<framework::Registry>> = cfg
@@ -96,7 +98,12 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
         .map(|name| {
             (
                 name.clone(),
-                Arc::new(framework::plugins::default_registry(client.clone(), cfg, name)),
+                Arc::new(framework::plugins::default_registry(
+                    client.clone(),
+                    cfg,
+                    name,
+                    pvc_bindings.clone(),
+                )),
             )
         })
         .collect();
@@ -158,6 +165,8 @@ async fn schedule_forever(client: kube::Client, cfg: &config::Config) -> Result<
         budgets: budgets.clone(),
         assumed: assumed.clone(),
         nominator: nominator.clone(),
+        pvc_bindings,
+        preserve_extender_objects: !cfg.extenders.is_empty(),
     };
 
     let mut watches = {
@@ -245,7 +254,11 @@ async fn scheduling_loop(
     client: kube::Client,
     cfg: &config::Config,
 ) -> Result<()> {
-    let mut scheduler = cycle::Scheduler::new(cfg.percentage_of_nodes_to_score, nominator);
+    let mut scheduler = cycle::Scheduler::new(
+        cfg.percentage_of_nodes_to_score,
+        cfg.parallelism,
+        nominator,
+    );
     let mut snapshot = cache::Snapshot::default();
 
     loop {
@@ -332,9 +345,10 @@ async fn scheduling_loop(
                 let queue = queue.clone();
                 let cache = cache.clone();
                 let assumed = assumed.clone();
+                let extenders = extenders.clone();
                 tokio::spawn(async move {
                     let outcome =
-                        binder::bind_one(&registry, state, pod.clone(), node).await;
+                        binder::bind_one(&registry, &extenders, state, pod.clone(), node).await;
                     binder::handle_outcome(&outcome, pod, &queue, &assumed, &cache);
                 });
             }
@@ -353,13 +367,17 @@ async fn scheduling_loop(
                     let pdbs = budgets.lock().unwrap().clone();
                     let outcome = scheduler.preempt(
                         &registry,
+                        &extenders,
                         &pod,
                         &snapshot,
                         &node_statuses,
                         &pdbs,
                         &mut rng,
-                    );
-                    if let Some(outcome) = outcome {
+                    ).await;
+                    if let Err(error) = &outcome {
+                        tracing::warn!(pod = %pod.key(), %error, "preemption extender failed");
+                    }
+                    if let Ok(Some(outcome)) = outcome {
                         tracing::info!(
                             pod = %pod.key(),
                             node = %outcome.nominated_node,
@@ -541,6 +559,37 @@ async fn evict_victims(
         };
         let api: Api<k8s_openapi::api::core::v1::Pod> =
             Api::namespaced(client.clone(), namespace);
+        // Kubernetes marks a victim before deleting it. Consumers use this
+        // condition to distinguish scheduler preemption from an arbitrary
+        // user/controller deletion, and kubelet can begin graceful shutdown
+        // with the right reason while the DELETE is in flight.
+        let disruption = serde_json::json!({
+            "status": { "conditions": [{
+                "type": "DisruptionTarget",
+                "status": "True",
+                "reason": "PreemptionByScheduler",
+                "message": format!(
+                    "Preempted by pod {}/{} on node {}",
+                    preemptor.namespace,
+                    preemptor.name,
+                    node,
+                ),
+                "lastTransitionTime": k8s_openapi::jiff::Timestamp::now().to_string(),
+            }] }
+        });
+        if let Err(error) = api
+            .patch_status(
+                name,
+                &PatchParams {
+                    field_manager: Some("nodescheduler".to_string()),
+                    ..Default::default()
+                },
+                &Patch::Strategic(disruption),
+            )
+            .await
+        {
+            tracing::warn!(victim = %victim, %error, "couldn't mark preemption victim as a disruption target");
+        }
         match api.delete(name, &DeleteParams::default()).await {
             Ok(_) => tracing::info!(victim = %victim, for_pod = %preemptor.key(), "evicted"),
             // A victim that is already gone is the ordinary race, not a

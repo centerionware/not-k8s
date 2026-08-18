@@ -183,6 +183,10 @@ impl Plugin for InterPodAffinity {
                 EventResource::Node,
                 ActionType::ADD | ActionType::UPDATE_NODE_LABEL,
             )),
+            ClusterEventWithHint::always(ClusterEvent::new(
+                EventResource::Namespace,
+                ActionType::ADD | ActionType::DELETE | ActionType::UPDATE,
+            )),
         ]
     }
 }

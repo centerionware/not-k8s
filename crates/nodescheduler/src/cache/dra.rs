@@ -75,10 +75,27 @@ pub struct RawDeviceClaim {
     /// Cross-request "must share an attribute" rules — evaluated in
     /// `dynamic_resources.rs`'s `allocate_on_node` as devices are picked, the
     /// same "first device in the group sets the value, later ones must
-    /// match" rule upstream's `matchAttributeConstraint` uses (see that
-    /// file's module header for the one real divergence: a single greedy
-    /// pass, not upstream's full backtracking search).
+    /// match" rule upstream's `matchAttributeConstraint` uses. The allocator
+    /// backtracks across requests and claims when an early match prevents a
+    /// complete solution.
     pub constraints: Option<Vec<RawDeviceConstraint>>,
+    /// Driver configuration supplied by the claim. It does not participate
+    /// in selection, but must be copied into the allocation result for the
+    /// node-side DRA plugin.
+    pub config: Option<Vec<RawDeviceClaimConfiguration>>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+pub struct RawOpaqueDeviceConfiguration {
+    pub driver: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct RawDeviceClaimConfiguration {
+    #[serde(default)]
+    pub requests: Vec<String>,
+    pub opaque: Option<RawOpaqueDeviceConfiguration>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -172,6 +189,16 @@ pub struct RawAllocationResult {
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct RawDeviceAllocationResult {
     pub results: Option<Vec<RawDeviceRequestAllocationResult>>,
+    pub config: Option<Vec<RawDeviceAllocationConfiguration>>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RawDeviceAllocationConfiguration {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requests: Vec<String>,
+    pub opaque: Option<RawOpaqueDeviceConfiguration>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
@@ -233,6 +260,12 @@ impl k8s_openapi::Metadata for RawDeviceClass {
 #[derive(Deserialize, Default, Clone, Debug)]
 pub struct RawDeviceClassSpec {
     pub selectors: Option<Vec<RawDeviceSelector>>,
+    pub config: Option<Vec<RawDeviceClassConfiguration>>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct RawDeviceClassConfiguration {
+    pub opaque: Option<RawOpaqueDeviceConfiguration>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────

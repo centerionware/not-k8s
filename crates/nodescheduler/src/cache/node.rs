@@ -33,18 +33,18 @@ use std::sync::Arc;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ImageState {
     pub size_bytes: i64,
-    /// Always `1` here — a single node's own projection has no way to know
-    /// the cluster-wide count. `image_locality.rs`'s `pre_score` computes
-    /// the real cluster-wide count itself (from the feasible node set
-    /// `PreScore` is handed) rather than reading this field; kept for the
-    /// shape symmetry with upstream's own per-node `ImageStateSummary` and
-    /// because test fixtures still construct it directly.
+    /// Kept for fixture/source-shape compatibility. The authoritative
+    /// cluster-wide count lives in `Snapshot::image_node_counts`, because a
+    /// per-node projection cannot update every other Node cheaply.
     pub num_nodes: i64,
 }
 
 /// The scheduler's view of a node.
 #[derive(Clone, Debug, Default)]
 pub struct NodeInfo {
+    /// Full object retained only when an HTTP extender is configured. See
+    /// `PodInfo::api_object`; ordinary clusters pay no duplicate-object cost.
+    pub api_object: Option<Box<Node>>,
     pub name: String,
     pub labels: BTreeMap<String, String>,
     pub taints: Vec<Taint>,

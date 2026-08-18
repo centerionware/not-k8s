@@ -24,7 +24,8 @@ pub mod storage;
 
 pub use assume::{Assumed, AssumedPods};
 pub use dra::{
-    RawDeviceClass, RawDeviceRequestAllocationResult, RawResourceClaim, RawResourceSlice,
+    RawDeviceAllocationConfiguration, RawDeviceClaimConfiguration, RawDeviceClass,
+    RawDeviceRequestAllocationResult, RawResourceClaim, RawResourceSlice,
 };
 pub use node::{ImageState, NodeInfo};
 pub use pod::{
@@ -34,4 +35,5 @@ pub use pod::{
 pub use snapshot::{Cache, Snapshot, WorkloadSelector};
 pub use storage::{
     CsiDriverInfo, CsiNodeInfo, PvInfo, PvcInfo, StorageCapacityInfo, StorageClassInfo,
+    VolumeAttachmentInfo,
 };

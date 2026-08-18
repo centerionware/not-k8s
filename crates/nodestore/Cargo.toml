@@ -27,6 +27,7 @@ path = "src/main.rs"
 tokio = { workspace = true }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tonic = { workspace = true }
+rustls = { workspace = true }
 prost = { workspace = true }
 tonic-prost = { workspace = true }
 anyhow = { workspace = true }

@@ -268,7 +268,7 @@ impl PreFilterPlugin for PodTopologySpread {
     ) -> (Status, Option<Vec<String>>) {
         // A pod that declares its own constraints never gets the defaults —
         // upstream treats the two as alternatives, not as a merge.
-        let mut default_constraints = Vec::new();
+        let default_constraints;
         let mut default_selector_for_all = None;
         let constraints: &[TopologySpreadConstraint] = if !pod.topology_spread_constraints.is_empty()
         {

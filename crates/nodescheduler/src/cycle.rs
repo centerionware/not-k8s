@@ -56,6 +56,8 @@
 use crate::cache::{NodeInfo, PodInfo, Snapshot};
 use crate::framework::status::{Code, NodeToStatus, Status};
 use crate::framework::{CycleState, Registry, MAX_NODE_SCORE};
+use rayon::prelude::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Below this many nodes, always consider all of them: the saving is not worth
@@ -98,7 +100,16 @@ impl Rng {
         if n == 0 {
             return 0;
         }
-        self.next_u64() % n
+        // Rejection removes `% n`'s bias when 2^64 is not divisible by n.
+        // The discarded tail is tiny (and zero for powers of two), while
+        // every returned bucket has exactly the same number of source values.
+        let zone = u64::MAX - (u64::MAX % n);
+        loop {
+            let value = self.next_u64();
+            if value < zone {
+                return value % n;
+            }
+        }
     }
 }
 
@@ -216,6 +227,8 @@ pub enum CycleOutcome {
 /// explicit parameter, resolved by the caller from `pod.scheduler_name`.
 pub struct Scheduler {
     pub percentage_of_nodes_to_score: i32,
+    parallelism: usize,
+    workers: rayon::ThreadPool,
     /// Rotates across cycles; see [`advance_start_index`].
     pub next_start_node_index: usize,
     /// Pods that have preempted and are waiting for their victims to drain.
@@ -231,9 +244,20 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn new(percentage_of_nodes_to_score: i32, nominator: Arc<Mutex<crate::preempt::Nominator>>) -> Self {
+    pub fn new(
+        percentage_of_nodes_to_score: i32,
+        parallelism: usize,
+        nominator: Arc<Mutex<crate::preempt::Nominator>>,
+    ) -> Self {
+        let parallelism = parallelism.max(1);
         Self {
             percentage_of_nodes_to_score,
+            parallelism,
+            workers: rayon::ThreadPoolBuilder::new()
+                .num_threads(parallelism)
+                .thread_name(|i| format!("nodescheduler-worker-{i}"))
+                .build()
+                .expect("a positive NODESCHEDULER_PARALLELISM builds a worker pool"),
             next_start_node_index: 0,
             nominator,
         }
@@ -283,6 +307,11 @@ impl Scheduler {
         }
 
         let mut state = CycleState::default();
+        // ImageLocality's upstream implementation reads the full scheduler
+        // snapshot from its framework handle during Score. Preserve that
+        // contract even though later filtering passes only feasible nodes to
+        // PreScore; the summary itself is maintained at Node-watch time.
+        crate::framework::plugins::image_locality::prepare_state(&mut state, snapshot);
 
         // ── PreFilter ───────────────────────────────────────────────────
         let mut restricted: Option<Vec<String>> = None;
@@ -331,14 +360,105 @@ impl Scheduler {
         // score, stop at one" short-circuit (`registry.score.is_empty()`)
         // would strand an extender-only prioritizer at a single candidate
         // before it ever got a say.
-        let any_prioritizer = extenders.iter().any(|e| e.config.prioritize_verb.is_some());
+        let has_extender_filter_or_scoring = extenders.iter().any(|e| {
+            e.config.filter_verb.is_some() || e.config.prioritize_verb.is_some()
+        });
+
+        // A pod which already preempted victims is overwhelmingly likely to
+        // fit only the node it was promised. Upstream evaluates that node
+        // first and returns immediately when it passes, before doing a normal
+        // cluster sweep or scoring unrelated nodes.
+        let preferred_nomination = pod.nominated_node_name.clone().or_else(|| {
+            self.nominator
+                .lock()
+                .unwrap()
+                .nominated_node(&pod.uid)
+                .map(str::to_string)
+        });
+        if let Some(name) = preferred_nomination {
+            let allowed = restricted.as_ref().is_none_or(|nodes| nodes.contains(&name));
+            if allowed {
+                if let Some(node) = snapshot.node(&name) {
+                    if self.filter_one_node(registry, &mut state, pod, node).is_none() {
+                        let mut preferred = vec![node.clone()];
+                        let mut extender_failed = false;
+                        for extender in extenders {
+                            if !extender.config.applies_to(pod) {
+                                continue;
+                            }
+                            let refs: Vec<&NodeInfo> =
+                                preferred.iter().map(|candidate| candidate.as_ref()).collect();
+                            match extender.filter(pod, &refs).await {
+                                Ok(Some(outcome)) => {
+                                    if let Some(nodes) = outcome.replacement_nodes {
+                                        preferred = nodes
+                                            .into_iter()
+                                            .map(|api| {
+                                                let mut projected = NodeInfo::default();
+                                                projected.update_from_node(&api, 0);
+                                                projected.api_object = Some(Box::new(api));
+                                                Arc::new(projected)
+                                            })
+                                            .collect();
+                                    } else {
+                                        preferred.retain(|candidate| {
+                                            outcome.passed.contains(&candidate.name)
+                                        });
+                                    }
+                                    if preferred.is_empty() {
+                                        extender_failed = true;
+                                        break;
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(error) if extender.config.ignorable => {
+                                    tracing::warn!(extender = %extender.config.url_prefix, %error, "ignorable extender failed while evaluating nominated node");
+                                }
+                                Err(error) => {
+                                    // The ordinary sweep below repeats the
+                                    // call and owns the final cycle error,
+                                    // matching upstream's nominated-node fast
+                                    // path falling back after an evaluation
+                                    // error.
+                                    tracing::warn!(extender = %extender.config.url_prefix, %error, "nominated-node extender evaluation failed; falling back to normal sweep");
+                                    extender_failed = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if !extender_failed {
+                            if let Some(chosen) = preferred.first() {
+                                return (
+                                    CycleOutcome::Scheduled { node: chosen.name.clone() },
+                                    state,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // ── Filter ──────────────────────────────────────────────────────
         let (feasible, node_statuses, processed) =
-            self.find_feasible_nodes(registry, &mut state, pod, snapshot, restricted.as_deref(), any_prioritizer);
+            self.find_feasible_nodes(
+                registry,
+                &mut state,
+                pod,
+                snapshot,
+                restricted.as_deref(),
+                has_extender_filter_or_scoring,
+            );
 
         self.next_start_node_index =
             advance_start_index(self.next_start_node_index, processed, snapshot.num_nodes());
+
+        // A Filter or PreFilterExtension error is a cycle failure, not an
+        // ordinary rejection attached to one node. In particular, a second
+        // feasible node must not hide that the cycle used invalid state.
+        if let Some(status) = node_statuses.first_error() {
+            return (CycleOutcome::Error { reason: status.to_string() }, state);
+        }
 
         // ── HTTP extenders' Filter ──────────────────────────────────────
         //
@@ -370,7 +490,19 @@ impl Scheduler {
                     for (node, reason) in &outcome.failed_unresolvable {
                         node_statuses.record(node.clone(), Status::unresolvable("HTTPExtender", reason.clone()));
                     }
-                    feasible.retain(|n| outcome.passed.contains(&n.name));
+                    if let Some(nodes) = outcome.replacement_nodes {
+                        feasible = nodes
+                            .into_iter()
+                            .map(|api| {
+                                let mut node = NodeInfo::default();
+                                node.update_from_node(&api, 0);
+                                node.api_object = Some(Box::new(api));
+                                Arc::new(node)
+                            })
+                            .collect();
+                    } else {
+                        feasible.retain(|n| outcome.passed.contains(&n.name));
+                    }
                 }
                 Ok(None) => {} // this extender has no filterVerb configured
                 Err(e) => {
@@ -419,6 +551,7 @@ impl Scheduler {
         // extender configures `prioritizeVerb` — `any_prioritizer` above is
         // exactly what let `find_feasible_nodes` collect more than one
         // candidate in the first place.
+        let any_prioritizer = extenders.iter().any(|e| e.config.prioritize_verb.is_some());
         if feasible.len() == 1 || (registry.score.is_empty() && !any_prioritizer) {
             return (CycleOutcome::Scheduled { node: feasible[0].name.clone() }, state);
         }
@@ -439,13 +572,17 @@ impl Scheduler {
             if state.score_skipped(plugin.name()) {
                 continue;
             }
-            let mut raw: Vec<i64> = Vec::with_capacity(feasible.len());
-            for node in &feasible {
-                match plugin.score(&state, pod, node) {
-                    Ok(v) => raw.push(v),
-                    Err(status) => {
-                        return (CycleOutcome::Error { reason: status.to_string() }, state)
-                    }
+            let scored: Vec<Result<i64, Status>> = self.workers.install(|| {
+                feasible
+                    .par_iter()
+                    .map(|node| plugin.score(&state, pod, node))
+                    .collect()
+            });
+            let mut raw = Vec::with_capacity(scored.len());
+            for score in scored {
+                match score {
+                    Ok(value) => raw.push(value),
+                    Err(status) => return (CycleOutcome::Error { reason: status.to_string() }, state),
                 }
             }
             let status = plugin.normalize(&state, pod, &mut raw);
@@ -454,9 +591,21 @@ impl Scheduler {
             }
             let weight = plugin.weight();
             for (total, score) in totals.iter_mut().zip(raw.iter()) {
-                // Clamp before weighting: a plugin whose normalize is wrong
-                // must not be able to swamp every other plugin's contribution.
-                total.1 += (*score).clamp(0, MAX_NODE_SCORE) * weight;
+                // Upstream rejects an invalid normalized score as a framework
+                // error. Silently clamping it can select a different node and
+                // hides a broken plugin configuration.
+                if !(0..=MAX_NODE_SCORE).contains(score) {
+                    return (
+                        CycleOutcome::Error {
+                            reason: format!(
+                                "plugin {:?} returned score {score} outside [0, {MAX_NODE_SCORE}] after normalizing",
+                                plugin.name()
+                            ),
+                        },
+                        state,
+                    );
+                }
+                total.1 = total.1.saturating_add(score.saturating_mul(weight));
             }
         }
 
@@ -472,25 +621,28 @@ impl Scheduler {
         // pod still gets placed using whatever scores plugins and any other
         // extenders already produced.
         let refs: Vec<&NodeInfo> = feasible.iter().map(|n| n.as_ref()).collect();
-        for extender in extenders {
-            if !extender.config.applies_to(pod) {
-                continue; // managedResources set, and pod requests none of them
-            }
-            match extender.prioritize(pod, &refs).await {
+        let calls = extenders
+            .iter()
+            .filter(|extender| extender.config.applies_to(pod))
+            .map(|extender| {
+                let refs = refs.as_slice();
+                async move { (extender, extender.prioritize(pod, refs).await) }
+            });
+        for (extender, result) in futures::future::join_all(calls).await {
+            match result {
                 Ok(Some(scores)) => {
                     for (host, score) in scores {
                         if let Some(total) = totals.iter_mut().find(|(n, _)| *n == host) {
-                            total.1 += score;
+                            total.1 = total.1.saturating_add(score);
                         }
                     }
                 }
                 Ok(None) => {} // this extender has no prioritizeVerb configured
                 Err(e) => {
-                    if extender.config.ignorable {
-                        tracing::warn!(extender = %extender.config.url_prefix, error = %e, "ignorable extender prioritize call failed; continuing without it");
-                    } else {
-                        return (CycleOutcome::Error { reason: e.to_string() }, state);
-                    }
+                    // Upstream ignores Prioritize failures for every extender,
+                    // irrespective of `ignorable`; Filter and preemption are
+                    // the phases where that flag controls fatality.
+                    tracing::warn!(extender = %extender.config.url_prefix, error = %e, "extender prioritize call failed; continuing without its score");
                 }
             }
         }
@@ -502,6 +654,75 @@ impl Scheduler {
             },
         };
         (outcome, state)
+    }
+
+    /// Run the Filter chain for exactly one node, including the nominated-pod
+    /// PreFilterExtension accounting installed and then undone around that
+    /// node's predicates.
+    fn filter_one_node(
+        &self,
+        registry: &Registry,
+        state: &mut CycleState,
+        pod: &PodInfo,
+        node: &NodeInfo,
+    ) -> Option<Status> {
+        let nominees: Vec<Arc<PodInfo>> = self
+            .nominator
+            .lock()
+            .unwrap()
+            .nominated_on(&node.name)
+            .into_iter()
+            .filter(|nominee| nominee.priority >= pod.priority && nominee.uid != pod.uid)
+            .collect();
+        let mut rejected = None;
+        let mut added_nominees: Vec<(usize, usize)> = Vec::new();
+        for (plugin_index, plugin) in registry.pre_filter.iter().enumerate() {
+            if let Some(extension) = plugin.extensions() {
+                for (nominee_index, nominee) in nominees.iter().enumerate() {
+                    let status = extension.add_pod(state, pod, nominee, node);
+                    if !status.is_success() && !status.is_skip() {
+                        rejected = Some(status);
+                        break;
+                    }
+                    added_nominees.push((plugin_index, nominee_index));
+                }
+            }
+            if rejected.is_some() {
+                break;
+            }
+        }
+
+        if rejected.is_none() {
+            rejected = Self::run_filters(registry, state, pod, node);
+        }
+
+        for (plugin_index, nominee_index) in added_nominees.into_iter().rev() {
+            if let Some(extension) = registry.pre_filter[plugin_index].extensions() {
+                let status = extension.remove_pod(state, pod, &nominees[nominee_index], node);
+                if rejected.is_none() && !status.is_success() && !status.is_skip() {
+                    rejected = Some(status);
+                }
+            }
+        }
+        rejected
+    }
+
+    /// Apply the ordinary Filter plugins once. Both the sequential path
+    /// (which also installs nominated-pod extension state) and the parallel
+    /// path use this same status/skip handling.
+    fn run_filters(
+        registry: &Registry,
+        state: &CycleState,
+        pod: &PodInfo,
+        node: &NodeInfo,
+    ) -> Option<Status> {
+        registry.filter.iter().find_map(|plugin| {
+            if state.filter_skipped(plugin.name()) {
+                return None;
+            }
+            let status = plugin.filter(state, pod, node);
+            (!status.is_success() && !status.is_skip()).then_some(status)
+        })
     }
 
     /// Sweep nodes until enough are feasible, starting where the last cycle
@@ -518,11 +739,11 @@ impl Scheduler {
         pod: &PodInfo,
         snapshot: &Snapshot,
         restricted: Option<&[String]>,
-        any_prioritizer: bool,
+        has_extender_filter_or_scoring: bool,
     ) -> (Vec<Arc<NodeInfo>>, NodeToStatus, usize) {
         let all = snapshot.nodes();
         let num_all = all.len();
-        let wanted = if registry.score.is_empty() && !any_prioritizer {
+        let wanted = if registry.score.is_empty() && !has_extender_filter_or_scoring {
             // With nothing to compare on, the first feasible node is as good
             // as the best one, so stop at one. An extender's own
             // `prioritizeVerb` counts as "something to compare on" even when
@@ -539,6 +760,44 @@ impl Scheduler {
         let mut statuses = NodeToStatus::default();
         let mut processed = 0usize;
 
+        // Nominated pods mutate PreFilterExtension state while one node is
+        // evaluated, so that uncommon preemption-drain path remains
+        // sequential. The normal path is read-only and fans Filter out over
+        // the configured worker pool in bounded waves, stopping after the
+        // first wave that reaches the upstream feasible-node target.
+        if self.parallelism > 1 && self.nominator.lock().unwrap().is_empty() {
+            let allowed: Option<std::collections::HashSet<&str>> =
+                restricted.map(|names| names.iter().map(String::as_str).collect());
+            let ordered: Vec<Arc<NodeInfo>> = (0..num_all)
+                .map(|i| all[(self.next_start_node_index + i) % num_all].clone())
+                .collect();
+
+            for wave in ordered.chunks(self.parallelism) {
+                let allowed_wave: Vec<Arc<NodeInfo>> = wave
+                    .iter()
+                    .filter(|node| allowed.as_ref().is_none_or(|set| set.contains(node.name.as_str())))
+                    .cloned()
+                    .collect();
+                let results: Vec<Option<Status>> = self.workers.install(|| {
+                    allowed_wave.par_iter()
+                        .map(|node| Self::run_filters(registry, state, pod, node))
+                        .collect()
+                });
+                processed += wave.len();
+                for (node, rejected) in allowed_wave.iter().zip(results) {
+                    match rejected {
+                        None => feasible.push(node.clone()),
+                        Some(status) => statuses.record(node.name.clone(), status),
+                    }
+                }
+                if feasible.len() >= wanted || statuses.first_error().is_some() {
+                    feasible.truncate(wanted);
+                    return (feasible, statuses, processed);
+                }
+            }
+            return (feasible, statuses, processed);
+        }
+
         for i in 0..num_all {
             let node = &all[(self.next_start_node_index + i) % num_all];
             processed += 1;
@@ -549,64 +808,12 @@ impl Scheduler {
                 }
             }
 
-            // Pods already promised this node by a previous preemption must
-            // be treated as if they were on it. Skipping this has two
-            // preemptors both see the same freed capacity and both claim it —
-            // a double-booking that only appears under concurrent preemption
-            // and that no single-pod test reproduces.
-            //
-            // Only nominees at least as important as this pod count. A less
-            // important nominee cannot legitimately keep us out; it would
-            // itself be preemptable.
-            let nominees: Vec<Arc<PodInfo>> = self
-                .nominator
-                .lock()
-                .unwrap()
-                .nominated_on(&node.name)
-                .into_iter()
-                .filter(|n| n.priority >= pod.priority && n.uid != pod.uid)
-                .collect();
-            for plugin in &registry.pre_filter {
-                if let Some(ext) = plugin.extensions() {
-                    for nominee in &nominees {
-                        ext.add_pod(state, pod, nominee, node);
-                    }
-                }
-            }
-
-            let mut rejected = None;
-            for plugin in &registry.filter {
-                if state.filter_skipped(plugin.name()) {
-                    continue;
-                }
-                let status = plugin.filter(state, pod, node);
-                if !status.is_success() && !status.is_skip() {
-                    rejected = Some(status);
-                    // First rejection wins: the remaining filters cannot
-                    // un-reject the node, and running them is pure cost on
-                    // the node-count-times-plugin-count hot path.
-                    break;
-                }
-            }
-
-            // Undo, so the next node is judged on its own merits. Same
-            // symmetry requirement as preemption's dry runs — an asymmetric
-            // add/remove pair would leak this node's nominees into every
-            // later node's answer.
-            for plugin in &registry.pre_filter {
-                if let Some(ext) = plugin.extensions() {
-                    for nominee in &nominees {
-                        ext.remove_pod(state, pod, nominee, node);
-                    }
-                }
-            }
+            let rejected = self.filter_one_node(registry, state, pod, node);
 
             match rejected {
                 None => {
                     feasible.push(node.clone());
-                    if feasible.len() >= wanted {
-                        break;
-                    }
+                    if feasible.len() >= wanted { break; }
                 }
                 Some(status) => statuses.record(node.name.clone(), status),
             }
@@ -660,6 +867,7 @@ mod tests;
 // the part that needs the registry.
 
 /// What a preemption attempt concluded.
+#[derive(Debug)]
 pub struct PreemptionOutcome {
     /// The node promised to the preemptor.
     pub nominated_node: String,
@@ -674,15 +882,16 @@ impl Scheduler {
     /// candidate, or no victim set makes the pod fit — all of which mean
     /// "leave the cluster alone", which is the right answer far more often
     /// than not.
-    pub fn preempt(
+    pub async fn preempt(
         &self,
         registry: &Registry,
+        extenders: &[crate::extender::Extender],
         pod: &PodInfo,
         snapshot: &Snapshot,
         node_statuses: &NodeToStatus,
         budgets: &[crate::preempt::PdbState],
         rng: &mut Rng,
-    ) -> Option<PreemptionOutcome> {
+    ) -> anyhow::Result<Option<PreemptionOutcome>> {
         use crate::preempt::{
             eligible_to_preempt, offset_and_num_candidates, pick_one_node, select_victims_on_node,
             Candidate,
@@ -695,73 +904,160 @@ impl Scheduler {
             .lock()
             .unwrap()
             .nominated_node(&pod.uid)
-            .map(str::to_string);
+            .map(str::to_string)
+            .or_else(|| pod.nominated_node_name.clone());
         let draining = nominated
             .as_deref()
             .and_then(|n| snapshot.node(n))
-            .map(|n| n.pods.iter().any(|p| p.priority < pod.priority))
+            .map(|n| {
+                n.pods
+                    .iter()
+                    .any(|p| p.priority < pod.priority && p.terminating_by_preemption)
+            })
             .unwrap_or(false);
-        eligible_to_preempt(pod.preemption_policy.as_deref(), draining, false).ok()?;
+        let nominated_unresolvable = nominated
+            .as_deref()
+            .and_then(|node| node_statuses.for_node(node))
+            .is_some_and(|status| {
+                status.code == crate::framework::status::Code::UnschedulableAndUnresolvable
+            });
+        if eligible_to_preempt(
+            pod.preemption_policy.as_deref(),
+            draining,
+            nominated_unresolvable,
+        )
+        .is_err()
+        {
+            return Ok(None);
+        }
 
         // Only nodes eviction could actually fix. A node rejected as
         // UnschedulableAndUnresolvable — wrong name, unmatched affinity, no
         // topology domain — stays rejected however many pods die on it.
         let candidates_by_name = node_statuses.preemption_candidates();
         if candidates_by_name.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         let (offset, wanted) =
             offset_and_num_candidates(candidates_by_name.len() as i32, rng);
 
-        let mut found: Vec<Candidate> = Vec::new();
-        for i in 0..candidates_by_name.len() {
-            if found.len() as i32 >= wanted {
-                break;
-            }
-            let idx = (offset as usize + i) % candidates_by_name.len();
-            let Some(node) = snapshot.node(candidates_by_name[idx]) else {
-                continue;
-            };
+        // Match upstream's DryRunPreemption: nodes are evaluated in parallel,
+        // each PDB-safe/PDB-violating bucket retains at most `wanted`
+        // candidates, and cancellation only starts once there is at least one
+        // PDB-safe choice and the combined shortlist is large enough. Stopping
+        // at `wanted` violating candidates would miss a clean node immediately
+        // after them and evict through a budget unnecessarily.
+        #[derive(Default)]
+        struct CandidateBuckets {
+            non_violating: Vec<Candidate>,
+            violating: Vec<Candidate>,
+            errors: Vec<Status>,
+        }
 
-            // A fresh CycleState per node: PreFilter's per-cycle work is
-            // cheap to redo and sharing one across nodes would leak one
-            // node's hypothetical removals into the next node's answer.
-            let mut state = CycleState::default();
-            for plugin in &registry.pre_filter {
-                plugin.pre_filter(&mut state, pod, snapshot);
-            }
+        let buckets = Mutex::new(CandidateBuckets::default());
+        let cancelled = AtomicBool::new(false);
+        self.workers.install(|| {
+            (0..candidates_by_name.len()).into_par_iter().for_each(|i| {
+                if cancelled.load(Ordering::Acquire) {
+                    return;
+                }
+                let idx = (offset as usize + i) % candidates_by_name.len();
+                let Some(node) = snapshot.node(candidates_by_name[idx]) else {
+                    return;
+                };
 
-            let mut budgets = budgets.to_vec();
-            let victims = select_victims_on_node(pod, node, &mut budgets, |removed| {
-                self.fits_without(registry, &mut state, pod, node, removed)
-            });
+                // A fresh CycleState per node: PreFilter's per-cycle work is
+                // cheap to redo and sharing one across nodes would leak one
+                // node's hypothetical removals into the next node's answer.
+                let mut state = CycleState::default();
+                for plugin in &registry.pre_filter {
+                    plugin.pre_filter(&mut state, pod, snapshot);
+                }
 
-            if let Some(victims) = victims {
-                let victim_pods: Vec<&PodInfo> = node
-                    .pods
-                    .iter()
-                    .filter(|p| victims.pods.contains(&p.key()))
-                    .map(|p| p.as_ref())
-                    .collect();
-                let highest = victim_pods.iter().map(|p| p.priority).max().unwrap_or(0);
-                found.push(Candidate {
-                    node: node.name.clone(),
-                    highest_victim_priority: highest,
-                    sum_victim_priorities: victim_pods.iter().map(|p| p.priority as i64).sum(),
-                    latest_start_of_highest: victim_pods
-                        .iter()
-                        .filter(|p| p.priority == highest)
-                        .map(|p| crate::preempt::pod_start_time(p))
-                        .max(),
-                    victims,
+                let mut filter_error = None;
+                let mut node_budgets = budgets.to_vec();
+                let victims = select_victims_on_node(pod, node, &mut node_budgets, |removed| {
+                    match self.fits_without(registry, &mut state, pod, node, removed) {
+                        Ok(fits) => fits,
+                        Err(status) => {
+                            filter_error = Some(status);
+                            false
+                        }
+                    }
                 });
+
+                let mut buckets = buckets.lock().unwrap();
+                if let Some(status) = filter_error {
+                    buckets.errors.push(status);
+                    return;
+                }
+                let Some(victims) = victims else { return };
+                let non_violating = victims.pdb_violations == 0;
+                let target = if non_violating {
+                    &mut buckets.non_violating
+                } else {
+                    &mut buckets.violating
+                };
+                if target.len() < wanted as usize {
+                    target.push(Candidate::from_victims(node, victims));
+                }
+                if !buckets.non_violating.is_empty()
+                    && buckets.non_violating.len() + buckets.violating.len() >= wanted as usize
+                {
+                    cancelled.store(true, Ordering::Release);
+                }
+            });
+        });
+
+        let mut buckets = buckets.into_inner().unwrap();
+        if !buckets.errors.is_empty() {
+            anyhow::bail!(
+                "preemption Filter dry run failed: {}",
+                buckets
+                    .errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+        let mut found = buckets.non_violating;
+        found.append(&mut buckets.violating);
+
+        // Preemption-capable extenders run sequentially and each receives the
+        // candidate map returned by the previous one. A non-ignorable error
+        // aborts preemption; an ignorable error preserves the current map.
+        for extender in extenders.iter().filter(|extender| {
+            extender.config.preempt_verb.is_some() && extender.config.applies_to(pod)
+        }) {
+            match extender.process_preemption(pod, &found, snapshot).await {
+                Ok(Some(replaced)) => {
+                    found = replaced
+                        .into_iter()
+                        .map(|selection| {
+                            let node = snapshot.node(&selection.node).expect("extender resolved a snapshot node");
+                            Candidate::from_victims(
+                                node,
+                                crate::preempt::Victims {
+                                    pods: selection.pod_keys,
+                                    pdb_violations: selection.pdb_violations,
+                                },
+                            )
+                        })
+                        .collect();
+                }
+                Ok(None) => {}
+                Err(error) if extender.config.ignorable => {
+                    tracing::warn!(extender = %extender.config.url_prefix, %error, "ignorable extender preemption call failed; preserving candidates");
+                }
+                Err(error) => return Err(error),
             }
         }
 
-        let best = pick_one_node(&found)?;
-        let node = snapshot.node(&best.node)?;
-        Some(PreemptionOutcome {
+        let Some(best) = pick_one_node(&found) else { return Ok(None) };
+        let Some(node) = snapshot.node(&best.node) else { return Ok(None) };
+        Ok(Some(PreemptionOutcome {
             nominated_node: best.node.clone(),
             victims: node
                 .pods
@@ -769,7 +1065,7 @@ impl Scheduler {
                 .filter(|p| best.victims.pods.contains(&p.key()))
                 .map(|p| p.key())
                 .collect(),
-        })
+        }))
     }
 
     /// Would the pod fit on this node with `removed` hypothetically gone?
@@ -788,7 +1084,7 @@ impl Scheduler {
         pod: &PodInfo,
         node: &NodeInfo,
         removed: &[&PodInfo],
-    ) -> bool {
+    ) -> Result<bool, Status> {
         for plugin in &registry.pre_filter {
             if let Some(ext) = plugin.extensions() {
                 for victim in removed {
@@ -797,13 +1093,23 @@ impl Scheduler {
             }
         }
 
-        let fits = registry.filter.iter().all(|plugin| {
+        let mut fits = true;
+        let mut error = None;
+        for plugin in &registry.filter {
             if state.filter_skipped(plugin.name()) {
-                return true;
+                continue;
             }
             let status = plugin.filter(state, pod, node);
-            status.is_success() || status.is_skip()
-        });
+            if status.code == Code::Error {
+                error = Some(status);
+                fits = false;
+                break;
+            }
+            if !status.is_success() && !status.is_skip() {
+                fits = false;
+                break;
+            }
+        }
 
         for plugin in &registry.pre_filter {
             if let Some(ext) = plugin.extensions() {
@@ -813,6 +1119,9 @@ impl Scheduler {
             }
         }
 
-        fits
+        match error {
+            Some(status) => Err(status),
+            None => Ok(fits),
+        }
     }
 }

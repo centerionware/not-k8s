@@ -79,13 +79,27 @@ impl Plugin for VolumeRestrictions {
     }
 
     fn events_to_register(&self) -> Vec<ClusterEventWithHint> {
-        // Both rejection paths this plugin can produce are undone the same
-        // way: the pod holding the conflicting volume (legacy identity or the
-        // ReadWriteOncePod claim) goes away.
-        vec![ClusterEventWithHint::always(ClusterEvent::new(
-            EventResource::AssignedPod,
-            ActionType::DELETE,
-        ))]
+        vec![
+            // Both rejection paths can be undone when the pod holding the
+            // conflicting volume goes away.
+            ClusterEventWithHint::always(ClusterEvent::new(
+                EventResource::AssignedPod,
+                ActionType::DELETE,
+            )),
+            // A fresh node has no conflicting pod volumes. Register only Add:
+            // no mutable Node field changes this plugin's answer.
+            ClusterEventWithHint::always(ClusterEvent::new(
+                EventResource::Node,
+                ActionType::ADD,
+            )),
+            // Matches upstream's missing-PVC recovery contract. In this
+            // registry VolumeBinding normally owns that rejection, but this
+            // keeps standalone/profile use of VolumeRestrictions safe too.
+            ClusterEventWithHint::always(ClusterEvent::new(
+                EventResource::PersistentVolumeClaim,
+                ActionType::ADD,
+            )),
+        ]
     }
 }
 

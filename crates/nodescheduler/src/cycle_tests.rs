@@ -265,7 +265,7 @@ fn fit_scheduler(cpu_cores: &str) -> (Scheduler, Registry, crate::cache::Snapsho
         ..Default::default()
     });
     let snapshot = cache.snapshot();
-    (Scheduler::new(0, Arc::new(Mutex::new(crate::preempt::Nominator::default()))), registry, snapshot)
+    (Scheduler::new(0, 2, Arc::new(Mutex::new(crate::preempt::Nominator::default()))), registry, snapshot)
 }
 
 fn pod_wanting_milli_cpu(milli: i64) -> PodInfo {
@@ -324,6 +324,170 @@ async fn a_pod_that_fits_is_scheduled() {
     }
 }
 
+struct ErrorOnOneNode;
+
+impl crate::framework::Plugin for ErrorOnOneNode {
+    fn name(&self) -> &'static str { "ErrorOnOneNode" }
+}
+
+impl crate::framework::FilterPlugin for ErrorOnOneNode {
+    fn filter(&self, _state: &CycleState, _pod: &PodInfo, node: &crate::cache::NodeInfo) -> Status {
+        if node.name == "broken" {
+            Status::error("ErrorOnOneNode", "plugin state is invalid")
+        } else {
+            Status::success()
+        }
+    }
+}
+
+struct InvalidNormalizedScore;
+
+impl crate::framework::Plugin for InvalidNormalizedScore {
+    fn name(&self) -> &'static str { "InvalidNormalizedScore" }
+}
+
+struct PreferNamedNode;
+
+impl crate::framework::Plugin for PreferNamedNode {
+    fn name(&self) -> &'static str { "PreferNamedNode" }
+}
+
+impl crate::framework::ScorePlugin for PreferNamedNode {
+    fn score(
+        &self,
+        _state: &CycleState,
+        _pod: &PodInfo,
+        node: &crate::cache::NodeInfo,
+    ) -> Result<i64, Status> {
+        Ok(if node.name == "better-score" { MAX_NODE_SCORE } else { 0 })
+    }
+}
+
+#[tokio::test]
+async fn a_feasible_nominated_node_is_chosen_before_normal_scoring() {
+    let registry = Registry { score: vec![Box::new(PreferNamedNode)], ..Default::default() };
+    let mut cache = Cache::new();
+    for name in ["nominated", "better-score"] {
+        cache.upsert_node(&Node {
+            metadata: ObjectMeta { name: Some(name.to_string()), ..Default::default() },
+            ..Default::default()
+        });
+    }
+    let snapshot = cache.snapshot();
+    let mut scheduler =
+        Scheduler::new(100, 2, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
+    let mut pod = pod_wanting_milli_cpu(1);
+    pod.nominated_node_name = Some("nominated".to_string());
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = scheduler.schedule_one(&registry, &[], &pod, &snapshot, &mut rng).await;
+    match outcome {
+        CycleOutcome::Scheduled { node } => assert_eq!(node, "nominated"),
+        CycleOutcome::Unschedulable { reason, .. } => panic!("nominee should fit: {reason}"),
+        CycleOutcome::Error { reason } => panic!("unexpected error: {reason}"),
+    }
+}
+
+impl crate::framework::ScorePlugin for InvalidNormalizedScore {
+    fn score(
+        &self,
+        _state: &CycleState,
+        _pod: &PodInfo,
+        _node: &crate::cache::NodeInfo,
+    ) -> Result<i64, Status> {
+        Ok(MAX_NODE_SCORE + 1)
+    }
+}
+
+#[tokio::test]
+async fn a_filter_error_aborts_the_cycle_even_when_another_node_passes() {
+    let registry = Registry {
+        filter: vec![Box::new(ErrorOnOneNode)],
+        ..Default::default()
+    };
+    let mut cache = Cache::new();
+    cache.upsert_node(&Node {
+        metadata: ObjectMeta { name: Some("broken".to_string()), ..Default::default() },
+        ..Default::default()
+    });
+    cache.upsert_node(&Node {
+        metadata: ObjectMeta { name: Some("healthy".to_string()), ..Default::default() },
+        ..Default::default()
+    });
+    let snapshot = cache.snapshot();
+    let mut sched = Scheduler::new(100, 2, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = sched
+        .schedule_one(&registry, &[], &pod_wanting_milli_cpu(1), &snapshot, &mut rng)
+        .await;
+    assert!(matches!(outcome, CycleOutcome::Error { .. }));
+}
+
+#[tokio::test]
+async fn a_filter_error_during_a_preemption_dry_run_is_not_a_failed_fit() {
+    let registry = Registry {
+        filter: vec![Box::new(ErrorOnOneNode)],
+        ..Default::default()
+    };
+    let mut cache = Cache::new();
+    cache.upsert_node(&Node {
+        metadata: ObjectMeta { name: Some("broken".to_string()), ..Default::default() },
+        ..Default::default()
+    });
+    let mut victim = pod_wanting_milli_cpu(1);
+    victim.uid = "victim".to_string();
+    victim.name = "victim".to_string();
+    victim.node_name = Some("broken".to_string());
+    cache.add_pod(Arc::new(victim));
+    let snapshot = cache.snapshot();
+
+    let mut statuses = NodeToStatus::default();
+    statuses.record(
+        "broken",
+        Status::unschedulable("NodeResourcesFit", "Insufficient cpu"),
+    );
+    let scheduler =
+        Scheduler::new(100, 2, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
+    let mut preemptor = pod_wanting_milli_cpu(1);
+    preemptor.priority = 100;
+    let mut rng = Rng::new(1);
+
+    let error = scheduler
+        .preempt(&registry, &[], &preemptor, &snapshot, &statuses, &[], &mut rng)
+        .await
+        .expect_err("a plugin error must abort preemption rather than reject one node");
+    assert!(error.to_string().contains("ErrorOnOneNode"), "{error}");
+}
+
+#[tokio::test]
+async fn an_out_of_range_normalized_score_aborts_instead_of_being_clamped() {
+    let registry = Registry {
+        score: vec![Box::new(InvalidNormalizedScore)],
+        ..Default::default()
+    };
+    let mut cache = Cache::new();
+    cache.upsert_node(&Node {
+        metadata: ObjectMeta { name: Some("a".to_string()), ..Default::default() },
+        ..Default::default()
+    });
+    cache.upsert_node(&Node {
+        metadata: ObjectMeta { name: Some("b".to_string()), ..Default::default() },
+        ..Default::default()
+    });
+    let snapshot = cache.snapshot();
+    let mut sched = Scheduler::new(100, 2, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
+    let mut rng = Rng::new(1);
+
+    let (outcome, _) = sched
+        .schedule_one(&registry, &[], &pod_wanting_milli_cpu(1), &snapshot, &mut rng)
+        .await;
+    match outcome {
+        CycleOutcome::Error { reason } => assert!(reason.contains("outside [0, 100]"), "{reason}"),
+        _ => panic!("invalid plugin score must abort the cycle"),
+    }
+}
+
 #[tokio::test]
 async fn a_pod_exactly_filling_the_node_still_fits() {
     let (mut sched, registry, snapshot) = fit_scheduler("4");
@@ -351,7 +515,7 @@ async fn one_millicore_over_capacity_does_not_fit() {
 #[tokio::test]
 async fn an_empty_cluster_reports_no_nodes_rather_than_scheduling_nowhere() {
     let registry = Registry::default();
-    let mut sched = Scheduler::new(0, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
+    let mut sched = Scheduler::new(0, 2, Arc::new(Mutex::new(crate::preempt::Nominator::default())));
     let snapshot = crate::cache::Snapshot::default();
     let mut rng = Rng::new(1);
 
