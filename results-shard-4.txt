@@ -1,10 +1,10 @@
-commit: 321d7fa2bdbf8ea314656142f77442690570372d
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32096657840
-timestamp (UTC): 2026-08-18T04:00:33Z
+commit: 244d1c89ca80452ac8a1a10d0fee3ca05080e0fd
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32099786320
+timestamp (UTC): 2026-08-18T04:51:14Z
 shard: 4/5
 exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1787025022
+==> Test namespace: not-k8s-e2e-1787028067
 ==> 238 test(s) registered total (before sharding); running now...
 ==> Shard 4/5: 45 test(s) selected
 ▶ test_ttl_after_finished_controller_deletes_expired_jobs
@@ -18,7 +18,7 @@ exit code: 0
 ▶ test_datastore_survives_a_restart_with_its_data
   ✔ PASS (0s)
 ▶ test_apiserver_watch_delivers_through_nodestore
-/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11476/environ: Permission denied
+/home/runner/work/not-k8s/not-k8s/deploy/lib/test/cases/datastore_apiserver.sh: line 104: /proc/11410/environ: Permission denied
   ✔ PASS (9s)
 ▶ test_the_cluster_keeps_serving_when_a_follower_dies
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
@@ -27,31 +27,31 @@ exit code: 0
     (skip: needs root to create network namespaces — a real multi-node cluster cannot be stood up here)
   ○ SKIP (0s)
 ▶ test_plugin_registry_watches_for_device_plugins_too
-  ✔ PASS (0s)
+  ✔ PASS (1s)
 ▶ test_disruption_controller_computes_pdb_status
-  ✔ PASS (34s)
+  ✔ PASS (33s)
 ▶ test_pod_exceeding_its_active_deadline_is_terminated
   ✔ PASS (39s)
 ▶ test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted
-  ✔ PASS (41s)
+  ✔ PASS (39s)
 ▶ test_prestop_hook_runs_before_termination
   ✔ PASS (20s)
 ▶ test_native_sidecar_container_restarts_on_crash
   ✔ PASS (5s)
 ▶ test_restart_policy_never_exit_zero_is_succeeded
-  ✔ PASS (3s)
+  ✔ PASS (2s)
 ▶ test_container_status_container_id_has_a_runtime_scheme_prefix
   ✔ PASS (3s)
 ▶ test_image_pull_policy_never_fails_when_image_is_absent
   ✔ PASS (41s)
 ▶ test_host_port_publishes_the_container_on_the_nodes_own_ip
-  ✔ PASS (3s)
+  ✔ PASS (4s)
 ▶ test_node_is_ready_with_capacity_advertised
   ✔ PASS (1s)
 ▶ test_node_status_images_reflects_a_real_pulled_image
   ✔ PASS (3s)
 ▶ test_liveness_probes_own_grace_period_overrides_the_pods
-  ✔ PASS (14s)
+  ✔ PASS (13s)
 ▶ test_grpc_probe_leaves_pod_not_ready_against_the_wrong_port
   ✔ PASS (13s)
 ▶ test_resourcequota_used_pods_tracks_actual_pod_count
@@ -69,29 +69,29 @@ exit code: 0
 ▶ test_read_only_root_filesystem_is_enforced
   ✔ PASS (3s)
 ▶ test_host_users_false_volume_still_reads_and_writes_normally
-  ✔ PASS (4s)
+  ✔ PASS (3s)
 ▶ test_host_pid_sees_host_processes
   ✔ PASS (3s)
 ▶ test_service_with_no_endpoints_does_not_wedge_the_ruleset
 table inet not_k8s_svc {
 	chain prerouting {
 		type nat hook prerouting priority dstnat; policy accept;
-		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.181:6443
-		ip daddr 10.43.108.50 tcp dport 80 dnat ip to 10.42.0.28:8080
-		ip daddr 10.43.158.232 tcp dport 80 dnat ip to 10.42.0.28:8080
+		ip daddr 10.43.105.85 tcp dport 80 dnat ip to 10.42.0.30:8080
 		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.3:53
 		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.3:53
 		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.3:9153
+		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.172:6443
+		ip daddr 10.43.152.183 tcp dport 80 dnat ip to 10.42.0.30:8080
 	}
 
 	chain output {
 		type nat hook output priority dstnat; policy accept;
-		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.181:6443
-		ip daddr 10.43.108.50 tcp dport 80 dnat ip to 10.42.0.28:8080
-		ip daddr 10.43.158.232 tcp dport 80 dnat ip to 10.42.0.28:8080
+		ip daddr 10.43.105.85 tcp dport 80 dnat ip to 10.42.0.30:8080
 		ip daddr 10.43.0.10 udp dport 53 dnat ip to 10.42.0.3:53
 		ip daddr 10.43.0.10 tcp dport 53 dnat ip to 10.42.0.3:53
 		ip daddr 10.43.0.10 tcp dport 9153 dnat ip to 10.42.0.3:9153
+		ip daddr 10.43.0.1 tcp dport 443 dnat ip to 10.1.0.172:6443
+		ip daddr 10.43.152.183 tcp dport 80 dnat ip to 10.42.0.30:8080
 	}
 
 	chain postrouting {
@@ -99,20 +99,20 @@ table inet not_k8s_svc {
 		ct status dnat masquerade
 	}
 }
-  ✔ PASS (4s)
+  ✔ PASS (5s)
 ▶ test_losing_every_backend_removes_the_dnat_rule
-  ✔ PASS (35s)
+  ✔ PASS (34s)
 ▶ test_statefulset_creates_ordinal_pods_and_scales_down_highest_first
   ✔ PASS (75s)
 ▶ test_pv_binder_requests_dynamic_provisioning_from_the_storage_class
-  ✔ PASS (1s)
+  ✔ PASS (2s)
 ▶ test_kubectl_port_forward_reaches_a_real_container_port
   ✔ PASS (7s)
 ▶ test_topology_manager_cross_provider_alignment_manual_note
     (skip: proving CPU-and-device alignment (not just non-rejection) needs either real multi-socket/multi-NUMA hardware or a device plugin reporting TopologyInfo pointing at a specific NUMA node — not something this suite can set up. Manual spot-check on real multi-NUMA hardware: deploy a device plugin whose devices report differing NUMA affinity, request both an exclusive CPU and one of those devices in the same Guaranteed pod, then compare the container's cpuset.cpus (see cpu_manager.sh for how to find it) against which NUMA node the allocated device actually sits on — they should be the same node. Also try NODELET_TOPOLOGY_MANAGER_POLICY=single-numa-node with a deliberately unsatisfiable combination (e.g. requesting more exclusive CPUs than any single node has) and confirm the pod stays Pending with a 'Topology Manager: no single NUMA node can satisfy' error logged, rather than starting misaligned.)
   ○ SKIP (0s)
 ▶ test_sub_path_expr_expands_a_downward_api_env_var
-  ✔ PASS (4s)
+  ✔ PASS (3s)
 ▶ test_empty_dir_medium_memory_is_backed_by_tmpfs
   ✔ PASS (3s)
 ▶ test_mount_propagation_host_to_container_still_mounts_normally
@@ -132,4 +132,4 @@ Warning: Immediate deletion does not wait for confirmation that the running reso
 ════════════════════════════════════════
 Results: 42 passed, 0 failed, 3 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1787025022...
+==> Cleaning up test namespace not-k8s-e2e-1787028067...
