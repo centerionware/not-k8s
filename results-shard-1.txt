@@ -1,32 +1,32 @@
-commit: 660574ce57f167e13355fb327414687ea3ea09df
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32094368350
-timestamp (UTC): 2026-08-18T03:33:46Z
+commit: 321d7fa2bdbf8ea314656142f77442690570372d
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32096657840
+timestamp (UTC): 2026-08-18T04:14:07Z
 shard: 1/5
-exit code: 1
+exit code: 0
 ----------------------------------------
-==> Test namespace: not-k8s-e2e-1787022784
+==> Test namespace: not-k8s-e2e-1787025214
 ==> 238 test(s) registered total (before sharding); running now...
 ==> Shard 1/5: 52 test(s) selected
 ▶ test_pod_with_an_attach_required_pvc_waits_for_volumeattachment
-  ✔ PASS (40s)
+  ✔ PASS (41s)
 ▶ test_dynamic_csi_registration_actually_registered_the_driver
   ✔ PASS (0s)
 ▶ test_csi_ephemeral_inline_volume_is_mounted
   ✔ PASS (5s)
 ▶ test_node_reports_volumes_in_use_for_a_csi_volume
-  ✔ PASS (50s)
+  ✔ PASS (117s)
 ▶ test_plugin_registry_watches_for_dra_drivers_too
-  ✔ PASS (1s)
+  ✔ PASS (0s)
 ▶ test_dra_claim_is_allocated_and_reserved_for_the_pod
-  ✔ PASS (7s)
+  ✔ PASS (9s)
 ▶ test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen
-  ✔ PASS (56s)
+  ✔ PASS (57s)
 ▶ test_job_controller_runs_pods_to_completion
-  ✔ PASS (14s)
+  ✔ PASS (11s)
 ▶ test_combined_binary_contains_every_component
   ✔ PASS (0s)
 ▶ test_pod_cgroup_reflects_its_qos_class
-  ✔ PASS (13s)
+  ✔ PASS (9s)
 ▶ test_datastore_round_trips_a_key_over_grpc
   ✔ PASS (0s)
 ▶ test_datastore_replays_missed_events_to_a_late_watcher
@@ -48,26 +48,26 @@ WARNING: Running pip as the 'root' user can result in broken permissions and con
 ==> generating gRPC stubs from the vendored proto files...
 ==> starting the fake device plugin (resource=fake.example.com/testdevice)...
 ==> WARNING: Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover
-  ✔ PASS (136s)
+  ✔ PASS (123s)
 ▶ test_spec_hostname_overrides_the_container_hostname
-  ✔ PASS (35s)
+  ✔ PASS (9s)
 ▶ test_eviction_priority_tiebreak_manual_procedure
     (skip: proving priority-based tiebreaking (round 26 — pick_eviction_candidate() ranks by spec.priority within a QoS class before falling back to usage) also needs artificial pressure, same limitation as the base eviction procedure above. Manual procedure: create two BestEffort pods with different PriorityClasses (e.g. a low-priority one and a high-priority one, or set spec.priority directly), force MemoryPressure the same way test_eviction_manual_procedure describes, and confirm the LOWER-priority pod is evicted first even if the higher-priority pod is using more memory — proof priority wins the tiebreak before usage does, matching real kubelet's rankMemoryPressure ordering. The pure ranking logic itself (priority beats usage, QoS class still outranks priority) is already covered by cargo test's eviction_tests/pick_candidate.rs — this only proves the live wiring end to end.)
   ○ SKIP (0s)
 ▶ test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods
-  ✔ PASS (69s)
+  ✔ PASS (57s)
 ▶ test_basic_pod_runs
-  ✔ PASS (48s)
+  ✔ PASS (13s)
 ▶ test_crashing_container_restarts_and_increments_restart_count
-  ✔ PASS (83s)
+  ✔ PASS (21s)
 ▶ test_exited_container_reports_terminated_state_with_exit_code
-  ✔ PASS (54s)
+  ✔ PASS (19s)
 ▶ test_pod_status_reports_qos_class
-  ✔ PASS (58s)
+  ✔ PASS (11s)
 ▶ test_a_long_lived_watch_survives_a_service_churn_burst
 === watcher pod status ===
 NAME                       READY   STATUS    RESTARTS   AGE   IP            NODE            NOMINATED NODE   READINESS GATES
-established-conn-watcher   1/1     Running   0          87s   10.42.0.162   runnervmzvulz   <none>           <none>
+established-conn-watcher   1/1     Running   0          39s   10.42.0.134   runnervmzvulz   <none>           <none>
 === watch.err ===
 host=10.43.0.1 port=443
 *   Trying 10.43.0.1:443...
@@ -100,10 +100,10 @@ host=10.43.0.1 port=443
 * ALPN: server accepted h2
 * Server certificate:
 *  subject: O=k3s; CN=k3s
-*  start date: Aug 18 02:11:20 2026 GMT
-*  expire date: Aug 18 02:11:20 2027 GMT
+*  start date: Aug 18 02:51:58 2026 GMT
+*  expire date: Aug 18 02:51:58 2027 GMT
 *  subjectAltName: host "10.43.0.1" matched cert's IP address!
-*  issuer: CN=k3s-server-ca@1787022680
+*  issuer: CN=k3s-server-ca@1787025118
 *  SSL certificate verify ok.
 *   Certificate level 0: Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256
 *   Certificate level 1: Public key type EC/prime256v1 (256/128 Bits/secBits), signed using ecdsa-with-SHA256
@@ -112,109 +112,105 @@ host=10.43.0.1 port=443
 { [122 bytes data]
 * Connected to 10.43.0.1 (10.43.0.1) port 443
 * using HTTP/2
-* [HTTP/2] [1] OPENED stream for https://10.43.0.1:443/api/v1/namespaces/not-k8s-e2e-1787022784/pods?watch=true&timeoutSeconds=85
+* [HTTP/2] [1] OPENED stream for https://10.43.0.1:443/api/v1/namespaces/not-k8s-e2e-1787025214/pods?watch=true&timeoutSeconds=85
 * [HTTP/2] [1] [:method: GET]
 * [HTTP/2] [1] [:scheme: https]
 * [HTTP/2] [1] [:authority: 10.43.0.1]
-* [HTTP/2] [1] [:path: /api/v1/namespaces/not-k8s-e2e-1787022784/pods?watch=true&timeoutSeconds=85]
+* [HTTP/2] [1] [:path: /api/v1/namespaces/not-k8s-e2e-1787025214/pods?watch=true&timeoutSeconds=85]
 * [HTTP/2] [1] [user-agent: curl/8.10.1]
 * [HTTP/2] [1] [accept: */*]
-* [HTTP/2] [1] [authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IjlneFpIZUljZnktbVBfTWNuWU5MRlZyd1QxcVNJUjZGSGN3b0xlekRLVGMifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NTU5NTI0LCJpYXQiOjE3ODcwMjM1MjQsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiZmY4ODU5NDAtNjMwYS00N2U2LTk0MjctM2I3YTNiODQ5ZTJjIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg3MDIyNzg0Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6IjAxNDM5ZjZkLWRjNDEtNGEwYS05ZDAwLTFkYjkyZWY1MTI1MyJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6IjAyNWM2YjRlLTcwYzctNDRhMy1hOGVjLWM4M2FhNTE0ZjA5OSJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6Ijk3ZTczZjEyLTkzYWUtNDFlZi05M2JjLWFjYWI4NWJhZDk2MiJ9LCJ3YXJuYWZ0ZXIiOjE3ODcwMjcxMzF9LCJuYmYiOjE3ODcwMjM1MjQsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg3MDIyNzg0OmRlZmF1bHQifQ.nDFgf_-MKxHZT7OQjh227n-S0dCqO24kc7p4Q-A4YIdAWZiC7epox-1GCy6wgEWe0j-BYe3TOuF0B6sZcgg4gGJqTqvMex5nCCxo2d2YFDbO392uotRUBf7QR5XGSDFYMDzQfGkVcffssSLJ8rTBXJCgh8NCMbJBcr-czpGM9WD1t2I9Ni4g0MiEzuV243fM3nqlFu7XVLdfWcBGk0UD1PCVDIQQsnSoEaamnbGuLtGkVaR06kfgNYvN3RppvFsUqaXdHKYEUwnRuTv0AYIGkGjL8ZJMB9GEdIgudAkBa3Le6eZiAGV5L6hdoqRBS7cImx_QjSFIHuT02wUkyBh1bA]
+* [HTTP/2] [1] [authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6Im1OcExhU0NsMHFSajhONmhSX0F3N3pEWWVBWER1TWx1ZnFjakNXNDlEZHMifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NTYxNzQwLCJpYXQiOjE3ODcwMjU3NDAsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiNmQ2MGZkNTctZTYzMS00MDk2LWFkMzYtMDhlMWYyNjQ0YjEzIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg3MDI1MjE0Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6ImU2OWFlOTQzLWRlN2UtNDIzOC04Yjk5LWY2ZDllMzZkYTYwMSJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6IjE0NTg0MzJmLTQ4MWMtNGM5My04ZWUyLWFlOWVlYjdmZGQ0OSJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6ImM5OTRlOGNjLTNlYjAtNDgzYS05MjAyLTEyYjU4NWU0NDliNyJ9LCJ3YXJuYWZ0ZXIiOjE3ODcwMjkzNDd9LCJuYmYiOjE3ODcwMjU3NDAsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg3MDI1MjE0OmRlZmF1bHQifQ.Tm3MGfNXGJ3JdGTkBbhonD3-Sux-zQ9d3n3Cnj6th762_zVTgUfpd30VA3ap9UxTjWktxeBMRLEn0HazD02t9y0Qg72lksQqpJnSbBV2l9sPsdJmQMYNtuMaXcylY23segjABMivhMfASaEtp730-gh5dqA_rRu2RwStJHyV5_yKejdfcN3t2gAIALDjW04SVxA8SuDE8r2KqxismkBT1x-agpbSc8Wbq1pqjRpleTW9M9KySCSwqVGA3pAUwI4FBddnkKP3fLzuBWOtlO1crP9G0Qx5Zp5sohOasn8W21rS1we1Qc8qOBFRikk2IUMAgzeVaXOMN4m7eW-n3gX7xg]
 } [5 bytes data]
-> GET /api/v1/namespaces/not-k8s-e2e-1787022784/pods?watch=true&timeoutSeconds=85 HTTP/2
+> GET /api/v1/namespaces/not-k8s-e2e-1787025214/pods?watch=true&timeoutSeconds=85 HTTP/2
 > Host: 10.43.0.1
 > User-Agent: curl/8.10.1
 > Accept: */*
-> Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IjlneFpIZUljZnktbVBfTWNuWU5MRlZyd1QxcVNJUjZGSGN3b0xlekRLVGMifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NTU5NTI0LCJpYXQiOjE3ODcwMjM1MjQsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiZmY4ODU5NDAtNjMwYS00N2U2LTk0MjctM2I3YTNiODQ5ZTJjIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg3MDIyNzg0Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6IjAxNDM5ZjZkLWRjNDEtNGEwYS05ZDAwLTFkYjkyZWY1MTI1MyJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6IjAyNWM2YjRlLTcwYzctNDRhMy1hOGVjLWM4M2FhNTE0ZjA5OSJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6Ijk3ZTczZjEyLTkzYWUtNDFlZi05M2JjLWFjYWI4NWJhZDk2MiJ9LCJ3YXJuYWZ0ZXIiOjE3ODcwMjcxMzF9LCJuYmYiOjE3ODcwMjM1MjQsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg3MDIyNzg0OmRlZmF1bHQifQ.nDFgf_-MKxHZT7OQjh227n-S0dCqO24kc7p4Q-A4YIdAWZiC7epox-1GCy6wgEWe0j-BYe3TOuF0B6sZcgg4gGJqTqvMex5nCCxo2d2YFDbO392uotRUBf7QR5XGSDFYMDzQfGkVcffssSLJ8rTBXJCgh8NCMbJBcr-czpGM9WD1t2I9Ni4g0MiEzuV243fM3nqlFu7XVLdfWcBGk0UD1PCVDIQQsnSoEaamnbGuLtGkVaR06kfgNYvN3RppvFsUqaXdHKYEUwnRuTv0AYIGkGjL8ZJMB9GEdIgudAkBa3Le6eZiAGV5L6hdoqRBS7cImx_QjSFIHuT02wUkyBh1bA
+> Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6Im1OcExhU0NsMHFSajhONmhSX0F3N3pEWWVBWER1TWx1ZnFjakNXNDlEZHMifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWwiLCJrM3MiXSwiZXhwIjoxODE4NTYxNzQwLCJpYXQiOjE3ODcwMjU3NDAsImlzcyI6Imh0dHBzOi8va3ViZXJuZXRlcy5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsIiwianRpIjoiNmQ2MGZkNTctZTYzMS00MDk2LWFkMzYtMDhlMWYyNjQ0YjEzIiwia3ViZXJuZXRlcy5pbyI6eyJuYW1lc3BhY2UiOiJub3QtazhzLWUyZS0xNzg3MDI1MjE0Iiwibm9kZSI6eyJuYW1lIjoicnVubmVydm16dnVseiIsInVpZCI6ImU2OWFlOTQzLWRlN2UtNDIzOC04Yjk5LWY2ZDllMzZkYTYwMSJ9LCJwb2QiOnsibmFtZSI6ImVzdGFibGlzaGVkLWNvbm4td2F0Y2hlciIsInVpZCI6IjE0NTg0MzJmLTQ4MWMtNGM5My04ZWUyLWFlOWVlYjdmZGQ0OSJ9LCJzZXJ2aWNlYWNjb3VudCI6eyJuYW1lIjoiZGVmYXVsdCIsInVpZCI6ImM5OTRlOGNjLTNlYjAtNDgzYS05MjAyLTEyYjU4NWU0NDliNyJ9LCJ3YXJuYWZ0ZXIiOjE3ODcwMjkzNDd9LCJuYmYiOjE3ODcwMjU3NDAsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpub3QtazhzLWUyZS0xNzg3MDI1MjE0OmRlZmF1bHQifQ.Tm3MGfNXGJ3JdGTkBbhonD3-Sux-zQ9d3n3Cnj6th762_zVTgUfpd30VA3ap9UxTjWktxeBMRLEn0HazD02t9y0Qg72lksQqpJnSbBV2l9sPsdJmQMYNtuMaXcylY23segjABMivhMfASaEtp730-gh5dqA_rRu2RwStJHyV5_yKejdfcN3t2gAIALDjW04SVxA8SuDE8r2KqxismkBT1x-agpbSc8Wbq1pqjRpleTW9M9KySCSwqVGA3pAUwI4FBddnkKP3fLzuBWOtlO1crP9G0Qx5Zp5sohOasn8W21rS1we1Qc8qOBFRikk2IUMAgzeVaXOMN4m7eW-n3gX7xg
 > 
 { [5 bytes data]
 * Request completely sent off
 { [5 bytes data]
 < HTTP/2 200 
-< audit-id: 53a546b7-e555-4c9c-9b78-f4ac001b4fb7
+< audit-id: 2ec5b9e9-ce3a-4344-a752-9927f629a2b3
 < cache-control: no-cache, private
 < content-type: application/json
-< x-kubernetes-pf-flowschema-uid: 2f1c5bad-276a-4c2d-bff7-9860cca0353d
-< x-kubernetes-pf-prioritylevel-uid: 43848f2d-081c-470b-bc02-0d76b3c0307a
-< date: Tue, 18 Aug 2026 03:25:26 GMT
+< x-kubernetes-pf-flowschema-uid: 4a7a321c-4f58-4fed-a3cc-a8b88a426fae
+< x-kubernetes-pf-prioritylevel-uid: 9a7e35cc-6961-4eb2-a8b9-764a0ec562cd
+< date: Tue, 18 Aug 2026 04:02:23 GMT
 < 
-{ [5 bytes data]
-watch.out bytes=11345 curl_processes_still_running=1
-  ✔ PASS (193s)
+} [5 bytes data]
+watch.out bytes=11341 curl_processes_still_running=1
+  ✔ PASS (84s)
 ▶ test_pressure_conditions_are_present_and_normally_false
-  ✔ PASS (2s)
+  ✔ PASS (1s)
 ▶ test_pod_resources_grpc_query_returns_real_data
-  ✔ PASS (89s)
+  ✔ PASS (13s)
 ▶ test_startup_probe_failure_past_threshold_restarts_the_container
-==> FATAL: timed out after 90s waiting for: startup-restart Running
-  ✘ FAIL (92s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (7567eff5-157e-4624-b17d-d1506cc3049f) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (7567eff5-157e-4624-b17d-d1506cc3049f) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (7567eff5-157e-4624-b17d-d1506cc3049f) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:30:41.141620Z  INFO node status pushed
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:30:41.206927Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]: Caused by:
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (7567eff5-157e-4624-b17d-d1506cc3049f) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (7567eff5-157e-4624-b17d-d1506cc3049f) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (7567eff5-157e-4624-b17d-d1506cc3049f) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:30:41.320074Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]: Caused by:
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (7567eff5-157e-4624-b17d-d1506cc3049f) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (7567eff5-157e-4624-b17d-d1506cc3049f) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (7567eff5-157e-4624-b17d-d1506cc3049f) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:30:41.430896Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]: Caused by:
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (7567eff5-157e-4624-b17d-d1506cc3049f) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (7567eff5-157e-4624-b17d-d1506cc3049f) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 18 03:30:41 runnervmzvulz run-nodelet.sh[13099]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (7567eff5-157e-4624-b17d-d1506cc3049f) does not match the UID in record. The object might have been deleted and then recreated: Conflict
+  ✔ PASS (50s)
 ▶ test_metrics_cadvisor_returns_real_container_usage
-==> FATAL: timed out after 90s waiting for: metrics-cadvisor-check Running
-  ✘ FAIL (92s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:32:12.212998Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]: Caused by:
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (cb0cdde9-7028-42e8-9d7f-9ad418ed76b3) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (cb0cdde9-7028-42e8-9d7f-9ad418ed76b3) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (cb0cdde9-7028-42e8-9d7f-9ad418ed76b3) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:32:12.314525Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]: Caused by:
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (cb0cdde9-7028-42e8-9d7f-9ad418ed76b3) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (cb0cdde9-7028-42e8-9d7f-9ad418ed76b3) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (cb0cdde9-7028-42e8-9d7f-9ad418ed76b3) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:32:12.436781Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:32:12.776222Z  INFO torn down pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:32:12.930274Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]: Caused by:
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (6b3ea559-042a-403b-992e-4de9e1579427) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (6b3ea559-042a-403b-992e-4de9e1579427) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (6b3ea559-042a-403b-992e-4de9e1579427) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 18 03:32:12 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:32:12.958174Z  INFO CreateContainer succeeded container=plugin container_id=c32ca413f310898774569df9c68b71cc558d1866488e385a88fa2235852a15e0
+  ✔ PASS (14s)
 ▶ test_hugepages_limit_is_enforced_via_cgroup
-==> FATAL: pod never reached Running with a hugepages-2Mi limit set — this node/kernel likely has no 2Mi hugepages reserved (check /proc/sys/vm/nr_hugepages) or the runtime doesn't support the hugetlb cgroup controller
-  ✘ FAIL (91s, exit 1)
-  [diag] node conditions: Ready MemoryPressure DiskPressure PIDPressure True False False False
-  [diag] node taints: 
-  [diag] nodelet tail:
-    Aug 18 03:33:44 runnervmzvulz run-nodelet.sh[13099]: Caused by:
-    Aug 18 03:33:44 runnervmzvulz run-nodelet.sh[13099]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (4f08cb49-0916-4466-990c-03b2f8835fb7) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (4f08cb49-0916-4466-990c-03b2f8835fb7) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 18 03:33:44 runnervmzvulz run-nodelet.sh[13099]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (4f08cb49-0916-4466-990c-03b2f8835fb7) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 18 03:33:44 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:33:44.608776Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 18 03:33:44 runnervmzvulz run-nodelet.sh[13099]: Caused by:
-    Aug 18 03:33:44 runnervmzvulz run-nodelet.sh[13099]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (4f08cb49-0916-4466-990c-03b2f8835fb7) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (4f08cb49-0916-4466-990c-03b2f8835fb7) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 18 03:33:44 runnervmzvulz run-nodelet.sh[13099]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (4f08cb49-0916-4466-990c-03b2f8835fb7) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 18 03:33:44 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:33:44.707747Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 18 03:33:44 runnervmzvulz run-nodelet.sh[13099]: Caused by:
-    Aug 18 03:33:44 runnervmzvulz run-nodelet.sh[13099]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (4f08cb49-0916-4466-990c-03b2f8835fb7) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (4f08cb49-0916-4466-990c-03b2f8835fb7) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 18 03:33:44 runnervmzvulz run-nodelet.sh[13099]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (4f08cb49-0916-4466-990c-03b2f8835fb7) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-    Aug 18 03:33:45 runnervmzvulz run-nodelet.sh[13099]: 2026-08-18T03:33:45.123795Z  WARN projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token) pod=dra-example-driver/dra-example-driver-kubeletplugin-b6c54aa289bd22ff service_account="dra-example-driver-service-account" error=TokenRequest API call
-    Aug 18 03:33:45 runnervmzvulz run-nodelet.sh[13099]: Caused by:
-    Aug 18 03:33:45 runnervmzvulz run-nodelet.sh[13099]:     0: ApiError: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (4f08cb49-0916-4466-990c-03b2f8835fb7) does not match the UID in record. The object might have been deleted and then recreated: Conflict (Status { status: Some(Failure), code: 409, message: "Operation cannot be fulfilled on Pod \"dra-example-driver-kubeletplugin-b6c54aa289bd22ff\": the UID in the bound object reference (4f08cb49-0916-4466-990c-03b2f8835fb7) does not match the UID in record. The object might have been deleted and then recreated", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "Conflict", details: Some(StatusDetails { name: "dra-example-driver-kubeletplugin-b6c54aa289bd22ff", group: "", kind: "Pod", uid: "", causes: [], retry_after_seconds: 0 }) })
-    Aug 18 03:33:45 runnervmzvulz run-nodelet.sh[13099]:     1: Operation cannot be fulfilled on Pod "dra-example-driver-kubeletplugin-b6c54aa289bd22ff": the UID in the bound object reference (4f08cb49-0916-4466-990c-03b2f8835fb7) does not match the UID in record. The object might have been deleted and then recreated: Conflict
-==> WARNING: stopping early: 3 failures reached NOTK8S_E2E_MAX_FAILURES=3 (52 tests registered total, not all of them ran) — see the failures above/print_summary below for what's already known, rather than burning time re-discovering the same root cause across the rest of the suite.
+    (skip: no /sys/fs/cgroup/hugetlb.2MB.limit_in_bytes in the container — this node's cgroup v2 hierarchy may not have the hugetlb controller enabled)
+  ○ SKIP (33s)
+▶ test_cpu_limit_is_enforced_via_cgroup
+  ✔ PASS (15s)
+▶ test_runtime_class_handler_is_honored
+  ✔ PASS (22s)
+▶ test_scheduler_rejects_a_pod_that_does_not_fit
+  ✔ PASS (11s)
+▶ test_scheduler_honours_pod_anti_affinity
+  ✔ PASS (65s)
+▶ test_scheduler_resolves_a_namespace_selector_against_real_labels
+  ✔ PASS (12s)
+▶ test_container_status_reports_resolved_user
+  ✔ PASS (16s)
+▶ test_proc_mount_default_masks_proc_kcore
+  ✔ PASS (17s)
+▶ test_supplemental_groups_policy_strict_ignores_image_group_membership
+==> WARNING: supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership, got '3000 5000' — this runtime may not implement Merge's image-group-membership resolution (a newer-than-usual runc feature); not failing outright since nodelet itself only passes the policy through to CRI unchanged
+  ✔ PASS (4s)
+▶ test_clusterip_is_reachable_from_inside_a_pod
+  ✔ PASS (29s)
+▶ test_session_affinity_pins_a_client_to_one_backend
+  ✔ PASS (35s)
+▶ test_kubectl_logs_follow_streams_new_output
+  ✔ PASS (15s)
+▶ test_a_slow_terminating_pod_does_not_stall_another_pods_creation
+  ✔ PASS (39s)
+▶ test_configmap_and_secret_volumes_are_materialized
+  ✔ PASS (20s)
+▶ test_service_account_token_projected_volume_mints_a_real_token
+  ✔ PASS (17s)
+▶ test_image_volume_source_mounts_a_read_only_image
+  ✔ PASS (28s)
+▶ test_mount_propagation_private_default_does_not_see_a_new_host_mount
+  ✔ PASS (27s)
+▶ test_host_path_directory_mounts_the_real_host_directory
+  ✔ PASS (19s)
+▶ test_cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container
+  ✔ PASS (8s)
+▶ test_image_gc_removes_unreferenced_images_above_the_watermark
+  ✔ PASS (37s)
+▶ test_log_rotation_creates_a_rotated_file
+==>     waiting for a rotated log file under /var/log/pods/not-k8s-e2e-1787025214_log-rotation_1173a3f5-d4de-4170-922a-eccd5abf85fb (log_rotate_interval, default 10s)...
+  ✔ PASS (12s)
+▶ test_client_certificate_authentication_works
+.+......+......+...+..+.........+.+..+.+...............+..+.......+..+..........+..............+....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...........+......+...+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+.........+.........+.+.........+..+..........+..+............+.+...+..+.........+....+......+...+..+...+......+.......+..+...+...+....+.....+.............+............+..+......+....+...+..+.+...+.....+.......+..+............+......+...+..........+............+..+......+.........+.+..+...+......+...+......+......+.+........+....+........+....+...+..+....+.........+...+...+..+....+.........+............+.........+...........+....+......+...+.........+...+............+.....+.......+...+...+........+.+...+..+..................+...+...+....+..+...............+.+............+...+.....+............+................+..+...+.+.....+.+...+............+...+.....+.+...........+..........+........+......+...+...+....+...........+..........+..+...+...+..........+............+..+......+....+..+...+.............+...+............+..............+..................+............+..........+...........+...+.+......+.....+.......+...........+....+..+.+............+.....+..........+...+..+......+......+....+.....+......+.+..+...+...............+....+...+......+.....+......+......+.......+.....+.......+...+.....+..........+...........+.......+...+.....+.+...+...........+......+.+...+...........+...+...+.........+....+..+....+......+...+......+...+.....+............+...+...+..........+..+......+.......+...+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+......+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+...........+.......+......+.....+.+.....+.+..+......+.........+.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+..+......................+..+.+........+....+...+..+................+......+.........+.........+............+.....+...+.+..+...+....+.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.....+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+..........+..+.........+.........+....+...+.....+.......+......+..+............+.+.........+...+...+......+...+...........+.......+...+......+...+...+..+...+....+.........+...........+....+..+.........+......+....+........+...+..................+.........+......+.+...+..+.+..+......+....+...+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+...+.........+..+...+.......+..+..........+...+..+...............+.+.....+.+........+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+.....+............+.............+........+.+.....+....+...........+...+.+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+...+.......+..+..........+..+.+...+............+...+..+............+.+.....+....+...........+.+..............+.+........+..........+.....+......+....+........+...+....+...+.................+...+...+.......+..+...............+.+......+......+..+.+...........+...+..........+......+.........+..+.+..+..........+..+...................+......+...+..+....+......+.....+.+............+..+.+...............+........+....+.....................+.........+......+.....+.+.....+...+............+.+..+.............+.........+..............+.......+...+..+....+.....+....+..+....+......+.....+...+......+...+.+.....+.......+.....+...+......+...+.......+...........+............+.+..............+...+...+.+..................+......+....................+.+...+........+...+.+.....+.+.....+...+...................+..+......+....+........+.+............+..+...............+.......+......+.........+.....+.+........+.......+.....+....+.....+....+......+...+...+.....+.........+....+..............+.......+......+.....+........................+.............+......+..+.......+...+...+..+....+.....+.+...........................+...+..+...+....+.....................+..+..........+......+.........+.....+...+.........+.+.........+.....+....+......+.....+...+.......+.........+..+.........+.+..+..........+.....+.......+.........+.....+...............+...................+................................+..........+...+..+....+......+...+......+..+...+......+.+...+......+........+.......+...+...+.....+....+..............+....+............+...+..+................+........+....+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+Certificate request self-signature ok
+subject=CN = alice, O = system:masters
+..............+.....+...+....+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*...+.....+....+...+..+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+.+....................+.+.................................+..+.+.....+.............+..............+...+....+...+...+.....+.......+...........+.+...........+...+......+......+....+.....+....+.............................+.+..+...............+....+......+........+.+.....+..................+......+.......+........+.........+..........+..+...+.+......+...+...+...+..+.........+.+........+.......+........+....+...........+.+......+...+.........+.....+...+.............+..+....+......+..+.+.....+....+.....+.......+......+...+............+........+.......+...+..+............+.+.........+.....+.+......+...........+....+....................+....+.....+.+...+..+...+...+...+..........+...........+.+............+......+......+...+.....+..........+.....................+..+.........+.+..+.......+.........+..+............+.+..+....+.....+...+.......+...+........+...+.+.....+..........+...........+...+.+........+...+.........+......+...+......+....+.........+........+..........+..+..........+............+........+............+...+..........+......+..+.......+..+..........+...+..+.........+.+.........+..+...+.+.....+...+.............+...+..+...+......................+...............+..+.......+........+.+..+...............+...+......+...............+...+...+.......+...+.....+..........+...+...........+.+.....+....+...........+.......+......+.....+....+..+.+...+.....+......+....+..+......................+........+.......+.....+.+..+.......+............+...............+...+...+..+.......+.....+.+.....+....+...+..+.........+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+........+..+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+....+...........+....+.....+.+..+.+.....+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*....+...+....+......+..+.........+....+............+.....+...+...............+......+...+......+......+.........+.+.....+.............+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+  ✔ PASS (2s)
+▶ test_static_pod_creates_a_mirror_pod
+  ✔ PASS (73s)
 
 ════════════════════════════════════════
-Results: 23 passed, 3 failed, 4 skipped
-Failed:
-  - test_startup_probe_failure_past_threshold_restarts_the_container
-  - test_metrics_cadvisor_returns_real_container_usage
-  - test_hugepages_limit_is_enforced_via_cgroup
+Results: 47 passed, 0 failed, 5 skipped
 ════════════════════════════════════════
-==> Cleaning up test namespace not-k8s-e2e-1787022784...
+==> Cleaning up test namespace not-k8s-e2e-1787025214...
