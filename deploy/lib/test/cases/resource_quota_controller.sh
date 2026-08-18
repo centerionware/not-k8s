@@ -45,14 +45,16 @@ spec:
       command: ["sleep", "3600"]
 EOF
 
-    # Compares against the actual live pod count (not a hardcoded number)
-    # so this doesn't assume exclusive ownership of the test namespace.
+    # The controller deliberately excludes terminal Succeeded/Failed Pods
+    # from quota usage, so use the same active-Pod set here. Comparing with
+    # every object returned by `kubectl get pods` makes leftover terminal Pods
+    # from an earlier test look like a controller undercount.
     wait_until 60 "ResourceQuota $quota's status.used.pods matches the actual pod count" \
-        bash -c "[[ \"\$(kctl get resourcequota '$quota' -o jsonpath='{.status.used.pods}')\" == \"\$(kctl get pods --no-headers 2>/dev/null | wc -l | tr -d ' ')\" ]]"
+        bash -c "[[ \"\$(kctl get resourcequota '$quota' -o jsonpath='{.status.used.pods}')\" == \"\$(kctl get pods --field-selector='status.phase!=Succeeded,status.phase!=Failed' --no-headers 2>/dev/null | wc -l | tr -d ' ')\" ]]"
 
     delete_pod_and_wait_gone "$pod"
     wait_until 60 "ResourceQuota $quota's status.used.pods drops after the pod is deleted" \
-        bash -c "[[ \"\$(kctl get resourcequota '$quota' -o jsonpath='{.status.used.pods}')\" == \"\$(kctl get pods --no-headers 2>/dev/null | wc -l | tr -d ' ')\" ]]"
+        bash -c "[[ \"\$(kctl get resourcequota '$quota' -o jsonpath='{.status.used.pods}')\" == \"\$(kctl get pods --field-selector='status.phase!=Succeeded,status.phase!=Failed' --no-headers 2>/dev/null | wc -l | tr -d ' ')\" ]]"
 
     trap - EXIT
     kctl delete resourcequota "$quota" --ignore-not-found >/dev/null 2>&1 || true
