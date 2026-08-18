@@ -1,7 +1,16 @@
-commit: 67a988fc811e7841983af39e641855a14f4da060
-workflow run: https://github.com/centerionware/not-k8s/actions/runs/32104199623
-timestamp (UTC): 2026-08-18T05:51:52Z
+commit: 623b51a51222d07c4d3c6e79f2f3e0a1bd6c5607
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/32104700021
+timestamp (UTC): 2026-08-18T06:00:06Z
 shard: 2/5
-exit code: unknown
+exit code: 0
 ----------------------------------------
-(no results captured — the run failed before test-e2e.sh could produce output)
+==> Test namespace: not-k8s-e2e-1787032754
+==> 239 test(s) registered total (before sharding); running now...
+==> Shard 2/5: 52 test(s) selected
+▶ test_a_recreated_pod_survives_the_old_pods_detached_teardown
+  ✔ PASS (50s)
+
+════════════════════════════════════════
+Results: 1 passed, 0 failed, 0 skipped
+════════════════════════════════════════
+==> Cleaning up test namespace not-k8s-e2e-1787032754...
