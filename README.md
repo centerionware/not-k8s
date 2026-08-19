@@ -13,6 +13,7 @@ control plane and the same containerd — only the node agent differs.
 
 ## Manual runs on real hardware
 
+- [`history/2026-08-19_23-33-47-arm64-phone-controller-manager/`](history/2026-08-19_23-33-47-arm64-phone-controller-manager/README.md) — **nodecontroller vs a real upstream kube-controller-manager**, same stripped `k3s server --disable-agent` control plane, same containerd, full not-k8s stack (nodestore/nodescheduler/nodeproxy/nodelet) running throughout — 6 alternating legs (ours/theirs x3), only the controller-manager swaps.
 Runs done by hand on physical ARM hardware rather than a CI runner. They do
 not feed `latest/`, which stays the canonical CI comparison.
 

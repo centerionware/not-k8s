@@ -1,0 +1,126 @@
+  PROCESS            avg CPU%    CPU-sec   RSS (MB)         cycles   instructions      IPC
+  ──────────────── ────────── ────────── ────────── ────────────── ────────────── ────────
+  k3s server           53.90%  62.438120      372.8            N/A            N/A      N/A
+  nodestore            80.20%  82.790330       11.6            N/A            N/A      N/A
+  nodelet              13.52%  15.687080        9.1            N/A            N/A      N/A
+  nodeproxy             0.00%   0.003550        3.9            N/A            N/A      N/A
+  nodescheduler         1.80%   2.128110        9.0            N/A            N/A      N/A
+  nodecontroller        7.47%   8.584720       34.4            N/A            N/A      N/A
+  containerd            4.31%   5.138420       51.8            N/A            N/A      N/A
+  flanneld              0.64%   2.518090       36.8            N/A            N/A      N/A
+  ──────────────── ────────── ────────── ────────── ────────────── ────────────── ────────
+  COMBINED            161.84%    179.288      529.4            N/A            N/A      N/A
+
+  what each row is:
+    k3s server     everything not yet replaced: apiserver, controller-manager, scheduler, and kine+SQLite unless a datastore row below is running
+    nodestore      the datastore — etcd v3 over SQLite, replacing kine
+    nodelet        the node agent, replacing kubelet
+    nodeproxy      Service/ClusterIP/NodePort routing, replacing kube-proxy
+    nodescheduler  the scheduler, replacing kube-scheduler
+    nodecontroller the controller manager — node lifecycle, ServiceAccount/CSR, GC and friends — replacing kube-controller-manager
+    containerd     the container runtime (k3s bundles its own; this stack uses the host's)
+    flanneld       the CNI overlay daemon (a separate service here, in-process on stock k3s)
+  not running on this host (not measured): nodeapiserver kube-apiserver kube-controller-manager kubelet kube-proxy kube-scheduler
+
+  test hardware: arch=aarch64 cores=8 model="unknown"
+  sample window: 120s, 1 sample/sec
+  perf hardware counters (cycles/instructions): available
+  CPU-seconds precision: k3s=perf-task-clock nodestore=perf-task-clock nodelet=perf-task-clock nodeproxy=perf-task-clock nodescheduler=perf-task-clock nodecontroller=perf-task-clock containerd=perf-task-clock flanneld=perf-task-clock (perf-task-clock = sub-ms via perf; proc-ticks = ~10ms via /proc, whenever perf's task-clock wasn't available)
+
+  NOTE: the "k3s server" row is one OS process holding everything not yet
+  replaced — apiserver + controller-manager + scheduler, plus kine/SQLite
+  whenever nodestore is not the datastore, plus the embedded kubelet whenever
+  the agent isn't disabled. Those cannot be isolated at the process level, so
+  read that row as a remainder that shrinks as components move out of it, not
+  as any one component's cost.
+=== MEASURE ===
+MEASURE_SAMPLE_SECS=120
+MEASURE_PERF_AVAILABLE=true
+MEASURE_OUT_DIR=/home/droid/nk8s-profiling-run-cm/nodecontroller-2
+MEASURE_CPU_ARCH=aarch64
+MEASURE_CPU_CORES=8
+MEASURE_CPU_MODEL=unknown
+MEASURE_K3S_PRESENT=true
+MEASURE_K3S_RSS_MB=372.8
+MEASURE_K3S_CPU_AVG_PCT=53.90
+MEASURE_K3S_CPU_SECONDS=62.438120
+MEASURE_K3S_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_K3S_CYCLES=
+MEASURE_K3S_INSTRUCTIONS=
+MEASURE_K3S_IPC=
+MEASURE_K3S_TIMESERIES_CSV=/home/droid/nk8s-profiling-run-cm/nodecontroller-2/k3s-timeseries.csv
+MEASURE_NODESTORE_PRESENT=true
+MEASURE_NODESTORE_RSS_MB=11.6
+MEASURE_NODESTORE_CPU_AVG_PCT=80.20
+MEASURE_NODESTORE_CPU_SECONDS=82.790330
+MEASURE_NODESTORE_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_NODESTORE_CYCLES=
+MEASURE_NODESTORE_INSTRUCTIONS=
+MEASURE_NODESTORE_IPC=
+MEASURE_NODESTORE_TIMESERIES_CSV=/home/droid/nk8s-profiling-run-cm/nodecontroller-2/nodestore-timeseries.csv
+MEASURE_NODELET_PRESENT=true
+MEASURE_NODELET_RSS_MB=9.1
+MEASURE_NODELET_CPU_AVG_PCT=13.52
+MEASURE_NODELET_CPU_SECONDS=15.687080
+MEASURE_NODELET_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_NODELET_CYCLES=
+MEASURE_NODELET_INSTRUCTIONS=
+MEASURE_NODELET_IPC=
+MEASURE_NODELET_TIMESERIES_CSV=/home/droid/nk8s-profiling-run-cm/nodecontroller-2/nodelet-timeseries.csv
+MEASURE_NODEPROXY_PRESENT=true
+MEASURE_NODEPROXY_RSS_MB=3.9
+MEASURE_NODEPROXY_CPU_AVG_PCT=0.00
+MEASURE_NODEPROXY_CPU_SECONDS=0.003550
+MEASURE_NODEPROXY_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_NODEPROXY_CYCLES=
+MEASURE_NODEPROXY_INSTRUCTIONS=
+MEASURE_NODEPROXY_IPC=
+MEASURE_NODEPROXY_TIMESERIES_CSV=/home/droid/nk8s-profiling-run-cm/nodecontroller-2/nodeproxy-timeseries.csv
+MEASURE_NODEAPISERVER_PRESENT=false
+MEASURE_NODESCHEDULER_PRESENT=true
+MEASURE_NODESCHEDULER_RSS_MB=9.0
+MEASURE_NODESCHEDULER_CPU_AVG_PCT=1.80
+MEASURE_NODESCHEDULER_CPU_SECONDS=2.128110
+MEASURE_NODESCHEDULER_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_NODESCHEDULER_CYCLES=
+MEASURE_NODESCHEDULER_INSTRUCTIONS=
+MEASURE_NODESCHEDULER_IPC=
+MEASURE_NODESCHEDULER_TIMESERIES_CSV=/home/droid/nk8s-profiling-run-cm/nodecontroller-2/nodescheduler-timeseries.csv
+MEASURE_NODECONTROLLER_PRESENT=true
+MEASURE_NODECONTROLLER_RSS_MB=34.4
+MEASURE_NODECONTROLLER_CPU_AVG_PCT=7.47
+MEASURE_NODECONTROLLER_CPU_SECONDS=8.584720
+MEASURE_NODECONTROLLER_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_NODECONTROLLER_CYCLES=
+MEASURE_NODECONTROLLER_INSTRUCTIONS=
+MEASURE_NODECONTROLLER_IPC=
+MEASURE_NODECONTROLLER_TIMESERIES_CSV=/home/droid/nk8s-profiling-run-cm/nodecontroller-2/nodecontroller-timeseries.csv
+MEASURE_KUBE_APISERVER_PRESENT=false
+MEASURE_KUBE_CONTROLLER_MANAGER_PRESENT=false
+MEASURE_KUBELET_PRESENT=false
+MEASURE_KUBE_PROXY_PRESENT=false
+MEASURE_KUBE_SCHEDULER_PRESENT=false
+MEASURE_CONTAINERD_PRESENT=true
+MEASURE_CONTAINERD_RSS_MB=51.8
+MEASURE_CONTAINERD_CPU_AVG_PCT=4.31
+MEASURE_CONTAINERD_CPU_SECONDS=5.138420
+MEASURE_CONTAINERD_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_CONTAINERD_CYCLES=
+MEASURE_CONTAINERD_INSTRUCTIONS=
+MEASURE_CONTAINERD_IPC=
+MEASURE_CONTAINERD_TIMESERIES_CSV=/home/droid/nk8s-profiling-run-cm/nodecontroller-2/containerd-timeseries.csv
+MEASURE_FLANNELD_PRESENT=true
+MEASURE_FLANNELD_RSS_MB=36.8
+MEASURE_FLANNELD_CPU_AVG_PCT=0.64
+MEASURE_FLANNELD_CPU_SECONDS=2.518090
+MEASURE_FLANNELD_CPU_SECONDS_SOURCE=perf-task-clock
+MEASURE_FLANNELD_CYCLES=
+MEASURE_FLANNELD_INSTRUCTIONS=
+MEASURE_FLANNELD_IPC=
+MEASURE_FLANNELD_TIMESERIES_CSV=/home/droid/nk8s-profiling-run-cm/nodecontroller-2/flanneld-timeseries.csv
+MEASURE_COMBINED_RSS_MB=529.4
+MEASURE_COMBINED_CPU_AVG_PCT=161.84
+MEASURE_COMBINED_CPU_SECONDS=179.288
+MEASURE_COMBINED_CYCLES=
+MEASURE_COMBINED_INSTRUCTIONS=
+=== END MEASURE ===
