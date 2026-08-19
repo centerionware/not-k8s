@@ -5,7 +5,7 @@
 # Expects these globals to already be set by the caller before use:
 #   WORK_DIR, LOG_DIR, SUDO, PKG_MGR, FORCE_SOURCE_BUILD
 
-log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+log()  { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m==> WARNING:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m==> FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 # Exported so callers that need to run one of these inside a `bash -c "..."`
