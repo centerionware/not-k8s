@@ -8,21 +8,21 @@
 //! listener with no reason to ever be individually disabled the way
 //! nodelet's exec/logs server is.
 //!
-//! **`GET` and `LIST` against a real resource are now real** (`rest::get`/
-//! `rest::list`, generic over every resource this build knows about — see
-//! `rest`'s own doc comment for exactly what's in and out of scope).
-//! **Every other verb is still a bring-up stub** — a `watch`/`create`/...
-//! against `/api(s)/.../<resource>` still just echoes the parsed
-//! [`crate::server::path::RequestInfo`] as JSON, not the real REST
-//! dispatch. Client certificate authentication is real (`super::tls`'s
-//! optional `client_ca`, `authn::x509::identity_from_der` on the
-//! verified peer cert), surfaced in the echo response's own `user` field
-//! for observability. Authorization is real too, but **opt-in and off by
-//! default** (`config::Config::enforce_rbac`/`NODEAPISERVER_ENFORCE_RBAC` —
-//! see that field's own doc comment for why: enabling RBAC enforcement
+//! **`GET`, `LIST`, and `CREATE` against a real resource are now real**
+//! (`rest::get`/`rest::list`/`rest::create`, generic over every resource
+//! this build knows about — see `rest`'s own doc comment for exactly
+//! what's in and out of scope). **Every other verb is still a bring-up
+//! stub** — a `watch`/`update`/... against `/api(s)/.../<resource>` still
+//! just echoes the parsed [`crate::server::path::RequestInfo`] as JSON,
+//! not the real REST dispatch. Client certificate authentication is real
+//! (`super::tls`'s optional `client_ca`, `authn::x509::identity_from_der`
+//! on the verified peer cert), surfaced in the echo response's own `user`
+//! field for observability. Authorization is real too, but **opt-in and
+//! off by default** (`config::Config::enforce_rbac`/`NODEAPISERVER_ENFORCE_RBAC`
+//! — see that field's own doc comment for why: enabling RBAC enforcement
 //! before Group O's bootstrap `ClusterRole`/`ClusterRoleBinding` set
 //! exists can lock every request out with no path back in). When
-//! enabled, `GET`/`LIST` resolve the caller's real rules
+//! enabled, `GET`/`LIST`/`CREATE` all resolve the caller's real rules
 //! (`authz::resolve::rules_for` — the real anonymous identity,
 //! `system:anonymous`/`system:unauthenticated`, when no x509 identity was
 //! established) and deny with a real `403` unless `authz::rbac::rules_allow`
@@ -75,6 +75,17 @@ pub type BoxedBody = http_body_util::combinators::BoxBody<hyper::body::Bytes, Bo
 fn body_from_bytes(bytes: Vec<u8>) -> BoxedBody {
     use http_body_util::{BodyExt, Full};
     Full::new(hyper::body::Bytes::from(bytes)).map_err(|never: std::convert::Infallible| match never {}).boxed()
+}
+
+/// Buffers a request's entire body into memory — fine for the object
+/// sizes this build's own resources actually reach (real kube-apiserver
+/// itself has no streaming write path either; every write is a single
+/// decoded object). No size cap yet — a named, real gap, not a
+/// forgotten one: real upstream enforces `--max-request-body-bytes`.
+async fn read_body_bytes(req: Request<Incoming>) -> Result<Vec<u8>, hyper::Error> {
+    use http_body_util::BodyExt;
+    let collected = req.into_body().collect().await?;
+    Ok(collected.to_bytes().to_vec())
 }
 
 fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<BoxedBody> {
@@ -154,7 +165,7 @@ pub async fn run(cfg: Config) {
             return;
         }
     };
-    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, "nodeapiserver: REST/watch listener up (discovery + GET/LIST are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
+    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
     let enforce_rbac = cfg.enforce_rbac;
 
     loop {
@@ -332,6 +343,40 @@ fn forbidden_status(path_str: &str, user_name: &str) -> serde_json::Value {
     })
 }
 
+/// Real upstream's own `AlreadyExists` shape for a `CREATE` that lost the
+/// create-only-if-absent race — `reason: "AlreadyExists"`, `code: 409`.
+fn conflict_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: object already exists"),
+        "reason": "AlreadyExists",
+        "details": {},
+        "code": 409,
+    })
+}
+
+/// Real upstream's own `Invalid` shape for a `CREATE` that failed
+/// `scheme::validation` — `reason: "Invalid"`, `code: 422`. Real
+/// upstream's full `Status.details.causes` (one structured entry per
+/// violation) isn't built — `message` joins every violation into one
+/// human-readable string instead, same "real subset, not the full type"
+/// posture every other `Status` builder in this module already takes.
+fn invalid_status(path_str: &str, violations: &[String]) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str} is invalid: {}", violations.join("; ")),
+        "reason": "Invalid",
+        "details": {},
+        "code": 422,
+    })
+}
+
 /// Real upstream's own `user.Anonymous`/`user.AllUnauthenticated`
 /// constants — what a request with no established identity is treated
 /// as for authorization purposes (RBAC then denies it unless some policy
@@ -364,16 +409,23 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity
 
     let info = path::parse(&method, &path_str, &query);
 
-    // Group E's first real resource verbs: single-object GET (`get`, not
+    // Group E's real resource verbs so far: single-object GET (`get`, not
     // `list`/`watch` — `path::parse` already tells those apart by an empty
-    // `name`) and LIST (`list`, no name). No subresource (not handled yet
-    // — see `rest`'s own doc comment). Everything else still falls through
-    // to the RequestInfo echo below. `storage` is only ever consumed once
-    // (moved into `client` here), which is why both verbs share this one
-    // `if let` rather than each checking it separately.
+    // `name`), LIST (`list`, no name), and CREATE (`create`, no name — a
+    // POST to the collection URL). No subresource (not handled yet — see
+    // `rest`'s own doc comment). Everything else still falls through to
+    // the RequestInfo echo below. `storage` is only ever consumed once
+    // (moved into `client` here), which is why all three verbs share this
+    // one `if let` rather than each checking it separately.
     let is_get = info.is_resource_request && info.verb == "get" && !info.name.is_empty() && info.subresource.is_empty();
     let is_list = info.is_resource_request && info.verb == "list" && info.name.is_empty() && info.subresource.is_empty();
-    if is_get || is_list {
+    let is_create = info.is_resource_request && info.verb == "create" && info.name.is_empty() && info.subresource.is_empty();
+    if is_get || is_list || is_create {
+        // Captured before `req` is potentially consumed below (`is_create`
+        // moves it into `read_body_bytes`) — a borrow of `req.headers()`
+        // can't outlive that move.
+        let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+
         if let Some(mut client) = storage {
             let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
 
@@ -414,7 +466,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                     }
                 }
-            } else {
+            } else if is_list {
                 match rest::list(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector).await {
                     Ok(rest::ListOutcome::Found(list)) => return Ok(json_response(StatusCode::OK, &list)),
                     Ok(rest::ListOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
@@ -424,6 +476,51 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity
                     Err(rest::Error::Selector(e)) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "rest::list failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            } else {
+                // is_create: decode the body per its real negotiated
+                // Content-Type. JSON/YAML only for now — a protobuf
+                // request body would need the target schema to decode,
+                // which needs `resolve_kind` first; named honestly as a
+                // real, separate gap rather than guessed at (see `rest`'s
+                // own module doc comment).
+                let body_bytes = match read_body_bytes(req).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "reading the request body failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                };
+                let format = content_type.as_deref().and_then(negotiation::content_type).unwrap_or(negotiation::Format::Json);
+                let decoded: Result<serde_json::Value, String> = match format {
+                    negotiation::Format::Json => crate::codec::json::decode(&body_bytes).map_err(|e| e.to_string()),
+                    negotiation::Format::Yaml => crate::codec::yaml::decode(&body_bytes).map_err(|e| e.to_string()),
+                    negotiation::Format::Protobuf => {
+                        return Ok(json_response(
+                            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                            &bad_request_status(&path_str, "protobuf request bodies are not decoded yet for CREATE — use application/json or application/yaml"),
+                        ));
+                    }
+                };
+                let body_value = match decoded {
+                    Ok(v) => v,
+                    Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e))),
+                };
+                match rest::create(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &body_value).await {
+                    Ok(rest::CreateOutcome::Created(object)) => return Ok(json_response(StatusCode::CREATED, &object)),
+                    Ok(rest::CreateOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                    Ok(rest::CreateOutcome::MissingName) => {
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.name is required (generateName is not supported)")));
+                    }
+                    Ok(rest::CreateOutcome::NamespaceMismatch) => {
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.namespace does not match the request URL")));
+                    }
+                    Ok(rest::CreateOutcome::AlreadyExists) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+                    Ok(rest::CreateOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "rest::create failed");
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                     }
                 }
@@ -598,5 +695,24 @@ mod tests {
         assert_eq!(status["reason"], "Forbidden");
         assert_eq!(status["code"], 403);
         assert!(status["message"].as_str().unwrap().contains("system:anonymous"));
+    }
+
+    #[test]
+    fn conflict_status_uses_the_real_already_exists_shape() {
+        let status = conflict_status("/api/v1/namespaces/default/pods");
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "AlreadyExists");
+        assert_eq!(status["code"], 409);
+    }
+
+    #[test]
+    fn invalid_status_joins_every_violation_into_the_message() {
+        let status = invalid_status("/api/v1/pods", &["spec.containers: Required value".to_string(), "spec.foo: expected type string, got number".to_string()]);
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "Invalid");
+        assert_eq!(status["code"], 422);
+        let message = status["message"].as_str().unwrap();
+        assert!(message.contains("spec.containers: Required value"));
+        assert!(message.contains("spec.foo: expected type string, got number"));
     }
 }
