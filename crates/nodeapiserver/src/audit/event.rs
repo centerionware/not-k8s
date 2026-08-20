@@ -7,23 +7,29 @@
 //! bodies themselves — those are `Request`/`RequestResponse` level,
 //! genuinely more invasive and not built here).
 //!
-//! **Pure builder only — not yet wired into `server::listener`.** Same
-//! "land the primitive, verify it, wire it later" pattern this crate has
-//! used repeatedly (`scheme::name_format`, `scheme::quantity`,
-//! `server::watch_event` before its own wiring PR): [`build_event`] is
-//! fully testable with no I/O, but nothing calls it from a real request
-//! yet, and there is no real audit-log *sink* (file/webhook with real
-//! upstream's own rotation/policy-filtering machinery) at all — that's
-//! separate, not-yet-started work this module doesn't claim to cover.
+//! **Wired into `server::listener`**: `server::listener::handle_with_audit`
+//! wraps every request, calling [`build_event`] once the response is
+//! known and logging it via this crate's own `tracing` output (target
+//! `"nodeapiserver::audit"`) — see that function's own doc comment for
+//! exactly why the sink is "this crate's own log output," not a
+//! dedicated file/webhook, and why wrapping the call site (rather than
+//! threading an audit context out through `handle`'s own many early
+//! returns) was the far less invasive place to add this.
 //!
 //! **One stage only**: real upstream emits up to four events per request
 //! across real audit *stages* (`RequestReceived`, `ResponseStarted` —
 //! long-running requests like `watch` only, `ResponseComplete`, `Panic`).
-//! This builder only produces a single `ResponseComplete`-stage event
-//! (the request already finished by the time this crate would call it,
-//! matching every REST verb this crate's own handler chain already
-//! serves synchronously) — named honestly, not silently claimed as the
-//! full four-stage pipeline.
+//! This builder only ever produces a single event labeled
+//! `ResponseComplete` — accurate for every ordinary REST verb (the
+//! request has genuinely finished by the time `handle_with_audit` logs
+//! it), but a **named inaccuracy for `watch`**: a watch response is only
+//! *starting* to stream when `handle` returns it (real upstream's own
+//! `ResponseStarted` is the semantically correct stage there), not
+//! complete — this builder has no way to know when a stream later ends
+//! (that would need a hook into the response body's own completion, not
+//! built), so a watch request's one logged event is stamped
+//! `ResponseComplete` a little early, a real, narrow, honestly-named gap
+//! rather than a silently wrong claim.
 
 use serde_json::{json, Value};
 
