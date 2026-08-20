@@ -550,17 +550,28 @@ apimachineryvalidation.NameIsDNSSubdomain`); `services` ->
 upstream's own default — a `RelaxedServiceNameValidation` alpha feature
 gate can relax this to `NameIsDNSLabel`, but this crate has no
 feature-gate machinery so it always applies the gate's default-off
-behavior). A handful of other `var Validate<Kind>Name` declarations exist
-in the same Go file (`PriorityClass`, `ResourceClaim`,
-`ResourceClaimTemplate`, `StorageClass` among them) but were deliberately
-left unwired here because they belong to non-core groups
-(`scheduling.k8s.io`, `resource.k8s.io`, `storage.k8s.io`) not yet
-individually confirmed against the vendored spec — guessing the group
-would break the "verify, don't guess" rule this whole table follows.
-Every other resource is left unchecked rather than guessing at a rule
-for it, gating both `create` and `update`. Extending this to more
-resources is real, separate follow-up work, one verified entry at a time
-(the function's own doc comment says so explicitly).
+behavior). Four more non-core resources are now wired too, each
+group-verified against the vendored spec's own `paths` table and
+cross-checked against the real per-type `Validate<Kind>` function that
+applies the rule to that type's own `ObjectMeta` (not merely a
+same-named var used elsewhere for a referenced-field check —
+`ValidateClassName`, for one, is also used to validate the
+`storageClassName` field referenced from PV/PVC, a different check
+entirely from validating a `StorageClass` object's own name):
+`scheduling.k8s.io/priorityclasses` -> `is_dns1123_subdomain`
+(`ValidatePriorityClass`, `pkg/apis/scheduling/validation/validation.go`
+— real upstream also forbids a `system-`-prefixed name unless it's one
+of a fixed predefined set, NOT ported here, only the DNS-subdomain
+shape); `resource.k8s.io/resourceclaims` and
+`resource.k8s.io/resourceclaimtemplates` -> `is_dns1123_subdomain`
+(`ValidateResourceClaim`/`ValidateResourceClaimTemplate`,
+`pkg/apis/resource/validation/validation.go`); `storage.k8s.io/storageclasses`
+-> `is_dns1123_subdomain` (`ValidateStorageClass`,
+`pkg/apis/storage/validation/validation.go`). Every other resource is
+left unchecked rather than guessing at a rule for it, gating both
+`create` and `update`. Extending this to more resources is real,
+separate follow-up work, one verified entry at a time (the function's
+own doc comment says so explicitly).
 
 Conversion only needed for genuinely multi-version groups
 (admissionregistration, autoscaling, certificates, coordination,
