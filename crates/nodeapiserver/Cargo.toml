@@ -55,6 +55,10 @@ base64 = "0.22"
 tonic = { workspace = true }
 prost = { workspace = true }
 tonic-prost = { workspace = true }
+# The Watch RPC is bidirectional streaming: ReceiverStream adapts a
+# tokio::sync::mpsc::Receiver into the Stream tonic's generated client
+# needs for the request side. Same version nodestore's own Cargo.toml uses.
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [build-dependencies]
 # Group A codegen: parses vendor/openapi-spec/v3/*.json and
