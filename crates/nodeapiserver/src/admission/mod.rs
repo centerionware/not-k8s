@@ -75,7 +75,8 @@
 //! cover them. Forbids a resource `CREATE` that would push a namespace's
 //! tracked usage
 //! (`pods`/`cpu`/`requests.cpu`/`limits.cpu`/`memory`/`requests.memory`/
-//! `limits.memory`/`persistentvolumeclaims`/`requests.storage`/
+//! `limits.memory`/`ephemeral-storage`/`requests.ephemeral-storage`/
+//! `limits.ephemeral-storage`/`persistentvolumeclaims`/`requests.storage`/
 //! `services`/`services.nodeports`/`services.loadbalancers`/
 //! `count/<resource>[.<group>]`) over any `ResourceQuota`'s own
 //! `spec.hard`. All six real `spec.scopes` names are matched for pods
