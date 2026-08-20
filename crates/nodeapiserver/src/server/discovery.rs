@@ -8,15 +8,19 @@
 //! `GroupVersionForDiscovery`) confirmed directly against the vendored
 //! OpenAPI v3 specs, not assumed from memory of the stable v1 meta types.
 //!
-//! **Scoped to group-level discovery only.** The per-version resource
-//! listing (`/api/v1`, `/apis/{group}/{version}` -> `APIResourceList`,
-//! naming every resource's plural name, namespaced flag, and supported
-//! verbs) needs data this crate hasn't vendored yet: `DISCOVERY_GVKS` only
-//! carries `(schema, group, version, kind)`, not the resource's REST path
-//! shape. Group A's codegen would need to also parse the OpenAPI spec's
-//! `paths` section (or Group F's registry would need to supply it
-//! directly) — real, separate work, not implied by this module's own
-//! completeness.
+//! Per-version resource listing (`/api/v1`, `/apis/{group}/{version}` ->
+//! `APIResourceList`) is `api_resource_list()`, built from
+//! `codegen::api_resources_by_group_version()` — itself from a new Group A
+//! table (`build/discovery_parse.rs`) that parses the OpenAPI spec's own
+//! `paths` section (each verb block's `x-kubernetes-action` +
+//! `x-kubernetes-group-version-kind`), closing the gap this module's doc
+//! comment used to name here. Deliberately still missing from each
+//! `APIResource` entry: `singularName` (not present anywhere in the
+//! vendored spec — real kube-apiserver derives it from Go type reflection,
+//! which this crate has no equivalent of), `shortNames`, `categories` (same
+//! reason), and subresources (`pods/status`, `pods/log`, ... — a named,
+//! separate skip in the parser itself, not a completeness claim by this
+//! module).
 //!
 //! `serverAddressByClientCIDRs` is left empty in every document here —
 //! real kube-apiserver populates it from the request's own observed
@@ -97,6 +101,43 @@ fn api_group_value(group: &str, versions: &[&str]) -> Value {
     })
 }
 
+/// `/api/{version}` or `/apis/{group}/{version}` — every resource this
+/// build serves for that exact group+version, `None` if this build serves
+/// no such group+version at all (as opposed to serving it with zero
+/// resources, which shouldn't happen against the real vendored data but
+/// would render as an empty `resources: []` rather than `None` — a
+/// genuinely served group+version always has at least one resource).
+pub fn api_resource_list(group: &str, version: &str) -> Option<Value> {
+    let resources = codegen::api_resources_by_group_version().get(&(group, version))?;
+    let group_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    let mut sorted: Vec<&codegen::api_resources::ApiResource> = resources.iter().copied().collect();
+    sorted.sort_by_key(|r| r.resource);
+    let list: Vec<Value> = sorted
+        .iter()
+        .map(|r| {
+            let mut verbs: Vec<&str> = r.verbs.to_vec();
+            verbs.sort_unstable();
+            json!({
+                "name": r.resource,
+                // Real kube-apiserver's own RESTMapper default when a type
+                // doesn't declare an explicit singular form — this crate
+                // has no per-type override table (see this module's own
+                // doc comment), so every entry uses the default.
+                "singularName": r.kind.to_lowercase(),
+                "namespaced": r.namespaced,
+                "kind": r.kind,
+                "verbs": verbs,
+            })
+        })
+        .collect();
+    Some(json!({
+        "kind": "APIResourceList",
+        "apiVersion": "v1",
+        "groupVersion": group_version,
+        "resources": list,
+    }))
+}
+
 /// Sorts `versions` most-preferred-first, per
 /// [`super::version_compare::compare_kube_aware_versions`].
 fn sort_versions_most_preferred_first(versions: &mut [&'static str]) {
@@ -138,6 +179,33 @@ mod tests {
     #[test]
     fn an_unknown_group_is_none() {
         assert!(api_group("totally.made.up.group").is_none());
+    }
+
+    #[test]
+    fn api_resource_list_serves_core_v1_pods_with_real_verbs() {
+        let list = api_resource_list("", "v1").expect("core/v1 should be served");
+        assert_eq!(list["kind"], "APIResourceList");
+        assert_eq!(list["groupVersion"], "v1");
+        let resources = list["resources"].as_array().unwrap();
+        let pods = resources.iter().find(|r| r["name"] == "pods").expect("pods should be listed");
+        assert_eq!(pods["namespaced"], true);
+        assert_eq!(pods["kind"], "Pod");
+        assert_eq!(pods["singularName"], "pod");
+        let verbs: Vec<&str> = pods["verbs"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(verbs.contains(&"watch"));
+    }
+
+    #[test]
+    fn api_resource_list_for_a_non_core_group_uses_group_slash_version() {
+        let list = api_resource_list("apps", "v1").expect("apps/v1 should be served");
+        assert_eq!(list["groupVersion"], "apps/v1");
+        let resources = list["resources"].as_array().unwrap();
+        assert!(resources.iter().any(|r| r["name"] == "deployments"));
+    }
+
+    #[test]
+    fn api_resource_list_for_an_unserved_group_version_is_none() {
+        assert!(api_resource_list("apps", "v999").is_none());
     }
 
     #[test]
