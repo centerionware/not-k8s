@@ -498,22 +498,41 @@ other fields populated), `Deleted` carrying the real last-known object
 state (real upstream's own `WatchEvent.Object` doc comment: "the state
 of the object immediately before deletion" — `cacher::store::WatchCache`
 now retains exactly that on delete, closing what was previously named
-here as a real gap; see that module's own doc comment). **Pure
-conversion only — not yet wired into an actual streaming HTTP
-response**: `server::listener` has no long-lived chunked-response
-machinery yet, and nothing starts a `cacher::registry::CacheRegistry` to
-read events from in the first place.
+here as a real gap; see that module's own doc comment).
 
-**Not yet landed**: `watch` end to end (the conversion above and real
-streaming HTTP responses still need to come together —
-`cacher::registry::CacheRegistry` now has several resources registered
-at boot, `server::listener`'s own `BOOT_CACHED_RESOURCES`, but nothing
-reads their events into an actual chunked response yet), `patch`/
-`deletecollection`, the rest of admission (Group J's own section
-has the running plugin list), the real handler chain itself (authn ->
-authz -> APF -> admission -> REST — a hard requirement on order, not a
-style choice, once it fully exists), `/openapi/v2`. The throwaway e2e rig
-described above should land as part of this group, not after it.
+**Milestone: `WATCH` is real end to end**, for any resource in
+`server::listener`'s own `BOOT_CACHED_RESOURCES`: a `GET
+.../pods?watch=true` (or the `/api/v1/watch/pods` legacy path form) now
+gets a genuine streaming response — `cache.watch_from(resourceVersion)`'s
+own retained-history replay first, then every live event as it happens,
+each encoded by `to_watch_event_json` and framed as a newline-terminated
+JSON document (`watch_response_body`, an `http_body_util::StreamBody`
+over a `tokio_stream` combining the replay `Vec` with a
+`BroadcastStream` of the cache's live event channel). No `Transfer-Encoding`
+header is set explicitly — hyper's own h1/h2 connection layer already
+frames a body with no known length correctly for whichever protocol was
+negotiated (chunked for h1, native framing for h2, where
+`Transfer-Encoding` is actually forbidden by the HTTP/2 spec, so setting
+it by hand would have been wrong for an h2 connection). A
+`resourceVersion` older than the cache's retained history window gets a
+real `410 Gone` (`errors.NewResourceExpired`'s own shape — the signal
+every real `client-go` informer relists on) rather than silently serving
+a gap. A resource outside `BOOT_CACHED_RESOURCES` (no registered cache)
+falls through to the bring-up echo stub, same posture as `GET`/`LIST`
+already had for an uncached resource. **Named, honest gap**: `WATCH`
+is not yet gated by RBAC or admission — both currently only run inside
+the five-verb (`GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`) block, which
+`watch` deliberately isn't part of; wiring authorization into the watch
+path is real, separate, not-yet-done work.
+
+**Not yet landed**: RBAC/admission on `WATCH` (above), `patch`/
+`deletecollection`, the rest of admission (Group J's own section has the
+running plugin list), the real handler chain fully unified into one
+ordered dispatcher (authn -> authz -> APF -> admission -> REST — a hard
+requirement on order, not a style choice, once it fully exists; today
+each piece is wired in ad hoc, in the right relative order, not through
+one shared pipeline), `/openapi/v2`. The throwaway e2e rig described
+above should land as part of this group, not after it.
 
 **F. Scheme: conversion, defaulting, validation** — **in progress**. The
 largest handwritten chunk. `scheme::defaulting::apply_defaults(schema, value)`
