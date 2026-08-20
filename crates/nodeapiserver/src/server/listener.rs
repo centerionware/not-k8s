@@ -351,7 +351,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle(req, storage.clone(), cache_registry.clone(), identity.clone(), enforce_rbac));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), enforce_rbac, peer));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -565,6 +565,71 @@ const UNAUTHENTICATED_GROUP: &str = "system:unauthenticated";
 /// own doc comment for why this list, not "every resource," is the
 /// reasoned choice today.
 const BOOT_CACHED_RESOURCES: &[(&str, &str, &str)] = &[("", "v1", "namespaces"), ("", "v1", "pods"), ("", "v1", "services"), ("", "v1", "secrets"), ("", "v1", "configmaps"), ("", "v1", "endpoints"), ("", "v1", "nodes")];
+
+/// Group M: wraps every request with a real `audit::event::build_event`
+/// call, logged rather than delegated back into `handle` itself — this
+/// wrapper needs nothing `handle` doesn't already compute internally
+/// (method/path/query are read off `req` before it's ever consumed, and
+/// `path::parse` is a pure function safe to call a second time here),
+/// so it's the far less invasive place to add auditing than threading an
+/// audit-context return value out through every one of `handle`'s own
+/// early-return branches would have been. **The sink is this crate's own
+/// `tracing` output** (`target: "nodeapiserver::audit"`, one JSON line
+/// per request) — a real, working choice consistent with how every other
+/// component in this workspace already does its own logging (no
+/// component here writes to a separate log file), not real upstream's
+/// own dedicated `--audit-log-path` file with rotation, and not a
+/// webhook backend either; an operator wanting a separate audit stream
+/// filters this crate's own log output by that target today. See
+/// `audit::event`'s own doc comment for exactly which real `Event`
+/// fields are populated and which stage/level this always uses.
+async fn handle_with_audit(req: Request<Incoming>, storage: Option<StorageClient>, cache_registry: crate::cacher::CacheRegistry, identity: Option<crate::authn::x509::Identity>, enforce_rbac: bool, peer: SocketAddr) -> Result<Response<BoxedBody>, Infallible> {
+    let method = req.method().as_str().to_string();
+    let path_str = req.uri().path().to_string();
+    let query = req.uri().query().unwrap_or("").to_string();
+    let user_agent = req.headers().get("user-agent").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let audit_identity = identity.clone();
+
+    let response = handle(req, storage, cache_registry, identity, enforce_rbac).await;
+
+    if let Ok(resp) = &response {
+        log_audit_event(&method, &path_str, &query, user_agent.as_deref(), audit_identity.as_ref(), &peer, resp.status().as_u16());
+    }
+    response
+}
+
+fn log_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16) {
+    let event = build_audit_event(method, path_str, query, user_agent, identity, peer, status);
+    tracing::info!(target: "nodeapiserver::audit", "{event}");
+}
+
+/// The pure half of [`log_audit_event`] — everything up to the built
+/// `Value`, factored out so it's unit-testable without capturing
+/// `tracing`'s own log output.
+fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16) -> serde_json::Value {
+    let info = path::parse(method, path_str, query);
+    let (user_name, user_groups): (&str, Vec<String>) = match identity {
+        Some(id) => (id.name.as_str(), id.groups.clone()),
+        None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+    };
+    let object_ref = info.is_resource_request.then(|| crate::audit::event::ObjectRef { group: &info.api_group, resource: &info.resource, namespace: &info.namespace, name: &info.name, api_version: &info.api_version });
+    let request_uri = if query.is_empty() { path_str.to_string() } else { format!("{path_str}?{query}") };
+    let audit_id = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let source_ip = peer.ip().to_string();
+    crate::audit::event::build_event(&crate::audit::event::EventInput {
+        audit_id: &audit_id,
+        request_uri: &request_uri,
+        verb: &info.verb,
+        user_name,
+        user_groups: user_groups.as_slice(),
+        source_ip: Some(&source_ip),
+        user_agent,
+        object_ref,
+        response_code: status,
+        timestamp: &timestamp,
+    })
+}
 
 async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_registry: crate::cacher::CacheRegistry, identity: Option<crate::authn::x509::Identity>, enforce_rbac: bool) -> Result<Response<BoxedBody>, Infallible> {
     let method = req.method().as_str().to_string();
@@ -1387,5 +1452,43 @@ mod tests {
         assert_eq!(text.lines().count(), 1);
         let parsed: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
         assert_eq!(parsed["type"], "ADDED");
+    }
+
+    fn test_peer() -> SocketAddr {
+        "10.0.0.7:54321".parse().unwrap()
+    }
+
+    #[test]
+    fn build_audit_event_carries_the_real_request_shape_for_an_anonymous_user() {
+        let event = build_audit_event("GET", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 200);
+        assert_eq!(event["verb"], "get");
+        assert_eq!(event["user"]["username"], "system:anonymous");
+        assert_eq!(event["responseStatus"]["code"], 200);
+        assert_eq!(event["sourceIPs"], serde_json::json!(["10.0.0.7"]));
+        assert_eq!(event["objectRef"]["resource"], "pods");
+        assert_eq!(event["objectRef"]["namespace"], "default");
+        assert_eq!(event["objectRef"]["name"], "web-1");
+    }
+
+    #[test]
+    fn build_audit_event_carries_the_real_identity_when_present() {
+        let identity = crate::authn::x509::Identity { name: "alice".to_string(), groups: vec!["developers".to_string()], credential_id: (String::new(), Vec::new()) };
+        let event = build_audit_event("GET", "/api/v1/pods", "watch=true", None, Some(&identity), &test_peer(), 200);
+        assert_eq!(event["user"]["username"], "alice");
+        assert_eq!(event["user"]["groups"], serde_json::json!(["developers"]));
+        assert_eq!(event["verb"], "watch");
+        assert_eq!(event["requestURI"], "/api/v1/pods?watch=true");
+    }
+
+    #[test]
+    fn build_audit_event_has_no_object_ref_for_a_non_resource_request() {
+        let event = build_audit_event("GET", "/version", "", None, None, &test_peer(), 200);
+        assert!(event.get("objectRef").is_none());
+    }
+
+    #[test]
+    fn build_audit_event_carries_a_denied_response_code() {
+        let event = build_audit_event("DELETE", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 403);
+        assert_eq!(event["responseStatus"]["code"], 403);
     }
 }
