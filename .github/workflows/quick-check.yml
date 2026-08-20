@@ -26,24 +26,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-toolchain
 
-      - name: cargo build (native x86_64, debug)
-        run: |
-          set -e
-          for crate in nodelet nodeproxy nodestore nodescheduler nodecontroller node-leaderelection nodeapiserver notk8s; do
-            if [[ -d "crates/$crate" ]]; then
-              cargo build -p "$crate"
-            else
-              echo "crates/$crate not present on this ref — skipping."
-            fi
-          done
-          if [[ -d crates/nodelet ]]; then
-            cargo build --features cri -p nodelet
-          fi
-          if [[ -d crates/notk8s ]]; then
-            cargo build --features cri -p notk8s
-          fi
-
       - name: cargo test (native x86_64, debug)
+        # No separate `cargo build` step — `cargo test` already compiles
+        # the lib, bins, and test targets for each package before running
+        # anything, so a prior build step would just pay the same
+        # compilation twice for no extra signal.
+        #
         # Under sudo for the same reason build.yml's test job is:
         # nodeproxy's svc.rs nft_check() tests open real netlink/nftables
         # sockets to validate generated ruleset syntax, which needs

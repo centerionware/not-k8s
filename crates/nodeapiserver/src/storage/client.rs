@@ -40,8 +40,11 @@ type Result<T> = std::result::Result<T, Error>;
 /// A connected client. Cheap to clone (an inner `tonic::transport::Channel`
 /// is itself a cheap-to-clone multiplexed connection handle) — same
 /// posture `kube::Client` and every other gRPC client in this workspace
-/// takes.
-#[derive(Clone)]
+/// takes. `Debug` is needed for `Result::expect_err` in this module's own
+/// tests (which requires the `Ok` type to be `Debug` even when only the
+/// `Err` case is exercised) — the tonic-generated client fields all derive
+/// it already, so this costs nothing.
+#[derive(Clone, Debug)]
 pub struct StorageClient {
     kv: KvClient<Channel>,
     watch: WatchClient<Channel>,
