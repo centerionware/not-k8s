@@ -102,8 +102,18 @@ verified spec-correct for proto2, not just simpler), `map<K, V>`, and the
 `k8s\x00` + `runtime.Unknown` envelope (`wrap_unknown`/`unwrap_unknown`).
 `codec::json`/`codec::yaml` are thin wrappers; `codec::negotiation` parses
 `Accept`/`Content-Type` including `kubectl get`'s `as=Table;g=...;v=...`
-parameters. Not yet done: `Table` server-side printing itself (only its
-negotiation parameters are parsed so far) and `PartialObjectMetadata`.
+parameters. `codec::table::convert_to_table` lands the generic default
+`Table` converter — a faithful port of real upstream's own
+`defaultTableConvertor` (`k8s.io/apiserver/pkg/registry/rest/table.go`,
+fetched and read directly): exactly two columns (`Name`, `Created At`),
+one row per item for a List-shaped input, `ResourceVersion`/`Continue`/
+`RemainingItemCount` carried through from the List's own metadata. Named
+honestly: real kube-apiserver's much larger *per-type* printer set
+(Pod's `READY`/`STATUS`/`RESTARTS` columns, computed from container
+statuses — hand-written Go, `pkg/printers/internalversion`) isn't
+started — every resource this build serves gets the generic table today,
+same as a fresh CRD does in real kube-apiserver until it earns its own
+printer. Not yet done: any per-type printer, and `PartialObjectMetadata`.
 
 **C. Storage over nodestore** — **in progress**. `storage::client::StorageClient`
 is a real etcd v3 gRPC client to nodestore (`Range`/`Put`/`DeleteRange`/`Txn`/
