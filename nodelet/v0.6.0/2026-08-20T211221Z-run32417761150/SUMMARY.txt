@@ -1,0 +1,29 @@
+nodelet-single-pod-lifecycle CPU profile
+==================
+pid: 4450
+started: 2026-08-20T21:11:06+00:00
+ended: 2026-08-20T21:12:18+00:00
+duration_seconds: 180
+profile_method: perf
+executable: /home/runner/work/not-k8s/not-k8s/bin/nodelet
+cmdline: /home/runner/work/not-k8s/not-k8s/bin/nodelet 
+
+journal (nodelet) warnings: 0   errors: 0
+
+files:
+  SUMMARY.txt
+  flamegraph.err
+  flamegraph.svg
+  nodelet-single-pod-lifecycle-journal.txt
+  out.folded
+  perf-record.txt
+  perf-report.txt
+  perf-script.txt
+  perf-self-report.txt
+  perf.data
+  perf.script
+  process.txt
+  stackcollapse.err
+  threads-after.txt
+  threads-before.txt
+  top-functions.txt

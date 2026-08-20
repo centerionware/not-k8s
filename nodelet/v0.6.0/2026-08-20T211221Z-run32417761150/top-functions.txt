@@ -1,0 +1,3 @@
+ 33.33%  memcpy
+ 33.33%  core::ptr::drop_glue::<alloc::boxed::Box<dyn core::future::future::Future<Output = core::result::Result<http::response::Response<tonic::body::Body>, alloc::boxed::Box<dyn core::error::Error + core::marker::Sync + core::marker::Send>>> + core::marker::Send>>
+ 33.33%  __lock

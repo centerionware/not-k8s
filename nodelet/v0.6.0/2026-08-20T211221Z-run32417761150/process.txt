@@ -1,0 +1,72 @@
+label=nodelet-single-pod-lifecycle
+pid=4450
+started=2026-08-20T21:11:06+00:00
+duration_seconds=180
+executable=/home/runner/work/not-k8s/not-k8s/bin/nodelet
+cmdline=/home/runner/work/not-k8s/not-k8s/bin/nodelet 
+
+=== executable ===
+/home/runner/work/not-k8s/not-k8s/bin/nodelet: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, with debug_info, not stripped
+
+=== status ===
+Name:	nodelet
+Umask:	0022
+State:	S (sleeping)
+Tgid:	4450
+Ngid:	0
+Pid:	4450
+PPid:	1
+TracerPid:	0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+FDSize:	256
+Groups:	 
+NStgid:	4450
+NSpid:	4450
+NSpgid:	4450
+NSsid:	4450
+Kthread:	0
+VmPeak:	   61636 kB
+VmSize:	   61492 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	   43616 kB
+VmRSS:	   43616 kB
+RssAnon:	    6428 kB
+RssFile:	   37188 kB
+RssShmem:	       0 kB
+VmData:	   10896 kB
+VmStk:	     920 kB
+VmExe:	   38536 kB
+VmLib:	       8 kB
+VmPTE:	     140 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffffff
+Threads:	5
+SigQ:	1/63795
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000001000
+SigCgt:	0000000000000440
+CapInh:	0000000000000000
+CapPrm:	000001ffffffffff
+CapEff:	000001ffffffffff
+CapBnd:	000001ffffffffff
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	0
+Seccomp_filters:	0
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	always enabled
+Cpus_allowed:	f
+Cpus_allowed_list:	0-3
+Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	454
+nonvoluntary_ctxt_switches:	37
+x86_Thread_features:	
+x86_Thread_features_locked:	

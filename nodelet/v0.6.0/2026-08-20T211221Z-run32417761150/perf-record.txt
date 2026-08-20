@@ -1,0 +1,39 @@
+==> stop-file seen after 24s; stopping perf record early (--duration was 180s)
+[ perf record: Woken up 1 times to write data ]
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+addr2line /home/runner/work/not-k8s/not-k8s/bin/nodelet: could not read first record
+[ perf record: Captured and wrote 0.057 MB /tmp/flamegraph-out/perf.data (3 samples) ]
