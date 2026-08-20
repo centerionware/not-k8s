@@ -27,6 +27,14 @@
 //! client address once it has one; there is no HTTP request in scope yet
 //! for these pure builder functions to read that from (Group E's handler
 //! chain, once it exists, is what would thread a real value through).
+//!
+//! Aggregated discovery v2 (`apidiscovery.k8s.io/v2`'s
+//! `APIGroupDiscoveryList`) is `api_group_discovery_list()`/
+//! `api_v1_group_discovery_list()` — **pure builders only, not yet wired
+//! into `listener`'s routing**, since real kube-apiserver picks this form
+//! over the legacy shape purely through content negotiation this crate's
+//! `codec::negotiation` doesn't yet generalize beyond the literal
+//! `as=Table` case — see those functions' own doc comment.
 
 use crate::codegen;
 use serde_json::{json, Value};
@@ -138,6 +146,94 @@ pub fn api_resource_list(group: &str, version: &str) -> Option<Value> {
     }))
 }
 
+/// Aggregated discovery v2 (`apidiscovery.k8s.io/v2`'s `APIGroupDiscoveryList`
+/// — introduced 1.30, GA by 1.34): one request instead of the legacy
+/// `/apis` + one `/apis/{group}/{version}` per group-version, real shape
+/// confirmed directly against upstream's own
+/// `staging/src/k8s.io/api/apidiscovery/v2/types.go`. **Pure builder only
+/// — not yet reachable over HTTP**: real kube-apiserver picks this form
+/// over the legacy `APIGroupList`/`APIGroup` shape purely through content
+/// negotiation (`Accept: application/json;as=APIGroupDiscoveryList;
+/// v=v2;g=apidiscovery.k8s.io`), and `codec::negotiation`'s `as=` handling
+/// today only recognizes the literal value `Table` — generalizing that to
+/// a client-requested *kind* rather than a boolean is real, separate work
+/// this module intentionally doesn't reach into, named honestly rather
+/// than wiring this into `listener`'s routing unconditionally (which
+/// would incorrectly serve every `/apis` request this shape regardless of
+/// what the client actually asked for).
+///
+/// `freshness` is always `"Current"`: this build has no aggregation layer
+/// (Group L) merging discovery from multiple backing apiservers yet, so
+/// there is no scenario in which this process's own discovery could be
+/// stale relative to itself.
+pub fn api_group_discovery_list() -> Value {
+    let groups = group_version_map();
+    let items: Vec<Value> = groups.keys().map(|group| group_discovery_value(group)).collect();
+    json!({
+        "kind": "APIGroupDiscoveryList",
+        "apiVersion": "apidiscovery.k8s.io/v2",
+        "metadata": {},
+        "items": items,
+    })
+}
+
+/// The core (groupless) group's own aggregated discovery document, the
+/// `/api` analogue of [`api_group_discovery_list`] — a single-item list,
+/// matching real upstream's own posture that `/api`'s aggregated response
+/// still carries the `APIGroupDiscoveryList` envelope, just scoped to the
+/// one group named `""`.
+pub fn api_v1_group_discovery_list() -> Value {
+    json!({
+        "kind": "APIGroupDiscoveryList",
+        "apiVersion": "apidiscovery.k8s.io/v2",
+        "metadata": {},
+        "items": [group_discovery_value("")],
+    })
+}
+
+fn group_discovery_value(group: &str) -> Value {
+    let mut versions: Vec<&str> = codegen::openapi_meta::DISCOVERY_GVKS.iter().filter(|g| g.group == group).map(|g| g.version).collect();
+    versions.sort_unstable();
+    versions.dedup();
+    sort_versions_most_preferred_first(&mut versions);
+
+    let version_values: Vec<Value> = versions
+        .iter()
+        .map(|version| {
+            let resources = codegen::api_resources_by_group_version().get(&(group, *version));
+            let mut sorted: Vec<&codegen::api_resources::ApiResource> = resources.map(|r| r.iter().copied().collect()).unwrap_or_default();
+            sorted.sort_by_key(|r| r.resource);
+            let resource_values: Vec<Value> = sorted.iter().map(|r| api_resource_discovery_value(group, version, r)).collect();
+            json!({
+                "version": version,
+                "resources": resource_values,
+                "freshness": "Current",
+            })
+        })
+        .collect();
+
+    json!({
+        "metadata": {"name": group},
+        "versions": version_values,
+    })
+}
+
+fn api_resource_discovery_value(group: &str, version: &str, r: &codegen::api_resources::ApiResource) -> Value {
+    let mut verbs: Vec<&str> = r.verbs.to_vec();
+    verbs.sort_unstable();
+    json!({
+        "resource": r.resource,
+        "responseKind": {"group": group, "version": version, "kind": r.kind},
+        "scope": if r.namespaced { "Namespaced" } else { "Cluster" },
+        "singularResource": r.kind.to_lowercase(),
+        "verbs": verbs,
+        // shortNames/categories/subresources: same named, deliberate gap
+        // as api_resource_list() above — not present anywhere in the
+        // vendored spec (shortNames/categories) or a separate, named skip
+        // in the discovery parser itself (subresources).
+    })
+}
+
 /// Sorts `versions` most-preferred-first, per
 /// [`super::version_compare::compare_kube_aware_versions`].
 fn sort_versions_most_preferred_first(versions: &mut [&'static str]) {
@@ -214,5 +310,47 @@ mod tests {
         let names: Vec<&str> = list["groups"].as_array().unwrap().iter().map(|g| g["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"apps"));
         assert!(!names.contains(&""), "the core group belongs to /api, not /apis");
+    }
+
+    #[test]
+    fn aggregated_discovery_list_has_the_real_kind_and_apiversion() {
+        let list = api_group_discovery_list();
+        assert_eq!(list["kind"], "APIGroupDiscoveryList");
+        assert_eq!(list["apiVersion"], "apidiscovery.k8s.io/v2");
+    }
+
+    #[test]
+    fn aggregated_discovery_list_never_contains_the_core_group_and_v1_group_discovery_list_is_only_the_core_group() {
+        let list = api_group_discovery_list();
+        let items = list["items"].as_array().unwrap();
+        assert!(items.iter().all(|g| g["metadata"]["name"] != ""), "the core group belongs to the /api document, not /apis");
+
+        let core = api_v1_group_discovery_list();
+        let core_items = core["items"].as_array().unwrap();
+        assert_eq!(core_items.len(), 1);
+        assert_eq!(core_items[0]["metadata"]["name"], "");
+    }
+
+    #[test]
+    fn aggregated_discovery_resource_entries_carry_a_real_response_kind_and_scope() {
+        let core = api_v1_group_discovery_list();
+        let versions = core["items"][0]["versions"].as_array().unwrap();
+        let v1 = versions.iter().find(|v| v["version"] == "v1").expect("core v1 should be present");
+        let resources = v1["resources"].as_array().unwrap();
+        let pods = resources.iter().find(|r| r["resource"] == "pods").expect("pods should be discoverable");
+        assert_eq!(pods["responseKind"], json!({"group": "", "version": "v1", "kind": "Pod"}));
+        assert_eq!(pods["scope"], "Namespaced");
+        assert_eq!(pods["singularResource"], "pod");
+        assert_eq!(v1["freshness"], "Current");
+    }
+
+    #[test]
+    fn aggregated_discovery_versions_are_sorted_most_preferred_first() {
+        let list = api_group_discovery_list();
+        let items = list["items"].as_array().unwrap();
+        let resource_group = items.iter().find(|g| g["metadata"]["name"] == "resource.k8s.io").expect("resource.k8s.io should be present");
+        let versions: Vec<&str> = resource_group["versions"].as_array().unwrap().iter().map(|v| v["version"].as_str().unwrap()).collect();
+        assert!(versions.len() > 1, "expected a genuinely multi-version group, got {versions:?}");
+        assert_eq!(versions[0], "v1", "the GA version must be preferred over any beta");
     }
 }
