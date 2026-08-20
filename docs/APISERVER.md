@@ -224,11 +224,28 @@ discovery v2, `/openapi/v2` + `/openapi/v3`, `/version`. Handler-chain order
 is a hard requirement, not a style choice. The throwaway e2e rig described
 above should land as part of this group, not after it.
 
-**F. Scheme: conversion, defaulting, validation** — **not started**. The
-largest handwritten chunk. Conversion only needed for genuinely multi-version
-groups (admissionregistration, autoscaling, certificates, coordination,
-networking, resource, storage, apiserverinternal, storagemigration).
-Validation is per-field business logic with no shortcut.
+**F. Scheme: conversion, defaulting, validation** — **in progress**. The
+largest handwritten chunk. `scheme::defaulting::apply_defaults(schema, value)`
+lands the first slice: recursively fills a JSON object's absent fields from
+Group A's `FIELD_META` table, now carrying each property's real vendored
+`"default"` value (`default_json`, added alongside this module) —
+unconditional defaults only (`ContainerPort.protocol` -> `"TCP"` is the
+verified concrete case), matching real upstream defaulting exactly wherever
+a field's default doesn't depend on another field's value or the request's
+`apiVersion`; upstream's genuinely conditional defaults
+(`pkg/apis/*/v1/defaults.go`'s hand-written Go) are out of scope for this
+mechanism and stay separate, per-type work, named honestly in the module's
+own doc comment rather than silently only-partially-implemented. An absent
+object-typed field first materializes from its own structural default
+(usually `{}`, which is what tells the recursion to keep going into that
+schema's own fields) via `ref_schema`, then gets that schema's own defaults
+applied — proven with a genuinely two-levels-deep case
+(`Container.ports[].protocol`) so the cascade isn't just asserted at one
+level. Conversion only needed for genuinely multi-version groups
+(admissionregistration, autoscaling, certificates, coordination,
+networking, resource, storage, apiserverinternal, storagemigration) —
+**not yet landed**, nor is validation (per-field business logic with no
+shortcut).
 
 **G. Patch + Server-Side Apply** — **in progress**. `patch::json_patch`/
 `patch::merge_patch` wrap the `json-patch` crate for RFC 6902/7386 —
