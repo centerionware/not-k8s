@@ -510,7 +510,25 @@ happened to lex it. Named honestly: both functions together are still
 only structural (presence + kind), not the rest of real validation
 (formats, enums — verified absent from the vendored specs entirely —
 cross-field consistency, numeric ranges — all hand-written Go upstream, no
-shortcut). Conversion only needed for genuinely multi-version groups
+shortcut).
+
+The first format checks now exist: `scheme::name_format::is_dns1123_label`/
+`is_dns1123_subdomain`/`is_dns1035_label` — faithful character-class
+ports of real upstream's own regex-based name validators
+(`apimachinery/pkg/util/validation/validation.go`'s `IsDNS1123Label`/
+`IsDNS1123Subdomain`/`IsDNS1035Label`, fetched and read directly; this
+crate has no regex dependency, and each pattern is simple enough to
+check in one pass without one). **Primitives only, not yet wired to any
+specific resource's own name rule**: real upstream itself keeps "which
+validator applies to which resource" as hand-maintained-per-type Go
+(`ValidateNamespaceName = NameIsDNSLabel`, `ValidateServiceAccountName
+= NameIsDNSSubdomain`, confirmed directly — there is no vendored table
+for this, the same "verified genuinely absent" finding `validate_types`
+already recorded for enum constraints) — wiring a specific validator
+into `server::rest::create`/`update` per resource is real, separate,
+not-yet-started follow-up work.
+
+Conversion only needed for genuinely multi-version groups
 (admissionregistration, autoscaling, certificates, coordination,
 networking, resource, storage, apiserverinternal, storagemigration) —
 **not yet landed**.
