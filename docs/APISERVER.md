@@ -983,12 +983,21 @@ read directly), `Metadata` level (who did what to which object — not
 request/response bodies, real upstream's own `Request`/
 `RequestResponse` levels), single-stage (`ResponseComplete` only — real
 upstream's other three stages, including the long-running-request-only
-`ResponseStarted`, aren't modeled). **Pure builder only — not yet wired
-into `server::listener`, and no real audit-log sink (file/webhook, with
-real upstream's own rotation/policy-filtering machinery) exists at all**
-— primitive landed, verification via unit tests only, same "land it,
-wire it later" pattern this crate has used repeatedly. FlowSchema/
-PriorityLevelConfiguration queueing; `/metrics`;
+`ResponseStarted`, aren't modeled — `watch` is a named, narrow exception:
+its one logged event is stamped `ResponseComplete` right as the stream
+*starts*, since this crate has no hook into when a stream later ends).
+**Now wired into `server::listener`**: `handle_with_audit` wraps every
+request (the far less invasive place to add this than threading an
+audit context out through `handle`'s own many early returns), building
+and logging one real event per request once the response status is
+known. Every request is unconditionally logged at `Metadata` level —
+real upstream's own policy-driven per-rule level selection isn't
+modeled. **The sink is this crate's own `tracing` output**
+(`target: "nodeapiserver::audit"`, one JSON line per request) — a real,
+working choice consistent with how every other component in this
+workspace already logs, not real upstream's own dedicated
+`--audit-log-path` file with rotation, and not a webhook backend either.
+FlowSchema/PriorityLevelConfiguration queueing; `/metrics`;
 `/healthz`/`/readyz`/`/livez` with per-check verbose output
 (`deploy/setup-control-plane.sh` already polls `/readyz?verbose`) — all
 still **not started**.
