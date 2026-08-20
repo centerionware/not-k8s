@@ -55,10 +55,15 @@
 //! (`ValidateNamespaceName`), `services` -> `is_dns1035_label`
 //! (`ValidateServiceName`, ignoring the alpha
 //! `RelaxedServiceNameValidation` feature gate this crate has no
-//! machinery for), and ten resources sharing `is_dns1123_subdomain`
-//! (`serviceaccounts`, `pods`, `replicationcontrollers`, `nodes`,
-//! `limitranges`, `resourcequotas`, `secrets`, `endpoints`,
-//! `persistentvolumes`, `configmaps`) — every other resource is
+//! machinery for), and fourteen resources sharing `is_dns1123_subdomain`
+//! (core group: `serviceaccounts`, `pods`, `replicationcontrollers`,
+//! `nodes`, `limitranges`, `resourcequotas`, `secrets`, `endpoints`,
+//! `persistentvolumes`, `configmaps`; non-core, each individually
+//! group-verified against the vendored spec:
+//! `scheduling.k8s.io/priorityclasses`,
+//! `resource.k8s.io/resourceclaims`,
+//! `resource.k8s.io/resourceclaimtemplates`,
+//! `storage.k8s.io/storageclasses`) — every other resource is
 //! deliberately left unchecked rather than guessed at; see that
 //! function's own doc comment for how to extend it one verified entry at
 //! a time. `update` runs the exact same two checks. Named honestly, not
@@ -507,6 +512,34 @@ fn name_format_violations(group: &str, resource: &str, name: &str) -> Vec<String
         // off). This crate has no feature-gate system, so the honest
         // default is the gate's default-off behavior: DNS1035Label.
         ("", "services") => crate::scheme::name_format::is_dns1035_label(name),
+        // Non-core groups, each confirmed two ways: the real
+        // `var Validate<Kind>Name = apimachineryvalidation.NameIsDNSSubdomain`
+        // declaration AND the real per-type `Validate<Kind>` function that
+        // actually applies it to that type's own `ObjectMeta` (not just a
+        // same-named field elsewhere — `ValidateClassName`, for one, is
+        // also used to check *referenced* `storageClassName` fields on
+        // PV/PVC, which is a different check entirely from this one), plus
+        // the group/version cross-checked against the vendored spec's own
+        // `paths` table:
+        // - `priorityclasses` (scheduling.k8s.io/v1):
+        //   `ValidatePriorityClass` -> `NameIsDNSSubdomain` directly
+        //   (inlined, not the `ValidatePriorityClassName` var — same rule).
+        //   Named honestly: real upstream also forbids a `system-`-prefixed
+        //   name unless it's one of a fixed predefined set
+        //   (`IsKnownSystemPriorityClass`) — that check is NOT ported here,
+        //   only the DNS-subdomain shape.
+        // - `resourceclaims`/`resourceclaimtemplates` (resource.k8s.io/v1):
+        //   `ValidateResourceClaim`/`ValidateResourceClaimTemplate` ->
+        //   `ValidateResourceClaimName`/`ValidateResourceClaimTemplateName`
+        //   (`pkg/apis/resource/validation/validation.go`, confirmed).
+        // - `storageclasses` (storage.k8s.io/v1): `ValidateStorageClass` ->
+        //   `ValidateClassName` (`pkg/apis/storage/validation/validation.go`,
+        //   confirmed this is really StorageClass's own object-name check,
+        //   not only the referenced-field usage).
+        ("scheduling.k8s.io", "priorityclasses") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("resource.k8s.io", "resourceclaims") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("resource.k8s.io", "resourceclaimtemplates") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("storage.k8s.io", "storageclasses") => crate::scheme::name_format::is_dns1123_subdomain(name),
         _ => Vec::new(),
     }
 }
@@ -633,6 +666,22 @@ mod tests {
             assert!(name_format_violations("", resource, "my-name.example").is_empty(), "{resource} should accept a valid DNS subdomain");
             assert!(!name_format_violations("", resource, "My_Bad_Name").is_empty(), "{resource} should reject an invalid DNS subdomain");
         }
+    }
+
+    #[test]
+    fn name_format_violations_enforces_the_real_dns_subdomain_rule_on_each_verified_non_core_resource() {
+        for (group, resource) in [
+            ("scheduling.k8s.io", "priorityclasses"),
+            ("resource.k8s.io", "resourceclaims"),
+            ("resource.k8s.io", "resourceclaimtemplates"),
+            ("storage.k8s.io", "storageclasses"),
+        ] {
+            assert!(name_format_violations(group, resource, "my-name.example").is_empty(), "{group}/{resource} should accept a valid DNS subdomain");
+            assert!(!name_format_violations(group, resource, "My_Bad_Name").is_empty(), "{group}/{resource} should reject an invalid DNS subdomain");
+        }
+        // The same resource name under the wrong group must not match --
+        // this table is keyed on (group, resource), not resource alone.
+        assert!(name_format_violations("", "priorityclasses", "My_Bad_Name").is_empty());
     }
 
     #[test]
