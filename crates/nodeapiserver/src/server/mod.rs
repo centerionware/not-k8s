@@ -10,23 +10,28 @@
 //! handler is a real dispatch for every non-resource discovery route**
 //! (`/api`, `/api/{version}`, `/apis`, `/apis/{group}`,
 //! `/apis/{group}/{version}`, plus `/healthz`) **and for `GET`/`LIST`/
-//! `CREATE`/`DELETE`** (`rest::get`/`rest::list`/`rest::create`/
-//! `rest::delete`, against real nodestore data) — **every other resource
-//! verb** (`watch`/`update`/`patch`/`deletecollection`) **is still a
-//! bring-up stub** that just echoes the parsed `RequestInfo` — see that
+//! `CREATE`/`DELETE`/`UPDATE`** (`rest::get`/`rest::list`/`rest::create`/
+//! `rest::delete`/`rest::update`, against real nodestore data) — **every
+//! other resource verb** (`watch`/`patch`/`deletecollection`) **is still
+//! a bring-up stub** that just echoes the parsed `RequestInfo` — see that
 //! module's own doc comment.
 //! `rest` — the real, generic REST verbs so far: `GET`/`LIST`/`CREATE`/
-//! `DELETE`, resolving a resource's Kind from Group A's discovery table,
-//! reading straight from nodestore (bypassing the watch cache — named
-//! honestly as a real, valid read strategy, not a shortcut; see that
-//! module's own doc comment for exactly what's in and out of scope).
-//! `LIST` filters by label/field selector for real
+//! `DELETE`/`UPDATE`, resolving a resource's Kind from Group A's
+//! discovery table, reading straight from nodestore (bypassing the watch
+//! cache — named honestly as a real, valid read strategy, not a
+//! shortcut; see that module's own doc comment for exactly what's in and
+//! out of scope). `LIST` filters by label/field selector for real
 //! (`cacher::selector::object_matches`, Group D's own generic adapter,
 //! wired in unchanged). `CREATE` runs Group F's
 //! `scheme::validation`/`defaulting`, sets real `creationTimestamp`/`uid`,
 //! and writes with a real create-only-if-absent `Txn`. `DELETE` is a
 //! single unconditional `DeleteRange` — no `resourceVersion`/`uid`
-//! preconditions, no `propagationPolicy`, no finalizers. No admission
+//! preconditions, no `propagationPolicy`, no finalizers. `UPDATE` is
+//! real optimistic concurrency (reads current, requires the submitted
+//! `resourceVersion` to match, writes with a `Txn` compared against that
+//! same revision — a real `Conflict` on a mismatch or a lost race, not a
+//! silent overwrite), preserving `creationTimestamp`/`uid` from the
+//! existing object regardless of what the client submitted. No admission
 //! (Group J) exists yet — the only gate on any of this is `listener`'s
 //! own opt-in RBAC (Groups H/I).
 //! `version_compare` — `CompareKubeAwareVersionStrings`, a faithful port
@@ -52,8 +57,8 @@
 //! every group/version discovery document actually reachable over HTTP
 //! (including a real `404` for an unknown group/version rather than a
 //! silent fallthrough), `/openapi/v3`, `/version`, aggregated discovery
-//! v2 (negotiated), and real `GET`/`LIST`/`CREATE`/`DELETE`, gated by
-//! opt-in RBAC (Groups H/I). **Not yet landed**: `watch`/`update`/
+//! v2 (negotiated), and real `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`,
+//! gated by opt-in RBAC (Groups H/I). **Not yet landed**: `watch`/
 //! `patch`/`deletecollection`, admission (Group J), the real handler
 //! chain (authn -> authz -> APF -> admission -> REST — a hard
 //! requirement on order, not a style choice, once it exists),
