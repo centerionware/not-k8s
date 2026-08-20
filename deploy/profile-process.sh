@@ -30,6 +30,7 @@ PATTERN=""
 LABEL=""
 JOURNAL_UNIT=""
 OUT_DIR=""
+STOP_FILE=""
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FG_DIR="$REPO_ROOT/.bootstrap/flamegraph-tools"
 
@@ -49,7 +50,19 @@ Options:
                              PATTERN, or "process" if only --pid was given)
   -j, --journal-unit UNIT   Also capture this systemd unit's journal for the
                              sample window, for correlating spikes with logs
-  -d, --duration SECONDS    Sampling duration (default: 30)
+  -d, --duration SECONDS    Sampling duration (default: 30) — a hard cap
+                             when --stop-file is given too (see below),
+                             the actual sample length otherwise.
+  -s, --stop-file FILE      Stop recording as soon as this file appears,
+                             instead of always running the full --duration
+                             — same MEASURE_STOP_FILE convention
+                             deploy/measure.sh already uses, for a caller
+                             bracketing perf around real work of unknown
+                             length (e.g. "until this pod is deleted")
+                             rather than a pre-guessed fixed window.
+                             --duration still applies as a safety cap so a
+                             caller that never creates the file can't hang
+                             this forever.
   -o, --output DIRECTORY    Output directory (default:
                              /tmp/not-k8s-profile-<label>-<timestamp>)
   -h, --help                Show this help
@@ -63,6 +76,7 @@ while [[ $# -gt 0 ]]; do
         -l|--label) [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }; LABEL="$2"; shift 2 ;;
         -j|--journal-unit) [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }; JOURNAL_UNIT="$2"; shift 2 ;;
         -d|--duration) [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }; DURATION="$2"; shift 2 ;;
+        -s|--stop-file) [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }; STOP_FILE="$2"; shift 2 ;;
         -o|--output) [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }; OUT_DIR="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -123,20 +137,53 @@ ensure_flamegraph_toolkit() {
     chmod +x "$FG_DIR"/*.pl
 }
 
+# Runs `perf record` (args in $*, plus -o "$perf_data") bounded by
+# --stop-file if set (background perf, poll once/sec, SIGINT it as soon as
+# the file appears — --duration is still the safety-cap ceiling so a
+# caller that never creates the file can't hang this forever) or by plain
+# `-- sleep $DURATION` otherwise (the original, still-default behavior for
+# a caller with no early-stop signal to give — kept as its own simple,
+# synchronous path rather than folded into the polling one, since `timeout`
+# can wrap that directly and a shell function can't be `timeout`'d without
+# `export -f` gymnastics).
+run_perf_record() {
+    local perf_data="$1"; shift
+    if [[ -z "$STOP_FILE" ]]; then
+        local timeout_cmd=()
+        command -v timeout >/dev/null 2>&1 && timeout_cmd=(timeout "$((DURATION + 15))")
+        "${timeout_cmd[@]}" perf record "$@" -o "$perf_data" -- sleep "$DURATION"
+        return $?
+    fi
+    perf record "$@" -o "$perf_data" &
+    local perf_pid=$!
+    local waited=0
+    while [[ $waited -lt $DURATION ]]; do
+        if [[ -e "$STOP_FILE" ]]; then
+            echo "==> stop-file seen after ${waited}s; stopping perf record early (--duration was ${DURATION}s)"
+            break
+        fi
+        if ! kill -0 "$perf_pid" 2>/dev/null; then
+            break # perf itself already exited (a real failure) -- nothing left to wait on
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    kill -INT "$perf_pid" 2>/dev/null || true
+    wait "$perf_pid"
+}
+
 capture_with_perf() {
     command -v perf >/dev/null 2>&1 || return 1
     local perf_data="$OUT_DIR/perf.data"
-    local timeout_cmd=()
-    command -v timeout >/dev/null 2>&1 && timeout_cmd=(timeout "$((DURATION + 15))")
 
     echo "==> perf available; recording DWARF call stacks"
     rm -f "$perf_data"
-    "${timeout_cmd[@]}" perf record -F 99 --call-graph dwarf -p "$PID" -o "$perf_data" -- sleep "$DURATION" \
+    run_perf_record "$perf_data" -F 99 --call-graph dwarf -p "$PID" \
         > "$OUT_DIR/perf-record.txt" 2>&1
     if [[ ! -s "$perf_data" ]]; then
         echo "DWARF call-graph capture failed; retrying with frame-pointer stacks" >> "$OUT_DIR/perf-record.txt"
         rm -f "$perf_data"
-        "${timeout_cmd[@]}" perf record -F 99 -g -p "$PID" -o "$perf_data" -- sleep "$DURATION" \
+        run_perf_record "$perf_data" -F 99 -g -p "$PID" \
             >> "$OUT_DIR/perf-record.txt" 2>&1
     fi
     [[ -s "$perf_data" ]] || return 1
@@ -250,6 +297,17 @@ fi
     fi
     echo "files:"; find "$OUT_DIR" -maxdepth 1 -type f -printf '  %f\n' | sort
 } > "$OUT_DIR/SUMMARY.txt"
+
+# perf needs real privilege (this script is typically run under sudo), so
+# every file it and this script wrote under $OUT_DIR is root-owned. A
+# caller that isn't root itself (a CI step that uploads $OUT_DIR as an
+# unprivileged user, e.g.) can't even read them back — found live:
+# actions/upload-artifact failed with EACCES on perf.data. Hand the
+# directory back to whoever actually invoked sudo, same as any
+# well-behaved sudo-wrapped tool should.
+if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" ]]; then
+    chown -R "$SUDO_UID:$SUDO_GID" "$OUT_DIR" 2>/dev/null || true
+fi
 
 echo "==> profile complete"
 cat "$OUT_DIR/SUMMARY.txt"
