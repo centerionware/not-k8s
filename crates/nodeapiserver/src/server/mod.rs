@@ -18,7 +18,9 @@
 //! resource's Kind from Group A's discovery table, reading straight from
 //! nodestore (bypassing the watch cache — named honestly as a real, valid
 //! read strategy, not a shortcut; see that module's own doc comment for
-//! exactly what's in and out of scope). No authn/authz/admission yet —
+//! exactly what's in and out of scope). `LIST` filters by label/field
+//! selector for real (`cacher::selector::object_matches`, Group D's own
+//! generic adapter, wired in unchanged). No authn/authz/admission yet —
 //! every request reaching it is currently treated as allowed.
 //! `version_compare` — `CompareKubeAwareVersionStrings`, a faithful port
 //! (GA beats beta beats alpha, then major, then minor — maturity compared
