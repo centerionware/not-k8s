@@ -24,8 +24,9 @@
 //! (matching upstream's own "policy rules are purely additive" posture).
 //!
 //! **Wired into `server::listener`, opt-in**: `server::listener::handle`
-//! calls `resolve::rules_for` + `rbac::rules_allow` to gate `GET`/`LIST`
-//! with a real `403` on denial — but only when
+//! calls `resolve::rules_for` + `rbac::rules_allow` to gate
+//! `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE` with a real `403` on denial —
+//! but only when
 //! `NODEAPISERVER_ENFORCE_RBAC` (`config::Config::enforce_rbac`) is set,
 //! off by default. That field's own doc comment explains why: enabling
 //! deny-by-default RBAC before Group O's bootstrap `ClusterRole`/

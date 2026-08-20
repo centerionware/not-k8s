@@ -16,18 +16,20 @@
 //! (`DELETE /api/v1/namespaces/{ns}/pods/{name}`), and now `UPDATE`
 //! (`PUT /api/v1/namespaces/{ns}/pods/{name}`) — `watch`/`patch`/
 //! `deletecollection` all remain the bring-up echo stub
-//! (`server::listener`'s own doc comment). `get` can consult a
-//! `cacher::store::SharedCache` if the caller passes one (a hit skips
-//! nodestore entirely; a miss always falls through to a real `Range`
-//! rather than trusting the cache to say "not found" — see that
-//! function's own doc comment for why) — `server::listener` actually
-//! does this for one real resource (`namespaces`) as a proof of
-//! concept, every other resource still passes `None`. `list`/`create`/
-//! `update`/`delete` still read/write straight to
-//! `storage::client::StorageClient`
-//! directly, bypassing the cache entirely — a real, valid strategy
-//! (upstream's own quorum-read / watch-cache-disabled path takes exactly
-//! this shape), not a shortcut. No authentication is consulted *inside*
+//! (`server::listener`'s own doc comment). `get` and `list` can both
+//! consult a `cacher::store::SharedCache` if the caller passes one — see
+//! each function's own doc comment for its exact contract (`get`: a hit
+//! skips nodestore, a miss always falls through to a real `Range` rather
+//! than trusting the cache to say "not found"; `list`: only once the
+//! cache's own `has_synced()` is true, since an empty `list()` is a
+//! valid answer on its own, not a fallthrough signal the way a `get`
+//! miss is). `server::listener` actually does this for one real resource
+//! (`namespaces`) as a proof of concept; every other resource still
+//! passes `None` to both. `create`/`update`/`delete` still read/write
+//! straight to `storage::client::StorageClient` directly, bypassing the
+//! cache entirely — a real, valid strategy (upstream's own quorum-read /
+//! watch-cache-disabled path takes exactly this shape), not a shortcut.
+//! No authentication is consulted *inside*
 //! this module either way — `server::listener` is what applies Group
 //! H/I's identity/RBAC (opt-in, see that module's own doc comment)
 //! before ever calling in here; no admission (Group J) exists at all yet.
@@ -231,24 +233,74 @@ fn list_kind(kind: &str) -> String {
 
 /// Lists every object of a resource — the whole resource, or scoped to
 /// one namespace (`namespace: None` for a cluster-scoped resource, same
-/// convention as [`get`]). One real `Range` request over the resource's
-/// key prefix (`storage::keys::list_prefix` + `prefix_range_end`),
-/// decoding every returned value the same way `get` does. Items are
-/// returned in whatever order nodestore's own `Range` returns them in
-/// (key order) — real upstream doesn't guarantee list ordering either.
+/// convention as [`get`]). Items are decoded and filtered
+/// (`cacher::selector::object_matches`) the same way regardless of source.
+/// Items are returned in whatever order the source hands them back in
+/// (key order, for both a real `Range` and the cache's own `BTreeMap`) —
+/// real upstream doesn't guarantee list ordering either.
 /// `label_selector`/`field_selector` are the raw query-string values
 /// `path::RequestInfo` already captures for `list` (empty means "no
 /// constraint from that half," matching upstream's own `Everything()`
-/// selector semantics — see `cacher::selector::object_matches`, the
-/// predicate this filters with once both are parsed).
-pub async fn list(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, label_selector: &str, field_selector: &str) -> Result<ListOutcome, Error> {
+/// selector semantics).
+///
+/// `cache`, if given, is consulted first — but only once
+/// [`crate::cacher::store::SharedCache::has_synced`] is true. Unlike
+/// [`get`]'s "a miss always falls through" trick, `list` can't use that
+/// same safety net: a cache that hasn't finished its first `LIST` yet
+/// would report zero items, and zero items is itself a fully valid `LIST`
+/// answer (a real `200`, not a `404`) — there is no way to tell "empty
+/// because unsynced" from "empty because genuinely empty" after the fact,
+/// so this checks `has_synced()` up front instead (see that method's own
+/// doc comment for why it's a real flag, not inferred from the revision).
+/// An unsynced cache falls through to nodestore exactly as `cache: None`
+/// would. `None` behaves exactly as before this parameter existed; every
+/// call site but `server::listener`'s own `namespaces` proof of concept
+/// still passes `None` (same scope `get`'s own cache parameter is at).
+pub async fn list(
+    storage: &mut StorageClient,
+    cache: Option<&crate::cacher::store::SharedCache>,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    label_selector: &str,
+    field_selector: &str,
+) -> Result<ListOutcome, Error> {
     let Some(kind) = resolve_kind(group, version, resource) else {
         return Ok(ListOutcome::UnknownResource);
     };
     let label_reqs = if label_selector.is_empty() { Vec::new() } else { selector::parse_label_selector(label_selector)? };
     let field_reqs = if field_selector.is_empty() { Vec::new() } else { selector::parse_field_selector(field_selector)? };
 
+    let group_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    // Shared by both the cache path and the direct-nodestore path below —
+    // the cache registers one entry per whole `(group, version, resource)`
+    // (`cacher::registry`'s own doc comment: "every namespace at once, not
+    // one cache per namespace"), so a namespaced request still needs this
+    // same prefix to scope the cache's own entries down to one namespace,
+    // exactly as it already scopes the `Range` request on the fallback path.
     let prefix = keys::list_prefix(group, resource, namespace).into_bytes();
+
+    if let Some(cache) = cache {
+        if cache.has_synced() {
+            let (entries, revision) = cache.list();
+            let items = entries
+                .iter()
+                .filter(|(key, _)| key.starts_with(&prefix))
+                .map(|(_, entry)| decode_stored_object(&entry.value))
+                .collect::<Result<Vec<Value>, protobuf::Error>>()?
+                .into_iter()
+                .filter(|item| selector::object_matches(item, &label_reqs, &field_reqs))
+                .collect::<Vec<Value>>();
+            return Ok(ListOutcome::Found(json!({
+                "kind": list_kind(kind),
+                "apiVersion": group_version,
+                "metadata": {"resourceVersion": revision.to_string()},
+                "items": items,
+            })));
+        }
+    }
+
     let range_end = prefix_range_end(&prefix);
     let resp = storage.range(RangeRequest { key: prefix, range_end, ..Default::default() }).await?;
     let revision = resp.header.map(|h| h.revision).unwrap_or(0);
@@ -261,7 +313,6 @@ pub async fn list(storage: &mut StorageClient, group: &str, version: &str, resou
         .filter(|item| selector::object_matches(item, &label_reqs, &field_reqs))
         .collect::<Vec<Value>>();
 
-    let group_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
     Ok(ListOutcome::Found(json!({
         "kind": list_kind(kind),
         "apiVersion": group_version,
