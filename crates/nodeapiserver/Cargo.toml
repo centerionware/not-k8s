@@ -25,9 +25,8 @@ path = "src/main.rs"
 # the boundary crates/nodeproxy/Cargo.toml's own comment establishes,
 # applied here too.
 #
-# Deliberately minimal right now: only Group A (vendoring + build-time
-# codegen) has landed, so only what src/ actually uses today is listed.
-# hyper/h2/tonic/prost (Group B/C/E), rcgen/p256/x509-parser/pem/jsonwebtoken
+# Deliberately minimal: only what src/ actually uses today is listed.
+# hyper/h2/tonic/prost (Group C/E), rcgen/p256/x509-parser/pem/jsonwebtoken
 # (Groups H/O), cel (Groups J/K), kube/k8s-openapi (Group F onward) get
 # added as the group that first needs them lands — matching every other
 # crate in this workspace, not speculatively declared up front.
@@ -36,6 +35,18 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+
+# Group B (wire formats): the codec operates on serde_json::Value as its
+# universal in-memory representation — real k8s-openapi struct
+# (de)serialization is Group F's job (the Scheme routes a GVK to a Rust
+# type; nothing here does that yet), so Value is what a format-transcoding
+# layer with no typed object model underneath can honestly operate on.
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+# protobuf's `bytes` fields are base64 in the JSON representation — the
+# same convention every other Kubernetes JSON<->protobuf codec follows.
+base64 = "0.22"
 
 [build-dependencies]
 # Group A codegen: parses vendor/openapi-spec/v3/*.json and
