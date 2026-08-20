@@ -613,6 +613,19 @@ Conversion only needed for genuinely multi-version groups
 networking, resource, storage, apiserverinternal, storagemigration) —
 **not yet landed**.
 
+`scheme::quantity::Quantity` parses real upstream's own resource-quantity
+string format (`100m`, `1.5Gi`, `1e3`, …) — a faithful port of the real
+grammar (`staging/.../api/resource/quantity.go`'s own doc comment, quoted
+verbatim in this module's own doc comment), **honestly not
+byte-for-byte**: real upstream falls back to an arbitrary-precision
+decimal for any value that would overflow `int64`; this port instead
+holds every value as an exact `i128` milli-unit count, lossless for any
+magnitude a real Kubernetes resource request/limit/quota has ever
+practically used, and returns an error rather than silently losing
+precision on the (unrealistic) values that would overflow that. Built as
+the prerequisite `plugin/pkg/admission/limitranger`/`resourcequota` both
+need for real min/max/ratio comparisons — not yet wired to either.
+
 **G. Patch + Server-Side Apply** — **in progress**. `patch::json_patch`/
 `patch::merge_patch` wrap the `json-patch` crate for RFC 6902/7386 —
 rollback-on-failure for JSON Patch (not the unsafe partial-apply variant),
