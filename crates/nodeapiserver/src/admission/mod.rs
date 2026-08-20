@@ -16,8 +16,17 @@
 //! upstream's own plugin (see that module's own doc comment for the exact
 //! rules and what's honestly simplified: no informer-cache staleness
 //! workarounds, since this crate has no cache in the admission path to be
-//! stale). **Wired into `server::listener`, unconditionally** — this
-//! plugin needs no operator-provisioned bootstrap data (unlike Group I's
+//! stale). Validating only.
+//! `default_toleration_seconds` — `DefaultTolerationSeconds`, this crate's
+//! first **mutating** plugin: appends default `NoExecute` tolerations for
+//! the `node.kubernetes.io/not-ready`/`unreachable` taints to a `Pod` that
+//! doesn't already have its own (see that module's own doc comment for the
+//! exact matching rule, ported from upstream's real loop). A pure
+//! `Value -> Value` transform, no I/O needed — unlike
+//! `namespace_lifecycle`, nothing about this decision depends on other
+//! cluster state.
+//! Both are **wired into `server::listener`, unconditionally** — neither
+//! plugin needs operator-provisioned bootstrap data (unlike Group I's
 //! RBAC), so there's no "could lock every request out" risk to gate
 //! behind a config flag.
 //!
@@ -31,4 +40,5 @@
 //! here).
 
 pub mod attributes;
+pub mod default_toleration_seconds;
 pub mod namespace_lifecycle;
