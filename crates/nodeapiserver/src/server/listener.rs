@@ -522,13 +522,17 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, namespac
                 }
             }
 
+            // Only `namespaces` (core group) has a real cache registered at
+            // all today (`run()`'s own proof-of-concept `namespaces_cache`)
+            // — every other resource still passes `None` to both `get` and
+            // `list`, same as before this cache existed. Shared by both
+            // verbs below; `rest::list`'s own doc comment covers why an
+            // unsynced cache is safe to pass here too (it just falls
+            // through, same as `None`).
+            let resource_cache = if info.api_group.is_empty() && info.resource == "namespaces" { namespaces_cache.as_ref() } else { None };
+
             if is_get {
-                // Only `namespaces` (core group) has a real cache
-                // registered at all today (`run()`'s own proof-of-concept
-                // `namespaces_cache`) — every other resource still passes
-                // `None`, same as before this cache existed.
-                let get_cache = if info.api_group.is_empty() && info.resource == "namespaces" { namespaces_cache.as_ref() } else { None };
-                match rest::get(&mut client, get_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                match rest::get(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
                     Ok(rest::GetOutcome::Found(object)) => return Ok(json_response(StatusCode::OK, &object)),
                     Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
                         return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
@@ -539,7 +543,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, namespac
                     }
                 }
             } else if is_list {
-                match rest::list(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector).await {
+                match rest::list(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector).await {
                     Ok(rest::ListOutcome::Found(list)) => return Ok(json_response(StatusCode::OK, &list)),
                     Ok(rest::ListOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
                     // A malformed selector is the client's fault, not a
