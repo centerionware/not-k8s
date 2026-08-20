@@ -1,8 +1,7 @@
-//! A thin etcd v3 KV client over nodestore's gRPC API. Wraps exactly the
-//! four RPCs Group C's storage layer needs on top of
-//! (`Range`/`Put`/`DeleteRange`/`Txn`) — `Watch`/`Lease` are Group D/C
-//! follow-ups, added when the watch cache and lease-backed subresources
-//! actually need them, not speculatively now.
+//! A thin etcd v3 KV client over nodestore's gRPC API. Wraps
+//! `Range`/`Put`/`DeleteRange`/`Txn`/`Watch` — Group C's storage layer and
+//! Group D's watch cache both build on this. `Lease` is still a follow-up,
+//! added when a lease-backed subresource actually needs it.
 //!
 //! TLS setup mirrors `crates/nodestore/src/tls.rs`'s own
 //! `client_tls_config()` almost exactly (see that function's doc comment)
@@ -11,9 +10,13 @@
 
 use crate::config::Config;
 use crate::storage::pb::etcdserverpb::kv_client::KvClient;
+use crate::storage::pb::etcdserverpb::watch_client::WatchClient;
 use crate::storage::pb::etcdserverpb::{
-    DeleteRangeRequest, DeleteRangeResponse, PutRequest, PutResponse, RangeRequest, RangeResponse, TxnRequest, TxnResponse,
+    watch_request::RequestUnion, DeleteRangeRequest, DeleteRangeResponse, PutRequest, PutResponse, RangeRequest, RangeResponse,
+    TxnRequest, TxnResponse, WatchCreateRequest, WatchRequest, WatchResponse,
 };
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +40,7 @@ type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone)]
 pub struct StorageClient {
     kv: KvClient<Channel>,
+    watch: WatchClient<Channel>,
 }
 
 impl StorageClient {
@@ -62,7 +66,7 @@ impl StorageClient {
         };
 
         let channel = endpoint.connect().await.map_err(|e| Error::Connect { endpoint: cfg.nodestore_endpoint.clone(), source: e })?;
-        Ok(StorageClient { kv: KvClient::new(channel) })
+        Ok(StorageClient { kv: KvClient::new(channel.clone()), watch: WatchClient::new(channel) })
     }
 
     /// `revision <= 0` means "the current revision" — matches etcd's own
@@ -92,6 +96,65 @@ impl StorageClient {
     pub async fn txn(&mut self, req: TxnRequest) -> Result<TxnResponse> {
         Ok(self.kv.txn(req).await?.into_inner())
     }
+
+    /// Opens a watcher over `[key, range_end)` starting at `start_revision`
+    /// (`0` means "now" — matches `WatchCreateRequest`'s own doc comment).
+    /// Use [`prefix_range_end`] to watch every key under a prefix.
+    ///
+    /// Returns a [`WatchHandle`]: `responses` is the raw etcd v3 response
+    /// stream, not yet decoded into this crate's own object model (Group
+    /// D's watch cache is what turns a `mvccpb::Event` into a typed
+    /// `Added`/`Modified`/`Deleted` the rest of the apiserver understands).
+    /// The first item is always the `created: true` acknowledgement.
+    ///
+    /// `requests` must be kept alive for as long as the watcher should stay
+    /// open — dropping it closes the request-side of the bidi stream,
+    /// which the server reads as the client canceling. The caller owning
+    /// it (rather than this method leaking it to keep the stream open
+    /// implicitly) is deliberate: a watch cache that reconnects/rewatches
+    /// repeatedly must not leak one channel per attempt, and holding
+    /// `requests` is also what a future multiplexed
+    /// `WatchCancelRequest`/second-watcher-per-connection path needs
+    /// anyway.
+    pub async fn watch(&mut self, key: Vec<u8>, range_end: Vec<u8>, start_revision: i64) -> Result<WatchHandle> {
+        // Buffer of 1 is enough for the initial create; a caller that later
+        // sends more requests on this channel (cancel, a second watcher)
+        // is free to, since they now own the sender.
+        let (tx, rx) = mpsc::channel(1);
+        let create = WatchCreateRequest { key, range_end, start_revision, ..Default::default() };
+        tx.send(WatchRequest { request_union: Some(RequestUnion::CreateRequest(create)) })
+            .await
+            .expect("channel was just created with capacity 1 and nothing else could have closed it");
+        let responses = self.watch.watch(ReceiverStream::new(rx)).await?.into_inner();
+        Ok(WatchHandle { requests: tx, responses })
+    }
+}
+
+/// An open watch: `requests` must be kept alive for as long as the watcher
+/// should stay open (see [`StorageClient::watch`]'s own doc comment),
+/// `responses` is the event stream.
+pub struct WatchHandle {
+    pub requests: mpsc::Sender<WatchRequest>,
+    pub responses: tonic::Streaming<WatchResponse>,
+}
+
+/// The standard etcd client convention for turning a key prefix into the
+/// `[key, range_end)` half-open interval that matches every key under it:
+/// increment the last byte that isn't already `0xff`, dropping everything
+/// after it. A prefix that is all `0xff` bytes (or empty) has no finite
+/// successor, so its range end is `\0` — `WatchCreateRequest.range_end`'s
+/// own doc comment states `\0` means "to the end of the keyspace" for
+/// exactly this reason.
+pub fn prefix_range_end(prefix: &[u8]) -> Vec<u8> {
+    let mut end = prefix.to_vec();
+    for i in (0..end.len()).rev() {
+        if end[i] < 0xff {
+            end[i] += 1;
+            end.truncate(i + 1);
+            return end;
+        }
+    }
+    vec![0]
 }
 
 fn client_tls_config(cert: &std::path::Path, key: &std::path::Path, ca: &std::path::Path) -> Result<ClientTlsConfig> {
@@ -129,5 +192,22 @@ mod tests {
         cfg.nodestore_ca_file = Some(std::path::PathBuf::from("/nonexistent/ca.pem"));
         let err = StorageClient::connect(&cfg).await.expect_err("a missing cert file must be a clear error");
         assert!(matches!(err, Error::ReadMaterial { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn prefix_range_end_increments_the_last_byte() {
+        assert_eq!(prefix_range_end(b"/registry/pods/"), b"/registry/pods0".to_vec());
+        assert_eq!(prefix_range_end(b"a"), b"b".to_vec());
+    }
+
+    #[test]
+    fn prefix_range_end_drops_trailing_0xff_bytes() {
+        assert_eq!(prefix_range_end(&[0x01, 0xff, 0xff]), vec![0x02]);
+    }
+
+    #[test]
+    fn prefix_range_end_of_all_0xff_or_empty_means_to_the_end_of_the_keyspace() {
+        assert_eq!(prefix_range_end(&[0xff, 0xff]), vec![0]);
+        assert_eq!(prefix_range_end(&[]), vec![0]);
     }
 }
