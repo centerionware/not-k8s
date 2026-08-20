@@ -1,0 +1,46 @@
+[package]
+name = "nodeapiserver"
+description = "kube-apiserver's job: REST + watch over every built-in and CRD resource, backed by nodestore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "nodeapiserver"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nodeapiserver"
+path = "src/main.rs"
+
+# No cargo features, deliberately — same reasoning nodestore's own Cargo.toml
+# gives: there is no "mock apiserver" worth having, the only real client that
+# matters is real kubectl/client-go/every other component here, so the thing
+# to test against is a real nodestore over a real gRPC connection.
+#
+# Dependency discipline (see docs/APISERVER.md): this crate must not depend
+# on nodelet, nodescheduler, or nodecontroller. It speaks etcd v3 over the
+# wire to nodestore like any other client rather than linking that crate —
+# the boundary crates/nodeproxy/Cargo.toml's own comment establishes,
+# applied here too.
+#
+# Deliberately minimal right now: only Group A (vendoring + build-time
+# codegen) has landed, so only what src/ actually uses today is listed.
+# hyper/h2/tonic/prost (Group B/C/E), rcgen/p256/x509-parser/pem/jsonwebtoken
+# (Groups H/O), cel (Groups J/K), kube/k8s-openapi (Group F onward) get
+# added as the group that first needs them lands — matching every other
+# crate in this workspace, not speculatively declared up front.
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+# Group A codegen: parses vendor/openapi-spec/v3/*.json and
+# vendor/protos/**/generated.proto at build time into the tables
+# src/codegen.rs's consumers read. No prost/tonic-build here — see that
+# module's own doc comment for why this crate does not generate a second
+# struct universe with prost for the k8s API types themselves.
+serde_json = { workspace = true }
