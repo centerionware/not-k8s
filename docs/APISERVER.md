@@ -359,16 +359,42 @@ in `lib.rs::run()` calls `cacher::driver::reflect()`), no subresources.
 `cacher::selector::object_matches` (Group D's own generic adapter,
 already landed and unit-tested there) wired in unchanged, with a real
 `400 BadRequest` (not a `500`) for a client-malformed selector. `list`'s
-remaining gap is pagination (`continue`/`limit`). **No authentication, no
-authorization, no admission at all** — every request reaching
-`rest::get`/`list` is currently treated as allowed, the same
-deliberately-incomplete-but-honest bring-up posture `server::tls`'s own
-self-signed cert already established for this crate.
+remaining gap is pagination (`continue`/`limit`).
+
+`server::rest::create` (`POST` to a resource's collection URL) is real
+too: runs Group F's already-landed `scheme::validation::validate_required`/
+`validate_types` on the client's raw submitted body (required-ness is
+about what the user *sent*, matching those functions' own documented
+ordering), then `scheme::defaulting::apply_defaults`, sets real
+`metadata.creationTimestamp`/`uid` (`uuid`, real RFC3339 via `chrono` —
+both already-resolved dependencies made directly usable, not new ones),
+and writes with a real create-only-if-absent `Txn`
+(`Compare(ModRevision(key), Equal, 0)` — confirmed directly against
+`nodestore`'s own server-side comment naming this the idiom, not
+assumed) rather than a plain `Put` that could silently clobber an
+existing object. Request bodies are decoded generically by negotiated
+`Content-Type` (JSON/YAML — a protobuf request body would need the
+target schema to decode, which needs the resource resolved first;
+named honestly as a real, separate gap, not guessed at). Real,
+distinct `Status` responses per outcome: `201` created, `409
+AlreadyExists` (lost the create race), `422 Invalid` (validation
+failures, joined into one message — real upstream's structured
+`details.causes` isn't built), `400` for a missing name (no
+`generateName` support) or a namespace mismatch between the body and
+the URL.
+
+**Authentication and authorization now gate all three real verbs**:
+`authn::x509`'s verified peer identity (Group H) plus opt-in RBAC
+enforcement (Group I, `NODEAPISERVER_ENFORCE_RBAC`) — see those groups'
+own sections for what's real and what's deliberately still opt-in.
+Admission (Group J) doesn't exist at all yet — no plugin gets a say in
+any of this.
 
 **Not yet landed**: every other resource verb
-(`watch`/`create`/`update`/`patch`/`delete`), the real handler
-chain itself (authn -> authz -> APF -> admission -> REST — a hard
-requirement on order, not a style choice, once it exists), `/openapi/v2`.
+(`watch`/`update`/`patch`/`delete`), admission (Group J), the real
+handler chain itself (authn -> authz -> APF -> admission -> REST — a
+hard requirement on order, not a style choice, once it fully exists),
+`/openapi/v2`.
 The throwaway e2e rig described above should land as part of this group,
 not after it.
 

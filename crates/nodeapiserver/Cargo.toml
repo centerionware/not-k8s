@@ -88,6 +88,14 @@ rcgen = "0.13"
 # already-proven-in-this-workspace pattern, not reinventing one.
 x509-parser = "0.16"
 
+# Group E's server::rest::create: real metadata.creationTimestamp/uid.
+# chrono is already a pinned workspace dependency (every other crate here
+# that touches wall-clock time uses it); uuid is already resolved
+# transitively (see Cargo.lock) — declaring it explicitly with the "v4"
+# feature just makes that usable here too, not a new crate in the graph.
+chrono = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
 # Group G: JSON Patch (RFC 6902) and JSON Merge Patch (RFC 7386) — reused
 # rather than hand-written (docs/APISERVER_PLAN.md finding 8: "94M
 # downloads, actively maintained"). Strategic Merge Patch is k8s-specific
