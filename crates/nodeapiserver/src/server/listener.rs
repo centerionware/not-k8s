@@ -258,6 +258,22 @@ fn internal_error_status(path_str: &str) -> serde_json::Value {
     })
 }
 
+/// Same minimal `Status` shape again, for a request the client itself
+/// malformed (today: an unparsable `labelSelector`/`fieldSelector`) —
+/// real upstream's `reason: "BadRequest"`, `code: 400`.
+fn bad_request_status(path_str: &str, detail: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: {detail}"),
+        "reason": "BadRequest",
+        "details": {},
+        "code": 400,
+    })
+}
+
 async fn handle(req: Request<Incoming>, storage: Option<StorageClient>) -> Result<Response<BoxedBody>, Infallible> {
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
@@ -306,9 +322,13 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>) -> Resul
                     }
                 }
             } else {
-                match rest::list(&mut client, &info.api_group, &info.api_version, &info.resource, namespace).await {
+                match rest::list(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector).await {
                     Ok(rest::ListOutcome::Found(list)) => return Ok(json_response(StatusCode::OK, &list)),
                     Ok(rest::ListOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                    // A malformed selector is the client's fault, not a
+                    // server failure — real upstream answers this with a
+                    // 400, not a 500.
+                    Err(rest::Error::Selector(e)) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "rest::list failed");
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
@@ -459,5 +479,14 @@ mod tests {
         assert_eq!(status["status"], "Failure");
         assert_eq!(status["reason"], "NotFound");
         assert_eq!(status["code"], 404);
+    }
+
+    #[test]
+    fn bad_request_status_carries_the_selector_parse_detail() {
+        let status = bad_request_status("/api/v1/pods", "malformed selector");
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "BadRequest");
+        assert_eq!(status["code"], 400);
+        assert!(status["message"].as_str().unwrap().contains("malformed selector"));
     }
 }
