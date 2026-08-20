@@ -22,9 +22,9 @@
 //! couldn't resolve contributes no rules, it doesn't block evaluating
 //! every other binding.
 //!
-//! **Not wired into `server::listener` yet** — see `authz`'s own module
-//! doc comment for what's still missing before an actual request gets
-//! gated by any of this.
+//! **Wired into `server::listener`**, opt-in — see `authz`'s own module
+//! doc comment for the exact gate (`config::Config::enforce_rbac`) and
+//! which verbs it covers.
 
 use crate::authz::rbac::PolicyRule;
 use crate::authz::subject::{first_applicable_subject, Subject, SubjectKind};
@@ -51,7 +51,7 @@ pub struct Resolved {
 pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups: &[String], namespace: &str) -> Resolved {
     let mut resolved = Resolved::default();
 
-    match rest::list(storage, GROUP, VERSION, "clusterrolebindings", None, "", "").await {
+    match rest::list(storage, None, GROUP, VERSION, "clusterrolebindings", None, "", "").await {
         Ok(ListOutcome::Found(list)) => {
             for item in list["items"].as_array().cloned().unwrap_or_default() {
                 accumulate_binding(storage, &item, user_name, user_groups, "", &mut resolved).await;
@@ -62,7 +62,7 @@ pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups
     }
 
     if !namespace.is_empty() {
-        match rest::list(storage, GROUP, VERSION, "rolebindings", Some(namespace), "", "").await {
+        match rest::list(storage, None, GROUP, VERSION, "rolebindings", Some(namespace), "", "").await {
             Ok(ListOutcome::Found(list)) => {
                 for item in list["items"].as_array().cloned().unwrap_or_default() {
                     accumulate_binding(storage, &item, user_name, user_groups, namespace, &mut resolved).await;
