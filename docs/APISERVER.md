@@ -953,15 +953,36 @@ and memory limits matching its own requests", not the pod-wide
 sidecar-aware total `pod_requests`/`pod_limits` compute for a different
 purpose), and `PriorityClass` (real upstream's own `podMatchesScopeFunc`
 for the classic `spec.scopes` list form: an implied `Exists` operator,
-so this is genuinely just "does the pod have *any* priority class name
-set," not a match against a specific class — that richer per-value
-matching is real upstream's own `spec.scopeSelector` field, a separate,
-not-yet-modeled feature), and `CrossNamespacePodAffinity` (real
+so this route alone is genuinely just "does the pod have *any* priority
+class name set"), and `CrossNamespacePodAffinity` (real
 upstream's own `usesCrossNamespacePodAffinity`: a structural presence
 check across all four real pod-(anti-)affinity term lists for an
 explicit `namespaces` list or any `namespaceSelector` at all — not an
 evaluation of what the selector actually matches, same as upstream's
 own check). **All six real scope names are now matched (for pods).**
+
+**`spec.scopeSelector` is now ported too** (`quota_matches_pod_scopes`,
+`scope_requirement_matches`): real upstream's own
+`getScopeSelectorsFromQuota` concatenates `spec.scopes` (each
+synthesized as an implied-`Exists` requirement) with
+`spec.scopeSelector.matchExpressions` (the real per-expression
+`scopeName`/`operator`/`values` form) into one list, then requires every
+entry in it to match — ported exactly, so a quota can now combine both
+forms (e.g. `scopes: [BestEffort]` AND `scopeSelector: {PriorityClass In
+[high]}`) with real AND semantics. `PriorityClass` is the one real scope
+name whose match depends on the operator: `Exists`/`DoesNotExist` are
+plain presence checks, `In`/`NotIn` match against a specific set of
+priority class names (real upstream's own `podMatchesSelector` — a
+label-selector match against a synthetic single-key
+`{PriorityClass: <name>}` label set, ported as real `In`/`NotIn`
+selector semantics, not reimplemented from scratch). Every other scope
+name ignores the operator/values, matching real upstream's own
+`podMatchesScopeFunc` switch exactly. The PVC/service/generic
+object-count evaluators' own "unscoped quotas only" check
+(`quota_has_any_scope_selectors`) now also treats a `spec.scopeSelector`
+with any `matchExpressions` as making the quota scoped, not just
+`spec.scopes` — matching real upstream's own `generic.Matches`, which
+folds every entry from *either* source through the same `scopeFunc`.
 
 On top of the three specialized evaluators, `admission::resource_quota`
 also ports real upstream's **generic `objectCountEvaluator`**
@@ -1001,8 +1022,7 @@ own defaulting), the same relative position real upstream's own default
 plugin order uses, so quota sees the final, fully-defaulted object.
 
 **Not yet landed**: every other built-in plugin, `ResourceQuota`'s own
-`spec.scopeSelector`/persisted usage counter/extra resource families
-(above), a
+persisted usage counter/extra resource families (above), a
 generic plugin-chain/registry abstraction (today `server::listener`
 hand-calls each plugin directly, not through
 any dispatch table), mutating/validating webhooks, and

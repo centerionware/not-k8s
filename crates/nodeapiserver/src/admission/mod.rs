@@ -80,11 +80,14 @@
 //! `count/<resource>[.<group>]`) over any `ResourceQuota`'s own
 //! `spec.hard`. All six real `spec.scopes` names are matched for pods
 //! (`Terminating`/`NotTerminating`/`BestEffort`/`NotBestEffort` —
-//! including a real `ComputePodQOS` port —, `PriorityClass` — an
-//! implied-`Exists` presence check for the classic `spec.scopes` list
-//! form, not real upstream's own separate, richer `spec.scopeSelector`
-//! field — and `CrossNamespacePodAffinity`); PVCs, services, and the
-//! generic evaluator only match an *unscoped* quota (matching each
+//! including a real `ComputePodQOS` port —, `PriorityClass`, and
+//! `CrossNamespacePodAffinity`), **and so is the richer
+//! `spec.scopeSelector.matchExpressions` form** — `PriorityClass` gains
+//! its real `In`/`NotIn`/`Exists`/`DoesNotExist` operators against a
+//! specific set of priority class names, while every other scope name
+//! ignores the operator/values the same way real upstream's own
+//! `podMatchesScopeFunc` switch does; PVCs, services, and the generic
+//! evaluator only match an *unscoped* quota (matching each
 //! evaluator's own real behavior). No persisted `status.used` counter
 //! (recomputed live from a fresh `Pod` list every time instead — see that
 //! module's own doc comment for the one real concurrency-race consequence
