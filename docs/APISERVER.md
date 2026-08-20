@@ -705,12 +705,31 @@ SubjectAccessReview/SelfSubjectAccessReview are not started. PKI
 primitives (`rcgen`, `p256`, `x509-parser`, `pem`) are already in-tree
 from `nodecontroller`'s CSR group.
 
-**J. Admission** — **not started**. Built-in plugin chain
-(NamespaceLifecycle, ServiceAccount, DefaultStorageClass, ResourceQuota,
-LimitRanger, PodSecurity, DefaultTolerationSeconds, …), mutating/validating
-webhooks, ValidatingAdmissionPolicy/MutatingAdmissionPolicy on CEL. **Build
-the CEL cost budget before wiring any CEL-driven admission path** — an
-unbudgeted CEL evaluator in the request path is a denial-of-service surface.
+**J. Admission** — **started**. `admission::namespace_lifecycle` is a
+faithful port of real upstream's own `NamespaceLifecycle` plugin
+(`staging/src/k8s.io/apiserver/pkg/admission/plugin/namespace/lifecycle/admission.go`,
+fetched and read directly): forbids deleting the three immortal namespaces
+(`default`/`kube-system`/`kube-public` — upstream's own literal
+registration args), forbids `CREATE` into a namespace whose `status.phase`
+is `Terminating`, and returns a real `404` (not a `403`) for `CREATE`/
+`UPDATE` into a namespace that doesn't exist at all — matching upstream's
+own "return the live lookup's NotFound error unwrapped" behavior. Named
+honestly simplified: upstream's version also carries an informer-cache
+staleness workaround (a 50ms wait + an LRU "force live lookup" list) this
+plugin has no equivalent need for, since it always resolves the namespace
+straight from storage (`server::rest::get`) rather than from a cache that
+could be stale. **Wired into `server::listener`, unconditionally** — unlike
+Group I's RBAC, this plugin needs no operator-provisioned bootstrap data,
+so there's no "could lock every request out" risk to gate behind a config
+flag; it runs on every `CREATE`/`UPDATE`/`DELETE` today. **Not yet
+landed**: every other built-in plugin (`ServiceAccount`,
+`DefaultStorageClass`, `ResourceQuota`, `LimitRanger`, `PodSecurity`,
+`DefaultTolerationSeconds`, …), a generic plugin-chain/registry
+abstraction (today `server::listener` hand-calls this one plugin directly,
+not through any dispatch table), mutating/validating webhooks, and
+ValidatingAdmissionPolicy/MutatingAdmissionPolicy on CEL. **Build the CEL
+cost budget before wiring any CEL-driven admission path** — an unbudgeted
+CEL evaluator in the request path is a denial-of-service surface.
 
 **K. CRDs (apiextensions)** — **not started**. Dynamic storage
 registration, structural schemas, pruning, defaulting,
