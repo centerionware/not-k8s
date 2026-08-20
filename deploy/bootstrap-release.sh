@@ -59,12 +59,21 @@ export CONTROLLER_MANAGER="${CONTROLLER_MANAGER:-nodecontroller}"
 for arg in "$@"; do
     case "$arg" in
         --tag=*) TAG="${arg#--tag=}" ;;
-        # Passed through too — bootstrap-source.sh needs it to know which
-        # layout to install, this script only needs it to know what to fetch.
-        --layout=*) LAYOUT="${arg#--layout=}"; PASSTHROUGH_ARGS+=("$arg") ;;
+        # LAYOUT is tracked here (not passed through as-is) so it can be
+        # forwarded unconditionally below — this script's own default
+        # ('combined', set above) has to reach bootstrap-source.sh even
+        # when the caller never passed --layout= explicitly. Found live:
+        # profiling.yml's install_args never pass --layout=, so this
+        # script fetched the combined 'notk8s' release asset (its own
+        # default) but bootstrap-source.sh fell back to *its* default
+        # ('split'), which then refused to install a combined-layout
+        # prebuilt under a split-layout run — a guaranteed FATAL every
+        # time this script's implicit default was relied on.
+        --layout=*) LAYOUT="${arg#--layout=}" ;;
         *) PASSTHROUGH_ARGS+=("$arg") ;;
     esac
 done
+PASSTHROUGH_ARGS+=("--layout=$LAYOUT")
 
 mkdir -p "$REPO_ROOT/.bootstrap/logs"
 source "$LIB_DIR/common.sh"
