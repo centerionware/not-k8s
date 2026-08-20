@@ -10,6 +10,13 @@
 //! Both parsers panic on malformed input rather than emitting a partial
 //! table — a build-time failure here is far cheaper to diagnose than a
 //! runtime KeyError deep in the codec or patch logic.
+//!
+//! Also compiles the etcd v3 gRPC client (Group C) from `proto/rpc.proto`
+//! — a synced copy of `nodestore`'s own already-vendored, already-stripped
+//! protos (`proto/sync-from-nodestore.sh`), client-only
+//! (`build_server(false)`): this crate is a client of nodestore, never a
+//! server of this API. See `crates/nodestore/build.rs` for the precedent
+//! this mirrors.
 
 #[path = "build/proto_parse.rs"]
 mod proto_parse;
@@ -59,4 +66,13 @@ fn main() {
         field_meta.len(),
         gvks.len()
     );
+
+    println!("cargo:rerun-if-changed=proto/rpc.proto");
+    println!("cargo:rerun-if-changed=proto/kv.proto");
+    println!("cargo:rerun-if-changed=proto/auth.proto");
+    tonic_prost_build::configure()
+        .build_server(false)
+        .build_client(true)
+        .compile_protos(&["proto/rpc.proto"], &["proto"])
+        .expect("failed to compile the etcd v3 client protos (is protoc on PATH?)");
 }
