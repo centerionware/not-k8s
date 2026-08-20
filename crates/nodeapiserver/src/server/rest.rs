@@ -10,11 +10,11 @@
 //!
 //! # Scope, named honestly
 //!
-//! Single-object `GET` only (`GET /api/v1/namespaces/{ns}/pods/{name}`-
-//! shaped requests) — `list`/`watch`/`create`/`update`/`patch`/`delete`
-//! all remain the bring-up echo stub (`server::listener`'s own doc
-//! comment). Reads go straight to nodestore via
-//! `storage::client::StorageClient::range`, bypassing
+//! `GET` (single object, `GET /api/v1/namespaces/{ns}/pods/{name}`-shaped)
+//! and `LIST` (`GET /api/v1/namespaces/{ns}/pods`-shaped, no name) —
+//! `watch`/`create`/`update`/`patch`/`delete` all remain the bring-up echo
+//! stub (`server::listener`'s own doc comment). Reads go straight to
+//! nodestore via `storage::client::StorageClient::range`, bypassing
 //! `cacher::store::WatchCache` entirely — a real, valid read strategy
 //! (upstream's own quorum-read / watch-cache-disabled path takes exactly
 //! this shape), not a shortcut standing in for the cache; wiring the
@@ -28,14 +28,19 @@
 //! Groups H/I/J replace this before anything here is production-usable.
 //! Subresources (`pods/status`, `pods/log`, ...) aren't handled — the
 //! discovery table this module reads doesn't carry them either (a named,
-//! separate skip in `build/discovery_parse.rs`).
+//! separate skip in `build/discovery_parse.rs`). `list`'s own real gaps:
+//! no label/field selector filtering yet (`cacher::selector`'s
+//! `object_matches` exists and is exactly what would filter these decoded
+//! items, but isn't wired in here — separate follow-up), no pagination
+//! (`continue`/`limit`), no `resourceVersion`-pinned reads (always reads
+//! at the current revision).
 
 use crate::codec::protobuf;
 use crate::codegen;
-use crate::storage::client::{Error as StorageError, StorageClient};
+use crate::storage::client::{prefix_range_end, Error as StorageError, StorageClient};
 use crate::storage::keys;
 use crate::storage::pb::etcdserverpb::RangeRequest;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -107,6 +112,48 @@ pub async fn get(storage: &mut StorageClient, group: &str, version: &str, resour
     Ok(GetOutcome::Found(object))
 }
 
+#[derive(Debug, PartialEq)]
+pub enum ListOutcome {
+    /// The real `<Kind>List` document, ready to serialize.
+    Found(Value),
+    UnknownResource,
+}
+
+/// The real `<Kind>List` `kind` value for a resource this build serves —
+/// standard Kubernetes convention, verified against real vendored data:
+/// every List type in the vendored OpenAPI specs is named exactly
+/// `<Kind>List` (`PodList`, `DeploymentList`, ...), never a separate
+/// hand-assigned name.
+fn list_kind(kind: &str) -> String {
+    format!("{kind}List")
+}
+
+/// Lists every object of a resource — the whole resource, or scoped to
+/// one namespace (`namespace: None` for a cluster-scoped resource, same
+/// convention as [`get`]). One real `Range` request over the resource's
+/// key prefix (`storage::keys::list_prefix` + `prefix_range_end`),
+/// decoding every returned value the same way `get` does. Items are
+/// returned in whatever order nodestore's own `Range` returns them in
+/// (key order) — real upstream doesn't guarantee list ordering either.
+pub async fn list(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>) -> Result<ListOutcome, Error> {
+    let Some(kind) = resolve_kind(group, version, resource) else {
+        return Ok(ListOutcome::UnknownResource);
+    };
+    let prefix = keys::list_prefix(group, resource, namespace).into_bytes();
+    let range_end = prefix_range_end(&prefix);
+    let resp = storage.range(RangeRequest { key: prefix, range_end, ..Default::default() }).await?;
+    let revision = resp.header.map(|h| h.revision).unwrap_or(0);
+    let items = resp.kvs.iter().map(|kv| decode_stored_object(&kv.value)).collect::<Result<Vec<Value>, protobuf::Error>>()?;
+
+    let group_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    Ok(ListOutcome::Found(json!({
+        "kind": list_kind(kind),
+        "apiVersion": group_version,
+        "metadata": {"resourceVersion": revision.to_string()},
+        "items": items,
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +194,11 @@ mod tests {
     #[test]
     fn decode_stored_object_rejects_a_non_envelope_payload() {
         assert!(decode_stored_object(b"not an envelope at all").is_err());
+    }
+
+    #[test]
+    fn list_kind_appends_list_to_the_real_kind() {
+        assert_eq!(list_kind("Pod"), "PodList");
+        assert_eq!(list_kind("Deployment"), "DeploymentList");
     }
 }
