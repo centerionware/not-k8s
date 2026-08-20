@@ -1158,8 +1158,26 @@ ported: the `log`/`informer-sync`/`shutdown` checks (klog-specific,
 no-informers-here, and no graceful-shutdown machinery respectively) and
 the `?exclude=` query param. `deploy/setup-control-plane.sh` already
 polls `/readyz?verbose`, so this is now genuinely meaningful there, not
-just a bare `200`. FlowSchema/PriorityLevelConfiguration queueing and
-`/metrics` remain **not started**.
+just a bare `200`. `/metrics` is real too now (`server::metrics`, a
+scoped port of real upstream's own `apiserver_request_total` counter,
+`k8s.io/apiserver/pkg/endpoints/metrics`): every completed request is
+recorded under `(verb, resource, code)` — a deliberately narrowed label
+set next to real upstream's own nine (`verb`/`dry_run`/`group`/
+`version`/`resource`/`subresource`/`scope`/`component`/`code`), the
+three that answer the practically useful "what's erroring"/"what's
+being hit hardest" questions without the cardinality cost of the full
+set this early in the crate's metrics story. Rendered as real
+Prometheus text exposition format by hand (no metrics crate dependency,
+mirroring `crates/nodelet/src/server/prom_metrics.rs`'s own established
+`push_metric`-shaped approach, sorted output so repeated scrapes diff
+cleanly), one process-wide `Mutex<HashMap<...>>` counter table — this
+crate's own request rate never remotely approaches where a real
+lock-free registry would matter. `apiserver_request_duration_seconds`
+(a histogram) and everything else in that real metrics package
+(`apiserver_current_inflight_requests`, `apiserver_watch_events_total`,
+...) are **not ported**, named honestly as separate, larger pieces of
+work. FlowSchema/PriorityLevelConfiguration queueing (APF) remains
+**not started**.
 
 **N. Streaming and proxy subresources** — **not started**. exec/attach/
 port-forward/log spliced through to `nodelet:10250`, reusing
