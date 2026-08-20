@@ -186,6 +186,20 @@ pub struct CriRuntime {
     // event-driven status() path has no Pod object to read it from directly
     // (only namespace+name), hence the side table instead of a parameter.
     restart_policies: Mutex<HashMap<String, String>>,
+    /// `container_id -> its ContainerStatus.log_path` (issue #133's
+    /// flamegraph investigation): `log_rotate_loop` used to call
+    /// `ContainerStatus` over CRI for *every* running container on *every*
+    /// tick (`NODELET_LOG_ROTATE_INTERVAL_SECS`, default 10s) purely to
+    /// learn a path that cannot change for the lifetime of a given
+    /// container id — a real, flamegraph-confirmed source of gRPC/tonic/h2
+    /// overhead that scaled with running-container count, not with any
+    /// actual log growth. Populated the first time a container's status is
+    /// fetched (by rotate_logs, or reused from any other ContainerStatus
+    /// caller that already resolved it); a container id is stable for its
+    /// whole lifetime, so entries are only ever pruned by
+    /// `gc_orphaned_sandboxes()`'s teardown of the pod they belonged to,
+    /// same lifecycle as `restart_policies` above.
+    container_log_paths: Mutex<HashMap<String, String>>,
     /// `"namespace/name" -> a per-pod async lock`, held for the whole
     /// duration of `ensure_pod()` (round 123; found live in CI). `ensure_pod()`
     /// is called from at least four independent, unsynchronized places for
@@ -583,6 +597,7 @@ impl CriRuntime {
             cluster_domain,
             rx: Mutex::new(Some(rx)),
             restart_policies: Mutex::new(HashMap::new()),
+            container_log_paths: Mutex::new(HashMap::new()),
             pod_ensure_locks: Mutex::new(HashMap::new()),
             pod_uids: Mutex::new(HashMap::new()),
             sidecar_names: Mutex::new(HashMap::new()),

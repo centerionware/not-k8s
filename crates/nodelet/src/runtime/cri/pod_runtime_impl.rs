@@ -399,14 +399,29 @@ impl PodRuntime for CriRuntime {
             if c.state != running_v {
                 continue; // nothing actively writing to a stopped container's log
             }
-            let status = match rt.container_status(ContainerStatusRequest { container_id: c.id.clone(), verbose: false }).await {
-                Ok(resp) => resp.into_inner().status,
-                Err(e) => {
-                    warn!(container = %c.id, error = ?e, "log rotation: ContainerStatus failed");
-                    continue;
+            // A container's log path is fixed for its whole lifetime (see
+            // container_log_paths' own doc comment) — check the cache
+            // before paying for a ContainerStatus RPC every tick. Found
+            // live via issue #133's flamegraph: this loop was making one
+            // gRPC round trip per running container, every
+            // NODELET_LOG_ROTATE_INTERVAL_SECS (10s default), purely to
+            // re-learn a path that can't have changed.
+            let cached = self.container_log_paths.lock().unwrap().get(&c.id).cloned();
+            let log_path = match cached {
+                Some(p) => p,
+                None => {
+                    let status = match rt.container_status(ContainerStatusRequest { container_id: c.id.clone(), verbose: false }).await {
+                        Ok(resp) => resp.into_inner().status,
+                        Err(e) => {
+                            warn!(container = %c.id, error = ?e, "log rotation: ContainerStatus failed");
+                            continue;
+                        }
+                    };
+                    let Some(log_path) = status.map(|s| s.log_path).filter(|p| !p.is_empty()) else { continue };
+                    self.container_log_paths.lock().unwrap().insert(c.id.clone(), log_path.clone());
+                    log_path
                 }
             };
-            let Some(log_path) = status.map(|s| s.log_path).filter(|p| !p.is_empty()) else { continue };
             let size = match std::fs::metadata(&log_path) {
                 Ok(meta) => meta.len(),
                 Err(_) => continue, // no log file yet, or already rotated by a previous tick
