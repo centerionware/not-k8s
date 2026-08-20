@@ -12,11 +12,12 @@
 //! but not required — mirroring `crates/nodelet/src/server/tls.rs`'s own
 //! already-proven precedent in this workspace), and `identity_from_der`
 //! turns a verified peer certificate into the `Identity` threaded through
-//! to `handle`. **Authentication without authorization**: the identity is
-//! real and observable (surfaced in the bring-up echo response's `user`
-//! field) but **nothing checks it before serving a request yet** — there
-//! is no authorization (Group I) to enforce it against, so this is
-//! genuinely "who are you" without yet "are you allowed."
+//! to `handle`. Authorization (Group I) can now consult this identity too
+//! — `authz::resolve::rules_for`/`rbac::rules_allow`, gating `GET`/`LIST`
+//! when `NODEAPISERVER_ENFORCE_RBAC` is set — but that's opt-in and off
+//! by default (see `config::Config::enforce_rbac`'s own doc comment for
+//! why), so by default this is still genuinely "who are you" without "are
+//! you allowed."
 //!
 //! Status: in progress (see docs/APISERVER.md). Everything else named
 //! above (ServiceAccount JWT, OIDC, TokenReview, bootstrap tokens,
