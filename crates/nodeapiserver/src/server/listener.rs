@@ -12,7 +12,14 @@
 //! against a real resource are now real** (`rest::get`/`rest::list`/
 //! `rest::create`/`rest::delete`/`rest::update`, generic over every
 //! resource this build knows about — see `rest`'s own doc comment for
-//! exactly what's in and out of scope). **Every other verb is still a
+//! exactly what's in and out of scope). `run()` also spawns a real
+//! `cacher::registry::CacheRegistry` cache for one proof-of-concept
+//! resource (`namespaces`) and `GET` consults it when the request
+//! targets that exact resource (`rest::get`'s own `Option<&SharedCache>`
+//! parameter) — every other resource still reads straight from
+//! nodestore, and this is one concrete case, not a general policy (see
+//! `cacher::registry`'s own doc comment for why enumerating every
+//! resource at boot isn't done yet). **Every other verb is still a
 //! bring-up stub** — a `watch`/`patch`/`deletecollection` against
 //! `/api(s)/.../<resource>` still just echoes the parsed
 //! [`crate::server::path::RequestInfo`] as JSON, not the real REST
@@ -153,6 +160,23 @@ pub async fn run(cfg: Config) {
         }
     };
 
+    // Group D: a real, working proof of concept for the cache
+    // consultation `rest::get` gained its `Option<&SharedCache>`
+    // parameter for — one resource, `namespaces` (the same one Group
+    // F's first verified name-format rule already targets), so this
+    // wiring is actually observable rather than dead code with every
+    // call site still passing `None`. Real per-resource cache
+    // registration policy (which resources, how many at once, whether
+    // to wait for initial sync before serving traffic) is still not
+    // decided for anything beyond this one concrete case — see
+    // `cacher::registry`'s own doc comment. `StorageClient::clone()` is
+    // cheap (a `tonic::transport::Channel` clone), so this doesn't cost
+    // a second real connection.
+    let namespaces_cache = storage.as_ref().map(|s| {
+        let registry = crate::cacher::CacheRegistry::new();
+        registry.spawn(s.clone(), "", "v1", "namespaces")
+    });
+
     let addr: SocketAddr = match cfg.bind_addr.parse() {
         Ok(a) => a,
         Err(e) => {
@@ -167,7 +191,7 @@ pub async fn run(cfg: Config) {
             return;
         }
     };
-    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
+    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, namespaces_cache = namespaces_cache.is_some(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
     let enforce_rbac = cfg.enforce_rbac;
 
     loop {
@@ -180,6 +204,7 @@ pub async fn run(cfg: Config) {
         };
         let acceptor = acceptor.clone();
         let storage = storage.clone();
+        let namespaces_cache = namespaces_cache.clone();
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
@@ -197,7 +222,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle(req, storage.clone(), identity.clone(), enforce_rbac));
+            let service = hyper::service::service_fn(move |req| handle(req, storage.clone(), namespaces_cache.clone(), identity.clone(), enforce_rbac));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -387,7 +412,7 @@ fn invalid_status(path_str: &str, violations: &[String]) -> serde_json::Value {
 const ANONYMOUS_USERNAME: &str = "system:anonymous";
 const UNAUTHENTICATED_GROUP: &str = "system:unauthenticated";
 
-async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity: Option<crate::authn::x509::Identity>, enforce_rbac: bool) -> Result<Response<BoxedBody>, Infallible> {
+async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, namespaces_cache: Option<crate::cacher::store::SharedCache>, identity: Option<crate::authn::x509::Identity>, enforce_rbac: bool) -> Result<Response<BoxedBody>, Infallible> {
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -498,11 +523,12 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity
             }
 
             if is_get {
-                // `None`: nothing in `lib.rs::run()` starts a
-                // `cacher::registry::CacheRegistry` yet — see
-                // `rest::get`'s own doc comment for the cache-consultation
-                // wiring this parameter exists for, once one does.
-                match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                // Only `namespaces` (core group) has a real cache
+                // registered at all today (`run()`'s own proof-of-concept
+                // `namespaces_cache`) — every other resource still passes
+                // `None`, same as before this cache existed.
+                let get_cache = if info.api_group.is_empty() && info.resource == "namespaces" { namespaces_cache.as_ref() } else { None };
+                match rest::get(&mut client, get_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
                     Ok(rest::GetOutcome::Found(object)) => return Ok(json_response(StatusCode::OK, &object)),
                     Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
                         return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));

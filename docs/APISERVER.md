@@ -239,15 +239,19 @@ always falls through to a real `Range` rather than trusting the cache's
 absence of an entry to mean "not found," since a not-yet-synced or
 never-registered cache is indistinguishable from a genuinely empty one
 using only what `SharedCache` exposes today — a pure latency win on the
-hit path, never a correctness risk on the miss path) — but every real
-call site still passes `None`, since nothing in `lib.rs::run()` starts
-a `CacheRegistry` at all yet. `list`/`create`/`update`/`delete` don't
-consult a cache at all (writes always have to reach real storage
-regardless; `list` consulting the cache is separate, not-yet-done
-follow-up work). **Not yet landed**: the per-Kind `SelectableFields`
-allowlist, registering a cache for every resource at boot, actually
-passing a real `Some(cache)` into `rest::get` from `server::listener`,
-and `list` consulting the cache.
+hit path, never a correctness risk on the miss path). `server::listener::run`
+now proves this end to end for one real resource: it spawns a
+`CacheRegistry` cache for `namespaces` (core group — the same resource
+Group F's first verified name-format rule already targets) and `GET`
+consults it whenever a request actually targets `namespaces`; every
+other resource's `GET`, and every `list`/`create`/`update`/`delete`
+regardless of resource, still reads/writes straight to nodestore. **One
+concrete case, not a general policy** — enumerating every resource
+this build knows about and starting a cache for each at boot is still
+a real, separate, not-yet-made decision (how many at once, in what
+order, whether to wait for sync before serving traffic). **Not yet
+landed**: the per-Kind `SelectableFields` allowlist, registering a
+cache for every resource at boot, and `list` consulting a cache.
 
 **E. Generic server + handler chain + REST endpoints** — **in progress**.
 `server::path` is the REST path grammar — a faithful, line-by-line port of
