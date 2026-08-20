@@ -28,13 +28,14 @@
 //! Groups H/I/J replace this before anything here is production-usable.
 //! Subresources (`pods/status`, `pods/log`, ...) aren't handled — the
 //! discovery table this module reads doesn't carry them either (a named,
-//! separate skip in `build/discovery_parse.rs`). `list`'s own real gaps:
-//! no label/field selector filtering yet (`cacher::selector`'s
-//! `object_matches` exists and is exactly what would filter these decoded
-//! items, but isn't wired in here — separate follow-up), no pagination
+//! separate skip in `build/discovery_parse.rs`). `list` filters by
+//! label/field selector for real (`cacher::selector::object_matches`,
+//! wired against every item's own decoded JSON — Group D's own generic
+//! adapter, unchanged here). `list`'s remaining real gaps: no pagination
 //! (`continue`/`limit`), no `resourceVersion`-pinned reads (always reads
 //! at the current revision).
 
+use crate::cacher::selector::{self, ParseError};
 use crate::codec::protobuf;
 use crate::codegen;
 use crate::storage::client::{prefix_range_end, Error as StorageError, StorageClient};
@@ -48,6 +49,8 @@ pub enum Error {
     Storage(#[from] StorageError),
     #[error("decoding the stored object failed: {0}")]
     Decode(#[from] protobuf::Error),
+    #[error("invalid selector: {0}")]
+    Selector(#[from] ParseError),
 }
 
 #[derive(Debug, PartialEq)]
@@ -135,15 +138,30 @@ fn list_kind(kind: &str) -> String {
 /// decoding every returned value the same way `get` does. Items are
 /// returned in whatever order nodestore's own `Range` returns them in
 /// (key order) — real upstream doesn't guarantee list ordering either.
-pub async fn list(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>) -> Result<ListOutcome, Error> {
+/// `label_selector`/`field_selector` are the raw query-string values
+/// `path::RequestInfo` already captures for `list` (empty means "no
+/// constraint from that half," matching upstream's own `Everything()`
+/// selector semantics — see `cacher::selector::object_matches`, the
+/// predicate this filters with once both are parsed).
+pub async fn list(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, label_selector: &str, field_selector: &str) -> Result<ListOutcome, Error> {
     let Some(kind) = resolve_kind(group, version, resource) else {
         return Ok(ListOutcome::UnknownResource);
     };
+    let label_reqs = if label_selector.is_empty() { Vec::new() } else { selector::parse_label_selector(label_selector)? };
+    let field_reqs = if field_selector.is_empty() { Vec::new() } else { selector::parse_field_selector(field_selector)? };
+
     let prefix = keys::list_prefix(group, resource, namespace).into_bytes();
     let range_end = prefix_range_end(&prefix);
     let resp = storage.range(RangeRequest { key: prefix, range_end, ..Default::default() }).await?;
     let revision = resp.header.map(|h| h.revision).unwrap_or(0);
-    let items = resp.kvs.iter().map(|kv| decode_stored_object(&kv.value)).collect::<Result<Vec<Value>, protobuf::Error>>()?;
+    let items = resp
+        .kvs
+        .iter()
+        .map(|kv| decode_stored_object(&kv.value))
+        .collect::<Result<Vec<Value>, protobuf::Error>>()?
+        .into_iter()
+        .filter(|item| selector::object_matches(item, &label_reqs, &field_reqs))
+        .collect::<Vec<Value>>();
 
     let group_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
     Ok(ListOutcome::Found(json!({
