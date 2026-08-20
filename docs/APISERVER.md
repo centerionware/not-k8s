@@ -847,22 +847,30 @@ directly): container-level (`LimitRange.spec.limits[].type ==
 request/limit for a resource the `LimitRange` carries a
 `default`/`defaultRequest` for gets it filled in, and the pod is
 annotated `kubernetes.io/limit-ranger` describing what was set — real
-upstream's own annotation key and message format, ported exactly), and
+upstream's own annotation key and message format, ported exactly),
+pod-level (`LimitTypePod`) aggregate min/max/ratio enforcement against
+the pod-wide total (`pod_requests`/`pod_limits`, real upstream's own
+`podRequests`/`podLimits` aggregation ported exactly — sums ordinary
+containers, folds in a restartable init container/"sidecar"
+[`restartPolicy: Always`] cumulatively into both the pod-wide total and
+a running sidecar subtotal since it keeps running alongside the main
+containers, and takes the *max* across ordinary sequential init
+containers' own need plus that running sidecar subtotal, since ordinary
+init containers never run concurrently with each other), and
 `PersistentVolumeClaim`-level (`LimitTypePersistentVolumeClaim`) min/max
 enforcement on `spec.resources.requests` (PVCs are validated, never
 defaulted — storage is a required part of the spec, matching upstream).
-Built on the new `scheme::quantity::Quantity` for real comparisons — its
-own `i128` exactness also means this port skips upstream's own
-`MaxMilliValue` overflow-avoidance dance entirely (see that module's own
-doc comment for why there's no overflow to avoid here). **Not yet
-ported, named honestly**: pod-level (`LimitTypePod`) aggregate min/max/
-ratio enforcement — upstream sums request/limits across every container
-with real, non-trivial restartable-init-container/sidecar aggregation
-rules and checks the pod-wide total; genuinely more involved than the
-per-container case this lands, left for a separate slice. Same
-pure-decision/real-I/O-step split as every other Group J plugin
-(`server::rest::list` over `LimitRange` in the target namespace is the
-one I/O step).
+Built on `scheme::quantity::Quantity` for real comparisons — its own
+`i128` exactness also means this port skips upstream's own
+`MaxMilliValue` overflow-avoidance dance entirely, and `Quantity` gained
+real `+`/`max` for the pod-level aggregation's own summing/maxing.
+**Not yet ported, named honestly**: the real `PodLevelResources`
+feature-gate override (pod-level `spec.resources` overriding the
+aggregated total for CPU/memory — an alpha feature with no feature-gate
+machinery in this crate to model, so the aggregated per-container total
+is always used). Same pure-decision/real-I/O-step split as every other
+Group J plugin (`server::rest::list` over `LimitRange` in the target
+namespace is the one I/O step).
 
 `admission::pod_security` is validating, `CREATE`-only — a
 faithful-but-scoped port of real upstream's own Pod Security Standards
@@ -901,10 +909,9 @@ twice for the same root cause. Same pure-decision/real-I/O-step split as
 every other Group J plugin (`server::rest::get` on the target namespace,
 to read its label, is the one I/O step).
 
-**Not yet landed**: every other built-in plugin (`ResourceQuota`, …),
-pod-level `LimitRange` enforcement (above), a generic
-plugin-chain/registry abstraction (today `server::listener` hand-calls
-each plugin directly, not through
+**Not yet landed**: every other built-in plugin (`ResourceQuota`, …), a
+generic plugin-chain/registry abstraction (today `server::listener`
+hand-calls each plugin directly, not through
 any dispatch table), mutating/validating webhooks, and
 ValidatingAdmissionPolicy/
 MutatingAdmissionPolicy on CEL. **Build the CEL cost budget before wiring
