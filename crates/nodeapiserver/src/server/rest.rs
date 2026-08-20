@@ -12,9 +12,10 @@
 //!
 //! `GET` (single object, `GET /api/v1/namespaces/{ns}/pods/{name}`-shaped),
 //! `LIST` (`GET /api/v1/namespaces/{ns}/pods`-shaped, no name), `CREATE`
-//! (`POST /api/v1/namespaces/{ns}/pods`), and now single-object `DELETE`
-//! (`DELETE /api/v1/namespaces/{ns}/pods/{name}`) — `watch`/`update`/
-//! `patch`/`deletecollection` all remain the bring-up echo stub
+//! (`POST /api/v1/namespaces/{ns}/pods`), single-object `DELETE`
+//! (`DELETE /api/v1/namespaces/{ns}/pods/{name}`), and now `UPDATE`
+//! (`PUT /api/v1/namespaces/{ns}/pods/{name}`) — `watch`/`patch`/
+//! `deletecollection` all remain the bring-up echo stub
 //! (`server::listener`'s own doc comment). Reads go straight to
 //! `storage::client::StorageClient::range`, bypassing
 //! `cacher::store::WatchCache` entirely — a real, valid read strategy
@@ -60,6 +61,21 @@
 //! garbage collector to orphan or cascade to in the first place), no
 //! finalizer handling at all. A real, unconditional delete-if-present,
 //! named honestly as the bring-up floor rather than the real thing.
+//!
+//! `update` is real optimistic concurrency, not a blind overwrite: reads
+//! the current object first, requires the submitted body's own
+//! `metadata.resourceVersion` to match what's actually stored (a real
+//! `Conflict`, not a silent clobber, on a mismatch — and a real
+//! `MissingResourceVersion` outcome if the client omitted it, matching
+//! real upstream's own requirement for `PUT`), then writes with a `Txn`
+//! compared against that exact revision, so a concurrent write between
+//! the read and this write also loses the race rather than being
+//! silently overwritten. `metadata.creationTimestamp`/`uid` are always
+//! preserved from the existing object regardless of what the client
+//! submitted — both are immutable after creation, matching real
+//! upstream. No create-on-update (a request targeting a name that
+//! doesn't exist is rejected, not created — real upstream's
+//! `AllowCreateOnUpdate` opt-in a handful of types use isn't modeled).
 
 use crate::cacher::selector::{self, ParseError};
 use crate::codec::protobuf;
@@ -290,6 +306,115 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
     let revision = resp.header.map(|h| h.revision).unwrap_or(0);
     set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
     Ok(CreateOutcome::Created(object))
+}
+
+#[derive(Debug, PartialEq)]
+pub enum UpdateOutcome {
+    Updated(Value),
+    UnknownResource,
+    /// No object exists at this key — this build doesn't support
+    /// create-on-update (`AllowCreateOnUpdate`, real upstream's own
+    /// opt-in a handful of types use), named honestly rather than
+    /// silently creating one.
+    ObjectNotFound,
+    /// The submitted body had no `metadata.resourceVersion` at all —
+    /// real upstream's own generic registry requires one for `PUT`
+    /// (optimistic concurrency has nothing to compare against
+    /// otherwise).
+    MissingResourceVersion,
+    /// The submitted `resourceVersion` didn't match what's currently
+    /// stored — a real conflict, matching real upstream's own
+    /// `errors.NewConflict`.
+    Conflict,
+    NamespaceMismatch,
+    Invalid(Vec<String>),
+}
+
+/// Replaces an existing object. `namespace: None` for a cluster-scoped
+/// resource, same convention as [`get`]/[`create`]. Real optimistic
+/// concurrency: reads the current object first, requires the submitted
+/// body's own `metadata.resourceVersion` to match what's actually
+/// stored, and writes with a `Txn` compared against that same revision
+/// — a concurrent write between the read and this write loses the race
+/// and gets a real `Conflict`, not a silent overwrite.
+/// `metadata.creationTimestamp`/`uid` are preserved from the existing
+/// object regardless of what the client submitted — real upstream
+/// treats both as immutable after creation.
+pub async fn update(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value) -> Result<UpdateOutcome, Error> {
+    let Some(kind) = resolve_kind(group, version, resource) else {
+        return Ok(UpdateOutcome::UnknownResource);
+    };
+    let Some(schema) = protobuf::schema_for_gvk(group, version, kind) else {
+        return Ok(UpdateOutcome::UnknownResource);
+    };
+
+    let key = keys::object_key(group, resource, namespace, name);
+    let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
+    let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
+        return Ok(UpdateOutcome::ObjectNotFound);
+    };
+    let existing_object = decode_stored_object(&existing_kv.value)?;
+
+    if let (Some(ns), Some(body_ns)) = (namespace, body.pointer("/metadata/namespace").and_then(Value::as_str)) {
+        if !body_ns.is_empty() && body_ns != ns {
+            return Ok(UpdateOutcome::NamespaceMismatch);
+        }
+    }
+
+    // Compared numerically, not as strings — resourceVersion is an
+    // opaque string to a real client, but this build's own encoding of
+    // it is always the decimal MVCC revision, so parsing avoids any
+    // formatting-mismatch false negative (leading zeros, etc.).
+    let Some(submitted_rv) = body.pointer("/metadata/resourceVersion").and_then(Value::as_str).and_then(|s| s.parse::<i64>().ok()) else {
+        return Ok(UpdateOutcome::MissingResourceVersion);
+    };
+    if submitted_rv != existing_kv.mod_revision {
+        return Ok(UpdateOutcome::Conflict);
+    }
+
+    let mut violations: Vec<String> = validation::validate_required(schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
+    violations.extend(validation::validate_types(schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+    if !violations.is_empty() {
+        return Ok(UpdateOutcome::Invalid(violations));
+    }
+
+    let mut object = defaulting::apply_defaults(schema, body);
+    for field in ["creationTimestamp", "uid"] {
+        if let Some(existing_value) = existing_object.pointer(&format!("/metadata/{field}")).cloned() {
+            set_metadata_field(&mut object, field, existing_value);
+        }
+    }
+    if let Some(ns) = namespace {
+        set_metadata_field(&mut object, "namespace", Value::String(ns.to_string()));
+    }
+
+    let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    let object_bytes = protobuf::encode_message(schema, &object)?;
+    let envelope = protobuf::wrap_unknown(&api_version, kind, &object_bytes);
+
+    let compare = pb::Compare {
+        key: key.clone().into_bytes(),
+        result: pb::compare::CompareResult::Equal as i32,
+        target: pb::compare::CompareTarget::Mod as i32,
+        target_union: Some(pb::compare::TargetUnion::ModRevision(existing_kv.mod_revision)),
+        range_end: Vec::new(),
+    };
+    let put = pb::PutRequest { key: key.into_bytes(), value: envelope, ..Default::default() };
+    let txn = pb::TxnRequest {
+        compare: vec![compare],
+        success: vec![pb::RequestOp { request: Some(pb::request_op::Request::RequestPut(put)) }],
+        failure: vec![],
+    };
+    let resp = storage.txn(txn).await?;
+    if !resp.succeeded {
+        // Lost the race: something else wrote to this key between our
+        // read above and this write.
+        return Ok(UpdateOutcome::Conflict);
+    }
+
+    let revision = resp.header.map(|h| h.revision).unwrap_or(0);
+    set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
+    Ok(UpdateOutcome::Updated(object))
 }
 
 /// No-ops (rather than panicking, matching this crate's established
