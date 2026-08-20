@@ -64,7 +64,14 @@ permissions:
 jobs:
   flamegraph:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 10 pods sequentially `kubectl wait`'d on a small shared GH-hosted
+    # runner genuinely took past 20 minutes in the first real dispatch
+    # (job-level cancellation, not a hang — no per-step diagnostic, just a
+    # silent "cancelled" with nothing published). 45 gives real headroom;
+    # the "Record a flame graph" step below now has its own tighter
+    # per-step timeout so a genuine hang there fails loud with real
+    # kubectl/perf output instead of a silent whole-job cancellation.
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -96,6 +103,7 @@ jobs:
         run: sleep 15
 
       - name: Record a flame graph across the workload's full lifecycle
+        timeout-minutes: 25
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
@@ -143,8 +151,18 @@ jobs:
                   - containerPort: 80
           EOF
           done
+          # 60s per pod, not the 120s default: the first real dispatch (10
+          # pods) blew through this whole job's 20-minute timeout with no
+          # per-pod signal of where the time actually went (a silent
+          # whole-job cancellation, nothing published) -- logging each
+          # pod's own wait here means a repeat is diagnosable from the log
+          # instead of a mystery, and a tighter per-pod cap bounds the
+          # worst case (COUNT * 60s) to something this step's own 25-minute
+          # timeout can still fail loud within, rather than the whole job
+          # silently getting cancelled out from under it.
           for i in $(seq 0 $((COUNT - 1))); do
-            kubectl wait --for=condition=Ready "pod/workload" -n "${NS_PREFIX}-${i}" --timeout=120s
+            echo "==> waiting for pod $((i + 1))/$COUNT (${NS_PREFIX}-${i}) to be Ready"
+            kubectl wait --for=condition=Ready "pod/workload" -n "${NS_PREFIX}-${i}" --timeout=60s
           done
           echo "==> all $COUNT pods Ready"
 
@@ -157,6 +175,7 @@ jobs:
           done
           for i in $(seq 0 $((COUNT - 1))); do
             ns="${NS_PREFIX}-${i}"
+            echo "==> waiting for namespace $((i + 1))/$COUNT ($ns) to be gone"
             for _ in $(seq 1 60); do
               kubectl get namespace "$ns" >/dev/null 2>&1 || break
               sleep 1
