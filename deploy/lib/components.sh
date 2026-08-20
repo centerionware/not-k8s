@@ -41,11 +41,18 @@ NOTK8S_COMPONENTS=(
     "nodecontroller|nodecontroller||want_nodecontroller|NOTK8S_NODECONTROLLER_PREBUILT|"
 )
 
-# Whether this run wants the node agent. --skip-nodelet is handled by the
-# entry point before build_nodelet() is called at all, so this is
-# unconditional today; it exists so every component is asked the same
-# question rather than one of them being implicitly always-on.
-want_nodelet() { return 0; }
+# Whether this run wants the node agent. SKIP_NODELET (--skip-nodelet on
+# the bootstrap entry points) is the one real off switch — a run that
+# wants a *different* component built/installed (nodestore, say) while
+# skipping nodelet itself needs build_nodelet() to still run for that
+# other component, so nodelet's own exclusion has to be expressed here,
+# not by the caller skipping build_nodelet() entirely (that used to be
+# how this worked, and it silently skipped every *other* enabled
+# component too whenever --skip-nodelet was set — found live: a
+# --skip-nodelet run that also wanted nodestore installed nodestore's own
+# systemd service without ever building its binary, a guaranteed
+# crash-loop, since the thing that would have built it never ran).
+want_nodelet() { [[ "${SKIP_NODELET:-0}" -eq 0 ]]; }
 
 # Whether this run wants the Service proxy at all. PROXY is set by the
 # bootstrap entry points (--proxy=nodeproxy|none); default to building it,
@@ -137,6 +144,25 @@ any_component_needs_protoc() {
             protoc) return 0 ;;
             @cri) [[ "${WITH_CRI:-0}" -eq 1 ]] && return 0 ;;
         esac
+    done < <(enabled_components)
+    return 1
+}
+
+# any_enabled_component_needs_build — whether this run has to actually
+# compile anything at all, i.e. whether a toolchain is worth installing
+# in the first place. Asked of the table the same way
+# any_component_needs_protoc() is, rather than special-casing nodelet:
+# true unless every enabled component already has its own prebuilt
+# binary supplied (or NOTK8S_COMBINED_PREBUILT covers all of them at
+# once) — the same real question use_prebuilt_binaries() (nodelet-build.sh)
+# answers just before actually building, asked earlier here so a
+# toolchain isn't installed and then never used.
+any_enabled_component_needs_build() {
+    [[ -n "${NOTK8S_COMBINED_PREBUILT:-}" ]] && return 1
+    local name var
+    while read -r name; do
+        var="$(component_field "$(component_row "$name")" 5)"
+        [[ -z "${!var:-}" ]] && return 0
     done < <(enabled_components)
     return 1
 }
