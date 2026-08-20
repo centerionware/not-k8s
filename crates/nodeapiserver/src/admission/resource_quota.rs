@@ -20,28 +20,24 @@
 //! `hugepages-*` family, and extended resources — all real, all just not
 //! this crate's first cut.
 //!
-//! **Partial scope matching** — real upstream's own
-//! `ResourceQuota.spec.scopes` lets an operator target a quota at a
-//! subset of pods; a pod must match *every* listed scope for the quota
-//! to apply (real upstream's own all-must-match semantics). Five of the
-//! six real scope names are evaluated: `Terminating`/`NotTerminating`
-//! (real upstream's own `IsTerminating`: `spec.activeDeadlineSeconds` is
-//! set and non-negative), `BestEffort`/`NotBestEffort` (real upstream's
-//! own `ComputePodQOS` — see [`compute_pod_qos`]'s own doc comment for
-//! exactly what's ported), and `PriorityClass` (real upstream's own
-//! `podMatchesScopeFunc` for the classic `spec.scopes` list form: an
-//! implied `Exists` operator, so this is genuinely just "does the pod
-//! have *any* priority class name set," not a match against a specific
-//! class — that richer per-value matching is real upstream's own
-//! `spec.scopeSelector` field, a separate, not-yet-modeled feature).
-//! **Not evaluated, named honestly**: `CrossNamespacePodAffinity` — real
-//! upstream's own check walks every pod (anti-)affinity term looking for
-//! a cross-namespace selector, genuinely more involved than this
-//! module's other scope checks; a quota using it is silently treated as
-//! if that one scope always matched (not as "the whole quota never
-//! applies"), the same "err toward stricter than requested, never
-//! laxer" posture the rest of this module already takes for what it
-//! doesn't model.
+//! **`spec.scopes` matching, all six real scope names** — real
+//! upstream's own `ResourceQuota.spec.scopes` lets an operator target a
+//! quota at a subset of pods; a pod must match *every* listed scope for
+//! the quota to apply (real upstream's own all-must-match semantics):
+//! `Terminating`/`NotTerminating` (real upstream's own `IsTerminating`:
+//! `spec.activeDeadlineSeconds` is set and non-negative),
+//! `BestEffort`/`NotBestEffort` (real upstream's own `ComputePodQOS` —
+//! see [`compute_pod_qos`]'s own doc comment for exactly what's ported),
+//! `PriorityClass` (real upstream's own `podMatchesScopeFunc` for the
+//! classic `spec.scopes` list form: an implied `Exists` operator, so
+//! this is genuinely just "does the pod have *any* priority class name
+//! set," not a match against a specific class — that richer per-value
+//! matching is real upstream's own `spec.scopeSelector` field, a
+//! separate, not-yet-modeled feature), and `CrossNamespacePodAffinity`
+//! (real upstream's own `usesCrossNamespacePodAffinity`: a structural
+//! presence check across all four real pod-(anti-)affinity term lists
+//! for an explicit `namespaces` list or any `namespaceSelector` at all —
+//! see [`uses_cross_namespace_pod_affinity`]'s own doc comment).
 //!
 //! **No persisted `status.used` counter, named honestly**: real
 //! upstream's own controller maintains a running `status.used` total on
@@ -166,13 +162,12 @@ fn compute_pod_qos(pod: &Value) -> &'static str {
     }
 }
 
-/// Whether `pod` matches one real `ResourceQuota.spec.scopes` entry —
-/// `true` for the two scope pairs this port evaluates
-/// (`Terminating`/`NotTerminating`, `BestEffort`/`NotBestEffort`), and
-/// `true` (auto-match, never narrows) for any other real scope name this
-/// port doesn't evaluate (`PriorityClass`/`CrossNamespacePodAffinity`) —
-/// see this module's own doc comment for why that's the deliberate,
-/// consistent "err toward stricter enforcement, not laxer" choice.
+/// Whether `pod` matches one real `ResourceQuota.spec.scopes` entry — all
+/// six real scope names are evaluated (see this module's own doc
+/// comment); any genuinely unrecognized scope name (not a real upstream
+/// value at all) auto-matches rather than narrowing, the same "err
+/// toward stricter enforcement, not laxer" posture as everything else
+/// this module doesn't model.
 fn scope_matches(scope: &str, pod: &Value) -> bool {
     match scope {
         "Terminating" => is_terminating(pod),
@@ -189,14 +184,43 @@ fn scope_matches(scope: &str, pod: &Value) -> bool {
         // just "does the pod have any priority class name set," not a
         // match against a specific class.
         "PriorityClass" => pod.get("spec").and_then(|s| s.get("priorityClassName")).and_then(Value::as_str).is_some_and(|s| !s.is_empty()),
-        // `CrossNamespacePodAffinity` isn't evaluated — real upstream's
-        // own check walks every pod (anti-)affinity term looking for a
-        // cross-namespace selector, genuinely more involved than this
-        // module's other scope checks; a real, separate, not-yet-ported
-        // gap, treated as always-matching like every other unmodeled
-        // scope this module names.
+        "CrossNamespacePodAffinity" => uses_cross_namespace_pod_affinity(pod),
         _ => true,
     }
+}
+
+/// Real upstream's own `usesCrossNamespacePodAffinity`/
+/// `crossNamespacePodAffinityTerm`: a term "crosses namespaces" if it
+/// names an explicit `namespaces` list or carries a `namespaceSelector`
+/// at all (even one that would only ever match the pod's own namespace —
+/// upstream's own check is a structural presence check, not an
+/// evaluation of what the selector actually matches), checked across all
+/// four real term lists (`podAffinity`/`podAntiAffinity`, each
+/// `requiredDuringSchedulingIgnoredDuringExecution`/
+/// `preferredDuringSchedulingIgnoredDuringExecution`).
+fn uses_cross_namespace_pod_affinity(pod: &Value) -> bool {
+    fn term_is_cross_namespace(term: &Value) -> bool {
+        let has_namespaces = term.get("namespaces").and_then(Value::as_array).is_some_and(|ns| !ns.is_empty());
+        let has_namespace_selector = term.get("namespaceSelector").is_some();
+        has_namespaces || has_namespace_selector
+    }
+
+    let Some(affinity) = pod.get("spec").and_then(|s| s.get("affinity")) else { return false };
+    for kind in ["podAffinity", "podAntiAffinity"] {
+        let Some(section) = affinity.get(kind) else { continue };
+        let required_matches = section.get("requiredDuringSchedulingIgnoredDuringExecution").and_then(Value::as_array).into_iter().flatten().any(term_is_cross_namespace);
+        if required_matches {
+            return true;
+        }
+        // Each `preferred` entry is a `WeightedPodAffinityTerm` — the
+        // real term is nested one level deeper, under its own
+        // `podAffinityTerm` field.
+        let preferred_matches = section.get("preferredDuringSchedulingIgnoredDuringExecution").and_then(Value::as_array).into_iter().flatten().filter_map(|w| w.get("podAffinityTerm")).any(term_is_cross_namespace);
+        if preferred_matches {
+            return true;
+        }
+    }
+    false
 }
 
 /// A `ResourceQuota` applies to `pod` only if `pod` matches *every*
@@ -537,11 +561,48 @@ mod tests {
     }
 
     #[test]
-    fn an_unmodeled_scope_name_does_not_narrow_the_quota() {
+    fn a_genuinely_unrecognized_scope_name_does_not_narrow_the_quota() {
+        let pod = pod_with_cpu_request("new", "999");
+        let mut q = quota("future-quota", json!({"requests.cpu": "1"}));
+        q["spec"]["scopes"] = json!(["SomeFutureScope"]);
+        assert!(check_pod_create(&pod, &[], &[q]).is_some(), "a genuinely unrecognized scope must not exempt the pod from an otherwise-applicable quota");
+    }
+
+    #[test]
+    fn a_crossnamespaceaffinity_scoped_quota_does_not_apply_without_a_cross_namespace_term() {
         let pod = pod_with_cpu_request("new", "999");
         let mut q = quota("affinity-quota", json!({"requests.cpu": "1"}));
         q["spec"]["scopes"] = json!(["CrossNamespacePodAffinity"]);
-        assert!(check_pod_create(&pod, &[], &[q]).is_some(), "an unmodeled scope must not exempt the pod from an otherwise-applicable quota");
+        assert!(check_pod_create(&pod, &[], &[q]).is_none(), "a pod with no affinity at all is not in scope for this quota");
+    }
+
+    #[test]
+    fn a_crossnamespaceaffinity_scoped_quota_applies_when_a_required_term_names_namespaces() {
+        let mut pod = pod_with_cpu_request("new", "999");
+        pod["spec"]["affinity"] = json!({"podAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [{"namespaces": ["other-ns"], "topologyKey": "kubernetes.io/hostname"}]}});
+        let mut q = quota("affinity-quota", json!({"requests.cpu": "1"}));
+        q["spec"]["scopes"] = json!(["CrossNamespacePodAffinity"]);
+        assert!(check_pod_create(&pod, &[], &[q]).is_some());
+    }
+
+    #[test]
+    fn a_crossnamespaceaffinity_scoped_quota_applies_for_a_preferred_antiaffinity_namespace_selector() {
+        let mut pod = pod_with_cpu_request("new", "999");
+        pod["spec"]["affinity"] = json!({"podAntiAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [
+            {"weight": 1, "podAffinityTerm": {"namespaceSelector": {}, "topologyKey": "kubernetes.io/hostname"}},
+        ]}});
+        let mut q = quota("affinity-quota", json!({"requests.cpu": "1"}));
+        q["spec"]["scopes"] = json!(["CrossNamespacePodAffinity"]);
+        assert!(check_pod_create(&pod, &[], &[q]).is_some());
+    }
+
+    #[test]
+    fn an_ordinary_same_namespace_affinity_term_does_not_count_as_cross_namespace() {
+        let mut pod = pod_with_cpu_request("new", "999");
+        pod["spec"]["affinity"] = json!({"podAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [{"topologyKey": "kubernetes.io/hostname"}]}});
+        let mut q = quota("affinity-quota", json!({"requests.cpu": "1"}));
+        q["spec"]["scopes"] = json!(["CrossNamespacePodAffinity"]);
+        assert!(check_pod_create(&pod, &[], &[q]).is_none(), "a term with no namespaces/namespaceSelector must not count as cross-namespace");
     }
 
     #[test]
