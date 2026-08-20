@@ -82,7 +82,9 @@ version bump; `dynamic_resources_tests.rs` is the safety net).
 exists; `vendor/refresh.sh` vendored `release-1.34`'s 64 openapi-spec v3
 files + 72 `generated.proto` files, recording the ref in `vendor/REF`.
 `build.rs` (`build/proto_parse.rs`, `build/openapi_parse.rs`) emits the
-protobuf field-number table, the SMP/SSA schema metadata table, and the
+protobuf field-number table, the SMP/SSA schema metadata table (now
+including `ref_schema` — the `$ref`'d schema a field's value is shaped
+like, added for Group G's Strategic Merge Patch recursion), and the
 discovery GVK map; `src/codegen.rs` builds runtime indexes over them plus
 the proto-style<->openapi-style message-name resolver (`resolve_message_ref`)
 Group B's codec depends on. Not wired into `deploy/lib/components.sh` or
@@ -232,12 +234,22 @@ Validation is per-field business logic with no shortcut.
 `patch::merge_patch` wrap the `json-patch` crate for RFC 6902/7386 —
 rollback-on-failure for JSON Patch (not the unsafe partial-apply variant),
 recursive-merge/null-deletes-key semantics verified for JSON Merge Patch.
-**Not yet landed**: hand-written strategic merge patch (needs Group A's
-codegen to also resolve a field's *referenced* schema, not just its own
-`x-kubernetes-*` flags — real, separate work) and hand-written
-structured-merge-diff + `managedFields` (no Rust crate exists for either),
-both to be driven by Group A's metadata table once the schema-resolution
-gap above is closed.
+`patch::strategic_merge` is the hand-written k8s-specific patch kind, now
+real: null deletes a key, object fields merge recursively using *their
+own* `ref_schema` (not the parent's — the reason `ref_schema` was added
+to Group A's codegen rather than inferred), and `patch_strategy: merge`
+list fields merge by `patch_merge_key`, matched and updated in place with
+non-matching elements appended, verified against the concrete
+`PodSpec.containers` sample finding 5 names directly (merge-key `name`)
+including a two-levels-deep recursion case
+(`containers[].resources.limits`) to prove `ref_schema` resolution chains
+correctly, not just parent -> immediate child. Named, deliberate gaps
+(`strategic_merge`'s own doc comment): no `$patch`/`$setElementOrder`/
+`$deleteFromPrimitiveList` directives — a patch that never uses them
+(the overwhelming majority) behaves identically either way. **Not yet
+landed**: Server-Side Apply/`managedFields` (structured-merge-diff has no
+Rust crate to reuse), which will build on the same `FIELD_META`
+(`ref_schema` included) this group's patch logic already reads.
 
 **H. Authentication** — **not started**. x509 client certs, ServiceAccount
 JWT issuance/validation, projected/bound tokens, OIDC discovery + JWKS,
