@@ -201,9 +201,23 @@ same layering nodelet's own HTTPS server already uses) that proves the
 listener/TLS/path-grammar stack works end to end — `nodeapiserver::run()`
 now actually binds and serves. **Its request handler is a bring-up stub**,
 answering `/healthz` and echoing the parsed `RequestInfo` as JSON, not the
-real REST dispatch. **Not yet landed**: the handler chain itself, `/api`,
-`/apis`, aggregated discovery v2, `/openapi/v2` + `/openapi/v3`, `/version`.
-Handler-chain order
+real REST dispatch. `server::discovery` builds the `/api` (`APIVersions`)
+and `/apis`/`/apis/{group}` (`APIGroupList`/`APIGroup`) documents from
+Group A's discovery GVK table — real shapes confirmed against the
+vendored OpenAPI v3 specs, preferred-version selection via
+`server::version_compare`'s faithful port of
+`CompareKubeAwareVersionStrings`. That port caught a real bug in its own
+first draft: a `(major, type, minor)` tuple order would let a higher major
+version at a *lower* maturity outrank a lower major version at GA
+(`v2alpha1` beating `v1`) — the opposite of upstream's documented
+"GA/alpha/beta first, then major and minor," fixed to `(type, major,
+minor)` with a regression test locking in the exact cross-case. Discovery
+is **group-level only** — the per-version `APIResourceList` needs the
+OpenAPI spec's `paths` section, which Group A hasn't vendored/parsed yet,
+named honestly rather than implied — and **not yet wired into the
+listener's routing**. **Not yet landed**: the handler chain itself, wiring
+discovery into real routing, per-version resource discovery, aggregated
+discovery v2, `/openapi/v2` + `/openapi/v3`, `/version`. Handler-chain order
 (authentication → authorization → priority-and-fairness → admission → REST)
 is a hard requirement, not a style choice. The throwaway e2e rig described
 above should land as part of this group, not after it.
