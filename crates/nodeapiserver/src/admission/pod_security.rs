@@ -376,9 +376,18 @@ fn allowed_apparmor_annotation_value(v: &str) -> bool {
     v.is_empty() || v == "runtime/default" || v.starts_with("localhost/")
 }
 
-fn check_apparmor_profile(pod: &Value) -> Option<String> {
-    let apparmor_type = |sc: &Value| sc.get("appArmorProfile").and_then(|p| p.get("type")).and_then(Value::as_str);
+/// A free function, not a closure — a closure's elided-lifetime
+/// inference can't express "generic over the input's own lifetime" for
+/// a fn that returns a reference borrowed from its argument (it infers
+/// one fixed lifetime from the first call site instead), which breaks
+/// reusing it across borrows of different lifetimes below (the pod's own
+/// `securityContext` vs. each container's, from separate iterator
+/// borrows) — a real compile error CI caught, not a style choice.
+fn apparmor_type(sc: &Value) -> Option<&str> {
+    sc.get("appArmorProfile").and_then(|p| p.get("type")).and_then(Value::as_str)
+}
 
+fn check_apparmor_profile(pod: &Value) -> Option<String> {
     let mut bad_setters = Vec::new();
     let mut bad_values = std::collections::BTreeSet::new();
 
