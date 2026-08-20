@@ -45,10 +45,17 @@
 //! create-only-if-absent `Txn` (`Compare(ModRevision(key), Equal, 0)` —
 //! confirmed directly against `nodestore`'s own server-side comment
 //! naming this the idiom for "create only if absent," not assumed).
-//! Named honestly, not overclaimed: no `generateName` (a request with no
-//! `metadata.name` is rejected, not given a generated one), no dry-run,
-//! no field-manager/Server-Side Apply bookkeeping, no admission plugins
-//! at all (Group J doesn't exist yet — a real cluster's `ServiceAccount`/
+//! `name_format_violations` also wires `scheme::name_format`'s
+//! validators in for the one resource this crate has actually verified a
+//! real per-type rule for (`namespaces` -> `is_dns1123_label`, matching
+//! upstream's own `ValidateNamespaceName`) — every other resource is
+//! deliberately left unchecked rather than guessed at; see that
+//! function's own doc comment for how to extend it one verified entry at
+//! a time. `update` runs the exact same two checks. Named honestly, not
+//! overclaimed: no `generateName` (a request with no `metadata.name` is
+//! rejected, not given a generated one), no dry-run, no field-manager/
+//! Server-Side Apply bookkeeping, no admission plugins at all (Group J
+//! doesn't exist yet — a real cluster's `ServiceAccount`/
 //! `NamespaceLifecycle`/`ResourceQuota`/... plugins would each get a say
 //! here and don't).
 //!
@@ -264,6 +271,7 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
 
     let mut violations: Vec<String> = validation::validate_required(schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
     violations.extend(validation::validate_types(schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+    violations.extend(name_format_violations(group, resource, &name).into_iter().map(|e| format!("metadata.name: {e}")));
     if !violations.is_empty() {
         return Ok(CreateOutcome::Invalid(violations));
     }
@@ -374,6 +382,7 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
 
     let mut violations: Vec<String> = validation::validate_required(schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
     violations.extend(validation::validate_types(schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+    violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
     if !violations.is_empty() {
         return Ok(UpdateOutcome::Invalid(violations));
     }
@@ -415,6 +424,26 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
     let revision = resp.header.map(|h| h.revision).unwrap_or(0);
     set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
     Ok(UpdateOutcome::Updated(object))
+}
+
+/// `scheme::name_format`'s validators, wired to the one resource this
+/// crate has actually verified a real per-type rule for: `namespaces`
+/// (core group) uses `NameIsDNSLabel` in real upstream
+/// (`ValidateNamespaceName = NameIsDNSLabel`,
+/// `apimachinery/pkg/api/validation/generic.go`, confirmed directly).
+/// Every other `(group, resource)` returns no violations at all — not
+/// because every other name is assumed valid, but because this crate
+/// hasn't verified which real validator (if any beyond the generic
+/// `NameIsDNSSubdomain` most types default to) applies to it yet; see
+/// `scheme::name_format`'s own doc comment for why that mapping isn't a
+/// generically-derivable table. Extend this match one verified entry at
+/// a time, the same way `scheme::defaulting`'s own concrete case
+/// (`ContainerPort.protocol`) was landed and proven before generalizing.
+fn name_format_violations(group: &str, resource: &str, name: &str) -> Vec<String> {
+    match (group, resource) {
+        ("", "namespaces") => crate::scheme::name_format::is_dns1123_label(name),
+        _ => Vec::new(),
+    }
 }
 
 /// No-ops (rather than panicking, matching this crate's established
@@ -512,6 +541,19 @@ mod tests {
     fn list_kind_appends_list_to_the_real_kind() {
         assert_eq!(list_kind("Pod"), "PodList");
         assert_eq!(list_kind("Deployment"), "DeploymentList");
+    }
+
+    #[test]
+    fn name_format_violations_enforces_the_real_namespace_rule() {
+        assert!(name_format_violations("", "namespaces", "my-namespace").is_empty());
+        assert!(!name_format_violations("", "namespaces", "My_Namespace").is_empty());
+    }
+
+    #[test]
+    fn name_format_violations_is_empty_for_a_resource_with_no_verified_rule() {
+        // pods has no verified per-type name rule wired in yet -- must not
+        // invent a check for it.
+        assert!(name_format_violations("", "pods", "Not-A-Valid-DNS-Label-But-Unchecked").is_empty());
     }
 
     #[test]
