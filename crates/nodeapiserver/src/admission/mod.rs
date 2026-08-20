@@ -44,11 +44,11 @@
 //! `limit_ranger` — `LimitRanger`, mutating (pods, `CREATE` only) +
 //! validating (pods and `PersistentVolumeClaim`s): defaults a container's
 //! missing requests/limits from its namespace's `LimitRange` objects and
-//! enforces their min/max/ratio constraints. Container-level and
-//! PVC-level only for now — pod-level (`LimitTypePod`) aggregate
-//! enforcement is a named, separate not-yet-ported gap (see that module's
-//! own doc comment). Built on [`crate::scheme::quantity::Quantity`] for
-//! real min/max/ratio comparisons.
+//! enforces their min/max/ratio constraints — container-level, pod-level
+//! (real upstream's own aggregated-total/sidecar-accounting rules ported
+//! exactly, see that module's own doc comment), and PVC-level. Built on
+//! [`crate::scheme::quantity::Quantity`] for real min/max/ratio
+//! comparisons (which also gained `+`/`max` for this).
 //!
 //! `pod_security` — `PodSecurity`, validating, `CREATE`-only: enforces
 //! whichever Pod Security Standards level a namespace's
@@ -66,10 +66,10 @@
 //! behind a config flag.
 //!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
-//! other built-in plugin (`ResourceQuota`, ...), pod-level `LimitRange`
-//! enforcement, a generic plugin-chain/registry abstraction to run more
-//! than one plugin without `server::listener` hand-calling each by name,
-//! mutating/validating admission webhooks, and ValidatingAdmissionPolicy/
+//! other built-in plugin (`ResourceQuota`, ...), a generic
+//! plugin-chain/registry abstraction to run more than one plugin without
+//! `server::listener` hand-calling each by name, mutating/validating
+//! admission webhooks, and ValidatingAdmissionPolicy/
 //! MutatingAdmissionPolicy (CEL-based — this crate already has `cel_ext`
 //! for a different purpose, not yet reused here).
 

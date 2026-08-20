@@ -84,6 +84,22 @@ impl Quantity {
         self.milli == 0
     }
 
+    /// The zero quantity — the correct starting accumulator for summing
+    /// (`+`) a resource across containers, the way real upstream's own
+    /// `addResourceList` does starting from an absent map entry.
+    pub const ZERO: Quantity = Quantity { milli: 0 };
+
+    /// Real upstream's own `maxResourceList`'s per-key comparison —
+    /// exact, since ordering here is exact `i128` comparison (see this
+    /// module's own doc comment).
+    pub fn max(self, other: Quantity) -> Quantity {
+        if self >= other {
+            self
+        } else {
+            other
+        }
+    }
+
     pub fn parse(s: &str) -> Result<Quantity, Error> {
         let s = s.trim();
         if s.is_empty() {
@@ -158,6 +174,18 @@ impl Quantity {
         };
 
         Ok(Quantity { milli })
+    }
+}
+
+/// Real upstream's own `addResourceList`'s per-key addition — exact,
+/// since the internal representation is already exact `i128` milli-units
+/// (see this module's own doc comment); saturates rather than wrapping
+/// on the (unrealistic) overflow case, same posture as
+/// [`Quantity::value`]/[`Quantity::milli_value`]'s own clamp.
+impl std::ops::Add for Quantity {
+    type Output = Quantity;
+    fn add(self, rhs: Quantity) -> Quantity {
+        Quantity { milli: self.milli.saturating_add(rhs.milli) }
     }
 }
 
@@ -283,5 +311,24 @@ mod tests {
     fn display_renders_a_plain_decimal() {
         assert_eq!(Quantity::parse("1.5").unwrap().to_string(), "1.500");
         assert_eq!(Quantity::parse("5").unwrap().to_string(), "5");
+    }
+
+    #[test]
+    fn add_sums_two_quantities_exactly() {
+        let sum = Quantity::parse("100m").unwrap() + Quantity::parse("1").unwrap();
+        assert_eq!(sum.milli_value(), 1100);
+    }
+
+    #[test]
+    fn zero_is_the_correct_additive_identity() {
+        assert_eq!((Quantity::ZERO + Quantity::parse("500m").unwrap()).milli_value(), 500);
+    }
+
+    #[test]
+    fn max_picks_the_larger_quantity() {
+        let a = Quantity::parse("1Gi").unwrap();
+        let b = Quantity::parse("500Mi").unwrap();
+        assert_eq!(a.max(b), a);
+        assert_eq!(b.max(a), a);
     }
 }
