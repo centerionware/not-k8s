@@ -116,6 +116,11 @@ jobs:
           else
             echo "crates/nodecontroller not present on this ref — skipping its tests."
           fi
+          if [[ -d crates/nodeapiserver ]]; then
+            sudo -E env "PATH=$PATH" cargo test -p nodeapiserver
+          else
+            echo "crates/nodeapiserver not present on this ref — skipping its tests."
+          fi
           # Same guard, same reason: the combined-binary crate postdates
           # all of the above.
           if [[ -d crates/notk8s ]]; then
@@ -328,6 +333,17 @@ jobs:
                 cargo build $1 -p nodecontroller $TARGET_FLAG
               else
                 echo "crates/nodecontroller not present on this ref — skipping it."
+              fi
+              # nodeapiserver: no features either. Not yet in
+              # deploy/lib/components.sh's table (Group O's job — see
+              # docs/APISERVER.md), so "Stage binaries" below won't pick its
+              # binary up even once built; built here anyway so a real
+              # cross-arch compile error surfaces here, not later.
+              if [[ -d crates/nodeapiserver ]]; then
+                # shellcheck disable=SC2086
+                cargo build $1 -p nodeapiserver $TARGET_FLAG
+              else
+                echo "crates/nodeapiserver not present on this ref — skipping it."
               fi
             fi
             # The combined layout: one binary containing every component

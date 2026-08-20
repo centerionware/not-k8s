@@ -90,3 +90,7 @@ serde_json = { workspace = true }
 # the same way), and inheriting something that isn't there fails at
 # manifest-parse time, before any code is even looked at.
 tonic-prost-build = "0.14"
+
+[dev-dependencies]
+# server::tls's own tests generate a cert into a scratch directory.
+tempfile = "3"
