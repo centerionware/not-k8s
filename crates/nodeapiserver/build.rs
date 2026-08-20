@@ -24,6 +24,9 @@ mod proto_parse;
 #[path = "build/openapi_parse.rs"]
 mod openapi_parse;
 
+#[path = "build/discovery_parse.rs"]
+mod discovery_parse;
+
 use std::path::Path;
 
 fn main() {
@@ -56,19 +59,25 @@ fn main() {
     assert!(!types.is_empty(), "parsed zero type-info entries out of {}", openapi_dir.display());
     let openapi_out = openapi_parse::render(&field_meta, &gvks, &required, &types);
 
+    let resources = discovery_parse::parse_all(&openapi_dir);
+    assert!(!resources.is_empty(), "parsed zero per-version API resources out of {}", openapi_dir.display());
+    let discovery_out = discovery_parse::render(&resources);
+
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let out_dir = Path::new(&out_dir);
     std::fs::write(out_dir.join("proto_fields.rs"), proto_out).expect("writing proto_fields.rs");
     std::fs::write(out_dir.join("openapi_meta.rs"), openapi_out).expect("writing openapi_meta.rs");
+    std::fs::write(out_dir.join("api_resources.rs"), discovery_out).expect("writing api_resources.rs");
 
     println!(
-        "cargo:warning=nodeapiserver codegen: {} protobuf fields across {} messages, {} field-meta entries, {} discovery GVKs, {} required-field entries, {} type-info entries",
+        "cargo:warning=nodeapiserver codegen: {} protobuf fields across {} messages, {} field-meta entries, {} discovery GVKs, {} required-field entries, {} type-info entries, {} per-version API resources",
         proto_fields.len(),
         proto_messages.len(),
         field_meta.len(),
         gvks.len(),
         required.len(),
-        types.len()
+        types.len(),
+        resources.len()
     );
 
     println!("cargo:rerun-if-changed=proto/rpc.proto");
