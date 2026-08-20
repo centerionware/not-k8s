@@ -228,10 +228,16 @@ groups (admissionregistration, autoscaling, certificates, coordination,
 networking, resource, storage, apiserverinternal, storagemigration).
 Validation is per-field business logic with no shortcut.
 
-**G. Patch + Server-Side Apply** — **not started**. `json-patch` for RFC
-6902/7386; hand-written strategic merge patch; hand-written
-structured-merge-diff + `managedFields` (no Rust crate exists), both driven
-by Group A's metadata table.
+**G. Patch + Server-Side Apply** — **in progress**. `patch::json_patch`/
+`patch::merge_patch` wrap the `json-patch` crate for RFC 6902/7386 —
+rollback-on-failure for JSON Patch (not the unsafe partial-apply variant),
+recursive-merge/null-deletes-key semantics verified for JSON Merge Patch.
+**Not yet landed**: hand-written strategic merge patch (needs Group A's
+codegen to also resolve a field's *referenced* schema, not just its own
+`x-kubernetes-*` flags — real, separate work) and hand-written
+structured-merge-diff + `managedFields` (no Rust crate exists for either),
+both to be driven by Group A's metadata table once the schema-resolution
+gap above is closed.
 
 **H. Authentication** — **not started**. x509 client certs, ServiceAccount
 JWT issuance/validation, projected/bound tokens, OIDC discovery + JWKS,
