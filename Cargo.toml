@@ -4,7 +4,7 @@ resolver = "2"
 # above — it links them, it isn't a component itself. Adding a new component
 # crate means adding it here *and* as an optional dependency of notk8s, so
 # both build layouts (split / combined) cover it.
-members = ["crates/nodelet", "crates/nodeproxy", "crates/nodescheduler", "crates/nodestore", "crates/nodecontroller", "crates/node-leaderelection", "crates/notk8s"]
+members = ["crates/nodelet", "crates/nodeproxy", "crates/nodescheduler", "crates/nodestore", "crates/nodecontroller", "crates/nodeapiserver", "crates/node-leaderelection", "crates/notk8s"]
 
 [workspace.package]
 version = "0.1.0"

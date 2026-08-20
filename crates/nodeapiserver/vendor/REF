@@ -1,0 +1,3 @@
+# Upstream ref currently vendored into openapi-spec/ and protos/.
+# Re-vendor with: ./refresh.sh <ref>
+release-1.34
