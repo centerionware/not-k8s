@@ -248,6 +248,35 @@ def render_stats_table(agents_summaries, out_path, slots=None):
         f.write("\n".join(lines) + "\n")
 
 
+def load_duration_seconds(path):
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path) as f:
+            return float(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def render_duration_table(agents_durations, out_path, unit_label):
+    """agents_durations: [(label, [seconds, ...replicates]), ...] — the
+    deploy/lib/profiling-workload.sh precise wall-clock timing of a
+    variable-duration operation (spin N pods up, or tear them down), as
+    opposed to the fixed-window resource sampling the rest of this script
+    aggregates. Same mean+range-across-replicates shape as
+    render_stats_table, one metric instead of a whole table's worth."""
+    lines = [f"| agent | {unit_label} |", "|---|---|"]
+    any_data = False
+    for label, durations in agents_durations:
+        stats = replicate_stats(durations)
+        if stats is not None:
+            any_data = True
+        lines.append(f"| **{label}** | {fmt_stat(stats, 2)} |")
+    with open(out_path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return any_data
+
+
 def parse_labeled_list_arg(spec):
     """"label=path1,path2,path3" -> (label, [path1, path2, path3])."""
     if "=" not in spec:
@@ -271,6 +300,18 @@ def main():
         "--slot", action="append", default=[], metavar="LABEL=SLOT",
         help="repeatable; which measure.sh slot's MEASURE_<SLOT>_* keys a row reads "
              "(k3s, nodestore, nodelet, nodeproxy, ...). Defaults to NODELET.",
+    )
+    parser.add_argument(
+        "--duration", action="append", default=[], metavar="LABEL=TXT1,TXT2,...",
+        help="repeatable; one per agent, comma-separated replicate "
+             "duration_seconds.txt paths (deploy/lib/profiling-workload.sh's "
+             "precise wall-clock timing of a spin-up/spin-down operation). "
+             "When given, writes duration.md alongside stats.md instead of "
+             "the fixed-window RSS/CPU charts.",
+    )
+    parser.add_argument(
+        "--duration-label", default="duration (s)", metavar="TEXT",
+        help="column header for --duration's table, e.g. 'time to healthy (s)'.",
     )
     args = parser.parse_args()
     slots = {}
@@ -317,7 +358,19 @@ def main():
     print(f"CPU chart: {'written to ' + cpu_path if cpu_ok else 'skipped (no data)'}")
     print(f"stats table: written to {stats_path}")
 
-    if not any(replicates for _, replicates in agents_timeseries):
+    duration_ok = True
+    if args.duration:
+        agents_durations = []
+        for spec in args.duration:
+            label, paths = parse_labeled_list_arg(spec)
+            durations = [d for d in (load_duration_seconds(p) for p in paths) if d is not None]
+            print(f"'{label}': loaded {len(durations)}/{len(paths)} duration replicate(s)")
+            agents_durations.append((label, durations))
+        duration_path = os.path.join(args.out_dir, "duration.md")
+        duration_ok = render_duration_table(agents_durations, duration_path, args.duration_label)
+        print(f"duration table: {'written to ' + duration_path if duration_ok else 'written (no data)'}")
+
+    if not any(replicates for _, replicates in agents_timeseries) and not duration_ok:
         sys.exit(1)
 
 

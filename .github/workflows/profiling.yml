@@ -52,10 +52,23 @@ name: Profiling — nodelet vs a real upstream kubelet (same control plane)
 on:
   workflow_dispatch:
     inputs:
+      profile_mode:
+        description: "idle: steady-state only (original, unchanged). workload: spin workload_pod_count pods (one per namespace) up, sample_seconds idle with them running, then spin them down -- timing + CPU/RSS for each phase, additive to (not a replacement for) idle mode."
+        required: false
+        default: "idle"
+        type: choice
+        options:
+          - idle
+          - workload
       sample_seconds:
-        description: "Sample window in seconds, 1 sample/sec (e.g. 120 for 2m, 300 for 5m, 600 for 10m)"
+        description: "Sample window in seconds, 1 sample/sec (e.g. 120 for 2m, 300 for 5m, 600 for 10m). idle mode: the whole measurement. workload mode: the idle-with-workload-present phase only -- the spin up/down phases are timed by how long the real operation takes, not this."
         required: false
         default: "120"
+        type: string
+      workload_pod_count:
+        description: "workload mode only: number of namespaces (one pod each) to spin up/down."
+        required: false
+        default: "10"
         type: string
 
 permissions:
@@ -70,6 +83,8 @@ env:
   # window plus bootstrap+settle overhead -- widen that too if pushing
   # sample_seconds past 10m.
   SAMPLE_SECS: ${{ inputs.sample_seconds }}
+  PROFILE_MODE: ${{ inputs.profile_mode }}
+  WORKLOAD_POD_COUNT: ${{ inputs.workload_pod_count }}
 
 jobs:
   profile:
@@ -116,18 +131,33 @@ jobs:
             # runs.
             install_args: --with-cri --skip-nodelet
     runs-on: ubuntu-latest
-    # 30s settle + up to a 600s (10m) sample_seconds window + bootstrap
-    # overhead (~2-3m) comfortably fits inside 30m; widen this if
+    # idle mode: 30s settle + up to a 600s (10m) sample_seconds window +
+    # bootstrap overhead (~2-3m) comfortably fits inside 30m; widen this if
     # sample_seconds is ever pushed past 10m.
-    timeout-minutes: 30
+    # workload mode adds two more phases in the same job (spin up, spin
+    # down), each capped at profiling-workload.sh's own 300s safety net —
+    # worst case idle's budget plus ~10m more, still comfortably inside 40m
+    # for the pod counts this is meant for (a real run finishes in well
+    # under a minute per phase).
+    timeout-minutes: 40
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Bootstrap the shared stack via the real standalone installer (stripped k3s control plane + containerd${{ matrix.agent == 'nodelet' && ' + nodelet' || '' }})
+        # idle mode (unchanged): install.sh, which always resolves to
+        # whatever release is currently latest.
+        # workload mode: pinned to install-v0.6.0.sh instead — the
+        # installer as actually published for the v0.6.0 release, fetching
+        # that release's own deploy.tar.gz/binaries rather than whatever is
+        # newest at dispatch time, so a workload run stays reproducible
+        # against a known build. Its default layout is the single
+        # multi-call `notk8s` binary (no --layout override here), i.e. the
+        # single built 0.6.0 binary containing nodelet.
         run: |
           set -e
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/install-scripts/install.sh | sudo bash -s -- ${{ matrix.install_args }}
+          INSTALLER="${{ inputs.profile_mode == 'workload' && 'install-v0.6.0.sh' || 'install.sh' }}"
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/install-scripts/$INSTALLER" | sudo bash -s -- ${{ matrix.install_args }}
 
       - name: Start a real upstream kubelet (same control plane, same containerd — nodelet was never installed on this runner)
         if: matrix.agent == 'kubelet'
@@ -138,10 +168,45 @@ jobs:
       - name: Settle before measuring idle steady-state
         run: sleep 30
 
+      - name: Make the kubeconfig readable
+        if: inputs.profile_mode == 'workload'
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+        run: sudo chmod 644 "$KUBECONFIG"
+
       - name: Measure ${{ matrix.agent }} replicate ${{ matrix.replicate }} (idle, ${{ env.SAMPLE_SECS }}s, 1 sample/sec)
+        if: inputs.profile_mode == 'idle'
         run: |
           set -e
           sudo ./deploy/measure.sh "$SAMPLE_SECS" /tmp/measure-out "${{ matrix.agent_pattern }}" | tee /tmp/measure-out-console.txt
+
+      # ── workload mode: spin up / 120s idle-with-workload / spin down ────────
+      # Additive to idle mode above, not a replacement for it -- see
+      # profile_mode's own description. All three phases run under this same
+      # matrix leg (same agent, same replicate, same already-bootstrapped
+      # stack) so they share hardware/state the way the idle-mode replicates
+      # already do.
+      - name: Spin up ${{ env.WORKLOAD_POD_COUNT }} pods/namespaces (timed, measured concurrently)
+        if: inputs.profile_mode == 'workload'
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+        run: |
+          set -e
+          sudo -E bash deploy/lib/profiling-workload.sh up "$WORKLOAD_POD_COUNT" /tmp/measure-out-spinup "${{ matrix.agent_pattern }}"
+
+      - name: Measure ${{ matrix.agent }} replicate ${{ matrix.replicate }} (idle with workload present, ${{ env.SAMPLE_SECS }}s, 1 sample/sec)
+        if: inputs.profile_mode == 'workload'
+        run: |
+          set -e
+          sudo ./deploy/measure.sh "$SAMPLE_SECS" /tmp/measure-out-idle-workload "${{ matrix.agent_pattern }}" | tee /tmp/measure-out-idle-workload-console.txt
+
+      - name: Spin down ${{ env.WORKLOAD_POD_COUNT }} pods/namespaces (timed, measured concurrently)
+        if: inputs.profile_mode == 'workload'
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+        run: |
+          set -e
+          sudo -E bash deploy/lib/profiling-workload.sh down "$WORKLOAD_POD_COUNT" /tmp/measure-out-teardown "${{ matrix.agent_pattern }}"
 
       - name: Tear down
         if: always()
@@ -151,17 +216,41 @@ jobs:
           sudo systemctl stop k3s.service 2>/dev/null || true
           sudo /usr/local/bin/k3s-uninstall.sh 2>/dev/null || true
 
-      - name: Upload measurement
-        if: always()
+      - name: Upload measurement (idle mode)
+        if: always() && inputs.profile_mode == 'idle'
         uses: actions/upload-artifact@v4
         with:
           name: profile-${{ matrix.agent }}-${{ matrix.replicate }}
           path: /tmp/measure-out
           retention-days: 1
 
+      - name: Upload measurement (workload mode, spin-up phase)
+        if: always() && inputs.profile_mode == 'workload'
+        uses: actions/upload-artifact@v4
+        with:
+          name: profile-${{ matrix.agent }}-${{ matrix.replicate }}-spinup
+          path: /tmp/measure-out-spinup
+          retention-days: 1
+
+      - name: Upload measurement (workload mode, idle-with-workload phase)
+        if: always() && inputs.profile_mode == 'workload'
+        uses: actions/upload-artifact@v4
+        with:
+          name: profile-${{ matrix.agent }}-${{ matrix.replicate }}-idle-workload
+          path: /tmp/measure-out-idle-workload
+          retention-days: 1
+
+      - name: Upload measurement (workload mode, teardown phase)
+        if: always() && inputs.profile_mode == 'workload'
+        uses: actions/upload-artifact@v4
+        with:
+          name: profile-${{ matrix.agent }}-${{ matrix.replicate }}-teardown
+          path: /tmp/measure-out-teardown
+          retention-days: 1
+
   report:
     needs: profile
-    if: always()
+    if: always() && inputs.profile_mode == 'idle'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -266,5 +355,121 @@ jobs:
             echo "no changes to publish"
           else
             git commit -m "profiling results for ${COMMIT_SHA}"
+            git push origin profiling-results
+          fi
+
+  report-workload:
+    needs: profile
+    if: always() && inputs.profile_mode == 'workload'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download all measurements
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/artifacts
+
+      - name: Install matplotlib/numpy
+        run: python3 -m pip install --quiet --break-system-packages matplotlib numpy
+
+      - name: Render charts + aggregated stats for each phase
+        run: |
+          set -e
+          mkdir -p /tmp/profiling-report/spinup /tmp/profiling-report/idle-workload /tmp/profiling-report/teardown
+
+          render_phase() {
+            local phase="$1" extra_duration_args=("${@:2}")
+            local nodelet_csvs kubelet_csvs nodelet_summaries kubelet_summaries
+            nodelet_csvs="/tmp/artifacts/profile-nodelet-1-${phase}/nodelet-timeseries.csv,/tmp/artifacts/profile-nodelet-2-${phase}/nodelet-timeseries.csv,/tmp/artifacts/profile-nodelet-3-${phase}/nodelet-timeseries.csv"
+            kubelet_csvs="/tmp/artifacts/profile-kubelet-1-${phase}/nodelet-timeseries.csv,/tmp/artifacts/profile-kubelet-2-${phase}/nodelet-timeseries.csv,/tmp/artifacts/profile-kubelet-3-${phase}/nodelet-timeseries.csv"
+            nodelet_summaries="/tmp/artifacts/profile-nodelet-1-${phase}/summary.txt,/tmp/artifacts/profile-nodelet-2-${phase}/summary.txt,/tmp/artifacts/profile-nodelet-3-${phase}/summary.txt"
+            kubelet_summaries="/tmp/artifacts/profile-kubelet-1-${phase}/summary.txt,/tmp/artifacts/profile-kubelet-2-${phase}/summary.txt,/tmp/artifacts/profile-kubelet-3-${phase}/summary.txt"
+            python3 deploy/lib/render-profiling-charts.py "/tmp/profiling-report/${phase}" \
+              --series "nodelet=$nodelet_csvs" \
+              --series "upstream kubelet=$kubelet_csvs" \
+              --summary "nodelet=$nodelet_summaries" \
+              --summary "upstream kubelet=$kubelet_summaries" \
+              "${extra_duration_args[@]}"
+          }
+
+          nodelet_durations="/tmp/artifacts/profile-nodelet-1-spinup/duration_seconds.txt,/tmp/artifacts/profile-nodelet-2-spinup/duration_seconds.txt,/tmp/artifacts/profile-nodelet-3-spinup/duration_seconds.txt"
+          kubelet_durations="/tmp/artifacts/profile-kubelet-1-spinup/duration_seconds.txt,/tmp/artifacts/profile-kubelet-2-spinup/duration_seconds.txt,/tmp/artifacts/profile-kubelet-3-spinup/duration_seconds.txt"
+          render_phase spinup --duration "nodelet=$nodelet_durations" --duration "upstream kubelet=$kubelet_durations" --duration-label "time to healthy (s)"
+
+          render_phase idle-workload
+
+          nodelet_durations="/tmp/artifacts/profile-nodelet-1-teardown/duration_seconds.txt,/tmp/artifacts/profile-nodelet-2-teardown/duration_seconds.txt,/tmp/artifacts/profile-nodelet-3-teardown/duration_seconds.txt"
+          kubelet_durations="/tmp/artifacts/profile-kubelet-1-teardown/duration_seconds.txt,/tmp/artifacts/profile-kubelet-2-teardown/duration_seconds.txt,/tmp/artifacts/profile-kubelet-3-teardown/duration_seconds.txt"
+          render_phase teardown --duration "nodelet=$nodelet_durations" --duration "upstream kubelet=$kubelet_durations" --duration-label "time to gone (s)"
+
+      - name: Build comparison report
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -e
+          bash deploy/lib/profiling-workload-report.sh \
+            /tmp/profiling-report \
+            "$COMMIT_SHA" "$RUN_URL" \
+            "$WORKLOAD_POD_COUNT" "$SAMPLE_SECS" \
+            > /tmp/profiling-report/README.md
+          cat /tmp/profiling-report/README.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish results to the profiling-results branch (workload/ prefix)
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # See the idle-mode `report` job's own note on why the token has
+          # to be embedded in this clone's own URL rather than relying on
+          # whatever credential setup actions/checkout@v4 did.
+          AUTH_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        run: |
+          set -e
+          git config --global user.name "not-k8s-profiling-bot"
+          git config --global user.email "actions@users.noreply.github.com"
+
+          WORKDIR="$(mktemp -d)"
+          if git ls-remote --exit-code --heads "$AUTH_URL" profiling-results >/dev/null 2>&1; then
+            git clone --branch profiling-results --single-branch "$AUTH_URL" "$WORKDIR"
+          else
+            git clone "$AUTH_URL" "$WORKDIR"
+            (cd "$WORKDIR" && git checkout --orphan profiling-results && git rm -rf . >/dev/null 2>&1 || true)
+          fi
+
+          STAMP="$(date -u +%Y-%m-%d_%H-%M-%S)"
+          RUN_DIR="$WORKDIR/workload/history/${STAMP}"
+          mkdir -p "$RUN_DIR/raw-data"
+
+          cp /tmp/profiling-report/README.md "$RUN_DIR/README.md" 2>/dev/null || true
+          for phase in spinup idle-workload teardown; do
+            mkdir -p "$RUN_DIR/$phase" "$RUN_DIR/raw-data/$phase"
+            cp "/tmp/profiling-report/${phase}/rss-over-time.png" "$RUN_DIR/$phase/" 2>/dev/null || true
+            cp "/tmp/profiling-report/${phase}/cpu-over-time.png" "$RUN_DIR/$phase/" 2>/dev/null || true
+            for agent in nodelet kubelet; do
+              for r in 1 2 3; do
+                src="/tmp/artifacts/profile-${agent}-${r}-${phase}"
+                cp "$src/nodelet-timeseries.csv"  "$RUN_DIR/raw-data/${phase}/${agent}-${r}-timeseries.csv" 2>/dev/null || true
+                cp "$src/summary.txt"             "$RUN_DIR/raw-data/${phase}/${agent}-${r}-summary.txt"    2>/dev/null || true
+                cp "$src/duration_seconds.txt"    "$RUN_DIR/raw-data/${phase}/${agent}-${r}-duration.txt"   2>/dev/null || true
+              done
+            done
+          done
+
+          rm -rf "$WORKDIR/workload/latest"
+          cp -r "$RUN_DIR" "$WORKDIR/workload/latest"
+
+          bash deploy/lib/profiling-workload-report.sh --readme \
+            "$COMMIT_SHA" "$RUN_URL" "$STAMP" \
+            > "$WORKDIR/workload/README.md"
+
+          cd "$WORKDIR"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no changes to publish"
+          else
+            git commit -m "workload profiling results for ${COMMIT_SHA}"
             git push origin profiling-results
           fi
