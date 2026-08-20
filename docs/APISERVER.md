@@ -438,10 +438,31 @@ own sections for what's real and what's deliberately still opt-in.
 Admission (Group J) doesn't exist at all yet — no plugin gets a say in
 any of this.
 
-**Not yet landed**: `watch`/`patch`/`deletecollection`, admission
-(Group J), the real handler chain itself (authn -> authz -> APF ->
-admission -> REST — a hard requirement on order, not a style choice,
-once it fully exists), `/openapi/v2`.
+`server::watch_event::to_watch_event_json` is the first piece of real
+`WATCH` support: converts one `cacher::store::WatchEvent` into the real
+`metav1.WatchEvent` wire shape (`staging/src/k8s.io/apimachinery/pkg/apis/meta/v1/watch.go`,
+fetched and read directly) — `{"type": "ADDED"|"MODIFIED"|"DELETED"|
+"BOOKMARK", "object": {...}}`, `Added`/`Modified` decoding the real
+stored object, `Bookmark` carrying just `kind`/`apiVersion`/
+`resourceVersion` (matching real upstream — a bookmark object has no
+other fields populated). **Pure conversion only — not yet wired into an
+actual streaming HTTP response**: `server::listener` has no long-lived
+chunked-response machinery yet, and nothing starts a
+`cacher::registry::CacheRegistry` to read events from in the first
+place. **Named, honest gap**: a `Deleted` event with no retained value
+(which is every `Deleted` event today — `cacher::store::WatchEvent`'s
+own doc comment says `value` is empty for `Deleted`) converts to `None`
+rather than a fabricated placeholder object — real upstream's own
+`WatchEvent.Object` doc comment requires "the state of the object
+immediately before deletion," which this cache doesn't currently keep;
+fixing that for real needs `WatchCache` itself to start retaining the
+last value on delete, separate, not-yet-started work.
+
+**Not yet landed**: `watch` end to end (the conversion above, streaming
+HTTP responses, and starting `CacheRegistry` all need to come together),
+`patch`/`deletecollection`, admission (Group J), the real handler chain
+itself (authn -> authz -> APF -> admission -> REST — a hard requirement
+on order, not a style choice, once it fully exists), `/openapi/v2`.
 The throwaway e2e rig described above should land as part of this group,
 not after it.
 
