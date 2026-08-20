@@ -894,9 +894,9 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                 }
             }
 
-            // Group J: `ResourceQuota` — validating, `CREATE` only, pods
-            // and PVCs only (see `admission::resource_quota`'s own doc
-            // comment for the full, honestly-named scope). Runs last
+            // Group J: `ResourceQuota` — validating, `CREATE` only, pods/
+            // PVCs/services only (see `admission::resource_quota`'s own
+            // doc comment for the full, honestly-named scope). Runs last
             // among the mutating-then-validating admission blocks above,
             // same relative position real upstream's own default plugin
             // order uses (quota checks the final, fully-defaulted/mutated
@@ -906,10 +906,18 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             // real I/O steps: list every existing object of the same kind
             // already in the namespace (to sum existing usage) and every
             // `ResourceQuota` in it.
-            let is_pod_create = is_create && admission::resource_quota::applies_to(admission::attributes::Operation::Create, &info.api_group, &info.resource, &info.subresource);
-            let is_pvc_create = is_create && admission::resource_quota::applies_to_pvc(admission::attributes::Operation::Create, &info.api_group, &info.resource, &info.subresource);
-            if is_pod_create || is_pvc_create {
-                let list_resource = if is_pod_create { "pods" } else { "persistentvolumeclaims" };
+            let quota_kind = if !is_create {
+                None
+            } else if admission::resource_quota::applies_to(admission::attributes::Operation::Create, &info.api_group, &info.resource, &info.subresource) {
+                Some("pods")
+            } else if admission::resource_quota::applies_to_pvc(admission::attributes::Operation::Create, &info.api_group, &info.resource, &info.subresource) {
+                Some("persistentvolumeclaims")
+            } else if admission::resource_quota::applies_to_service(admission::attributes::Operation::Create, &info.api_group, &info.resource, &info.subresource) {
+                Some("services")
+            } else {
+                None
+            };
+            if let Some(list_resource) = quota_kind {
                 if let Some(new_object) = body_value.as_ref() {
                     let existing = match rest::list(&mut client, None, "", "v1", list_resource, namespace, "", "").await {
                         Ok(rest::ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
@@ -922,7 +930,11 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                     match rest::list(&mut client, None, "", "v1", "resourcequotas", namespace, "", "").await {
                         Ok(rest::ListOutcome::Found(list)) => {
                             let quotas = list["items"].as_array().cloned().unwrap_or_default();
-                            let denial = if is_pod_create { admission::resource_quota::check_pod_create(new_object, &existing, &quotas) } else { admission::resource_quota::check_pvc_create(new_object, &existing, &quotas) };
+                            let denial = match list_resource {
+                                "pods" => admission::resource_quota::check_pod_create(new_object, &existing, &quotas),
+                                "persistentvolumeclaims" => admission::resource_quota::check_pvc_create(new_object, &existing, &quotas),
+                                _ => admission::resource_quota::check_service_create(new_object, &existing, &quotas),
+                            };
                             if let Some(denial) = denial {
                                 return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &denial)));
                             }
