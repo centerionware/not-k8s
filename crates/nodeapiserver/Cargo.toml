@@ -76,6 +76,12 @@ rustls = { workspace = true }
 # PKI (Group O's job) and what it is instead.
 rcgen = "0.13"
 
+# Group G: JSON Patch (RFC 6902) and JSON Merge Patch (RFC 7386) — reused
+# rather than hand-written (docs/APISERVER_PLAN.md finding 8: "94M
+# downloads, actively maintained"). Strategic Merge Patch is k8s-specific
+# and has no crate to reuse — hand-written in patch/strategic_merge.rs.
+json-patch = "4"
+
 [build-dependencies]
 # Group A codegen: parses vendor/openapi-spec/v3/*.json and
 # vendor/protos/**/generated.proto at build time into the tables
