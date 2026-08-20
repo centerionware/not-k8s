@@ -1,7 +1,8 @@
 //! Hand-written subset of `resource.k8s.io`'s DRA types — `ResourceClaim`,
-//! `DeviceClass`, `ResourceSlice`. Same reason and same pattern as
-//! `cache/storage.rs`'s comment on `resource.k8s.io/v1` not existing in the
-//! pinned k8s-openapi `v1_33` schema feature, and the same one
+//! `DeviceClass`, `ResourceSlice`. `resource.k8s.io/v1` is typed as of the
+//! k8s-openapi `v1_34` bump (see `CLAUDE.md`), but this raw-request copy
+//! hasn't been retired yet — that's separate follow-up work, not a rider on
+//! the version bump (`docs/APISERVER_PLAN.md` Phase 0). Same pattern
 //! `crates/nodelet/src/runtime/cri/claims.rs`'s `RawResourceClaim` already
 //! uses on the node side: fetched/watched via a raw request into these
 //! structs rather than a typed `kube::Api`.

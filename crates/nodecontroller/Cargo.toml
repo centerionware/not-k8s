@@ -30,9 +30,10 @@ path = "src/lib.rs"
 # `certificate-authority-data`, the same pattern nodelet's own
 # `bootstrap.rs` already uses — `root_ca_publisher.rs` needs it to read the
 # cluster CA it publishes into every namespace. `http` builds the raw
-# requests `resource_claim.rs` needs for `resource.k8s.io` (not
-# k8s-openapi-typed until its "v1_34" schema feature — see CLAUDE.md),
-# the same escape hatch nodelet's own `claims.rs` already uses. `rcgen`
+# requests `resource_claim.rs` needs for `resource.k8s.io` — now
+# k8s-openapi-typed too (workspace is on "v1_34", see CLAUDE.md), but not
+# yet migrated off the raw-request escape hatch, the same one nodelet's own
+# `claims.rs` already uses. `rcgen`
 # (already a nodelet dependency, for CSR *generation* on the bootstrap
 # client side) is reused here for CSR *signing* — `csr.rs`'s
 # certificatesigningrequest-signing-controller; the `x509-parser` feature
