@@ -1,24 +1,33 @@
 //! `ResourceQuota` — a faithful-but-substantially-scoped port of real
 //! upstream's own admission plugin
 //! (`staging/src/k8s.io/apiserver/pkg/admission/plugin/resourcequota/controller.go`
-//! + `pkg/quota/v1/evaluator/core/pods.go`, release-1.34, fetched and read
-//! directly): forbids a `Pod` `CREATE` that would push its namespace's
+//! + `pkg/quota/v1/evaluator/core/{pods,persistent_volume_claims}.go`,
+//! release-1.34, fetched and read directly): forbids a `Pod`/
+//! `PersistentVolumeClaim` `CREATE` that would push its namespace's
 //! tracked resource usage over any `ResourceQuota` object's own
 //! `spec.hard` limit.
 //!
-//! **Pods only** — real upstream's `ResourceQuota` also tracks
-//! `Service`/`PersistentVolumeClaim`/`Secret`/`ConfigMap`/arbitrary
+//! **Two of real upstream's evaluators** — real upstream's
+//! `ResourceQuota` also tracks `Service`/`Secret`/`ConfigMap`/arbitrary
 //! `count/<resource>` object counts through a whole per-type `Evaluator`
-//! registry (`pkg/quota/v1/evaluator/core/*.go`); this crate only ports
-//! the pod evaluator, real upstream's own `podEvaluator`, which is what
-//! the overwhelming majority of real `ResourceQuota` usage actually
-//! targets (compute resource limits). **Compute resources only** — of
-//! real upstream's own `podResources` tracked-resource list, this port
+//! registry (`pkg/quota/v1/evaluator/core/*.go`); this crate ports the
+//! pod evaluator (real upstream's own `podEvaluator`) and the PVC
+//! evaluator (`pvcEvaluator`) — together what the overwhelming majority
+//! of real `ResourceQuota` usage actually targets (compute + storage
+//! limits). **Compute/storage resources only** — of real upstream's own
+//! `podResources`/`pvcResources` tracked-resource lists, this port
 //! covers `pods` (object count), `cpu`/`requests.cpu`, `memory`/
-//! `requests.memory`, `limits.cpu`, `limits.memory`; not ported:
-//! `ephemeral-storage` and its `requests`/`limits` forms, the
-//! `hugepages-*` family, and extended resources — all real, all just not
-//! this crate's first cut.
+//! `requests.memory`, `limits.cpu`, `limits.memory`,
+//! `persistentvolumeclaims` (object count), `requests.storage`; not
+//! ported: `ephemeral-storage` and its `requests`/`limits` forms, the
+//! `hugepages-*` family, extended resources, and the PVC evaluator's own
+//! real per-storage-class resource name family
+//! (`<class>.storageclass.storage.k8s.io/...`) — all real, all just not
+//! this crate's first cut. The PVC evaluator only applies to an
+//! *unscoped* `ResourceQuota` (`spec.scopes` empty) — real upstream's
+//! own `pvcEvaluator.Matches` only consults scopes at all behind the
+//! alpha `VolumeAttributesClass` feature gate, so this matches its real
+//! stable-feature-gate-off default behavior, not a shortcut.
 //!
 //! **`spec.scopes` matching, all six real scope names** — real
 //! upstream's own `ResourceQuota.spec.scopes` lets an operator target a
@@ -298,6 +307,30 @@ fn quota_applies(resource_quota: &Value) -> bool {
     hard_limits(resource_quota).keys().any(|k| TRACKED_RESOURCES.contains(&k.as_str()))
 }
 
+/// Real upstream's own `pvcResources` — this port's subset (see this
+/// module's own doc comment: the real per-storage-class resource name
+/// family, `<class>.storageclass.storage.k8s.io/...`, isn't tracked).
+const TRACKED_PVC_RESOURCES: [&str; 2] = ["persistentvolumeclaims", "requests.storage"];
+
+fn quota_applies_to_pvcs(resource_quota: &Value) -> bool {
+    hard_limits(resource_quota).keys().any(|k| TRACKED_PVC_RESOURCES.contains(&k.as_str()))
+}
+
+/// Real upstream's own `pvcEvaluator.Usage`, restricted to the two
+/// resources this port tracks (see this module's own doc comment for
+/// what's not: the per-storage-class resource family, and the
+/// `RecoverVolumeExpansionFailure`-gated `status.allocatedResources`
+/// comparison — this always uses the plain `spec.resources.requests.storage`
+/// value, no feature-gate machinery to model the alpha/beta variant).
+fn pvc_usage(pvc: &Value) -> BTreeMap<String, Quantity> {
+    let mut usage = BTreeMap::new();
+    usage.insert("persistentvolumeclaims".to_string(), Quantity::parse("1").expect("literal \"1\" always parses"));
+    if let Some(q) = pvc.get("spec").and_then(|s| s.get("resources")).and_then(|r| r.get("requests")).and_then(|r| r.get("storage")).and_then(Value::as_str).and_then(|s| Quantity::parse(s).ok()) {
+        usage.insert("requests.storage".to_string(), q);
+    }
+    usage
+}
+
 fn format_usage(map: &BTreeMap<String, Quantity>) -> String {
     map.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(",")
 }
@@ -362,6 +395,38 @@ pub fn check_pod_create(pod: &Value, existing_pods: &[Value], resource_quotas: &
             }
         }
         if let Some(message) = check_quota(resource_quota, &existing_usage, &this_pod_usage) {
+            return Some(message);
+        }
+    }
+    None
+}
+
+pub fn applies_to_pvc(operation: crate::admission::attributes::Operation, group: &str, resource: &str, subresource: &str) -> bool {
+    group.is_empty() && resource == "persistentvolumeclaims" && subresource.is_empty() && operation == crate::admission::attributes::Operation::Create
+}
+
+/// Real upstream's own `pvcEvaluator`, ported: [`pvc_usage`] tracks
+/// `persistentvolumeclaims` (count) and `requests.storage`. **Unscoped
+/// quotas only** — real upstream's own `pvcEvaluator.Matches` only
+/// consults `spec.scopes`/`spec.scopeSelector` at all behind the alpha
+/// `VolumeAttributesClass` feature gate (this crate has no feature-gate
+/// machinery to model that), so a `ResourceQuota` carrying any
+/// `spec.scopes` entries is treated as not applying to `PersistentVolumeClaim`s
+/// at all here — real upstream's own stable-feature-gate default
+/// behavior for exactly this case (`generic.MatchesNoScopeFunc`).
+pub fn check_pvc_create(pvc: &Value, existing_pvcs: &[Value], resource_quotas: &[Value]) -> Option<String> {
+    let this_pvc_usage = pvc_usage(pvc);
+
+    for resource_quota in resource_quotas {
+        let has_scopes = resource_quota.get("spec").and_then(|s| s.get("scopes")).and_then(Value::as_array).is_some_and(|s| !s.is_empty());
+        if has_scopes || !quota_applies_to_pvcs(resource_quota) {
+            continue;
+        }
+        let mut existing_usage = BTreeMap::new();
+        for existing in existing_pvcs {
+            existing_usage = add_maps(&existing_usage, &pvc_usage(existing));
+        }
+        if let Some(message) = check_quota(resource_quota, &existing_usage, &this_pvc_usage) {
             return Some(message);
         }
     }
@@ -615,5 +680,71 @@ mod tests {
 
         let without_priority = pod_with_cpu_request("new", "999");
         assert!(check_pod_create(&without_priority, &[], &[q]).is_none(), "a pod with no priority class name is out of scope for this quota");
+    }
+
+    fn pvc_with_storage(name: &str, storage: &str) -> Value {
+        json!({"metadata": {"name": name}, "spec": {"resources": {"requests": {"storage": storage}}}})
+    }
+
+    #[test]
+    fn applies_to_pvc_create_only() {
+        use crate::admission::attributes::Operation;
+        assert!(applies_to_pvc(Operation::Create, "", "persistentvolumeclaims", ""));
+        assert!(!applies_to_pvc(Operation::Update, "", "persistentvolumeclaims", ""));
+        assert!(!applies_to_pvc(Operation::Create, "", "persistentvolumeclaims", "status"));
+    }
+
+    #[test]
+    fn pvc_usage_always_counts_the_claim_object() {
+        let usage = pvc_usage(&json!({"spec": {}}));
+        assert_eq!(usage["persistentvolumeclaims"].value(), 1);
+        assert!(usage.get("requests.storage").is_none());
+    }
+
+    #[test]
+    fn pvc_usage_tracks_requested_storage() {
+        let usage = pvc_usage(&pvc_with_storage("data", "10Gi"));
+        assert_eq!(usage["requests.storage"].value(), 10 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn a_pvc_within_storage_quota_is_allowed() {
+        let pvc = pvc_with_storage("new", "5Gi");
+        let q = quota("storage-quota", json!({"requests.storage": "10Gi"}));
+        assert!(check_pvc_create(&pvc, &[], &[q]).is_none());
+    }
+
+    #[test]
+    fn a_pvc_that_would_exceed_storage_quota_is_denied() {
+        let pvc = pvc_with_storage("new", "8Gi");
+        let existing = pvc_with_storage("existing", "5Gi");
+        let q = quota("storage-quota", json!({"requests.storage": "10Gi"}));
+        let denial = check_pvc_create(&pvc, &[existing], &[q]).expect("8Gi + 5Gi > 10Gi");
+        assert!(denial.contains("exceeded quota: storage-quota"));
+        assert!(denial.contains("requests.storage"));
+    }
+
+    #[test]
+    fn the_pvc_count_limit_is_enforced_too() {
+        let pvc = pvc_with_storage("new", "1Gi");
+        let existing = pvc_with_storage("existing", "1Gi");
+        let q = quota("pvc-count-quota", json!({"persistentvolumeclaims": "1"}));
+        let denial = check_pvc_create(&pvc, &[existing], &[q]).expect("2 PVCs > hard limit of 1");
+        assert!(denial.contains("persistentvolumeclaims="));
+    }
+
+    #[test]
+    fn a_pvc_quota_tracking_an_unrelated_resource_is_not_consulted() {
+        let pvc = pvc_with_storage("new", "999Gi");
+        let q = quota("pods-quota", json!({"pods": "5"}));
+        assert!(check_pvc_create(&pvc, &[], &[q]).is_none());
+    }
+
+    #[test]
+    fn a_scoped_quota_does_not_apply_to_pvcs_at_all() {
+        let pvc = pvc_with_storage("new", "999Gi");
+        let mut q = quota("scoped-quota", json!({"requests.storage": "1Gi"}));
+        q["spec"]["scopes"] = json!(["BestEffort"]);
+        assert!(check_pvc_create(&pvc, &[], &[q]).is_none(), "a scoped quota must not apply to PVCs at all, matching real upstream's stable-feature-gate-off default");
     }
 }

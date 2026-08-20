@@ -895,30 +895,35 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             }
 
             // Group J: `ResourceQuota` — validating, `CREATE` only, pods
-            // only (see `admission::resource_quota`'s own doc comment for
-            // the full, honestly-named scope). Runs last among the
-            // mutating-then-validating admission blocks above, same
-            // relative position real upstream's own default plugin order
-            // uses (quota checks the final, fully-defaulted/mutated
+            // and PVCs only (see `admission::resource_quota`'s own doc
+            // comment for the full, honestly-named scope). Runs last
+            // among the mutating-then-validating admission blocks above,
+            // same relative position real upstream's own default plugin
+            // order uses (quota checks the final, fully-defaulted/mutated
             // object) — placed after `LimitRanger`'s own defaulting, so a
             // container that only got its requests/limits from a
             // `LimitRange` default is still counted correctly here. Two
-            // real I/O steps: list every `Pod` already in the namespace
-            // (to sum existing usage) and every `ResourceQuota` in it.
-            if is_create && admission::resource_quota::applies_to(admission::attributes::Operation::Create, &info.api_group, &info.resource, &info.subresource) {
-                if let Some(pod) = body_value.as_ref() {
-                    let existing_pods = match rest::list(&mut client, None, "", "v1", "pods", namespace, "", "").await {
+            // real I/O steps: list every existing object of the same kind
+            // already in the namespace (to sum existing usage) and every
+            // `ResourceQuota` in it.
+            let is_pod_create = is_create && admission::resource_quota::applies_to(admission::attributes::Operation::Create, &info.api_group, &info.resource, &info.subresource);
+            let is_pvc_create = is_create && admission::resource_quota::applies_to_pvc(admission::attributes::Operation::Create, &info.api_group, &info.resource, &info.subresource);
+            if is_pod_create || is_pvc_create {
+                let list_resource = if is_pod_create { "pods" } else { "persistentvolumeclaims" };
+                if let Some(new_object) = body_value.as_ref() {
+                    let existing = match rest::list(&mut client, None, "", "v1", list_resource, namespace, "", "").await {
                         Ok(rest::ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
                         Ok(rest::ListOutcome::UnknownResource) => Vec::new(),
                         Err(e) => {
-                            warn!(path = %path_str, error = ?e, "admission: listing pods for ResourceQuota failed");
+                            warn!(path = %path_str, error = ?e, resource = list_resource, "admission: listing existing objects for ResourceQuota failed");
                             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                         }
                     };
                     match rest::list(&mut client, None, "", "v1", "resourcequotas", namespace, "", "").await {
                         Ok(rest::ListOutcome::Found(list)) => {
                             let quotas = list["items"].as_array().cloned().unwrap_or_default();
-                            if let Some(denial) = admission::resource_quota::check_pod_create(pod, &existing_pods, &quotas) {
+                            let denial = if is_pod_create { admission::resource_quota::check_pod_create(new_object, &existing, &quotas) } else { admission::resource_quota::check_pvc_create(new_object, &existing, &quotas) };
+                            if let Some(denial) = denial {
                                 return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &denial)));
                             }
                         }

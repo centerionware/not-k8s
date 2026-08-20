@@ -61,18 +61,21 @@
 //! comment for exactly which upstream variant of each check.
 //!
 //! `resource_quota` — `ResourceQuota`, validating, `CREATE`-only,
-//! **pods only** (real upstream also tracks services/PVCs/secrets/
-//! configmaps/arbitrary object counts through a whole per-type evaluator
-//! registry this crate doesn't port): forbids a `Pod` `CREATE` that would
-//! push a namespace's tracked compute-resource usage
+//! **pods and PersistentVolumeClaims** (real upstream also tracks
+//! services/secrets/configmaps/arbitrary object counts through a whole
+//! per-type evaluator registry this crate doesn't port): forbids a
+//! `Pod`/`PersistentVolumeClaim` `CREATE` that would push a namespace's
+//! tracked compute/storage-resource usage
 //! (`pods`/`cpu`/`requests.cpu`/`limits.cpu`/`memory`/`requests.memory`/
-//! `limits.memory`) over any `ResourceQuota`'s own `spec.hard`. All six
-//! real `spec.scopes` names are matched now (`Terminating`/
-//! `NotTerminating`/`BestEffort`/`NotBestEffort` — including a real
-//! `ComputePodQOS` port —, `PriorityClass` — an implied-`Exists`
-//! presence check for the classic `spec.scopes` list form, not real
-//! upstream's own separate, richer `spec.scopeSelector` field — and
-//! `CrossNamespacePodAffinity`), and no persisted `status.used` counter
+//! `limits.memory`/`persistentvolumeclaims`/`requests.storage`) over any
+//! `ResourceQuota`'s own `spec.hard`. All six real `spec.scopes` names
+//! are matched for pods (`Terminating`/`NotTerminating`/`BestEffort`/
+//! `NotBestEffort` — including a real `ComputePodQOS` port —,
+//! `PriorityClass` — an implied-`Exists` presence check for the classic
+//! `spec.scopes` list form, not real upstream's own separate, richer
+//! `spec.scopeSelector` field — and `CrossNamespacePodAffinity`); PVCs
+//! only match an *unscoped* quota (matching real upstream's own
+//! stable-feature-gate-off default). No persisted `status.used` counter
 //! (recomputed live from a fresh `Pod` list every time instead — see that
 //! module's own doc comment for the one real concurrency-race consequence
 //! this carries that a persisted counter with real upstream's own
