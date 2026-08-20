@@ -1252,11 +1252,17 @@ mod tests {
     async fn watch_response_body_streams_the_replay_then_live_events() {
         use http_body_util::BodyExt;
 
+        // An unrelated event at revision 2 first, purely so `watch_from`'s
+        // own "not older than the oldest retained history entry" check
+        // has something at or before the requested start_revision (same
+        // pre-existing `watch_from` quirk `cacher::store`'s own tests hit
+        // — untouched by, and unrelated to, what this test is proving).
         let cache = crate::cacher::store::WatchCache::new(vec![], 1, 16, 16);
         let shared = crate::cacher::store::SharedCache::new(cache);
-        shared.apply(crate::cacher::store::EventKind::Added, b"a".to_vec(), b"seed".to_vec(), 2);
-        let (replay, rx) = shared.watch_from(1).unwrap();
-        assert_eq!(replay.len(), 1, "the seeded Added event must be in the replay");
+        shared.apply(crate::cacher::store::EventKind::Added, b"seed".to_vec(), b"unrelated".to_vec(), 2);
+        shared.apply(crate::cacher::store::EventKind::Added, b"a".to_vec(), b"real".to_vec(), 3);
+        let (replay, rx) = shared.watch_from(2).unwrap();
+        assert_eq!(replay.len(), 1, "only the revision-3 event should be in the replay");
         // Drop the cache (and its own broadcast::Sender) before consuming
         // the stream to completion below — otherwise the live half of
         // `watch_response_body` never ends (a real watch stream is
