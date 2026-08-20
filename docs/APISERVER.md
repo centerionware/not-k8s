@@ -153,7 +153,21 @@ sending a `WatchProgressRequest` — confirmed by reading
 that request on demand but never generates a progress notification
 unprompted, so the client side has to ask periodically; `tokio::select!`
 between the response stream and the bookmark timer, not a second task.
-**Not yet landed**: label/field selector filtering over the cached items.
+`cacher::selector` is a faithful port of upstream's label (`labels/selector.go`)
+and field (`fields/selector.go`) selector grammars — including `>`/`<`
+(numeric-only Gt/Lt), which the label grammar's own doc-comment BNF omits
+but the real lexer supports (confirmed against the lexer's token table, not
+the possibly-stale comment). Caught and fixed a real parsing bug before it
+shipped: a naive fixed-keyword-priority scan (check `" in "` before `"="`)
+mis-parses `key=value in here` as a set-based `in` requirement, because
+`" in "` occurs inside the *value* after the real `=`; a leftmost-match
+scan (longest operator wins ties at the same position) fixes it, with a
+regression test locking in exactly that case. Deliberately decoupled from
+`WatchCache`'s raw bytes — takes a label map or a field-lookup closure —
+so it doesn't have to wait on Group F's object-decoding decisions.
+**Not yet landed**: wiring the selector matchers into an actual LIST call
+over cached items, which needs Group F's object model to know what a
+cached entry's labels/fields even are.
 
 **E. Generic server + handler chain + REST endpoints** — **in progress**.
 `server::path` is the REST path grammar — a faithful, line-by-line port of
