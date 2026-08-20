@@ -19,6 +19,7 @@
 //!   inside a term are preserved as literal data, not treated as
 //!   separators (upstream's `splitTerms`).
 
+use serde_json::Value;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +247,69 @@ fn parse_field_term(term: &str) -> Result<FieldRequirement, ParseError> {
     Err(ParseError::Malformed(term.to_string()))
 }
 
+// --- Wiring onto a decoded object (closes the "an actual LIST call over
+// cached items" gap `docs/APISERVER.md` names for this module) ---
+//
+// `matches_labels`/`matches_fields` above are already decoupled from any
+// particular object representation — deliberately, so this half didn't
+// have to wait on Group F's decode path to exist. Group F's `codec`
+// module now produces `serde_json::Value` for a decoded object, so this
+// is the concrete adapter: extract a label map and answer field lookups
+// from that shape specifically.
+//
+// The two halves are *not* symmetric, and that's a real, named
+// asymmetry, not an oversight: every Kind's labels live at exactly
+// `metadata.labels` (`ObjectMeta` is shared structurally by every type),
+// so `object_labels` is genuinely generic. Field selectors are not — real
+// upstream restricts which fields are even selectable per Kind via a
+// hand-written `SelectableFields` function per type
+// (`pkg/registry/*/*/strategy.go`, e.g. Pod adds `spec.nodeName`/
+// `status.phase`/... on top of the universal `metadata.name`/
+// `metadata.namespace`), and no such per-type allowlist is vendored or
+// built here yet. `field_value` below is a generic dotted-JSON-path
+// fallback (`"metadata.namespace"` -> pointer `/metadata/namespace`) —
+// it will resolve *any* path that exists on the object, a strict
+// superset of what real upstream allows for a given Kind, not a faithful
+// per-type restriction. Good enough to make selector filtering actually
+// work against real objects today; the per-type allowlist is separate,
+// named, not-yet-started work, same shape as Group F's still-missing
+// conversion.
+
+/// Every Kind's labels live at `metadata.labels` — the one part of "get a
+/// label map out of a decoded object" that's the same for every type.
+/// Missing `metadata.labels`, a non-object value there, or a non-string
+/// label value all degrade to "that label absent" rather than panicking.
+pub fn object_labels(item: &Value) -> BTreeMap<String, String> {
+    item.pointer("/metadata/labels")
+        .and_then(Value::as_object)
+        .map(|labels| labels.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+        .unwrap_or_default()
+}
+
+/// Reads a dot-separated field path (`"metadata.namespace"`,
+/// `"spec.nodeName"`) off a decoded object as a string, via the
+/// equivalent JSON pointer. `None` if the path doesn't exist or isn't a
+/// scalar — a field selector can never match against an object/array
+/// value, matching upstream's own field-selector grammar (string
+/// equality only).
+pub fn field_value(item: &Value, field: &str) -> Option<String> {
+    let pointer = format!("/{}", field.replace('.', "/"));
+    match item.pointer(&pointer) {
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::Bool(b)) => Some(b.to_string()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// The real predicate a LIST call filters decoded cache items with: both
+/// an empty label selector and an empty field selector mean "no
+/// constraint from that half," matching upstream's own `Everything()`
+/// selector semantics.
+pub fn object_matches(item: &Value, label_reqs: &[Requirement], field_reqs: &[FieldRequirement]) -> bool {
+    matches_labels(label_reqs, &object_labels(item)) && matches_fields(field_reqs, |f| field_value(item, f))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,5 +458,65 @@ mod tests {
         // leading backslash is kept, not stripped, in the returned term.
         let terms = split_field_terms(r"a=b\,c,d=e");
         assert_eq!(terms, vec![r"a=b\,c", "d=e"]);
+    }
+
+    fn pod(name: &str, ns: &str, node: &str, labels: serde_json::Value) -> Value {
+        serde_json::json!({
+            "metadata": {"name": name, "namespace": ns, "labels": labels},
+            "spec": {"nodeName": node},
+        })
+    }
+
+    #[test]
+    fn object_labels_reads_metadata_labels() {
+        let item = pod("web-1", "default", "node-a", serde_json::json!({"app": "web", "tier": "frontend"}));
+        assert_eq!(object_labels(&item), labels(&[("app", "web"), ("tier", "frontend")]));
+    }
+
+    #[test]
+    fn object_labels_defaults_to_empty_when_absent_or_malformed() {
+        assert_eq!(object_labels(&serde_json::json!({"metadata": {}})), BTreeMap::new());
+        assert_eq!(object_labels(&serde_json::json!({})), BTreeMap::new());
+        // A non-object "labels" value (malformed data) degrades to empty
+        // rather than panicking.
+        assert_eq!(object_labels(&serde_json::json!({"metadata": {"labels": "not-an-object"}})), BTreeMap::new());
+    }
+
+    #[test]
+    fn field_value_reads_a_dotted_path_via_json_pointer() {
+        let item = pod("web-1", "default", "node-a", serde_json::json!({}));
+        assert_eq!(field_value(&item, "metadata.name"), Some("web-1".to_string()));
+        assert_eq!(field_value(&item, "metadata.namespace"), Some("default".to_string()));
+        assert_eq!(field_value(&item, "spec.nodeName"), Some("node-a".to_string()));
+        assert_eq!(field_value(&item, "metadata.missing"), None);
+    }
+
+    #[test]
+    fn field_value_is_none_for_a_non_scalar() {
+        let item = pod("web-1", "default", "node-a", serde_json::json!({"app": "web"}));
+        // "metadata.labels" resolves to a JSON object, not a scalar — a
+        // field selector can never match against it.
+        assert_eq!(field_value(&item, "metadata.labels"), None);
+    }
+
+    #[test]
+    fn object_matches_ands_the_label_and_field_halves() {
+        let item = pod("web-1", "default", "node-a", serde_json::json!({"app": "web"}));
+
+        let label_reqs = parse_label_selector("app=web").unwrap();
+        let field_reqs = parse_field_selector("spec.nodeName=node-a").unwrap();
+        assert!(object_matches(&item, &label_reqs, &field_reqs));
+
+        let wrong_field = parse_field_selector("spec.nodeName=node-b").unwrap();
+        assert!(!object_matches(&item, &label_reqs, &wrong_field), "a field mismatch must fail the whole match");
+
+        let wrong_label = parse_label_selector("app=db").unwrap();
+        assert!(!object_matches(&item, &wrong_label, &field_reqs), "a label mismatch must fail the whole match");
+    }
+
+    #[test]
+    fn object_matches_with_no_selectors_at_all_matches_everything() {
+        let item = pod("web-1", "default", "node-a", serde_json::json!({}));
+        assert!(object_matches(&item, &[], &[]));
     }
 }
