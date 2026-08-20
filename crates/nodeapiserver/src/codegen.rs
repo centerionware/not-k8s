@@ -12,6 +12,10 @@ pub mod openapi_meta {
     include!(concat!(env!("OUT_DIR"), "/openapi_meta.rs"));
 }
 
+pub mod api_resources {
+    include!(concat!(env!("OUT_DIR"), "/api_resources.rs"));
+}
+
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -104,6 +108,20 @@ pub fn required_fields_index() -> &'static HashMap<&'static str, Vec<&'static st
 pub fn type_info_index() -> &'static HashMap<(&'static str, &'static str), &'static str> {
     static INDEX: OnceLock<HashMap<(&'static str, &'static str), &'static str>> = OnceLock::new();
     INDEX.get_or_init(|| openapi_meta::TYPE_INFO.iter().map(|t| ((t.schema, t.field), t.openapi_type)).collect())
+}
+
+/// `(group, version) -> Vec<&ApiResource>`, built once from
+/// `api_resources::API_RESOURCES`. `server::discovery`'s per-version
+/// `APIResourceList` builder is this index's intended reader.
+pub fn api_resources_by_group_version() -> &'static HashMap<(&'static str, &'static str), Vec<&'static api_resources::ApiResource>> {
+    static INDEX: OnceLock<HashMap<(&'static str, &'static str), Vec<&'static api_resources::ApiResource>>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut m: HashMap<(&'static str, &'static str), Vec<&'static api_resources::ApiResource>> = HashMap::new();
+        for r in api_resources::API_RESOURCES {
+            m.entry((r.group, r.version)).or_default().push(r);
+        }
+        m
+    })
 }
 
 /// Resolves a field's `proto_type` (as `proto_fields::ProtoField` stores
@@ -246,6 +264,41 @@ mod tests {
         assert_eq!(idx.get(&("io.k8s.api.core.v1.PodSpec", "containers")), Some(&"array"));
         assert_eq!(idx.get(&("io.k8s.api.core.v1.PodSpec", "hostNetwork")), Some(&"boolean"));
         assert_eq!(idx.get(&("io.k8s.api.core.v1.PodSpec", "securityContext")), None);
+    }
+
+    /// Real, verified per-version discovery facts: `pods` is namespaced
+    /// with a full CRUD+watch verb set (merged across the namespaced list
+    /// path, the `/api/v1/pods` list-all-namespaces path, and the
+    /// single-item path); `nodes` is genuinely cluster-scoped; `namespaces`
+    /// resolves to the `Namespace` object itself (the `{namespace}` vs
+    /// `{name}` disambiguation this parser exists for) rather than being
+    /// mistaken for some namespaced resource named "namespaces".
+    #[test]
+    fn api_resources_reflects_real_verbs_and_namespaced_ness() {
+        let core_v1 = api_resources_by_group_version().get(&("", "v1")).expect("core/v1 should have discovered resources");
+        let pods = core_v1.iter().find(|r| r.resource == "pods").expect("pods should be discovered");
+        assert!(pods.namespaced);
+        assert_eq!(pods.kind, "Pod");
+        for verb in ["get", "list", "create", "update", "patch", "delete", "deletecollection", "watch"] {
+            assert!(pods.verbs.contains(&verb), "pods should support verb {verb:?}, got {:?}", pods.verbs);
+        }
+
+        let nodes = core_v1.iter().find(|r| r.resource == "nodes").expect("nodes should be discovered");
+        assert!(!nodes.namespaced, "Node is cluster-scoped");
+
+        let namespaces = core_v1.iter().find(|r| r.resource == "namespaces").expect("namespaces should be discovered");
+        assert_eq!(namespaces.kind, "Namespace");
+        assert!(!namespaces.namespaced, "Namespace itself is cluster-scoped, not namespaced");
+    }
+
+    /// A subresource path (`pods/{name}/status`) must not produce its own
+    /// bogus top-level resource entry (e.g. a "status" resource) — it's a
+    /// named, deliberate skip (see `build/discovery_parse.rs`'s own doc),
+    /// not something this parser should silently misinterpret.
+    #[test]
+    fn a_subresource_path_never_produces_a_spurious_top_level_resource() {
+        let core_v1 = api_resources_by_group_version().get(&("", "v1")).expect("core/v1 should have discovered resources");
+        assert!(core_v1.iter().all(|r| r.resource != "status"));
     }
 
     /// Real cases from `DaemonSetSpec`, verified against the vendored
