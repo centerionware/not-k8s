@@ -20,14 +20,21 @@
 //! `hugepages-*` family, and extended resources — all real, all just not
 //! this crate's first cut.
 //!
-//! **No scope matching** — real upstream's own `ResourceQuota.spec.scopes`/
-//! `scopeSelector` (`Terminating`/`NotTerminating`/`BestEffort`/
-//! `NotBestEffort`/`PriorityClass`/`CrossNamespacePodAffinity`) let an
-//! operator target a quota at a subset of pods; every `ResourceQuota` in
-//! the namespace is treated as unscoped (applies to every pod) here — a
-//! real, named under-enforcement (a scope-restricted quota gets applied
-//! more broadly than intended, never less, so this errs toward stricter
-//! than requested, not laxer).
+//! **Partial scope matching** — real upstream's own
+//! `ResourceQuota.spec.scopes` lets an operator target a quota at a
+//! subset of pods; a pod must match *every* listed scope for the quota
+//! to apply (real upstream's own all-must-match semantics). Four of the
+//! six real scope names are evaluated: `Terminating`/`NotTerminating`
+//! (real upstream's own `IsTerminating`: `spec.activeDeadlineSeconds` is
+//! set and non-negative) and `BestEffort`/`NotBestEffort` (real
+//! upstream's own `ComputePodQOS` — see [`compute_pod_qos`]'s own doc
+//! comment for exactly what's ported). **Not evaluated, named
+//! honestly**: `PriorityClass` (a label-selector match against the pod's
+//! `priorityClassName`) and `CrossNamespacePodAffinity` — a quota using
+//! either is silently treated as if that one scope always matched (not
+//! as "the whole quota never applies"), the same "err toward stricter
+//! than requested, never laxer" posture the rest of this module already
+//! takes for what it doesn't model.
 //!
 //! **No persisted `status.used` counter, named honestly**: real
 //! upstream's own controller maintains a running `status.used` total on
@@ -82,6 +89,99 @@ pub fn applies_to(operation: crate::admission::attributes::Operation, group: &st
 fn counts_toward_quota(pod: &Value) -> bool {
     let phase = pod.get("status").and_then(|s| s.get("phase")).and_then(Value::as_str).unwrap_or("");
     phase != "Failed" && phase != "Succeeded"
+}
+
+/// Real upstream's own `IsTerminating`: `spec.activeDeadlineSeconds` is
+/// set and non-negative.
+fn is_terminating(pod: &Value) -> bool {
+    pod.get("spec").and_then(|s| s.get("activeDeadlineSeconds")).and_then(Value::as_i64).is_some_and(|s| s >= 0)
+}
+
+fn positive_quantity(container: &Value, field: &str, name: &str) -> Option<Quantity> {
+    let raw = container.get("resources")?.get(field)?.get(name)?.as_str()?;
+    let q = Quantity::parse(raw).ok()?;
+    (q > Quantity::ZERO).then_some(q)
+}
+
+/// Real upstream's own `ComputePodQOS` (`pkg/apis/core/v1/helper/qos/qos.go`),
+/// restricted to the two real QoS-relevant resources upstream itself
+/// restricts to (`cpu`/`memory` — `isSupportedQoSComputeResource`), and
+/// without the `PodLevelResources` feature-gate branch (alpha, no
+/// feature-gate machinery in this crate — the per-container branch,
+/// upstream's own default, is always used). Deliberately **not** the
+/// same aggregation as [`pod_requests`]/[`pod_limits`] — QoS classification
+/// is a simpler per-container "does every container set both cpu and
+/// memory limits, matching its own requests" check, not the pod-wide
+/// sidecar-aware total those two compute.
+fn compute_pod_qos(pod: &Value) -> &'static str {
+    let mut requests: BTreeMap<&str, Quantity> = BTreeMap::new();
+    let mut limits: BTreeMap<&str, Quantity> = BTreeMap::new();
+    let mut is_guaranteed = true;
+
+    let containers = pod.get("spec").and_then(|s| s.get("containers")).and_then(Value::as_array).into_iter().flatten();
+    let init_containers = pod.get("spec").and_then(|s| s.get("initContainers")).and_then(Value::as_array).into_iter().flatten();
+    for container in containers.chain(init_containers) {
+        for name in ["cpu", "memory"] {
+            if let Some(q) = positive_quantity(container, "requests", name) {
+                requests.entry(name).and_modify(|e| *e = *e + q).or_insert(q);
+            }
+        }
+        let mut limits_found = 0;
+        for name in ["cpu", "memory"] {
+            if let Some(q) = positive_quantity(container, "limits", name) {
+                limits_found += 1;
+                limits.entry(name).and_modify(|e| *e = *e + q).or_insert(q);
+            }
+        }
+        if limits_found != 2 {
+            is_guaranteed = false;
+        }
+    }
+
+    if requests.is_empty() && limits.is_empty() {
+        return "BestEffort";
+    }
+    if is_guaranteed {
+        for (name, req) in &requests {
+            match limits.get(name) {
+                Some(lim) if *lim == *req => {}
+                _ => {
+                    is_guaranteed = false;
+                    break;
+                }
+            }
+        }
+    }
+    if is_guaranteed && requests.len() == limits.len() {
+        "Guaranteed"
+    } else {
+        "Burstable"
+    }
+}
+
+/// Whether `pod` matches one real `ResourceQuota.spec.scopes` entry —
+/// `true` for the two scope pairs this port evaluates
+/// (`Terminating`/`NotTerminating`, `BestEffort`/`NotBestEffort`), and
+/// `true` (auto-match, never narrows) for any other real scope name this
+/// port doesn't evaluate (`PriorityClass`/`CrossNamespacePodAffinity`) —
+/// see this module's own doc comment for why that's the deliberate,
+/// consistent "err toward stricter enforcement, not laxer" choice.
+fn scope_matches(scope: &str, pod: &Value) -> bool {
+    match scope {
+        "Terminating" => is_terminating(pod),
+        "NotTerminating" => !is_terminating(pod),
+        "BestEffort" => compute_pod_qos(pod) == "BestEffort",
+        "NotBestEffort" => compute_pod_qos(pod) != "BestEffort",
+        _ => true,
+    }
+}
+
+/// A `ResourceQuota` applies to `pod` only if `pod` matches *every*
+/// scope the quota's own `spec.scopes` lists (real upstream's own
+/// all-must-match semantics) — an absent/empty `spec.scopes` matches
+/// every pod, same as before scope matching existed.
+fn quota_matches_pod_scopes(resource_quota: &Value, pod: &Value) -> bool {
+    resource_quota.get("spec").and_then(|s| s.get("scopes")).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).all(|scope| scope_matches(scope, pod))
 }
 
 /// Real upstream's own `podComputeUsageHelper`, restricted to the
@@ -190,7 +290,12 @@ fn check_quota(resource_quota: &Value, existing_usage: &BTreeMap<String, Quantit
 /// output, before this new one is written) — terminal ones
 /// ([`counts_toward_quota`]) are excluded from the summed usage, same as
 /// real upstream. `resource_quotas` is every `ResourceQuota` in the
-/// namespace; only ones [`quota_applies`] to are actually checked.
+/// namespace; a quota is only checked if it [`quota_applies`] (tracks a
+/// resource this port covers) *and* [`quota_matches_pod_scopes`] against
+/// this specific pod (real upstream's own per-quota scope matching — a
+/// quota scoped to `BestEffort` only sums *other* `BestEffort` pods'
+/// usage too, not every pod in the namespace, which is why the existing-
+/// usage sum is computed per-quota here rather than once globally).
 /// Returns the first quota's own denial message, real upstream's own
 /// "the first `ResourceQuota` that would be exceeded wins" posture (its
 /// own loop returns on the first failure, doesn't aggregate every
@@ -199,16 +304,15 @@ fn check_quota(resource_quota: &Value, existing_usage: &BTreeMap<String, Quantit
 pub fn check_pod_create(pod: &Value, existing_pods: &[Value], resource_quotas: &[Value]) -> Option<String> {
     let this_pod_usage = pod_usage(pod);
 
-    let mut existing_usage = BTreeMap::new();
-    for existing in existing_pods {
-        if counts_toward_quota(existing) {
-            existing_usage = add_maps(&existing_usage, &pod_usage(existing));
-        }
-    }
-
     for resource_quota in resource_quotas {
-        if !quota_applies(resource_quota) {
+        if !quota_applies(resource_quota) || !quota_matches_pod_scopes(resource_quota, pod) {
             continue;
+        }
+        let mut existing_usage = BTreeMap::new();
+        for existing in existing_pods {
+            if counts_toward_quota(existing) && quota_matches_pod_scopes(resource_quota, existing) {
+                existing_usage = add_maps(&existing_usage, &pod_usage(existing));
+            }
         }
         if let Some(message) = check_quota(resource_quota, &existing_usage, &this_pod_usage) {
             return Some(message);
@@ -315,5 +419,105 @@ mod tests {
         let q2 = quota("q2", json!({"requests.cpu": "1"}));
         let denial = check_pod_create(&pod, &[], &[q1, q2]).unwrap();
         assert!(denial.contains("q1"), "the first quota in the list should be the one reported");
+    }
+
+    #[test]
+    fn compute_pod_qos_is_besteffort_with_no_requests_or_limits() {
+        let pod = json!({"spec": {"containers": [{"name": "c1"}]}});
+        assert_eq!(compute_pod_qos(&pod), "BestEffort");
+    }
+
+    #[test]
+    fn compute_pod_qos_is_guaranteed_when_every_container_matches_requests_to_limits() {
+        let pod = json!({"spec": {"containers": [{"name": "c1", "resources": {
+            "requests": {"cpu": "100m", "memory": "128Mi"},
+            "limits": {"cpu": "100m", "memory": "128Mi"},
+        }}]}});
+        assert_eq!(compute_pod_qos(&pod), "Guaranteed");
+    }
+
+    #[test]
+    fn compute_pod_qos_is_burstable_when_requests_and_limits_differ() {
+        let pod = json!({"spec": {"containers": [{"name": "c1", "resources": {
+            "requests": {"cpu": "100m", "memory": "128Mi"},
+            "limits": {"cpu": "200m", "memory": "256Mi"},
+        }}]}});
+        assert_eq!(compute_pod_qos(&pod), "Burstable");
+    }
+
+    #[test]
+    fn compute_pod_qos_is_burstable_when_only_some_containers_set_limits() {
+        let pod = json!({"spec": {"containers": [
+            {"name": "c1", "resources": {"requests": {"cpu": "100m"}, "limits": {"cpu": "100m", "memory": "128Mi"}}},
+            {"name": "c2", "resources": {"requests": {"cpu": "100m"}}},
+        ]}});
+        assert_eq!(compute_pod_qos(&pod), "Burstable");
+    }
+
+    #[test]
+    fn is_terminating_reflects_active_deadline_seconds() {
+        assert!(is_terminating(&json!({"spec": {"activeDeadlineSeconds": 30}})));
+        assert!(is_terminating(&json!({"spec": {"activeDeadlineSeconds": 0}})));
+        assert!(!is_terminating(&json!({"spec": {}})));
+    }
+
+    #[test]
+    fn a_besteffort_scoped_quota_does_not_apply_to_a_non_besteffort_pod() {
+        // A pod with requests set is Burstable, not BestEffort -- the
+        // scope doesn't match, so the quota shouldn't even be consulted,
+        // regardless of what its hard limit says.
+        let burstable_pod = pod_with_cpu_request("new", "999");
+        let q = json!({"metadata": {"name": "besteffort-quota"}, "spec": {"scopes": ["BestEffort"], "hard": {"requests.cpu": "1"}}});
+        assert!(check_pod_create(&burstable_pod, &[], &[q]).is_none());
+    }
+
+    #[test]
+    fn a_besteffort_scoped_quota_excludes_a_guaranteed_existing_pod_from_its_usage() {
+        let besteffort_pod = json!({"metadata": {"name": "new"}, "spec": {"containers": [{"name": "c1"}]}});
+        // Guaranteed: requests match limits exactly -- not BestEffort, so
+        // this existing pod must not count toward a BestEffort-scoped
+        // quota's usage even though it's a real pod in the namespace.
+        let guaranteed_existing = json!({"metadata": {"name": "existing"}, "spec": {"containers": [{"name": "c1", "resources": {
+            "requests": {"cpu": "1", "memory": "1Gi"},
+            "limits": {"cpu": "1", "memory": "1Gi"},
+        }}]}});
+        let q = json!({"metadata": {"name": "besteffort-quota"}, "spec": {"scopes": ["BestEffort"], "hard": {"pods": "1"}}});
+        // Only the new BestEffort pod counts (1 <= hard 1) -- the
+        // Guaranteed existing pod is correctly excluded.
+        assert!(check_pod_create(&besteffort_pod, &[guaranteed_existing.clone()], &[q.clone()]).is_none());
+
+        // Add a second BestEffort existing pod -- now 2 BestEffort pods
+        // total > hard 1, correctly denied.
+        let besteffort_existing = json!({"metadata": {"name": "existing2"}, "spec": {"containers": [{"name": "c1"}]}});
+        assert!(check_pod_create(&besteffort_pod, &[guaranteed_existing, besteffort_existing], &[q]).is_some());
+    }
+
+    #[test]
+    fn a_terminating_scoped_quota_does_not_apply_to_a_non_terminating_pod() {
+        let pod = pod_with_cpu_request("new", "999");
+        let q = quota("terminating-quota", json!({"requests.cpu": "1"}));
+        let mut scoped = q.clone();
+        scoped["spec"]["scopes"] = json!(["Terminating"]);
+        // The new pod has no activeDeadlineSeconds, so it is NotTerminating
+        // -- the Terminating-scoped quota must not apply to it at all,
+        // even though 999 cores would otherwise exceed it.
+        assert!(check_pod_create(&pod, &[], &[scoped]).is_none());
+    }
+
+    #[test]
+    fn a_terminating_scoped_quota_applies_to_a_terminating_pod() {
+        let mut pod = pod_with_cpu_request("new", "999");
+        pod["spec"]["activeDeadlineSeconds"] = json!(30);
+        let mut q = quota("terminating-quota", json!({"requests.cpu": "1"}));
+        q["spec"]["scopes"] = json!(["Terminating"]);
+        assert!(check_pod_create(&pod, &[], &[q]).is_some());
+    }
+
+    #[test]
+    fn an_unrecognized_scope_name_does_not_narrow_the_quota() {
+        let pod = pod_with_cpu_request("new", "999");
+        let mut q = quota("priority-quota", json!({"requests.cpu": "1"}));
+        q["spec"]["scopes"] = json!(["PriorityClass"]);
+        assert!(check_pod_create(&pod, &[], &[q]).is_some(), "an unmodeled scope must not exempt the pod from an otherwise-applicable quota");
     }
 }
