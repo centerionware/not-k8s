@@ -21,15 +21,21 @@
 //! (`rest::get`/`rest::list`'s own `Option<&SharedCache>` parameter);
 //! every other resource still reads straight from nodestore (see
 //! `cacher::registry`'s own doc comment for why enumerating *every*
-//! resource at boot still isn't done). **Every other verb is still a
-//! bring-up stub** — a `watch`/`patch`/`deletecollection` against
-//! `/api(s)/.../<resource>` still just echoes the parsed
-//! [`crate::server::path::RequestInfo`] as JSON, not the real REST
-//! dispatch. Client certificate authentication is real
-//! (`super::tls`'s optional `client_ca`, `authn::x509::identity_from_der`
-//! on the verified peer cert), surfaced in the echo response's own `user`
-//! field for observability. Authorization is real too, but **opt-in and
-//! off by default** (`config::Config::enforce_rbac`/`NODEAPISERVER_ENFORCE_RBAC`
+//! resource at boot still isn't done). `WATCH` against a resource with a
+//! registered cache is real too now (`is_watch`'s own doc comment, and
+//! `watch_response_body`): the cache's own retained history replays
+//! first, then live events stream as they happen, real `Transfer-Encoding`
+//! framing handled by hyper's own h1/h2 connection layer. A resource with
+//! no registered cache still falls through to the echo stub, same as a
+//! resource `GET`/`LIST` can't yet serve from a cache. **`patch`/
+//! `deletecollection` are still bring-up stubs** — a request against
+//! either still just echoes the parsed
+//! [`crate::server::path::RequestInfo`] as JSON, not the real dispatch.
+//! Client certificate authentication is real (`super::tls`'s optional
+//! `client_ca`, `authn::x509::identity_from_der` on the verified peer
+//! cert), surfaced in the echo response's own `user` field for
+//! observability. Authorization is real too, but **opt-in and off by
+//! default** (`config::Config::enforce_rbac`/`NODEAPISERVER_ENFORCE_RBAC`
 //! — see that field's own doc comment for why: enabling RBAC enforcement
 //! before Group O's bootstrap `ClusterRole`/`ClusterRoleBinding` set
 //! exists can lock every request out with no path back in). When
@@ -37,12 +43,16 @@
 //! (`authz::resolve::rules_for` — the real anonymous identity,
 //! `system:anonymous`/`system:unauthenticated`, when no x509 identity was
 //! established) and deny with a real `403` unless `authz::rbac::rules_allow`
-//! says yes. When disabled (the default), every request is still served
-//! the same way regardless of identity, same as before this existed. The
-//! real handler chain (authentication -> authorization ->
+//! says yes; `WATCH` is **not yet gated** by this (`is_watch`'s own doc
+//! comment names it as a real, separate gap). Group J admission (five
+//! unconditional plugins as of this revision, `admission`'s own doc
+//! comment has the running list) also runs, on the real write verbs only
+//! — real upstream's own admission posture too, admission never gates a
+//! read. The real handler chain (authentication -> authorization ->
 //! priority-and-fairness -> admission -> REST, `docs/APISERVER.md`'s own
-//! hard requirement) replaces all of this once admission (Group J) exists
-//! too.
+//! hard requirement) is still not fully unified into one ordered
+//! pipeline — each piece above is wired in ad hoc, in the right relative
+//! order for what exists today, not through one shared dispatcher yet.
 //!
 //! What *is* real now: `/healthz`, and every non-resource discovery route
 //! (`/api`, `/api/{version}`, `/apis`, `/apis/{group}`,
@@ -103,6 +113,120 @@ async fn read_body_bytes(req: Request<Incoming>) -> Result<Vec<u8>, hyper::Error
 fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<BoxedBody> {
     let bytes = serde_json::to_vec(value).unwrap_or_else(|_| b"{}".to_vec());
     Response::builder().status(status).header("Content-Type", "application/json").body(body_from_bytes(bytes)).unwrap()
+}
+
+/// Real upstream's own `resourceVersion` query parameter for a `watch`
+/// request — `path::RequestInfo` doesn't carry this (it's not part of
+/// the URL *path* grammar `path::parse` ports, only the query string), so
+/// this is read directly off the raw query the same ad hoc way
+/// `content-type` is read off headers elsewhere in this function. `0` (the
+/// same "unset"/"start from now" value `cacher::store::WatchCache::watch_from`
+/// already treats `<= 0` as) for a missing or unparsable value.
+fn resource_version_query(query: &str) -> i64 {
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("resourceVersion="))
+        .and_then(|v| urlencoding_decode(v).parse::<i64>().ok())
+        .unwrap_or(0)
+}
+
+/// The minimal `%XX`/`+` decoding a bare integer query value could ever
+/// actually need — `resourceVersion` is always digits, so this only
+/// exists to be defensive against a client that percent-encodes it
+/// anyway (real browsers/`curl --data-urlencode` do this unconditionally
+/// for some tooling); not a general URL-decoder.
+fn urlencoding_decode(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('%') && !s.contains('+') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '+' => out.push(' '),
+            '%' => {
+                let hi = chars.next();
+                let lo = chars.next();
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    if let Ok(byte) = u8::from_str_radix(&format!("{hi}{lo}"), 16) {
+                        out.push(byte as char);
+                        continue;
+                    }
+                }
+                out.push('%');
+            }
+            other => out.push(other),
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Real upstream's own minimal `Status` shape for the `410 Gone` a watch
+/// whose `resourceVersion` has fallen out of the cache's retained history
+/// window gets — `reason: "Gone"`, `code: 410`, matching real
+/// kube-apiserver's own `errors.NewResourceExpired` (the signal every
+/// real `client-go` informer relists on).
+fn resource_expired_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: the requested resource version is too old — relist required"),
+        "reason": "Gone",
+        "details": {},
+        "code": 410,
+    })
+}
+
+/// Encodes one `WatchEvent` as a single newline-terminated JSON document —
+/// the same framing real `client-go`'s own `StreamWatcher`/
+/// `restclientwatch.NewDecoder` reads a JSON watch response with
+/// (`io.Reader`-based JSON decoders read one value at a time regardless of
+/// a trailing newline, but emitting one keeps every line independently
+/// parseable by simpler line-oriented tooling like `curl | jq -c`, and
+/// matches what a real kube-apiserver response looks like on the wire).
+/// `None` when [`crate::server::watch_event::to_watch_event_json`] itself
+/// returns `None` (the one honest, narrow case: a `Deleted` event for a
+/// key this cache never held a value for — see that module's own doc
+/// comment) — the event is silently skipped from the stream rather than
+/// breaking it, since there is nothing real to report for it.
+fn encode_watch_event(event: &crate::cacher::store::WatchEvent, kind: &str, api_version: &str) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
+    match crate::server::watch_event::to_watch_event_json(event, kind, api_version) {
+        None => None,
+        Some(Ok(json)) => {
+            let mut bytes = serde_json::to_vec(&json).unwrap_or_default();
+            bytes.push(b'\n');
+            Some(Ok(hyper::body::Frame::data(hyper::body::Bytes::from(bytes))))
+        }
+        Some(Err(e)) => Some(Err(Box::new(e) as BoxError)),
+    }
+}
+
+/// The real streaming `watch` response body: every already-retained
+/// history event past `start_revision` (`replay`), then every live event
+/// as it arrives on `rx`, each encoded by [`encode_watch_event`]. A
+/// `broadcast::Receiver::recv()` `Lagged` error (the watcher fell behind
+/// the channel's bounded capacity) ends the stream rather than skipping
+/// silently past the gap — real kube-apiserver's own posture for a
+/// watcher that falls too far behind: close the connection, the client's
+/// own `client-go` Reflector relists. `StreamBody`/`Frame` come from
+/// `http_body_util`/`hyper::body` — `BoxedBody` (a boxed `http_body::Body`
+/// trait object) is what lets this coexist with every other, non-streaming
+/// `Response<BoxedBody>` this listener already returns; hyper's own h1/h2
+/// connection handling picks chunked transfer-encoding (h1) or native
+/// framing (h2) automatically for a body with no known `Content-Length`,
+/// no explicit opt-in needed here.
+fn watch_response_body(replay: Vec<crate::cacher::store::WatchEvent>, rx: tokio::sync::broadcast::Receiver<crate::cacher::store::WatchEvent>, kind: String, api_version: String) -> BoxedBody {
+    use http_body_util::{BodyExt, StreamBody};
+    use tokio_stream::wrappers::BroadcastStream;
+    use tokio_stream::StreamExt;
+
+    let replay_stream = tokio_stream::iter(replay);
+    let live_stream = BroadcastStream::new(rx).map_while(|res| res.ok());
+    let events = replay_stream.chain(live_stream);
+    let frames = events.filter_map(move |event| encode_watch_event(&event, &kind, &api_version));
+    StreamBody::new(frames).boxed()
 }
 
 /// Runs the listener forever (until the process exits). Best-effort on
@@ -483,6 +607,15 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
     let is_create = info.is_resource_request && info.verb == "create" && info.name.is_empty() && info.subresource.is_empty();
     let is_delete = info.is_resource_request && info.verb == "delete" && !info.name.is_empty() && info.subresource.is_empty();
     let is_update = info.is_resource_request && info.verb == "update" && !info.name.is_empty() && info.subresource.is_empty();
+    // `watch` (no name — `path::parse` already tells a namefull `watch`
+    // apart, though real upstream's own single-resource watch form isn't
+    // handled specially here either way today) is deliberately handled in
+    // its own branch below, not folded into the five-verb block above:
+    // unlike those five, it needs no request body, no `storage`/`client`
+    // (it's served purely from an already-registered `cacher::CacheRegistry`
+    // cache — see that branch's own doc comment), and produces a
+    // streaming response rather than one JSON document.
+    let is_watch = info.is_resource_request && info.verb == "watch" && info.subresource.is_empty();
     let has_body = is_create || is_update;
     if is_get || is_list || is_create || is_delete || is_update {
         // Captured before `req` is potentially consumed below (`has_body`
@@ -835,6 +968,56 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
         // "not found" vs. "unreachable" for yet.
     }
 
+    // Group D/E: real `WATCH`, served purely from an already-registered
+    // `cacher::CacheRegistry` cache — see `BOOT_CACHED_RESOURCES` for
+    // which resources that is today. No `storage`/`client` needed here at
+    // all (unlike GET/LIST/CREATE/DELETE/UPDATE above): a live cache
+    // already holds everything this handler needs (a snapshot to replay
+    // from, a live event subscription), and if a resource has no
+    // registered cache, this falls through to the RequestInfo echo below
+    // exactly like the "no nodestore connection" case above, rather than
+    // claiming a real watch this build can't actually serve.
+    //
+    // **Not yet gated by RBAC/admission** — both currently only run
+    // inside the five-verb block above, which `watch` deliberately isn't
+    // part of (see `is_watch`'s own doc comment for why); wiring
+    // `authz`'s checks in here too is real, separate, not-yet-done work,
+    // named honestly rather than silently skipped without comment.
+    if is_watch {
+        if let Some(cache) = cache_registry.get(&info.api_group, &info.api_version, &info.resource) {
+            let start_revision = resource_version_query(&query);
+            match cache.watch_from(start_revision) {
+                Ok((replay, rx)) => {
+                    let Some(kind) = rest::resolve_kind(&info.api_group, &info.api_version, &info.resource) else {
+                        // A cache exists but the discovery table doesn't
+                        // know this (group, version, resource) — shouldn't
+                        // happen in practice (nothing registers a cache
+                        // for an unknown resource), but a real 404 is the
+                        // honest answer if it ever did, not a panic.
+                        return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                    };
+                    let group_version = if info.api_group.is_empty() { info.api_version.clone() } else { format!("{}/{}", info.api_group, info.api_version) };
+                    let body = watch_response_body(replay, rx, kind.to_string(), group_version);
+                    // No explicit `Transfer-Encoding` header: hyper's own
+                    // h1/h2 connection handling already frames a body with
+                    // no known length correctly for whichever protocol
+                    // this connection negotiated (chunked for h1, native
+                    // DATA-frame streaming for h2, where the
+                    // `Transfer-Encoding` header is actually forbidden by
+                    // the HTTP/2 spec) — setting it here ourselves would
+                    // be wrong for an h2 connection.
+                    return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "application/json").body(body).unwrap());
+                }
+                Err(crate::cacher::store::Error::TooOld { .. }) => {
+                    return Ok(json_response(StatusCode::GONE, &resource_expired_status(&path_str)));
+                }
+            }
+        }
+        // No cache registered for this resource — falls through to the
+        // echo stub below, same posture as every other not-yet-served
+        // case in this handler.
+    }
+
     // Surfaced for real observability (this is the only response shape
     // that ever includes it today), not consulted for any access-control
     // decision anywhere yet — there is no authorization (Group I) to
@@ -1017,5 +1200,90 @@ mod tests {
         let message = status["message"].as_str().unwrap();
         assert!(message.contains("spec.containers: Required value"));
         assert!(message.contains("spec.foo: expected type string, got number"));
+    }
+
+    #[test]
+    fn resource_expired_status_uses_the_real_gone_shape() {
+        let status = resource_expired_status("/api/v1/watch/pods");
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "Gone");
+        assert_eq!(status["code"], 410);
+    }
+
+    #[test]
+    fn resource_version_query_reads_the_real_param() {
+        assert_eq!(resource_version_query("resourceVersion=42"), 42);
+        assert_eq!(resource_version_query("watch=true&resourceVersion=7&timeoutSeconds=30"), 7);
+    }
+
+    #[test]
+    fn resource_version_query_defaults_to_zero_when_absent_or_unparsable() {
+        assert_eq!(resource_version_query(""), 0);
+        assert_eq!(resource_version_query("watch=true"), 0);
+        assert_eq!(resource_version_query("resourceVersion=not-a-number"), 0);
+    }
+
+    #[test]
+    fn resource_version_query_handles_a_percent_encoded_value() {
+        // Real clients never percent-encode a bare integer, but some
+        // generic HTTP tooling does anyway — defensive, not a case real
+        // kubectl/client-go traffic would ever hit.
+        assert_eq!(resource_version_query("resourceVersion=%34%32"), 42);
+    }
+
+    #[test]
+    fn encode_watch_event_produces_a_newline_terminated_json_line() {
+        let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 9 };
+        let frame = encode_watch_event(&event, "Pod", "v1").expect("Bookmark always converts").expect("Bookmark conversion never fails");
+        let bytes = frame.into_data().unwrap();
+        assert!(bytes.ends_with(b"\n"));
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
+        assert_eq!(parsed["type"], "BOOKMARK");
+        assert_eq!(parsed["object"]["kind"], "Pod");
+    }
+
+    #[test]
+    fn encode_watch_event_skips_a_deleted_event_with_no_retained_value() {
+        let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Deleted, key: b"k".to_vec(), value: Vec::new(), revision: 9 };
+        assert!(encode_watch_event(&event, "Pod", "v1").is_none());
+    }
+
+    #[tokio::test]
+    async fn watch_response_body_streams_the_replay_then_live_events() {
+        use http_body_util::BodyExt;
+
+        // An unrelated event at revision 2 first, purely so `watch_from`'s
+        // own "not older than the oldest retained history entry" check
+        // has something at or before the requested start_revision (same
+        // pre-existing `watch_from` quirk `cacher::store`'s own tests hit
+        // — untouched by, and unrelated to, what this test is proving).
+        // The event actually under test needs a real encoded envelope —
+        // `to_watch_event_json` decodes it for real, same as
+        // `server::watch_event`'s own tests do.
+        let schema = crate::codec::protobuf::schema_for_gvk("", "v1", "Namespace").unwrap();
+        let object_bytes = crate::codec::protobuf::encode_message(schema, &serde_json::json!({"metadata": {"name": "default"}})).unwrap();
+        let envelope = crate::codec::protobuf::wrap_unknown("v1", "Namespace", &object_bytes);
+
+        let cache = crate::cacher::store::WatchCache::new(vec![], 1, 16, 16);
+        let shared = crate::cacher::store::SharedCache::new(cache);
+        shared.apply(crate::cacher::store::EventKind::Added, b"seed".to_vec(), b"unrelated".to_vec(), 2);
+        shared.apply(crate::cacher::store::EventKind::Added, b"a".to_vec(), envelope, 3);
+        let (replay, rx) = shared.watch_from(2).unwrap();
+        assert_eq!(replay.len(), 1, "only the revision-3 event should be in the replay");
+        // Drop the cache (and its own broadcast::Sender) before consuming
+        // the stream to completion below — otherwise the live half of
+        // `watch_response_body` never ends (a real watch stream is
+        // meant to run forever; only exercised for the replay half here,
+        // the live half is real end-to-end behavior, not something a
+        // `.collect()`-to-completion unit test can observe without
+        // artificially closing the channel first).
+        drop(shared);
+
+        let body = watch_response_body(replay, rx, "Namespace".to_string(), "v1".to_string());
+        let collected = body.collect().await.unwrap().to_bytes();
+        let text = String::from_utf8(collected.to_vec()).unwrap();
+        assert_eq!(text.lines().count(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["type"], "ADDED");
     }
 }
