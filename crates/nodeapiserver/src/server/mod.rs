@@ -9,19 +9,23 @@
 //! `listener` — the real hyper + h2 + rustls listener. **Its request
 //! handler is a real dispatch for every non-resource discovery route**
 //! (`/api`, `/api/{version}`, `/apis`, `/apis/{group}`,
-//! `/apis/{group}/{version}`, plus `/healthz`) **and for `GET`/`LIST`**
-//! (`rest::get`/`rest::list`, against real nodestore data) — **every
-//! other resource verb** (`watch`/`create`/`update`/`patch`/`delete`)
-//! **is still a bring-up stub** that just echoes the parsed `RequestInfo`
-//! — see that module's own doc comment.
-//! `rest` — the first real, generic REST verbs: `GET`/`LIST`, resolving a
-//! resource's Kind from Group A's discovery table, reading straight from
-//! nodestore (bypassing the watch cache — named honestly as a real, valid
-//! read strategy, not a shortcut; see that module's own doc comment for
-//! exactly what's in and out of scope). `LIST` filters by label/field
-//! selector for real (`cacher::selector::object_matches`, Group D's own
-//! generic adapter, wired in unchanged). No authn/authz/admission yet —
-//! every request reaching it is currently treated as allowed.
+//! `/apis/{group}/{version}`, plus `/healthz`) **and for `GET`/`LIST`/
+//! `CREATE`** (`rest::get`/`rest::list`/`rest::create`, against real
+//! nodestore data) — **every other resource verb**
+//! (`watch`/`update`/`patch`/`delete`) **is still a bring-up stub** that
+//! just echoes the parsed `RequestInfo` — see that module's own doc
+//! comment.
+//! `rest` — the real, generic REST verbs so far: `GET`/`LIST`/`CREATE`,
+//! resolving a resource's Kind from Group A's discovery table, reading
+//! straight from nodestore (bypassing the watch cache — named honestly as
+//! a real, valid read strategy, not a shortcut; see that module's own doc
+//! comment for exactly what's in and out of scope). `LIST` filters by
+//! label/field selector for real (`cacher::selector::object_matches`,
+//! Group D's own generic adapter, wired in unchanged). `CREATE` runs
+//! Group F's `scheme::validation`/`defaulting`, sets real
+//! `creationTimestamp`/`uid`, and writes with a real create-only-if-absent
+//! `Txn`. No admission (Group J) exists yet — the only gate on any of
+//! this is `listener`'s own opt-in RBAC (Groups H/I).
 //! `version_compare` — `CompareKubeAwareVersionStrings`, a faithful port
 //! (GA beats beta beats alpha, then major, then minor — maturity compared
 //! *before* major version, a real bug this module's own tests caught in
@@ -45,10 +49,11 @@
 //! every group/version discovery document actually reachable over HTTP
 //! (including a real `404` for an unknown group/version rather than a
 //! silent fallthrough), `/openapi/v3`, `/version`, aggregated discovery
-//! v2 (negotiated), and real `GET`/`LIST`. **Not yet landed**: the rest
-//! of the verb set, the real handler chain (authn -> authz -> APF ->
-//! admission -> REST — a hard requirement on order, not a style choice,
-//! once it exists), `/openapi/v2`.
+//! v2 (negotiated), and real `GET`/`LIST`/`CREATE`, gated by opt-in RBAC
+//! (Groups H/I). **Not yet landed**: the rest of the verb set, admission
+//! (Group J), the real handler chain (authn -> authz -> APF -> admission
+//! -> REST — a hard requirement on order, not a style choice, once it
+//! exists), `/openapi/v2`.
 
 pub mod path;
 pub mod tls;
