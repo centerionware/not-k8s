@@ -136,7 +136,13 @@ jobs:
             # kube-proxy on the other side and a measure.sh that sums
             # multiple PIDs. Neither exists today; don't read these
             # numbers as covering service routing on either side.
-            install_args: --with-cri --proxy=none
+            # --datastore=none too: bootstrap-release.sh's release-path
+            # default is DATASTORE=nodestore, but this comparison wants
+            # both legs running the entire rest of the real k3s stack
+            # unmodified, including its own bundled kine datastore — same
+            # apples-to-apples reasoning as --proxy=none above, just for
+            # the datastore instead of the service proxy.
+            install_args: --with-cri --proxy=none --datastore=none
           - agent: kubelet
             agent_pattern: /usr/local/bin/kubelet
             # Round 124 (found live from a user's own review of the run):
@@ -146,7 +152,11 @@ jobs:
             # nodelet never built, installed, or started, so
             # upstream-kubelet.sh is the only node agent this runner ever
             # runs.
-            install_args: --with-cri --skip-nodelet
+            # --datastore=none for the same reason as the nodelet leg
+            # above: this comparison wants the entire rest of the real
+            # k3s stack unmodified on both legs, including its own
+            # bundled kine datastore, not nodestore.
+            install_args: --with-cri --skip-nodelet --datastore=none
     runs-on: ubuntu-latest
     # idle mode: 30s settle + up to a 600s (10m) sample_seconds window +
     # bootstrap overhead (~2-3m) comfortably fits inside 30m; widen this if
