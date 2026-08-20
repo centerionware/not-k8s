@@ -929,25 +929,36 @@ message format is ported exactly: `"exceeded quota: <name>, requested:
 restricted to only the resource(s) that actually exceeded; the first
 `ResourceQuota` found to be exceeded wins (matches upstream's own
 first-failure-wins loop, not an aggregate of every quota's own
-violations). **Substantially scoped, named honestly**: real upstream
-also tracks services/PVCs/secrets/configmaps/arbitrary `count/<resource>`
-object counts through a whole per-type `Evaluator` registry — only the
-pod evaluator is ported; `ephemeral-storage`/`hugepages-*`/extended
-resources aren't tracked; `ResourceQuota.spec.scopes`/`scopeSelector`
-aren't matched at all (every quota in the namespace is treated as
-unscoped — errs toward stricter than requested, never laxer); and there
-is **no persisted `status.used` counter** — usage is recomputed live
-from a fresh `Pod` list on every check rather than an incrementally
-maintained, optimistic-lock-protected running total, which means (unlike
-real upstream) two concurrent `CREATE`s that each individually fit under
-the quota can both be admitted, together exceeding it — a real, narrow,
+violations). `ResourceQuota.spec.scopes` is now matched too (real
+upstream's own all-scopes-must-match semantics — an existing pod is only
+summed into a quota's usage if it matches every scope the quota lists,
+computed per-quota, not once globally): `Terminating`/`NotTerminating`
+(real upstream's own `IsTerminating` — `activeDeadlineSeconds` set and
+non-negative) and `BestEffort`/`NotBestEffort` (a real port of upstream's
+own `ComputePodQOS` — per-container "does every container set both cpu
+and memory limits matching its own requests", not the pod-wide
+sidecar-aware total `pod_requests`/`pod_limits` compute for a different
+purpose). `PriorityClass`/`CrossNamespacePodAffinity` aren't evaluated —
+a quota using either scope is treated as if that one scope always
+matched, the same "err toward stricter than requested, never laxer"
+posture already established. **Substantially scoped, named honestly**:
+real upstream also tracks services/PVCs/secrets/configmaps/arbitrary
+`count/<resource>` object counts through a whole per-type `Evaluator`
+registry — only the pod evaluator is ported; `ephemeral-storage`/
+`hugepages-*`/extended resources aren't tracked; and there is **no
+persisted `status.used` counter** — usage is recomputed live from a
+fresh `Pod` list on every check rather than an incrementally maintained,
+optimistic-lock-protected running total, which means (unlike real
+upstream) two concurrent `CREATE`s that each individually fit under the
+quota can both be admitted, together exceeding it — a real, narrow,
 accepted concurrency gap, not silently glossed over. Placed last among
 this crate's admission blocks (after `LimitRanger`'s own defaulting), the
 same relative position real upstream's own default plugin order uses,
 so quota sees the final, fully-defaulted object.
 
 **Not yet landed**: every other built-in plugin, `ResourceQuota`'s own
-non-pod evaluators/scope matching/persisted usage counter (above), a
+non-pod evaluators/`PriorityClass`+`CrossNamespacePodAffinity` scope
+matching/persisted usage counter (above), a
 generic plugin-chain/registry abstraction (today `server::listener`
 hand-calls each plugin directly, not through
 any dispatch table), mutating/validating webhooks, and
