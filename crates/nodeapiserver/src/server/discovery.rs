@@ -30,11 +30,10 @@
 //!
 //! Aggregated discovery v2 (`apidiscovery.k8s.io/v2`'s
 //! `APIGroupDiscoveryList`) is `api_group_discovery_list()`/
-//! `api_v1_group_discovery_list()` — **pure builders only, not yet wired
-//! into `listener`'s routing**, since real kube-apiserver picks this form
-//! over the legacy shape purely through content negotiation this crate's
-//! `codec::negotiation` doesn't yet generalize beyond the literal
-//! `as=Table` case — see those functions' own doc comment.
+//! `api_v1_group_discovery_list()`, wired into `listener`'s `/api`/`/apis`
+//! routing via `codec::negotiation` — a client requesting
+//! `as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io` gets this shape
+//! instead of the legacy one.
 
 use crate::codegen;
 use serde_json::{json, Value};
@@ -150,17 +149,11 @@ pub fn api_resource_list(group: &str, version: &str) -> Option<Value> {
 /// — introduced 1.30, GA by 1.34): one request instead of the legacy
 /// `/apis` + one `/apis/{group}/{version}` per group-version, real shape
 /// confirmed directly against upstream's own
-/// `staging/src/k8s.io/api/apidiscovery/v2/types.go`. **Pure builder only
-/// — not yet reachable over HTTP**: real kube-apiserver picks this form
-/// over the legacy `APIGroupList`/`APIGroup` shape purely through content
-/// negotiation (`Accept: application/json;as=APIGroupDiscoveryList;
-/// v=v2;g=apidiscovery.k8s.io`), and `codec::negotiation`'s `as=` handling
-/// today only recognizes the literal value `Table` — generalizing that to
-/// a client-requested *kind* rather than a boolean is real, separate work
-/// this module intentionally doesn't reach into, named honestly rather
-/// than wiring this into `listener`'s routing unconditionally (which
-/// would incorrectly serve every `/apis` request this shape regardless of
-/// what the client actually asked for).
+/// `staging/src/k8s.io/api/apidiscovery/v2/types.go`. Reachable over HTTP
+/// via `listener::route_discovery`'s content negotiation: a client whose
+/// `Accept` header asks for `as=APIGroupDiscoveryList;v=v2;
+/// g=apidiscovery.k8s.io` gets this shape at `/api`/`/apis` instead of the
+/// legacy `APIVersions`/`APIGroupList`.
 ///
 /// `freshness` is always `"Current"`: this build has no aggregation layer
 /// (Group L) merging discovery from multiple backing apiservers yet, so

@@ -314,21 +314,23 @@ Go version.
 
 Aggregated discovery v2 (`apidiscovery.k8s.io/v2`'s `APIGroupDiscoveryList`
 — real shape confirmed against upstream's own
-`staging/src/k8s.io/api/apidiscovery/v2/types.go`) now has a real builder
-(`discovery::api_group_discovery_list`/`api_v1_group_discovery_list`),
-fully data-driven from the same Group A tables as the legacy shape —
-**pure builders only, not yet reachable over HTTP**: real kube-apiserver
-picks this form over the legacy `APIGroupList` purely through content
-negotiation (`Accept: ...;as=APIGroupDiscoveryList;v=v2;
-g=apidiscovery.k8s.io`), and `codec::negotiation`'s `as=` handling today
-only recognizes the literal value `Table` as a boolean — generalizing
-that into a client-requested *kind* is real, separate work, named
-honestly rather than serving this form unconditionally regardless of
-what a client actually asked for.
+`staging/src/k8s.io/api/apidiscovery/v2/types.go`) is now real and
+reachable over HTTP: `discovery::api_group_discovery_list`/
+`api_v1_group_discovery_list` build it, fully data-driven from the same
+Group A tables as the legacy shape, and `codec::negotiation`'s `as=`
+handling was generalized from a `Table`-only boolean into a
+client-requested *kind* (`Accepted::as_kind`/`as_group`/`as_version`,
+with `wants_table()` as the old boolean's replacement) so
+`listener::route_discovery` can pick this form over the legacy
+`APIVersions`/`APIGroupList` at `/api`/`/apis` whenever a client's
+`Accept` header asks for `as=APIGroupDiscoveryList;v=v2;
+g=apidiscovery.k8s.io` — an exact `v2` match only, not `v2beta1` (the
+pre-GA shape this crate doesn't separately model), so a client asking for
+a shape this build doesn't actually build falls back to the legacy form
+rather than silently getting served a possibly-wrong one.
 
 **Not yet landed**: the handler chain itself for actual resource
-requests, wiring aggregated discovery v2 into content negotiation,
-`/openapi/v2`. Handler-chain order
+requests, `/openapi/v2`. Handler-chain order
 (authentication → authorization → priority-and-fairness → admission → REST)
 is a hard requirement, not a style choice. The throwaway e2e rig described
 above should land as part of this group, not after it.

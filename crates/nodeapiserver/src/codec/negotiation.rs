@@ -4,10 +4,15 @@
 //! is a real listener to drive it.
 //!
 //! Kubernetes' `Accept` header can carry more than a bare media type — the
-//! `as=Table;g=meta.k8s.io;v=v1` parameters (`kubectl get` uses these to
-//! ask for server-side printing) are part of the same header this module
-//! parses, so `negotiate()` returns them alongside the chosen format rather
-//! than making a second pass over the header later.
+//! `as=<Kind>;g=<group>;v=<version>` parameters (`kubectl get`'s own
+//! `as=Table;g=meta.k8s.io;v=v1` for server-side printing is the most
+//! common case, but real clients also send other `as=` kinds — aggregated
+//! discovery's `as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io`, for
+//! one) are part of the same header this module parses, captured
+//! generically (`Accepted::as_kind`/`as_group`/`as_version`) rather than
+//! special-cased to Table alone, so `negotiate()` returns them alongside
+//! the chosen format rather than making a second pass over the header
+//! later.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -40,11 +45,28 @@ impl Format {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Accepted {
     pub format: Format,
-    /// `as=Table` — server-side printing (`kubectl get`'s default). `g`/`v`
-    /// name which `meta.k8s.io` Table version the client understands.
-    pub as_table: bool,
-    pub table_group: Option<String>,
-    pub table_version: Option<String>,
+    /// The raw `as=` value, case-preserved exactly as the client sent it —
+    /// real upstream compares this against literal Go string constants
+    /// (`"Table"`, `"APIGroupDiscoveryList"`, `"PartialObjectMetadata"`,
+    /// `"PartialObjectMetadataList"`), case-sensitively, so this module
+    /// doesn't normalize case either. `None` means the client didn't ask
+    /// for an alternate representation at all — just `format` applies.
+    pub as_kind: Option<String>,
+    /// `g`/`v` — which group/version of `as_kind`'s type the client
+    /// understands (e.g. `meta.k8s.io`/`v1` for `as=Table`,
+    /// `apidiscovery.k8s.io`/`v2` for `as=APIGroupDiscoveryList`).
+    pub as_group: Option<String>,
+    pub as_version: Option<String>,
+}
+
+impl Accepted {
+    /// `true` for `kubectl get`'s own server-side-printing request
+    /// (`as=Table`) — the one `as=` kind this crate can currently act on
+    /// (`codec::table::convert_to_table`); every other `as_kind` value is
+    /// parsed but not yet something a caller can convert an object into.
+    pub fn wants_table(&self) -> bool {
+        self.as_kind.as_deref() == Some("Table")
+    }
 }
 
 /// Parses one `Accept` header value (comma-separated media ranges, each
@@ -66,21 +88,21 @@ pub fn negotiate(accept_header: &str) -> Option<Accepted> {
         let Some(format) = Format::from_media_type(&media_type) else { continue };
 
         let mut q: f32 = 1.0;
-        let mut as_table = false;
-        let mut table_group = None;
-        let mut table_version = None;
+        let mut as_kind = None;
+        let mut as_group = None;
+        let mut as_version = None;
         for param in parts {
             let Some((key, value)) = param.split_once('=') else { continue };
             match key.trim() {
                 "q" => q = value.trim().parse().unwrap_or(1.0),
-                "as" if value.trim().eq_ignore_ascii_case("table") => as_table = true,
-                "g" => table_group = Some(value.trim().to_string()),
-                "v" => table_version = Some(value.trim().to_string()),
+                "as" => as_kind = Some(value.trim().to_string()),
+                "g" => as_group = Some(value.trim().to_string()),
+                "v" => as_version = Some(value.trim().to_string()),
                 _ => {}
             }
         }
 
-        let candidate = Accepted { format, as_table, table_group, table_version };
+        let candidate = Accepted { format, as_kind, as_group, as_version };
         let better = match &best {
             None => true,
             Some((best_q, best_index, _)) => q > *best_q || (q == *best_q && index < *best_index),
@@ -147,9 +169,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(accepted.format, Format::Json);
-        assert!(accepted.as_table);
-        assert_eq!(accepted.table_group.as_deref(), Some("meta.k8s.io"));
-        assert_eq!(accepted.table_version.as_deref(), Some("v1"));
+        assert!(accepted.wants_table());
+        assert_eq!(accepted.as_group.as_deref(), Some("meta.k8s.io"));
+        assert_eq!(accepted.as_version.as_deref(), Some("v1"));
+    }
+
+    /// `as=` is a generic client-requested-kind parameter, not a
+    /// Table-specific boolean — `kubectl get --raw /apis` (or client-go's
+    /// aggregated discovery client) sends a completely different `as=`
+    /// value, and this module must capture it just as faithfully.
+    #[test]
+    fn a_non_table_as_value_is_captured_generically_and_does_not_want_table() {
+        let accepted = negotiate("application/json;as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io").unwrap();
+        assert_eq!(accepted.as_kind.as_deref(), Some("APIGroupDiscoveryList"));
+        assert_eq!(accepted.as_group.as_deref(), Some("apidiscovery.k8s.io"));
+        assert_eq!(accepted.as_version.as_deref(), Some("v2"));
+        assert!(!accepted.wants_table());
+    }
+
+    #[test]
+    fn no_as_parameter_at_all_means_no_alternate_representation_was_requested() {
+        let accepted = negotiate("application/json").unwrap();
+        assert_eq!(accepted.as_kind, None);
+        assert!(!accepted.wants_table());
     }
 
     #[test]
