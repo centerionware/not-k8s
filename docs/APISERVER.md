@@ -524,13 +524,14 @@ validator applies to which resource" as hand-maintained-per-type Go
 = NameIsDNSSubdomain`, confirmed directly — there is no vendored table
 for this, the same "verified genuinely absent" finding `validate_types`
 already recorded for enum constraints), so `server::rest`'s own
-`name_format_violations` wires in only the one resource this crate has
+`name_format_violations` wires in only the resources this crate has
 actually verified a real rule for — `namespaces` (core group) ->
-`is_dns1123_label`, matching upstream's own `ValidateNamespaceName` —
-and deliberately leaves every other resource unchecked rather than
-guessing at a rule for it, gating both `create` and `update`. Extending
-this to more resources is real, separate follow-up work, one verified
-entry at a time (the function's own doc comment says so explicitly).
+`is_dns1123_label` (`ValidateNamespaceName`), `serviceaccounts` (core
+group) -> `is_dns1123_subdomain` (`ValidateServiceAccountName`) — and
+deliberately leaves every other resource unchecked rather than guessing
+at a rule for it, gating both `create` and `update`. Extending this to
+more resources is real, separate follow-up work, one verified entry at
+a time (the function's own doc comment says so explicitly).
 
 Conversion only needed for genuinely multi-version groups
 (admissionregistration, autoscaling, certificates, coordination,
