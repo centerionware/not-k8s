@@ -799,6 +799,36 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                 }
             }
 
+            // Group J: `PodSecurity` — validating, `CREATE` only (see
+            // `admission::pod_security`'s own doc comment for exactly
+            // which checks are ported and which are named, honest gaps).
+            // The one real I/O step: fetch the target namespace to read
+            // its own `pod-security.kubernetes.io/enforce` label.
+            if is_create && admission::pod_security::applies_to(&info.api_group, &info.resource, &info.subresource, admission::attributes::Operation::Create) {
+                if let Some(pod) = body_value.as_ref() {
+                    match rest::get(&mut client, None, "", "v1", "namespaces", None, &info.namespace).await {
+                        Ok(rest::GetOutcome::Found(ns)) => {
+                            let level = admission::pod_security::enforcement_level(&ns);
+                            let violations = admission::pod_security::validate(pod, level);
+                            if !violations.is_empty() {
+                                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &violations.join("; "))));
+                            }
+                        }
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                            // No real namespace to read a label off —
+                            // `namespace_lifecycle` is what's responsible
+                            // for rejecting a create into a namespace that
+                            // doesn't exist at all; this check just has
+                            // nothing to enforce in that case.
+                        }
+                        Err(e) => {
+                            warn!(path = %path_str, error = ?e, "admission: namespace lookup for PodSecurity failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    }
+                }
+            }
+
             // Group I: authorization, opt-in (see config::Config::enforce_rbac's
             // own doc comment for why this defaults to off rather than
             // being unconditional the moment identity extraction and RBAC
