@@ -3,25 +3,25 @@
 //! (`docs/APISERVER_PLAN.md` finding 3, `ARCHITECTURE.md` §4).
 //!
 //! `store` — the cache core (`WatchCache`): apply/list/watch_from/
-//! bookmarks/consistent-read waiting. Pure and synchronous underneath, unit
-//! tested against synthetic events with no live storage needed.
+//! bookmarks/consistent-read waiting, plus `SharedCache` (an `Arc<RwLock<..>>`
+//! wrapper — what a driver loop and its readers actually hold, since both
+//! sides need concurrent access to the same cache). Pure and synchronous
+//! underneath, unit tested against synthetic events with no live storage
+//! needed.
 //! `driver` — wires a real `storage::client::StorageClient` to the core:
 //! LIST for a snapshot + RV, WATCH from `RV + 1`, decode `mvccpb::Event`s
-//! into `WatchCache::apply` calls. Decode logic is pure/unit-tested; the
-//! two functions that actually call `StorageClient` are thin wrappers.
+//! into `WatchCache::apply` calls, and `reflect()` — the reconnect loop
+//! that runs this forever, relisting on any failure or stream end.
 //!
 //! Status: in progress (see docs/APISERVER.md). Landed: the cache core,
-//! and the LIST/decode/apply logic to drive it from real nodestore
-//! responses. **Not yet landed**, named honestly rather than implied by
-//! the above: a reconnect-on-disconnect loop (today's driver functions
-//! give a caller one LIST-then-WATCH cycle; noticing the stream end and
-//! starting over is still the caller's job), bookmark *generation* on a
-//! timer (nodestore's `progress_notify` mechanism would drive this — this
-//! module only turns a progress-notify response into a cache bookmark, it
-//! doesn't request one on any schedule), and label/field selector
-//! filtering over the cached items.
+//! `SharedCache`, the LIST/decode/apply logic, and the reconnect loop.
+//! **Not yet landed**, named honestly rather than implied by the above:
+//! bookmark *generation* on a timer (nodestore's `progress_notify`
+//! mechanism would drive this — today's code only *handles* one if
+//! nodestore happens to send it, it doesn't request one on a schedule),
+//! and label/field selector filtering over the cached items.
 
 pub mod store;
 pub mod driver;
 
-pub use store::{wait_for_revision, CacheEntry, EventKind, Error, WatchCache, WatchEvent};
+pub use store::{wait_for_revision, CacheEntry, EventKind, Error, SharedCache, WatchCache, WatchEvent};
