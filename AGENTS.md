@@ -359,7 +359,14 @@ and why, and leave the PR open.
 
 ## CI/CD (`.github/workflows/`)
 
-`build.yml` is the one to reach for during development: manual
+`quick-check.yml` is the tightest loop: manual (`workflow_dispatch`), native
+x86_64 debug build + full unit tests, no musl/cross targets, no artifact
+upload at all — just "does this compile and pass its own tests," as fast as
+possible. Reach for this while iterating on a branch; it does **not**
+replace a merge-path gate (`build.yml`/`e2e.yml` per the merge protocol
+below still apply before anything merges).
+
+`build.yml` is the one that also produces something installable: manual
 (`workflow_dispatch`), builds both crates and runs the full unit tests, no
 e2e, no release, and uploads the binaries as run artifacts (`profile`:
 debug/release/both; `arch`: x86_64/aarch64/armv7l/all). This exists because
