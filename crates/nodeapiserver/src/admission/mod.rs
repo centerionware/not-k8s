@@ -83,8 +83,10 @@
 //! `requests.<name>`-only form, e.g. `requests.nvidia.com/gpu` (real
 //! upstream's own `isExtendedResourceNameForQuota`: overcommit isn't
 //! supported for extended resources, so no bare or `limits.`-prefixed
-//! form is ever recognized)) over any `ResourceQuota`'s own
-//! `spec.hard`. All six real `spec.scopes` names are matched for pods
+//! form is ever recognized)/the PVC evaluator's own real per-storage-class
+//! resource family (`<class>.storageclass.storage.k8s.io/
+//! persistentvolumeclaims` and `.../requests.storage`)) over any
+//! `ResourceQuota`'s own `spec.hard`. All six real `spec.scopes` names are matched for pods
 //! (`Terminating`/`NotTerminating`/`BestEffort`/`NotBestEffort` —
 //! including a real `ComputePodQOS` port —, `PriorityClass`, and
 //! `CrossNamespacePodAffinity`), **and so is the richer

@@ -921,8 +921,10 @@ fetched and read directly): forbids a `Pod`/`PersistentVolumeClaim`/
 `limits.ephemeral-storage`/`hugepages-<size>`/`requests.hugepages-<size>`
 — real upstream's own `podComputeUsageHelper`, restricted to this subset
 — plus `persistentvolumeclaims`/
-`requests.storage` — real upstream's own `pvcEvaluator.Usage`, minus its
-real per-storage-class resource name family and the alpha
+`requests.storage`, plus both again under the claim's own storage
+class's scoped key (`<class>.storageclass.storage.k8s.io/...`,
+`V1ResourceByStorageClass`) when it names one — real upstream's own
+`pvcEvaluator.Usage`, minus only the alpha
 `RecoverVolumeExpansionFailure`-gated `status.allocatedResources`
 comparison — plus `services`/`services.nodeports`/`services.loadbalancers`
 — real upstream's own `serviceEvaluator.Usage`, ported exactly including
@@ -1028,10 +1030,19 @@ own comment on why). `is_native_resource`/`is_extended_resource_name`
 port real upstream's own `helper.IsNativeResource`/
 `IsExtendedResourceName` (`pkg/apis/core/v1/helper/helpers.go`) — not
 ported: upstream's own final `IsQualifiedName` structural re-validation,
-a named simplification. **Substantially scoped, named honestly** in the
-one remaining way real upstream's three specialized evaluators track an
-extra resource family this crate doesn't: the PVC evaluator's own
-per-storage-class resource family; and there is **no
+a named simplification. The PVC evaluator's own real per-storage-class
+resource family is now tracked too (`pvc_storage_class_ref` — real
+upstream's own `storagehelpers.GetPersistentVolumeClaimClass`, beta
+`volume.beta.kubernetes.io/storage-class` annotation taking precedence
+over `spec.storageClassName` same as `admission::default_storage_class`'s
+own `pvc_has_class` already established — charges
+`persistentvolumeclaims`/`requests.storage` a second time under the
+claim's own `<class>.storageclass.storage.k8s.io/...` key,
+`quota_applies_to_pvcs` matching any `spec.hard` key ending in that
+suffixed form, same as real upstream's own `MatchingResources`'
+`strings.HasSuffix` check). **Substantially scoped, named honestly** in
+the one resource-family gap now left: real upstream's three specialized
+evaluators track no further families this crate doesn't; there is **no
 persisted `status.used` counter** — usage is recomputed live from a
 fresh object list on every check rather than an incrementally
 maintained, optimistic-lock-protected running total, which means
@@ -1043,7 +1054,7 @@ own defaulting), the same relative position real upstream's own default
 plugin order uses, so quota sees the final, fully-defaulted object.
 
 **Not yet landed**: every other built-in plugin, `ResourceQuota`'s own
-persisted usage counter/extra resource families (above), a
+persisted usage counter (above), a
 generic plugin-chain/registry abstraction (today `server::listener`
 hand-calls each plugin directly, not through
 any dispatch table), mutating/validating webhooks, and
