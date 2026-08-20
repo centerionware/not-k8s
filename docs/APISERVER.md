@@ -219,9 +219,16 @@ per-version gap this doc used to name here: a new Group A parser
 (`build/discovery_parse.rs`) reads every vendored spec's own `paths`
 section — each verb block's `x-kubernetes-action` + its GVK extension —
 grouped by `(group, version, resource)` with verbs and namespaced-ness
-unioned across every path that resource appears on (a namespaced
-resource's own `/namespaces/{namespace}/...` path and its "list across
-all namespaces" sibling both contribute to one entry, not two). Correctly
+unioned across every path that resource appears on, with `"watch"`
+synthesized whenever `"list"` is present — real bug caught by CI, not
+assumed correct: the modern GET-collection route's own action is `"list"`,
+never `"watch"` literally (that label only appears on the deprecated
+`/watch/`-prefixed legacy route family this parser skips), but every real
+REST storage supporting list also supports watching that same route.
+Verbs and namespaced-ness are also unioned across every path a resource
+appears on: a namespaced resource's own `/namespaces/{namespace}/...`
+path and its "list across all namespaces" sibling both contribute to one
+entry, not two. Correctly
 tells `/api/v1/namespaces` (list `Namespace` objects) apart from
 `/api/v1/namespaces/{namespace}/pods` (list `Pod`s in a namespace) by the
 real path-parameter name the vendored spec uses (`{name}` vs.

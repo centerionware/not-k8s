@@ -17,7 +17,12 @@
 //!   path family (the pre-1.0-style watch API, superseded by `?watch=true`
 //!   on the plain list path — its own `x-kubernetes-action` values are
 //!   `watch`/`watchlist` but attached to a *different, legacy* route this
-//!   build doesn't need to discover separately) — skipped outright.
+//!   build doesn't need to discover separately) — skipped outright. This
+//!   means "watch" never appears as a literal `x-kubernetes-action` on any
+//!   path this parser actually reads (the modern GET-collection route's
+//!   own action is `list`) — `parse_all` synthesizes a `"watch"` verb
+//!   whenever `"list"` is present instead, since every real REST storage
+//!   supporting list also supports watching that same route.
 //! - Subresources (`.../pods/{name}/status`, `/log`, `/exec`, `/proxy`,
 //!   ...) — skipped for this slice. A subresource needs its own
 //!   `APIResource` entry with `name: "pods/status"` in real discovery;
@@ -102,13 +107,23 @@ pub fn parse_all(root: &Path) -> Vec<ResourceEntry> {
     }
 
     acc.into_iter()
-        .map(|((group, version, resource), (kind, namespaced, verbs))| ResourceEntry {
-            group,
-            version,
-            resource,
-            kind,
-            namespaced,
-            verbs: verbs.into_iter().collect(),
+        .map(|((group, version, resource), (kind, namespaced, mut verbs))| {
+            // "watch" never appears on the modern GET-collection route's
+            // own x-kubernetes-action (confirmed against the vendored
+            // spec directly: that route's action is "list"; "watch" only
+            // ever labels the deprecated `/watch/`-prefixed legacy route
+            // family, which this parser skips outright per its own doc
+            // comment). Every real REST storage that supports `list` also
+            // supports watching the same collection via `?watch=true` on
+            // that exact route — a universal pairing in kube-apiserver's
+            // own generic registry (`rest.Lister`/`rest.Watcher`), not a
+            // per-type exception — so synthesize the "watch" verb from
+            // "list" rather than leaving every resource's own discovery
+            // silently missing a verb it genuinely supports.
+            if verbs.contains("list") {
+                verbs.insert("watch".to_string());
+            }
+            ResourceEntry { group, version, resource, kind, namespaced, verbs: verbs.into_iter().collect() }
         })
         .collect()
 }
