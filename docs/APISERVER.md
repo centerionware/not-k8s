@@ -329,34 +329,42 @@ pre-GA shape this crate doesn't separately model), so a client asking for
 a shape this build doesn't actually build falls back to the legacy form
 rather than silently getting served a possibly-wrong one.
 
-The first real resource verb now exists too: `server::rest::get` is a
-generic single-object `GET` — resolves the resource's `Kind` from Group
-A's discovery table (`resolve_kind`, pure, unit-tested), builds the
-`storage::keys::object_key`, does a real `RangeRequest` against nodestore
-via `StorageClient`, and decodes the stored `runtime.Unknown` envelope
-back to JSON via `codec::protobuf` (`decode_stored_object`, resolving the
-schema from the envelope's own `apiVersion`/`kind` — what was actually
-written — not the request path, verified with a real encode-then-decode
-round trip). Generic over every resource this build knows about, no
-per-type Go code, same posture every other Group B/C/E slice has taken.
-`server::listener::run` connects a `StorageClient` at startup
-(best-effort — a nodestore unreachable at boot degrades to `None`,
-falling back to the bring-up echo stub rather than stopping the listener
-from serving discovery, which needs no storage at all) and clones it per
-connection (`StorageClient` wraps a cheap-to-clone `tonic::transport::Channel`,
-same posture `cacher`'s own driver takes). Named honestly, not
-overclaimed: reads go straight to nodestore, bypassing
-`cacher::store::WatchCache` entirely (a real, valid strategy — upstream's
-own quorum-read path takes exactly this shape — not a stand-in for the
-cache; the cache isn't even started yet, since nothing in `lib.rs::run()`
-calls `cacher::driver::reflect()`), no subresources, and **no
-authentication, no authorization, no admission at all** — every request
-reaching `rest::get` is currently treated as allowed, the same
-deliberately-incomplete-but-honest bring-up posture `server::tls`'s own
-self-signed cert already established for this crate.
+The first real resource verbs now exist too: `server::rest::get`/`list`
+— generic single-object `GET` and whole-resource `LIST` — resolve the
+resource's `Kind` from Group A's discovery table (`resolve_kind`, pure,
+unit-tested), build the storage key (`storage::keys::object_key`/
+`list_prefix` + `prefix_range_end`), do a real `RangeRequest` against
+nodestore via `StorageClient`, and decode the stored `runtime.Unknown`
+envelope(s) back to JSON via `codec::protobuf` (`decode_stored_object`,
+resolving the schema from the envelope's own `apiVersion`/`kind` — what
+was actually written — not the request path, verified with a real
+encode-then-decode round trip). `list` wraps its items in the real
+`<Kind>List` shape (`PodList`, `DeploymentList`, ... — verified against
+the vendored spec, not assumed: every List type is named exactly that,
+never a separate hand-assigned name), `resourceVersion` from the
+`Range`'s own header revision. Both generic over every resource this
+build knows about, no per-type Go code, same posture every other Group
+B/C/E slice has taken. `server::listener::run` connects a `StorageClient`
+at startup (best-effort — a nodestore unreachable at boot degrades to
+`None`, falling back to the bring-up echo stub rather than stopping the
+listener from serving discovery, which needs no storage at all) and
+clones it per connection (`StorageClient` wraps a cheap-to-clone
+`tonic::transport::Channel`, same posture `cacher`'s own driver takes).
+Named honestly, not overclaimed: reads go straight to nodestore,
+bypassing `cacher::store::WatchCache` entirely (a real, valid strategy —
+upstream's own quorum-read path takes exactly this shape — not a
+stand-in for the cache; the cache isn't even started yet, since nothing
+in `lib.rs::run()` calls `cacher::driver::reflect()`), no subresources,
+`list` has no label/field selector filtering yet (`cacher::selector`'s
+already-landed `object_matches` is exactly what would filter these
+decoded items, just not wired in here — separate follow-up) and no
+pagination, and **no authentication, no authorization, no admission at
+all** — every request reaching `rest::get`/`list` is currently treated as
+allowed, the same deliberately-incomplete-but-honest bring-up posture
+`server::tls`'s own self-signed cert already established for this crate.
 
 **Not yet landed**: every other resource verb
-(`list`/`watch`/`create`/`update`/`patch`/`delete`), the real handler
+(`watch`/`create`/`update`/`patch`/`delete`), the real handler
 chain itself (authn -> authz -> APF -> admission -> REST — a hard
 requirement on order, not a style choice, once it exists), `/openapi/v2`.
 The throwaway e2e rig described above should land as part of this group,
