@@ -139,7 +139,22 @@ now-stale guess at the location) turned out not to define it in
 -> `controllers`, `endpoints` -> `services/endpoints`, `nodes` -> `minions`,
 `services` -> `services/specs`, and `ingresses` -> `ingress` in both
 `extensions` and `networking.k8s.io`), vendored as a literal table rather
-than approximated. **Not yet landed**: encryption-at-rest providers.
+than approximated. **Encryption-at-rest transform primitives now exist**
+(`storage::encryption`): `Identity` and AES-256-GCM providers, plus the
+generic `PrefixTransformers` composition every provider list (including
+per-key rotation) uses — a faithful port of upstream's own
+`storage/value` package (`transformer.go`'s `prefixTransformers`,
+`encrypt/identity/identity.go`, `encrypt/aes/aes.go`'s `gcm` type), fetched
+and read directly. Real envelope format confirmed against upstream:
+`k8s:enc:aesgcm:v1:<key-name>:<nonce><ciphertext+tag>`. Named honestly:
+AES-CBC, secretbox, and KMS (v1/v2) are real upstream providers this
+module doesn't build (no CBC/secretbox crate in the dependency tree, no
+KMS gRPC plugin protocol vendored — `ring`, used for AES-GCM, is not a
+*new* dependency, already pulled in transitively by `rustls`). **Not yet
+landed**: wiring any of this into `StorageClient`'s actual read/write
+path, and `EncryptionConfiguration` YAML parsing (which provider(s) apply
+to which resource) — this module is the transform primitives a config
+loader would wire up, not the loader itself.
 
 **D. Watch cache** — **in progress**. `cacher::store::WatchCache` is the
 cache core: apply/list/watch_from, bookmarks, RV=0 reads, and consistent
