@@ -1,12 +1,11 @@
 use super::*;
 
 /// Hand-written subset of `resource.k8s.io/v1`'s `ResourceClaim` — only
-/// the fields DRA actually reads. Exists because k8s-openapi's own
-/// generated type for this resource only appears from its "v1_34" schema
-/// feature onward, and this workspace stays pinned to "v1_33" (bumping it
-/// ripples into unrelated breaking field renames across the whole
-/// codebase, confirmed trying it — a much bigger change than this fix
-/// warrants). Fetched via a raw GET through `kube::Client::request`, the
+/// the fields DRA actually reads. k8s-openapi's own generated type for this
+/// resource is now available too (the workspace bumped to "v1_34"), but
+/// this hand-written copy hasn't been retired yet — separate follow-up
+/// work, not a rider on the version bump (`docs/APISERVER_PLAN.md` Phase
+/// 0). Fetched via a raw GET through `kube::Client::request`, the
 /// same pattern `container_support.rs`'s `resolve_service_account_token()`
 /// already uses for a subresource k8s-openapi 0.28 doesn't generate a
 /// helper for either. Round 121 — found live standing up a real DRA
