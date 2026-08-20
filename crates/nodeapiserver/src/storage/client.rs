@@ -1,7 +1,8 @@
 //! A thin etcd v3 KV client over nodestore's gRPC API. Wraps
-//! `Range`/`Put`/`DeleteRange`/`Txn`/`Watch` — Group C's storage layer and
-//! Group D's watch cache both build on this. `Lease` is still a follow-up,
-//! added when a lease-backed subresource actually needs it.
+//! `Range`/`Put`/`DeleteRange`/`Txn`/`Watch`/`Lease*` — Group C's storage
+//! layer and Group D's watch cache both build on the former; `Lease*` is
+//! for TTL-backed keys (ServiceAccount token expiry, `Lease` objects, and
+//! any future lease-backed subresource).
 //!
 //! TLS setup mirrors `crates/nodestore/src/tls.rs`'s own
 //! `client_tls_config()` almost exactly (see that function's doc comment)
@@ -10,10 +11,13 @@
 
 use crate::config::Config;
 use crate::storage::pb::etcdserverpb::kv_client::KvClient;
+use crate::storage::pb::etcdserverpb::lease_client::LeaseClient;
 use crate::storage::pb::etcdserverpb::watch_client::WatchClient;
 use crate::storage::pb::etcdserverpb::{
-    watch_request::RequestUnion, DeleteRangeRequest, DeleteRangeResponse, PutRequest, PutResponse, RangeRequest, RangeResponse,
-    TxnRequest, TxnResponse, WatchCreateRequest, WatchRequest, WatchResponse,
+    watch_request::RequestUnion, DeleteRangeRequest, DeleteRangeResponse, LeaseGrantRequest, LeaseGrantResponse,
+    LeaseKeepAliveRequest, LeaseKeepAliveResponse, LeaseRevokeRequest, LeaseRevokeResponse, LeaseTimeToLiveRequest,
+    LeaseTimeToLiveResponse, PutRequest, PutResponse, RangeRequest, RangeResponse, TxnRequest, TxnResponse, WatchCreateRequest,
+    WatchRequest, WatchResponse,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -41,6 +45,7 @@ type Result<T> = std::result::Result<T, Error>;
 pub struct StorageClient {
     kv: KvClient<Channel>,
     watch: WatchClient<Channel>,
+    lease: LeaseClient<Channel>,
 }
 
 impl StorageClient {
@@ -66,7 +71,11 @@ impl StorageClient {
         };
 
         let channel = endpoint.connect().await.map_err(|e| Error::Connect { endpoint: cfg.nodestore_endpoint.clone(), source: e })?;
-        Ok(StorageClient { kv: KvClient::new(channel.clone()), watch: WatchClient::new(channel) })
+        Ok(StorageClient {
+            kv: KvClient::new(channel.clone()),
+            watch: WatchClient::new(channel.clone()),
+            lease: LeaseClient::new(channel),
+        })
     }
 
     /// `revision <= 0` means "the current revision" — matches etcd's own
@@ -128,6 +137,45 @@ impl StorageClient {
         let responses = self.watch.watch(ReceiverStream::new(rx)).await?.into_inner();
         Ok(WatchHandle { requests: tx, responses })
     }
+
+    /// Grants a new lease with the requested TTL (seconds; the server may
+    /// choose a different one — see `LeaseGrantResponse.TTL`, the actual
+    /// value to honor). A ServiceAccount token's expiry, or any future
+    /// `Lease` object, is a key attached to one of these.
+    pub async fn lease_grant(&mut self, req: LeaseGrantRequest) -> Result<LeaseGrantResponse> {
+        Ok(self.lease.lease_grant(req).await?.into_inner())
+    }
+
+    /// Revoking a lease deletes every key still attached to it — the same
+    /// mechanism a `Lease` object's expiry (or explicit deletion) uses to
+    /// clean up whatever it owns.
+    pub async fn lease_revoke(&mut self, req: LeaseRevokeRequest) -> Result<LeaseRevokeResponse> {
+        Ok(self.lease.lease_revoke(req).await?.into_inner())
+    }
+
+    pub async fn lease_time_to_live(&mut self, req: LeaseTimeToLiveRequest) -> Result<LeaseTimeToLiveResponse> {
+        Ok(self.lease.lease_time_to_live(req).await?.into_inner())
+    }
+
+    /// Opens a keep-alive stream: send a `LeaseKeepAliveRequest{ID}` on
+    /// `requests` before the lease's current TTL expires, get back a
+    /// `LeaseKeepAliveResponse` with the renewed TTL on `responses`. Same
+    /// caller-owns-the-sender shape as [`Self::watch`], for the same
+    /// reason — a renewer that reconnects repeatedly must not leak one
+    /// channel per attempt.
+    pub async fn lease_keep_alive(&mut self) -> Result<LeaseKeepAliveHandle> {
+        let (tx, rx) = mpsc::channel(1);
+        let responses = self.lease.lease_keep_alive(ReceiverStream::new(rx)).await?.into_inner();
+        Ok(LeaseKeepAliveHandle { requests: tx, responses })
+    }
+}
+
+/// An open keep-alive stream: `requests` must be kept alive for as long as
+/// the lease should keep being renewed, `responses` carries each renewal's
+/// new TTL.
+pub struct LeaseKeepAliveHandle {
+    pub requests: mpsc::Sender<LeaseKeepAliveRequest>,
+    pub responses: tonic::Streaming<LeaseKeepAliveResponse>,
 }
 
 /// An open watch: `requests` must be kept alive for as long as the watcher
