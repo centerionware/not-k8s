@@ -145,10 +145,24 @@ the caller's job), bookmark *generation* on a timer (this only turns a
 progress-notify response into a bookmark, it doesn't request one on any
 schedule), and label/field selector filtering over the cached items.
 
-**E. Generic server + handler chain + REST endpoints** — **not started**.
-hyper + h2 + rustls listener, path grammar, full verb set incl.
-`deletecollection` and subresources, `/api`, `/apis`, aggregated discovery
-v2, `/openapi/v2` + `/openapi/v3`, `/version`. Handler-chain order
+**E. Generic server + handler chain + REST endpoints** — **in progress**.
+`server::path` is the REST path grammar — a faithful, line-by-line port of
+upstream's own `RequestInfoFactory.NewRequestInfo`
+(`staging/src/k8s.io/apiserver/pkg/endpoints/request/requestinfo.go`), not
+a reimplementation from a handful of example paths: every branch traces to
+a specific line there, and the tests are upstream's own documented example
+paths from that function's doc comment. Caught one real thing by tracing
+the algorithm rather than assuming: `RequestInfo.Namespace` gets
+positionally populated from a `namespaces/{X}/...` path even when the
+request turns out to be for the cluster-scoped `Namespace` object itself
+(`/api/v1/namespaces/default/status`) — a genuine, harmless upstream quirk
+a naive reimplementation would likely have "corrected" away, which would
+have been a real behavioral divergence. Full verb set incl.
+`deletecollection`, subresources, and field/label selector capture for
+`list`/`watch`/`deletecollection` are covered; **not yet landed**: the
+actual hyper + h2 + rustls listener (nothing calls `path::parse` yet — no
+request exists to call it on), `/api`, `/apis`, aggregated discovery v2,
+`/openapi/v2` + `/openapi/v3`, `/version`. Handler-chain order
 (authentication → authorization → priority-and-fairness → admission → REST)
 is a hard requirement, not a style choice. The throwaway e2e rig described
 above should land as part of this group, not after it.
