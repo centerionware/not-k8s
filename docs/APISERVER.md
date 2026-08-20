@@ -188,9 +188,21 @@ scan (longest operator wins ties at the same position) fixes it, with a
 regression test locking in exactly that case. Deliberately decoupled from
 `WatchCache`'s raw bytes — takes a label map or a field-lookup closure —
 so it doesn't have to wait on Group F's object-decoding decisions.
-**Not yet landed**: wiring the selector matchers into an actual LIST call
-over cached items, which needs Group F's object model to know what a
-cached entry's labels/fields even are.
+The selector matchers are now wired onto a decoded object:
+`cacher::selector::object_labels`/`field_value`/`object_matches` adapt
+`matches_labels`/`matches_fields` onto a `serde_json::Value` (Group F's
+decoded-object shape). The two halves are deliberately asymmetric, named
+honestly: `object_labels` is genuinely generic — every Kind's labels live
+at `metadata.labels`, `ObjectMeta` being shared structurally — but
+`field_value` is only a generic dotted-JSON-path fallback
+(`"spec.nodeName"` -> pointer `/spec/nodeName`), a strict superset of what
+real upstream allows; real kube-apiserver restricts which fields are even
+selectable per Kind via a hand-written `SelectableFields` function per
+type (`pkg/registry/*/*/strategy.go`), which isn't built here yet.
+**Not yet landed**: actually calling this from a real LIST request
+handler (blocked on Group E's REST dispatch existing at all — the
+listener today only reaches the bring-up echo stub for resource
+requests) and the per-Kind `SelectableFields` allowlist.
 
 **E. Generic server + handler chain + REST endpoints** — **in progress**.
 `server::path` is the REST path grammar — a faithful, line-by-line port of
