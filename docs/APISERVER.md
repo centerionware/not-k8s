@@ -537,13 +537,30 @@ validator applies to which resource" as hand-maintained-per-type Go
 for this, the same "verified genuinely absent" finding `validate_types`
 already recorded for enum constraints), so `server::rest`'s own
 `name_format_violations` wires in only the resources this crate has
-actually verified a real rule for — `namespaces` (core group) ->
-`is_dns1123_label` (`ValidateNamespaceName`), `serviceaccounts` (core
-group) -> `is_dns1123_subdomain` (`ValidateServiceAccountName`) — and
-deliberately leaves every other resource unchecked rather than guessing
-at a rule for it, gating both `create` and `update`. Extending this to
-more resources is real, separate follow-up work, one verified entry at
-a time (the function's own doc comment says so explicitly).
+actually verified a real rule for, each confirmed directly against
+`pkg/apis/core/validation/validation.go` (release-1.34) and cross-checked
+against the vendored `api__v1_openapi.json` `paths` table to confirm it's
+really core-group: `namespaces` -> `is_dns1123_label`
+(`ValidateNamespaceName = NameIsDNSLabel`); `serviceaccounts`, `pods`,
+`replicationcontrollers`, `nodes`, `limitranges`, `resourcequotas`,
+`secrets`, `endpoints`, `persistentvolumes`, `configmaps` ->
+`is_dns1123_subdomain` (each a literal `var Validate<Kind>Name =
+apimachineryvalidation.NameIsDNSSubdomain`); `services` ->
+`is_dns1035_label` (`ValidateServiceName = NameIsDNS1035Label`, real
+upstream's own default — a `RelaxedServiceNameValidation` alpha feature
+gate can relax this to `NameIsDNSLabel`, but this crate has no
+feature-gate machinery so it always applies the gate's default-off
+behavior). A handful of other `var Validate<Kind>Name` declarations exist
+in the same Go file (`PriorityClass`, `ResourceClaim`,
+`ResourceClaimTemplate`, `StorageClass` among them) but were deliberately
+left unwired here because they belong to non-core groups
+(`scheduling.k8s.io`, `resource.k8s.io`, `storage.k8s.io`) not yet
+individually confirmed against the vendored spec — guessing the group
+would break the "verify, don't guess" rule this whole table follows.
+Every other resource is left unchecked rather than guessing at a rule
+for it, gating both `create` and `update`. Extending this to more
+resources is real, separate follow-up work, one verified entry at a time
+(the function's own doc comment says so explicitly).
 
 Conversion only needed for genuinely multi-version groups
 (admissionregistration, autoscaling, certificates, coordination,
