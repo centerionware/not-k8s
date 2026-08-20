@@ -518,15 +518,19 @@ ports of real upstream's own regex-based name validators
 (`apimachinery/pkg/util/validation/validation.go`'s `IsDNS1123Label`/
 `IsDNS1123Subdomain`/`IsDNS1035Label`, fetched and read directly; this
 crate has no regex dependency, and each pattern is simple enough to
-check in one pass without one). **Primitives only, not yet wired to any
-specific resource's own name rule**: real upstream itself keeps "which
+check in one pass without one). Real upstream itself keeps "which
 validator applies to which resource" as hand-maintained-per-type Go
 (`ValidateNamespaceName = NameIsDNSLabel`, `ValidateServiceAccountName
 = NameIsDNSSubdomain`, confirmed directly — there is no vendored table
 for this, the same "verified genuinely absent" finding `validate_types`
-already recorded for enum constraints) — wiring a specific validator
-into `server::rest::create`/`update` per resource is real, separate,
-not-yet-started follow-up work.
+already recorded for enum constraints), so `server::rest`'s own
+`name_format_violations` wires in only the one resource this crate has
+actually verified a real rule for — `namespaces` (core group) ->
+`is_dns1123_label`, matching upstream's own `ValidateNamespaceName` —
+and deliberately leaves every other resource unchecked rather than
+guessing at a rule for it, gating both `create` and `update`. Extending
+this to more resources is real, separate follow-up work, one verified
+entry at a time (the function's own doc comment says so explicitly).
 
 Conversion only needed for genuinely multi-version groups
 (admissionregistration, autoscaling, certificates, coordination,
