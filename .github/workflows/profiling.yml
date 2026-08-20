@@ -145,19 +145,30 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Bootstrap the shared stack via the real standalone installer (stripped k3s control plane + containerd${{ matrix.agent == 'nodelet' && ' + nodelet' || '' }})
-        # idle mode (unchanged): install.sh, which always resolves to
-        # whatever release is currently latest.
-        # workload mode: pinned to install-v0.6.0.sh instead — the
-        # installer as actually published for the v0.6.0 release, fetching
-        # that release's own deploy.tar.gz/binaries rather than whatever is
-        # newest at dispatch time, so a workload run stays reproducible
-        # against a known build. Its default layout is the single
-        # multi-call `notk8s` binary (no --layout override here), i.e. the
-        # single built 0.6.0 binary containing nodelet.
+        # idle mode (unchanged): the install-scripts branch's install.sh,
+        # which fetches releases/latest/download/deploy.tar.gz -- whatever
+        # release is currently "latest", packaged as of that release (i.e.
+        # frozen at publish time, not the live main branch).
+        #
+        # workload mode: --tag=v0.6.0 against this checked-out ref's own
+        # deploy/bootstrap-release.sh instead of curling the install-scripts
+        # branch's install-v0.6.0.sh. Those two look equivalent but are not:
+        # install-v0.6.0.sh is itself a frozen artifact compiled *from* the
+        # v0.6.0 release, so it bakes in that release's own copy of
+        # bootstrap-release.sh forever -- a bug fixed in this repo today can
+        # never reach an already-published release's installer. Running the
+        # checked-out ref's script with --tag=v0.6.0 gets both: the pinned
+        # v0.6.0 binary (still "the single built 0.6.0 binary" -- default
+        # layout is the combined multi-call `notk8s`, no --layout override
+        # here) fetched by whatever bootstrap-release.sh logic this branch
+        # actually has.
         run: |
           set -e
-          INSTALLER="${{ inputs.profile_mode == 'workload' && 'install-v0.6.0.sh' || 'install.sh' }}"
-          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/install-scripts/$INSTALLER" | sudo bash -s -- ${{ matrix.install_args }}
+          if [[ "${{ inputs.profile_mode }}" == "workload" ]]; then
+            sudo ./deploy/bootstrap-release.sh --tag=v0.6.0 ${{ matrix.install_args }}
+          else
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/install-scripts/install.sh" | sudo bash -s -- ${{ matrix.install_args }}
+          fi
 
       - name: Start a real upstream kubelet (same control plane, same containerd — nodelet was never installed on this runner)
         if: matrix.agent == 'kubelet'
