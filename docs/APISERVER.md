@@ -743,14 +743,37 @@ request body in `server::listener` before it reaches
 actually gets validated and persisted. Also wired unconditionally, same
 no-lockout-risk reasoning as `namespace_lifecycle`.
 
-**Not yet landed**: every other built-in plugin (`ServiceAccount`,
-`DefaultStorageClass`, `ResourceQuota`, `LimitRanger`, `PodSecurity`, …), a
-generic plugin-chain/registry abstraction (today `server::listener`
-hand-calls each plugin directly, not through any dispatch table),
-mutating/validating webhooks, and ValidatingAdmissionPolicy/
-MutatingAdmissionPolicy on CEL. **Build the CEL cost budget before wiring
-any CEL-driven admission path** — an unbudgeted CEL evaluator in the
-request path is a denial-of-service surface.
+`admission::service_account` is both mutating and validating, `CREATE`-only
+— a faithful port of real upstream's own `ServiceAccount` plugin
+(`plugin/pkg/admission/serviceaccount/admission.go`, fetched and read
+directly): defaults `spec.serviceAccountName` to `"default"` when unset (a
+mirror pod is never mutated — its spec is left alone and instead validated
+against three real restrictions: may not reference a `ServiceAccount`, a
+`Secret`, or a projected `ServiceAccountToken` volume source, all ported
+from upstream's own mirror-pod `Validate` branch), requires the referenced
+`ServiceAccount` to exist (forbidden if not), auto-mounts a projected
+`kube-api-access-*` token volume into every container lacking its own
+mount at `/var/run/secrets/kubernetes.io/serviceaccount` unless the pod or
+its `ServiceAccount` opts out (`shouldAutomount`, ported exactly — pod's
+own preference wins, then the `ServiceAccount`'s, defaulting `true`), and
+copies the `ServiceAccount`'s `imagePullSecrets` onto the pod when it
+specifies none of its own. Split the same pure-decision/real-I/O-step way
+as `namespace_lifecycle`. Named honestly not ported:
+`LimitSecretReferences`/`enforceMountableSecrets` (upstream's own default
+is `false` unless an operator annotates the `ServiceAccount`
+`kubernetes.io/enforce-mountable-secrets: "true"` — a real but
+off-by-default check most real clusters never exercise) and the
+`ephemeralcontainers` subresource validation path (this crate doesn't
+serve any subresource yet).
+
+**Not yet landed**: every other built-in plugin (`DefaultStorageClass`,
+`ResourceQuota`, `LimitRanger`, `PodSecurity`, …), a generic
+plugin-chain/registry abstraction (today `server::listener` hand-calls each
+plugin directly, not through any dispatch table), mutating/validating
+webhooks, and ValidatingAdmissionPolicy/MutatingAdmissionPolicy on CEL.
+**Build the CEL cost budget before wiring any CEL-driven admission path**
+— an unbudgeted CEL evaluator in the request path is a denial-of-service
+surface.
 
 **K. CRDs (apiextensions)** — **not started**. Dynamic storage
 registration, structural schemas, pruning, defaulting,
