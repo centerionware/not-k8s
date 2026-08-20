@@ -570,6 +570,40 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, namespac
                 }
             }
 
+            // Group J: `DefaultStorageClass` — mutating, `CREATE` only
+            // (see `admission::default_storage_class`'s own doc comment).
+            // Unlike `namespace_lifecycle`/`service_account`, this one has
+            // no cheap `QuickDecision`-style early-out before the one real
+            // I/O step: `mutate` itself checks whether the PVC already has
+            // a class and no-ops, but only after the `StorageClass` list
+            // has already been fetched — a real (small) inefficiency for
+            // the common already-classed case, named honestly rather than
+            // silently optimized around with a duplicated has-class check.
+            if is_create {
+                if let Some(pvc) = body_value.as_mut() {
+                    if admission::default_storage_class::applies_to(&info.api_group, &info.resource, &info.subresource) {
+                        match rest::list(&mut client, None, "storage.k8s.io", "v1", "storageclasses", None, "", "").await {
+                            Ok(rest::ListOutcome::Found(list)) => {
+                                let classes = list["items"].as_array().cloned().unwrap_or_default();
+                                admission::default_storage_class::mutate(pvc, &classes);
+                            }
+                            Ok(rest::ListOutcome::UnknownResource) => {
+                                // This build's own discovery table doesn't
+                                // know `storageclasses` at all — treat the
+                                // same as "no default class exists" rather
+                                // than failing the PVC create, matching
+                                // upstream's own "no default class
+                                // selected, do nothing" no-op path.
+                            }
+                            Err(e) => {
+                                warn!(path = %path_str, error = ?e, "admission: listing storage classes failed");
+                                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                            }
+                        }
+                    }
+                }
+            }
+
             // Group I: authorization, opt-in (see config::Config::enforce_rbac's
             // own doc comment for why this defaults to off rather than
             // being unconditional the moment identity extraction and RBAC

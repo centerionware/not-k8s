@@ -35,21 +35,28 @@
 //! `ephemeralcontainers` subresource path, which this crate doesn't serve
 //! at all yet).
 //!
-//! All three plugins are **wired into `server::listener`, unconditionally**
+//! `default_storage_class` — `DefaultStorageClass`, mutating, `CREATE`-only:
+//! a `PersistentVolumeClaim` with no class of its own gets
+//! `spec.storageClassName` set to whichever `StorageClass` is marked
+//! default (real upstream's own default-selection + tie-break rules,
+//! ported exactly — see that module's own doc comment).
+//!
+//! All four plugins are **wired into `server::listener`, unconditionally**
 //! — none needs operator-provisioned bootstrap data (unlike Group I's
 //! RBAC), so there's no "could lock every request out" risk to gate
 //! behind a config flag.
 //!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
 //! other built-in plugin (`LimitRanger`, `ResourceQuota`, `PodSecurity`,
-//! `DefaultStorageClass`, ...), a generic plugin-chain/registry
-//! abstraction to run more than one plugin without `server::listener`
-//! hand-calling each by name, mutating/validating admission webhooks, and
+//! ...), a generic plugin-chain/registry abstraction to run more than one
+//! plugin without `server::listener` hand-calling each by name,
+//! mutating/validating admission webhooks, and
 //! ValidatingAdmissionPolicy/MutatingAdmissionPolicy (CEL-based — this
 //! crate already has `cel_ext` for a different purpose, not yet reused
 //! here).
 
 pub mod attributes;
+pub mod default_storage_class;
 pub mod default_toleration_seconds;
 pub mod namespace_lifecycle;
 pub mod service_account;
