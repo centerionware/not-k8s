@@ -162,11 +162,22 @@ mod tests {
         assert_eq!(meta.ref_schema.as_deref(), Some("io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"));
     }
 
-    /// A plain scalar field has no ref_schema at all, and — since it also
-    /// carries no other x-kubernetes-* metadata — isn't in the table.
+    /// A plain scalar field with no default and no other x-kubernetes-*
+    /// metadata isn't in the table at all.
     #[test]
-    fn a_scalar_field_has_no_field_meta_entry() {
+    fn a_scalar_field_with_no_default_has_no_field_meta_entry() {
         assert!(field_meta_index().get(&("io.k8s.api.apps.v1.DaemonSetSpec", "minReadySeconds")).is_none());
+    }
+
+    /// A real, meaningful scalar default — `ContainerPort.protocol`
+    /// defaults to `"TCP"` — captured even though the field has no other
+    /// x-kubernetes-* metadata at all.
+    #[test]
+    fn a_scalar_fields_real_default_value_is_captured() {
+        let meta = field_meta_index()
+            .get(&("io.k8s.api.core.v1.ContainerPort", "protocol"))
+            .expect("ContainerPort.protocol should carry a default");
+        assert_eq!(meta.default_json, Some("\"TCP\""));
     }
 
     /// Real cases from `DaemonSetSpec`, verified against the vendored
