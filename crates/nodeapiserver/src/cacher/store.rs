@@ -163,6 +163,17 @@ impl WatchCache {
         (self.items.iter().map(|(k, v)| (k.clone(), v.clone())).collect(), self.revision)
     }
 
+    /// The single-key equivalent of [`Self::list`] — same "whatever the
+    /// cache currently holds, no wait" semantics, for a GET rather than a
+    /// LIST. `None` covers both "never existed" and "existed but was
+    /// deleted"; this cache has no separate tombstone representation
+    /// (`WatchCache::apply`'s own `EventKind::Deleted` arm removes the
+    /// entry outright), matching a real `Range` request's own behavior
+    /// for an absent key.
+    pub fn get(&self, key: &[u8]) -> Option<CacheEntry> {
+        self.items.get(key).cloned()
+    }
+
     /// A live subscription plus the replay of any retained history the
     /// caller needs to catch up on if `start_revision` is behind
     /// `self.revision()`. `start_revision <= 0` means "start from now" —
@@ -253,6 +264,10 @@ impl SharedCache {
         self.read().list()
     }
 
+    pub fn get(&self, key: &[u8]) -> Option<CacheEntry> {
+        self.read().get(key)
+    }
+
     pub fn watch_from(&self, start_revision: i64) -> Result<(Vec<WatchEvent>, broadcast::Receiver<WatchEvent>)> {
         self.read().watch_from(start_revision)
     }
@@ -307,6 +322,26 @@ mod tests {
         cache.apply(EventKind::Deleted, b"a".to_vec(), Vec::new(), 4);
         assert!(cache.list().0.is_empty());
         assert_eq!(cache.revision(), 4);
+    }
+
+    #[test]
+    fn get_finds_a_seeded_key_and_reflects_apply() {
+        let mut cache = WatchCache::new(vec![(b"a".to_vec(), entry("1", 5))], 5, 16, 16);
+        assert_eq!(cache.get(b"a").unwrap().value, b"1");
+        assert!(cache.get(b"missing").is_none());
+
+        cache.apply(EventKind::Modified, b"a".to_vec(), b"2".to_vec(), 6);
+        assert_eq!(cache.get(b"a").unwrap().value, b"2");
+
+        cache.apply(EventKind::Deleted, b"a".to_vec(), Vec::new(), 7);
+        assert!(cache.get(b"a").is_none(), "a deleted key must not still be found");
+    }
+
+    #[test]
+    fn shared_cache_get_delegates_to_the_inner_cache() {
+        let shared = SharedCache::new(WatchCache::new(vec![(b"a".to_vec(), entry("1", 5))], 5, 16, 16));
+        assert_eq!(shared.get(b"a").unwrap().value, b"1");
+        assert!(shared.get(b"missing").is_none());
     }
 
     #[tokio::test]

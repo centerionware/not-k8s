@@ -2,12 +2,13 @@
 //! served instead of always hitting nodestore directly
 //! (`docs/APISERVER_PLAN.md` finding 3, `ARCHITECTURE.md` §4).
 //!
-//! `store` — the cache core (`WatchCache`): apply/list/watch_from/
-//! bookmarks/consistent-read waiting, plus `SharedCache` (an `Arc<RwLock<..>>`
-//! wrapper — what a driver loop and its readers actually hold, since both
-//! sides need concurrent access to the same cache). Pure and synchronous
-//! underneath, unit tested against synthetic events with no live storage
-//! needed.
+//! `store` — the cache core (`WatchCache`): apply/list/get/watch_from/
+//! bookmarks/consistent-read waiting (`get` is `list`'s single-key
+//! equivalent, for a `GET` rather than a `LIST`), plus `SharedCache` (an
+//! `Arc<RwLock<..>>` wrapper — what a driver loop and its readers
+//! actually hold, since both sides need concurrent access to the same
+//! cache). Pure and synchronous underneath, unit tested against
+//! synthetic events with no live storage needed.
 //! `driver` — wires a real `storage::client::StorageClient` to the core:
 //! LIST for a snapshot + RV, WATCH from `RV + 1`, decode `mvccpb::Event`s
 //! into `WatchCache::apply` calls, and `reflect()` — the reconnect loop
