@@ -116,13 +116,18 @@ implementation of the same generated types, not assumed from the .proto
 alone (worth flagging: nodestore's own code reads `LeaseGrantRequest.ttl`/
 `.id`, lowercased from the .proto's `TTL`/`ID` — prost snake_cases
 regardless of the source proto's own casing convention). `storage::keys`
-has the *unconfigured-default* key layout (`/registry/<resource>/<ns>/<name>`,
-no group suffix — verified against `DefaultStorageFactory.ResourcePrefix`
-directly, corrected from this doc's earlier `<group>`-suffixed shorthand).
-Not yet done, named honestly rather than approximated: the per-resource
-key-prefix override table (`pkg/controlplane/instance.go`'s
-`DefaultResourcePrefixes`, real vendoring work of its own) and
-encryption-at-rest providers.
+has the full key layout, override table included:
+`/registry/<prefix>/<ns>/<name>` where `<prefix>` is the resource's own
+lowercased name unless `(group, resource)` is one of the six real
+overrides in `SpecialDefaultResourcePrefixes` — found at
+`pkg/kubeapiserver/default_storage_factory_builder.go` via GitHub code
+search once `pkg/controlplane/instance.go` (this doc's own earlier,
+now-stale guess at the location) turned out not to define it in
+`release-1.34` anymore. Genuinely small (six entries: `replicationcontrollers`
+-> `controllers`, `endpoints` -> `services/endpoints`, `nodes` -> `minions`,
+`services` -> `services/specs`, and `ingresses` -> `ingress` in both
+`extensions` and `networking.k8s.io`), vendored as a literal table rather
+than approximated. **Not yet landed**: encryption-at-rest providers.
 
 **D. Watch cache** — **in progress**. `cacher::store::WatchCache` is the
 cache core: apply/list/watch_from, bookmarks, RV=0 reads, and consistent
