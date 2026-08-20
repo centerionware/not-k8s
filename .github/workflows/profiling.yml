@@ -136,13 +136,20 @@ jobs:
             # kube-proxy on the other side and a measure.sh that sums
             # multiple PIDs. Neither exists today; don't read these
             # numbers as covering service routing on either side.
-            # --datastore=none too: bootstrap-release.sh's release-path
-            # default is DATASTORE=nodestore, but this comparison wants
+            # --datastore=none/--scheduler=none/--controller-manager=none
+            # too: bootstrap-release.sh's release-path defaults are
+            # DATASTORE=nodestore, SCHEDULER=nodescheduler,
+            # CONTROLLER_MANAGER=nodecontroller, but this comparison wants
             # both legs running the entire rest of the real k3s stack
-            # unmodified, including its own bundled kine datastore — same
-            # apples-to-apples reasoning as --proxy=none above, just for
-            # the datastore instead of the service proxy.
-            install_args: --with-cri --proxy=none --datastore=none
+            # unmodified — same apples-to-apples reasoning as --proxy=none
+            # above, just for the three other replaceable components too.
+            # Found live: leaving CONTROLLER_MANAGER at its default meant
+            # nodecontroller (not yet implementing the ServiceAccount
+            # controller — see nodecontroller-progress in the project's
+            # own memory) replaced k3s's real controller-manager, so new
+            # namespaces never got a "default" ServiceAccount and every
+            # pod create failed with a 403 looking it up.
+            install_args: --with-cri --proxy=none --datastore=none --scheduler=none --controller-manager=none
           - agent: kubelet
             agent_pattern: /usr/local/bin/kubelet
             # Round 124 (found live from a user's own review of the run):
@@ -152,11 +159,12 @@ jobs:
             # nodelet never built, installed, or started, so
             # upstream-kubelet.sh is the only node agent this runner ever
             # runs.
-            # --datastore=none for the same reason as the nodelet leg
-            # above: this comparison wants the entire rest of the real
-            # k3s stack unmodified on both legs, including its own
-            # bundled kine datastore, not nodestore.
-            install_args: --with-cri --skip-nodelet --datastore=none
+            # --datastore=none/--scheduler=none/--controller-manager=none
+            # for the same reason as the nodelet leg above: this
+            # comparison wants the entire rest of the real k3s stack
+            # unmodified on both legs, not nodestore/nodescheduler/
+            # nodecontroller.
+            install_args: --with-cri --skip-nodelet --datastore=none --scheduler=none --controller-manager=none
     runs-on: ubuntu-latest
     # idle mode: 30s settle + up to a 600s (10m) sample_seconds window +
     # bootstrap overhead (~2-3m) comfortably fits inside 30m; widen this if
