@@ -48,6 +48,14 @@ serde_yaml = "0.9"
 # same convention every other Kubernetes JSON<->protobuf codec follows.
 base64 = "0.22"
 
+# Group C: the etcd v3 gRPC client to nodestore. tonic/prost, not the
+# nodestore crate itself — see the dependency-discipline note above; this
+# crate speaks the wire protocol like any other client rather than linking
+# nodestore's own types.
+tonic = { workspace = true }
+prost = { workspace = true }
+tonic-prost = { workspace = true }
+
 [build-dependencies]
 # Group A codegen: parses vendor/openapi-spec/v3/*.json and
 # vendor/protos/**/generated.proto at build time into the tables
@@ -55,3 +63,10 @@ base64 = "0.22"
 # module's own doc comment for why this crate does not generate a second
 # struct universe with prost for the k8s API types themselves.
 serde_json = { workspace = true }
+# Group C: compiles proto/rpc.proto (client-only) into the etcd v3 client
+# types storage/client.rs wraps. Declared with an explicit version rather
+# than inherited: this one is not in the workspace's
+# [workspace.dependencies] (nodestore's own Cargo.toml declares its copy
+# the same way), and inheriting something that isn't there fails at
+# manifest-parse time, before any code is even looked at.
+tonic-prost-build = "0.14"
