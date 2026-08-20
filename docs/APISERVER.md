@@ -354,14 +354,16 @@ Named honestly, not overclaimed: reads go straight to nodestore,
 bypassing `cacher::store::WatchCache` entirely (a real, valid strategy —
 upstream's own quorum-read path takes exactly this shape — not a
 stand-in for the cache; the cache isn't even started yet, since nothing
-in `lib.rs::run()` calls `cacher::driver::reflect()`), no subresources,
-`list` has no label/field selector filtering yet (`cacher::selector`'s
-already-landed `object_matches` is exactly what would filter these
-decoded items, just not wired in here — separate follow-up) and no
-pagination, and **no authentication, no authorization, no admission at
-all** — every request reaching `rest::get`/`list` is currently treated as
-allowed, the same deliberately-incomplete-but-honest bring-up posture
-`server::tls`'s own self-signed cert already established for this crate.
+in `lib.rs::run()` calls `cacher::driver::reflect()`), no subresources.
+`list` now filters by label/field selector for real —
+`cacher::selector::object_matches` (Group D's own generic adapter,
+already landed and unit-tested there) wired in unchanged, with a real
+`400 BadRequest` (not a `500`) for a client-malformed selector. `list`'s
+remaining gap is pagination (`continue`/`limit`). **No authentication, no
+authorization, no admission at all** — every request reaching
+`rest::get`/`list` is currently treated as allowed, the same
+deliberately-incomplete-but-honest bring-up posture `server::tls`'s own
+self-signed cert already established for this crate.
 
 **Not yet landed**: every other resource verb
 (`watch`/`create`/`update`/`patch`/`delete`), the real handler

@@ -27,10 +27,14 @@
 //! Status: in progress (see docs/APISERVER.md). Landed: the cache core,
 //! `SharedCache`, the LIST/decode/apply logic, the reconnect loop,
 //! bookmark generation, label/field selector parsing+matching, and the
-//! adapter onto a decoded `serde_json::Value` object. **Not yet landed**:
-//! actually calling this from a real LIST request handler (needs Group
-//! E's REST dispatch to exist first) and a per-Kind `SelectableFields`
-//! allowlist.
+//! adapter onto a decoded `serde_json::Value` object — `object_matches`
+//! is now called for real, from `server::rest::list` (Group E), filtering
+//! every item a real `LIST` request decodes. **Not yet landed**: a
+//! per-Kind `SelectableFields` allowlist, and wiring `WatchCache` itself
+//! (as opposed to `object_matches` alone) into the read path — `rest::list`
+//! still reads straight from nodestore, not the cache (see that module's
+//! own doc comment for why that's a real, valid strategy for now, not a
+//! shortcut).
 
 pub mod store;
 pub mod driver;
