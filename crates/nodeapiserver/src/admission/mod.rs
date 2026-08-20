@@ -25,14 +25,24 @@
 //! `Value -> Value` transform, no I/O needed — unlike
 //! `namespace_lifecycle`, nothing about this decision depends on other
 //! cluster state.
-//! Both are **wired into `server::listener`, unconditionally** — neither
-//! plugin needs operator-provisioned bootstrap data (unlike Group I's
+//! `service_account` — `ServiceAccount`, both mutating and validating,
+//! `CREATE`-only: defaults `spec.serviceAccountName`, requires the
+//! referenced `ServiceAccount` to exist, auto-mounts its token volume
+//! unless opted out, copies its `imagePullSecrets`, and validates a
+//! mirror pod's three real restrictions. See that module's own doc
+//! comment for the two real pieces of upstream's plugin this one doesn't
+//! port (`LimitSecretReferences`, off by default upstream anyway, and the
+//! `ephemeralcontainers` subresource path, which this crate doesn't serve
+//! at all yet).
+//!
+//! All three plugins are **wired into `server::listener`, unconditionally**
+//! — none needs operator-provisioned bootstrap data (unlike Group I's
 //! RBAC), so there's no "could lock every request out" risk to gate
 //! behind a config flag.
 //!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
-//! other built-in plugin (`LimitRanger`, `ServiceAccount`,
-//! `ResourceQuota`, `PodSecurity`, ...), a generic plugin-chain/registry
+//! other built-in plugin (`LimitRanger`, `ResourceQuota`, `PodSecurity`,
+//! `DefaultStorageClass`, ...), a generic plugin-chain/registry
 //! abstraction to run more than one plugin without `server::listener`
 //! hand-calling each by name, mutating/validating admission webhooks, and
 //! ValidatingAdmissionPolicy/MutatingAdmissionPolicy (CEL-based — this
@@ -42,3 +52,4 @@
 pub mod attributes;
 pub mod default_toleration_seconds;
 pub mod namespace_lifecycle;
+pub mod service_account;
