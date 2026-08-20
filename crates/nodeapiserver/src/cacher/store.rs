@@ -32,7 +32,13 @@ pub enum EventKind {
 pub struct WatchEvent {
     pub kind: EventKind,
     pub key: Vec<u8>,
-    /// Empty for `Deleted`/`Bookmark`.
+    /// The object's encoded value — for `Deleted`, this is the last
+    /// known value *before* deletion (real upstream's own
+    /// `WatchEvent.Object` semantics for a delete: "the state of the
+    /// object immediately before deletion" — see [`WatchCache::apply`]'s
+    /// own doc comment for how that's captured), empty only if this
+    /// cache never held a value for the deleted key at all. Always empty
+    /// for `Bookmark`.
     pub value: Vec<u8>,
     pub revision: i64,
 }
@@ -133,6 +139,20 @@ impl WatchCache {
     /// this needs to tolerate).
     pub fn apply(&mut self, kind: EventKind, key: Vec<u8>, value: Vec<u8>, revision: i64) {
         debug_assert!(revision > self.revision, "watch events must arrive in increasing revision order");
+        // Real upstream's own `WatchEvent.Object` doc comment: for a
+        // `Deleted` event, `Object` is "the state of the object
+        // immediately before deletion." The caller (`cacher::driver`)
+        // never has that value to hand (nodestore's own watch stream
+        // isn't asked for `prev_kv`, and even if it were, decoding it
+        // needs the resource's schema, which is `server`-layer, not
+        // `cacher`-layer, knowledge) — but this cache already holds the
+        // pre-delete value in `self.items` at the moment a delete
+        // arrives, so it's captured here before the entry is removed,
+        // rather than the caller's always-empty `value` argument being
+        // used for a `Deleted` event. `None` (nothing retained for this
+        // key — a delete for a key this cache never saw, e.g. right at a
+        // relist boundary) falls back to empty, same as before this fix.
+        let value = if kind == EventKind::Deleted { self.items.get(&key).map(|e| e.value.clone()).unwrap_or_default() } else { value };
         match kind {
             EventKind::Added | EventKind::Modified => {
                 self.items.insert(key.clone(), CacheEntry { value: value.clone(), mod_revision: revision });
@@ -354,6 +374,39 @@ mod tests {
         cache.apply(EventKind::Deleted, b"a".to_vec(), Vec::new(), 4);
         assert!(cache.list().0.is_empty());
         assert_eq!(cache.revision(), 4);
+    }
+
+    #[test]
+    fn a_deleted_event_carries_the_last_known_value_not_the_callers_empty_argument() {
+        // Real upstream's own WatchEvent.Object semantics for a delete:
+        // "the state of the object immediately before deletion". The
+        // caller (cacher::driver, mirroring nodestore's own watch stream)
+        // always passes an empty value for a Deleted event — WatchCache
+        // itself is responsible for retaining the pre-delete value.
+        // An unrelated seed event at revision 2 first, purely so
+        // `watch_from`'s own "not older than the oldest retained history
+        // entry" check has something at or before the requested
+        // start_revision — `watch_from`'s semantics are unrelated to what
+        // this test is proving and untouched by this fix.
+        let mut cache = WatchCache::new(vec![(b"a".to_vec(), entry("last-value", 1))], 1, 16, 16);
+        cache.apply(EventKind::Added, b"seed".to_vec(), b"unrelated".to_vec(), 2);
+        cache.apply(EventKind::Deleted, b"a".to_vec(), Vec::new(), 3);
+        let (replay, _rx) = cache.watch_from(2).unwrap();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].kind, EventKind::Deleted);
+        assert_eq!(replay[0].value, b"last-value", "the Deleted WatchEvent must carry the value the key held just before deletion");
+    }
+
+    #[test]
+    fn deleting_a_key_this_cache_never_held_a_value_for_falls_back_to_empty() {
+        // A delete for a key this cache never saw (e.g. right at a relist
+        // boundary) has nothing to retain — falls back to empty rather
+        // than panicking or fabricating a value.
+        let mut cache = WatchCache::new(vec![], 1, 16, 16);
+        cache.apply(EventKind::Added, b"seed".to_vec(), b"unrelated".to_vec(), 2);
+        cache.apply(EventKind::Deleted, b"never-seen".to_vec(), Vec::new(), 3);
+        let (replay, _rx) = cache.watch_from(2).unwrap();
+        assert_eq!(replay[0].value, Vec::<u8>::new());
     }
 
     #[test]
