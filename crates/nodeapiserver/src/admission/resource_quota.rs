@@ -1,33 +1,37 @@
 //! `ResourceQuota` — a faithful-but-substantially-scoped port of real
 //! upstream's own admission plugin
 //! (`staging/src/k8s.io/apiserver/pkg/admission/plugin/resourcequota/controller.go`
-//! + `pkg/quota/v1/evaluator/core/{pods,persistent_volume_claims}.go`,
+//! + `pkg/quota/v1/evaluator/core/{pods,persistent_volume_claims,services}.go`,
 //! release-1.34, fetched and read directly): forbids a `Pod`/
-//! `PersistentVolumeClaim` `CREATE` that would push its namespace's
-//! tracked resource usage over any `ResourceQuota` object's own
-//! `spec.hard` limit.
+//! `PersistentVolumeClaim`/`Service` `CREATE` that would push its
+//! namespace's tracked resource usage over any `ResourceQuota` object's
+//! own `spec.hard` limit.
 //!
-//! **Two of real upstream's evaluators** — real upstream's
-//! `ResourceQuota` also tracks `Service`/`Secret`/`ConfigMap`/arbitrary
+//! **Three of real upstream's evaluators** — real upstream's
+//! `ResourceQuota` also tracks `Secret`/`ConfigMap`/arbitrary
 //! `count/<resource>` object counts through a whole per-type `Evaluator`
 //! registry (`pkg/quota/v1/evaluator/core/*.go`); this crate ports the
-//! pod evaluator (real upstream's own `podEvaluator`) and the PVC
-//! evaluator (`pvcEvaluator`) — together what the overwhelming majority
-//! of real `ResourceQuota` usage actually targets (compute + storage
-//! limits). **Compute/storage resources only** — of real upstream's own
-//! `podResources`/`pvcResources` tracked-resource lists, this port
-//! covers `pods` (object count), `cpu`/`requests.cpu`, `memory`/
-//! `requests.memory`, `limits.cpu`, `limits.memory`,
-//! `persistentvolumeclaims` (object count), `requests.storage`; not
-//! ported: `ephemeral-storage` and its `requests`/`limits` forms, the
-//! `hugepages-*` family, extended resources, and the PVC evaluator's own
-//! real per-storage-class resource name family
-//! (`<class>.storageclass.storage.k8s.io/...`) — all real, all just not
-//! this crate's first cut. The PVC evaluator only applies to an
-//! *unscoped* `ResourceQuota` (`spec.scopes` empty) — real upstream's
-//! own `pvcEvaluator.Matches` only consults scopes at all behind the
-//! alpha `VolumeAttributesClass` feature gate, so this matches its real
-//! stable-feature-gate-off default behavior, not a shortcut.
+//! pod evaluator (real upstream's own `podEvaluator`), the PVC evaluator
+//! (`pvcEvaluator`), and the service evaluator (`serviceEvaluator`) —
+//! together what the overwhelming majority of real `ResourceQuota` usage
+//! actually targets (compute/storage limits + service-type counts).
+//! **Compute/storage/service resources only** — of real upstream's own
+//! `podResources`/`pvcResources`/`serviceResources` tracked-resource
+//! lists, this port covers `pods` (object count), `cpu`/`requests.cpu`,
+//! `memory`/`requests.memory`, `limits.cpu`, `limits.memory`,
+//! `persistentvolumeclaims` (object count), `requests.storage`,
+//! `services` (object count), `services.nodeports`,
+//! `services.loadbalancers`; not ported: `ephemeral-storage` and its
+//! `requests`/`limits` forms, the `hugepages-*` family, extended
+//! resources, and the PVC evaluator's own real per-storage-class
+//! resource name family (`<class>.storageclass.storage.k8s.io/...`) —
+//! all real, all just not this crate's first cut. The PVC and service
+//! evaluators only apply to an *unscoped* `ResourceQuota` (`spec.scopes`
+//! empty) — real upstream's own `pvcEvaluator.Matches` only consults
+//! scopes at all behind the alpha `VolumeAttributesClass` feature gate,
+//! and `serviceEvaluator.Matches` never consults scopes at all (no
+//! feature gate involved for services either way), so this matches both
+//! evaluators' real stable behavior, not a shortcut.
 //!
 //! **`spec.scopes` matching, all six real scope names** — real
 //! upstream's own `ResourceQuota.spec.scopes` lets an operator target a
@@ -433,6 +437,74 @@ pub fn check_pvc_create(pvc: &Value, existing_pvcs: &[Value], resource_quotas: &
     None
 }
 
+pub fn applies_to_service(operation: crate::admission::attributes::Operation, group: &str, resource: &str, subresource: &str) -> bool {
+    group.is_empty() && resource == "services" && subresource.is_empty() && operation == crate::admission::attributes::Operation::Create
+}
+
+const TRACKED_SERVICE_RESOURCES: [&str; 3] = ["services", "services.nodeports", "services.loadbalancers"];
+
+fn quota_applies_to_services(resource_quota: &Value) -> bool {
+    hard_limits(resource_quota).keys().any(|k| TRACKED_SERVICE_RESOURCES.contains(&k.as_str()))
+}
+
+/// Real upstream's own `serviceEvaluator.Usage`, ported exactly: every
+/// `Service` counts once toward `services`; `services.nodeports` counts
+/// the number of ports that actually consume a node port (a `NodePort`
+/// service always counts every port; a `LoadBalancer` service counts
+/// every port unless it explicitly opted out of node-port allocation via
+/// `spec.allocateLoadBalancerNodePorts: false`, in which case only ports
+/// with an explicit `nodePort` value already set count — real upstream's
+/// own `portsWithNodePorts`); `services.loadbalancers` counts 1 only for
+/// `LoadBalancer`-type services. Unscoped quotas only, same posture as
+/// [`check_pvc_create`] and for the same reason (real upstream's own
+/// `serviceEvaluator.Matches` uses `generic.MatchesNoScopeFunc`
+/// unconditionally — services never match any scope at all, no feature
+/// gate involved).
+fn service_usage(svc: &Value) -> BTreeMap<String, Quantity> {
+    let mut usage = BTreeMap::new();
+    let one = Quantity::parse("1").expect("literal \"1\" always parses");
+    usage.insert("services".to_string(), one);
+
+    let ports = svc.get("spec").and_then(|s| s.get("ports")).and_then(Value::as_array).cloned().unwrap_or_default();
+    let port_count = Quantity::parse(&ports.len().to_string()).unwrap_or(Quantity::ZERO);
+    let ports_with_node_port = || {
+        let count = ports.iter().filter(|p| p.get("nodePort").and_then(Value::as_i64).is_some_and(|n| n != 0)).count();
+        Quantity::parse(&count.to_string()).unwrap_or(Quantity::ZERO)
+    };
+
+    match svc.get("spec").and_then(|s| s.get("type")).and_then(Value::as_str).unwrap_or("ClusterIP") {
+        "NodePort" => {
+            usage.insert("services.nodeports".to_string(), port_count);
+        }
+        "LoadBalancer" => {
+            let allocates_node_ports = svc.get("spec").and_then(|s| s.get("allocateLoadBalancerNodePorts")).and_then(Value::as_bool).unwrap_or(true);
+            usage.insert("services.nodeports".to_string(), if allocates_node_ports { port_count } else { ports_with_node_port() });
+            usage.insert("services.loadbalancers".to_string(), one);
+        }
+        _ => {}
+    }
+    usage
+}
+
+pub fn check_service_create(svc: &Value, existing_services: &[Value], resource_quotas: &[Value]) -> Option<String> {
+    let this_service_usage = service_usage(svc);
+
+    for resource_quota in resource_quotas {
+        let has_scopes = resource_quota.get("spec").and_then(|s| s.get("scopes")).and_then(Value::as_array).is_some_and(|s| !s.is_empty());
+        if has_scopes || !quota_applies_to_services(resource_quota) {
+            continue;
+        }
+        let mut existing_usage = BTreeMap::new();
+        for existing in existing_services {
+            existing_usage = add_maps(&existing_usage, &service_usage(existing));
+        }
+        if let Some(message) = check_quota(resource_quota, &existing_usage, &this_service_usage) {
+            return Some(message);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -746,5 +818,75 @@ mod tests {
         let mut q = quota("scoped-quota", json!({"requests.storage": "1Gi"}));
         q["spec"]["scopes"] = json!(["BestEffort"]);
         assert!(check_pvc_create(&pvc, &[], &[q]).is_none(), "a scoped quota must not apply to PVCs at all, matching real upstream's stable-feature-gate-off default");
+    }
+
+    fn cluster_ip_service(name: &str) -> Value {
+        json!({"metadata": {"name": name}, "spec": {"type": "ClusterIP", "ports": [{"port": 80}]}})
+    }
+
+    #[test]
+    fn applies_to_service_create_only() {
+        assert!(applies_to_service(Operation::Create, "", "services", ""));
+        assert!(!applies_to_service(Operation::Update, "", "services", ""));
+        assert!(!applies_to_service(Operation::Create, "", "services", "status"));
+    }
+
+    #[test]
+    fn service_usage_always_counts_the_service_object() {
+        let usage = service_usage(&cluster_ip_service("svc"));
+        assert_eq!(usage["services"].value(), 1);
+        assert!(usage.get("services.nodeports").is_none());
+        assert!(usage.get("services.loadbalancers").is_none());
+    }
+
+    #[test]
+    fn service_usage_counts_nodeports_for_a_nodeport_service() {
+        let svc = json!({"metadata": {"name": "svc"}, "spec": {"type": "NodePort", "ports": [{"port": 80}, {"port": 443}]}});
+        let usage = service_usage(&svc);
+        assert_eq!(usage["services.nodeports"].value(), 2);
+        assert!(usage.get("services.loadbalancers").is_none());
+    }
+
+    #[test]
+    fn service_usage_counts_loadbalancer_and_nodeports_by_default() {
+        let svc = json!({"metadata": {"name": "svc"}, "spec": {"type": "LoadBalancer", "ports": [{"port": 80}]}});
+        let usage = service_usage(&svc);
+        assert_eq!(usage["services.loadbalancers"].value(), 1);
+        assert_eq!(usage["services.nodeports"].value(), 1);
+    }
+
+    #[test]
+    fn service_usage_only_counts_explicit_nodeports_when_allocation_is_disabled() {
+        let svc = json!({"metadata": {"name": "svc"}, "spec": {
+            "type": "LoadBalancer",
+            "allocateLoadBalancerNodePorts": false,
+            "ports": [{"port": 80, "nodePort": 30080}, {"port": 443}],
+        }});
+        let usage = service_usage(&svc);
+        assert_eq!(usage["services.nodeports"].value(), 1, "only the port with an explicit nodePort counts");
+    }
+
+    #[test]
+    fn a_service_within_quota_is_allowed() {
+        let svc = cluster_ip_service("new");
+        let q = quota("service-quota", json!({"services": "5"}));
+        assert!(check_service_create(&svc, &[], &[q]).is_none());
+    }
+
+    #[test]
+    fn a_nodeport_service_that_would_exceed_quota_is_denied() {
+        let svc = json!({"metadata": {"name": "new"}, "spec": {"type": "NodePort", "ports": [{"port": 80}, {"port": 443}]}});
+        let existing = json!({"metadata": {"name": "existing"}, "spec": {"type": "NodePort", "ports": [{"port": 8080}]}});
+        let q = quota("nodeport-quota", json!({"services.nodeports": "2"}));
+        let denial = check_service_create(&svc, &[existing], &[q]).expect("2 + 1 > 2");
+        assert!(denial.contains("services.nodeports"));
+    }
+
+    #[test]
+    fn a_scoped_quota_does_not_apply_to_services_at_all() {
+        let svc = cluster_ip_service("new");
+        let mut q = quota("scoped-quota", json!({"services": "0"}));
+        q["spec"]["scopes"] = json!(["BestEffort"]);
+        assert!(check_service_create(&svc, &[], &[q]).is_none());
     }
 }
