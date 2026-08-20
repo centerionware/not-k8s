@@ -28,19 +28,27 @@
 //! framing handled by hyper's own h1/h2 connection layer. A resource with
 //! no registered cache still falls through to the echo stub, same as a
 //! resource `GET`/`LIST` can't yet serve from a cache. `PATCH` is real
-//! too now (`rest::patch`, reusing Group G's already-landed
-//! `patch::json_patch`/`merge_patch`/`strategic_merge`, selected by the
-//! real `Content-Type` — `application/json-patch+json`/
-//! `application/merge-patch+json`/`application/strategic-merge-patch+json`
-//! — with a real `415` for anything else) — **but doesn't run through
-//! Group J admission yet**, a named gap (this branch's own comment,
-//! right above where it's handled, has the reason). `deletecollection`
+//! too now (`rest::patch_prepare`/`patch_persist`, reusing Group G's
+//! already-landed `patch::json_patch`/`merge_patch`/`strategic_merge`,
+//! selected by the real `Content-Type` —
+//! `application/json-patch+json`/`application/merge-patch+json`/
+//! `application/strategic-merge-patch+json` — with a real `415` for
+//! anything else), **and now runs the two Group J plugins that ever
+//! apply to an `Update`-shaped write** (`namespace_lifecycle`,
+//! `LimitRanger`'s own PVC validation — the split between
+//! `rest::patch_prepare`/`patch_persist` exists specifically so admission
+//! can see the real candidate object in between the two). `deletecollection`
 //! is real too now (`rest::delete_collection` — lists via the same
-//! selector filtering `LIST` already has, then deletes each match; same
-//! no-admission-yet gap as `PATCH`). `watch` is the only remaining
-//! resource verb this build knows about that isn't a real generic REST
-//! dispatch — it's real too, just structurally different (a streaming
-//! response, covered above).
+//! selector filtering `LIST` already has, then deletes each match) —
+//! **it alone still runs no Group J admission**, a named gap (in
+//! practice a small one: `namespace_lifecycle`'s own immortal-namespace
+//! check needs a `name`, which a collection delete never has, so the
+//! only real loss is `LimitRanger`'s own PVC check, which a bulk PVC
+//! delete wouldn't be blocked by anyway — deleting under a limit never
+//! violates a *minimum*). `watch` is the only remaining resource verb
+//! this build knows about that isn't a real generic REST dispatch — it's
+//! real too, just structurally different (a streaming response, covered
+//! above).
 //! Client certificate authentication is real (`super::tls`'s optional
 //! `client_ca`, `authn::x509::identity_from_der` on the verified peer
 //! cert), surfaced in the echo response's own `user` field for
@@ -702,15 +710,14 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
     // block below: its request body is a patch document, not a
     // full/partial object, and which of `rest::patch`'s three real patch
     // kinds applies is decided by `Content-Type` rather than the
-    // JSON-vs-YAML negotiation `has_body` below uses. **No Group J
-    // admission runs on `PATCH` yet** — a named, honest gap: the
-    // mutating/validating plugin chain below is wired specifically
-    // against `body_value`/`is_create`/`is_update`, and `PATCH`'s own
-    // final object only exists once `rest::patch` has already applied
-    // the patch and persisted it, past the point admission would need to
-    // run to still be able to reject the write. Closing this gap needs
-    // `rest::patch` split into an apply-then-validate-then-persist shape
-    // the way `create`/`update` already are — separate follow-up work.
+    // JSON-vs-YAML negotiation `has_body` below uses. Group J admission
+    // now runs on it too (`namespace_lifecycle` + `LimitRanger`'s own
+    // PVC-update validation — the only two plugins that ever apply to an
+    // `Update`-shaped write in this crate; every other Group J plugin is
+    // `CREATE`-only, so there's nothing else to run here), via
+    // `rest::patch_prepare`/`patch_persist`'s own split, which exists
+    // specifically so admission can see the real candidate object in
+    // between the two.
     if info.is_resource_request && info.verb == "patch" && !info.name.is_empty() && info.subresource.is_empty() {
         let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
         let Some(kind_of_patch) = content_type.as_deref().and_then(rest::patch_kind_for_content_type) else {
@@ -734,22 +741,90 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
         let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
-        return match rest::patch(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc).await {
+
+        // Group J: `namespace_lifecycle`, same `Update`-shaped check
+        // `CREATE`/`UPDATE` already get (an "operation" of `Update` is
+        // exactly right for a `PATCH` too — real upstream's own
+        // `admission.Update` covers both).
+        let admission_attrs = admission::attributes::Attributes { operation: admission::attributes::Operation::Update, group: &info.api_group, resource: &info.resource, namespace: &info.namespace, name: &info.name };
+        match admission::namespace_lifecycle::quick_decision(&admission_attrs) {
+            admission::namespace_lifecycle::QuickDecision::Allow => {}
+            admission::namespace_lifecycle::QuickDecision::Forbidden(msg) => {
+                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+            }
+            admission::namespace_lifecycle::QuickDecision::NeedsNamespaceLookup => {
+                let namespace_phase = match rest::get(&mut client, None, "", "v1", "namespaces", None, &info.namespace).await {
+                    Ok(rest::GetOutcome::Found(ns)) => Some(ns.get("status").and_then(|s| s.get("phase")).and_then(|p| p.as_str()).unwrap_or("").to_string()),
+                    Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "admission: namespace lookup failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                };
+                match admission::namespace_lifecycle::decide(&admission_attrs, namespace_phase.as_deref()) {
+                    admission::namespace_lifecycle::Decision::Allow => {}
+                    admission::namespace_lifecycle::Decision::Forbidden(msg) => {
+                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+                    }
+                    admission::namespace_lifecycle::Decision::NamespaceNotFound(_) => {
+                        return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                    }
+                }
+            }
+        }
+
+        let (candidate, context) = match rest::patch_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc).await {
+            Ok(rest::PatchPrepareOutcome::Ready(candidate, context)) => (candidate, context),
+            Ok(rest::PatchPrepareOutcome::UnknownResource) | Ok(rest::PatchPrepareOutcome::ObjectNotFound) => {
+                return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+            }
+            Ok(rest::PatchPrepareOutcome::Invalid(violations)) => {
+                return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations)));
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "rest::patch_prepare failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+
+        // Group J: `LimitRanger`'s own PVC-`Update` validation — its only
+        // `Update`-shaped check (pods are `CREATE`-only, real upstream's
+        // own "containers are immutable after create" posture, see
+        // `admission::limit_ranger::applies_to`'s own doc comment).
+        if admission::limit_ranger::applies_to(admission::attributes::Operation::Update, &info.api_group, &info.resource, &info.subresource) {
+            match rest::list(&mut client, None, "", "v1", "limitranges", namespace, "", "").await {
+                Ok(rest::ListOutcome::Found(list)) => {
+                    for limit_range in list["items"].as_array().cloned().unwrap_or_default() {
+                        let errs = admission::limit_ranger::validate_pvc(&limit_range, &candidate);
+                        if !errs.is_empty() {
+                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &errs.join("; "))));
+                        }
+                    }
+                }
+                Ok(rest::ListOutcome::UnknownResource) => {}
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "admission: listing limit ranges failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
+
+        return match rest::patch_persist(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, context, candidate).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
             Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
             Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
-            // `rest::patch` never itself returns these two -- they're
-            // `update`-only (a submitted resourceVersion, a submitted
-            // namespace) and `UnsupportedPatchType` is pre-checked above,
-            // before `rest::patch` is ever called. Kept exhaustive rather
-            // than `unreachable!()` so a future real use from `rest::patch`
-            // doesn't silently panic in production.
+            // `rest::patch_persist` never itself returns these two -- a
+            // submitted resourceVersion/namespace are `update`-only
+            // outcomes, and `UnsupportedPatchType` is pre-checked before
+            // `rest::patch_prepare` is ever called. Kept exhaustive rather
+            // than `unreachable!()` so a future real use doesn't silently
+            // panic in production.
             Ok(rest::UpdateOutcome::MissingResourceVersion) | Ok(rest::UpdateOutcome::NamespaceMismatch) | Ok(rest::UpdateOutcome::UnsupportedPatchType) => {
                 Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
             }
             Err(e) => {
-                warn!(path = %path_str, error = ?e, "rest::patch failed");
+                warn!(path = %path_str, error = ?e, "rest::patch_persist failed");
                 Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
             }
         };
@@ -758,8 +833,11 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
     // reason `patch` is: it needs no request body at all (unlike
     // `create`/`update`), and reuses [`rest::delete_collection`] rather
     // than the single-object shape the five-verb block below assumes.
-    // **No Group J admission runs on it yet**, the same named gap
-    // `patch`'s own branch already has above — see this crate's
+    // **No Group J admission runs on it yet**, a named gap — but a small
+    // one in practice: `namespace_lifecycle`'s own immortal-namespace
+    // check needs a `name`, which a collection delete never has, and
+    // `LimitRanger`'s only `Update`-shaped check is a PVC *minimum*,
+    // which deleting can't violate. See this crate's
     // `rest::delete_collection`'s own doc comment for the rest of its
     // scope.
     if info.is_resource_request && info.verb == "deletecollection" && info.subresource.is_empty() {

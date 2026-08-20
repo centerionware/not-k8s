@@ -528,26 +528,27 @@ admission deliberately does **not** gate `watch` — matching real
 upstream's own posture (admission never runs on a read, whatever the
 verb), not a gap.
 
-**`PATCH` is real too now** (`rest::patch`, reusing Group G's already-landed
-`patch::json_patch`/`merge_patch`/`strategic_merge`): the real `Content-Type`
-selects the patch kind (`application/json-patch+json`/
-`application/merge-patch+json`/`application/strategic-merge-patch+json` —
+**`PATCH` is real too now** (`rest::patch_prepare`/`patch_persist`,
+reusing Group G's already-landed `patch::json_patch`/`merge_patch`/
+`strategic_merge`): the real `Content-Type` selects the patch kind
+(`application/json-patch+json`/`application/merge-patch+json`/
+`application/strategic-merge-patch+json` —
 `rest::patch_kind_for_content_type`, a real `415` for anything else,
 Server-Side Apply's own `application/apply-patch+yaml` deliberately not
 recognized, matching Group G's own "not yet landed" note), applied to
-the object this same call itself reads, then persisted through the same
-optimistic-concurrency `Txn`-compared-against-`ModRevision` tail
-`rest::update` already used (factored out as `persist_update`) — no
-client-submitted `resourceVersion` needed, unlike `PUT`, since the
-object being patched *is* the one just read. **Named, honest gap**:
-`PATCH` doesn't run through Group J admission yet — the mutating/
-validating plugin chain in `server::listener` is wired specifically
-against a pre-built `body_value` the way `CREATE`/`UPDATE` supply it,
-and `PATCH`'s own final object only exists once `rest::patch` has
-already applied the patch and persisted it, past the point admission
-would need to run to still be able to reject the write; closing this
-needs `rest::patch` itself split into an apply-then-validate-then-persist
-shape the way `create`/`update` already are.
+the object `patch_prepare` itself reads, then persisted by
+`patch_persist` through the same optimistic-concurrency
+`Txn`-compared-against-`ModRevision` tail `rest::update` already used
+(factored out as `persist_update`) — no client-submitted
+`resourceVersion` needed, unlike `PUT`, since the object being patched
+*is* the one just read. **`PATCH` now runs Group J admission too**: the
+function is deliberately split into a "prepare" half (fetch + apply the
+patch) and a "persist" half (validate + default + write) so
+`server::listener` can run admission against the real candidate object
+in between — specifically `namespace_lifecycle` and `LimitRanger`'s own
+PVC-`Update` validation, the only two Group J plugins that ever apply to
+an `Update`-shaped write in this crate (every other plugin is
+`CREATE`-only, so there's genuinely nothing else to wire here).
 
 **`DELETECOLLECTION` is real too now** (`rest::delete_collection`, a
 faithful-but-scoped port of real upstream's own `Store.DeleteCollection`,
@@ -560,15 +561,18 @@ of the same object isn't a collection-delete failure), and returns the
 pre-deletion `List`, real upstream's own response shape. **Named, honest
 simplifications**: real upstream deletes with a worker pool and paginates
 the list internally; this port deletes sequentially and lists in one
-shot (this crate's own `list` doesn't paginate either yet). Same
-no-admission-yet gap as `PATCH`.
+shot (this crate's own `list` doesn't paginate either yet). **Still
+doesn't run Group J admission**, a small gap in practice:
+`namespace_lifecycle`'s own immortal-namespace check needs a `name`,
+which a collection delete never has, and `LimitRanger`'s only
+`Update`-shaped check is a PVC *minimum*, which deleting can't violate.
 
 **Every real, generic REST verb this build knows about is now wired
 in** — `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`/`PATCH`/`DELETECOLLECTION`,
 plus a real streaming response for `WATCH`. **Not yet landed**: the rest
 of admission (Group J's own section has the
-running plugin list, including `PATCH`/`DELETECOLLECTION`'s own gap
-above), the real handler chain fully unified into one
+running plugin list; `DELETECOLLECTION`'s own small gap above is the only
+verb-level admission gap left), the real handler chain fully unified into one
 ordered dispatcher (authn -> authz -> APF -> admission -> REST — a hard
 requirement on order, not a style choice, once it fully exists; today
 each piece is wired in ad hoc, in the right relative order, not through
