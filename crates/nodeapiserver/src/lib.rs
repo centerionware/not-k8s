@@ -68,11 +68,12 @@ use anyhow::Result;
 /// `notk8s` applet dispatch (once Group O adds the `components.sh` row —
 /// docs/APISERVER_PLAN.md finding 11 — this is what it will call).
 ///
-/// Currently Group A only: validates the build-time codegen tables loaded
-/// and logs their size, then returns — there is no listener yet (Group E)
-/// and nothing this process could usefully block forever on. Once Group E
-/// lands, this becomes the real "run the server until told to stop" entry
-/// point every other component's `run()` already is.
+/// Runs the Group E listener forever. **Its handler is still a bring-up
+/// stub** (`server::listener`'s own doc comment) — this proves the
+/// listener, TLS, and path grammar work end to end, not that the apiserver
+/// is feature-complete. Not wired into `deploy/lib/components.sh` yet for
+/// exactly that reason (Group O's job, once there's a real handler chain
+/// behind it).
 pub async fn run() -> Result<()> {
     let cfg = config::Config::from_env()?;
     tracing::info!(
@@ -81,7 +82,8 @@ pub async fn run() -> Result<()> {
         discovery_gvks = codegen::openapi_meta::DISCOVERY_GVKS.len(),
         field_meta_entries = codegen::openapi_meta::FIELD_META.len(),
         bind_addr = %cfg.bind_addr,
-        "nodeapiserver: Group A codegen tables loaded; no listener yet (Group E)"
+        "nodeapiserver starting"
     );
+    server::listener::run(cfg).await;
     Ok(())
 }

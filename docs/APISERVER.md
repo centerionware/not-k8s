@@ -159,10 +159,16 @@ request turns out to be for the cluster-scoped `Namespace` object itself
 a naive reimplementation would likely have "corrected" away, which would
 have been a real behavioral divergence. Full verb set incl.
 `deletecollection`, subresources, and field/label selector capture for
-`list`/`watch`/`deletecollection` are covered; **not yet landed**: the
-actual hyper + h2 + rustls listener (nothing calls `path::parse` yet — no
-request exists to call it on), `/api`, `/apis`, aggregated discovery v2,
-`/openapi/v2` + `/openapi/v3`, `/version`. Handler-chain order
+`list`/`watch`/`deletecollection` are covered. `server::listener` is a real
+hyper + h2 + rustls TLS listener (`server::tls` self-signs a cert on first
+start — explicitly **not** the cluster's real PKI, that's Group O's job,
+same layering nodelet's own HTTPS server already uses) that proves the
+listener/TLS/path-grammar stack works end to end — `nodeapiserver::run()`
+now actually binds and serves. **Its request handler is a bring-up stub**,
+answering `/healthz` and echoing the parsed `RequestInfo` as JSON, not the
+real REST dispatch. **Not yet landed**: the handler chain itself, `/api`,
+`/apis`, aggregated discovery v2, `/openapi/v2` + `/openapi/v3`, `/version`.
+Handler-chain order
 (authentication → authorization → priority-and-fairness → admission → REST)
 is a hard requirement, not a style choice. The throwaway e2e rig described
 above should land as part of this group, not after it.
