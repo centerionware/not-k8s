@@ -721,15 +721,36 @@ straight from storage (`server::rest::get`) rather than from a cache that
 could be stale. **Wired into `server::listener`, unconditionally** — unlike
 Group I's RBAC, this plugin needs no operator-provisioned bootstrap data,
 so there's no "could lock every request out" risk to gate behind a config
-flag; it runs on every `CREATE`/`UPDATE`/`DELETE` today. **Not yet
-landed**: every other built-in plugin (`ServiceAccount`,
-`DefaultStorageClass`, `ResourceQuota`, `LimitRanger`, `PodSecurity`,
-`DefaultTolerationSeconds`, …), a generic plugin-chain/registry
-abstraction (today `server::listener` hand-calls this one plugin directly,
-not through any dispatch table), mutating/validating webhooks, and
-ValidatingAdmissionPolicy/MutatingAdmissionPolicy on CEL. **Build the CEL
-cost budget before wiring any CEL-driven admission path** — an unbudgeted
-CEL evaluator in the request path is a denial-of-service surface.
+flag; it runs on every `CREATE`/`UPDATE`/`DELETE` today.
+
+`admission::default_toleration_seconds` is this crate's first **mutating**
+plugin — a faithful port of real upstream's own `DefaultTolerationSeconds`
+(`plugin/pkg/admission/defaulttolerationseconds/admission.go`, fetched and
+read directly): every `Pod` `CREATE`/`UPDATE` (core group, no subresource)
+that doesn't already carry its own toleration for the
+`node.kubernetes.io/not-ready`/`node.kubernetes.io/unreachable` `NoExecute`
+taints gets one appended, `tolerationSeconds: 300` — upstream's own
+default (this crate has no admission-plugin flag surface yet, so only the
+default value is ported, named honestly rather than hard-coded as if it
+were the only value upstream supports). "Already tolerates" uses
+upstream's own real matching rule: a toleration whose `key` is the taint's
+key (or empty — wildcard) *and* whose `effect` is `NoExecute` (or empty)
+counts, regardless of `operator`/`tolerationSeconds`. A pure `Value ->
+Value` transform, no I/O needed (unlike `namespace_lifecycle`, nothing
+about this decision depends on other cluster state) — runs on the decoded
+request body in `server::listener` before it reaches
+`rest::create`/`update`, so the appended tolerations are part of what
+actually gets validated and persisted. Also wired unconditionally, same
+no-lockout-risk reasoning as `namespace_lifecycle`.
+
+**Not yet landed**: every other built-in plugin (`ServiceAccount`,
+`DefaultStorageClass`, `ResourceQuota`, `LimitRanger`, `PodSecurity`, …), a
+generic plugin-chain/registry abstraction (today `server::listener`
+hand-calls each plugin directly, not through any dispatch table),
+mutating/validating webhooks, and ValidatingAdmissionPolicy/
+MutatingAdmissionPolicy on CEL. **Build the CEL cost budget before wiring
+any CEL-driven admission path** — an unbudgeted CEL evaluator in the
+request path is a denial-of-service surface.
 
 **K. CRDs (apiextensions)** — **not started**. Dynamic storage
 registration, structural schemas, pruning, defaulting,
