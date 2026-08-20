@@ -285,9 +285,22 @@ the exact subset `client-go`'s own `errors.NewNotFound` decoding path
 reads, not the full `Status` type's `details.causes` machinery) for an
 unknown group/version rather than a silent fallthrough into the
 resource-request echo stub. A resource-shaped path (`/api/v1/namespaces/
-default/pods`) still falls through to that stub, unchanged. **Not yet
-landed**: the handler chain itself for actual resource requests, aggregated
-discovery v2, `/openapi/v2` + `/openapi/v3`, `/version`. Handler-chain order
+default/pods`) still falls through to that stub, unchanged.
+`/openapi/v3` and `/openapi/v3/<path>` are also now real, wired the same
+way: a new Group A build-time step (`build/openapi_serve.rs`) embeds
+every `vendor/openapi-spec/v3/*.json` file verbatim, keyed by the real
+HTTP path upstream's own vendored filenames mechanically encode
+(`apis__apps__v1_openapi.json` -> `apis/apps/v1`, confirmed directly from
+the filenames, not guessed) — `server::openapi::root()` builds the
+`{"paths": {...}}` discovery index real client-go's `openapi3` package
+expects (`serverRelativeURL` + a `?hash=` cache-busting token, this
+build's own content hash, not a reproduction of upstream's internal hash
+algorithm — nothing in the protocol requires the two to match), and
+`server::openapi::doc(path)` serves a document's bytes completely
+unmodified — this crate has no OpenAPI v3 generator of its own to
+diverge from what upstream actually published for the vendored ref.
+**Not yet landed**: the handler chain itself for actual resource
+requests, aggregated discovery v2, `/openapi/v2`, `/version`. Handler-chain order
 (authentication → authorization → priority-and-fairness → admission → REST)
 is a hard requirement, not a style choice. The throwaway e2e rig described
 above should land as part of this group, not after it.
