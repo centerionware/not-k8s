@@ -16,14 +16,17 @@
 //! (`DELETE /api/v1/namespaces/{ns}/pods/{name}`), and now `UPDATE`
 //! (`PUT /api/v1/namespaces/{ns}/pods/{name}`) — `watch`/`patch`/
 //! `deletecollection` all remain the bring-up echo stub
-//! (`server::listener`'s own doc comment). Reads go straight to
-//! `storage::client::StorageClient::range`, bypassing
-//! `cacher::store::WatchCache` entirely — a real, valid read strategy
+//! (`server::listener`'s own doc comment). `get` can consult a
+//! `cacher::store::SharedCache` if the caller passes one (a hit skips
+//! nodestore entirely; a miss always falls through to a real `Range`
+//! rather than trusting the cache to say "not found" — see that
+//! function's own doc comment for why), but every real call site passes
+//! `None` today — nothing in `lib.rs::run()` starts a
+//! `cacher::registry::CacheRegistry` yet. `list`/`create`/`update`/
+//! `delete` still read/write straight to `storage::client::StorageClient`
+//! directly, bypassing the cache entirely — a real, valid strategy
 //! (upstream's own quorum-read / watch-cache-disabled path takes exactly
-//! this shape), not a shortcut standing in for the cache; wiring the
-//! cache in is separate follow-up work, blocked on `cacher::driver`'s own
-//! reconnect loop actually being started at boot (today nothing in
-//! `lib.rs::run()` calls it). No authentication is consulted *inside*
+//! this shape), not a shortcut. No authentication is consulted *inside*
 //! this module either way — `server::listener` is what applies Group
 //! H/I's identity/RBAC (opt-in, see that module's own doc comment)
 //! before ever calling in here; no admission (Group J) exists at all yet.
@@ -153,11 +156,35 @@ fn split_api_version(api_version: &str) -> (&str, &str) {
 /// convention) — the caller (`server::listener`) is responsible for
 /// turning `path::RequestInfo`'s always-`String` `namespace` field into
 /// this `Option` (empty string -> `None`).
-pub async fn get(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str) -> Result<GetOutcome, Error> {
+///
+/// `cache`, if given, is consulted first (`cacher::store::SharedCache::get`,
+/// Group D) — a hit skips the `Range` round trip to nodestore entirely.
+/// A **miss always falls through to nodestore**, unconditionally, rather
+/// than trusting the cache to say "not found": a `cache: Some(_)` that
+/// hasn't finished its first `LIST` yet (or isn't registered for this
+/// exact resource at all, if a caller ever passed the wrong one) is
+/// indistinguishable from "genuinely empty" using only what `SharedCache`
+/// exposes today, so treating a miss as authoritative would risk a false
+/// `404` during that window. This makes cache consultation a pure
+/// latency optimization on the hit path, never a correctness risk on the
+/// miss path — real upstream's own watch cache takes the same
+/// "consistent read falls through" posture for exactly this reason.
+/// `None` (every real call site today — nothing in `lib.rs::run()`
+/// starts a `cacher::registry::CacheRegistry` yet) behaves exactly as
+/// before this parameter existed.
+pub async fn get(storage: &mut StorageClient, cache: Option<&crate::cacher::store::SharedCache>, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str) -> Result<GetOutcome, Error> {
     if resolve_kind(group, version, resource).is_none() {
         return Ok(GetOutcome::UnknownResource);
     }
     let key = keys::object_key(group, resource, namespace, name);
+
+    if let Some(cache) = cache {
+        if let Some(entry) = cache.get(key.as_bytes()) {
+            let object = decode_stored_object(&entry.value)?;
+            return Ok(GetOutcome::Found(object));
+        }
+    }
+
     let resp = storage.range(RangeRequest { key: key.into_bytes(), ..Default::default() }).await?;
     let Some(kv) = resp.kvs.into_iter().next() else {
         return Ok(GetOutcome::ObjectNotFound);

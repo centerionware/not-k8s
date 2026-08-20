@@ -498,7 +498,11 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity
             }
 
             if is_get {
-                match rest::get(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                // `None`: nothing in `lib.rs::run()` starts a
+                // `cacher::registry::CacheRegistry` yet — see
+                // `rest::get`'s own doc comment for the cache-consultation
+                // wiring this parameter exists for, once one does.
+                match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
                     Ok(rest::GetOutcome::Found(object)) => return Ok(json_response(StatusCode::OK, &object)),
                     Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
                         return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
