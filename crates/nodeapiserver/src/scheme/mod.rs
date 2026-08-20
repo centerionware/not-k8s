@@ -13,10 +13,15 @@
 //! primitives only, not yet wired to any specific resource's own name
 //! rule (which validator applies to which resource is real, separate,
 //! hand-maintained-per-type knowledge upstream itself keeps this way; see
-//! that module's own doc comment). Conversion and the rest of validation
-//! (cross-field consistency, numeric ranges) not started (see
-//! docs/APISERVER.md).
+//! that module's own doc comment). `quantity` parses real upstream's own
+//! resource-quantity string format (`100m`, `1.5Gi`, …) into an exact
+//! comparable value — a faithful-but-honestly-scoped port (no
+//! arbitrary-precision fallback; see that module's own doc comment for
+//! why that's a real, narrow, documented gap rather than a silent one).
+//! Conversion and the rest of validation (cross-field consistency, numeric
+//! ranges) not started (see docs/APISERVER.md).
 
 pub mod defaulting;
 pub mod validation;
 pub mod name_format;
+pub mod quantity;
