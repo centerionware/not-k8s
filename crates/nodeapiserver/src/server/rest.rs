@@ -20,10 +20,11 @@
 //! `cacher::store::SharedCache` if the caller passes one (a hit skips
 //! nodestore entirely; a miss always falls through to a real `Range`
 //! rather than trusting the cache to say "not found" — see that
-//! function's own doc comment for why), but every real call site passes
-//! `None` today — nothing in `lib.rs::run()` starts a
-//! `cacher::registry::CacheRegistry` yet. `list`/`create`/`update`/
-//! `delete` still read/write straight to `storage::client::StorageClient`
+//! function's own doc comment for why) — `server::listener` actually
+//! does this for one real resource (`namespaces`) as a proof of
+//! concept, every other resource still passes `None`. `list`/`create`/
+//! `update`/`delete` still read/write straight to
+//! `storage::client::StorageClient`
 //! directly, bypassing the cache entirely — a real, valid strategy
 //! (upstream's own quorum-read / watch-cache-disabled path takes exactly
 //! this shape), not a shortcut. No authentication is consulted *inside*
@@ -169,9 +170,10 @@ fn split_api_version(api_version: &str) -> (&str, &str) {
 /// latency optimization on the hit path, never a correctness risk on the
 /// miss path — real upstream's own watch cache takes the same
 /// "consistent read falls through" posture for exactly this reason.
-/// `None` (every real call site today — nothing in `lib.rs::run()`
-/// starts a `cacher::registry::CacheRegistry` yet) behaves exactly as
-/// before this parameter existed.
+/// `None` behaves exactly as before this parameter existed — the only
+/// real call site passing `Some` today is `server::listener`'s own
+/// `namespaces` proof of concept (see that module's own doc comment);
+/// every other resource, and every other caller, still passes `None`.
 pub async fn get(storage: &mut StorageClient, cache: Option<&crate::cacher::store::SharedCache>, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str) -> Result<GetOutcome, Error> {
     if resolve_kind(group, version, resource).is_none() {
         return Ok(GetOutcome::UnknownResource);
