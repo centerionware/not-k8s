@@ -14,18 +14,19 @@
 //! `reflect()` is the reconnect loop: LIST, WATCH from `RV + 1`, and on any
 //! failure or stream end, relist and start again — never gives up, matches
 //! real `client-go` Reflector semantics. Takes a `SharedCache` (not a bare
-//! `WatchCache`) so reader tasks can run concurrently with it.
-//!
-//! **Not yet done**, named honestly rather than left unsaid: bookmark
-//! *generation* on a timer — this module only turns a progress-notify
-//! response nodestore might send into a cache bookmark, it doesn't request
-//! one on any schedule (nodestore's own `progress_notify` mechanism, via
-//! `WatchCreateRequest.progress_notify`, is what a future revision of
-//! `watch_from_revision` would set to get one periodically).
+//! `WatchCache`) so reader tasks can run concurrently with it. It also
+//! generates bookmarks on `bookmark_interval`: nodestore's own server
+//! doesn't drive `WatchCreateRequest.progress_notify` on a timer (confirmed
+//! by reading `crates/nodestore/src/server/watch.rs` — it answers an
+//! explicit `WatchProgressRequest` on demand, exactly kube-apiserver's own
+//! "tell me where you are... apiserver uses this to advance its bookmarks
+//! without waiting for real traffic" comment describes, but generates
+//! nothing unprompted), so the client side is what has to ask periodically.
 
 use crate::cacher::store::{CacheEntry, EventKind, SharedCache, WatchCache};
 use crate::storage::client::{prefix_range_end, Error as StorageError, StorageClient, WatchHandle};
-use crate::storage::pb::etcdserverpb::{RangeRequest, WatchResponse};
+use crate::storage::pb::etcdserverpb::watch_request::RequestUnion;
+use crate::storage::pb::etcdserverpb::{RangeRequest, WatchProgressRequest, WatchRequest, WatchResponse};
 use crate::storage::pb::mvccpb;
 
 /// LIST: fetch every key under `key_prefix` at the current revision.
@@ -72,8 +73,20 @@ pub async fn watch_from_revision(client: &mut StorageClient, key_prefix: &[u8], 
 /// `CLAUDE.md`'s standing note on this project's zero-idle-poll thesis:
 /// this loop is not a poll, it blocks on the watch stream between events,
 /// but a failure that repeated immediately with no backoff at all would
-/// still hammer a nodestore that is down or overloaded.
-pub async fn reflect(client: &mut StorageClient, key_prefix: &[u8], cache: &SharedCache, event_buffer: usize, history_limit: usize, backoff: std::time::Duration) {
+/// still hammer a nodestore that is down or overloaded. `bookmark_interval`
+/// is the same kind of interval, for the same reason: real, but far
+/// coarser than a poll (kube-apiserver's own default is a few minutes,
+/// this module's own doc comment explains why the request has to be sent
+/// explicitly at all).
+pub async fn reflect(
+    client: &mut StorageClient,
+    key_prefix: &[u8],
+    cache: &SharedCache,
+    event_buffer: usize,
+    history_limit: usize,
+    backoff: std::time::Duration,
+    bookmark_interval: std::time::Duration,
+) {
     loop {
         let (items, revision) = match list(client, key_prefix).await {
             Ok(v) => v,
@@ -94,19 +107,40 @@ pub async fn reflect(client: &mut StorageClient, key_prefix: &[u8], cache: &Shar
             }
         };
 
+        // First tick fires immediately by default — skip it, there is
+        // nothing to progress-notify about before the watch has even
+        // received its `created: true` acknowledgement.
+        let mut bookmark_timer = tokio::time::interval(bookmark_interval);
+        bookmark_timer.reset();
+
         loop {
-            match handle.responses.message().await {
-                Ok(Some(resp)) => apply_watch_response_shared(cache, &resp),
-                Ok(None) => {
-                    // Stream ended cleanly (server closed it) — same
-                    // response as an error: relist, don't just stop.
-                    tracing::info!("cacher: watch stream ended, relisting");
-                    break;
+            tokio::select! {
+                msg = handle.responses.message() => {
+                    match msg {
+                        Ok(Some(resp)) => apply_watch_response_shared(cache, &resp),
+                        Ok(None) => {
+                            // Stream ended cleanly (server closed it) — same
+                            // response as an error: relist, don't just stop.
+                            tracing::info!("cacher: watch stream ended, relisting");
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = ?e, "cacher: watch stream error, relisting after backoff");
+                            tokio::time::sleep(backoff).await;
+                            break;
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(error = ?e, "cacher: watch stream error, relisting after backoff");
-                    tokio::time::sleep(backoff).await;
-                    break;
+                _ = bookmark_timer.tick() => {
+                    let req = WatchRequest { request_union: Some(RequestUnion::ProgressRequest(WatchProgressRequest {})) };
+                    if handle.requests.send(req).await.is_err() {
+                        // The request side is already gone — the response
+                        // side will report the same thing on its next poll
+                        // (Ok(None) or an error), so just let this loop
+                        // iteration continue rather than duplicating that
+                        // handling here.
+                        tracing::debug!("cacher: watch request channel closed while sending a progress request");
+                    }
                 }
             }
         }

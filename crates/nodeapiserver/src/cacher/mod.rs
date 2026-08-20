@@ -11,15 +11,15 @@
 //! `driver` — wires a real `storage::client::StorageClient` to the core:
 //! LIST for a snapshot + RV, WATCH from `RV + 1`, decode `mvccpb::Event`s
 //! into `WatchCache::apply` calls, and `reflect()` — the reconnect loop
-//! that runs this forever, relisting on any failure or stream end.
+//! that runs this forever, relisting on any failure or stream end, and
+//! periodically sending an explicit `WatchProgressRequest` to generate a
+//! bookmark (nodestore's own server never generates one unprompted —
+//! confirmed by reading its watch handler, not assumed).
 //!
 //! Status: in progress (see docs/APISERVER.md). Landed: the cache core,
-//! `SharedCache`, the LIST/decode/apply logic, and the reconnect loop.
-//! **Not yet landed**, named honestly rather than implied by the above:
-//! bookmark *generation* on a timer (nodestore's `progress_notify`
-//! mechanism would drive this — today's code only *handles* one if
-//! nodestore happens to send it, it doesn't request one on a schedule),
-//! and label/field selector filtering over the cached items.
+//! `SharedCache`, the LIST/decode/apply logic, the reconnect loop, and
+//! bookmark generation. **Not yet landed**: label/field selector filtering
+//! over the cached items.
 
 pub mod store;
 pub mod driver;

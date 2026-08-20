@@ -147,10 +147,13 @@ again forever, the same "never give up" posture a real `client-go`
 Reflector takes. Decode logic is pure and unit-tested against constructed
 `mvccpb`/`etcdserverpb` values; the async orchestration around real
 `StorageClient` calls needs live infrastructure to test further.
-**Not yet landed**, named honestly rather than implied by the above:
-bookmark *generation* on a timer (today's code only handles one if
-nodestore happens to send it, it doesn't request one on a schedule), and
-label/field selector filtering over the cached items.
+`reflect()` also generates bookmarks on `bookmark_interval` by explicitly
+sending a `WatchProgressRequest` — confirmed by reading
+`crates/nodestore/src/server/watch.rs` that nodestore's own server answers
+that request on demand but never generates a progress notification
+unprompted, so the client side has to ask periodically; `tokio::select!`
+between the response stream and the bookmark timer, not a second task.
+**Not yet landed**: label/field selector filtering over the cached items.
 
 **E. Generic server + handler chain + REST endpoints** — **in progress**.
 `server::path` is the REST path grammar — a faithful, line-by-line port of
