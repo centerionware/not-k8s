@@ -488,7 +488,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, namespac
             // the resource resolved first; named honestly as a real,
             // separate gap rather than guessed at (see `rest`'s own
             // module doc comment).
-            let body_value = if has_body {
+            let mut body_value = if has_body {
                 let body_bytes = match read_body_bytes(req).await {
                     Ok(b) => b,
                     Err(e) => {
@@ -514,6 +514,20 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, namespac
             } else {
                 None
             };
+
+            // Group J: mutating admission — `DefaultTolerationSeconds`,
+            // real upstream's own plugin, ported (see
+            // `admission::default_toleration_seconds`'s own doc comment).
+            // Unconditional, same posture as `namespace_lifecycle`: no
+            // bootstrap data needed, so no lockout risk to gate behind a
+            // config flag. Runs on the decoded body before it reaches
+            // `rest::create`/`update`, so the appended tolerations are
+            // part of what actually gets validated and persisted.
+            if let Some(body) = body_value.as_mut() {
+                if admission::default_toleration_seconds::applies_to(&info.api_group, &info.resource, &info.subresource) {
+                    admission::default_toleration_seconds::mutate(body);
+                }
+            }
 
             // Group I: authorization, opt-in (see config::Config::enforce_rbac's
             // own doc comment for why this defaults to off rather than
