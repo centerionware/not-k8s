@@ -1194,8 +1194,29 @@ lock-free registry would matter. `apiserver_request_duration_seconds`
 (a histogram) and everything else in that real metrics package
 (`apiserver_current_inflight_requests`, `apiserver_watch_events_total`,
 ...) are **not ported**, named honestly as separate, larger pieces of
-work. FlowSchema/PriorityLevelConfiguration queueing (APF) remains
-**not started**.
+work. **APF (FlowSchema/PriorityLevelConfiguration queueing) is
+started**: `flowcontrol::flow_schema` ports real upstream's own
+`FlowSchema` matching (`pkg/util/flowcontrol/rule.go`, fetched and read
+directly) — `matches_flow_schema`/`matches_policy_rule`/`matches_subject`
+(all three real subject kinds, `User`/`Group`/`ServiceAccount`,
+including the `ServiceAccount` wildcard-name case's own real
+namespace-only prefix check, kept as a genuinely separate function from
+the exact-name matcher, same as real upstream) and real resource/
+non-resource rule matching (verb/apiGroup/resource/namespace, and the
+non-resource URL's real trailing-`*` prefix semantics). `select_flow_schema`
+ports `apihelpers.FlowSchemaSequence`'s own real sort order — lowest
+`matchingPrecedence` wins (defaulting to real upstream's own `1000`
+when unset), ties broken by lexicographically smaller name. **Pure
+matching primitive only**, the same "land the primitive, wire it later"
+split `authz::rbac`/`authz::subject` and `admission::resource_quota`'s
+own evaluators already took in this crate: nothing here fetches a real
+`FlowSchema` from storage, and no request is actually queued, rejected,
+or rate-limited — that concurrency-limiting half of real APF (fair
+queuing, seat borrowing) is a genuinely separate, larger undertaking,
+named honestly as not started, along with the `distinguisherMethod`
+computation (meaningless without queuing) and the two mandatory
+bootstrap `FlowSchema`s real upstream always synthesizes (Group O's
+job).
 
 **N. Streaming and proxy subresources** — **not started**. exec/attach/
 port-forward/log spliced through to `nodelet:10250`, reusing
