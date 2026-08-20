@@ -1257,10 +1257,17 @@ mod tests {
         // has something at or before the requested start_revision (same
         // pre-existing `watch_from` quirk `cacher::store`'s own tests hit
         // — untouched by, and unrelated to, what this test is proving).
+        // The event actually under test needs a real encoded envelope —
+        // `to_watch_event_json` decodes it for real, same as
+        // `server::watch_event`'s own tests do.
+        let schema = crate::codec::protobuf::schema_for_gvk("", "v1", "Namespace").unwrap();
+        let object_bytes = crate::codec::protobuf::encode_message(schema, &serde_json::json!({"metadata": {"name": "default"}})).unwrap();
+        let envelope = crate::codec::protobuf::wrap_unknown("v1", "Namespace", &object_bytes);
+
         let cache = crate::cacher::store::WatchCache::new(vec![], 1, 16, 16);
         let shared = crate::cacher::store::SharedCache::new(cache);
         shared.apply(crate::cacher::store::EventKind::Added, b"seed".to_vec(), b"unrelated".to_vec(), 2);
-        shared.apply(crate::cacher::store::EventKind::Added, b"a".to_vec(), b"real".to_vec(), 3);
+        shared.apply(crate::cacher::store::EventKind::Added, b"a".to_vec(), envelope, 3);
         let (replay, rx) = shared.watch_from(2).unwrap();
         assert_eq!(replay.len(), 1, "only the revision-3 event should be in the replay");
         // Drop the cache (and its own broadcast::Sender) before consuming
