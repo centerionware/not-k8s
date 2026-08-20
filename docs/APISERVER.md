@@ -241,11 +241,23 @@ object-typed field first materializes from its own structural default
 schema's own fields) via `ref_schema`, then gets that schema's own defaults
 applied — proven with a genuinely two-levels-deep case
 (`Container.ports[].protocol`) so the cascade isn't just asserted at one
-level. Conversion only needed for genuinely multi-version groups
+level. `scheme::validation::validate_required(schema, value)` lands the
+first validation slice: recursively checks every field a schema's own
+vendored `required` array names is present and non-null, returning one
+`MissingField{path}` per violation with a real dotted/indexed path
+(`"containers[1].name"`) — reads a new Group A table (`REQUIRED_FIELDS`, a
+schema-level array flattened to (schema, field) pairs, kept separate from
+`FIELD_META` since `required` has no per-property JSON node to hang off,
+unlike `x-kubernetes-*`/`default`). Recurses the same way defaulting does,
+via `ref_schema`. Deliberately run *before* defaulting in a real
+create/update path — a field is required in the user's *input*, not
+required to survive defaulting. Named honestly: this is structural
+presence-checking only, not the rest of real validation (formats, enums,
+cross-field consistency, numeric ranges — all hand-written Go upstream, no
+shortcut). Conversion only needed for genuinely multi-version groups
 (admissionregistration, autoscaling, certificates, coordination,
 networking, resource, storage, apiserverinternal, storagemigration) —
-**not yet landed**, nor is validation (per-field business logic with no
-shortcut).
+**not yet landed**.
 
 **G. Patch + Server-Side Apply** — **in progress**. `patch::json_patch`/
 `patch::merge_patch` wrap the `json-patch` crate for RFC 6902/7386 —
