@@ -1,0 +1,20 @@
+  2.50%  memcpy
+  1.67%  srso_alias_safe_ret
+  1.67%  memcmp
+  1.67%  <usize>::pow
+  1.67%  <tonic::transport::channel::service::reconnect::ResponseFuture<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = core::result::Result<http::response::Response<tonic::body::Body>, alloc::boxed::Box<dyn core::error::Error + core::marker::Sync + core::marker::Send>>> + core::marker::Send>>> as core::future::future::Future>::poll
+  1.67%  <serde_json::de::Deserializer<serde_json::read::StrRead>>::parse_whitespace
+  1.67%  <alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>> as core::ops::deref::Deref>::deref
+  0.83%  x64_sys_call
+  0.83%  vms_gather_munmap_vmas
+  0.83%  unmapped_area_topdown
+  0.83%  tokio::sync::oneshot::channel::<core::result::Result<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = core::result::Result<http::response::Response<tonic::body::Body>, alloc::boxed::Box<dyn core::error::Error + core::marker::Sync + core::marker::Send>>> + core::marker::Send>>, tower::buffer::error::ServiceError>>
+  0.83%  std::sync::poison::map_result::<std::sync::poison::Guard, std::sync::poison::mutex::MutexGuard<h2::proto::streams::streams::Inner>, <std::sync::poison::mutex::MutexGuard<h2::proto::streams::streams::Inner>>::new::{closure#0}>
+  0.83%  std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<tokio::runtime::task::harness::poll_future<core::pin::Pin<alloc::boxed::Box<nodelet::probes::spawn::{closure#0}>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>::{closure#0}>, core::task::poll::Poll<()>>
+  0.83%  serde_json::ser::format_escaped_str_contents::<&mut alloc::vec::Vec<u8>, serde_json::ser::CompactFormatter>
+  0.83%  sched_balance_update_blocked_averages
+  0.83%  prost::encoding::merge_loop::<nodelet::runtime::cri::v1::LinuxContainerUser, prost::encoding::message::merge<nodelet::runtime::cri::v1::LinuxContainerUser, &mut &mut tonic::codec::buffer::DecodeBuf>::{closure#0}, &mut &mut tonic::codec::buffer::DecodeBuf>
+  0.83%  memcpy
+  0.83%  ktime_get_ts64
+  0.83%  kmem_cache_free
+  0.83%  irqentry_exit_to_user_mode

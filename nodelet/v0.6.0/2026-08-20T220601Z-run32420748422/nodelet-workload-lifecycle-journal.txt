@@ -1,0 +1,63 @@
+2026-08-20T21:45:56.741867+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:45:56.741805Z  INFO CreateContainer succeeded container=app container_id=3d36dc7d598aebfd97f7819f37c84f88964b7a7eeb9592b3fd4717e05e4f0a9f
+2026-08-20T21:45:56.908332+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:45:56.908277Z  INFO CreateContainer succeeded container=app container_id=d698700026dc2eb707fedc49206bbf5e82ce169dad036a503f15fae438cf2448
+2026-08-20T21:45:57.026528+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:45:57.026419Z  INFO re-materializing volumes after referenced object changed pod=flamegraph-wl-1/workload namespace="flamegraph-wl-1" name="kube-root-ca.crt" kind=ConfigMap
+2026-08-20T21:45:57.064284+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:45:57.064197Z  INFO re-materializing volumes after referenced object changed pod=flamegraph-wl-2/workload namespace="flamegraph-wl-2" name="kube-root-ca.crt" kind=ConfigMap
+2026-08-20T21:45:57.167263+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:45:57.167211Z  INFO CreateContainer succeeded container=app container_id=887c0d7e36778dba12f2a26131316449e9e5fd7e4c5b4abf1bec58ee2276237b
+2026-08-20T21:45:58.126167+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:45:58.126028Z  INFO CreateContainer succeeded container=app container_id=b7c6ae938fb610263d8e8db1ceba00cdb25bafae0eeec4d3ae217e2b26a54658
+2026-08-20T21:45:59.134549+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:45:59.134490Z  INFO CreateContainer succeeded container=app container_id=046f5142130fc305a5c189686c3803f8bb11e29125ed0e7e1e4935ec576a16a4
+2026-08-20T21:46:00.126323+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:00.126253Z  INFO CreateContainer succeeded container=app container_id=d18ac7e02349ef691b56bf0deae0bced0afdb36ce5f0e245c2a709c66e206cf6
+2026-08-20T21:46:01.135323+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:01.135264Z  INFO CreateContainer succeeded container=app container_id=80deda8d5ceca814fc75180a469bfd11ca51ea87b2a37883c74785bf917ac219
+2026-08-20T21:46:02.119950+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:02.119895Z  INFO CreateContainer succeeded container=app container_id=a24bfe7805e86f8fa551c5b90f090b8e5250aefa117d9b87715d0738e54b9bcd
+2026-08-20T21:46:03.132868+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:03.132819Z  INFO CreateContainer succeeded container=app container_id=c6d063dcc8198f101d0e335f9d6a9a4e805a5f630abfaafbb5ab21b84b60992f
+2026-08-20T21:46:04.114542+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:04.114485Z  INFO CreateContainer succeeded container=app container_id=1f6e9aea7f0a54638e2dc669e6d3d2acf674760c97cdb6df34ea6f7a90bf7d3d
+2026-08-20T21:46:15.515690+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:15.515636Z  INFO node status pushed
+2026-08-20T21:46:26.658038+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.657615Z  INFO torn down pod=flamegraph-wl-0/workload
+2026-08-20T21:46:26.686150+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.685623Z  INFO torn down pod=flamegraph-wl-0/workload
+2026-08-20T21:46:26.689223+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.688688Z  INFO torn down pod=flamegraph-wl-1/workload
+2026-08-20T21:46:26.708812+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.708727Z  WARN failed to write pod status pod=flamegraph-wl-1/workload error=ApiError: pods "workload" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"workload\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "workload", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-08-20T21:46:26.708812+00:00 runnervm76f27 run-nodelet.sh[4573]: Caused by:
+2026-08-20T21:46:26.708812+00:00 runnervm76f27 run-nodelet.sh[4573]:     pods "workload" not found: NotFound
+2026-08-20T21:46:26.715117+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.715068Z  INFO torn down pod=flamegraph-wl-1/workload
+2026-08-20T21:46:26.867949+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.867794Z  INFO torn down pod=flamegraph-wl-3/workload
+2026-08-20T21:46:26.869630+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.869596Z  INFO torn down pod=flamegraph-wl-2/workload
+2026-08-20T21:46:26.916937+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.916878Z  INFO torn down pod=flamegraph-wl-4/workload
+2026-08-20T21:46:26.917879+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.917799Z  WARN failed to write pod status pod=flamegraph-wl-2/workload error=ApiError: pods "workload" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"workload\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "workload", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-08-20T21:46:26.917879+00:00 runnervm76f27 run-nodelet.sh[4573]: Caused by:
+2026-08-20T21:46:26.917879+00:00 runnervm76f27 run-nodelet.sh[4573]:     pods "workload" not found: NotFound
+2026-08-20T21:46:26.927059+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.926981Z  INFO torn down pod=flamegraph-wl-2/workload
+2026-08-20T21:46:26.952582+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.952458Z  INFO torn down pod=flamegraph-wl-4/workload
+2026-08-20T21:46:26.960678+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.960639Z  INFO torn down pod=flamegraph-wl-5/workload
+2026-08-20T21:46:26.966097+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.966022Z  WARN failed to write pod status pod=flamegraph-wl-5/workload error=ApiError: pods "workload" not found: NotFound (Status { status: Some(Failure), code: 404, message: "pods \"workload\" not found", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "workload", group: "", kind: "pods", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-08-20T21:46:26.966097+00:00 runnervm76f27 run-nodelet.sh[4573]: Caused by:
+2026-08-20T21:46:26.966097+00:00 runnervm76f27 run-nodelet.sh[4573]:     pods "workload" not found: NotFound
+2026-08-20T21:46:26.971920+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.971883Z  INFO torn down pod=flamegraph-wl-3/workload
+2026-08-20T21:46:26.972306+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.972091Z  INFO torn down pod=flamegraph-wl-2/workload
+2026-08-20T21:46:26.974963+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.974907Z  INFO torn down pod=flamegraph-wl-4/workload
+2026-08-20T21:46:26.977791+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:26.977755Z  INFO torn down pod=flamegraph-wl-5/workload
+2026-08-20T21:46:27.115549+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:27.115032Z  INFO torn down pod=flamegraph-wl-7/workload
+2026-08-20T21:46:27.120607+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:27.120541Z  INFO torn down pod=flamegraph-wl-6/workload
+2026-08-20T21:46:27.130280+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:27.130178Z  INFO torn down pod=flamegraph-wl-7/workload
+2026-08-20T21:46:27.134460+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:27.134423Z  INFO torn down pod=flamegraph-wl-6/workload
+2026-08-20T21:46:27.262450+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:27.262048Z  INFO torn down pod=flamegraph-wl-8/workload
+2026-08-20T21:46:27.263015+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:27.262981Z  INFO torn down pod=flamegraph-wl-9/workload
+2026-08-20T21:46:27.272532+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:27.272461Z  INFO torn down pod=flamegraph-wl-9/workload
+2026-08-20T21:46:27.273390+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:46:27.273348Z  INFO torn down pod=flamegraph-wl-8/workload
+2026-08-20T21:47:15.554775+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:47:15.554713Z  INFO node status pushed
+2026-08-20T21:48:15.593532+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:48:15.593419Z  INFO node status pushed
+2026-08-20T21:49:15.632990+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:49:15.632876Z  INFO node status pushed
+2026-08-20T21:50:15.673781+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:50:15.673722Z  INFO node status pushed
+2026-08-20T21:51:15.713996+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:51:15.713888Z  INFO node status pushed
+2026-08-20T21:52:15.755388+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:52:15.755281Z  INFO node status pushed
+2026-08-20T21:53:15.793845+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:53:15.793791Z  INFO node status pushed
+2026-08-20T21:54:15.833266+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:54:15.833194Z  INFO node status pushed
+2026-08-20T21:55:15.873159+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:55:15.873090Z  INFO node status pushed
+2026-08-20T21:56:15.912716+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:56:15.912659Z  INFO node status pushed
+2026-08-20T21:57:15.952868+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:57:15.952706Z  INFO node status pushed
+2026-08-20T21:58:15.993954+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:58:15.993902Z  INFO node status pushed
+2026-08-20T21:59:16.035579+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T21:59:16.035529Z  INFO node status pushed
+2026-08-20T22:00:16.079443+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T22:00:16.079340Z  INFO node status pushed
+2026-08-20T22:01:16.160623+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T22:01:16.160566Z  INFO node status pushed
+2026-08-20T22:02:16.200762+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T22:02:16.200703Z  INFO node status pushed
+2026-08-20T22:03:16.241481+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T22:03:16.241373Z  INFO node status pushed
+2026-08-20T22:04:16.281545+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T22:04:16.281490Z  INFO node status pushed
+2026-08-20T22:05:16.320500+00:00 runnervm76f27 run-nodelet.sh[4573]: 2026-08-20T22:05:16.320445Z  INFO node status pushed
