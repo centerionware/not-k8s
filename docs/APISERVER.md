@@ -105,18 +105,24 @@ negotiation parameters are parsed so far) and `PartialObjectMetadata`.
 
 **C. Storage over nodestore** — **in progress**. `storage::client::StorageClient`
 is a real etcd v3 gRPC client to nodestore (`Range`/`Put`/`DeleteRange`/`Txn`/
-`Watch`, the last a real bidirectional stream with a `prefix_range_end()`
-helper matching etcd's own client convention), same mutual-TLS posture as
-nodestore's own client API, compiled from a synced copy of nodestore's own
-vendored protos (`proto/sync-from-nodestore.sh`) — client-only, not linking
-the `nodestore` crate. `storage::keys` has the *unconfigured-default* key
-layout (`/registry/<resource>/<ns>/<name>`, no group suffix — verified
-against `DefaultStorageFactory.ResourcePrefix` directly, corrected from
-this doc's earlier `<group>`-suffixed shorthand). Not yet done, named
-honestly rather than approximated: the per-resource key-prefix override
-table (`pkg/controlplane/instance.go`'s `DefaultResourcePrefixes`, real
-vendoring work of its own) and encryption-at-rest providers. `Lease` RPCs
-are a follow-up, added when a lease-backed subresource needs them.
+`Watch`/`Lease*` — `Watch` and `LeaseKeepAlive` both real bidirectional
+streams, plus a `prefix_range_end()` helper matching etcd's own client
+convention), same mutual-TLS posture as nodestore's own client API,
+compiled from a synced copy of nodestore's own vendored protos
+(`proto/sync-from-nodestore.sh`) — client-only, not linking the
+`nodestore` crate. Method names and the bidi-streaming shape confirmed
+directly against `crates/nodestore/src/server/mod.rs`'s own working
+implementation of the same generated types, not assumed from the .proto
+alone (worth flagging: nodestore's own code reads `LeaseGrantRequest.ttl`/
+`.id`, lowercased from the .proto's `TTL`/`ID` — prost snake_cases
+regardless of the source proto's own casing convention). `storage::keys`
+has the *unconfigured-default* key layout (`/registry/<resource>/<ns>/<name>`,
+no group suffix — verified against `DefaultStorageFactory.ResourcePrefix`
+directly, corrected from this doc's earlier `<group>`-suffixed shorthand).
+Not yet done, named honestly rather than approximated: the per-resource
+key-prefix override table (`pkg/controlplane/instance.go`'s
+`DefaultResourcePrefixes`, real vendoring work of its own) and
+encryption-at-rest providers.
 
 **D. Watch cache** — **in progress**. `cacher::store::WatchCache` is the
 cache core: apply/list/watch_from, bookmarks, RV=0 reads, and consistent
