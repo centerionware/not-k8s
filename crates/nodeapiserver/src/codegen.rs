@@ -138,11 +138,35 @@ mod tests {
         assert_eq!(meta.list_map_keys, &["name"]);
         assert_eq!(meta.patch_strategy.as_deref(), Some("merge"));
         assert_eq!(meta.patch_merge_key.as_deref(), Some("name"));
+        assert_eq!(
+            meta.ref_schema.as_deref(),
+            Some("io.k8s.api.core.v1.Container"),
+            "an array field's ref_schema must resolve to its *element* schema (items.allOf[0].$ref), not the array itself"
+        );
     }
 
     #[test]
     fn every_proto_message_appears_at_least_once() {
         assert!(proto_fields::PROTO_MESSAGES.len() > 100, "expected hundreds of parsed messages");
+    }
+
+    /// A single (non-array) object-typed field's ref_schema — the
+    /// `allOf: [{$ref: ...}]` shape, distinct from an array field's
+    /// `items.allOf[0].$ref` (covered by `pod_schema_has_a_gvk_and_fields`
+    /// above).
+    #[test]
+    fn a_non_array_object_field_resolves_its_own_ref_schema() {
+        let meta = field_meta_index()
+            .get(&("io.k8s.api.apps.v1.DaemonSetSpec", "selector"))
+            .expect("DaemonSetSpec.selector should carry ref_schema metadata");
+        assert_eq!(meta.ref_schema.as_deref(), Some("io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"));
+    }
+
+    /// A plain scalar field has no ref_schema at all, and — since it also
+    /// carries no other x-kubernetes-* metadata — isn't in the table.
+    #[test]
+    fn a_scalar_field_has_no_field_meta_entry() {
+        assert!(field_meta_index().get(&("io.k8s.api.apps.v1.DaemonSetSpec", "minReadySeconds")).is_none());
     }
 
     /// Real cases from `DaemonSetSpec`, verified against the vendored
