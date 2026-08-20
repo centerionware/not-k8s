@@ -68,6 +68,36 @@ pub fn field_meta_index() -> &'static HashMap<(&'static str, &'static str), &'st
     })
 }
 
+/// `schema -> Vec<&FieldMeta>`, built once from `openapi_meta::FIELD_META` —
+/// the "every field this schema carries metadata for" view, as opposed to
+/// `field_meta_index()`'s single-field lookup. `scheme::validation`'s
+/// recursion (walking every `ref_schema`-bearing field of a schema) is
+/// this index's intended reader.
+pub fn field_meta_index_by_schema() -> &'static HashMap<&'static str, Vec<&'static openapi_meta::FieldMeta>> {
+    static INDEX: OnceLock<HashMap<&'static str, Vec<&'static openapi_meta::FieldMeta>>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut m: HashMap<&'static str, Vec<&'static openapi_meta::FieldMeta>> = HashMap::new();
+        for f in openapi_meta::FIELD_META {
+            m.entry(f.schema).or_default().push(f);
+        }
+        m
+    })
+}
+
+/// `schema -> Vec<field name>`, built once from
+/// `openapi_meta::REQUIRED_FIELDS`. `scheme::validation` is this index's
+/// intended reader.
+pub fn required_fields_index() -> &'static HashMap<&'static str, Vec<&'static str>> {
+    static INDEX: OnceLock<HashMap<&'static str, Vec<&'static str>>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut m: HashMap<&'static str, Vec<&'static str>> = HashMap::new();
+        for r in openapi_meta::REQUIRED_FIELDS {
+            m.entry(r.schema).or_default().push(r.field);
+        }
+        m
+    })
+}
+
 /// Resolves a field's `proto_type` (as `proto_fields::ProtoField` stores
 /// it — either bare, meaning "same package as the declaring message", or a
 /// fully proto-package-qualified name) into the openapi-style qualified
@@ -178,6 +208,23 @@ mod tests {
             .get(&("io.k8s.api.core.v1.ContainerPort", "protocol"))
             .expect("ContainerPort.protocol should carry a default");
         assert_eq!(meta.default_json, Some("\"TCP\""));
+    }
+
+    /// Real, verified vendored `required` arrays: `ContainerPort` requires
+    /// only `containerPort`; `Container` requires only `name` (not
+    /// `image` — a real, easy-to-assume-wrong fact about the schema).
+    #[test]
+    fn required_fields_index_reflects_the_real_vendored_required_arrays() {
+        let idx = required_fields_index();
+        assert_eq!(idx.get("io.k8s.api.core.v1.ContainerPort").map(Vec::as_slice), Some(&["containerPort"][..]));
+        assert_eq!(idx.get("io.k8s.api.core.v1.Container").map(Vec::as_slice), Some(&["name"][..]));
+    }
+
+    /// `ObjectMeta` has no `required` array at all in the vendored spec —
+    /// every one of its fields is optional at the structural level.
+    #[test]
+    fn a_schema_with_no_required_array_has_no_index_entry() {
+        assert!(required_fields_index().get("io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta").is_none());
     }
 
     /// Real cases from `DaemonSetSpec`, verified against the vendored
