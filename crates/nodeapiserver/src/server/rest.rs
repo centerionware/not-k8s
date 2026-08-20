@@ -19,11 +19,16 @@
 //! concurrency against the exact revision `patch` itself reads, no
 //! client-submitted `resourceVersion` required — see [`patch`]'s own doc
 //! comment for its three real patch kinds, reusing Group G's
-//! already-landed `patch::json_patch`/`merge_patch`/`strategic_merge`)
-//! — `watch`/`deletecollection` remain the bring-up echo stub
-//! (`server::listener`'s own doc comment; **`PATCH` also isn't run
-//! through Group J admission yet**, a named gap — see
-//! `server::listener`'s own doc comment for why). `get` and `list` can both
+//! already-landed `patch::json_patch`/`merge_patch`/`strategic_merge`),
+//! and now [`delete_collection`] (`DELETE /api/v1/namespaces/{ns}/pods`,
+//! no name — lists via the same selector filtering [`list`] already has,
+//! then deletes each match, returning the pre-deletion `List` real
+//! upstream's own `Store.DeleteCollection` returns) — `watch` remains
+//! the only verb this build knows about that isn't a generic REST
+//! dispatch (a real streaming response instead, `server::listener`'s own
+//! doc comment). **Neither `PATCH` nor `DELETECOLLECTION` runs through
+//! Group J admission yet**, a named gap — see
+//! `server::listener`'s own doc comment for why. `get` and `list` can both
 //! consult a `cacher::store::SharedCache` if the caller passes one — see
 //! each function's own doc comment for its exact contract (`get`: a hit
 //! skips nodestore, a miss always falls through to a real `Range` rather
@@ -805,6 +810,50 @@ pub async fn delete(storage: &mut StorageClient, group: &str, version: &str, res
     };
     let object = decode_stored_object(&prev.value)?;
     Ok(DeleteOutcome::Deleted(object))
+}
+
+#[derive(Debug, PartialEq)]
+pub enum DeleteCollectionOutcome {
+    /// The `<Kind>List` of every object that matched, exactly as it
+    /// listed immediately before any of them were deleted — real
+    /// upstream's own `Store.DeleteCollection` response shape (it
+    /// returns the `List` object it read at the start, not one rebuilt
+    /// after the fact).
+    Deleted(Value),
+    UnknownResource,
+}
+
+/// Real upstream's own `Store.DeleteCollection`
+/// (`k8s.io/apiserver/pkg/registry/generic/registry/store.go`, fetched
+/// and read directly), scoped down: lists every object matching
+/// `label_selector`/`field_selector` (reusing [`list`]'s own selector
+/// parsing — the exact same filtering a real `DELETE .../pods` collection
+/// request would apply), then deletes each one by name via [`delete`],
+/// silently ignoring one that's already gone (`ObjectNotFound` — matches
+/// real upstream's own `!apierrors.IsNotFound(err)` guard: a concurrent
+/// delete of the same object isn't a collection-delete failure). Returns
+/// the pre-deletion `List`, the same real response shape a single
+/// `DELETE`'s own "the object as it was immediately before deletion"
+/// convention already established for one object at a time.
+/// **Named, honest simplification**: real upstream deletes with a
+/// worker pool (`DeleteCollectionWorkers`, concurrent) and paginates the
+/// list internally; this port deletes sequentially and lists in one
+/// shot, since this crate's own `list` doesn't yet paginate either
+/// (`rest`'s own module doc comment already names that as a real,
+/// separate gap). A per-item deletion error *other than* not-found still
+/// aborts the whole call and surfaces as a real `500` — real upstream's
+/// own posture too (`errs <- err` stops the collection short).
+pub async fn delete_collection(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, label_selector: &str, field_selector: &str) -> Result<DeleteCollectionOutcome, Error> {
+    let listed = list(storage, None, group, version, resource, namespace, label_selector, field_selector).await?;
+    let ListOutcome::Found(list_value) = listed else {
+        return Ok(DeleteCollectionOutcome::UnknownResource);
+    };
+    let items = list_value["items"].as_array().cloned().unwrap_or_default();
+    for item in &items {
+        let Some(name) = item.pointer("/metadata/name").and_then(Value::as_str) else { continue };
+        delete(storage, group, version, resource, namespace, name).await?;
+    }
+    Ok(DeleteCollectionOutcome::Deleted(list_value))
 }
 
 #[cfg(test)]

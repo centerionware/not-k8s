@@ -549,9 +549,26 @@ would need to run to still be able to reject the write; closing this
 needs `rest::patch` itself split into an apply-then-validate-then-persist
 shape the way `create`/`update` already are.
 
-**Not yet landed**: `deletecollection`, the rest of admission
-(Group J's own section has the
-running plugin list), the real handler chain fully unified into one
+**`DELETECOLLECTION` is real too now** (`rest::delete_collection`, a
+faithful-but-scoped port of real upstream's own `Store.DeleteCollection`,
+`k8s.io/apiserver/pkg/registry/generic/registry/store.go`, fetched and
+read directly): lists every match via the same `label_selector`/
+`field_selector` filtering `LIST` already applies, deletes each one by
+name via `rest::delete`, ignoring one that's already gone (matching real
+upstream's own `!apierrors.IsNotFound(err)` guard — a concurrent delete
+of the same object isn't a collection-delete failure), and returns the
+pre-deletion `List`, real upstream's own response shape. **Named, honest
+simplifications**: real upstream deletes with a worker pool and paginates
+the list internally; this port deletes sequentially and lists in one
+shot (this crate's own `list` doesn't paginate either yet). Same
+no-admission-yet gap as `PATCH`.
+
+**Every real, generic REST verb this build knows about is now wired
+in** — `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`/`PATCH`/`DELETECOLLECTION`,
+plus a real streaming response for `WATCH`. **Not yet landed**: the rest
+of admission (Group J's own section has the
+running plugin list, including `PATCH`/`DELETECOLLECTION`'s own gap
+above), the real handler chain fully unified into one
 ordered dispatcher (authn -> authz -> APF -> admission -> REST — a hard
 requirement on order, not a style choice, once it fully exists; today
 each piece is wired in ad hoc, in the right relative order, not through
