@@ -48,7 +48,7 @@ const CREATED_AT_DESCRIPTION: &str = "CreationTimestamp is a timestamp represent
 pub fn convert_to_table(object: &Value) -> Value {
     let items = list_items(object);
     let rows: Vec<Value> = match &items {
-        Some(items) => items.iter().map(row_for).collect(),
+        Some(items) => items.iter().map(|item| row_for(item)).collect(),
         None => vec![row_for(object)],
     };
 
