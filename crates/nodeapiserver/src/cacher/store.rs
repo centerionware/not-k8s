@@ -236,20 +236,51 @@ pub async fn wait_for_revision(rx: &mut watch::Receiver<i64>, target: i64) {
 /// ([`Self::list`], [`Self::watch_from`], [`Self::revision`],
 /// [`Self::revision_watch`]) can hold a read lock concurrently; the driver
 /// loop's [`Self::apply`] briefly takes a write lock per event.
+///
+/// Also carries `synced` — real `client-go`'s own `HasSynced()`, ported: a
+/// fresh [`Self::new`] starts unsynced (the registered-but-empty case named
+/// in `cacher::registry::CacheRegistry::spawn`'s own doc comment), and
+/// [`Self::replace`] (what `cacher::driver::reflect`'s first successful
+/// `LIST` calls) sets it permanently. This is a separate `AtomicBool`, not
+/// "`revision() > 0`" — a genuinely empty resource that has, in fact,
+/// completed its first `LIST` still reports revision `0` from nodestore
+/// (an empty store has never advanced its revision), which would be
+/// indistinguishable from "not synced yet" if synced-ness were inferred
+/// from the revision alone. Exists so a reader (`server::rest::list`) can
+/// tell "registered but still mid-relist" apart from "synced, genuinely
+/// empty" — the same distinction [`Self::get`]'s own doc comment already
+/// draws for the single-key case, but `list`'s cache consultation can't
+/// borrow `get`'s "a miss always falls through" trick: an empty `Vec` is
+/// itself a fully valid `LIST` answer (a real `200` with zero items), not
+/// a miss to fall through on.
 #[derive(Clone)]
-pub struct SharedCache(std::sync::Arc<std::sync::RwLock<WatchCache>>);
+pub struct SharedCache {
+    inner: std::sync::Arc<std::sync::RwLock<WatchCache>>,
+    synced: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl SharedCache {
     pub fn new(cache: WatchCache) -> SharedCache {
-        SharedCache(std::sync::Arc::new(std::sync::RwLock::new(cache)))
+        SharedCache {
+            inner: std::sync::Arc::new(std::sync::RwLock::new(cache)),
+            synced: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, WatchCache> {
-        self.0.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.read().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, WatchCache> {
-        self.0.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether at least one [`Self::replace`] (a completed `LIST`) has
+    /// happened yet — see this struct's own doc comment for why this is a
+    /// real flag, not inferred from `revision()`. Once true, stays true:
+    /// a later relist replaces the data, it doesn't un-sync the cache.
+    pub fn has_synced(&self) -> bool {
+        self.synced.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn revision(&self) -> i64 {
@@ -288,6 +319,7 @@ impl SharedCache {
     /// exactly what a relist is.
     pub fn replace(&self, cache: WatchCache) {
         *self.write() = cache;
+        self.synced.store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -342,6 +374,32 @@ mod tests {
         let shared = SharedCache::new(WatchCache::new(vec![(b"a".to_vec(), entry("1", 5))], 5, 16, 16));
         assert_eq!(shared.get(b"a").unwrap().value, b"1");
         assert!(shared.get(b"missing").is_none());
+    }
+
+    #[test]
+    fn a_fresh_shared_cache_has_not_synced() {
+        let shared = SharedCache::new(WatchCache::new(vec![], 0, 16, 16));
+        assert!(!shared.has_synced());
+    }
+
+    #[test]
+    fn replace_marks_the_cache_synced_even_on_a_genuinely_empty_list() {
+        // The case this flag exists for: an empty LIST result is a real,
+        // valid completed sync, not distinguishable from "not synced yet"
+        // by revision alone (see SharedCache's own doc comment).
+        let shared = SharedCache::new(WatchCache::new(vec![], 0, 16, 16));
+        assert!(!shared.has_synced());
+        shared.replace(WatchCache::new(vec![], 0, 16, 16));
+        assert!(shared.has_synced());
+    }
+
+    #[test]
+    fn has_synced_stays_true_across_a_later_relist() {
+        let shared = SharedCache::new(WatchCache::new(vec![], 0, 16, 16));
+        shared.replace(WatchCache::new(vec![(b"a".to_vec(), entry("1", 5))], 5, 16, 16));
+        assert!(shared.has_synced());
+        shared.replace(WatchCache::new(vec![], 9, 16, 16));
+        assert!(shared.has_synced(), "a relist must not un-sync the cache");
     }
 
     #[tokio::test]
