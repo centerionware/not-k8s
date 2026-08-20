@@ -23,21 +23,32 @@
 //! than upstream's real per-type `SelectableFields` allowlist (named,
 //! not-yet-started work — see that section of the module's own doc
 //! comment).
+//! `registry` — starts a `driver::reflect()` background loop for one
+//! resource and hands back the `SharedCache` it keeps live
+//! (`CacheRegistry::spawn`). The primitive only — it does not yet
+//! enumerate every resource this build knows about and start one for
+//! each at boot (a real integration decision, not built), and nothing
+//! reads from a registered cache yet either — see that module's own doc
+//! comment for exactly what's deferred and why.
 //!
 //! Status: in progress (see docs/APISERVER.md). Landed: the cache core,
 //! `SharedCache`, the LIST/decode/apply logic, the reconnect loop,
-//! bookmark generation, label/field selector parsing+matching, and the
-//! adapter onto a decoded `serde_json::Value` object — `object_matches`
-//! is now called for real, from `server::rest::list` (Group E), filtering
-//! every item a real `LIST` request decodes. **Not yet landed**: a
-//! per-Kind `SelectableFields` allowlist, and wiring `WatchCache` itself
-//! (as opposed to `object_matches` alone) into the read path — `rest::list`
-//! still reads straight from nodestore, not the cache (see that module's
-//! own doc comment for why that's a real, valid strategy for now, not a
+//! bookmark generation, label/field selector parsing+matching, the
+//! adapter onto a decoded `serde_json::Value` object (`object_matches` is
+//! called for real, from `server::rest::list`, Group E), and a
+//! single-resource cache-registration primitive (`registry::CacheRegistry`).
+//! **Not yet landed**: a per-Kind `SelectableFields` allowlist,
+//! registering a cache for every resource at boot, and wiring
+//! `server::rest`'s read verbs to read from a registered cache instead of
+//! calling `StorageClient::range` directly — `rest::get`/`list` still
+//! read straight from nodestore, not the cache (see `rest`'s own doc
+//! comment for why that's a real, valid strategy for now, not a
 //! shortcut).
 
 pub mod store;
 pub mod driver;
 pub mod selector;
+pub mod registry;
 
 pub use store::{wait_for_revision, CacheEntry, EventKind, Error, SharedCache, WatchCache, WatchEvent};
+pub use registry::CacheRegistry;

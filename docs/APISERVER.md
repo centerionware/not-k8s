@@ -214,10 +214,26 @@ at `metadata.labels`, `ObjectMeta` being shared structurally — but
 real upstream allows; real kube-apiserver restricts which fields are even
 selectable per Kind via a hand-written `SelectableFields` function per
 type (`pkg/registry/*/*/strategy.go`), which isn't built here yet.
-**Not yet landed**: actually calling this from a real LIST request
-handler (blocked on Group E's REST dispatch existing at all — the
-listener today only reaches the bring-up echo stub for resource
-requests) and the per-Kind `SelectableFields` allowlist.
+`object_matches` is now called for real, from `server::rest::list`
+(Group E), filtering every item a real `LIST` request decodes.
+
+`cacher::registry::CacheRegistry` is the last Group D piece: a
+single-resource cache-registration primitive —
+`CacheRegistry::spawn(storage, group, version, resource)` starts a
+background `driver::reflect()` loop for one resource and hands back the
+`SharedCache` it keeps live, `get()` looks one up by `(group, version,
+resource)`. **Pure primitive only, not yet the full picture**: it does
+not enumerate every resource this build knows about and start one for
+each at boot (spawning on the order of 90 concurrent, long-running
+reconnect loops against nodestore at process startup is a real
+resource/ordering decision this crate hasn't made yet, not an
+oversight), and nothing reads from a registered cache yet either —
+`server::rest::get`/`list` still read straight from nodestore on every
+call, not a registered cache (a real, valid strategy for now per
+`rest`'s own doc comment, not a shortcut). **Not yet landed**: the
+per-Kind `SelectableFields` allowlist, registering a cache for every
+resource at boot, and wiring `rest`'s read verbs to consult a
+registered cache.
 
 **E. Generic server + handler chain + REST endpoints** — **in progress**.
 `server::path` is the REST path grammar — a faithful, line-by-line port of
