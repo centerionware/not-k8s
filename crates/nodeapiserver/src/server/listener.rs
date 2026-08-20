@@ -529,6 +529,47 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, namespac
                 }
             }
 
+            // Group J: `ServiceAccount` — mutating + validating, `CREATE`
+            // only (see `admission::service_account`'s own doc comment for
+            // exactly what's ported and what's named-honestly skipped).
+            // Defaulting is pure and always runs on a `pods` CREATE;
+            // `quick_decision` then says whether a real `ServiceAccount`
+            // lookup is needed before this plugin can finish.
+            if is_create {
+                if let Some(pod) = body_value.as_mut() {
+                    if admission::service_account::applies_to(&info.api_group, &info.resource, &info.subresource) {
+                        admission::service_account::default_service_account_name(pod);
+                        match admission::service_account::quick_decision(pod, admission::attributes::Operation::Create) {
+                            admission::service_account::Decision::Allow => {}
+                            admission::service_account::Decision::Forbidden(msg) => {
+                                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+                            }
+                            admission::service_account::Decision::NeedsServiceAccountLookup => {
+                                let sa_name = pod.get("spec").and_then(|s| s.get("serviceAccountName")).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+                                match rest::get(&mut client, None, "", "v1", "serviceaccounts", namespace, &sa_name).await {
+                                    Ok(rest::GetOutcome::Found(sa)) => {
+                                        admission::service_account::mutate_with_service_account(pod, &sa, || {
+                                            let suffix: String = uuid::Uuid::new_v4().to_string().chars().take(5).collect();
+                                            format!("{}{suffix}", admission::service_account::SERVICE_ACCOUNT_VOLUME_PREFIX)
+                                        });
+                                    }
+                                    Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                                        return Ok(json_response(
+                                            StatusCode::FORBIDDEN,
+                                            &admission_forbidden_status(&path_str, &format!("error looking up service account {:?}/{sa_name:?}: not found", info.namespace)),
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        warn!(path = %path_str, error = ?e, "admission: service account lookup failed");
+                                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Group I: authorization, opt-in (see config::Config::enforce_rbac's
             // own doc comment for why this defaults to off rather than
             // being unconditional the moment identity extraction and RBAC
