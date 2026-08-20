@@ -766,14 +766,31 @@ off-by-default check most real clusters never exercise) and the
 `ephemeralcontainers` subresource validation path (this crate doesn't
 serve any subresource yet).
 
-**Not yet landed**: every other built-in plugin (`DefaultStorageClass`,
-`ResourceQuota`, `LimitRanger`, `PodSecurity`, …), a generic
-plugin-chain/registry abstraction (today `server::listener` hand-calls each
-plugin directly, not through any dispatch table), mutating/validating
-webhooks, and ValidatingAdmissionPolicy/MutatingAdmissionPolicy on CEL.
-**Build the CEL cost budget before wiring any CEL-driven admission path**
-— an unbudgeted CEL evaluator in the request path is a denial-of-service
-surface.
+`admission::default_storage_class` is mutating, `CREATE`-only — a faithful
+port of real upstream's own `DefaultStorageClass` plugin
+(`plugin/pkg/admission/storage/storageclass/setdefault/admission.go`,
+fetched and read directly): a `PersistentVolumeClaim` that doesn't already
+specify a class (upstream's own real `PersistentVolumeClaimHasClass` —
+either the beta `volume.beta.kubernetes.io/storage-class` annotation or a
+non-null `spec.storageClassName` counts) gets `spec.storageClassName` set
+to whichever `StorageClass` carries a default annotation
+(`storageclass.kubernetes.io/is-default-class` or the beta spelling, value
+`"true"`), newest by `creationTimestamp` first, name-ascending as the
+tie-break — both upstream's real selection rule and its real tie-break,
+ported exactly, not approximated. No-ops if no class is marked default,
+same as upstream. The one real I/O step (`server::rest::list` over every
+`StorageClass`) always runs on a `PersistentVolumeClaim` `CREATE` today,
+even when the PVC already has a class — a real, named inefficiency
+(`mutate` itself no-ops in that case, but only after the list already
+happened), not silently optimized around with a duplicate has-class check.
+
+**Not yet landed**: every other built-in plugin (`ResourceQuota`,
+`LimitRanger`, `PodSecurity`, …), a generic plugin-chain/registry
+abstraction (today `server::listener` hand-calls each plugin directly, not
+through any dispatch table), mutating/validating webhooks, and
+ValidatingAdmissionPolicy/MutatingAdmissionPolicy on CEL. **Build the CEL
+cost budget before wiring any CEL-driven admission path** — an unbudgeted
+CEL evaluator in the request path is a denial-of-service surface.
 
 **K. CRDs (apiextensions)** — **not started**. Dynamic storage
 registration, structural schemas, pruning, defaulting,
