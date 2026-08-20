@@ -62,6 +62,7 @@
 //! that `client-go`'s own error-decoding path reads `code`/`reason`/
 //! `message` off exactly this JSON today.
 
+use crate::admission;
 use crate::authz;
 use crate::config::Config;
 use crate::codec::negotiation;
@@ -370,6 +371,24 @@ fn forbidden_status(path_str: &str, user_name: &str) -> serde_json::Value {
     })
 }
 
+/// Same minimal `Status` shape, for a Group J admission denial (today:
+/// only `admission::namespace_lifecycle`) — real upstream's `reason:
+/// "Forbidden"`, `code: 403`, same as an RBAC denial's shape but carrying
+/// the plugin's own message rather than a generic "does not have
+/// permission" one.
+fn admission_forbidden_status(path_str: &str, detail: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: {detail}"),
+        "reason": "Forbidden",
+        "details": {},
+        "code": 403,
+    })
+}
+
 /// Real upstream's own `AlreadyExists` shape for a `CREATE` that lost the
 /// create-only-if-absent race — `reason: "AlreadyExists"`, `code: 409`.
 fn conflict_status(path_str: &str) -> serde_json::Value {
@@ -519,6 +538,55 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, namespac
                 };
                 if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
                     return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+                }
+            }
+
+            // Group J: admission control, unconditional — see
+            // `admission`'s own doc comment for why this plugin, unlike
+            // Group I's RBAC, needs no config gate (it needs no
+            // operator-provisioned bootstrap data, so there's no
+            // "could lock every request out" risk). Only the three
+            // mutating verbs pass through a real admission plugin at all;
+            // GET/LIST are unaffected, matching real upstream (admission
+            // only ever runs on write operations).
+            if is_create || is_update || is_delete {
+                let operation = if is_create {
+                    admission::attributes::Operation::Create
+                } else if is_update {
+                    admission::attributes::Operation::Update
+                } else {
+                    admission::attributes::Operation::Delete
+                };
+                let admission_attrs = admission::attributes::Attributes { operation, group: &info.api_group, resource: &info.resource, namespace: &info.namespace, name: &info.name };
+
+                match admission::namespace_lifecycle::quick_decision(&admission_attrs) {
+                    admission::namespace_lifecycle::QuickDecision::Allow => {}
+                    admission::namespace_lifecycle::QuickDecision::Forbidden(msg) => {
+                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+                    }
+                    admission::namespace_lifecycle::QuickDecision::NeedsNamespaceLookup => {
+                        // `namespaces` is cluster-scoped — looked up by
+                        // name with no parent namespace, same convention
+                        // every other cluster-scoped `get` in this crate
+                        // uses.
+                        let namespace_phase = match rest::get(&mut client, None, "", "v1", "namespaces", None, &info.namespace).await {
+                            Ok(rest::GetOutcome::Found(ns)) => Some(ns.get("status").and_then(|s| s.get("phase")).and_then(|p| p.as_str()).unwrap_or("").to_string()),
+                            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                            Err(e) => {
+                                warn!(path = %path_str, error = ?e, "admission: namespace lookup failed");
+                                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                            }
+                        };
+                        match admission::namespace_lifecycle::decide(&admission_attrs, namespace_phase.as_deref()) {
+                            admission::namespace_lifecycle::Decision::Allow => {}
+                            admission::namespace_lifecycle::Decision::Forbidden(msg) => {
+                                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+                            }
+                            admission::namespace_lifecycle::Decision::NamespaceNotFound(_) => {
+                                return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                            }
+                        }
+                    }
                 }
             }
 
