@@ -480,10 +480,18 @@ wired to real `Role`/`RoleBinding`/`ClusterRole`/`ClusterRoleBinding`
 objects**: resolving which `PolicyRule`s apply to a subject in a
 namespace needs those objects fetched from storage (real upstream's
 `DefaultRuleResolver`) — separate, not-yet-started work, same "land the
-primitive, wire it later" split this arc has taken throughout. Not wired
-into `server::listener` either — every request is still served
-regardless of the identity Group H's x509 authenticator may have
-established for it. Node authorizer, webhook authorization, and
+primitive, wire it later" split this arc has taken throughout.
+`authz::subject` is the other half `DefaultRuleResolver` combines with
+rule matching: does a binding's `Subjects` list include a given
+authenticated user (`pkg/registry/rbac/validation/rule.go`'s
+`appliesTo`/`appliesToUser`, fetched and read directly), including the
+real `ServiceAccount` `system:serviceaccount:<namespace>:<name>`
+username convention (`MakeUsername`/`MatchesUsername`) and the real
+namespace-defaulting rule (an unqualified `ServiceAccount` subject
+defaults to its binding's own namespace — meaningless on a
+`ClusterRoleBinding`, which has none, so such a subject must name one
+explicitly there). Also pure, also not wired to real binding objects or
+into `server::listener`. Node authorizer, webhook authorization, and
 SubjectAccessReview/SelfSubjectAccessReview are not started. PKI
 primitives (`rcgen`, `p256`, `x509-parser`, `pem`) are already in-tree
 from `nodecontroller`'s CSR group.
