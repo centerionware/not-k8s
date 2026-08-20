@@ -60,14 +60,30 @@
 //! `Restricted`, not double-reported) — see that module's own doc
 //! comment for exactly which upstream variant of each check.
 //!
-//! All six plugins are **wired into `server::listener`, unconditionally**
+//! `resource_quota` — `ResourceQuota`, validating, `CREATE`-only,
+//! **pods only** (real upstream also tracks services/PVCs/secrets/
+//! configmaps/arbitrary object counts through a whole per-type evaluator
+//! registry this crate doesn't port): forbids a `Pod` `CREATE` that would
+//! push a namespace's tracked compute-resource usage
+//! (`pods`/`cpu`/`requests.cpu`/`limits.cpu`/`memory`/`requests.memory`/
+//! `limits.memory`) over any `ResourceQuota`'s own `spec.hard`. No scope
+//! matching, and no persisted `status.used` counter (recomputed live from
+//! a fresh `Pod` list every time instead — see that module's own doc
+//! comment for the one real concurrency-race consequence this carries
+//! that a persisted counter with real upstream's own optimistic-lock
+//! retry wouldn't). Reuses `limit_ranger`'s own `pod_requests`/
+//! `pod_limits` for the aggregation, since real upstream's quota usage
+//! function calls the exact same underlying helper.
+//!
+//! All seven plugins are **wired into `server::listener`, unconditionally**
 //! — none needs operator-provisioned bootstrap data (unlike Group I's
 //! RBAC), so there's no "could lock every request out" risk to gate
 //! behind a config flag.
 //!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
-//! other built-in plugin (`ResourceQuota`, ...), a generic
-//! plugin-chain/registry abstraction to run more than one plugin without
+//! other built-in plugin, `ResourceQuota`'s own non-pod evaluators/scope
+//! matching/persisted usage counter (above), a generic plugin-chain/
+//! registry abstraction to run more than one plugin without
 //! `server::listener` hand-calling each by name, mutating/validating
 //! admission webhooks, and ValidatingAdmissionPolicy/
 //! MutatingAdmissionPolicy (CEL-based — this crate already has `cel_ext`
@@ -79,4 +95,5 @@ pub mod default_toleration_seconds;
 pub mod limit_ranger;
 pub mod namespace_lifecycle;
 pub mod pod_security;
+pub mod resource_quota;
 pub mod service_account;
