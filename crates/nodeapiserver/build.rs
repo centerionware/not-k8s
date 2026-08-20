@@ -97,4 +97,31 @@ fn main() {
         .build_client(true)
         .compile_protos(&["proto/rpc.proto"], &["proto"])
         .expect("failed to compile the etcd v3 client protos (is protoc on PATH?)");
+
+    // `/version` (server::version): a handful of build-time facts real
+    // upstream embeds via `-ldflags`, this crate's own equivalent since
+    // Cargo has no linker-flag string injection. Every command here
+    // degrades to a named "unknown" on failure rather than aborting the
+    // build — none of this is essential to a working binary, only to a
+    // fully-populated /version response, so a build host missing `git`
+    // (a tarball checkout, not a clone) must still build.
+    // Best-effort staleness trigger only — a build host with no `.git` at
+    // all (a release tarball) just never reruns this step, which is fine
+    // since it has nothing to react to either.
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    let run = |cmd: &str, args: &[&str]| -> Option<String> {
+        std::process::Command::new(cmd).args(args).current_dir(&manifest_dir).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let git_commit = run("git", &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    let git_tree_state = match run("git", &["status", "--porcelain"]) {
+        Some(s) if s.is_empty() => "clean".to_string(),
+        Some(_) => "dirty".to_string(),
+        None => "unknown".to_string(),
+    };
+    let build_date = run("date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"]).unwrap_or_else(|| "unknown".to_string());
+    let rustc_version = run("rustc", &["--version"]).unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=NODEAPISERVER_GIT_COMMIT={git_commit}");
+    println!("cargo:rustc-env=NODEAPISERVER_GIT_TREE_STATE={git_tree_state}");
+    println!("cargo:rustc-env=NODEAPISERVER_BUILD_DATE={build_date}");
+    println!("cargo:rustc-env=NODEAPISERVER_RUSTC_VERSION={rustc_version}");
 }
