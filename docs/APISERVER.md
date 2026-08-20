@@ -965,10 +965,22 @@ registration, structural schemas, pruning, defaulting,
 `ServiceResolver`, reverse proxying, discovery merge, availability
 conditions.
 
-**M. APF, audit, observability** — **not started**. FlowSchema/
-PriorityLevelConfiguration queueing; policy-driven audit; `/metrics`;
+**M. APF, audit, observability** — **started**. `audit::event::build_event`
+is a pure builder for one real `audit.k8s.io/v1` `Event` document
+(`staging/src/k8s.io/apiserver/pkg/apis/audit/v1/types.go`, fetched and
+read directly), `Metadata` level (who did what to which object — not
+request/response bodies, real upstream's own `Request`/
+`RequestResponse` levels), single-stage (`ResponseComplete` only — real
+upstream's other three stages, including the long-running-request-only
+`ResponseStarted`, aren't modeled). **Pure builder only — not yet wired
+into `server::listener`, and no real audit-log sink (file/webhook, with
+real upstream's own rotation/policy-filtering machinery) exists at all**
+— primitive landed, verification via unit tests only, same "land it,
+wire it later" pattern this crate has used repeatedly. FlowSchema/
+PriorityLevelConfiguration queueing; `/metrics`;
 `/healthz`/`/readyz`/`/livez` with per-check verbose output
-(`deploy/setup-control-plane.sh` already polls `/readyz?verbose`).
+(`deploy/setup-control-plane.sh` already polls `/readyz?verbose`) — all
+still **not started**.
 
 **N. Streaming and proxy subresources** — **not started**. exec/attach/
 port-forward/log spliced through to `nodelet:10250`, reusing
