@@ -50,16 +50,25 @@
 //! own doc comment). Built on [`crate::scheme::quantity::Quantity`] for
 //! real min/max/ratio comparisons.
 //!
-//! All five plugins are **wired into `server::listener`, unconditionally**
+//! `pod_security` — `PodSecurity`, validating, `CREATE`-only: enforces
+//! whichever Pod Security Standards level a namespace's
+//! `pod-security.kubernetes.io/enforce` label requests
+//! (`baseline`/`restricted`; six of the twelve real `baseline`-level
+//! checks are ported — see that module's own doc comment for exactly
+//! which, and for the honest gap a `restricted`-labeled namespace has
+//! today: only baseline enforcement, not full restricted enforcement).
+//!
+//! All six plugins are **wired into `server::listener`, unconditionally**
 //! — none needs operator-provisioned bootstrap data (unlike Group I's
 //! RBAC), so there's no "could lock every request out" risk to gate
 //! behind a config flag.
 //!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
-//! other built-in plugin (`ResourceQuota`, `PodSecurity`, ...), pod-level
-//! `LimitRange` enforcement, a generic plugin-chain/registry abstraction
-//! to run more than one plugin without `server::listener` hand-calling
-//! each by name, mutating/validating admission webhooks, and
+//! other built-in plugin (`ResourceQuota`, ...), pod-level `LimitRange`
+//! enforcement, the six not-yet-ported baseline `PodSecurity` checks and
+//! every restricted-level one, a generic plugin-chain/registry
+//! abstraction to run more than one plugin without `server::listener`
+//! hand-calling each by name, mutating/validating admission webhooks, and
 //! ValidatingAdmissionPolicy/MutatingAdmissionPolicy (CEL-based — this
 //! crate already has `cel_ext` for a different purpose, not yet reused
 //! here).
@@ -69,4 +78,5 @@ pub mod default_storage_class;
 pub mod default_toleration_seconds;
 pub mod limit_ranger;
 pub mod namespace_lifecycle;
+pub mod pod_security;
 pub mod service_account;
