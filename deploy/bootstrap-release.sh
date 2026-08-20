@@ -81,20 +81,27 @@ esac
 detect_platform   # sets ARCH
 ensure_fetch_tool
 
-# Round 124: --skip-nodelet means no nodelet binary is wanted on this host
-# at all (profiling.yml's upstream-kubelet.sh comparison leg — a real
-# kubelet, not nodelet, is going in) -- skip the whole release-lookup/
-# download dance (including the arch-support gate below, which only
-# exists because a release asset needs to actually match) and hand off
-# to bootstrap-source.sh directly. It sees --skip-nodelet itself and
-# skips build_nodelet()/run_and_verify() the same way, so this is the one
-# code path that needs zero changes downstream — this script is just not
-# in the way at all when nodelet isn't wanted.
+# --skip-nodelet means no nodelet binary is wanted on this host at all
+# (profiling.yml's upstream-kubelet.sh comparison leg — a real kubelet,
+# not nodelet, is going in). It does NOT mean "skip every other
+# component's prebuilt fetch too" — a real bug found live (issue #133's
+# own investigation): the previous version of this check short-circuited
+# straight to bootstrap-source.sh for *any* --skip-nodelet call, before
+# ever reaching the nodestore/nodeproxy/nodescheduler/nodecontroller
+# fetch logic below, which real components those blocks otherwise
+# correctly gate on their own WANT_* checks. bootstrap-source.sh then had
+# no prebuilt for a wanted-but-never-fetched component (nodestore, if
+# DATASTORE=nodestore — this script's own release-path default just
+# below) and, in that case, had no toolchain installed to build it with
+# either, so nodestore's systemd service came up wanting a binary that
+# was neither fetched nor built: a guaranteed crash-loop. SKIP_NODELET is
+# tracked here now and only skips the one nodelet-specific fetch below;
+# every other component's own WANT_* gate (already correct) decides the
+# rest, so a --skip-nodelet run gets exactly what it actually asked for,
+# fetched as real release binaries, same as any other run.
+SKIP_NODELET=0
 for arg in "${PASSTHROUGH_ARGS[@]}"; do
-    if [[ "$arg" == "--skip-nodelet" ]]; then
-        log "Skipping the release binary fetch (--skip-nodelet) — handing off straight to bootstrap-source.sh."
-        exec "$SCRIPT_DIR/bootstrap-source.sh" "${PASSTHROUGH_ARGS[@]}"
-    fi
+    [[ "$arg" == "--skip-nodelet" ]] && SKIP_NODELET=1
 done
 
 case "$ARCH" in
@@ -151,10 +158,13 @@ if [[ "$LAYOUT" == "combined" ]]; then
 fi
 
 # Same assign-check-export as the combined branch above, for the same
-# reason.
-nodelet_prebuilt="$(download_release_binary nodelet)" \
-    || die "Couldn't download the 'nodelet' binary for this release."
-export NOTK8S_NODELET_PREBUILT="$nodelet_prebuilt"
+# reason. Skipped entirely for --skip-nodelet — see this script's own
+# SKIP_NODELET note above.
+if [[ "$SKIP_NODELET" -eq 0 ]]; then
+    nodelet_prebuilt="$(download_release_binary nodelet)" \
+        || die "Couldn't download the 'nodelet' binary for this release."
+    export NOTK8S_NODELET_PREBUILT="$nodelet_prebuilt"
+fi
 
 # --proxy=none means this node's ClusterIP/NodePort routing belongs to
 # something else (a real kube-proxy, Cilium) — don't fetch a binary that
@@ -222,5 +232,9 @@ fi
 
 rm -f "$RELEASE_JSON"
 
-log "Handing off to bootstrap-source.sh with NOTK8S_NODELET_PREBUILT=$NOTK8S_NODELET_PREBUILT"
+if [[ -n "${NOTK8S_NODELET_PREBUILT:-}" ]]; then
+    log "Handing off to bootstrap-source.sh with NOTK8S_NODELET_PREBUILT=$NOTK8S_NODELET_PREBUILT"
+else
+    log "Handing off to bootstrap-source.sh (--skip-nodelet: no nodelet binary fetched)"
+fi
 exec "$SCRIPT_DIR/bootstrap-source.sh" "${PASSTHROUGH_ARGS[@]}"

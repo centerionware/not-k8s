@@ -355,15 +355,23 @@ on_failure() {
 trap on_failure EXIT
 
 log "not-k8s bootstrap-source: isolated single-command source deployment"
-# Round 124: build_nodelet() already no-ops entirely on a prebuilt binary
-# (NOTK8S_NODELET_PREBUILT — see nodelet-build.sh's own header for the
-# seam this completes) — nothing downstream of it needs a C/Rust
-# toolchain either in that case, so skip installing one at all rather
-# than paying for it and never using it. Matters for real: this is
-# exactly the case CI's own e2e stage hits on every shard now that it
-# downloads a prebuilt debug binary from build-and-test instead of
-# rebuilding from source.
-if [[ -z "${NOTK8S_NODELET_PREBUILT:-}" && "$SKIP_NODELET" -eq 0 ]]; then
+# Round 124: build_nodelet() already no-ops entirely when every enabled
+# component has its own prebuilt binary supplied (nodelet-build.sh's own
+# use_prebuilt_binaries(), asked ahead of time here via
+# any_enabled_component_needs_build() so a toolchain isn't installed and
+# then never used) — matters for real: this is exactly the case CI's own
+# e2e stage hits on every shard now that it downloads a prebuilt debug
+# binary from build-and-test instead of rebuilding from source.
+#
+# Deliberately NOT gated on SKIP_NODELET any more: want_nodelet() itself
+# now excludes nodelet from the enabled-component set when SKIP_NODELET
+# is set (see its own doc comment for the real bug this closes — a
+# --skip-nodelet run that also wants nodestore used to install
+# nodestore's own systemd service without ever building its binary,
+# since the toolchain-install step here skipped installing anything to
+# build it with). A run that wants nothing at all still calls this
+# cheaply — any_enabled_component_needs_build() just says no.
+if any_enabled_component_needs_build; then
     ensure_c_toolchain
     ensure_rust
 fi
@@ -378,12 +386,13 @@ fi
 # build_nodelet builds every *enabled* component in one pass (see
 # lib/components.sh), so this is also what produces bin/nodelet and
 # bin/nodeproxy on this path — hence the flag, so it isn't run twice.
+# Safe to call unconditionally now (not gated on SKIP_NODELET) — nodelet
+# itself is already excluded via want_nodelet() when skipped, so this
+# only ever builds whatever else this run actually wants.
 NODELET_ALREADY_BUILT=0
 if want_nodestore; then
-    if [[ "$SKIP_NODELET" -eq 0 ]]; then
-        build_nodelet
-        NODELET_ALREADY_BUILT=1
-    fi
+    build_nodelet
+    NODELET_ALREADY_BUILT=1
     install_nodestore_service
     # Ordering the units is not enough on its own: systemd calls a Type=simple
     # service "started" the moment it forks, so k3s would race a store that
@@ -417,7 +426,11 @@ if want_nodestore; then
 fi
 
 setup_control_plane
-if [[ "$SKIP_NODELET" -eq 0 && "$NODELET_ALREADY_BUILT" -eq 0 ]]; then
+# Not gated on SKIP_NODELET any more, same reasoning as the earlier call
+# site above — want_nodelet() already excludes nodelet from what this
+# builds when skipped, so this only needs to avoid running twice
+# (NODELET_ALREADY_BUILT) when the nodestore branch above already did.
+if [[ "$NODELET_ALREADY_BUILT" -eq 0 ]]; then
     build_nodelet
 fi
 ensure_container_runtime
