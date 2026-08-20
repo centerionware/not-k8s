@@ -299,8 +299,21 @@ algorithm — nothing in the protocol requires the two to match), and
 `server::openapi::doc(path)` serves a document's bytes completely
 unmodified — this crate has no OpenAPI v3 generator of its own to
 diverge from what upstream actually published for the vendored ref.
+`/version` is also real now (`server::version`): a `version.Info` document
+(shape confirmed against upstream's own `apimachinery/pkg/version/types.go`)
+built from real build-time facts — `major`/`minor` parsed from
+`vendor/REF`, `gitCommit`/`gitTreeState`/`buildDate` captured by a new
+`build.rs` step (`git`/`date`, each degrading to `"unknown"` rather than
+failing the build if unavailable). `gitVersion` follows the
+`vX.Y.Z+<suffix>` convention real distros use for a non-stock control
+plane (K3s's own `v1.28.3+k3s1` is the precedent) — `+notk8s` here.
+`goVersion`/`compiler` are inherently Go-specific fields with no faithful
+Rust equivalent — named honestly in the module's own doc comment: this
+build reports its actual `rustc` toolchain there instead of fabricating a
+Go version.
+
 **Not yet landed**: the handler chain itself for actual resource
-requests, aggregated discovery v2, `/openapi/v2`, `/version`. Handler-chain order
+requests, aggregated discovery v2, `/openapi/v2`. Handler-chain order
 (authentication → authorization → priority-and-fairness → admission → REST)
 is a hard requirement, not a style choice. The throwaway e2e rig described
 above should land as part of this group, not after it.

@@ -25,15 +25,20 @@
 //! `openapi` — `/openapi/v3` and `/openapi/v3/<path>`, serving every
 //! vendored OpenAPI v3 document verbatim (Group A's `codegen::openapi_v3_docs`),
 //! wired into `listener`'s routing alongside the other discovery routes.
+//! `version` — `/version`, a `version.Info` document built from real
+//! build-time facts (vendored release, git commit/tree state, build
+//! date) — see that module's own doc comment for exactly what's real and
+//! what's necessarily approximate (`goVersion`/`compiler` for a Rust
+//! binary).
 //!
 //! Status: in progress (see docs/APISERVER.md). Landed: the path grammar,
 //! a real TLS listener proving the grammar and transport work together,
 //! every group/version discovery document actually reachable over HTTP
 //! (including a real `404` for an unknown group/version rather than a
-//! silent fallthrough), and `/openapi/v3`. **Not yet landed**: the handler
-//! chain itself for actual resource requests (authn -> authz -> APF ->
-//! admission -> REST — a hard requirement on order, not a style choice,
-//! once it exists), aggregated discovery v2, `/openapi/v2`, `/version`.
+//! silent fallthrough), `/openapi/v3`, and `/version`. **Not yet landed**:
+//! the handler chain itself for actual resource requests (authn -> authz
+//! -> APF -> admission -> REST — a hard requirement on order, not a style
+//! choice, once it exists), aggregated discovery v2, `/openapi/v2`.
 
 pub mod path;
 pub mod tls;
@@ -41,3 +46,4 @@ pub mod listener;
 pub mod version_compare;
 pub mod discovery;
 pub mod openapi;
+pub mod version;
