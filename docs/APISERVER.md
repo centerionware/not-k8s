@@ -164,7 +164,15 @@ reads (`wait_for_revision`, a free function operating on a cloneable
 `apply()`, caught before it shipped rather than after). A watcher whose
 `start_revision` has fallen out of the retained history window gets
 `Error::TooOld`, the same "relist required" signal real
-etcd/kube-apiserver/client-go informers all key off. `cacher::store::SharedCache`
+etcd/kube-apiserver/client-go informers all key off. `apply()`'s own
+`Deleted` handling retains the key's last-known value before removing it
+from `items` — real upstream's own `WatchEvent.Object` semantics for a
+delete ("the state of the object immediately before deletion"), closing
+a gap this doc used to name in Group E's `to_watch_event_json` section:
+the caller (`cacher::driver`) always passes an empty value for a
+`Deleted` event (nodestore's own watch stream is never asked for
+`prev_kv`), so the cache — the only place that still has the pre-delete
+value — is what has to remember it. `cacher::store::SharedCache`
 wraps a `WatchCache` in `Arc<std::sync::RwLock<..>>` — the same aliasing
 problem `wait_for_revision` hit shows up again for `list()`/`watch_from()`
 once a driver loop and reader tasks need concurrent access to one cache,
@@ -462,12 +470,11 @@ immutable after creation, matching real upstream). No create-on-update
 use, isn't modeled — a `PUT` targeting a name that doesn't exist is a
 real `404`, not a create).
 
-**Authentication and authorization now gate all five real verbs**:
-`authn::x509`'s verified peer identity (Group H) plus opt-in RBAC
-enforcement (Group I, `NODEAPISERVER_ENFORCE_RBAC`) — see those groups'
-own sections for what's real and what's deliberately still opt-in.
-Admission (Group J) doesn't exist at all yet — no plugin gets a say in
-any of this.
+**Authentication, authorization, and admission now all gate the real
+write verbs**: `authn::x509`'s verified peer identity (Group H), opt-in
+RBAC enforcement (Group I, `NODEAPISERVER_ENFORCE_RBAC`), and five
+unconditional Group J admission plugins — see those groups' own sections
+for what's real and what's deliberately still opt-in/not-yet-ported.
 
 `server::watch_event::to_watch_event_json` is the first piece of real
 `WATCH` support: converts one `cacher::store::WatchEvent` into the real
@@ -476,26 +483,24 @@ fetched and read directly) — `{"type": "ADDED"|"MODIFIED"|"DELETED"|
 "BOOKMARK", "object": {...}}`, `Added`/`Modified` decoding the real
 stored object, `Bookmark` carrying just `kind`/`apiVersion`/
 `resourceVersion` (matching real upstream — a bookmark object has no
-other fields populated). **Pure conversion only — not yet wired into an
-actual streaming HTTP response**: `server::listener` has no long-lived
-chunked-response machinery yet, and nothing starts a
-`cacher::registry::CacheRegistry` to read events from in the first
-place. **Named, honest gap**: a `Deleted` event with no retained value
-(which is every `Deleted` event today — `cacher::store::WatchEvent`'s
-own doc comment says `value` is empty for `Deleted`) converts to `None`
-rather than a fabricated placeholder object — real upstream's own
-`WatchEvent.Object` doc comment requires "the state of the object
-immediately before deletion," which this cache doesn't currently keep;
-fixing that for real needs `WatchCache` itself to start retaining the
-last value on delete, separate, not-yet-started work.
+other fields populated), `Deleted` carrying the real last-known object
+state (real upstream's own `WatchEvent.Object` doc comment: "the state
+of the object immediately before deletion" — `cacher::store::WatchCache`
+now retains exactly that on delete, closing what was previously named
+here as a real gap; see that module's own doc comment). **Pure
+conversion only — not yet wired into an actual streaming HTTP
+response**: `server::listener` has no long-lived chunked-response
+machinery yet, and nothing starts a `cacher::registry::CacheRegistry` to
+read events from in the first place.
 
 **Not yet landed**: `watch` end to end (the conversion above, streaming
-HTTP responses, and starting `CacheRegistry` all need to come together),
-`patch`/`deletecollection`, admission (Group J), the real handler chain
-itself (authn -> authz -> APF -> admission -> REST — a hard requirement
-on order, not a style choice, once it fully exists), `/openapi/v2`.
-The throwaway e2e rig described above should land as part of this group,
-not after it.
+HTTP responses, and starting `CacheRegistry` for more than the one
+`namespaces` proof-of-concept resource all need to come together),
+`patch`/`deletecollection`, the rest of admission (Group J's own section
+has the running plugin list), the real handler chain itself (authn ->
+authz -> APF -> admission -> REST — a hard requirement on order, not a
+style choice, once it fully exists), `/openapi/v2`. The throwaway e2e rig
+described above should land as part of this group, not after it.
 
 **F. Scheme: conversion, defaulting, validation** — **in progress**. The
 largest handwritten chunk. `scheme::defaulting::apply_defaults(schema, value)`

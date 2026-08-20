@@ -12,18 +12,16 @@
 //! `cacher::registry::CacheRegistry` to read events from in the first
 //! place; both are separate, not-yet-started work.
 //!
-//! # Named gap: `Deleted` events have no last-known object state
-//!
-//! Real upstream's own `WatchEvent.Object` doc comment: for a `Deleted`
-//! event, `Object` is "the state of the object immediately before
-//! deletion." `cacher::store::WatchEvent` doesn't retain this — its own
-//! doc comment states `value` is empty for `Deleted`/`Bookmark` — a real,
-//! pre-existing gap in Group D's own cache design, not introduced here.
-//! Rather than fabricate a placeholder object with no real spec/status
-//! data (which would be actively misleading to a real client, worse than
-//! an honest gap), [`to_watch_event_json`] returns `None` for a `Deleted`
-//! event with no value: it needs `WatchCache` to start retaining the last
-//! value on delete, separate, not-yet-started work.
+//! `Deleted` events carry the real last-known object state: real
+//! upstream's own `WatchEvent.Object` doc comment says a `Deleted`
+//! event's `Object` is "the state of the object immediately before
+//! deletion", and `cacher::store::WatchCache::apply` now retains exactly
+//! that (a real, previously-named gap — fixed there, not in this module,
+//! since it's the cache's own job to remember it). [`to_watch_event_json`]
+//! still returns `None` for the one honest edge case that can still
+//! happen (a `Deleted` event for a key this cache never held a value
+//! for, e.g. right at a relist boundary) rather than fabricating a
+//! placeholder object with no real spec/status data.
 
 use crate::cacher::store::{EventKind, WatchEvent};
 use crate::server::rest::decode_stored_object;
@@ -45,9 +43,10 @@ pub fn event_type_str(kind: EventKind) -> &'static str {
 /// has no stored value to read them from at all) needs them supplied by
 /// the caller, who already knows what resource this watch is for.
 ///
-/// `None` for a `Deleted` event with no retained value — see this
-/// module's own doc comment for why that's an honest gap, not a bug to
-/// paper over with an invented placeholder object.
+/// `None` for a `Deleted` event with no retained value (the one case
+/// `WatchCache` itself can't retain a value for — see this module's own
+/// doc comment) — an honest `None`, not a bug papered over with an
+/// invented placeholder object.
 pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str) -> Option<Result<Value, crate::codec::protobuf::Error>> {
     let event_type = event_type_str(event.kind);
     match event.kind {
@@ -70,10 +69,9 @@ pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str) ->
             if event.value.is_empty() {
                 None
             } else {
-                // Real upstream's own case — this cache doesn't
-                // currently produce a Deleted event with a non-empty
-                // value, but honor it correctly if that ever changes
-                // rather than assuming it can't.
+                // The common case now: `WatchCache::apply` retains the
+                // pre-delete value, so this is what a real Deleted event
+                // actually carries.
                 match decode_stored_object(&event.value) {
                     Ok(o) => Some(Ok(json!({"type": event_type, "object": o}))),
                     Err(e) => Some(Err(e)),
