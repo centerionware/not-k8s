@@ -78,15 +78,30 @@ reworked — `Val` trait, `Env` overload resolution — so
 `dynamic_resources.rs`'s compile/execute path needs real changes, not a
 version bump; `dynamic_resources_tests.rs` is the safety net).
 
-**A. Vendoring + build-time codegen** — **not started**. Vendor 63
-openapi-spec v3 files + 80 `generated.proto` files from `release-1.34`, with
-a refresh script recording the exact upstream ref. `build.rs` emits the
+**A. Vendoring + build-time codegen** — **done**. `crates/nodeapiserver`
+exists; `vendor/refresh.sh` vendored `release-1.34`'s 64 openapi-spec v3
+files + 72 `generated.proto` files, recording the ref in `vendor/REF`.
+`build.rs` (`build/proto_parse.rs`, `build/openapi_parse.rs`) emits the
 protobuf field-number table, the SMP/SSA schema metadata table, and the
-discovery GVK map.
+discovery GVK map; `src/codegen.rs` builds runtime indexes over them plus
+the proto-style<->openapi-style message-name resolver (`resolve_message_ref`)
+Group B's codec depends on. Not wired into `deploy/lib/components.sh` or
+`notk8s`'s `APPLETS` table yet — correctly Group O's job, per this doc's own
+delivery-group split, since there is no listener until Group E.
 
-**B. Wire formats** — **not started**. JSON, YAML, protobuf codec
-(`k8s\x00` + `runtime.Unknown` envelope) over Group A's table. Content
-negotiation, `Table` printing, `PartialObjectMetadata`.
+**B. Wire formats** — **in progress**. `codec::protobuf` is a generic
+protobuf encode/decode over `serde_json::Value`, driven entirely by Group
+A's field table (`codec::wire` has the raw varint/tag primitives) — no
+prost-generated struct universe, per finding 6. Handles all six scalar
+types actually present in the vendored set (bool/bytes/double/int32/int64/
+string — verified empty for anything else via a codegen-table-driven test,
+not just grepped once and assumed), nested messages, repeated (unpacked —
+verified spec-correct for proto2, not just simpler), `map<K, V>`, and the
+`k8s\x00` + `runtime.Unknown` envelope (`wrap_unknown`/`unwrap_unknown`).
+`codec::json`/`codec::yaml` are thin wrappers; `codec::negotiation` parses
+`Accept`/`Content-Type` including `kubectl get`'s `as=Table;g=...;v=...`
+parameters. Not yet done: `Table` server-side printing itself (only its
+negotiation parameters are parsed so far) and `PartialObjectMetadata`.
 
 **C. Storage over nodestore** — **not started**. etcd v3 client,
 `/registry/<group>/<resource>/<ns>/<name>` key layout, `resourceVersion` ==
