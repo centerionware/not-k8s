@@ -442,9 +442,25 @@ landed**: Server-Side Apply/`managedFields` (structured-merge-diff has no
 Rust crate to reuse), which will build on the same `FIELD_META`
 (`ref_schema` included) this group's patch logic already reads.
 
-**H. Authentication** — **not started**. x509 client certs, ServiceAccount
-JWT issuance/validation, projected/bound tokens, OIDC discovery + JWKS,
-TokenReview, bootstrap tokens, anonymous.
+**H. Authentication** — **started**. `authn::x509::identity_from_der`
+derives an `Identity{name, groups, credential_id}` from a client
+certificate's Subject — Common Name as username, every Organization
+value as a group, real upstream's own generic x509 authenticator
+convention (`authentication/request/x509/x509.go`'s
+`CommonNameUserConversion`, fetched and read directly), including the
+real `credential_id` extra entry (`X509SHA256=<hex sha256 of the leaf
+cert's DER>`, upstream's own `user.CredentialIDKey`). Mirrors
+`crates/nodelet/src/server/tls.rs::client_identity_from_der`'s
+already-proven pattern in this workspace. **Pure identity-extraction
+primitive only — not yet wired into the listener**: `server::listener`'s
+TLS acceptor doesn't request or verify client certificates at all yet
+(`with_no_client_auth`), so there's no verified peer certificate in scope
+to call this with. Wiring real mTLS into the listener
+(`with_client_cert_verifier`, mirroring `nodelet`'s own
+`load_client_ca`) and threading the resulting identity through the
+handler chain, plus everything else named below (ServiceAccount JWT,
+OIDC, TokenReview, bootstrap tokens, anonymous), is separate, not yet
+done.
 
 **I. Authorization** — **not started**. RBAC, Node authorizer, webhook,
 SubjectAccessReview/SelfSubjectAccessReview. PKI primitives (`rcgen`, `p256`,

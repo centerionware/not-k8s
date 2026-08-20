@@ -81,6 +81,13 @@ rustls = { workspace = true }
 # PKI (Group O's job) and what it is instead.
 rcgen = "0.13"
 
+# Group H: x509 client-certificate authentication. Same crate/version
+# nodecontroller's CSR controller and nodelet's own mTLS exec/logs server
+# already use (crates/nodelet/src/server/tls.rs's `client_identity_from_der`
+# is the precedent this module's identity extraction mirrors) — reusing an
+# already-proven-in-this-workspace pattern, not reinventing one.
+x509-parser = "0.16"
+
 # Group G: JSON Patch (RFC 6902) and JSON Merge Patch (RFC 7386) — reused
 # rather than hand-written (docs/APISERVER_PLAN.md finding 8: "94M
 # downloads, actively maintained"). Strategic Merge Patch is k8s-specific
