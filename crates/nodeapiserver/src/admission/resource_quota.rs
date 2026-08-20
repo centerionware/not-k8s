@@ -39,10 +39,11 @@
 //! upstream's own `isExtendedResourceNameForQuota`/
 //! `IsExtendedResourceName`: overcommit isn't supported for extended
 //! resources, so only the `requests.`-prefixed quota key is ever
-//! recognized, never a bare one); not ported: the PVC evaluator's own
-//! real per-storage-class resource name family
-//! (`<class>.storageclass.storage.k8s.io/...`) — real, just not this
-//! crate's first cut. The PVC and service
+//! recognized, never a bare one), and the PVC evaluator's own real
+//! per-storage-class resource name family
+//! (`<class>.storageclass.storage.k8s.io/persistentvolumeclaims` and
+//! `.../requests.storage` — real upstream's own `V1ResourceByStorageClass`
+//! key convention). The PVC and service
 //! evaluators only apply to an *unscoped* `ResourceQuota` (`spec.scopes`
 //! empty) — real upstream's own `pvcEvaluator.Matches` only consults
 //! scopes at all behind the alpha `VolumeAttributesClass` feature gate,
@@ -473,26 +474,65 @@ fn quota_applies(resource_quota: &Value) -> bool {
         .any(|k| TRACKED_RESOURCES.contains(&k.as_str()) || k.starts_with("hugepages-") || k.starts_with("requests.hugepages-") || is_extended_resource_hard_key(k))
 }
 
-/// Real upstream's own `pvcResources` — this port's subset (see this
-/// module's own doc comment: the real per-storage-class resource name
-/// family, `<class>.storageclass.storage.k8s.io/...`, isn't tracked).
+/// Real upstream's own `pvcResources`.
 const TRACKED_PVC_RESOURCES: [&str; 2] = ["persistentvolumeclaims", "requests.storage"];
 
-fn quota_applies_to_pvcs(resource_quota: &Value) -> bool {
-    hard_limits(resource_quota).keys().any(|k| TRACKED_PVC_RESOURCES.contains(&k.as_str()))
+/// Real upstream's own `storageClassSuffix`
+/// (`pkg/quota/v1/evaluator/core/persistent_volume_claims.go`): a
+/// storage-class-scoped quota key is `<storage-class-name>` plus this
+/// suffix plus one of [`TRACKED_PVC_RESOURCES`], e.g.
+/// `gold.storageclass.storage.k8s.io/requests.storage`.
+const STORAGE_CLASS_SUFFIX: &str = ".storageclass.storage.k8s.io/";
+
+/// Real upstream's own `MatchingResources`' third branch: a `spec.hard`
+/// key scoped to a storage class matches if it ends with the suffix form
+/// of one of [`TRACKED_PVC_RESOURCES`] — the storage class name itself
+/// isn't checked against anything (any prefix, including empty, is
+/// accepted, same as real upstream's own plain `strings.HasSuffix`).
+fn is_storage_class_scoped_pvc_key(key: &str) -> bool {
+    TRACKED_PVC_RESOURCES.iter().any(|r| key.ends_with(&format!("{STORAGE_CLASS_SUFFIX}{r}")))
 }
 
-/// Real upstream's own `pvcEvaluator.Usage`, restricted to the two
-/// resources this port tracks (see this module's own doc comment for
-/// what's not: the per-storage-class resource family, and the
+fn quota_applies_to_pvcs(resource_quota: &Value) -> bool {
+    hard_limits(resource_quota).keys().any(|k| TRACKED_PVC_RESOURCES.contains(&k.as_str()) || is_storage_class_scoped_pvc_key(k))
+}
+
+/// Real upstream's own `storagehelpers.GetPersistentVolumeClaimClass`
+/// (`k8s.io/component-helpers/storage/volume`): the beta
+/// `volume.beta.kubernetes.io/storage-class` annotation takes precedence
+/// over `spec.storageClassName` when both are set — the same precedence
+/// `admission::default_storage_class`'s own `pvc_has_class` already
+/// ported for a different purpose (whether a PVC has *any* class at
+/// all); this is its value-returning counterpart.
+fn pvc_storage_class_ref(pvc: &Value) -> Option<String> {
+    if let Some(class) = pvc.get("metadata").and_then(|m| m.get("annotations")).and_then(|a| a.get("volume.beta.kubernetes.io/storage-class")).and_then(Value::as_str) {
+        return Some(class.to_string());
+    }
+    pvc.get("spec").and_then(|s| s.get("storageClassName")).and_then(Value::as_str).map(str::to_string)
+}
+
+/// Real upstream's own `pvcEvaluator.Usage`: `persistentvolumeclaims`
+/// (count) and `requests.storage` are always charged; when the claim
+/// names a storage class ([`pvc_storage_class_ref`]), both are charged a
+/// second time under that class's own scoped key
+/// (`V1ResourceByStorageClass`). Not ported: the
 /// `RecoverVolumeExpansionFailure`-gated `status.allocatedResources`
-/// comparison — this always uses the plain `spec.resources.requests.storage`
-/// value, no feature-gate machinery to model the alpha/beta variant).
+/// comparison — this always uses the plain
+/// `spec.resources.requests.storage` value, no feature-gate machinery to
+/// model the alpha/beta variant.
 fn pvc_usage(pvc: &Value) -> BTreeMap<String, Quantity> {
     let mut usage = BTreeMap::new();
-    usage.insert("persistentvolumeclaims".to_string(), Quantity::parse("1").expect("literal \"1\" always parses"));
+    let one = Quantity::parse("1").expect("literal \"1\" always parses");
+    usage.insert("persistentvolumeclaims".to_string(), one);
+    let storage_class = pvc_storage_class_ref(pvc);
+    if let Some(class) = &storage_class {
+        usage.insert(format!("{class}{STORAGE_CLASS_SUFFIX}persistentvolumeclaims"), one);
+    }
     if let Some(q) = pvc.get("spec").and_then(|s| s.get("resources")).and_then(|r| r.get("requests")).and_then(|r| r.get("storage")).and_then(Value::as_str).and_then(|s| Quantity::parse(s).ok()) {
         usage.insert("requests.storage".to_string(), q);
+        if let Some(class) = &storage_class {
+            usage.insert(format!("{class}{STORAGE_CLASS_SUFFIX}requests.storage"), q);
+        }
     }
     usage
 }
@@ -572,7 +612,10 @@ pub fn applies_to_pvc(operation: crate::admission::attributes::Operation, group:
 }
 
 /// Real upstream's own `pvcEvaluator`, ported: [`pvc_usage`] tracks
-/// `persistentvolumeclaims` (count) and `requests.storage`. **Unscoped
+/// `persistentvolumeclaims` (count) and `requests.storage`, plus both
+/// again under the claim's own storage class's scoped key
+/// (`<class>.storageclass.storage.k8s.io/...`) when it names one.
+/// **Unscoped
 /// quotas only** — real upstream's own `pvcEvaluator.Matches` only
 /// consults `spec.scopes`/`spec.scopeSelector` at all behind the alpha
 /// `VolumeAttributesClass` feature gate (this crate has no feature-gate
@@ -1119,6 +1162,42 @@ mod tests {
         let mut q = quota("scoped-quota", json!({"requests.storage": "1Gi"}));
         q["spec"]["scopes"] = json!(["BestEffort"]);
         assert!(check_pvc_create(&pvc, &[], &[q]).is_none(), "a scoped quota must not apply to PVCs at all, matching real upstream's stable-feature-gate-off default");
+    }
+
+    #[test]
+    fn pvc_usage_tracks_a_storage_class_scoped_key_too_when_the_pvc_names_one() {
+        let mut pvc = pvc_with_storage("data", "10Gi");
+        pvc["spec"]["storageClassName"] = json!("gold");
+        let usage = pvc_usage(&pvc);
+        assert_eq!(usage["persistentvolumeclaims"].value(), 1);
+        assert_eq!(usage["gold.storageclass.storage.k8s.io/persistentvolumeclaims"].value(), 1);
+        assert_eq!(usage["requests.storage"].value(), 10 * 1024 * 1024 * 1024);
+        assert_eq!(usage["gold.storageclass.storage.k8s.io/requests.storage"].value(), 10 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn pvc_usage_has_no_storage_class_scoped_keys_when_the_pvc_names_no_class() {
+        let usage = pvc_usage(&pvc_with_storage("data", "10Gi"));
+        assert!(usage.keys().all(|k| !k.contains("storageclass.storage.k8s.io")));
+    }
+
+    #[test]
+    fn a_storage_class_scoped_quota_is_enforced() {
+        let mut pvc = pvc_with_storage("new", "8Gi");
+        pvc["spec"]["storageClassName"] = json!("gold");
+        let mut existing = pvc_with_storage("existing", "5Gi");
+        existing["spec"]["storageClassName"] = json!("gold");
+        let q = quota("gold-quota", json!({"gold.storageclass.storage.k8s.io/requests.storage": "10Gi"}));
+        let denial = check_pvc_create(&pvc, &[existing], &[q]).expect("8Gi + 5Gi > 10Gi under the gold class");
+        assert!(denial.contains("gold.storageclass.storage.k8s.io/requests.storage"));
+    }
+
+    #[test]
+    fn a_storage_class_scoped_quota_ignores_a_pvc_in_a_different_class() {
+        let mut pvc = pvc_with_storage("new", "999Gi");
+        pvc["spec"]["storageClassName"] = json!("bronze");
+        let q = quota("gold-quota", json!({"gold.storageclass.storage.k8s.io/requests.storage": "1Gi"}));
+        assert!(check_pvc_create(&pvc, &[], &[q]).is_none(), "a bronze-class PVC must not be charged against a gold-scoped quota key");
     }
 
     fn cluster_ip_service(name: &str) -> Value {
