@@ -41,16 +41,25 @@
 //! default (real upstream's own default-selection + tie-break rules,
 //! ported exactly — see that module's own doc comment).
 //!
-//! All four plugins are **wired into `server::listener`, unconditionally**
+//! `limit_ranger` — `LimitRanger`, mutating (pods, `CREATE` only) +
+//! validating (pods and `PersistentVolumeClaim`s): defaults a container's
+//! missing requests/limits from its namespace's `LimitRange` objects and
+//! enforces their min/max/ratio constraints. Container-level and
+//! PVC-level only for now — pod-level (`LimitTypePod`) aggregate
+//! enforcement is a named, separate not-yet-ported gap (see that module's
+//! own doc comment). Built on [`crate::scheme::quantity::Quantity`] for
+//! real min/max/ratio comparisons.
+//!
+//! All five plugins are **wired into `server::listener`, unconditionally**
 //! — none needs operator-provisioned bootstrap data (unlike Group I's
 //! RBAC), so there's no "could lock every request out" risk to gate
 //! behind a config flag.
 //!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
-//! other built-in plugin (`LimitRanger`, `ResourceQuota`, `PodSecurity`,
-//! ...), a generic plugin-chain/registry abstraction to run more than one
-//! plugin without `server::listener` hand-calling each by name,
-//! mutating/validating admission webhooks, and
+//! other built-in plugin (`ResourceQuota`, `PodSecurity`, ...), pod-level
+//! `LimitRange` enforcement, a generic plugin-chain/registry abstraction
+//! to run more than one plugin without `server::listener` hand-calling
+//! each by name, mutating/validating admission webhooks, and
 //! ValidatingAdmissionPolicy/MutatingAdmissionPolicy (CEL-based — this
 //! crate already has `cel_ext` for a different purpose, not yet reused
 //! here).
@@ -58,5 +67,6 @@
 pub mod attributes;
 pub mod default_storage_class;
 pub mod default_toleration_seconds;
+pub mod limit_ranger;
 pub mod namespace_lifecycle;
 pub mod service_account;

@@ -604,6 +604,57 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, namespac
                 }
             }
 
+            // Group J: `LimitRanger` — mutating (pods only, `CREATE` only)
+            // + validating (pods and PVCs; see
+            // `admission::limit_ranger`'s own doc comment for exact scope
+            // and what's not yet ported). `operation` mirrors the same
+            // three-way mapping the other Group J blocks each compute
+            // locally.
+            {
+                let operation = if is_create {
+                    Some(admission::attributes::Operation::Create)
+                } else if is_update {
+                    Some(admission::attributes::Operation::Update)
+                } else if is_delete {
+                    Some(admission::attributes::Operation::Delete)
+                } else {
+                    None
+                };
+                if let Some(operation) = operation {
+                    if admission::limit_ranger::applies_to(operation, &info.api_group, &info.resource, &info.subresource) {
+                        match rest::list(&mut client, None, "", "v1", "limitranges", namespace, "", "").await {
+                            Ok(rest::ListOutcome::Found(list)) => {
+                                let limit_ranges = list["items"].as_array().cloned().unwrap_or_default();
+                                if let Some(body) = body_value.as_mut() {
+                                    if is_create && info.resource == "pods" {
+                                        admission::limit_ranger::mutate_pod(body, &limit_ranges);
+                                    }
+                                    for limit_range in &limit_ranges {
+                                        let errs = if info.resource == "pods" {
+                                            admission::limit_ranger::validate_pod(limit_range, body)
+                                        } else {
+                                            admission::limit_ranger::validate_pvc(limit_range, body)
+                                        };
+                                        if !errs.is_empty() {
+                                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &errs.join("; "))));
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(rest::ListOutcome::UnknownResource) => {
+                                // No `limitranges` known to this build at
+                                // all — same "nothing to enforce" no-op as
+                                // an empty list.
+                            }
+                            Err(e) => {
+                                warn!(path = %path_str, error = ?e, "admission: listing limit ranges failed");
+                                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                            }
+                        }
+                    }
+                }
+            }
+
             // Group I: authorization, opt-in (see config::Config::enforce_rbac's
             // own doc comment for why this defaults to off rather than
             // being unconditional the moment identity extraction and RBAC
