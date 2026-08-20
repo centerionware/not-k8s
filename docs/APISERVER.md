@@ -1018,11 +1018,20 @@ separate `limits.hugepages-*` tracking at all in real upstream either,
 since a hugepage request and its limit are always equal in a real pod
 spec; `quota_applies` matches a `spec.hard` key under either the
 `hugepages-`/`requests.hugepages-` prefix, same as real upstream's own
-`quota.ContainsPrefix`). **Substantially scoped, named honestly** in the
-ways real upstream's three specialized evaluators track extra resource
-families: extended resources (`isExtendedResourceNameForQuota`) aren't
-tracked, nor is the PVC evaluator's own per-storage-class resource
-family; and there is **no
+`quota.ContainsPrefix`). Extended resources (e.g. `nvidia.com/gpu`) are
+now tracked too, in their real `requests.<name>`-only form (real
+upstream's own `isExtendedResourceNameForQuota`/`IsExtendedResourceName`
+— overcommit isn't supported for extended resources, so no bare or
+`limits.`-prefixed form is ever quota-recognized, matching real
+upstream's own `podComputeUsageHelper` extended-resource branch and its
+own comment on why). `is_native_resource`/`is_extended_resource_name`
+port real upstream's own `helper.IsNativeResource`/
+`IsExtendedResourceName` (`pkg/apis/core/v1/helper/helpers.go`) — not
+ported: upstream's own final `IsQualifiedName` structural re-validation,
+a named simplification. **Substantially scoped, named honestly** in the
+one remaining way real upstream's three specialized evaluators track an
+extra resource family this crate doesn't: the PVC evaluator's own
+per-storage-class resource family; and there is **no
 persisted `status.used` counter** — usage is recomputed live from a
 fresh object list on every check rather than an incrementally
 maintained, optimistic-lock-protected running total, which means

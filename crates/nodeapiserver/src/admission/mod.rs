@@ -79,7 +79,11 @@
 //! `limits.ephemeral-storage`/`hugepages-<size>`/
 //! `requests.hugepages-<size>`/`persistentvolumeclaims`/`requests.storage`/
 //! `services`/`services.nodeports`/`services.loadbalancers`/
-//! `count/<resource>[.<group>]`) over any `ResourceQuota`'s own
+//! `count/<resource>[.<group>]`/extended resources in their real
+//! `requests.<name>`-only form, e.g. `requests.nvidia.com/gpu` (real
+//! upstream's own `isExtendedResourceNameForQuota`: overcommit isn't
+//! supported for extended resources, so no bare or `limits.`-prefixed
+//! form is ever recognized)) over any `ResourceQuota`'s own
 //! `spec.hard`. All six real `spec.scopes` names are matched for pods
 //! (`Terminating`/`NotTerminating`/`BestEffort`/`NotBestEffort` —
 //! including a real `ComputePodQOS` port —, `PriorityClass`, and
