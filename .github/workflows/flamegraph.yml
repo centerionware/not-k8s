@@ -1,0 +1,197 @@
+name: Flamegraph — nodelet, single-pod lifecycle
+
+# Manual trigger only, same conservative posture as profiling.yml/e2e.yml.
+#
+# Purpose: capture a real CPU flame graph of nodelet across one pod's full
+# lifecycle (create -> Ready -> idle -> delete -> gone) against a real CRI
+# runtime, to get real data on issue #133 (nodelet using far more idle CPU
+# than kubelet once real pods are running) instead of guessing from reading
+# source. Deliberately narrow scope, per the issue's own investigation:
+#
+#   - One pod, not a whole workload sweep — this exists to answer "where is
+#     nodelet's own CPU time actually going", which one pod already
+#     answers; profiling.yml's own workload_pod_count sweep (separate,
+#     larger effort) is for the aggregate RSS/CPU comparison against a real
+#     kubelet, not for finding a hot path. Keeping this to one pod keeps a
+#     single dispatch fast.
+#   - nodelet only, no kubelet leg. This isn't a comparison run — it's a
+#     profile of one process. Nothing here builds or runs upstream-kubelet.sh.
+#
+# The debug binary (not the LTO/stripped release one) is used deliberately:
+# a flame graph is only useful with real function names and unmerged frames.
+# bootstrap-release.sh only ever fetches the release profile, so this
+# downloads the debug release asset directly and hands it to
+# bootstrap-source.sh via NOTK8S_NODELET_PREBUILT (the same prebuilt seam
+# CLAUDE.md documents for this exact "already-published binary, no local
+# toolchain" case) rather than teaching bootstrap-release.sh a new flag for
+# a one-off profiling need.
+#
+# A follow-up, broader version of this workflow (every component, not just
+# nodelet) is real future work, not done here — see the flamegraphs branch's
+# own README for that note once it exists.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to fetch nodelet's debug binary from (e.g. v0.6.0). Empty = latest."
+        required: false
+        default: ""
+      idle_seconds:
+        description: "How long to stay idle with the pod Ready before deleting it"
+        required: false
+        default: "15"
+        type: string
+      sample_seconds:
+        description: "Total perf sampling window — must comfortably cover create+Ready+idle+delete+gone"
+        required: false
+        default: "90"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  flamegraph:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve the release tag and download nodelet's debug binary
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="${{ inputs.tag }}"
+          if [[ -z "$TAG" ]]; then
+            TAG="$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name)"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          VERSION="${TAG#v}"
+          ASSET="nodelet-${VERSION}-linux-x86_64-debug"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+          gh release download "$TAG" --repo "${{ github.repository }}" -p "$ASSET" -O /tmp/nodelet-debug
+          chmod +x /tmp/nodelet-debug
+          file /tmp/nodelet-debug
+
+      - name: Bootstrap the stack with the debug nodelet binary (stripped k3s control plane + containerd + CNI, no proxy)
+        run: |
+          set -e
+          sudo -E NOTK8S_NODELET_PREBUILT=/tmp/nodelet-debug ./deploy/bootstrap-source.sh --with-cri --proxy=none
+
+      - name: Settle before profiling
+        run: sleep 15
+
+      - name: Record a flame graph across one pod's full lifecycle
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+        run: |
+          set -e
+          sudo chmod +x deploy/profile-process.sh
+          sudo ./deploy/profile-process.sh --pattern nodelet --label nodelet-single-pod-lifecycle \
+            --duration "${{ inputs.sample_seconds }}" --journal-unit nodelet \
+            --output /tmp/flamegraph-out &
+          PROFILE_PID=$!
+
+          # Give profile-process.sh a moment to find the PID and attach perf
+          # before generating any load, so the very start of the sample
+          # isn't wasted on process discovery.
+          sleep 3
+
+          echo "==> creating a single plain nginx pod"
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: flamegraph-workload
+            namespace: default
+          spec:
+            containers:
+              - name: app
+                image: nginx:1.27-alpine
+                ports:
+                  - containerPort: 80
+          EOF
+          kubectl wait --for=condition=Ready pod/flamegraph-workload --timeout=90s
+
+          echo "==> idle ${{ inputs.idle_seconds }}s with the pod Ready"
+          sleep "${{ inputs.idle_seconds }}"
+
+          echo "==> deleting the pod"
+          kubectl delete pod flamegraph-workload --wait=true --timeout=60s
+          echo "==> pod gone; waiting out the rest of the sample window"
+
+          wait "$PROFILE_PID"
+          ls -la /tmp/flamegraph-out
+
+      - name: Upload the flamegraph and raw profiling output as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodelet-flamegraph-${{ steps.resolve.outputs.tag }}-run${{ github.run_id }}
+          path: /tmp/flamegraph-out/
+          if-no-files-found: warn
+
+      - name: Publish the flamegraph to the flamegraphs branch
+        if: always()
+        run: |
+          set -e
+          [[ -s /tmp/flamegraph-out/flamegraph.svg ]] || { echo "no flamegraph.svg produced — nothing to publish (see the uploaded artifact for why)" >&2; exit 0; }
+
+          git config --global user.name "not-k8s-profiling-bot"
+          git config --global user.email "actions@users.noreply.github.com"
+          AUTH_URL="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          WORKDIR="$(mktemp -d)"
+
+          if git ls-remote --exit-code --heads "$AUTH_URL" flamegraphs >/dev/null 2>&1; then
+            git clone --branch flamegraphs --single-branch "$AUTH_URL" "$WORKDIR"
+          else
+            git clone "$AUTH_URL" "$WORKDIR"
+            (cd "$WORKDIR" && git checkout --orphan flamegraphs && git rm -rf . >/dev/null 2>&1 || true)
+          fi
+
+          STAMP="$(date -u +%Y-%m-%dT%H%M%SZ)"
+          DEST="$WORKDIR/nodelet/${{ steps.resolve.outputs.tag }}/${STAMP}-run${{ github.run_id }}"
+          mkdir -p "$DEST"
+          cp -r /tmp/flamegraph-out/. "$DEST/"
+
+          cat > "$DEST/README.md" <<EOF
+          # nodelet flame graph — ${{ steps.resolve.outputs.tag }}
+
+          Single-pod lifecycle: create a plain \`nginx:1.27-alpine\` pod (no
+          probes), wait for \`Ready\`, idle ${{ inputs.idle_seconds }}s, delete
+          it, wait for it to be gone. \`deploy/profile-process.sh\` attached to
+          the real nodelet PID (\`perf record -F 99 --call-graph dwarf\`, real
+          debug binary — ${{ steps.resolve.outputs.asset }}) for the whole
+          ${{ inputs.sample_seconds }}s window.
+
+          - \`flamegraph.svg\` — open directly in a browser.
+          - \`perf-report.txt\` / \`perf-self-report.txt\` — textual top-functions
+            breakdown (inclusive / self time).
+          - \`top-functions.txt\` — the same, pre-sorted top 20.
+          - \`nodelet-single-pod-lifecycle-journal.txt\` — nodelet's own log lines for the sample window.
+          - \`process.txt\` — PID/executable/cmdline identity.
+
+          Captured from: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Repo commit: $(git -C "$GITHUB_WORKSPACE" rev-parse --short HEAD)
+
+          Related: #133
+          EOF
+
+          cd "$WORKDIR"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "nothing new to publish"
+          else
+            git commit -m "flamegraph: nodelet single-pod lifecycle (${{ steps.resolve.outputs.tag }}, run ${{ github.run_id }})"
+            git push origin flamegraphs
+          fi
+
+      - name: Print where the results landed
+        if: always()
+        run: |
+          echo "Workflow artifact: see this run's Artifacts section."
+          echo "flamegraphs branch: https://github.com/${{ github.repository }}/tree/flamegraphs/nodelet/${{ steps.resolve.outputs.tag }}"
