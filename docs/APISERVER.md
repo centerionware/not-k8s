@@ -248,11 +248,19 @@ Named, deliberate skips (the parser's own doc comment): subresources
 path family. `singularName` uses real kube-apiserver's own RESTMapper
 default (lowercased kind) since no per-type override table is vendored;
 `shortNames`/`categories` aren't emitted at all (not present anywhere in
-the vendored spec). **Still not wired into the listener's routing** —
-`api_resource_list` is a pure builder, not yet reachable by an actual
-`GET /api/v1` request. **Not yet landed**: the handler chain itself,
-wiring discovery into real routing, aggregated discovery v2, `/openapi/v2`
-+ `/openapi/v3`, `/version`. Handler-chain order
+the vendored spec). **Now wired into the listener's actual routing**:
+`server::listener`'s `route_discovery` (pure, unit-tested apart from the
+async handler) dispatches all five non-resource discovery routes (`/api`,
+`/api/{version}`, `/apis`, `/apis/{group}`, `/apis/{group}/{version}`) to
+`server::discovery`'s real builders, with a genuine `404` (a minimal
+`Status` body — `kind`/`apiVersion`/`status`/`message`/`reason`/`code`,
+the exact subset `client-go`'s own `errors.NewNotFound` decoding path
+reads, not the full `Status` type's `details.causes` machinery) for an
+unknown group/version rather than a silent fallthrough into the
+resource-request echo stub. A resource-shaped path (`/api/v1/namespaces/
+default/pods`) still falls through to that stub, unchanged. **Not yet
+landed**: the handler chain itself for actual resource requests, aggregated
+discovery v2, `/openapi/v2` + `/openapi/v3`, `/version`. Handler-chain order
 (authentication → authorization → priority-and-fairness → admission → REST)
 is a hard requirement, not a style choice. The throwaway e2e rig described
 above should land as part of this group, not after it.

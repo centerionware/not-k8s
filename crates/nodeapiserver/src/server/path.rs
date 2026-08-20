@@ -169,7 +169,13 @@ pub fn parse(method: &str, path: &str, query: &str) -> RequestInfo {
     info
 }
 
-fn split_path(path: &str) -> Vec<String> {
+/// `pub(crate)`: also used by `server::listener`'s discovery routing, which
+/// needs the same raw path segments `parse()` builds on — a `/api`/`/apis`
+/// path is too short for `parse()` itself to produce a populated
+/// `RequestInfo` (it returns early below three parts), so the listener
+/// re-splits the path itself for the handful of non-resource discovery
+/// routes rather than duplicating this exact trim/split behavior.
+pub(crate) fn split_path(path: &str) -> Vec<String> {
     let trimmed = path.trim_matches('/');
     if trimmed.is_empty() {
         return Vec::new();
