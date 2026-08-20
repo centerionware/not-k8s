@@ -59,6 +59,11 @@ tonic-prost = { workspace = true }
 # tokio::sync::mpsc::Receiver into the Stream tonic's generated client
 # needs for the request side. Same version nodestore's own Cargo.toml uses.
 tokio-stream = { version = "0.1", features = ["sync"] }
+# storage/encryption.rs's AES-256-GCM encryption-at-rest provider. Not a
+# new dependency in the build graph — rustls (below, via its "ring"
+# feature) already pulls this crate in transitively (see Cargo.lock);
+# declaring it explicitly just makes it directly usable here too.
+ring = "0.17"
 
 # Group E: the REST/watch listener. Same hyper/hyper-util/tokio-rustls
 # stack as crates/nodelet/Cargo.toml's own HTTPS server, except this one
