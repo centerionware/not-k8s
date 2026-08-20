@@ -103,10 +103,19 @@ verified spec-correct for proto2, not just simpler), `map<K, V>`, and the
 parameters. Not yet done: `Table` server-side printing itself (only its
 negotiation parameters are parsed so far) and `PartialObjectMetadata`.
 
-**C. Storage over nodestore** — **not started**. etcd v3 client,
-`/registry/<group>/<resource>/<ns>/<name>` key layout, `resourceVersion` ==
-nodestore revision, optimistic concurrency → 409, encryption-at-rest
-providers.
+**C. Storage over nodestore** — **in progress**. `storage::client::StorageClient`
+is a real etcd v3 gRPC client to nodestore (`Range`/`Put`/`DeleteRange`/`Txn`),
+same mutual-TLS posture as nodestore's own client API, compiled from a
+synced copy of nodestore's own vendored protos
+(`proto/sync-from-nodestore.sh`) — client-only, not linking the `nodestore`
+crate. `storage::keys` has the *unconfigured-default* key layout
+(`/registry/<resource>/<ns>/<name>`, no group suffix — verified against
+`DefaultStorageFactory.ResourcePrefix` directly, corrected from this doc's
+earlier `<group>`-suffixed shorthand). Not yet done, named honestly rather
+than approximated: the per-resource key-prefix override table
+(`pkg/controlplane/instance.go`'s `DefaultResourcePrefixes`, real vendoring
+work of its own), encryption-at-rest providers, and `Watch`/`Lease` RPCs
+(Group D's job once the watch cache needs them).
 
 **D. Watch cache** — **not started**. LIST-then-WATCH init, in-memory
 serving, bookmarks, RV=0/consistent reads, label/field selector filtering.
