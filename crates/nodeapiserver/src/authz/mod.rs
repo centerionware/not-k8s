@@ -8,18 +8,26 @@
 //! `APIGroupMatches`/`ResourceMatches`/`ResourceNameMatches`/
 //! `NonResourceURLMatches`, composed by
 //! `plugin/pkg/auth/authorizer/rbac/rbac.go`'s `RuleAllows`/`RulesAllow`).
-//! **Pure evaluation engine only — not yet wired to real `Role`/
-//! `RoleBinding`/`ClusterRole`/`ClusterRoleBinding` objects**: resolving
-//! which `PolicyRule`s apply to a given subject in a given namespace
-//! needs those objects fetched from storage (real upstream's
-//! `DefaultRuleResolver`), which isn't built yet — see that module's own
-//! doc comment. Not wired into `server::listener` either: every request
-//! is still served regardless of the identity `authn::x509` may have
-//! established for it (that module's own doc comment names this same
-//! gap from the authentication side).
+//! `subject` — does a binding's `Subjects` list include a given
+//! authenticated user? A faithful port of
+//! `pkg/registry/rbac/validation/rule.go`'s `appliesTo`/`appliesToUser`,
+//! including the `ServiceAccount` `system:serviceaccount:<ns>:<name>`
+//! username convention.
+//!
+//! **Both are pure evaluation primitives only — not yet wired to real
+//! `Role`/`RoleBinding`/`ClusterRole`/`ClusterRoleBinding` objects**:
+//! resolving which bindings/rules apply to a given subject in a given
+//! namespace needs those objects fetched from storage (real upstream's
+//! `DefaultRuleResolver`, which combines exactly these two primitives
+//! over real listed/fetched objects), which isn't built yet. Not wired
+//! into `server::listener` either: every request is still served
+//! regardless of the identity `authn::x509` may have established for it
+//! (that module's own doc comment names this same gap from the
+//! authentication side).
 //!
 //! Status: in progress (see docs/APISERVER.md). The Node authorizer,
 //! webhook authorization, and SubjectAccessReview/SelfSubjectAccessReview
 //! are not started.
 
 pub mod rbac;
+pub mod subject;
