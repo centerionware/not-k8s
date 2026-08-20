@@ -233,13 +233,21 @@ not enumerate every resource this build knows about and start one for
 each at boot (spawning on the order of 90 concurrent, long-running
 reconnect loops against nodestore at process startup is a real
 resource/ordering decision this crate hasn't made yet, not an
-oversight), and nothing reads from a registered cache yet either —
-`server::rest::get`/`list` still read straight from nodestore on every
-call, not a registered cache (a real, valid strategy for now per
-`rest`'s own doc comment, not a shortcut). **Not yet landed**: the
-per-Kind `SelectableFields` allowlist, registering a cache for every
-resource at boot, and wiring `rest`'s read verbs to consult a
-registered cache.
+oversight). `server::rest::get` now *can* consult a `SharedCache` if
+handed one (`cache.get(key)`, a hit skips nodestore entirely; a miss
+always falls through to a real `Range` rather than trusting the cache's
+absence of an entry to mean "not found," since a not-yet-synced or
+never-registered cache is indistinguishable from a genuinely empty one
+using only what `SharedCache` exposes today — a pure latency win on the
+hit path, never a correctness risk on the miss path) — but every real
+call site still passes `None`, since nothing in `lib.rs::run()` starts
+a `CacheRegistry` at all yet. `list`/`create`/`update`/`delete` don't
+consult a cache at all (writes always have to reach real storage
+regardless; `list` consulting the cache is separate, not-yet-done
+follow-up work). **Not yet landed**: the per-Kind `SelectableFields`
+allowlist, registering a cache for every resource at boot, actually
+passing a real `Some(cache)` into `rest::get` from `server::listener`,
+and `list` consulting the cache.
 
 **E. Generic server + handler chain + REST endpoints** — **in progress**.
 `server::path` is the REST path grammar — a faithful, line-by-line port of

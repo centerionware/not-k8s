@@ -94,8 +94,8 @@ async fn accumulate_binding(storage: &mut StorageClient, binding: &Value, user_n
     let name = role_ref.get("name").and_then(Value::as_str).unwrap_or("");
 
     let role_object = match kind {
-        "Role" => rest::get(storage, GROUP, VERSION, "roles", Some(binding_namespace), name).await,
-        "ClusterRole" => rest::get(storage, GROUP, VERSION, "clusterroles", None, name).await,
+        "Role" => rest::get(storage, None, GROUP, VERSION, "roles", Some(binding_namespace), name).await,
+        "ClusterRole" => rest::get(storage, None, GROUP, VERSION, "clusterroles", None, name).await,
         other => {
             resolved.errors.push(format!("unsupported roleRef kind {other:?}"));
             return;
