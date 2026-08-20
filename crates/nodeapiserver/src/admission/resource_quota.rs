@@ -24,15 +24,17 @@
 //! `count/deployments.apps=5` convention, ported exactly.
 //! **Compute/storage/service resources only** — of real upstream's own
 //! `podResources`/`pvcResources`/`serviceResources` tracked-resource
-//! lists, this port covers `pods` (object count), `cpu`/`requests.cpu`,
-//! `memory`/`requests.memory`, `limits.cpu`, `limits.memory`,
-//! `persistentvolumeclaims` (object count), `requests.storage`,
-//! `services` (object count), `services.nodeports`,
-//! `services.loadbalancers`; not ported: `ephemeral-storage` and its
-//! `requests`/`limits` forms, the `hugepages-*` family, extended
-//! resources, and the PVC evaluator's own real per-storage-class
-//! resource name family (`<class>.storageclass.storage.k8s.io/...`) —
-//! all real, all just not this crate's first cut. The PVC and service
+//! lists, this port covers `pods` (object count), `cpu`/`requests.cpu`/
+//! `limits.cpu`, `memory`/`requests.memory`/`limits.memory`,
+//! `ephemeral-storage`/`requests.ephemeral-storage`/
+//! `limits.ephemeral-storage`, `persistentvolumeclaims` (object count),
+//! `requests.storage`, `services` (object count), `services.nodeports`,
+//! `services.loadbalancers`; not ported: the `hugepages-*` family (real
+//! upstream's own prefix-matched resource family, `podResourcePrefixes`),
+//! extended resources (`isExtendedResourceNameForQuota`), and the PVC
+//! evaluator's own real per-storage-class resource name family
+//! (`<class>.storageclass.storage.k8s.io/...`) — all real, all just not
+//! this crate's first cut. The PVC and service
 //! evaluators only apply to an *unscoped* `ResourceQuota` (`spec.scopes`
 //! empty) — real upstream's own `pvcEvaluator.Matches` only consults
 //! scopes at all behind the alpha `VolumeAttributesClass` feature gate,
@@ -349,6 +351,13 @@ fn pod_compute_usage(requests: &BTreeMap<String, Quantity>, limits: &BTreeMap<St
     if let Some(&mem) = limits.get("memory") {
         usage.insert("limits.memory".to_string(), mem);
     }
+    if let Some(&storage) = requests.get("ephemeral-storage") {
+        usage.insert("ephemeral-storage".to_string(), storage);
+        usage.insert("requests.ephemeral-storage".to_string(), storage);
+    }
+    if let Some(&storage) = limits.get("ephemeral-storage") {
+        usage.insert("limits.ephemeral-storage".to_string(), storage);
+    }
     usage
 }
 
@@ -389,7 +398,7 @@ fn hard_limits(resource_quota: &Value) -> BTreeMap<String, Quantity> {
 /// a `ResourceQuota` whose `spec.hard` only names resources this port
 /// doesn't track (e.g. `count/services`) is correctly not consulted at
 /// all, rather than spuriously matched.
-const TRACKED_RESOURCES: [&str; 7] = ["pods", "cpu", "requests.cpu", "limits.cpu", "memory", "requests.memory", "limits.memory"];
+const TRACKED_RESOURCES: [&str; 10] = ["pods", "cpu", "requests.cpu", "limits.cpu", "memory", "requests.memory", "limits.memory", "ephemeral-storage", "requests.ephemeral-storage", "limits.ephemeral-storage"];
 
 fn quota_applies(resource_quota: &Value) -> bool {
     hard_limits(resource_quota).keys().any(|k| TRACKED_RESOURCES.contains(&k.as_str()))
@@ -686,6 +695,28 @@ mod tests {
         assert_eq!(usage["limits.cpu"].milli_value(), 200);
         assert_eq!(usage["memory"].value(), 128 * 1024 * 1024);
         assert_eq!(usage["limits.memory"].value(), 256 * 1024 * 1024);
+    }
+
+    #[test]
+    fn pod_usage_tracks_ephemeral_storage_requests_and_limits() {
+        let pod = json!({"spec": {"containers": [{"name": "c1", "resources": {
+            "requests": {"ephemeral-storage": "1Gi"},
+            "limits": {"ephemeral-storage": "2Gi"},
+        }}]}});
+        let usage = pod_usage(&pod);
+        assert_eq!(usage["ephemeral-storage"].value(), 1024 * 1024 * 1024);
+        assert_eq!(usage["requests.ephemeral-storage"].value(), 1024 * 1024 * 1024);
+        assert_eq!(usage["limits.ephemeral-storage"].value(), 2 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn an_ephemeral_storage_quota_is_enforced() {
+        let mut pod = pod_with_cpu_request("new", "1m");
+        pod["spec"]["containers"][0]["resources"]["requests"]["ephemeral-storage"] = json!("2Gi");
+        let existing = json!({"metadata": {"name": "existing"}, "spec": {"containers": [{"name": "c1", "resources": {"requests": {"ephemeral-storage": "3Gi"}}}]}});
+        let q = quota("ephemeral-quota", json!({"requests.ephemeral-storage": "4Gi"}));
+        let denial = check_pod_create(&pod, &[existing], &[q]).expect("2Gi + 3Gi > 4Gi");
+        assert!(denial.contains("requests.ephemeral-storage"));
     }
 
     #[test]
