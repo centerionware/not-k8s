@@ -797,13 +797,41 @@ even when the PVC already has a class — a real, named inefficiency
 (`mutate` itself no-ops in that case, but only after the list already
 happened), not silently optimized around with a duplicate has-class check.
 
+`admission::limit_ranger` is mutating (pods, `CREATE` only) + validating
+(pods and `PersistentVolumeClaim`s) — a faithful-but-scoped port of real
+upstream's own `LimitRanger` plugin
+(`plugin/pkg/admission/limitranger/admission.go`, fetched and read
+directly): container-level (`LimitRange.spec.limits[].type ==
+"Container"`) min/max/ratio enforcement across `containers` and
+`initContainers`, container-level defaulting (a container missing a
+request/limit for a resource the `LimitRange` carries a
+`default`/`defaultRequest` for gets it filled in, and the pod is
+annotated `kubernetes.io/limit-ranger` describing what was set — real
+upstream's own annotation key and message format, ported exactly), and
+`PersistentVolumeClaim`-level (`LimitTypePersistentVolumeClaim`) min/max
+enforcement on `spec.resources.requests` (PVCs are validated, never
+defaulted — storage is a required part of the spec, matching upstream).
+Built on the new `scheme::quantity::Quantity` for real comparisons — its
+own `i128` exactness also means this port skips upstream's own
+`MaxMilliValue` overflow-avoidance dance entirely (see that module's own
+doc comment for why there's no overflow to avoid here). **Not yet
+ported, named honestly**: pod-level (`LimitTypePod`) aggregate min/max/
+ratio enforcement — upstream sums request/limits across every container
+with real, non-trivial restartable-init-container/sidecar aggregation
+rules and checks the pod-wide total; genuinely more involved than the
+per-container case this lands, left for a separate slice. Same
+pure-decision/real-I/O-step split as every other Group J plugin
+(`server::rest::list` over `LimitRange` in the target namespace is the
+one I/O step).
+
 **Not yet landed**: every other built-in plugin (`ResourceQuota`,
-`LimitRanger`, `PodSecurity`, …), a generic plugin-chain/registry
-abstraction (today `server::listener` hand-calls each plugin directly, not
-through any dispatch table), mutating/validating webhooks, and
-ValidatingAdmissionPolicy/MutatingAdmissionPolicy on CEL. **Build the CEL
-cost budget before wiring any CEL-driven admission path** — an unbudgeted
-CEL evaluator in the request path is a denial-of-service surface.
+`PodSecurity`, …), pod-level `LimitRange` enforcement (above), a generic
+plugin-chain/registry abstraction (today `server::listener` hand-calls
+each plugin directly, not through any dispatch table), mutating/
+validating webhooks, and ValidatingAdmissionPolicy/
+MutatingAdmissionPolicy on CEL. **Build the CEL cost budget before wiring
+any CEL-driven admission path** — an unbudgeted CEL evaluator in the
+request path is a denial-of-service surface.
 
 **K. CRDs (apiextensions)** — **not started**. Dynamic storage
 registration, structural schemas, pruning, defaulting,
