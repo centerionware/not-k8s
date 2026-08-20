@@ -1,0 +1,62 @@
+name: Quick check (x86_64, no artifacts)
+
+# The fast iteration loop: native x86_64, debug profile, no musl/cross
+# targets, no artifact upload — just "does this compile and pass its own
+# tests," in the shortest round trip this repo has. build.yml is
+# deliberately heavier (static musl binaries for three architectures,
+# uploaded as run artifacts) because it doubles as "give me a binary to
+# try on a device"; most iteration on a branch needs none of that.
+#
+# This does NOT replace a gate on the merge path — CLAUDE.md's merge
+# protocol (build.yml + e2e.yml, full unfiltered suite) still applies
+# before anything merges to main. Use this for the same kind of tight
+# edit/dispatch/read-result loop e2e.yml's `only` input gives targeted
+# e2e iteration, just for compile+unit-test correctness instead.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quick-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: cargo build (native x86_64, debug)
+        run: |
+          set -e
+          for crate in nodelet nodeproxy nodestore nodescheduler nodecontroller node-leaderelection nodeapiserver notk8s; do
+            if [[ -d "crates/$crate" ]]; then
+              cargo build -p "$crate"
+            else
+              echo "crates/$crate not present on this ref — skipping."
+            fi
+          done
+          if [[ -d crates/nodelet ]]; then
+            cargo build --features cri -p nodelet
+          fi
+          if [[ -d crates/notk8s ]]; then
+            cargo build --features cri -p notk8s
+          fi
+
+      - name: cargo test (native x86_64, debug)
+        # Under sudo for the same reason build.yml's test job is:
+        # nodeproxy's svc.rs nft_check() tests open real netlink/nftables
+        # sockets to validate generated ruleset syntax, which needs
+        # CAP_NET_ADMIN. sudo -E preserves PATH/CARGO_HOME/RUSTUP_HOME that
+        # setup-toolchain put in $GITHUB_ENV/$GITHUB_PATH.
+        run: |
+          set -e
+          sudo -E env "PATH=$PATH" cargo test -p nodelet
+          sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
+          for crate in nodeproxy nodestore nodescheduler nodecontroller node-leaderelection nodeapiserver notk8s; do
+            if [[ -d "crates/$crate" ]]; then
+              sudo -E env "PATH=$PATH" cargo test -p "$crate"
+            else
+              echo "crates/$crate not present on this ref — skipping its tests."
+            fi
+          done
