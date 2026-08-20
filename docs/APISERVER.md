@@ -251,8 +251,22 @@ schema-level array flattened to (schema, field) pairs, kept separate from
 unlike `x-kubernetes-*`/`default`). Recurses the same way defaulting does,
 via `ref_schema`. Deliberately run *before* defaulting in a real
 create/update path — a field is required in the user's *input*, not
-required to survive defaulting. Named honestly: this is structural
-presence-checking only, not the rest of real validation (formats, enums,
+required to survive defaulting. `scheme::validation::validate_types(schema,
+value)` lands the second: checks every field that *is* present has the
+JSON kind (`string`/`boolean`/`number`/`integer`/`array`) the schema's own
+`type` declares, reading another new Group A table (`TYPE_INFO` — kept
+separate from `FIELD_META` for the same "different question, different
+selectivity" reason `REQUIRED_FIELDS` is: nearly every scalar/array field
+carries a `"type"`, unlike `FIELD_META`'s narrower x-kubernetes-*/default/
+ref scope; a field with no `"type"` key at all, i.e. a nested single-object
+field spelled via `allOf`, has no entry and is left to `ref_schema`
+recursion instead, verified against `PodSpec.securityContext`). Recurses
+the same way, and a whole number encoded as a JSON float (`30.0`) still
+counts as `integer` — JSON has no separate integer literal syntax, so the
+check is on the value's mathematical shape, not how a particular encoder
+happened to lex it. Named honestly: both functions together are still
+only structural (presence + kind), not the rest of real validation
+(formats, enums — verified absent from the vendored specs entirely —
 cross-field consistency, numeric ranges — all hand-written Go upstream, no
 shortcut). Conversion only needed for genuinely multi-version groups
 (admissionregistration, autoscaling, certificates, coordination,

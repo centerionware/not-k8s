@@ -98,6 +98,14 @@ pub fn required_fields_index() -> &'static HashMap<&'static str, Vec<&'static st
     })
 }
 
+/// `(schema, field) -> openapi_type` ("string"/"integer"/"boolean"/
+/// "number"/"array"), built once from `openapi_meta::TYPE_INFO`.
+/// `scheme::validation` is this index's intended reader.
+pub fn type_info_index() -> &'static HashMap<(&'static str, &'static str), &'static str> {
+    static INDEX: OnceLock<HashMap<(&'static str, &'static str), &'static str>> = OnceLock::new();
+    INDEX.get_or_init(|| openapi_meta::TYPE_INFO.iter().map(|t| ((t.schema, t.field), t.openapi_type)).collect())
+}
+
 /// Resolves a field's `proto_type` (as `proto_fields::ProtoField` stores
 /// it — either bare, meaning "same package as the declaring message", or a
 /// fully proto-package-qualified name) into the openapi-style qualified
@@ -225,6 +233,19 @@ mod tests {
     #[test]
     fn a_schema_with_no_required_array_has_no_index_entry() {
         assert!(required_fields_index().get("io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta").is_none());
+    }
+
+    /// Real, verified vendored `type` declarations from `PodSpec`: an
+    /// array field (`containers`), a scalar boolean (`hostNetwork`), and a
+    /// nested-object field (`securityContext`, spelled via `allOf` with no
+    /// sibling `"type"` key) which correctly has *no* entry — that shape
+    /// is `ref_schema`'s job, not this table's.
+    #[test]
+    fn type_info_index_reflects_real_vendored_type_declarations() {
+        let idx = type_info_index();
+        assert_eq!(idx.get(&("io.k8s.api.core.v1.PodSpec", "containers")), Some(&"array"));
+        assert_eq!(idx.get(&("io.k8s.api.core.v1.PodSpec", "hostNetwork")), Some(&"boolean"));
+        assert_eq!(idx.get(&("io.k8s.api.core.v1.PodSpec", "securityContext")), None);
     }
 
     /// Real cases from `DaemonSetSpec`, verified against the vendored
