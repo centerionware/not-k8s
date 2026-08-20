@@ -60,22 +60,31 @@
 //! `Restricted`, not double-reported) — see that module's own doc
 //! comment for exactly which upstream variant of each check.
 //!
-//! `resource_quota` — `ResourceQuota`, validating, `CREATE`-only,
-//! **pods, PersistentVolumeClaims, and Services** (real upstream also
-//! tracks secrets/configmaps/arbitrary object counts through a whole
-//! per-type evaluator registry this crate doesn't port): forbids a
-//! `Pod`/`PersistentVolumeClaim`/`Service` `CREATE` that would push a
-//! namespace's tracked usage
+//! `resource_quota` — `ResourceQuota`, validating, `CREATE`-only. Three
+//! specialized evaluators — **pods, PersistentVolumeClaims, and
+//! Services** — plus a fourth, **generic** one
+//! (`check_object_count_create`, mirroring real upstream's own
+//! `generic.objectCountEvaluator`) that covers every other resource kind
+//! via the stable `count/<resource>` (core group) /
+//! `count/<resource>.<group>` (other groups) quota-key convention, with
+//! no scope matching (matching real upstream's own `MatchesNoScopeFunc`
+//! for that evaluator). Real upstream's own registry
+//! (`pkg/quota/v1/evaluator/core/registry.go`) is exactly this shape:
+//! three specials, everything else generic — so this crate doesn't need
+//! a real per-type evaluator for secrets/configmaps/etc. to already
+//! cover them. Forbids a resource `CREATE` that would push a namespace's
+//! tracked usage
 //! (`pods`/`cpu`/`requests.cpu`/`limits.cpu`/`memory`/`requests.memory`/
 //! `limits.memory`/`persistentvolumeclaims`/`requests.storage`/
-//! `services`/`services.nodeports`/`services.loadbalancers`) over any
-//! `ResourceQuota`'s own `spec.hard`. All six real `spec.scopes` names
-//! are matched for pods (`Terminating`/`NotTerminating`/`BestEffort`/
-//! `NotBestEffort` — including a real `ComputePodQOS` port —,
-//! `PriorityClass` — an implied-`Exists` presence check for the classic
-//! `spec.scopes` list form, not real upstream's own separate, richer
-//! `spec.scopeSelector` field — and `CrossNamespacePodAffinity`); PVCs
-//! and services only match an *unscoped* quota (matching each
+//! `services`/`services.nodeports`/`services.loadbalancers`/
+//! `count/<resource>[.<group>]`) over any `ResourceQuota`'s own
+//! `spec.hard`. All six real `spec.scopes` names are matched for pods
+//! (`Terminating`/`NotTerminating`/`BestEffort`/`NotBestEffort` —
+//! including a real `ComputePodQOS` port —, `PriorityClass` — an
+//! implied-`Exists` presence check for the classic `spec.scopes` list
+//! form, not real upstream's own separate, richer `spec.scopeSelector`
+//! field — and `CrossNamespacePodAffinity`); PVCs, services, and the
+//! generic evaluator only match an *unscoped* quota (matching each
 //! evaluator's own real behavior). No persisted `status.used` counter
 //! (recomputed live from a fresh `Pod` list every time instead — see that
 //! module's own doc comment for the one real concurrency-race consequence
