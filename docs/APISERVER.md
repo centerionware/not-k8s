@@ -528,7 +528,28 @@ admission deliberately does **not** gate `watch` — matching real
 upstream's own posture (admission never runs on a read, whatever the
 verb), not a gap.
 
-**Not yet landed**: `patch`/`deletecollection`, the rest of admission
+**`PATCH` is real too now** (`rest::patch`, reusing Group G's already-landed
+`patch::json_patch`/`merge_patch`/`strategic_merge`): the real `Content-Type`
+selects the patch kind (`application/json-patch+json`/
+`application/merge-patch+json`/`application/strategic-merge-patch+json` —
+`rest::patch_kind_for_content_type`, a real `415` for anything else,
+Server-Side Apply's own `application/apply-patch+yaml` deliberately not
+recognized, matching Group G's own "not yet landed" note), applied to
+the object this same call itself reads, then persisted through the same
+optimistic-concurrency `Txn`-compared-against-`ModRevision` tail
+`rest::update` already used (factored out as `persist_update`) — no
+client-submitted `resourceVersion` needed, unlike `PUT`, since the
+object being patched *is* the one just read. **Named, honest gap**:
+`PATCH` doesn't run through Group J admission yet — the mutating/
+validating plugin chain in `server::listener` is wired specifically
+against a pre-built `body_value` the way `CREATE`/`UPDATE` supply it,
+and `PATCH`'s own final object only exists once `rest::patch` has
+already applied the patch and persisted it, past the point admission
+would need to run to still be able to reject the write; closing this
+needs `rest::patch` itself split into an apply-then-validate-then-persist
+shape the way `create`/`update` already are.
+
+**Not yet landed**: `deletecollection`, the rest of admission
 (Group J's own section has the
 running plugin list), the real handler chain fully unified into one
 ordered dispatcher (authn -> authz -> APF -> admission -> REST — a hard
@@ -682,7 +703,10 @@ including a two-levels-deep recursion case
 correctly, not just parent -> immediate child. Named, deliberate gaps
 (`strategic_merge`'s own doc comment): no `$patch`/`$setElementOrder`/
 `$deleteFromPrimitiveList` directives — a patch that never uses them
-(the overwhelming majority) behaves identically either way. **Not yet
+(the overwhelming majority) behaves identically either way. **All three
+are now wired into a real `PATCH` verb** (Group E's own section has the
+detail: `server::rest::patch`, selected by real `Content-Type`, real
+optimistic concurrency, admission not yet run on it). **Not yet
 landed**: Server-Side Apply/`managedFields` (structured-merge-diff has no
 Rust crate to reuse), which will build on the same `FIELD_META`
 (`ref_schema` included) this group's patch logic already reads.
