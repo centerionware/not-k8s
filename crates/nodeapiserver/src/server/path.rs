@@ -191,7 +191,7 @@ pub(crate) fn split_path(path: &str) -> Vec<String> {
 /// space; does not validate UTF-8 strictly (falls back to the raw bytes
 /// via `from_utf8_lossy` — a malformed escape degrading gracefully rather
 /// than panicking is the right posture for untrusted request input).
-fn parse_query(query: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_query(query: &str) -> Vec<(String, String)> {
     query
         .split('&')
         .filter(|s| !s.is_empty())
