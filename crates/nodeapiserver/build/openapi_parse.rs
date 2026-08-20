@@ -26,6 +26,15 @@ pub struct FieldMeta {
     pub map_type: Option<String>,
     pub patch_strategy: Option<String>,
     pub patch_merge_key: Option<String>,
+    /// The schema this field's value is shaped like — the object schema
+    /// itself for a nested-object field, or the *element* schema for an
+    /// array field (`items.$ref`/`items.allOf[0].$ref`). `None` for a
+    /// scalar field (`string`/`integer`/`boolean`) or a field with no
+    /// `$ref` at all. This is what lets Strategic Merge Patch (Group G)
+    /// recurse into a nested field using *that* field's own metadata,
+    /// instead of only ever seeing the metadata attached to the field that
+    /// references it.
+    pub ref_schema: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,8 +123,15 @@ fn extension_meta(schema_name: &str, field_name: &str, prop: &Value) -> Option<F
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
         .unwrap_or_default();
+    let ref_schema = resolve_ref_schema(prop);
 
-    if list_type.is_none() && map_type.is_none() && patch_strategy.is_none() && patch_merge_key.is_none() && list_map_keys.is_empty() {
+    if list_type.is_none()
+        && map_type.is_none()
+        && patch_strategy.is_none()
+        && patch_merge_key.is_none()
+        && list_map_keys.is_empty()
+        && ref_schema.is_none()
+    {
         return None;
     }
     Some(FieldMeta {
@@ -126,7 +142,35 @@ fn extension_meta(schema_name: &str, field_name: &str, prop: &Value) -> Option<F
         map_type,
         patch_strategy,
         patch_merge_key,
+        ref_schema,
     })
+}
+
+/// The `$ref`'d schema a property's value is shaped like — checking the
+/// three real shapes seen in the vendored specs: a direct `$ref`, a
+/// single-entry `allOf: [{$ref: ...}]` (how a non-array object-typed
+/// property is spelled — confirmed against `DaemonSetSpec.selector`), and
+/// an array property's `items` (either form again, confirmed against
+/// `PodSpec.containers`).
+fn resolve_ref_schema(prop: &Value) -> Option<String> {
+    if let Some(name) = ref_target(prop) {
+        return Some(name);
+    }
+    let items = prop.get("items")?;
+    ref_target(items)
+}
+
+fn ref_target(v: &Value) -> Option<String> {
+    if let Some(r) = v.get("$ref").and_then(Value::as_str) {
+        return schema_name_from_ref(r);
+    }
+    let all_of = v.get("allOf")?.as_array()?;
+    let r = all_of.first()?.get("$ref")?.as_str()?;
+    schema_name_from_ref(r)
+}
+
+fn schema_name_from_ref(r: &str) -> Option<String> {
+    r.strip_prefix("#/components/schemas/").map(str::to_string)
 }
 
 fn opt_str(o: &Option<String>) -> String {
@@ -155,6 +199,7 @@ pub fn render(field_meta: &[FieldMeta], gvks: &[GvkEntry]) -> String {
     out.push_str("    pub map_type: Option<&'static str>,\n");
     out.push_str("    pub patch_strategy: Option<&'static str>,\n");
     out.push_str("    pub patch_merge_key: Option<&'static str>,\n");
+    out.push_str("    pub ref_schema: Option<&'static str>,\n");
     out.push_str("}\n\n");
 
     out.push_str("pub static FIELD_META: &[FieldMeta] = &[\n");
@@ -162,7 +207,7 @@ pub fn render(field_meta: &[FieldMeta], gvks: &[GvkEntry]) -> String {
         for m in group {
             let keys: Vec<String> = m.list_map_keys.iter().map(|k| format!("{k:?}")).collect();
             out.push_str(&format!(
-                "    FieldMeta {{ schema: {:?}, field: {:?}, list_type: {}, list_map_keys: &[{}], map_type: {}, patch_strategy: {}, patch_merge_key: {} }},\n",
+                "    FieldMeta {{ schema: {:?}, field: {:?}, list_type: {}, list_map_keys: &[{}], map_type: {}, patch_strategy: {}, patch_merge_key: {}, ref_schema: {} }},\n",
                 schema,
                 m.field,
                 opt_str(&m.list_type),
@@ -170,6 +215,7 @@ pub fn render(field_meta: &[FieldMeta], gvks: &[GvkEntry]) -> String {
                 opt_str(&m.map_type),
                 opt_str(&m.patch_strategy),
                 opt_str(&m.patch_merge_key),
+                opt_str(&m.ref_schema),
             ));
         }
     }
