@@ -12,12 +12,14 @@
 //! reconnect loops against nodestore at process startup is a real
 //! resource/ordering decision this crate hasn't made yet (how many at
 //! once, in what order, whether to wait for any to sync before serving
-//! traffic), not an oversight. That boot-time integration is the
-//! remaining, not-yet-started follow-up work — the read side is no
-//! longer blocked on it: `server::rest::get`/`list` both already consult
-//! whatever cache a caller hands them (`rest`'s own doc comment), it's
-//! just that only `server::listener`'s own `namespaces` proof of concept
-//! calls `spawn` at all today.
+//! traffic), not an oversight. That boot-time integration for *every*
+//! resource is the remaining, not-yet-started follow-up work — the read
+//! side is no longer blocked on it: `server::rest::get`/`list` both
+//! already consult whatever cache a caller hands them (`rest`'s own doc
+//! comment), and `server::listener::run` now calls `spawn` for a
+//! deliberately bounded, reasoned list of resources
+//! (`BOOT_CACHED_RESOURCES`), not just the original one-resource
+//! (`namespaces`) proof of concept.
 //!
 //! Cache scope matches real kube-apiserver's own: one cache per
 //! `(group, version, resource)`, covering every namespace at once (not
