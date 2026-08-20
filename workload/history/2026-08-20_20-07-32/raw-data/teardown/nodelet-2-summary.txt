@@ -1,0 +1,117 @@
+  PROCESS            avg CPU%    CPU-sec   RSS (MB)         cycles   instructions      IPC
+  ──────────────── ────────── ────────── ────────── ────────────── ────────────── ────────
+  k3s server           36.00%   3.600000      525.8            N/A            N/A      N/A
+  nodestore            71.90%   7.190000       22.6            N/A            N/A      N/A
+  nodelet               9.60%   0.960000       22.1            N/A            N/A      N/A
+  nodescheduler         1.70%   0.170000       19.7            N/A            N/A      N/A
+  nodecontroller        8.10%   0.810000       63.0            N/A            N/A      N/A
+  containerd            5.90%   0.590000       83.8            N/A            N/A      N/A
+  flanneld              0.10%   0.010000       41.9            N/A            N/A      N/A
+  ──────────────── ────────── ────────── ────────── ────────────── ────────────── ────────
+  COMBINED            133.30%     13.330      778.9            N/A            N/A      N/A
+
+  what each row is:
+    k3s server     everything not yet replaced: apiserver, controller-manager, scheduler, and kine+SQLite unless a datastore row below is running
+    nodestore      the datastore — etcd v3 over SQLite, replacing kine
+    nodelet        the node agent, replacing kubelet
+    nodescheduler  the scheduler, replacing kube-scheduler
+    nodecontroller the controller manager — node lifecycle, ServiceAccount/CSR, GC and friends — replacing kube-controller-manager
+    containerd     the container runtime (k3s bundles its own; this stack uses the host's)
+    flanneld       the CNI overlay daemon (a separate service here, in-process on stock k3s)
+  not running on this host (not measured): nodeproxy nodeapiserver kube-apiserver kube-controller-manager kubelet kube-proxy kube-scheduler
+
+  test hardware: arch=x86_64 cores=4 model="Intel(R) Xeon(R) 6973P-C"
+  sample window: 10s actual (stop-file driven, capped at 300s), 1 sample/sec
+  perf hardware counters (cycles/instructions): available
+  CPU-seconds precision: k3s=proc-ticks nodestore=proc-ticks nodelet=proc-ticks nodescheduler=proc-ticks nodecontroller=proc-ticks containerd=proc-ticks flanneld=proc-ticks (perf-task-clock = sub-ms via perf; proc-ticks = ~10ms via /proc, whenever perf's task-clock wasn't available)
+
+  NOTE: the "k3s server" row is one OS process holding everything not yet
+  replaced — apiserver + controller-manager + scheduler, plus kine/SQLite
+  whenever nodestore is not the datastore, plus the embedded kubelet whenever
+  the agent isn't disabled. Those cannot be isolated at the process level, so
+  read that row as a remainder that shrinks as components move out of it, not
+  as any one component's cost.
+=== MEASURE ===
+MEASURE_SAMPLE_SECS=300
+MEASURE_ACTUAL_SECS=10
+MEASURE_PERF_AVAILABLE=true
+MEASURE_OUT_DIR=/tmp/measure-out-teardown
+MEASURE_CPU_ARCH=x86_64
+MEASURE_CPU_CORES=4
+MEASURE_CPU_MODEL=Intel(R) Xeon(R) 6973P-C
+MEASURE_K3S_PRESENT=true
+MEASURE_K3S_RSS_MB=525.8
+MEASURE_K3S_CPU_AVG_PCT=36.00
+MEASURE_K3S_CPU_SECONDS=3.600000
+MEASURE_K3S_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_K3S_CYCLES=
+MEASURE_K3S_INSTRUCTIONS=
+MEASURE_K3S_IPC=
+MEASURE_K3S_TIMESERIES_CSV=/tmp/measure-out-teardown/k3s-timeseries.csv
+MEASURE_NODESTORE_PRESENT=true
+MEASURE_NODESTORE_RSS_MB=22.6
+MEASURE_NODESTORE_CPU_AVG_PCT=71.90
+MEASURE_NODESTORE_CPU_SECONDS=7.190000
+MEASURE_NODESTORE_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_NODESTORE_CYCLES=
+MEASURE_NODESTORE_INSTRUCTIONS=
+MEASURE_NODESTORE_IPC=
+MEASURE_NODESTORE_TIMESERIES_CSV=/tmp/measure-out-teardown/nodestore-timeseries.csv
+MEASURE_NODELET_PRESENT=true
+MEASURE_NODELET_RSS_MB=22.1
+MEASURE_NODELET_CPU_AVG_PCT=9.60
+MEASURE_NODELET_CPU_SECONDS=0.960000
+MEASURE_NODELET_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_NODELET_CYCLES=
+MEASURE_NODELET_INSTRUCTIONS=
+MEASURE_NODELET_IPC=
+MEASURE_NODELET_TIMESERIES_CSV=/tmp/measure-out-teardown/nodelet-timeseries.csv
+MEASURE_NODEPROXY_PRESENT=false
+MEASURE_NODEAPISERVER_PRESENT=false
+MEASURE_NODESCHEDULER_PRESENT=true
+MEASURE_NODESCHEDULER_RSS_MB=19.7
+MEASURE_NODESCHEDULER_CPU_AVG_PCT=1.70
+MEASURE_NODESCHEDULER_CPU_SECONDS=0.170000
+MEASURE_NODESCHEDULER_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_NODESCHEDULER_CYCLES=
+MEASURE_NODESCHEDULER_INSTRUCTIONS=
+MEASURE_NODESCHEDULER_IPC=
+MEASURE_NODESCHEDULER_TIMESERIES_CSV=/tmp/measure-out-teardown/nodescheduler-timeseries.csv
+MEASURE_NODECONTROLLER_PRESENT=true
+MEASURE_NODECONTROLLER_RSS_MB=63.0
+MEASURE_NODECONTROLLER_CPU_AVG_PCT=8.10
+MEASURE_NODECONTROLLER_CPU_SECONDS=0.810000
+MEASURE_NODECONTROLLER_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_NODECONTROLLER_CYCLES=
+MEASURE_NODECONTROLLER_INSTRUCTIONS=
+MEASURE_NODECONTROLLER_IPC=
+MEASURE_NODECONTROLLER_TIMESERIES_CSV=/tmp/measure-out-teardown/nodecontroller-timeseries.csv
+MEASURE_KUBE_APISERVER_PRESENT=false
+MEASURE_KUBE_CONTROLLER_MANAGER_PRESENT=false
+MEASURE_KUBELET_PRESENT=false
+MEASURE_KUBE_PROXY_PRESENT=false
+MEASURE_KUBE_SCHEDULER_PRESENT=false
+MEASURE_CONTAINERD_PRESENT=true
+MEASURE_CONTAINERD_RSS_MB=83.8
+MEASURE_CONTAINERD_CPU_AVG_PCT=5.90
+MEASURE_CONTAINERD_CPU_SECONDS=0.590000
+MEASURE_CONTAINERD_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_CONTAINERD_CYCLES=
+MEASURE_CONTAINERD_INSTRUCTIONS=
+MEASURE_CONTAINERD_IPC=
+MEASURE_CONTAINERD_TIMESERIES_CSV=/tmp/measure-out-teardown/containerd-timeseries.csv
+MEASURE_FLANNELD_PRESENT=true
+MEASURE_FLANNELD_RSS_MB=41.9
+MEASURE_FLANNELD_CPU_AVG_PCT=0.10
+MEASURE_FLANNELD_CPU_SECONDS=0.010000
+MEASURE_FLANNELD_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_FLANNELD_CYCLES=
+MEASURE_FLANNELD_INSTRUCTIONS=
+MEASURE_FLANNELD_IPC=
+MEASURE_FLANNELD_TIMESERIES_CSV=/tmp/measure-out-teardown/flanneld-timeseries.csv
+MEASURE_COMBINED_RSS_MB=778.9
+MEASURE_COMBINED_CPU_AVG_PCT=133.30
+MEASURE_COMBINED_CPU_SECONDS=13.330
+MEASURE_COMBINED_CYCLES=
+MEASURE_COMBINED_INSTRUCTIONS=
+=== END MEASURE ===

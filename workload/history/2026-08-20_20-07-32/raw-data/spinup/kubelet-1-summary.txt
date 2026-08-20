@@ -1,0 +1,87 @@
+  PROCESS            avg CPU%    CPU-sec   RSS (MB)         cycles   instructions      IPC
+  ──────────────── ────────── ────────── ────────── ────────────── ────────────── ────────
+  k3s server           13.67%   1.640000      437.8            N/A            N/A      N/A
+  /usr/local/bin/kubelet      4.58%   0.550000       81.8            N/A            N/A      N/A
+  containerd           10.50%   1.260000       83.2            N/A            N/A      N/A
+  flanneld              0.08%   0.010000       41.5            N/A            N/A      N/A
+  ──────────────── ────────── ────────── ────────── ────────────── ────────────── ────────
+  COMBINED             28.83%      3.460      644.3            N/A            N/A      N/A
+
+  what each row is:
+    k3s server     everything not yet replaced: apiserver, controller-manager, scheduler, and kine+SQLite unless a datastore row below is running
+    /usr/local/bin/kubelet the node agent, replacing kubelet
+    containerd     the container runtime (k3s bundles its own; this stack uses the host's)
+    flanneld       the CNI overlay daemon (a separate service here, in-process on stock k3s)
+  not running on this host (not measured): nodestore nodeproxy nodeapiserver nodescheduler nodecontroller kube-apiserver kube-controller-manager kubelet kube-proxy kube-scheduler
+
+  test hardware: arch=x86_64 cores=4 model="AMD EPYC 7763 64-Core Processor"
+  sample window: 12s actual (stop-file driven, capped at 300s), 1 sample/sec
+  perf hardware counters (cycles/instructions): available
+  CPU-seconds precision: k3s=proc-ticks nodelet=proc-ticks containerd=proc-ticks flanneld=proc-ticks (perf-task-clock = sub-ms via perf; proc-ticks = ~10ms via /proc, whenever perf's task-clock wasn't available)
+
+  NOTE: the "k3s server" row is one OS process holding everything not yet
+  replaced — apiserver + controller-manager + scheduler, plus kine/SQLite
+  whenever nodestore is not the datastore, plus the embedded kubelet whenever
+  the agent isn't disabled. Those cannot be isolated at the process level, so
+  read that row as a remainder that shrinks as components move out of it, not
+  as any one component's cost.
+=== MEASURE ===
+MEASURE_SAMPLE_SECS=300
+MEASURE_ACTUAL_SECS=12
+MEASURE_PERF_AVAILABLE=true
+MEASURE_OUT_DIR=/tmp/measure-out-spinup
+MEASURE_CPU_ARCH=x86_64
+MEASURE_CPU_CORES=4
+MEASURE_CPU_MODEL=AMD EPYC 7763 64-Core Processor
+MEASURE_K3S_PRESENT=true
+MEASURE_K3S_RSS_MB=437.8
+MEASURE_K3S_CPU_AVG_PCT=13.67
+MEASURE_K3S_CPU_SECONDS=1.640000
+MEASURE_K3S_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_K3S_CYCLES=
+MEASURE_K3S_INSTRUCTIONS=
+MEASURE_K3S_IPC=
+MEASURE_K3S_TIMESERIES_CSV=/tmp/measure-out-spinup/k3s-timeseries.csv
+MEASURE_NODESTORE_PRESENT=false
+MEASURE_NODELET_PRESENT=true
+MEASURE_NODELET_RSS_MB=81.8
+MEASURE_NODELET_CPU_AVG_PCT=4.58
+MEASURE_NODELET_CPU_SECONDS=0.550000
+MEASURE_NODELET_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_NODELET_CYCLES=
+MEASURE_NODELET_INSTRUCTIONS=
+MEASURE_NODELET_IPC=
+MEASURE_NODELET_TIMESERIES_CSV=/tmp/measure-out-spinup/nodelet-timeseries.csv
+MEASURE_NODEPROXY_PRESENT=false
+MEASURE_NODEAPISERVER_PRESENT=false
+MEASURE_NODESCHEDULER_PRESENT=false
+MEASURE_NODECONTROLLER_PRESENT=false
+MEASURE_KUBE_APISERVER_PRESENT=false
+MEASURE_KUBE_CONTROLLER_MANAGER_PRESENT=false
+MEASURE_KUBELET_PRESENT=false
+MEASURE_KUBE_PROXY_PRESENT=false
+MEASURE_KUBE_SCHEDULER_PRESENT=false
+MEASURE_CONTAINERD_PRESENT=true
+MEASURE_CONTAINERD_RSS_MB=83.2
+MEASURE_CONTAINERD_CPU_AVG_PCT=10.50
+MEASURE_CONTAINERD_CPU_SECONDS=1.260000
+MEASURE_CONTAINERD_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_CONTAINERD_CYCLES=
+MEASURE_CONTAINERD_INSTRUCTIONS=
+MEASURE_CONTAINERD_IPC=
+MEASURE_CONTAINERD_TIMESERIES_CSV=/tmp/measure-out-spinup/containerd-timeseries.csv
+MEASURE_FLANNELD_PRESENT=true
+MEASURE_FLANNELD_RSS_MB=41.5
+MEASURE_FLANNELD_CPU_AVG_PCT=0.08
+MEASURE_FLANNELD_CPU_SECONDS=0.010000
+MEASURE_FLANNELD_CPU_SECONDS_SOURCE=proc-ticks
+MEASURE_FLANNELD_CYCLES=
+MEASURE_FLANNELD_INSTRUCTIONS=
+MEASURE_FLANNELD_IPC=
+MEASURE_FLANNELD_TIMESERIES_CSV=/tmp/measure-out-spinup/flanneld-timeseries.csv
+MEASURE_COMBINED_RSS_MB=644.3
+MEASURE_COMBINED_CPU_AVG_PCT=28.83
+MEASURE_COMBINED_CPU_SECONDS=3.460
+MEASURE_COMBINED_CYCLES=
+MEASURE_COMBINED_INSTRUCTIONS=
+=== END MEASURE ===
