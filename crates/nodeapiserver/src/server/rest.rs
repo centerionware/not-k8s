@@ -426,22 +426,24 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
     Ok(UpdateOutcome::Updated(object))
 }
 
-/// `scheme::name_format`'s validators, wired to the one resource this
-/// crate has actually verified a real per-type rule for: `namespaces`
-/// (core group) uses `NameIsDNSLabel` in real upstream
-/// (`ValidateNamespaceName = NameIsDNSLabel`,
-/// `apimachinery/pkg/api/validation/generic.go`, confirmed directly).
-/// Every other `(group, resource)` returns no violations at all — not
-/// because every other name is assumed valid, but because this crate
-/// hasn't verified which real validator (if any beyond the generic
-/// `NameIsDNSSubdomain` most types default to) applies to it yet; see
-/// `scheme::name_format`'s own doc comment for why that mapping isn't a
-/// generically-derivable table. Extend this match one verified entry at
-/// a time, the same way `scheme::defaulting`'s own concrete case
-/// (`ContainerPort.protocol`) was landed and proven before generalizing.
+/// `scheme::name_format`'s validators, wired to the resources this crate
+/// has actually verified a real per-type rule for
+/// (`apimachinery/pkg/api/validation/generic.go`, confirmed directly):
+/// `namespaces` (core group) uses `NameIsDNSLabel`
+/// (`ValidateNamespaceName = NameIsDNSLabel`), `serviceaccounts` (core
+/// group) uses `NameIsDNSSubdomain` (`ValidateServiceAccountName =
+/// NameIsDNSSubdomain`). Every other `(group, resource)` returns no
+/// violations at all — not because every other name is assumed valid,
+/// but because this crate hasn't verified which real validator applies
+/// to it yet; see `scheme::name_format`'s own doc comment for why that
+/// mapping isn't a generically-derivable table. Extend this match one
+/// verified entry at a time, the same way `scheme::defaulting`'s own
+/// concrete case (`ContainerPort.protocol`) was landed and proven before
+/// generalizing.
 fn name_format_violations(group: &str, resource: &str, name: &str) -> Vec<String> {
     match (group, resource) {
         ("", "namespaces") => crate::scheme::name_format::is_dns1123_label(name),
+        ("", "serviceaccounts") => crate::scheme::name_format::is_dns1123_subdomain(name),
         _ => Vec::new(),
     }
 }
@@ -547,6 +549,12 @@ mod tests {
     fn name_format_violations_enforces_the_real_namespace_rule() {
         assert!(name_format_violations("", "namespaces", "my-namespace").is_empty());
         assert!(!name_format_violations("", "namespaces", "My_Namespace").is_empty());
+    }
+
+    #[test]
+    fn name_format_violations_enforces_the_real_serviceaccount_rule() {
+        assert!(name_format_violations("", "serviceaccounts", "my.sa-name").is_empty());
+        assert!(!name_format_violations("", "serviceaccounts", "My_SA").is_empty());
     }
 
     #[test]
