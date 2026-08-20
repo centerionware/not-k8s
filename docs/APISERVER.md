@@ -466,9 +466,27 @@ so every request is still served the same way regardless of who (if
 anyone) it authenticated as. Everything else named above (ServiceAccount
 JWT, OIDC, TokenReview, bootstrap tokens, anonymous) is not started.
 
-**I. Authorization** — **not started**. RBAC, Node authorizer, webhook,
-SubjectAccessReview/SelfSubjectAccessReview. PKI primitives (`rcgen`, `p256`,
-`x509-parser`, `pem`) are already in-tree from `nodecontroller`'s CSR group.
+**I. Authorization** — **started**. `authz::rbac` is the RBAC
+rule-matching primitive — a faithful port of real upstream's own
+`VerbMatches`/`APIGroupMatches`/`ResourceMatches`/`ResourceNameMatches`/
+`NonResourceURLMatches` (`pkg/apis/rbac/v1/evaluation_helpers.go`) and
+`RuleAllows`/`RulesAllow` (`plugin/pkg/auth/authorizer/rbac/rbac.go`),
+fetched and read directly. Covers the real wildcard semantics
+(`verbs`/`apiGroups`/`resources` `"*"`, the `*/status`-style subresource
+wildcard, the trailing-`*` prefix wildcard `nonResourceURLs` supports,
+and empty `resourceNames` meaning "every name") and the resource vs.
+non-resource request split. **Pure evaluation engine only — not yet
+wired to real `Role`/`RoleBinding`/`ClusterRole`/`ClusterRoleBinding`
+objects**: resolving which `PolicyRule`s apply to a subject in a
+namespace needs those objects fetched from storage (real upstream's
+`DefaultRuleResolver`) — separate, not-yet-started work, same "land the
+primitive, wire it later" split this arc has taken throughout. Not wired
+into `server::listener` either — every request is still served
+regardless of the identity Group H's x509 authenticator may have
+established for it. Node authorizer, webhook authorization, and
+SubjectAccessReview/SelfSubjectAccessReview are not started. PKI
+primitives (`rcgen`, `p256`, `x509-parser`, `pem`) are already in-tree
+from `nodecontroller`'s CSR group.
 
 **J. Admission** — **not started**. Built-in plugin chain
 (NamespaceLifecycle, ServiceAccount, DefaultStorageClass, ResourceQuota,
