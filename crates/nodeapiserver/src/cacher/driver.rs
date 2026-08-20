@@ -4,21 +4,26 @@
 //! `ARCHITECTURE.md` §4's "LIST for a point-in-time RV, then WATCH from
 //! it" made real.
 //!
-//! Split into pure decode logic (`decode_event`, `apply_watch_response` —
+//! Split into pure decode logic (`decode_event`, `decode_applies` —
 //! unit-tested against constructed `mvccpb`/`etcdserverpb` values, no
-//! network needed) and thin async orchestration (`list`, `watch_from_list`)
-//! that only wraps `StorageClient` calls — the same split every group so
-//! far has kept between what a unit test can prove and what genuinely
+//! network needed) and async orchestration (`list`, `watch_from_revision`,
+//! `reflect`) that wraps `StorageClient` calls — the same split every group
+//! so far has kept between what a unit test can prove and what genuinely
 //! needs live infrastructure.
 //!
-//! **Not yet done**, named honestly rather than left unsaid: a
-//! reconnect-on-disconnect loop (a caller today gets one LIST-then-WATCH
-//! cycle and must notice the response stream ending and start over itself)
-//! and bookmark *generation* on a timer — this module only turns a
-//! progress-notify response nodestore might send into a cache bookmark, it
-//! doesn't request one on any schedule.
+//! `reflect()` is the reconnect loop: LIST, WATCH from `RV + 1`, and on any
+//! failure or stream end, relist and start again — never gives up, matches
+//! real `client-go` Reflector semantics. Takes a `SharedCache` (not a bare
+//! `WatchCache`) so reader tasks can run concurrently with it.
+//!
+//! **Not yet done**, named honestly rather than left unsaid: bookmark
+//! *generation* on a timer — this module only turns a progress-notify
+//! response nodestore might send into a cache bookmark, it doesn't request
+//! one on any schedule (nodestore's own `progress_notify` mechanism, via
+//! `WatchCreateRequest.progress_notify`, is what a future revision of
+//! `watch_from_revision` would set to get one periodically).
 
-use crate::cacher::store::{CacheEntry, EventKind, WatchCache};
+use crate::cacher::store::{CacheEntry, EventKind, SharedCache, WatchCache};
 use crate::storage::client::{prefix_range_end, Error as StorageError, StorageClient, WatchHandle};
 use crate::storage::pb::etcdserverpb::{RangeRequest, WatchResponse};
 use crate::storage::pb::mvccpb;
@@ -41,13 +46,71 @@ pub async fn list(client: &mut StorageClient, key_prefix: &[u8]) -> Result<(Vec<
     Ok((items, revision))
 }
 
-/// WATCH: opens a watcher over `key_prefix` starting just past `cache`'s
-/// current revision — not at it, so the event that produced the LIST
-/// snapshot's own revision isn't redelivered (which would otherwise
-/// violate `WatchCache::apply`'s monotonic-increase expectation the moment
-/// the very first watch response arrived).
-pub async fn watch_from_cache(client: &mut StorageClient, key_prefix: &[u8], cache: &WatchCache) -> Result<WatchHandle, StorageError> {
-    client.watch(key_prefix.to_vec(), prefix_range_end(key_prefix), cache.revision() + 1).await
+/// WATCH: opens a watcher over `key_prefix` starting just past
+/// `list_revision` (a LIST's own returned revision) — not at it, so the
+/// event that produced that revision isn't redelivered (which would
+/// otherwise violate `WatchCache::apply`'s monotonic-increase expectation
+/// the moment the very first watch response arrived). Takes the revision
+/// directly rather than a cache reference so it doesn't care whether the
+/// caller holds a bare `WatchCache` or a `SharedCache`.
+pub async fn watch_from_revision(client: &mut StorageClient, key_prefix: &[u8], list_revision: i64) -> Result<WatchHandle, StorageError> {
+    client.watch(key_prefix.to_vec(), prefix_range_end(key_prefix), list_revision + 1).await
+}
+
+/// The reconnect loop named as missing in this module's own doc comment
+/// (fixed as of this revision): runs LIST-then-WATCH against nodestore
+/// forever, feeding every event into `cache`. Never returns — a LIST
+/// failure, a watch-open failure, a mid-stream error, or the stream simply
+/// ending (nodestore restarting, a network blip) all trigger a fresh
+/// LIST-then-WATCH cycle after `backoff`, the same "the client's job is to
+/// retry, not to give up" posture every real `client-go` Reflector takes.
+/// `cache` is a [`SharedCache`] rather than a bare `WatchCache`
+/// specifically so reader tasks (a REST handler's `list()`/`watch_from()`)
+/// can run concurrently with this loop's own `apply()` calls.
+///
+/// `backoff` should be a real interval (seconds, not milliseconds) — see
+/// `CLAUDE.md`'s standing note on this project's zero-idle-poll thesis:
+/// this loop is not a poll, it blocks on the watch stream between events,
+/// but a failure that repeated immediately with no backoff at all would
+/// still hammer a nodestore that is down or overloaded.
+pub async fn reflect(client: &mut StorageClient, key_prefix: &[u8], cache: &SharedCache, event_buffer: usize, history_limit: usize, backoff: std::time::Duration) {
+    loop {
+        let (items, revision) = match list(client, key_prefix).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = ?e, "cacher: LIST failed, retrying after backoff");
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+        };
+        cache.replace(WatchCache::new(items, revision, event_buffer, history_limit));
+
+        let mut handle = match watch_from_revision(client, key_prefix, revision).await {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!(error = ?e, "cacher: opening watch failed, relisting after backoff");
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+        };
+
+        loop {
+            match handle.responses.message().await {
+                Ok(Some(resp)) => apply_watch_response_shared(cache, &resp),
+                Ok(None) => {
+                    // Stream ended cleanly (server closed it) — same
+                    // response as an error: relist, don't just stop.
+                    tracing::info!("cacher: watch stream ended, relisting");
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(error = ?e, "cacher: watch stream error, relisting after backoff");
+                    tokio::time::sleep(backoff).await;
+                    break;
+                }
+            }
+        }
+    }
 }
 
 /// Applies every event in one `WatchResponse` to `cache`. An empty
@@ -56,28 +119,46 @@ pub async fn watch_from_cache(client: &mut StorageClient, key_prefix: &[u8], cac
 /// [`EventKind::Bookmark`] — real kube-apiserver sends these so a watcher
 /// that reconnects can resume from a recent RV without a full relist
 /// (`ARCHITECTURE.md` §4); nodestore's own `progress_notify` mechanism is
-/// what a real driver loop would request on a timer to get one
-/// periodically (the "not yet done" named in this module's own doc
-/// comment). The `created`/`canceled` acknowledgement responses carry no
-/// events and no revision advance worth applying, so they're a no-op here.
+/// what would drive one on a schedule (this module's own doc comment's
+/// "not yet done" — requesting one, not handling one once it arrives). The
+/// `created`/`canceled` acknowledgement responses carry no events and no
+/// revision advance worth applying, so they're a no-op here.
 pub fn apply_watch_response(cache: &mut WatchCache, resp: &WatchResponse) {
-    let header_revision = resp.header.as_ref().map(|h| h.revision).unwrap_or(0);
-    if resp.events.is_empty() {
-        if header_revision > cache.revision() {
-            cache.apply(EventKind::Bookmark, Vec::new(), Vec::new(), header_revision);
-        }
-        return;
-    }
-    for event in &resp.events {
-        let Some((kind, key, value, revision)) = decode_event(event) else { continue };
-        // Defensive against any overlap between the LIST snapshot and the
-        // watch's own start_revision boundary — see watch_from_cache's own
-        // doc comment for why +1 should already prevent this in practice.
-        if revision <= cache.revision() {
-            continue;
-        }
+    for (kind, key, value, revision) in decode_applies(resp, cache.revision()) {
         cache.apply(kind, key, value, revision);
     }
+}
+
+/// Same as [`apply_watch_response`], for a [`crate::cacher::store::SharedCache`]
+/// — what [`reflect`]'s reconnect loop actually calls, since it holds a
+/// `SharedCache` (readers need concurrent access to the same cache while
+/// this loop drives it — see `SharedCache`'s own doc comment).
+pub fn apply_watch_response_shared(cache: &crate::cacher::store::SharedCache, resp: &WatchResponse) {
+    for (kind, key, value, revision) in decode_applies(resp, cache.revision()) {
+        cache.apply(kind, key, value, revision);
+    }
+}
+
+/// The pure decision behind both appliers above: what to apply, and in
+/// what order, given a `WatchResponse` and the cache's current revision —
+/// factored out so it's exercised by the same unit tests regardless of
+/// which applier (bare `WatchCache` or `SharedCache`) ends up calling it.
+fn decode_applies(resp: &WatchResponse, current_revision: i64) -> Vec<(EventKind, Vec<u8>, Vec<u8>, i64)> {
+    let header_revision = resp.header.as_ref().map(|h| h.revision).unwrap_or(0);
+    if resp.events.is_empty() {
+        if header_revision > current_revision {
+            return vec![(EventKind::Bookmark, Vec::new(), Vec::new(), header_revision)];
+        }
+        return Vec::new();
+    }
+    resp.events
+        .iter()
+        .filter_map(decode_event)
+        // Defensive against any overlap between the LIST snapshot and the
+        // watch's own start_revision boundary — see watch_from_revision's own
+        // doc comment for why +1 should already prevent this in practice.
+        .filter(|(_, _, _, revision)| *revision > current_revision)
+        .collect()
 }
 
 /// Decodes one `mvccpb::Event` into what `WatchCache::apply` needs.
@@ -198,7 +279,7 @@ mod tests {
 
     #[test]
     fn apply_watch_response_skips_an_event_at_or_below_the_caches_own_revision() {
-        // Defends the boundary watch_from_cache's own doc comment
+        // Defends the boundary watch_from_revision's own doc comment
         // describes: even if a client sent (or a server delivered) an
         // event that overlaps what the LIST snapshot already reflects,
         // applying it again must not panic or double-count it.
