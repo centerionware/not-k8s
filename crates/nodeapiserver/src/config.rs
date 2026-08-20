@@ -9,8 +9,9 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// Where the REST/watch API will be served once Group E lands. Not yet
-    /// bound to anything — `run()` only logs it today.
+    /// Where the REST/watch API is served — `server::listener::run` binds
+    /// this directly. Its handler is still a bring-up stub, not the real
+    /// REST dispatch (see `server::listener`'s own doc comment).
     pub bind_addr: String,
     /// The nodestore etcd v3 endpoint this apiserver is a client of (Group
     /// C). Loopback by default: a control-plane component talks to its

@@ -4,14 +4,19 @@
 //! `path` — the REST path grammar (`RequestInfo`): a faithful port of
 //! upstream's own `RequestInfoFactory.NewRequestInfo`, pure and fully
 //! unit-tested against upstream's own documented example paths.
+//! `tls` — self-signed server certificate for the listener (not the
+//! cluster's real PKI — see that module's own doc comment).
+//! `listener` — the real hyper + h2 + rustls listener. **Its request
+//! handler is a bring-up stub**, not the real REST dispatch — see that
+//! module's own doc comment.
 //!
-//! Status: in progress (see docs/APISERVER.md). Landed: the path grammar.
-//! **Not yet landed**: the actual hyper/h2/rustls listener, the handler
-//! chain itself (today nothing calls `path::parse` — there is no request
-//! to call it on), discovery (`/api`, `/apis`, aggregated discovery v2),
-//! `/openapi/v2`+`/openapi/v3`, `/version`. The handler-chain order
-//! (authentication -> authorization -> priority-and-fairness -> admission
-//! -> REST) is a hard requirement once it exists, not a style choice
-//! (`docs/APISERVER.md`'s own "honest engineering problem" section).
+//! Status: in progress (see docs/APISERVER.md). Landed: the path grammar,
+//! and a real TLS listener proving the grammar and the transport work
+//! together end to end. **Not yet landed**: the handler chain itself
+//! (authn -> authz -> APF -> admission -> REST — a hard requirement on
+//! order, not a style choice, once it exists), discovery (`/api`, `/apis`,
+//! aggregated discovery v2), `/openapi/v2` + `/openapi/v3`, `/version`.
 
 pub mod path;
+pub mod tls;
+pub mod listener;
