@@ -312,8 +312,23 @@ Rust equivalent — named honestly in the module's own doc comment: this
 build reports its actual `rustc` toolchain there instead of fabricating a
 Go version.
 
+Aggregated discovery v2 (`apidiscovery.k8s.io/v2`'s `APIGroupDiscoveryList`
+— real shape confirmed against upstream's own
+`staging/src/k8s.io/api/apidiscovery/v2/types.go`) now has a real builder
+(`discovery::api_group_discovery_list`/`api_v1_group_discovery_list`),
+fully data-driven from the same Group A tables as the legacy shape —
+**pure builders only, not yet reachable over HTTP**: real kube-apiserver
+picks this form over the legacy `APIGroupList` purely through content
+negotiation (`Accept: ...;as=APIGroupDiscoveryList;v=v2;
+g=apidiscovery.k8s.io`), and `codec::negotiation`'s `as=` handling today
+only recognizes the literal value `Table` as a boolean — generalizing
+that into a client-requested *kind* is real, separate work, named
+honestly rather than serving this form unconditionally regardless of
+what a client actually asked for.
+
 **Not yet landed**: the handler chain itself for actual resource
-requests, aggregated discovery v2, `/openapi/v2`. Handler-chain order
+requests, wiring aggregated discovery v2 into content negotiation,
+`/openapi/v2`. Handler-chain order
 (authentication → authorization → priority-and-fairness → admission → REST)
 is a hard requirement, not a style choice. The throwaway e2e rig described
 above should land as part of this group, not after it.
