@@ -48,23 +48,54 @@ PASSTHROUGH_ARGS=()
 # this entry point is the optimized, no-toolchain release path.
 LAYOUT="${NOTK8S_BUILD_LAYOUT:-combined}"
 
-# The combined release contains every applet. Enable every replacement by
-# default too, so bootstrap-source.sh links and starts all of them and
-# disables the corresponding bundled k3s control-plane processes. Explicit
-# command-line flags still override these environment defaults downstream.
-export DATASTORE="${DATASTORE:-nodestore}"
-export SCHEDULER="${SCHEDULER:-nodescheduler}"
-export CONTROLLER_MANAGER="${CONTROLLER_MANAGER:-nodecontroller}"
-
+EXPLICIT_LAYOUT=false
+SKIP_NODELET=false
 for arg in "$@"; do
     case "$arg" in
         --tag=*) TAG="${arg#--tag=}" ;;
         # Passed through too — bootstrap-source.sh needs it to know which
         # layout to install, this script only needs it to know what to fetch.
-        --layout=*) LAYOUT="${arg#--layout=}"; PASSTHROUGH_ARGS+=("$arg") ;;
+        --layout=*) LAYOUT="${arg#--layout=}"; EXPLICIT_LAYOUT=true; PASSTHROUGH_ARGS+=("$arg") ;;
+        --skip-nodelet) SKIP_NODELET=true; PASSTHROUGH_ARGS+=("$arg") ;;
         *) PASSTHROUGH_ARGS+=("$arg") ;;
     esac
 done
+
+# The combined release contains every applet. Enable every replacement by
+# default too, so bootstrap-source.sh links and starts all of them and
+# disables the corresponding bundled k3s control-plane processes. Explicit
+# command-line flags still override these environment defaults downstream.
+#
+# Round 124 (found live: "ERROR: nodestore binary not found or not
+# executable"): skipped entirely when --skip-nodelet is set. That flag means
+# the opposite intent — a baseline comparison against k3s's own bundled
+# kine/kube-scheduler/kube-controller-manager with *none* of our
+# replacements (profiling.yml's upstream-kubelet comparison leg is exactly
+# this) — so defaulting DATASTORE/SCHEDULER/CONTROLLER_MANAGER to "on" here
+# would tell bootstrap-source.sh to run nodestore/nodescheduler/
+# nodecontroller anyway, none of which this script's own --skip-nodelet
+# early-exit below ever fetches (or builds — there's no toolchain on this
+# path either), so they'd be missing binaries at service-start time.
+if ! $SKIP_NODELET; then
+    export DATASTORE="${DATASTORE:-nodestore}"
+    export SCHEDULER="${SCHEDULER:-nodescheduler}"
+    export CONTROLLER_MANAGER="${CONTROLLER_MANAGER:-nodecontroller}"
+fi
+
+# Round 124 (found live: every one of the three exec paths below failed with
+# "NOTK8S_COMBINED_PREBUILT is set... but this run's layout is 'split'" for
+# any caller that didn't pass --layout= explicitly — i.e. every real
+# `install.sh`/`install-vX.Y.Z.sh` invocation, the actual published
+# installers). LAYOUT above already resolved to this script's own default
+# ("combined") when the caller didn't ask for one, and that's what drove the
+# asset fetch — but PASSTHROUGH_ARGS only ever gained a --layout= entry when
+# the caller supplied one, so bootstrap-source.sh (execed below with this
+# process's env, --layout=* absent) fell back to *its own* default
+# ("split") instead, and immediately died on the mismatch. Appending the
+# already-resolved LAYOUT here, once, covers every exec site below with an
+# explicit flag instead of relying on an implicit default neither script
+# actually shares.
+$EXPLICIT_LAYOUT || PASSTHROUGH_ARGS+=("--layout=$LAYOUT")
 
 mkdir -p "$REPO_ROOT/.bootstrap/logs"
 source "$LIB_DIR/common.sh"
