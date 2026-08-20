@@ -16,17 +16,21 @@
 //! bookmark (nodestore's own server never generates one unprompted —
 //! confirmed by reading its watch handler, not assumed).
 //! `selector` — label/field selector parsing and matching, faithful ports
-//! of upstream's own `labels`/`fields` package parsers. Deliberately
-//! decoupled from `WatchCache`'s raw bytes: takes a label map or a
-//! field-lookup closure, so it doesn't need to wait on Group F's decision
-//! about how a cached object's bytes get decoded.
+//! of upstream's own `labels`/`fields` package parsers, plus the adapter
+//! onto a decoded object (`object_labels`/`field_value`/`object_matches`):
+//! labels always live at `metadata.labels` (genuinely generic across every
+//! Kind), field lookups are a generic dotted-JSON-path fallback rather
+//! than upstream's real per-type `SelectableFields` allowlist (named,
+//! not-yet-started work — see that section of the module's own doc
+//! comment).
 //!
 //! Status: in progress (see docs/APISERVER.md). Landed: the cache core,
 //! `SharedCache`, the LIST/decode/apply logic, the reconnect loop,
-//! bookmark generation, and label/field selector parsing+matching.
-//! **Not yet landed**: wiring the selector matchers into an actual LIST
-//! call over cached items — that needs Group F's object model to know
-//! what a cached entry's labels/fields even are.
+//! bookmark generation, label/field selector parsing+matching, and the
+//! adapter onto a decoded `serde_json::Value` object. **Not yet landed**:
+//! actually calling this from a real LIST request handler (needs Group
+//! E's REST dispatch to exist first) and a per-Kind `SelectableFields`
+//! allowlist.
 
 pub mod store;
 pub mod driver;
