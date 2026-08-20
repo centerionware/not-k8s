@@ -457,15 +457,17 @@ routed by `PluginInfo.type` to its own subsystem (`runtime::csi`,
 `device_plugins.rs`, `dra.rs`). New plugin-protocol-driven features should
 reuse this rather than inventing a new discovery mechanism.
 
-**k8s-openapi is pinned to the `v1_33` schema feature** (`Cargo.toml`) —
-deliberately, not an oversight. Bumping it to get a newer API type (this came
-up for `resource.k8s.io/v1`, which only exists from `v1_34` onward) ripples
-into unrelated breaking field renames across the whole codebase. The
-established workaround: fetch the resource via a raw request into a small
-hand-written struct (see `runtime/cri/claims.rs`'s `RawResourceClaim`) instead
-of bumping the schema — same pattern `container_support.rs`'s
-`resolve_service_account_token()` already uses for a subresource k8s-openapi
-doesn't generate a helper for either.
+**k8s-openapi is pinned to the `v1_34` schema feature** (`Cargo.toml`) — bumped
+from `v1_33` as `nodeapiserver`'s Phase 0 (`docs/APISERVER_PLAN.md` finding
+10: diffed structurally, zero fields removed across 572 shared structs, so
+the bump was additive, not the breaking rename churn a naive bump can cause).
+`resource.k8s.io/v1` now exists and is typed. The raw-request escape hatch
+(`runtime/cri/claims.rs`'s `RawResourceClaim`, `nodescheduler`'s
+`cache/dra.rs`) is **not yet retired** — that's tracked as separate follow-up
+work, not a rider on the version bump — so DRA access still goes through it
+for now. The same pattern `container_support.rs`'s
+`resolve_service_account_token()` uses for a subresource k8s-openapi doesn't
+generate a helper for either remains the fallback for any future schema gap.
 
 **Everything is found-and-fixed against real infrastructure, not assumed
 correct from reading the spec.** The pattern this whole project follows: when

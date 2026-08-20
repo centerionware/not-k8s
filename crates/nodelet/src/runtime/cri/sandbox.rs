@@ -120,6 +120,7 @@ pub(crate) fn ephemeral_to_container(ec: &EphemeralContainer) -> Container {
         resize_policy: ec.resize_policy.clone(),
         resources: ec.resources.clone(),
         restart_policy: ec.restart_policy.clone(),
+        restart_policy_rules: ec.restart_policy_rules.clone(),
         security_context: ec.security_context.clone(),
         startup_probe: ec.startup_probe.clone(),
         stdin: ec.stdin,

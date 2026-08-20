@@ -11,10 +11,11 @@
 //! # Why raw requests, not a typed `kube::Api`
 //!
 //! Same reason nodelet's own `claims.rs` gives for `RawResourceClaim`:
-//! k8s-openapi's generated types for `resource.k8s.io` only exist from its
-//! `v1_34` schema feature onward, and this workspace stays pinned to
-//! `v1_33` (see `CLAUDE.md`). Rather than duplicate nodelet's hand-written
-//! partial struct (which only models the *status* fields nodelet reads),
+//! k8s-openapi's generated `resource.k8s.io` types are now available (the
+//! workspace bumped to `v1_34`, see `CLAUDE.md`), but the raw-request copies
+//! haven't been retired yet — separate follow-up work, not a rider on the
+//! version bump. Rather than duplicate nodelet's hand-written partial
+//! struct (which only models the *status* fields nodelet reads),
 //! this controller treats a `ResourceClaimTemplate`'s `spec.spec` as an
 //! opaque `serde_json::Value` and copies it verbatim into the new
 //! `ResourceClaim`'s own `spec` — this controller never needs to
