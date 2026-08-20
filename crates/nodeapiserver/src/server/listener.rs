@@ -8,17 +8,31 @@
 //! listener with no reason to ever be individually disabled the way
 //! nodelet's exec/logs server is.
 //!
-//! **The request handler here is a bring-up stub, not the REST dispatch.**
-//! It answers `/healthz` and otherwise echoes the parsed
-//! [`crate::server::path::RequestInfo`] as JSON — enough to prove the
-//! listener, TLS, and path grammar all work together end to end, which is
-//! exactly what this milestone is for. The real handler chain
+//! **The request handler here is still a bring-up stub for actual resource
+//! requests** — a `get`/`list`/`create`/... against `/api(s)/.../<resource>`
+//! still just echoes the parsed [`crate::server::path::RequestInfo`] as
+//! JSON, not the real REST dispatch. The real handler chain
 //! (authentication -> authorization -> priority-and-fairness -> admission
-//! -> REST, `docs/APISERVER.md`'s own hard requirement) replaces this once
+//! -> REST, `docs/APISERVER.md`'s own hard requirement) replaces that once
 //! Groups H-J exist to fill it in.
+//!
+//! What *is* real now: `/healthz`, and every non-resource discovery route
+//! (`/api`, `/api/{version}`, `/apis`, `/apis/{group}`,
+//! `/apis/{group}/{version}`) is answered by `server::discovery`'s real
+//! document builders (`route_discovery`, pure and unit-tested below) rather
+//! than falling into the generic echo — these are the routes `kubectl`
+//! itself calls first (RESTMapper discovery) before it can even shape a
+//! request for an actual resource, so wiring them is what makes the
+//! listener minimally useful to a real client rather than just a
+//! path-grammar demo. A discovery-shaped path this build doesn't serve
+//! (unknown group/version) gets a real `404` with a minimal `Status`
+//! body — not yet upstream's full `Status` type (`reason`/`details`
+//! machinery is real hand-written work for a later group), but shaped
+//! close enough that `client-go`'s own error-decoding path reads `code`/
+//! `reason`/`message` off exactly this JSON today.
 
 use crate::config::Config;
-use crate::server::path;
+use crate::server::{discovery, path};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -109,6 +123,65 @@ pub async fn run(cfg: Config) {
     }
 }
 
+/// Outcome of trying to route a path as one of the five non-resource
+/// discovery endpoints. Kept distinct from a plain `Option<Value>` so the
+/// caller can tell "not a discovery-shaped path at all, fall through to
+/// resource handling" apart from "was discovery-shaped, but this build
+/// serves no such group/version" — the latter is a real `404`, not a
+/// silent fallthrough into the resource-request echo stub, which would
+/// otherwise mis-describe a `/apis/totally.made.up/v1` request as some
+/// kind of resource request.
+enum DiscoveryRoute {
+    NotApplicable,
+    Found(serde_json::Value),
+    NotFound,
+}
+
+/// Pure and unit-tested (unlike `handle`, which needs a live TLS
+/// connection to exercise at all): `parts` is the already-split, prefix-
+/// intact path (`["api", "v1"]`, `["apis", "apps", "v1"]`, ...) from
+/// [`path::split_path`].
+fn route_discovery(parts: &[String]) -> DiscoveryRoute {
+    let seg = |i: usize| parts.get(i).map(String::as_str);
+    match (seg(0), parts.len()) {
+        (Some("api"), 1) => DiscoveryRoute::Found(discovery::api_versions()),
+        (Some("api"), 2) => match discovery::api_resource_list("", &parts[1]) {
+            Some(doc) => DiscoveryRoute::Found(doc),
+            None => DiscoveryRoute::NotFound,
+        },
+        (Some("apis"), 1) => DiscoveryRoute::Found(discovery::api_group_list()),
+        (Some("apis"), 2) => match discovery::api_group(&parts[1]) {
+            Some(doc) => DiscoveryRoute::Found(doc),
+            None => DiscoveryRoute::NotFound,
+        },
+        (Some("apis"), 3) => match discovery::api_resource_list(&parts[1], &parts[2]) {
+            Some(doc) => DiscoveryRoute::Found(doc),
+            None => DiscoveryRoute::NotFound,
+        },
+        _ => DiscoveryRoute::NotApplicable,
+    }
+}
+
+/// A minimal `meta/v1.Status` body for a `404` — real upstream's full
+/// `Status` type (structured `details.causes`, per-reason `retryAfter`,
+/// ...) isn't built yet (Group E/J territory), but `kind`/`apiVersion`/
+/// `status`/`message`/`reason`/`code` is exactly what `client-go`'s own
+/// `errors.NewNotFound`-decoding path (`apimachinery/pkg/api/errors`)
+/// reads off an error response, so this shape is a real, not approximate,
+/// subset rather than an invented one.
+fn not_found_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("the server could not find the requested resource ({path_str})"),
+        "reason": "NotFound",
+        "details": {},
+        "code": 404,
+    })
+}
+
 async fn handle(req: Request<Incoming>) -> Result<Response<BoxedBody>, Infallible> {
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
@@ -116,6 +189,15 @@ async fn handle(req: Request<Incoming>) -> Result<Response<BoxedBody>, Infallibl
 
     if path_str == "/healthz" {
         return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "text/plain").body(body_from_bytes(b"ok".to_vec())).unwrap());
+    }
+
+    if method == "GET" || method == "HEAD" {
+        let parts = path::split_path(&path_str);
+        match route_discovery(&parts) {
+            DiscoveryRoute::Found(doc) => return Ok(json_response(StatusCode::OK, &doc)),
+            DiscoveryRoute::NotFound => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+            DiscoveryRoute::NotApplicable => {}
+        }
     }
 
     let info = path::parse(&method, &path_str, &query);
@@ -131,4 +213,75 @@ async fn handle(req: Request<Incoming>) -> Result<Response<BoxedBody>, Infallibl
         "name": info.name,
     });
     Ok(json_response(StatusCode::OK, &value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parts(path: &str) -> Vec<String> {
+        path::split_path(path)
+    }
+
+    #[test]
+    fn api_root_serves_api_versions() {
+        let route = route_discovery(&parts("/api"));
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIVersions");
+    }
+
+    #[test]
+    fn api_v1_serves_the_core_group_resource_list() {
+        let route = route_discovery(&parts("/api/v1"));
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIResourceList");
+        assert_eq!(doc["groupVersion"], "v1");
+    }
+
+    #[test]
+    fn apis_root_serves_the_group_list() {
+        let route = route_discovery(&parts("/apis"));
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIGroupList");
+    }
+
+    #[test]
+    fn apis_group_serves_the_group_document() {
+        let route = route_discovery(&parts("/apis/apps"));
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIGroup");
+        assert_eq!(doc["name"], "apps");
+    }
+
+    #[test]
+    fn apis_group_version_serves_the_resource_list() {
+        let route = route_discovery(&parts("/apis/apps/v1"));
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIResourceList");
+        assert_eq!(doc["groupVersion"], "apps/v1");
+    }
+
+    #[test]
+    fn an_unknown_group_is_a_real_not_found_not_a_fallthrough() {
+        assert!(matches!(route_discovery(&parts("/apis/totally.made.up")), DiscoveryRoute::NotFound));
+        assert!(matches!(route_discovery(&parts("/apis/apps/v999")), DiscoveryRoute::NotFound));
+        assert!(matches!(route_discovery(&parts("/api/v999")), DiscoveryRoute::NotFound));
+    }
+
+    #[test]
+    fn a_resource_shaped_path_is_not_applicable_to_discovery_routing() {
+        assert!(matches!(route_discovery(&parts("/api/v1/namespaces/default/pods")), DiscoveryRoute::NotApplicable));
+        assert!(matches!(route_discovery(&parts("/apis/apps/v1/namespaces/default/deployments")), DiscoveryRoute::NotApplicable));
+        assert!(matches!(route_discovery(&parts("/")), DiscoveryRoute::NotApplicable));
+    }
+
+    #[test]
+    fn not_found_status_has_the_real_client_go_status_shape() {
+        let status = not_found_status("/apis/totally.made.up");
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["apiVersion"], "v1");
+        assert_eq!(status["status"], "Failure");
+        assert_eq!(status["reason"], "NotFound");
+        assert_eq!(status["code"], 404);
+    }
 }
