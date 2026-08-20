@@ -53,6 +53,15 @@
 #   ./deploy/measure.sh 120 /tmp/measure-out   # explicit output directory
 #   ./deploy/measure.sh 120 /tmp/out kubelet   # measure a different node agent
 #
+# MEASURE_STOP_FILE=<path> (env, not a positional — every existing caller is
+# unaffected): instead of always sampling for the full SAMPLE_SECS, stop as
+# soon as that file appears, checked once per second inside the same sampling
+# loop. SAMPLE_SECS becomes a safety-net cap, not the actual window length —
+# used by deploy/lib/profiling-workload.sh to sample a variable-duration
+# "spin up N pods" / "tear down N pods" phase, whose real length is a
+# workload's own creation/deletion time, not a number known in advance. The
+# real elapsed length is recorded as ACTUAL_SECS / MEASURE_ACTUAL_SECS
+# throughout, distinct from the requested/cap SAMPLE_SECS.
 set -uo pipefail
 
 SAMPLE_SECS="${1:-30}"
@@ -316,7 +325,11 @@ else
     echo "    resolution) and RSS remain the primary metrics."
 fi
 echo ""
-echo "==> sampling RSS + CPU% every 1s for ${SAMPLE_SECS}s across ${#PRESENT[@]} component(s)..."
+if [[ -n "${MEASURE_STOP_FILE:-}" ]]; then
+    echo "==> sampling RSS + CPU% every 1s (stopping early on \$MEASURE_STOP_FILE, capped at ${SAMPLE_SECS}s) across ${#PRESENT[@]} component(s)..."
+else
+    echo "==> sampling RSS + CPU% every 1s for ${SAMPLE_SECS}s across ${#PRESENT[@]} component(s)..."
+fi
 
 for slot in "${PRESENT[@]}"; do
     echo "second,rss_kb,cpu_pct" > "${SLOT_CSV[$slot]}"
@@ -325,6 +338,7 @@ for slot in "${PRESENT[@]}"; do
     SLOT_RSS_PEAK[$slot]=0
 done
 
+ACTUAL_SECS="$SAMPLE_SECS"
 for (( sec=1; sec<=SAMPLE_SECS; sec++ )); do
     sleep 1
     for slot in "${PRESENT[@]}"; do
@@ -340,8 +354,24 @@ for (( sec=1; sec<=SAMPLE_SECS; sec++ )); do
         pct="$(awk -v d="$delta" -v c="$CLK_TCK" 'BEGIN { printf "%.2f", (d / c) * 100 }')"
         echo "$sec,$rss,$pct" >> "${SLOT_CSV[$slot]}"
     done
+    if [[ -n "${MEASURE_STOP_FILE:-}" && -f "$MEASURE_STOP_FILE" ]]; then
+        ACTUAL_SECS="$sec"
+        break
+    fi
 done
 
+# A stop-file caller doesn't know its real duration ahead of time, so the
+# perf-stat background reads (started above against the full SAMPLE_SECS cap
+# as their own safety net) are likely still mid-sleep here. SIGINT is what
+# `perf stat` treats as "stop now and report what you have" (the same signal
+# a human hits Ctrl-C with) rather than a hard kill that would leave
+# SLOT_PERF_RAW empty; harmless no-op when the background read already
+# finished on its own (the non-stop-file, default-caller case).
+if [[ -n "${MEASURE_STOP_FILE:-}" ]]; then
+    for slot in "${PRESENT[@]}"; do
+        [[ -n "${SLOT_PERF_BGPID[$slot]:-}" ]] && kill -INT "${SLOT_PERF_BGPID[$slot]}" 2>/dev/null
+    done
+fi
 for slot in "${PRESENT[@]}"; do
     [[ -n "${SLOT_PERF_BGPID[$slot]:-}" ]] && wait "${SLOT_PERF_BGPID[$slot]}" 2>/dev/null
 done
@@ -421,7 +451,7 @@ cpu_seconds_from_ticks_or_task_clock() {
     else
         candidate="$(awk -v t="$ticks_total" -v c="$CLK_TCK" 'BEGIN { printf "%.3f", t / c }')"
     fi
-    awk -v v="$candidate" -v s="$SAMPLE_SECS" -v cores="$CPU_CORES" 'BEGIN {
+    awk -v v="$candidate" -v s="$ACTUAL_SECS" -v cores="$CPU_CORES" 'BEGIN {
         max = s * ((cores + 0 > 0) ? cores : 1) * 1.05
         if (v + 0 > max) { print ""; exit }
         printf "%.6f", v
@@ -497,7 +527,11 @@ rule() { printf "$row_fmt" "────────────────" "�
     [[ -n "$absent" ]] && echo "  not running on this host (not measured):$absent"
     echo ""
     echo "  test hardware: arch=$CPU_ARCH cores=$CPU_CORES model=\"$CPU_MODEL\""
-    echo "  sample window: ${SAMPLE_SECS}s, 1 sample/sec"
+    if [[ -n "${MEASURE_STOP_FILE:-}" ]]; then
+        echo "  sample window: ${ACTUAL_SECS}s actual (stop-file driven, capped at ${SAMPLE_SECS}s), 1 sample/sec"
+    else
+        echo "  sample window: ${SAMPLE_SECS}s, 1 sample/sec"
+    fi
     echo "  perf hardware counters (cycles/instructions): $($PERF_OK && echo "available" || echo "unavailable on this host")"
     printf "  CPU-seconds precision:"
     for slot in "${PRESENT[@]}"; do printf " %s=%s" "$slot" "${SLOT_CPU_SECONDS_SOURCE[$slot]}"; done
@@ -514,6 +548,7 @@ rule() { printf "$row_fmt" "────────────────" "�
 machine_block() {
     echo "=== MEASURE ==="
     echo "MEASURE_SAMPLE_SECS=$SAMPLE_SECS"
+    echo "MEASURE_ACTUAL_SECS=$ACTUAL_SECS"
     echo "MEASURE_PERF_AVAILABLE=$PERF_OK"
     echo "MEASURE_OUT_DIR=$OUT_DIR"
     echo "MEASURE_CPU_ARCH=$CPU_ARCH"
