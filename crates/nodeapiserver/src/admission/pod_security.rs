@@ -34,13 +34,22 @@
 //! containers at all), `seLinuxOptions` (the 1.31+ allowed-type set,
 //! which is the widest one upstream has defined).
 //!
-//! **Not yet ported, named honestly**: every real `restricted`-level
-//! check (`runAsNonRoot`, `runAsUser`, `allowPrivilegeEscalation`,
-//! `capabilities_restricted`, `seccompProfile_restricted`,
-//! `restrictedVolumes`) — a namespace labeled `restricted` gets only the
-//! full baseline check set above enforced today, *not* full restricted
-//! enforcement; a real, named under-enforcement, not a
-//! silently-assumed-complete one.
+//! **All six real `restricted`-level checks are ported too**:
+//! `runAsNonRoot` (the real three-way pod/container logic — a container
+//! that leaves it unset inherits an explicit pod-level `true`),
+//! `runAsUser` (forbids `runAsUser=0`), `allowPrivilegeEscalation`
+//! (Windows-exempt, matching upstream's own 1.25+ variant — Pod API
+//! validation already rejects the field on a Windows pod),
+//! `capabilities_restricted` (must drop `ALL`, may only add
+//! `NET_BIND_SERVICE`; Windows-exempt too), `seccompProfile_restricted`
+//! (same three-way pod/container logic as `runAsNonRoot`, Windows-exempt),
+//! `restrictedVolumes` (the real inline-volume-source allowlist).
+//! Real upstream's own `OverrideCheckIDs` is ported too: at `Restricted`,
+//! `hostPathVolumes`/`capabilities_baseline`/`seccompProfile_baseline`
+//! are suppressed in favor of their strictly-stronger restricted
+//! equivalents (`restrictedVolumes`/`capabilities_restricted`/
+//! `seccompProfile_restricted`), so a `Restricted`-level violation isn't
+//! reported twice for the same root cause.
 //!
 //! Also not modeled: `pod-security.kubernetes.io/enforce-version` (pins
 //! enforcement to a specific Kubernetes minor version's check semantics —
@@ -270,16 +279,29 @@ fn check_sysctls(pod: &Value) -> Option<String> {
     }
 }
 
-/// Real upstream's own `relaxPolicyForUserNamespacePod` +
-/// `procMount_1_0`: a pod opting into a user namespace (`hostUsers:
-/// false`) has every `procMount` value allowed (upstream's own comment:
-/// pod validation already checks for a well-formed type there, so this
-/// deliberately doesn't double-validate) — this crate has no
-/// `UserNamespacesPodSecurityStandards` feature-gate machinery, so the
-/// relaxation is unconditional on `hostUsers`, not gated behind a
-/// feature flag that doesn't exist here.
+/// Real upstream's own `relaxPolicyForUserNamespacePod` — a pod opting
+/// into a user namespace (`hostUsers: false`) relaxes several checks
+/// (this crate has no `UserNamespacesPodSecurityStandards` feature-gate
+/// machinery, so the relaxation is unconditional on `hostUsers`, not
+/// gated behind a feature flag that doesn't exist here).
+fn relax_for_user_namespace_pod(pod: &Value) -> bool {
+    pod.get("spec").and_then(|s| s.get("hostUsers")).and_then(Value::as_bool) == Some(false)
+}
+
+/// Real upstream's own `podSpec.OS != nil && podSpec.OS.Name ==
+/// corev1.Windows` — several restricted-level checks (fields real
+/// upstream's own Pod API validation already forbids on a Windows pod)
+/// exempt one, ported exactly.
+fn is_windows_pod(pod: &Value) -> bool {
+    pod.get("spec").and_then(|s| s.get("os")).and_then(|os| os.get("name")).and_then(Value::as_str) == Some("windows")
+}
+
+/// `procMount_1_0`: a pod opting into a user namespace has every
+/// `procMount` value allowed (upstream's own comment: pod validation
+/// already checks for a well-formed type there, so this deliberately
+/// doesn't double-validate).
 fn check_proc_mount(pod: &Value) -> Option<String> {
-    if pod.get("spec").and_then(|s| s.get("hostUsers")).and_then(Value::as_bool) == Some(false) {
+    if relax_for_user_namespace_pod(pod) {
         return None;
     }
     let mut bad_containers = Vec::new();
@@ -497,38 +519,255 @@ fn check_selinux_options(pod: &Value) -> Option<String> {
     Some(format!("seLinuxOptions: {} set forbidden securityContext.seLinuxOptions: {}", bad_setters.join(" and "), detail.join("; ")))
 }
 
+/// `runAsNonRoot_1_0`: real upstream's own three-way "explicit
+/// pod-level false / explicit container-level false / neither pod nor
+/// container opted in" logic, ported exactly (the pod-level `true`
+/// exemption for a container that leaves it unset is the "undefined/null
+/// at container-level if pod-level is set to true" allowed value from
+/// upstream's own doc comment).
+fn check_run_as_non_root(pod: &Value) -> Option<String> {
+    if relax_for_user_namespace_pod(pod) {
+        return None;
+    }
+    let pod_run_as_non_root = pod.get("spec").and_then(|s| s.get("securityContext")).and_then(|sc| sc.get("runAsNonRoot")).and_then(Value::as_bool);
+
+    let mut bad_setters = Vec::new();
+    if pod_run_as_non_root == Some(false) {
+        bad_setters.push("pod".to_string());
+    }
+    let pod_opted_in = pod_run_as_non_root == Some(true);
+
+    let mut explicitly_bad = Vec::new();
+    let mut implicitly_bad = Vec::new();
+    for container in containers(pod) {
+        match container.get("securityContext").and_then(|sc| sc.get("runAsNonRoot")).and_then(Value::as_bool) {
+            Some(false) => explicitly_bad.push(container_name(container).to_string()),
+            Some(true) => {}
+            None => {
+                if !pod_opted_in {
+                    implicitly_bad.push(container_name(container).to_string());
+                }
+            }
+        }
+    }
+    if !explicitly_bad.is_empty() {
+        bad_setters.push(format!("container(s) {}", explicitly_bad.join(", ")));
+    }
+    if !bad_setters.is_empty() {
+        return Some(format!("runAsNonRoot != true: {} must not set securityContext.runAsNonRoot=false", bad_setters.join(" and ")));
+    }
+    if !implicitly_bad.is_empty() {
+        return Some(format!("runAsNonRoot != true: pod or container(s) {} must set securityContext.runAsNonRoot=true", implicitly_bad.join(", ")));
+    }
+    None
+}
+
+fn check_run_as_user(pod: &Value) -> Option<String> {
+    if relax_for_user_namespace_pod(pod) {
+        return None;
+    }
+    let mut bad_setters = Vec::new();
+    if pod.get("spec").and_then(|s| s.get("securityContext")).and_then(|sc| sc.get("runAsUser")).and_then(Value::as_i64) == Some(0) {
+        bad_setters.push("pod".to_string());
+    }
+    let bad_containers: Vec<String> = containers(pod).filter(|c| c.get("securityContext").and_then(|sc| sc.get("runAsUser")).and_then(Value::as_i64) == Some(0)).map(|c| container_name(c).to_string()).collect();
+    if !bad_containers.is_empty() {
+        bad_setters.push(format!("container(s) {}", bad_containers.join(", ")));
+    }
+    if bad_setters.is_empty() {
+        None
+    } else {
+        Some(format!("runAsUser=0: {} must not set runAsUser=0", bad_setters.join(" and ")))
+    }
+}
+
+/// `allowPrivilegeEscalation_1_25`: exempts a Windows pod entirely
+/// (upstream's own comment: Pod API validation already rejects the field
+/// being set on a Windows pod, so an unset value is fine to admit).
+fn check_allow_privilege_escalation(pod: &Value) -> Option<String> {
+    if is_windows_pod(pod) {
+        return None;
+    }
+    let bad: Vec<String> = containers(pod).filter(|c| c.get("securityContext").and_then(|sc| sc.get("allowPrivilegeEscalation")).and_then(Value::as_bool) != Some(false)).map(|c| container_name(c).to_string()).collect();
+    if bad.is_empty() {
+        None
+    } else {
+        Some(format!("allowPrivilegeEscalation != false: container(s) {} must set securityContext.allowPrivilegeEscalation=false", bad.join(", ")))
+    }
+}
+
+const CAPABILITY_ALL: &str = "ALL";
+const CAPABILITY_NET_BIND_SERVICE: &str = "NET_BIND_SERVICE";
+
+/// `capabilitiesRestricted_1_25`: also Windows-exempt (same reasoning as
+/// [`check_allow_privilege_escalation`]). Overrides
+/// [`check_capabilities_baseline`] at the `Restricted` level (real
+/// upstream's own `OverrideCheckIDs`) — it's a strict superset
+/// requirement, so both would otherwise report overlapping violations
+/// for the same root cause.
+fn check_capabilities_restricted(pod: &Value) -> Option<String> {
+    if is_windows_pod(pod) {
+        return None;
+    }
+    let mut missing_drop_all = Vec::new();
+    let mut adding_forbidden = Vec::new();
+    let mut forbidden_caps = std::collections::BTreeSet::new();
+
+    for container in containers(pod) {
+        let capabilities = container.get("securityContext").and_then(|sc| sc.get("capabilities"));
+        let dropped_all = capabilities.and_then(|c| c.get("drop")).and_then(Value::as_array).is_some_and(|drop| drop.iter().any(|c| c.as_str() == Some(CAPABILITY_ALL)));
+        if !dropped_all {
+            missing_drop_all.push(container_name(container).to_string());
+        }
+        let mut added_forbidden = false;
+        for cap in capabilities.and_then(|c| c.get("add")).and_then(Value::as_array).into_iter().flatten() {
+            if let Some(name) = cap.as_str() {
+                if name != CAPABILITY_NET_BIND_SERVICE {
+                    added_forbidden = true;
+                    forbidden_caps.insert(name.to_string());
+                }
+            }
+        }
+        if added_forbidden {
+            adding_forbidden.push(container_name(container).to_string());
+        }
+    }
+
+    let mut details = Vec::new();
+    if !missing_drop_all.is_empty() {
+        details.push(format!(r#"container(s) {} must set securityContext.capabilities.drop=["ALL"]"#, missing_drop_all.join(", ")));
+    }
+    if !adding_forbidden.is_empty() {
+        details.push(format!("container(s) {} must not include {} in securityContext.capabilities.add", adding_forbidden.join(", "), forbidden_caps.into_iter().collect::<Vec<_>>().join(", ")));
+    }
+    if details.is_empty() {
+        None
+    } else {
+        Some(format!("unrestricted capabilities: {}", details.join("; ")))
+    }
+}
+
+/// `seccompProfileRestricted_1_19`/`_1_25`: same three-way pod/container
+/// logic as [`check_run_as_non_root`], and Windows-exempt like
+/// [`check_allow_privilege_escalation`]. Overrides
+/// [`check_seccomp_profile_baseline`] at the `Restricted` level.
+fn check_seccomp_profile_restricted(pod: &Value) -> Option<String> {
+    if is_windows_pod(pod) {
+        return None;
+    }
+    let pod_type = pod.get("spec").and_then(|s| s.get("securityContext")).and_then(|sc| sc.get("seccompProfile")).and_then(|sp| sp.get("type")).and_then(Value::as_str);
+
+    let mut bad_setters = Vec::new();
+    let mut bad_values = std::collections::BTreeSet::new();
+    let mut pod_seccomp_set = false;
+    if let Some(t) = pod_type {
+        if !valid_seccomp_type(t) {
+            bad_setters.push("pod".to_string());
+            bad_values.insert(t.to_string());
+        } else {
+            pod_seccomp_set = true;
+        }
+    }
+
+    let mut explicitly_bad = Vec::new();
+    let mut implicitly_bad = Vec::new();
+    for container in containers(pod) {
+        match container.get("securityContext").and_then(|sc| sc.get("seccompProfile")).and_then(|sp| sp.get("type")).and_then(Value::as_str) {
+            Some(t) if !valid_seccomp_type(t) => {
+                explicitly_bad.push(container_name(container).to_string());
+                bad_values.insert(t.to_string());
+            }
+            Some(_) => {}
+            None => {
+                if !pod_seccomp_set {
+                    implicitly_bad.push(container_name(container).to_string());
+                }
+            }
+        }
+    }
+    if !explicitly_bad.is_empty() {
+        bad_setters.push(format!("container(s) {}", explicitly_bad.join(", ")));
+    }
+    if !bad_setters.is_empty() {
+        return Some(format!("seccompProfile: {} must not set securityContext.seccompProfile.type to {}", bad_setters.join(" and "), bad_values.into_iter().collect::<Vec<_>>().join(", ")));
+    }
+    if !implicitly_bad.is_empty() {
+        return Some(format!(r#"seccompProfile: pod or container(s) {} must set securityContext.seccompProfile.type to "RuntimeDefault" or "Localhost""#, implicitly_bad.join(", ")));
+    }
+    None
+}
+
+/// `restrictedVolumes_1_0`: real upstream's own allowlist of inline
+/// volume sources, ported exactly (`image` is real upstream's newer
+/// `VolumeSource.Image` — this crate's vendored OpenAPI spec is checked
+/// against the same release, so it's included here too). Overrides
+/// [`check_host_path_volumes`] at the `Restricted` level — it's a strict
+/// superset (every restricted volume type it forbids includes
+/// `hostPath`).
+fn check_restricted_volumes(pod: &Value) -> Option<String> {
+    const ALLOWED_VOLUME_SOURCES: &[&str] = &["configMap", "csi", "downwardAPI", "emptyDir", "ephemeral", "image", "persistentVolumeClaim", "projected", "secret"];
+    let mut bad_volumes = Vec::new();
+    let mut bad_types = std::collections::BTreeSet::new();
+    for volume in pod.get("spec").and_then(|s| s.get("volumes")).and_then(Value::as_array).into_iter().flatten() {
+        let Some(obj) = volume.as_object() else { continue };
+        let source_key = obj.keys().find(|k| k.as_str() != "name");
+        let Some(source_key) = source_key else { continue };
+        if ALLOWED_VOLUME_SOURCES.contains(&source_key.as_str()) {
+            continue;
+        }
+        bad_volumes.push(volume.get("name").and_then(Value::as_str).unwrap_or("").to_string());
+        bad_types.insert(source_key.clone());
+    }
+    if bad_volumes.is_empty() {
+        None
+    } else {
+        Some(format!("restricted volume types: volume(s) {} use restricted volume type(s) {}", bad_volumes.join(", "), bad_types.into_iter().collect::<Vec<_>>().join(", ")))
+    }
+}
+
 /// Every landed `baseline`-level check, run in real upstream's own file
 /// order — collects every failing check's message rather than stopping
 /// at the first (matching `PodValidateLimitFunc`'s own "aggregate every
 /// violation" posture, and real PSA's own `AggregateCheckResults`).
-fn baseline_violations(pod: &Value) -> Vec<String> {
-    [
-        check_privileged(pod),
-        check_host_namespaces(pod),
-        check_host_ports(pod),
-        check_host_path_volumes(pod),
-        check_capabilities_baseline(pod),
-        check_seccomp_profile_baseline(pod),
-        check_sysctls(pod),
-        check_proc_mount(pod),
-        check_host_probes_and_host_lifecycle(pod),
-        check_windows_host_process(pod),
-        check_apparmor_profile(pod),
-        check_selinux_options(pod),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+/// `include_overridden` is `false` at the `Restricted` level: real
+/// upstream's own `OverrideCheckIDs` suppresses `hostPathVolumes`/
+/// `capabilities_baseline`/`seccompProfile_baseline` there in favor of
+/// their strictly-stronger restricted-level equivalents, so both don't
+/// separately report overlapping violations for the same root cause.
+fn baseline_violations(pod: &Value, include_overridden: bool) -> Vec<String> {
+    let mut violations = vec![check_privileged(pod), check_host_namespaces(pod), check_host_ports(pod)];
+    if include_overridden {
+        violations.push(check_host_path_volumes(pod));
+        violations.push(check_capabilities_baseline(pod));
+        violations.push(check_seccomp_profile_baseline(pod));
+    }
+    violations.extend([check_sysctls(pod), check_proc_mount(pod), check_host_probes_and_host_lifecycle(pod), check_windows_host_process(pod), check_apparmor_profile(pod), check_selinux_options(pod)]);
+    violations.into_iter().flatten().collect()
+}
+
+fn restricted_violations(pod: &Value) -> Vec<String> {
+    let mut violations = baseline_violations(pod, false);
+    violations.extend(
+        [
+            check_run_as_non_root(pod),
+            check_run_as_user(pod),
+            check_allow_privilege_escalation(pod),
+            check_capabilities_restricted(pod),
+            check_seccomp_profile_restricted(pod),
+            check_restricted_volumes(pod),
+        ]
+        .into_iter()
+        .flatten(),
+    );
+    violations
 }
 
 /// `level` is [`enforcement_level`]'s own output for the pod's namespace.
-/// `Restricted` currently enforces only the same baseline checks
-/// `Baseline` does — see this module's own doc comment for why that's a
-/// real, named under-enforcement, not full restricted-level checking.
 pub fn validate(pod: &Value, level: Level) -> Vec<String> {
     match level {
         Level::Privileged => Vec::new(),
-        Level::Baseline | Level::Restricted => baseline_violations(pod),
+        Level::Baseline => baseline_violations(pod, true),
+        Level::Restricted => restricted_violations(pod),
     }
 }
 
@@ -766,6 +1005,105 @@ mod tests {
         let violations = validate(&pod, Level::Baseline);
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("user may not be set"));
+    }
+
+    #[test]
+    fn restricted_rejects_a_container_that_does_not_opt_into_run_as_non_root() {
+        let pod = json!({"spec": {"containers": [{"name": "c1"}]}});
+        let violations = validate(&pod, Level::Restricted);
+        assert!(violations.iter().any(|v| v.contains("runAsNonRoot")));
+    }
+
+    #[test]
+    fn restricted_allows_run_as_non_root_set_at_pod_level() {
+        let pod = json!({"spec": {"securityContext": {"runAsNonRoot": true}, "containers": [{"name": "c1"}]}});
+        let violations = validate(&pod, Level::Restricted);
+        assert!(!violations.iter().any(|v| v.contains("runAsNonRoot")));
+    }
+
+    #[test]
+    fn restricted_rejects_run_as_user_zero() {
+        let pod = json!({"spec": {"securityContext": {"runAsNonRoot": true}, "containers": [{"name": "c1", "securityContext": {"runAsUser": 0}}]}});
+        let violations = validate(&pod, Level::Restricted);
+        assert!(violations.iter().any(|v| v.contains("runAsUser=0")));
+    }
+
+    #[test]
+    fn restricted_rejects_a_container_without_allow_privilege_escalation_false() {
+        let pod = json!({"spec": {"securityContext": {"runAsNonRoot": true}, "containers": [{"name": "c1"}]}});
+        let violations = validate(&pod, Level::Restricted);
+        assert!(violations.iter().any(|v| v.contains("allowPrivilegeEscalation")));
+    }
+
+    #[test]
+    fn restricted_requires_dropping_all_capabilities() {
+        let pod = json!({"spec": {"securityContext": {"runAsNonRoot": true}, "containers": [{"name": "c1", "securityContext": {"allowPrivilegeEscalation": false}}]}});
+        let violations = validate(&pod, Level::Restricted);
+        assert!(violations.iter().any(|v| v.contains(r#"drop=["ALL"]"#)));
+    }
+
+    #[test]
+    fn restricted_allows_adding_net_bind_service() {
+        let pod = json!({"spec": {"containers": [{"name": "c1", "securityContext": {"capabilities": {"drop": ["ALL"], "add": ["NET_BIND_SERVICE"]}}}]}});
+        let violations = validate(&pod, Level::Restricted);
+        assert!(!violations.iter().any(|v| v.contains("capabilities")));
+    }
+
+    #[test]
+    fn restricted_rejects_adding_a_forbidden_capability() {
+        let pod = json!({"spec": {"containers": [{"name": "c1", "securityContext": {"capabilities": {"drop": ["ALL"], "add": ["NET_ADMIN"]}}}]}});
+        let violations = validate(&pod, Level::Restricted);
+        assert!(violations.iter().any(|v| v.contains("NET_ADMIN")));
+    }
+
+    #[test]
+    fn restricted_requires_a_seccomp_profile() {
+        let pod = json!({"spec": {"securityContext": {"runAsNonRoot": true}, "containers": [{"name": "c1", "securityContext": {"allowPrivilegeEscalation": false, "capabilities": {"drop": ["ALL"]}}}]}});
+        let violations = validate(&pod, Level::Restricted);
+        assert!(violations.iter().any(|v| v.contains("seccompProfile")));
+    }
+
+    #[test]
+    fn restricted_rejects_a_disallowed_volume_type() {
+        let pod = json!({"spec": {"containers": [], "volumes": [{"name": "v1", "nfs": {"server": "1.2.3.4", "path": "/"}}]}});
+        let violations = validate(&pod, Level::Restricted);
+        assert!(violations.iter().any(|v| v.contains("restricted volume type")));
+    }
+
+    #[test]
+    fn restricted_allows_a_projected_volume() {
+        let pod = json!({"spec": {"containers": [], "volumes": [{"name": "v1", "projected": {"sources": []}}]}});
+        let violations = validate(&pod, Level::Restricted);
+        assert!(!violations.iter().any(|v| v.contains("volume type")));
+    }
+
+    #[test]
+    fn restricted_does_not_double_report_a_hostpath_volume() {
+        // hostPathVolumes is overridden by restrictedVolumes at the
+        // Restricted level -- exactly one violation for this, not two.
+        let pod = json!({"spec": {"containers": [], "volumes": [{"name": "v1", "hostPath": {"path": "/etc"}}]}});
+        let violations = validate(&pod, Level::Restricted);
+        let matching: Vec<_> = violations.iter().filter(|v| v.contains("v1")).collect();
+        assert_eq!(matching.len(), 1, "hostPath must only be reported once, by restrictedVolumes, not also by hostPathVolumes: {violations:?}");
+    }
+
+    #[test]
+    fn restricted_exempts_a_windows_pod_from_linux_only_checks() {
+        let pod = json!({"spec": {"os": {"name": "windows"}, "containers": [{"name": "c1"}]}});
+        let violations = validate(&pod, Level::Restricted);
+        assert!(!violations.iter().any(|v| v.contains("allowPrivilegeEscalation") || v.contains("capabilities") || v.contains("seccompProfile")));
+    }
+
+    #[test]
+    fn a_fully_compliant_pod_passes_restricted() {
+        let pod = json!({"spec": {
+            "securityContext": {"runAsNonRoot": true, "seccompProfile": {"type": "RuntimeDefault"}},
+            "containers": [{
+                "name": "c1",
+                "securityContext": {"allowPrivilegeEscalation": false, "capabilities": {"drop": ["ALL"]}},
+            }],
+        }});
+        assert!(validate(&pod, Level::Restricted).is_empty());
     }
 
     #[test]
