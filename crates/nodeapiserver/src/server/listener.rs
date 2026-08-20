@@ -8,13 +8,13 @@
 //! listener with no reason to ever be individually disabled the way
 //! nodelet's exec/logs server is.
 //!
-//! **A single-object `GET` against a real resource is now real**
-//! (`rest::get`, generic over every resource this build knows about, no
+//! **`GET` and `LIST` against a real resource are now real** (`rest::get`/
+//! `rest::list`, generic over every resource this build knows about, no
 //! authn/authz/admission yet — see `rest`'s own doc comment for exactly
 //! what that means). **Every other verb is still a bring-up stub** — a
-//! `list`/`watch`/`create`/... against `/api(s)/.../<resource>` still
-//! just echoes the parsed [`crate::server::path::RequestInfo`] as JSON,
-//! not the real REST dispatch. The real handler chain (authentication ->
+//! `watch`/`create`/... against `/api(s)/.../<resource>` still just
+//! echoes the parsed [`crate::server::path::RequestInfo`] as JSON, not
+//! the real REST dispatch. The real handler chain (authentication ->
 //! authorization -> priority-and-fairness -> admission -> REST,
 //! `docs/APISERVER.md`'s own hard requirement) replaces both once Groups
 //! H-J exist to fill it in.
@@ -121,7 +121,7 @@ pub async fn run(cfg: Config) {
             return;
         }
     };
-    info!(%addr, storage_connected = storage.is_some(), "nodeapiserver: REST/watch listener up (discovery + single-object GET are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
+    info!(%addr, storage_connected = storage.is_some(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
 
     loop {
         let (tcp, peer) = match listener.accept().await {
@@ -282,22 +282,37 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>) -> Resul
 
     let info = path::parse(&method, &path_str, &query);
 
-    // Group E's first real resource verb: a single-object GET (`get`, not
+    // Group E's first real resource verbs: single-object GET (`get`, not
     // `list`/`watch` — `path::parse` already tells those apart by an empty
-    // `name`), no subresource (not handled yet — see `rest`'s own doc
-    // comment). Everything else still falls through to the RequestInfo
-    // echo below.
-    if info.is_resource_request && info.verb == "get" && !info.name.is_empty() && info.subresource.is_empty() {
+    // `name`) and LIST (`list`, no name). No subresource (not handled yet
+    // — see `rest`'s own doc comment). Everything else still falls through
+    // to the RequestInfo echo below. `storage` is only ever consumed once
+    // (moved into `client` here), which is why both verbs share this one
+    // `if let` rather than each checking it separately.
+    let is_get = info.is_resource_request && info.verb == "get" && !info.name.is_empty() && info.subresource.is_empty();
+    let is_list = info.is_resource_request && info.verb == "list" && info.name.is_empty() && info.subresource.is_empty();
+    if is_get || is_list {
         if let Some(mut client) = storage {
             let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
-            match rest::get(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
-                Ok(rest::GetOutcome::Found(object)) => return Ok(json_response(StatusCode::OK, &object)),
-                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
-                    return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+            if is_get {
+                match rest::get(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                    Ok(rest::GetOutcome::Found(object)) => return Ok(json_response(StatusCode::OK, &object)),
+                    Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                        return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                    }
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "rest::get failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
                 }
-                Err(e) => {
-                    warn!(path = %path_str, error = ?e, "rest::get failed");
-                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            } else {
+                match rest::list(&mut client, &info.api_group, &info.api_version, &info.resource, namespace).await {
+                    Ok(rest::ListOutcome::Found(list)) => return Ok(json_response(StatusCode::OK, &list)),
+                    Ok(rest::ListOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "rest::list failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
                 }
             }
         }
