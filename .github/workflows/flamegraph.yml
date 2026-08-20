@@ -43,9 +43,9 @@ on:
         default: "15"
         type: string
       sample_seconds:
-        description: "Total perf sampling window — must comfortably cover create+Ready+idle+delete+gone"
+        description: "Safety-cap ceiling on the perf sampling window — recording stops as soon as the real workload lifecycle finishes, well before this in the normal case"
         required: false
-        default: "90"
+        default: "180"
         type: string
 
 permissions:
@@ -91,8 +91,20 @@ jobs:
         run: |
           set -e
           sudo chmod +x deploy/profile-process.sh
+
+          # --stop-file: perf records for exactly as long as the real
+          # workload below actually takes (create -> Ready -> idle ->
+          # delete -> gone), not a pre-guessed fixed window — there's
+          # nothing useful to sample once the pod's already torn down, so
+          # padding the recording past that would only dilute the flame
+          # graph with idle-nodelet frames. --duration is still passed as
+          # a safety-cap ceiling in case this stop-file is somehow never
+          # created (a failed kubectl step, etc.).
+          STOP_FILE="$(mktemp -u /tmp/flamegraph-stop.XXXXXX)"
+          rm -f "$STOP_FILE"
+
           sudo ./deploy/profile-process.sh --pattern nodelet --label nodelet-single-pod-lifecycle \
-            --duration "${{ inputs.sample_seconds }}" --journal-unit nodelet \
+            --duration "${{ inputs.sample_seconds }}" --stop-file "$STOP_FILE" --journal-unit nodelet \
             --output /tmp/flamegraph-out &
           PROFILE_PID=$!
 
@@ -122,9 +134,11 @@ jobs:
 
           echo "==> deleting the pod"
           kubectl delete pod flamegraph-workload --wait=true --timeout=60s
-          echo "==> pod gone; waiting out the rest of the sample window"
+          echo "==> pod gone; signaling profile-process.sh to stop recording now"
 
+          touch "$STOP_FILE"
           wait "$PROFILE_PID"
+          rm -f "$STOP_FILE"
           ls -la /tmp/flamegraph-out
 
       - name: Upload the flamegraph and raw profiling output as a workflow artifact
@@ -165,8 +179,12 @@ jobs:
           probes), wait for \`Ready\`, idle ${{ inputs.idle_seconds }}s, delete
           it, wait for it to be gone. \`deploy/profile-process.sh\` attached to
           the real nodelet PID (\`perf record -F 99 --call-graph dwarf\`, real
-          debug binary — ${{ steps.resolve.outputs.asset }}) for the whole
-          ${{ inputs.sample_seconds }}s window.
+          debug binary — ${{ steps.resolve.outputs.asset }}) for exactly that
+          window — stopped the moment the pod was confirmed gone
+          (\`--stop-file\`), not a pre-guessed fixed duration, so nothing here
+          is diluted by idle-nodelet-with-nothing-happening frames.
+          ${{ inputs.sample_seconds }}s was the safety-cap ceiling, not the
+          actual sample length.
 
           - \`flamegraph.svg\` — open directly in a browser.
           - \`perf-report.txt\` / \`perf-self-report.txt\` — textual top-functions
