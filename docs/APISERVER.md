@@ -383,7 +383,17 @@ failures, joined into one message — real upstream's structured
 `generateName` support) or a namespace mismatch between the body and
 the URL.
 
-**Authentication and authorization now gate all three real verbs**:
+`server::rest::delete` (single-object `DELETE`) is real too: one
+`DeleteRange` with `prev_kv: true` so the deleted object can be returned
+in the response, matching real upstream's own synchronous-delete shape.
+Named honestly as the bring-up floor, not the real thing: no
+`resourceVersion`/`uid` precondition checking
+(`metav1.DeleteOptions.Preconditions`), no `propagationPolicy`
+(Foreground/Background/Orphan — no owner-reference garbage collector
+exists to orphan from or cascade through in the first place), no
+finalizer handling — an unconditional delete-if-present.
+
+**Authentication and authorization now gate all four real verbs**:
 `authn::x509`'s verified peer identity (Group H) plus opt-in RBAC
 enforcement (Group I, `NODEAPISERVER_ENFORCE_RBAC`) — see those groups'
 own sections for what's real and what's deliberately still opt-in.
@@ -391,9 +401,9 @@ Admission (Group J) doesn't exist at all yet — no plugin gets a say in
 any of this.
 
 **Not yet landed**: every other resource verb
-(`watch`/`update`/`patch`/`delete`), admission (Group J), the real
-handler chain itself (authn -> authz -> APF -> admission -> REST — a
-hard requirement on order, not a style choice, once it fully exists),
+(`watch`/`update`/`patch`/`deletecollection`), admission (Group J), the
+real handler chain itself (authn -> authz -> APF -> admission -> REST —
+a hard requirement on order, not a style choice, once it fully exists),
 `/openapi/v2`.
 The throwaway e2e rig described above should land as part of this group,
 not after it.

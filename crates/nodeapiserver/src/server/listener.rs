@@ -8,13 +8,15 @@
 //! listener with no reason to ever be individually disabled the way
 //! nodelet's exec/logs server is.
 //!
-//! **`GET`, `LIST`, and `CREATE` against a real resource are now real**
-//! (`rest::get`/`rest::list`/`rest::create`, generic over every resource
-//! this build knows about — see `rest`'s own doc comment for exactly
-//! what's in and out of scope). **Every other verb is still a bring-up
-//! stub** — a `watch`/`update`/... against `/api(s)/.../<resource>` still
-//! just echoes the parsed [`crate::server::path::RequestInfo`] as JSON,
-//! not the real REST dispatch. Client certificate authentication is real
+//! **`GET`, `LIST`, `CREATE`, and single-object `DELETE` against a real
+//! resource are now real** (`rest::get`/`rest::list`/`rest::create`/
+//! `rest::delete`, generic over every resource this build knows about —
+//! see `rest`'s own doc comment for exactly what's in and out of scope).
+//! **Every other verb is still a bring-up stub** — a
+//! `watch`/`update`/`patch`/`deletecollection` against
+//! `/api(s)/.../<resource>` still just echoes the parsed
+//! [`crate::server::path::RequestInfo`] as JSON, not the real REST
+//! dispatch. Client certificate authentication is real
 //! (`super::tls`'s optional `client_ca`, `authn::x509::identity_from_der`
 //! on the verified peer cert), surfaced in the echo response's own `user`
 //! field for observability. Authorization is real too, but **opt-in and
@@ -22,7 +24,7 @@
 //! — see that field's own doc comment for why: enabling RBAC enforcement
 //! before Group O's bootstrap `ClusterRole`/`ClusterRoleBinding` set
 //! exists can lock every request out with no path back in). When
-//! enabled, `GET`/`LIST`/`CREATE` all resolve the caller's real rules
+//! enabled, `GET`/`LIST`/`CREATE`/`DELETE` all resolve the caller's real rules
 //! (`authz::resolve::rules_for` — the real anonymous identity,
 //! `system:anonymous`/`system:unauthenticated`, when no x509 identity was
 //! established) and deny with a real `403` unless `authz::rbac::rules_allow`
@@ -165,7 +167,7 @@ pub async fn run(cfg: Config) {
             return;
         }
     };
-    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
+    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
     let enforce_rbac = cfg.enforce_rbac;
 
     loop {
@@ -411,16 +413,19 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity
 
     // Group E's real resource verbs so far: single-object GET (`get`, not
     // `list`/`watch` — `path::parse` already tells those apart by an empty
-    // `name`), LIST (`list`, no name), and CREATE (`create`, no name — a
-    // POST to the collection URL). No subresource (not handled yet — see
-    // `rest`'s own doc comment). Everything else still falls through to
-    // the RequestInfo echo below. `storage` is only ever consumed once
-    // (moved into `client` here), which is why all three verbs share this
-    // one `if let` rather than each checking it separately.
+    // `name`), LIST (`list`, no name), CREATE (`create`, no name — a POST
+    // to the collection URL), and single-object DELETE (`delete`, name
+    // required — no name means `deletecollection`, still the echo stub).
+    // No subresource (not handled yet — see `rest`'s own doc comment).
+    // Everything else still falls through to the RequestInfo echo below.
+    // `storage` is only ever consumed once (moved into `client` here),
+    // which is why all four verbs share this one `if let` rather than
+    // each checking it separately.
     let is_get = info.is_resource_request && info.verb == "get" && !info.name.is_empty() && info.subresource.is_empty();
     let is_list = info.is_resource_request && info.verb == "list" && info.name.is_empty() && info.subresource.is_empty();
     let is_create = info.is_resource_request && info.verb == "create" && info.name.is_empty() && info.subresource.is_empty();
-    if is_get || is_list || is_create {
+    let is_delete = info.is_resource_request && info.verb == "delete" && !info.name.is_empty() && info.subresource.is_empty();
+    if is_get || is_list || is_create || is_delete {
         // Captured before `req` is potentially consumed below (`is_create`
         // moves it into `read_body_bytes`) — a borrow of `req.headers()`
         // can't outlive that move.
@@ -479,9 +484,9 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                     }
                 }
-            } else {
-                // is_create: decode the body per its real negotiated
-                // Content-Type. JSON/YAML only for now — a protobuf
+            } else if is_create {
+                // Decode the body per its real negotiated Content-Type.
+                // JSON/YAML only for now — a protobuf
                 // request body would need the target schema to decode,
                 // which needs `resolve_kind` first; named honestly as a
                 // real, separate gap rather than guessed at (see `rest`'s
@@ -521,6 +526,18 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity
                     Ok(rest::CreateOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "rest::create failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            } else {
+                // is_delete.
+                match rest::delete(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                    Ok(rest::DeleteOutcome::Deleted(object)) => return Ok(json_response(StatusCode::OK, &object)),
+                    Ok(rest::DeleteOutcome::ObjectNotFound) | Ok(rest::DeleteOutcome::UnknownResource) => {
+                        return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                    }
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "rest::delete failed");
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                     }
                 }

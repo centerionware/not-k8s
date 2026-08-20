@@ -11,10 +11,11 @@
 //! # Scope, named honestly
 //!
 //! `GET` (single object, `GET /api/v1/namespaces/{ns}/pods/{name}`-shaped),
-//! `LIST` (`GET /api/v1/namespaces/{ns}/pods`-shaped, no name), and now
-//! `CREATE` (`POST /api/v1/namespaces/{ns}/pods`) — `watch`/`update`/
-//! `patch`/`delete` all remain the bring-up echo stub (`server::listener`'s
-//! own doc comment). Reads go straight to nodestore via
+//! `LIST` (`GET /api/v1/namespaces/{ns}/pods`-shaped, no name), `CREATE`
+//! (`POST /api/v1/namespaces/{ns}/pods`), and now single-object `DELETE`
+//! (`DELETE /api/v1/namespaces/{ns}/pods/{name}`) — `watch`/`update`/
+//! `patch`/`deletecollection` all remain the bring-up echo stub
+//! (`server::listener`'s own doc comment). Reads go straight to
 //! `storage::client::StorageClient::range`, bypassing
 //! `cacher::store::WatchCache` entirely — a real, valid read strategy
 //! (upstream's own quorum-read / watch-cache-disabled path takes exactly
@@ -49,6 +50,16 @@
 //! at all (Group J doesn't exist yet — a real cluster's `ServiceAccount`/
 //! `NamespaceLifecycle`/`ResourceQuota`/... plugins would each get a say
 //! here and don't).
+//!
+//! `delete` is a single `DeleteRange` (`prev_kv: true` so the deleted
+//! object can be returned, matching real upstream's own synchronous
+//! delete response) with no preconditions yet: no
+//! `resourceVersion`/`uid` precondition checking
+//! (`metav1.DeleteOptions.Preconditions`), no `propagationPolicy`
+//! (Foreground/Background/Orphan — this build has no owner-reference
+//! garbage collector to orphan or cascade to in the first place), no
+//! finalizer handling at all. A real, unconditional delete-if-present,
+//! named honestly as the bring-up floor rather than the real thing.
 
 use crate::cacher::selector::{self, ParseError};
 use crate::codec::protobuf;
@@ -302,6 +313,32 @@ fn set_metadata_field(object: &mut Value, field: &str, value: Value) {
 /// carries sub-second precision.
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+#[derive(Debug, PartialEq)]
+pub enum DeleteOutcome {
+    /// The object as it was immediately before deletion — real upstream's
+    /// own synchronous-delete response shape (not a bare `Status`, unless
+    /// the caller specifically asked for one, which this build doesn't
+    /// yet distinguish).
+    Deleted(Value),
+    UnknownResource,
+    ObjectNotFound,
+}
+
+/// Deletes a single object. `namespace: None` for a cluster-scoped
+/// resource, same convention as [`get`]/[`list`]/[`create`].
+pub async fn delete(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str) -> Result<DeleteOutcome, Error> {
+    if resolve_kind(group, version, resource).is_none() {
+        return Ok(DeleteOutcome::UnknownResource);
+    }
+    let key = keys::object_key(group, resource, namespace, name);
+    let resp = storage.delete_range(pb::DeleteRangeRequest { key: key.into_bytes(), prev_kv: true, ..Default::default() }).await?;
+    let Some(prev) = resp.prev_kvs.into_iter().next() else {
+        return Ok(DeleteOutcome::ObjectNotFound);
+    };
+    let object = decode_stored_object(&prev.value)?;
+    Ok(DeleteOutcome::Deleted(object))
 }
 
 #[cfg(test)]
