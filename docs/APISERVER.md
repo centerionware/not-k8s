@@ -909,7 +909,45 @@ twice for the same root cause. Same pure-decision/real-I/O-step split as
 every other Group J plugin (`server::rest::get` on the target namespace,
 to read its label, is the one I/O step).
 
-**Not yet landed**: every other built-in plugin (`ResourceQuota`, …), a
+`admission::resource_quota` is validating, `CREATE`-only, **pods only** —
+a faithful-but-substantially-scoped port of real upstream's own
+`ResourceQuota` plugin
+(`staging/src/k8s.io/apiserver/pkg/admission/plugin/resourcequota/controller.go`
++ `pkg/quota/v1/evaluator/core/pods.go`, fetched and read directly):
+forbids a `Pod` `CREATE` that would push a namespace's tracked
+compute-resource usage (`pods`/`cpu`/`requests.cpu`/`limits.cpu`/
+`memory`/`requests.memory`/`limits.memory` — real upstream's own
+`podComputeUsageHelper`, restricted to this subset) over any
+`ResourceQuota`'s own `spec.hard`. Reuses `limit_ranger`'s own
+`pod_requests`/`pod_limits` for the aggregation, since real upstream's
+own quota usage function (`PodUsageFunc`) calls the exact same
+underlying helper `limit_ranger` already ported. Terminal pods
+(`Failed`/`Succeeded`) are excluded from summed usage, matching real
+upstream's own `QuotaV1Pod` convention. Real upstream's own denial
+message format is ported exactly: `"exceeded quota: <name>, requested:
+<resource>=<val>, used: <resource>=<val>, limited: <resource>=<val>"`,
+restricted to only the resource(s) that actually exceeded; the first
+`ResourceQuota` found to be exceeded wins (matches upstream's own
+first-failure-wins loop, not an aggregate of every quota's own
+violations). **Substantially scoped, named honestly**: real upstream
+also tracks services/PVCs/secrets/configmaps/arbitrary `count/<resource>`
+object counts through a whole per-type `Evaluator` registry — only the
+pod evaluator is ported; `ephemeral-storage`/`hugepages-*`/extended
+resources aren't tracked; `ResourceQuota.spec.scopes`/`scopeSelector`
+aren't matched at all (every quota in the namespace is treated as
+unscoped — errs toward stricter than requested, never laxer); and there
+is **no persisted `status.used` counter** — usage is recomputed live
+from a fresh `Pod` list on every check rather than an incrementally
+maintained, optimistic-lock-protected running total, which means (unlike
+real upstream) two concurrent `CREATE`s that each individually fit under
+the quota can both be admitted, together exceeding it — a real, narrow,
+accepted concurrency gap, not silently glossed over. Placed last among
+this crate's admission blocks (after `LimitRanger`'s own defaulting), the
+same relative position real upstream's own default plugin order uses,
+so quota sees the final, fully-defaulted object.
+
+**Not yet landed**: every other built-in plugin, `ResourceQuota`'s own
+non-pod evaluators/scope matching/persisted usage counter (above), a
 generic plugin-chain/registry abstraction (today `server::listener`
 hand-calls each plugin directly, not through
 any dispatch table), mutating/validating webhooks, and
