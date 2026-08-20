@@ -55,15 +55,22 @@
 //! (`ValidateNamespaceName`), `services` -> `is_dns1035_label`
 //! (`ValidateServiceName`, ignoring the alpha
 //! `RelaxedServiceNameValidation` feature gate this crate has no
-//! machinery for), and fourteen resources sharing `is_dns1123_subdomain`
-//! (core group: `serviceaccounts`, `pods`, `replicationcontrollers`,
-//! `nodes`, `limitranges`, `resourcequotas`, `secrets`, `endpoints`,
-//! `persistentvolumes`, `configmaps`; non-core, each individually
-//! group-verified against the vendored spec:
+//! machinery for), and twenty-six resources sharing
+//! `is_dns1123_subdomain` (core group: `serviceaccounts`, `pods`,
+//! `replicationcontrollers`, `nodes`, `limitranges`, `resourcequotas`,
+//! `secrets`, `endpoints`, `persistentvolumes`, `configmaps`; non-core,
+//! each individually group-verified against the vendored spec:
 //! `scheduling.k8s.io/priorityclasses`,
 //! `resource.k8s.io/resourceclaims`,
 //! `resource.k8s.io/resourceclaimtemplates`,
-//! `storage.k8s.io/storageclasses`) — every other resource is
+//! `storage.k8s.io/storageclasses`, `apps/controllerrevisions`,
+//! `apps/daemonsets`, `apps/deployments`, `apps/replicasets`,
+//! `networking.k8s.io/ingresses`, `networking.k8s.io/ingressclasses`,
+//! `networking.k8s.io/servicecidrs`, `discovery.k8s.io/endpointslices`,
+//! `flowcontrol.apiserver.k8s.io/flowschemas`,
+//! `flowcontrol.apiserver.k8s.io/prioritylevelconfigurations`,
+//! `node.k8s.io/runtimeclasses`, `coordination.k8s.io/leases`) — every
+//! other resource is
 //! deliberately left unchecked rather than guessed at; see that
 //! function's own doc comment for how to extend it one verified entry at
 //! a time. `update` runs the exact same two checks. Named honestly, not
@@ -540,6 +547,36 @@ fn name_format_violations(group: &str, resource: &str, name: &str) -> Vec<String
         ("resource.k8s.io", "resourceclaims") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("resource.k8s.io", "resourceclaimtemplates") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("storage.k8s.io", "storageclasses") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        // More non-core groups, same two-way verification (real
+        // per-type `Validate<Kind>[Create]` function confirmed to apply
+        // the var to that type's own `ObjectMeta`, real group confirmed
+        // against that group's own vendored spec `paths` table):
+        // `apps/v1`: ControllerRevision, DaemonSet, Deployment, ReplicaSet
+        // (`pkg/apis/apps/validation/validation.go`).
+        // `networking.k8s.io/v1`: Ingress, IngressClass, ServiceCIDR
+        // (`pkg/apis/networking/validation/validation.go`).
+        // `discovery.k8s.io/v1`: EndpointSlice
+        // (`pkg/apis/discovery/validation/validation.go`).
+        // `flowcontrol.apiserver.k8s.io/v1`: FlowSchema,
+        // PriorityLevelConfiguration
+        // (`pkg/apis/flowcontrol/validation/validation.go`).
+        // `node.k8s.io/v1`: RuntimeClass — inlines `NameIsDNSSubdomain`
+        // directly rather than through a named var, same rule
+        // (`pkg/apis/node/validation/validation.go`).
+        // `coordination.k8s.io/v1`: Lease — same inlined-not-var pattern
+        // (`pkg/apis/coordination/validation/validation.go`).
+        ("apps", "controllerrevisions") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("apps", "daemonsets") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("apps", "deployments") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("apps", "replicasets") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("networking.k8s.io", "ingresses") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("networking.k8s.io", "ingressclasses") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("networking.k8s.io", "servicecidrs") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("discovery.k8s.io", "endpointslices") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("flowcontrol.apiserver.k8s.io", "flowschemas") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("node.k8s.io", "runtimeclasses") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("coordination.k8s.io", "leases") => crate::scheme::name_format::is_dns1123_subdomain(name),
         _ => Vec::new(),
     }
 }
@@ -682,6 +719,27 @@ mod tests {
         // The same resource name under the wrong group must not match --
         // this table is keyed on (group, resource), not resource alone.
         assert!(name_format_violations("", "priorityclasses", "My_Bad_Name").is_empty());
+    }
+
+    #[test]
+    fn name_format_violations_enforces_the_real_dns_subdomain_rule_on_each_newly_verified_resource() {
+        for (group, resource) in [
+            ("apps", "controllerrevisions"),
+            ("apps", "daemonsets"),
+            ("apps", "deployments"),
+            ("apps", "replicasets"),
+            ("networking.k8s.io", "ingresses"),
+            ("networking.k8s.io", "ingressclasses"),
+            ("networking.k8s.io", "servicecidrs"),
+            ("discovery.k8s.io", "endpointslices"),
+            ("flowcontrol.apiserver.k8s.io", "flowschemas"),
+            ("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations"),
+            ("node.k8s.io", "runtimeclasses"),
+            ("coordination.k8s.io", "leases"),
+        ] {
+            assert!(name_format_violations(group, resource, "my-name.example").is_empty(), "{group}/{resource} should accept a valid DNS subdomain");
+            assert!(!name_format_violations(group, resource, "My_Bad_Name").is_empty(), "{group}/{resource} should reject an invalid DNS subdomain");
+        }
     }
 
     #[test]
