@@ -27,10 +27,17 @@
 //! first, then live events stream as they happen, real `Transfer-Encoding`
 //! framing handled by hyper's own h1/h2 connection layer. A resource with
 //! no registered cache still falls through to the echo stub, same as a
-//! resource `GET`/`LIST` can't yet serve from a cache. **`patch`/
-//! `deletecollection` are still bring-up stubs** — a request against
-//! either still just echoes the parsed
-//! [`crate::server::path::RequestInfo`] as JSON, not the real dispatch.
+//! resource `GET`/`LIST` can't yet serve from a cache. `PATCH` is real
+//! too now (`rest::patch`, reusing Group G's already-landed
+//! `patch::json_patch`/`merge_patch`/`strategic_merge`, selected by the
+//! real `Content-Type` — `application/json-patch+json`/
+//! `application/merge-patch+json`/`application/strategic-merge-patch+json`
+//! — with a real `415` for anything else) — **but doesn't run through
+//! Group J admission yet**, a named gap (this branch's own comment,
+//! right above where it's handled, has the reason). **`deletecollection`
+//! is still a bring-up stub** — a request against it still just echoes
+//! the parsed [`crate::server::path::RequestInfo`] as JSON, not the real
+//! dispatch.
 //! Client certificate authentication is real (`super::tls`'s optional
 //! `client_ca`, `authn::x509::identity_from_der` on the verified peer
 //! cert), surfaced in the echo response's own `user` field for
@@ -687,6 +694,62 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
     // cache — see that branch's own doc comment), and produces a
     // streaming response rather than one JSON document.
     let is_watch = info.is_resource_request && info.verb == "watch" && info.subresource.is_empty();
+    // `PATCH` is handled in its own branch, not folded into the five-verb
+    // block below: its request body is a patch document, not a
+    // full/partial object, and which of `rest::patch`'s three real patch
+    // kinds applies is decided by `Content-Type` rather than the
+    // JSON-vs-YAML negotiation `has_body` below uses. **No Group J
+    // admission runs on `PATCH` yet** — a named, honest gap: the
+    // mutating/validating plugin chain below is wired specifically
+    // against `body_value`/`is_create`/`is_update`, and `PATCH`'s own
+    // final object only exists once `rest::patch` has already applied
+    // the patch and persisted it, past the point admission would need to
+    // run to still be able to reject the write. Closing this gap needs
+    // `rest::patch` split into an apply-then-validate-then-persist shape
+    // the way `create`/`update` already are — separate follow-up work.
+    if info.is_resource_request && info.verb == "patch" && !info.name.is_empty() && info.subresource.is_empty() {
+        let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let Some(kind_of_patch) = content_type.as_deref().and_then(rest::patch_kind_for_content_type) else {
+            return Ok(json_response(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                &bad_request_status(&path_str, "unsupported or missing Content-Type for PATCH -- use application/json-patch+json, application/merge-patch+json, or application/strategic-merge-patch+json"),
+            ));
+        };
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let patch_doc: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+        return match rest::patch(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc).await {
+            Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
+            Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+            Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+            // `rest::patch` never itself returns these two -- they're
+            // `update`-only (a submitted resourceVersion, a submitted
+            // namespace) and `UnsupportedPatchType` is pre-checked above,
+            // before `rest::patch` is ever called. Kept exhaustive rather
+            // than `unreachable!()` so a future real use from `rest::patch`
+            // doesn't silently panic in production.
+            Ok(rest::UpdateOutcome::MissingResourceVersion) | Ok(rest::UpdateOutcome::NamespaceMismatch) | Ok(rest::UpdateOutcome::UnsupportedPatchType) => {
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "rest::patch failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+        };
+    }
     let has_body = is_create || is_update;
     if is_get || is_list || is_create || is_delete || is_update {
         // Captured before `req` is potentially consumed below (`has_body`
@@ -1134,6 +1197,11 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                     }
                     Ok(rest::UpdateOutcome::Conflict) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
                     Ok(rest::UpdateOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                    // `rest::update` never itself returns this -- it's
+                    // `rest::patch`-only, checked before `rest::patch` is
+                    // even called (see the `PATCH` branch above). Kept
+                    // exhaustive rather than `unreachable!()`.
+                    Ok(rest::UpdateOutcome::UnsupportedPatchType) => return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str))),
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "rest::update failed");
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
