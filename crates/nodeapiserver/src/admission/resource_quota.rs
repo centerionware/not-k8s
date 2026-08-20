@@ -34,11 +34,15 @@
 //! hugepage request and its limit are always equal in a real pod spec),
 //! `persistentvolumeclaims` (object count), `requests.storage`,
 //! `services` (object count), `services.nodeports`,
-//! `services.loadbalancers`; not ported: extended resources
-//! (`isExtendedResourceNameForQuota`) and the PVC evaluator's own real
-//! per-storage-class resource name family
-//! (`<class>.storageclass.storage.k8s.io/...`) — both real, both just
-//! not this crate's first cut. The PVC and service
+//! `services.loadbalancers`, and extended resources in their real
+//! `requests.<name>`-only form (e.g. `requests.nvidia.com/gpu` — real
+//! upstream's own `isExtendedResourceNameForQuota`/
+//! `IsExtendedResourceName`: overcommit isn't supported for extended
+//! resources, so only the `requests.`-prefixed quota key is ever
+//! recognized, never a bare one); not ported: the PVC evaluator's own
+//! real per-storage-class resource name family
+//! (`<class>.storageclass.storage.k8s.io/...`) — real, just not this
+//! crate's first cut. The PVC and service
 //! evaluators only apply to an *unscoped* `ResourceQuota` (`spec.scopes`
 //! empty) — real upstream's own `pvcEvaluator.Matches` only consults
 //! scopes at all behind the alpha `VolumeAttributesClass` feature gate,
@@ -375,7 +379,41 @@ fn pod_compute_usage(requests: &BTreeMap<String, Quantity>, limits: &BTreeMap<St
             usage.insert(format!("requests.hugepages-{size}"), q);
         }
     }
+    // Real upstream's own extended-resource branch of the same loop:
+    // "as overcommit is not supported by extended resources for now,
+    // only quota objects in format of `requests.resourceName` is
+    // allowed" — so unlike compute/hugepages resources, an extended
+    // resource gets *only* its `requests.<name>` entry, never a bare
+    // one.
+    for (name, &q) in requests {
+        if is_extended_resource_name(name) {
+            usage.insert(format!("requests.{name}"), q);
+        }
+    }
     usage
+}
+
+/// Real upstream's own `helper.IsExtendedResourceName`, simplified: a
+/// resource name that names a real extended resource (e.g.
+/// `nvidia.com/gpu`) rather than a native/built-in one. Ported checks:
+/// not [`is_native_resource`] (real upstream's own `IsNativeResource` —
+/// no `/` at all, or one under the reserved `kubernetes.io/` namespace),
+/// and not already `requests.`-prefixed (upstream's own guard against
+/// double-prefixing a resource name that's already in quota-key form).
+/// **Not ported**: upstream's own final `IsQualifiedName` structural
+/// validation of the would-be `requests.<name>` quota key — this port
+/// trusts any not-obviously-native name shape rather than re-validating
+/// full DNS-subdomain/qualified-name grammar a second time here.
+fn is_extended_resource_name(name: &str) -> bool {
+    !is_native_resource(name) && !name.starts_with("requests.")
+}
+
+/// Real upstream's own `helper.IsNativeResource`: no `/` at all (an
+/// unprefixed name is implicitly in the `kubernetes.io/` namespace), or
+/// one that's explicitly under the reserved `kubernetes.io/` namespace
+/// (`IsPrefixedNativeResource`).
+fn is_native_resource(name: &str) -> bool {
+    !name.contains('/') || name.contains("kubernetes.io/")
 }
 
 /// Real upstream's own `PodUsageFunc`: the object-count entry (`pods`)
@@ -417,8 +455,22 @@ fn hard_limits(resource_quota: &Value) -> BTreeMap<String, Quantity> {
 /// all, rather than spuriously matched.
 const TRACKED_RESOURCES: [&str; 10] = ["pods", "cpu", "requests.cpu", "limits.cpu", "memory", "requests.memory", "limits.memory", "ephemeral-storage", "requests.ephemeral-storage", "limits.ephemeral-storage"];
 
+/// Real upstream's own `isExtendedResourceNameForQuota`: a `spec.hard`
+/// key names an extended resource's quota entry only in its
+/// `requests.<name>` form (real upstream's own comment: "as overcommit
+/// is not supported by extended resources for now, only quota objects
+/// in format of `requests.resourceName` is allowed") — the *whole* key,
+/// prefix included, must not be a native resource name (a `kubernetes.io/`
+/// name, once prefixed with `requests.`, would still contain
+/// `kubernetes.io/` and correctly not match here).
+fn is_extended_resource_hard_key(key: &str) -> bool {
+    key.starts_with("requests.") && !is_native_resource(key)
+}
+
 fn quota_applies(resource_quota: &Value) -> bool {
-    hard_limits(resource_quota).keys().any(|k| TRACKED_RESOURCES.contains(&k.as_str()) || k.starts_with("hugepages-") || k.starts_with("requests.hugepages-"))
+    hard_limits(resource_quota)
+        .keys()
+        .any(|k| TRACKED_RESOURCES.contains(&k.as_str()) || k.starts_with("hugepages-") || k.starts_with("requests.hugepages-") || is_extended_resource_hard_key(k))
 }
 
 /// Real upstream's own `pvcResources` — this port's subset (see this
@@ -767,6 +819,40 @@ mod tests {
         let pod = json!({"metadata": {"name": "new"}, "spec": {"containers": [{"name": "c1", "resources": {"requests": {"hugepages-2Mi": "999Mi"}}}]}});
         let q = quota("hugepages-quota", json!({"hugepages-2Mi": "1Mi"}));
         assert!(check_pod_create(&pod, &[], &[q]).is_some());
+    }
+
+    #[test]
+    fn pod_usage_tracks_an_extended_resource_under_its_requests_prefixed_name_only() {
+        let pod = json!({"spec": {"containers": [{"name": "c1", "resources": {
+            "requests": {"nvidia.com/gpu": "2"},
+            "limits": {"nvidia.com/gpu": "2"},
+        }}]}});
+        let usage = pod_usage(&pod);
+        assert_eq!(usage["requests.nvidia.com/gpu"].milli_value(), 2000);
+        // Real upstream never tracks a bare or limits.-prefixed key for an
+        // extended resource -- overcommit isn't supported, so only the
+        // requests.-prefixed form is ever recognized.
+        assert!(usage.get("nvidia.com/gpu").is_none());
+        assert!(usage.get("limits.nvidia.com/gpu").is_none());
+    }
+
+    #[test]
+    fn an_extended_resource_quota_is_enforced() {
+        let pod = json!({"metadata": {"name": "new"}, "spec": {"containers": [{"name": "c1", "resources": {"requests": {"nvidia.com/gpu": "2"}}}]}});
+        let existing = json!({"metadata": {"name": "existing"}, "spec": {"containers": [{"name": "c1", "resources": {"requests": {"nvidia.com/gpu": "2"}}}]}});
+        let q = quota("gpu-quota", json!({"requests.nvidia.com/gpu": "3"}));
+        let denial = check_pod_create(&pod, &[existing], &[q]).expect("2 + 2 > 3");
+        assert!(denial.contains("requests.nvidia.com/gpu"));
+    }
+
+    #[test]
+    fn a_native_resource_shaped_like_a_slash_name_is_not_treated_as_extended() {
+        // kubernetes.io/-prefixed names are native, not extended -- a
+        // requests.-prefixed hard limit for one must not be recognized by
+        // the extended-resource path (it isn't tracked by this evaluator
+        // at all, so such a quota simply never applies).
+        let q = quota("bogus-quota", json!({"requests.example.kubernetes.io/foo": "1"}));
+        assert!(!quota_applies(&q));
     }
 
     #[test]
