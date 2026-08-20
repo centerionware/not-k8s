@@ -66,14 +66,17 @@
 //! registry this crate doesn't port): forbids a `Pod` `CREATE` that would
 //! push a namespace's tracked compute-resource usage
 //! (`pods`/`cpu`/`requests.cpu`/`limits.cpu`/`memory`/`requests.memory`/
-//! `limits.memory`) over any `ResourceQuota`'s own `spec.hard`. No scope
-//! matching, and no persisted `status.used` counter (recomputed live from
-//! a fresh `Pod` list every time instead — see that module's own doc
-//! comment for the one real concurrency-race consequence this carries
-//! that a persisted counter with real upstream's own optimistic-lock
-//! retry wouldn't). Reuses `limit_ranger`'s own `pod_requests`/
-//! `pod_limits` for the aggregation, since real upstream's quota usage
-//! function calls the exact same underlying helper.
+//! `limits.memory`) over any `ResourceQuota`'s own `spec.hard`. Partial
+//! `spec.scopes` matching (`Terminating`/`NotTerminating`/`BestEffort`/
+//! `NotBestEffort`, including a real `ComputePodQOS` port —
+//! `PriorityClass`/`CrossNamespacePodAffinity` aren't evaluated, treated
+//! as always-matching), and no persisted `status.used` counter
+//! (recomputed live from a fresh `Pod` list every time instead — see that
+//! module's own doc comment for the one real concurrency-race consequence
+//! this carries that a persisted counter with real upstream's own
+//! optimistic-lock retry wouldn't). Reuses `limit_ranger`'s own
+//! `pod_requests`/`pod_limits` for the aggregation, since real upstream's
+//! quota usage function calls the exact same underlying helper.
 //!
 //! All seven plugins are **wired into `server::listener`, unconditionally**
 //! — none needs operator-provisioned bootstrap data (unlike Group I's
