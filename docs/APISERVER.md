@@ -126,24 +126,31 @@ reads (`wait_for_revision`, a free function operating on a cloneable
 `apply()`, caught before it shipped rather than after). A watcher whose
 `start_revision` has fallen out of the retained history window gets
 `Error::TooOld`, the same "relist required" signal real
-etcd/kube-apiserver/client-go informers all key off. Pure and synchronous
-underneath, unit-tested against synthetic events with no live storage
-needed. `cacher::driver` wires a real `StorageClient` to it: `list()` seeds
-the cache from a `Range` snapshot + its header revision, `watch_from_cache()`
-opens a `Watch` from `revision + 1` (not `revision` — avoids redelivering
-the event the snapshot already reflects), and `apply_watch_response()`
-decodes `mvccpb::Event`s into `WatchCache::apply` calls (`Added` vs
-`Modified` distinguished by `kv.version == 1`, matching `mvccpb::Event`'s
-own doc comment; an empty-events response with a newer header revision
-becomes a `Bookmark`). Decode logic is pure and unit-tested against
-constructed `mvccpb`/`etcdserverpb` values; only the two thin wrappers
-around real `StorageClient` calls need live infrastructure to test
-further. **Not yet landed**, named honestly rather than implied by the
-above: a reconnect-on-disconnect loop (today's driver gives a caller one
-LIST-then-WATCH cycle; noticing the stream end and starting over is still
-the caller's job), bookmark *generation* on a timer (this only turns a
-progress-notify response into a bookmark, it doesn't request one on any
-schedule), and label/field selector filtering over the cached items.
+etcd/kube-apiserver/client-go informers all key off. `cacher::store::SharedCache`
+wraps a `WatchCache` in `Arc<std::sync::RwLock<..>>` — the same aliasing
+problem `wait_for_revision` hit shows up again for `list()`/`watch_from()`
+once a driver loop and reader tasks need concurrent access to one cache,
+so this is what real callers actually hold, verified with a genuinely
+concurrent `tokio::spawn` reader+writer test, not just a sequential one.
+Pure and synchronous underneath, unit-tested against synthetic events
+with no live storage needed. `cacher::driver` wires a real `StorageClient`
+to it: `list()` seeds the cache from a `Range` snapshot + its header
+revision, `watch_from_revision()` opens a `Watch` from `revision + 1` (not
+`revision` — avoids redelivering the event the snapshot already
+reflects), `apply_watch_response`/`apply_watch_response_shared` decode
+`mvccpb::Event`s into `WatchCache::apply`/`SharedCache::apply` calls
+(`Added` vs `Modified` distinguished by `kv.version == 1`, matching
+`mvccpb::Event`'s own doc comment; an empty-events response with a newer
+header revision becomes a `Bookmark`), and `reflect()` is the reconnect
+loop — LIST, WATCH, and on any failure or stream end, relist and try
+again forever, the same "never give up" posture a real `client-go`
+Reflector takes. Decode logic is pure and unit-tested against constructed
+`mvccpb`/`etcdserverpb` values; the async orchestration around real
+`StorageClient` calls needs live infrastructure to test further.
+**Not yet landed**, named honestly rather than implied by the above:
+bookmark *generation* on a timer (today's code only handles one if
+nodestore happens to send it, it doesn't request one on a schedule), and
+label/field selector filtering over the cached items.
 
 **E. Generic server + handler chain + REST endpoints** — **in progress**.
 `server::path` is the REST path grammar — a faithful, line-by-line port of
