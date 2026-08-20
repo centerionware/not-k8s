@@ -917,7 +917,8 @@ port of real upstream's own `ResourceQuota` plugin
 fetched and read directly): forbids a `Pod`/`PersistentVolumeClaim`/
 `Service` `CREATE` that would push a namespace's tracked usage
 (`pods`/`cpu`/`requests.cpu`/`limits.cpu`/`memory`/`requests.memory`/
-`limits.memory` — real upstream's own `podComputeUsageHelper`,
+`limits.memory`/`ephemeral-storage`/`requests.ephemeral-storage`/
+`limits.ephemeral-storage` — real upstream's own `podComputeUsageHelper`,
 restricted to this subset — plus `persistentvolumeclaims`/
 `requests.storage` — real upstream's own `pvcEvaluator.Usage`, minus its
 real per-storage-class resource name family and the alpha
@@ -1006,11 +1007,14 @@ this is the *complete* real evaluator set — three specials plus the
 generic fallback for everything else — so, unlike the pod/PVC/service
 evaluators (each independently a narrowed port of a specialized real
 evaluator), the generic evaluator itself is now a **complete** port.
-**Substantially scoped, named honestly** in the ways real upstream's
-three specialized evaluators track extra resource families:
-`ephemeral-storage`/`hugepages-*`/extended resources and the PVC
-evaluator's own per-storage-class resource family aren't tracked; and
-there is **no
+`ephemeral-storage`/`requests.ephemeral-storage`/
+`limits.ephemeral-storage` are now tracked too, the same
+request/limit shape as `cpu`/`memory` (`pod_compute_usage`, extended
+this session). **Substantially scoped, named honestly** in the ways real
+upstream's three specialized evaluators track extra resource families:
+the `hugepages-*` prefix family (`podResourcePrefixes`) and extended
+resources (`isExtendedResourceNameForQuota`) aren't tracked, nor is the
+PVC evaluator's own per-storage-class resource family; and there is **no
 persisted `status.used` counter** — usage is recomputed live from a
 fresh object list on every check rather than an incrementally
 maintained, optimistic-lock-protected running total, which means
