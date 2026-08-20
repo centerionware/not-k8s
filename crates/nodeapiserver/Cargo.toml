@@ -60,6 +60,22 @@ tonic-prost = { workspace = true }
 # needs for the request side. Same version nodestore's own Cargo.toml uses.
 tokio-stream = { version = "0.1", features = ["sync"] }
 
+# Group E: the REST/watch listener. Same hyper/hyper-util/tokio-rustls
+# stack as crates/nodelet/Cargo.toml's own HTTPS server, except this one
+# needs "http2" too (client-go and kubectl negotiate h2, and watch
+# multiplexing depends on it — CLAUDE.md's own note on why nodelet's http1-
+# only choice doesn't carry over here).
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { workspace = true, features = ["tokio", "server", "server-auto", "server-graceful"] }
+http = "1"
+http-body-util = "0.1"
+tokio-rustls = "0.26"
+rustls = { workspace = true }
+# Self-signed TLS server cert, generated on first start — see
+# server/tls.rs's own doc comment for why this isn't the cluster's real
+# PKI (Group O's job) and what it is instead.
+rcgen = "0.13"
+
 [build-dependencies]
 # Group A codegen: parses vendor/openapi-spec/v3/*.json and
 # vendor/protos/**/generated.proto at build time into the tables
