@@ -32,7 +32,7 @@
 //! `reason`/`message` off exactly this JSON today.
 
 use crate::config::Config;
-use crate::server::{discovery, path};
+use crate::server::{discovery, openapi, path};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -134,6 +134,12 @@ pub async fn run(cfg: Config) {
 enum DiscoveryRoute {
     NotApplicable,
     Found(serde_json::Value),
+    /// Same as `Found`, but the bytes are already-serialized JSON (an
+    /// `/openapi/v3/<path>` document, embedded verbatim at build time) —
+    /// serving them directly avoids a pointless parse-then-reserialize
+    /// round trip through `serde_json::Value` for a payload that can be
+    /// tens of kilobytes.
+    FoundRaw(&'static [u8]),
     NotFound,
 }
 
@@ -143,19 +149,24 @@ enum DiscoveryRoute {
 /// [`path::split_path`].
 fn route_discovery(parts: &[String]) -> DiscoveryRoute {
     let seg = |i: usize| parts.get(i).map(String::as_str);
-    match (seg(0), parts.len()) {
-        (Some("api"), 1) => DiscoveryRoute::Found(discovery::api_versions()),
-        (Some("api"), 2) => match discovery::api_resource_list("", &parts[1]) {
+    match (seg(0), seg(1), parts.len()) {
+        (Some("api"), _, 1) => DiscoveryRoute::Found(discovery::api_versions()),
+        (Some("api"), _, 2) => match discovery::api_resource_list("", &parts[1]) {
             Some(doc) => DiscoveryRoute::Found(doc),
             None => DiscoveryRoute::NotFound,
         },
-        (Some("apis"), 1) => DiscoveryRoute::Found(discovery::api_group_list()),
-        (Some("apis"), 2) => match discovery::api_group(&parts[1]) {
+        (Some("apis"), _, 1) => DiscoveryRoute::Found(discovery::api_group_list()),
+        (Some("apis"), _, 2) => match discovery::api_group(&parts[1]) {
             Some(doc) => DiscoveryRoute::Found(doc),
             None => DiscoveryRoute::NotFound,
         },
-        (Some("apis"), 3) => match discovery::api_resource_list(&parts[1], &parts[2]) {
+        (Some("apis"), _, 3) => match discovery::api_resource_list(&parts[1], &parts[2]) {
             Some(doc) => DiscoveryRoute::Found(doc),
+            None => DiscoveryRoute::NotFound,
+        },
+        (Some("openapi"), Some("v3"), 2) => DiscoveryRoute::Found(openapi::root()),
+        (Some("openapi"), Some("v3"), n) if n > 2 => match openapi::doc(&parts[2..].join("/")) {
+            Some(bytes) => DiscoveryRoute::FoundRaw(bytes),
             None => DiscoveryRoute::NotFound,
         },
         _ => DiscoveryRoute::NotApplicable,
@@ -195,6 +206,9 @@ async fn handle(req: Request<Incoming>) -> Result<Response<BoxedBody>, Infallibl
         let parts = path::split_path(&path_str);
         match route_discovery(&parts) {
             DiscoveryRoute::Found(doc) => return Ok(json_response(StatusCode::OK, &doc)),
+            DiscoveryRoute::FoundRaw(bytes) => {
+                return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "application/json").body(body_from_bytes(bytes.to_vec())).unwrap());
+            }
             DiscoveryRoute::NotFound => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
             DiscoveryRoute::NotApplicable => {}
         }
@@ -273,6 +287,26 @@ mod tests {
         assert!(matches!(route_discovery(&parts("/api/v1/namespaces/default/pods")), DiscoveryRoute::NotApplicable));
         assert!(matches!(route_discovery(&parts("/apis/apps/v1/namespaces/default/deployments")), DiscoveryRoute::NotApplicable));
         assert!(matches!(route_discovery(&parts("/")), DiscoveryRoute::NotApplicable));
+    }
+
+    #[test]
+    fn openapi_v3_root_serves_the_root_index() {
+        let route = route_discovery(&parts("/openapi/v3"));
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert!(doc["paths"].as_object().unwrap().contains_key("apis/apps/v1"));
+    }
+
+    #[test]
+    fn openapi_v3_a_multi_segment_path_serves_the_raw_vendored_document() {
+        let route = route_discovery(&parts("/openapi/v3/apis/apps/v1"));
+        let DiscoveryRoute::FoundRaw(bytes) = route else { panic!("expected FoundRaw") };
+        let parsed: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert!(parsed.get("openapi").is_some());
+    }
+
+    #[test]
+    fn openapi_v3_an_unvendored_path_is_a_real_not_found() {
+        assert!(matches!(route_discovery(&parts("/openapi/v3/apis/totally.made.up/v1")), DiscoveryRoute::NotFound));
     }
 
     #[test]

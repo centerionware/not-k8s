@@ -16,6 +16,10 @@ pub mod api_resources {
     include!(concat!(env!("OUT_DIR"), "/api_resources.rs"));
 }
 
+pub mod openapi_v3_docs {
+    include!(concat!(env!("OUT_DIR"), "/openapi_v3_docs.rs"));
+}
+
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -122,6 +126,14 @@ pub fn api_resources_by_group_version() -> &'static HashMap<(&'static str, &'sta
         }
         m
     })
+}
+
+/// `path -> &ServedOpenApiDoc`, built once from
+/// `openapi_v3_docs::OPENAPI_V3_DOCS`. `server::openapi`'s `/openapi/v3`
+/// endpoints are this index's intended reader.
+pub fn openapi_v3_doc_index() -> &'static HashMap<&'static str, &'static openapi_v3_docs::ServedOpenApiDoc> {
+    static INDEX: OnceLock<HashMap<&'static str, &'static openapi_v3_docs::ServedOpenApiDoc>> = OnceLock::new();
+    INDEX.get_or_init(|| openapi_v3_docs::OPENAPI_V3_DOCS.iter().map(|d| (d.path, d)).collect())
 }
 
 /// Resolves a field's `proto_type` (as `proto_fields::ProtoField` stores
