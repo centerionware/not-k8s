@@ -567,11 +567,27 @@ shape); `resource.k8s.io/resourceclaims` and
 (`ValidateResourceClaim`/`ValidateResourceClaimTemplate`,
 `pkg/apis/resource/validation/validation.go`); `storage.k8s.io/storageclasses`
 -> `is_dns1123_subdomain` (`ValidateStorageClass`,
-`pkg/apis/storage/validation/validation.go`). Every other resource is
-left unchecked rather than guessing at a rule for it, gating both
-`create` and `update`. Extending this to more resources is real,
-separate follow-up work, one verified entry at a time (the function's
-own doc comment says so explicitly).
+`pkg/apis/storage/validation/validation.go`). Twelve more resources
+across six more non-core groups landed the same way (real
+`Validate<Kind>[Create]` function confirmed to apply the var to that
+type's own `ObjectMeta`, real group confirmed against that group's own
+vendored spec `paths` table): `apps/v1`'s `controllerrevisions`,
+`daemonsets`, `deployments`, `replicasets`
+(`pkg/apis/apps/validation/validation.go`); `networking.k8s.io/v1`'s
+`ingresses`, `ingressclasses`, `servicecidrs`
+(`pkg/apis/networking/validation/validation.go`);
+`discovery.k8s.io/v1`'s `endpointslices`
+(`pkg/apis/discovery/validation/validation.go`);
+`flowcontrol.apiserver.k8s.io/v1`'s `flowschemas`,
+`prioritylevelconfigurations`
+(`pkg/apis/flowcontrol/validation/validation.go`); `node.k8s.io/v1`'s
+`runtimeclasses` and `coordination.k8s.io/v1`'s `leases` (both inline
+`NameIsDNSSubdomain` directly rather than through a named var — same
+rule, confirmed the same way). `name_format_violations` now covers 28
+resources total. Every other resource is left unchecked rather than
+guessing at a rule for it, gating both `create` and `update`. Extending
+this to more resources is real, separate follow-up work, one verified
+entry at a time (the function's own doc comment says so explicitly).
 
 Conversion only needed for genuinely multi-version groups
 (admissionregistration, autoscaling, certificates, coordination,
