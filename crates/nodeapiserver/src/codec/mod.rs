@@ -8,12 +8,16 @@
 //! `negotiation` — `Accept`/`Content-Type` header parsing, including the
 //! `as=Table;g=...;v=...` server-side-printing parameters `kubectl get`
 //! sends.
+//! `table` — the `Table` conversion itself, negotiated via those
+//! parameters: the generic default converter only (real per-type printers
+//! like Pod's `READY`/`STATUS` columns are separate, unstarted work — see
+//! the module's own doc for exactly what's covered).
 //!
-//! Not yet done: `Table` server-side printing itself (only its negotiation
-//! parameters are parsed so far) and `PartialObjectMetadata`.
+//! Not yet done: `PartialObjectMetadata`.
 
 pub mod wire;
 pub mod protobuf;
 pub mod json;
 pub mod yaml;
 pub mod negotiation;
+pub mod table;
