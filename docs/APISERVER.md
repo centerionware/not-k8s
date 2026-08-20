@@ -104,18 +104,19 @@ parameters. Not yet done: `Table` server-side printing itself (only its
 negotiation parameters are parsed so far) and `PartialObjectMetadata`.
 
 **C. Storage over nodestore** — **in progress**. `storage::client::StorageClient`
-is a real etcd v3 gRPC client to nodestore (`Range`/`Put`/`DeleteRange`/`Txn`),
-same mutual-TLS posture as nodestore's own client API, compiled from a
-synced copy of nodestore's own vendored protos
-(`proto/sync-from-nodestore.sh`) — client-only, not linking the `nodestore`
-crate. `storage::keys` has the *unconfigured-default* key layout
-(`/registry/<resource>/<ns>/<name>`, no group suffix — verified against
-`DefaultStorageFactory.ResourcePrefix` directly, corrected from this doc's
-earlier `<group>`-suffixed shorthand). Not yet done, named honestly rather
-than approximated: the per-resource key-prefix override table
-(`pkg/controlplane/instance.go`'s `DefaultResourcePrefixes`, real vendoring
-work of its own), encryption-at-rest providers, and `Watch`/`Lease` RPCs
-(Group D's job once the watch cache needs them).
+is a real etcd v3 gRPC client to nodestore (`Range`/`Put`/`DeleteRange`/`Txn`/
+`Watch`, the last a real bidirectional stream with a `prefix_range_end()`
+helper matching etcd's own client convention), same mutual-TLS posture as
+nodestore's own client API, compiled from a synced copy of nodestore's own
+vendored protos (`proto/sync-from-nodestore.sh`) — client-only, not linking
+the `nodestore` crate. `storage::keys` has the *unconfigured-default* key
+layout (`/registry/<resource>/<ns>/<name>`, no group suffix — verified
+against `DefaultStorageFactory.ResourcePrefix` directly, corrected from
+this doc's earlier `<group>`-suffixed shorthand). Not yet done, named
+honestly rather than approximated: the per-resource key-prefix override
+table (`pkg/controlplane/instance.go`'s `DefaultResourcePrefixes`, real
+vendoring work of its own) and encryption-at-rest providers. `Lease` RPCs
+are a follow-up, added when a lease-backed subresource needs them.
 
 **D. Watch cache** — **not started**. LIST-then-WATCH init, in-memory
 serving, bookmarks, RV=0/consistent reads, label/field selector filtering.
