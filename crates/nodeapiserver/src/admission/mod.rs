@@ -53,11 +53,12 @@
 //! `pod_security` — `PodSecurity`, validating, `CREATE`-only: enforces
 //! whichever Pod Security Standards level a namespace's
 //! `pod-security.kubernetes.io/enforce` label requests
-//! (`baseline`/`restricted`; all twelve real `baseline`-level checks are
-//! now ported — see that module's own doc comment for exactly which
-//! upstream variant of each, and for the honest gap a `restricted`-labeled
-//! namespace has today: only baseline enforcement, not full restricted
-//! enforcement).
+//! (`baseline`/`restricted`). **All eighteen real checks are ported** —
+//! all twelve `baseline`-level and all six `restricted`-level, including
+//! real upstream's own `OverrideCheckIDs` (the three baseline checks a
+//! stronger restricted-level check strictly supersedes are suppressed at
+//! `Restricted`, not double-reported) — see that module's own doc
+//! comment for exactly which upstream variant of each check.
 //!
 //! All six plugins are **wired into `server::listener`, unconditionally**
 //! — none needs operator-provisioned bootstrap data (unlike Group I's
@@ -66,10 +67,9 @@
 //!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
 //! other built-in plugin (`ResourceQuota`, ...), pod-level `LimitRange`
-//! enforcement, every restricted-level `PodSecurity` check, a generic
-//! plugin-chain/registry abstraction to run more than one plugin without
-//! `server::listener` hand-calling each by name, mutating/validating
-//! admission webhooks, and ValidatingAdmissionPolicy/
+//! enforcement, a generic plugin-chain/registry abstraction to run more
+//! than one plugin without `server::listener` hand-calling each by name,
+//! mutating/validating admission webhooks, and ValidatingAdmissionPolicy/
 //! MutatingAdmissionPolicy (CEL-based — this crate already has `cel_ext`
 //! for a different purpose, not yet reused here).
 
