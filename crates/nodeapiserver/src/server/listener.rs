@@ -8,13 +8,16 @@
 //! listener with no reason to ever be individually disabled the way
 //! nodelet's exec/logs server is.
 //!
-//! **The request handler here is still a bring-up stub for actual resource
-//! requests** — a `get`/`list`/`create`/... against `/api(s)/.../<resource>`
-//! still just echoes the parsed [`crate::server::path::RequestInfo`] as
-//! JSON, not the real REST dispatch. The real handler chain
-//! (authentication -> authorization -> priority-and-fairness -> admission
-//! -> REST, `docs/APISERVER.md`'s own hard requirement) replaces that once
-//! Groups H-J exist to fill it in.
+//! **A single-object `GET` against a real resource is now real**
+//! (`rest::get`, generic over every resource this build knows about, no
+//! authn/authz/admission yet — see `rest`'s own doc comment for exactly
+//! what that means). **Every other verb is still a bring-up stub** — a
+//! `list`/`watch`/`create`/... against `/api(s)/.../<resource>` still
+//! just echoes the parsed [`crate::server::path::RequestInfo`] as JSON,
+//! not the real REST dispatch. The real handler chain (authentication ->
+//! authorization -> priority-and-fairness -> admission -> REST,
+//! `docs/APISERVER.md`'s own hard requirement) replaces both once Groups
+//! H-J exist to fill it in.
 //!
 //! What *is* real now: `/healthz`, and every non-resource discovery route
 //! (`/api`, `/api/{version}`, `/apis`, `/apis/{group}`,
@@ -38,7 +41,8 @@
 
 use crate::config::Config;
 use crate::codec::negotiation;
-use crate::server::{discovery, openapi, path, version};
+use crate::server::{discovery, openapi, path, rest, version};
+use crate::storage::client::StorageClient;
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -87,6 +91,22 @@ pub async fn run(cfg: Config) {
     };
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
+    // Best-effort, matching every other failure in this function: a
+    // nodestore that isn't reachable yet at startup shouldn't stop the
+    // listener from serving discovery (which needs no storage at all) —
+    // `rest::get` degrades to the bring-up echo stub when this is `None`
+    // (see its own call site's comment). Connected once here and cloned
+    // per connection below: `StorageClient` wraps a cheap-to-clone
+    // `tonic::transport::Channel`, the same "clone per use, don't share a
+    // `&mut` behind a lock" posture `cacher`'s own driver takes.
+    let storage = match StorageClient::connect(&cfg).await {
+        Ok(c) => Some(c),
+        Err(e) => {
+            warn!(error = ?e, "failed to connect to nodestore at startup; resource GET requests will fall back to the bring-up echo stub until this succeeds");
+            None
+        }
+    };
+
     let addr: SocketAddr = match cfg.bind_addr.parse() {
         Ok(a) => a,
         Err(e) => {
@@ -101,7 +121,7 @@ pub async fn run(cfg: Config) {
             return;
         }
     };
-    info!(%addr, "nodeapiserver: REST/watch listener up (bring-up handler only — see server::listener's own doc comment)");
+    info!(%addr, storage_connected = storage.is_some(), "nodeapiserver: REST/watch listener up (discovery + single-object GET are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
 
     loop {
         let (tcp, peer) = match listener.accept().await {
@@ -112,6 +132,7 @@ pub async fn run(cfg: Config) {
             }
         };
         let acceptor = acceptor.clone();
+        let storage = storage.clone();
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
@@ -121,7 +142,7 @@ pub async fn run(cfg: Config) {
                 }
             };
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(handle);
+            let service = hyper::service::service_fn(move |req| handle(req, storage.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -220,7 +241,24 @@ fn not_found_status(path_str: &str) -> serde_json::Value {
     })
 }
 
-async fn handle(req: Request<Incoming>) -> Result<Response<BoxedBody>, Infallible> {
+/// Same minimal `Status` shape as [`not_found_status`], for the one real
+/// failure mode `rest::get` can hit that isn't "not found" — a nodestore
+/// request that itself errored (connection drop, decode failure on
+/// malformed stored data, ...).
+fn internal_error_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("the server encountered an internal error handling {path_str}"),
+        "reason": "InternalError",
+        "details": {},
+        "code": 500,
+    })
+}
+
+async fn handle(req: Request<Incoming>, storage: Option<StorageClient>) -> Result<Response<BoxedBody>, Infallible> {
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -243,6 +281,32 @@ async fn handle(req: Request<Incoming>) -> Result<Response<BoxedBody>, Infallibl
     }
 
     let info = path::parse(&method, &path_str, &query);
+
+    // Group E's first real resource verb: a single-object GET (`get`, not
+    // `list`/`watch` — `path::parse` already tells those apart by an empty
+    // `name`), no subresource (not handled yet — see `rest`'s own doc
+    // comment). Everything else still falls through to the RequestInfo
+    // echo below.
+    if info.is_resource_request && info.verb == "get" && !info.name.is_empty() && info.subresource.is_empty() {
+        if let Some(mut client) = storage {
+            let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+            match rest::get(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                Ok(rest::GetOutcome::Found(object)) => return Ok(json_response(StatusCode::OK, &object)),
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                    return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                }
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "rest::get failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
+        // No nodestore connection at all (failed at startup, or not yet
+        // reconnected) — falls through to the echo stub below rather than
+        // claiming a 503 for a request this build genuinely can't judge
+        // "not found" vs. "unreachable" for yet.
+    }
+
     let value = serde_json::json!({
         "isResourceRequest": info.is_resource_request,
         "verb": info.verb,
