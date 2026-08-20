@@ -27,14 +27,18 @@
 //! lists, this port covers `pods` (object count), `cpu`/`requests.cpu`/
 //! `limits.cpu`, `memory`/`requests.memory`/`limits.memory`,
 //! `ephemeral-storage`/`requests.ephemeral-storage`/
-//! `limits.ephemeral-storage`, `persistentvolumeclaims` (object count),
-//! `requests.storage`, `services` (object count), `services.nodeports`,
-//! `services.loadbalancers`; not ported: the `hugepages-*` family (real
-//! upstream's own prefix-matched resource family, `podResourcePrefixes`),
-//! extended resources (`isExtendedResourceNameForQuota`), and the PVC
-//! evaluator's own real per-storage-class resource name family
-//! (`<class>.storageclass.storage.k8s.io/...`) — all real, all just not
-//! this crate's first cut. The PVC and service
+//! `limits.ephemeral-storage`, the `hugepages-<size>`/
+//! `requests.hugepages-<size>` prefix family (real upstream's own
+//! `podResourcePrefixes`/`requestedResourcePrefixes` — hugepages have no
+//! separate `limits` tracking at all in real upstream either, since a
+//! hugepage request and its limit are always equal in a real pod spec),
+//! `persistentvolumeclaims` (object count), `requests.storage`,
+//! `services` (object count), `services.nodeports`,
+//! `services.loadbalancers`; not ported: extended resources
+//! (`isExtendedResourceNameForQuota`) and the PVC evaluator's own real
+//! per-storage-class resource name family
+//! (`<class>.storageclass.storage.k8s.io/...`) — both real, both just
+//! not this crate's first cut. The PVC and service
 //! evaluators only apply to an *unscoped* `ResourceQuota` (`spec.scopes`
 //! empty) — real upstream's own `pvcEvaluator.Matches` only consults
 //! scopes at all behind the alpha `VolumeAttributesClass` feature gate,
@@ -358,6 +362,19 @@ fn pod_compute_usage(requests: &BTreeMap<String, Quantity>, limits: &BTreeMap<St
     if let Some(&storage) = limits.get("ephemeral-storage") {
         usage.insert("limits.ephemeral-storage".to_string(), storage);
     }
+    // Real upstream's own `requestedResourcePrefixes` loop
+    // (`podComputeUsageHelper`): every *requested* `hugepages-<size>`
+    // resource counts both under its own bare name and under
+    // `requests.hugepages-<size>` — hugepages have no separate `limits`
+    // tracking at all in real upstream (a hugepage request and its limit
+    // are always equal in a real pod spec, so only `requests` is ever
+    // consulted here).
+    for (name, &q) in requests {
+        if let Some(size) = name.strip_prefix("hugepages-") {
+            usage.insert(name.clone(), q);
+            usage.insert(format!("requests.hugepages-{size}"), q);
+        }
+    }
     usage
 }
 
@@ -401,7 +418,7 @@ fn hard_limits(resource_quota: &Value) -> BTreeMap<String, Quantity> {
 const TRACKED_RESOURCES: [&str; 10] = ["pods", "cpu", "requests.cpu", "limits.cpu", "memory", "requests.memory", "limits.memory", "ephemeral-storage", "requests.ephemeral-storage", "limits.ephemeral-storage"];
 
 fn quota_applies(resource_quota: &Value) -> bool {
-    hard_limits(resource_quota).keys().any(|k| TRACKED_RESOURCES.contains(&k.as_str()))
+    hard_limits(resource_quota).keys().any(|k| TRACKED_RESOURCES.contains(&k.as_str()) || k.starts_with("hugepages-") || k.starts_with("requests.hugepages-"))
 }
 
 /// Real upstream's own `pvcResources` — this port's subset (see this
@@ -717,6 +734,39 @@ mod tests {
         let q = quota("ephemeral-quota", json!({"requests.ephemeral-storage": "4Gi"}));
         let denial = check_pod_create(&pod, &[existing], &[q]).expect("2Gi + 3Gi > 4Gi");
         assert!(denial.contains("requests.ephemeral-storage"));
+    }
+
+    #[test]
+    fn pod_usage_tracks_hugepages_under_both_its_bare_and_requests_prefixed_name() {
+        let pod = json!({"spec": {"containers": [{"name": "c1", "resources": {
+            "requests": {"hugepages-2Mi": "4Mi"},
+            "limits": {"hugepages-2Mi": "4Mi"},
+        }}]}});
+        let usage = pod_usage(&pod);
+        assert_eq!(usage["hugepages-2Mi"].value(), 4 * 1024 * 1024);
+        assert_eq!(usage["requests.hugepages-2Mi"].value(), 4 * 1024 * 1024);
+        // Real upstream never tracks a separate limits.hugepages-* key.
+        assert!(usage.get("limits.hugepages-2Mi").is_none());
+    }
+
+    #[test]
+    fn a_hugepages_quota_is_enforced() {
+        let pod = json!({"metadata": {"name": "new"}, "spec": {"containers": [{"name": "c1", "resources": {"requests": {"hugepages-2Mi": "4Mi"}, "limits": {"hugepages-2Mi": "4Mi"}}}]}});
+        let existing = json!({"metadata": {"name": "existing"}, "spec": {"containers": [{"name": "c1", "resources": {"requests": {"hugepages-2Mi": "6Mi"}, "limits": {"hugepages-2Mi": "6Mi"}}}]}});
+        let q = quota("hugepages-quota", json!({"requests.hugepages-2Mi": "8Mi"}));
+        let denial = check_pod_create(&pod, &[existing], &[q]).expect("4Mi + 6Mi > 8Mi");
+        assert!(denial.contains("requests.hugepages-2Mi"));
+    }
+
+    #[test]
+    fn a_bare_hugepages_hard_limit_makes_the_quota_apply_too() {
+        // spec.hard can name the resource with its bare hugepages-<size>
+        // key too (not just the requests.-prefixed form) -- quota_applies
+        // must recognize both, matching real upstream's own
+        // podResourcePrefixes covering both prefixes.
+        let pod = json!({"metadata": {"name": "new"}, "spec": {"containers": [{"name": "c1", "resources": {"requests": {"hugepages-2Mi": "999Mi"}}}]}});
+        let q = quota("hugepages-quota", json!({"hugepages-2Mi": "1Mi"}));
+        assert!(check_pod_create(&pod, &[], &[q]).is_some());
     }
 
     #[test]

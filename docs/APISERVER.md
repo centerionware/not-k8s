@@ -918,8 +918,9 @@ fetched and read directly): forbids a `Pod`/`PersistentVolumeClaim`/
 `Service` `CREATE` that would push a namespace's tracked usage
 (`pods`/`cpu`/`requests.cpu`/`limits.cpu`/`memory`/`requests.memory`/
 `limits.memory`/`ephemeral-storage`/`requests.ephemeral-storage`/
-`limits.ephemeral-storage` — real upstream's own `podComputeUsageHelper`,
-restricted to this subset — plus `persistentvolumeclaims`/
+`limits.ephemeral-storage`/`hugepages-<size>`/`requests.hugepages-<size>`
+— real upstream's own `podComputeUsageHelper`, restricted to this subset
+— plus `persistentvolumeclaims`/
 `requests.storage` — real upstream's own `pvcEvaluator.Usage`, minus its
 real per-storage-class resource name family and the alpha
 `RecoverVolumeExpansionFailure`-gated `status.allocatedResources`
@@ -1010,11 +1011,18 @@ evaluator), the generic evaluator itself is now a **complete** port.
 `ephemeral-storage`/`requests.ephemeral-storage`/
 `limits.ephemeral-storage` are now tracked too, the same
 request/limit shape as `cpu`/`memory` (`pod_compute_usage`, extended
-this session). **Substantially scoped, named honestly** in the ways real
-upstream's three specialized evaluators track extra resource families:
-the `hugepages-*` prefix family (`podResourcePrefixes`) and extended
-resources (`isExtendedResourceNameForQuota`) aren't tracked, nor is the
-PVC evaluator's own per-storage-class resource family; and there is **no
+this session), and so is the `hugepages-<size>`/
+`requests.hugepages-<size>` prefix family (real upstream's own
+`podResourcePrefixes`/`requestedResourcePrefixes` — hugepages carry no
+separate `limits.hugepages-*` tracking at all in real upstream either,
+since a hugepage request and its limit are always equal in a real pod
+spec; `quota_applies` matches a `spec.hard` key under either the
+`hugepages-`/`requests.hugepages-` prefix, same as real upstream's own
+`quota.ContainsPrefix`). **Substantially scoped, named honestly** in the
+ways real upstream's three specialized evaluators track extra resource
+families: extended resources (`isExtendedResourceNameForQuota`) aren't
+tracked, nor is the PVC evaluator's own per-storage-class resource
+family; and there is **no
 persisted `status.used` counter** — usage is recomputed live from a
 fresh object list on every check rather than an incrementally
 maintained, optimistic-lock-protected running total, which means
