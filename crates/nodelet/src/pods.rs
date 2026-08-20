@@ -20,6 +20,7 @@ use k8s_openapi::api::core::v1::{
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{DeleteParams, Patch, PatchParams, Preconditions};
+use kube::core::PartialObjectMeta;
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -319,12 +320,28 @@ impl PodController {
         // doc comment for what happens without it.
         let mut stream = watcher(api, wc).backoff(WatchBackoffPolicy::default()).boxed();
         // ConfigMaps/Secrets have no node-scoping fieldSelector (they aren't
-        // bound to a node), so these watches are cluster-wide. That's fine:
-        // they're rare-write objects and we only react to edges, never poll.
-        let cm_api: Api<ConfigMap> = Api::all(self.client.clone());
+        // bound to a node), so these watches are cluster-wide — every
+        // ConfigMap/Secret write anywhere in the cluster, not just ones any
+        // pod on this node references. That's fine for *how often* it
+        // fires (rare-write objects, react to edges, never poll), but
+        // `on_referenced_object_changed()` only ever needs an object's own
+        // `namespace`/`name` to check the local `pod_refs` cache — so this
+        // watches `PartialObjectMeta<K>` (metadata only), not the full
+        // typed `ConfigMap`/`Secret`. Real, measured cost of the
+        // full-object form (issue #133): a real live flame graph caught
+        // 100% of its (thin) sample inside `serde_json` deserializing a
+        // full object body into typed `k8s_openapi` structs — real
+        // allocation-heavy work `kube-rs` was doing on *every* watch event,
+        // for *every* ConfigMap/Secret in the cluster, before this
+        // controller's own code ever got a chance to decide the object was
+        // irrelevant. `PartialObjectMeta<K>` is `kube-rs`'s own real fix
+        // for exactly this case (`Api<PartialObjectMeta<K>>` requests and
+        // decodes only `ObjectMeta`, not the whole object) — this crate's
+        // own reference-tracking never needed the body at all.
+        let cm_api: Api<PartialObjectMeta<ConfigMap>> = Api::all(self.client.clone());
         let mut cm_stream =
             watcher(cm_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
-        let sec_api: Api<Secret> = Api::all(self.client.clone());
+        let sec_api: Api<PartialObjectMeta<Secret>> = Api::all(self.client.clone());
         let mut sec_stream =
             watcher(sec_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
         // Move the receivers into locals so reconcile methods can borrow `&self`.
