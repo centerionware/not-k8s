@@ -383,9 +383,15 @@ mod tests {
         // caller (cacher::driver, mirroring nodestore's own watch stream)
         // always passes an empty value for a Deleted event — WatchCache
         // itself is responsible for retaining the pre-delete value.
+        // An unrelated seed event at revision 2 first, purely so
+        // `watch_from`'s own "not older than the oldest retained history
+        // entry" check has something at or before the requested
+        // start_revision — `watch_from`'s semantics are unrelated to what
+        // this test is proving and untouched by this fix.
         let mut cache = WatchCache::new(vec![(b"a".to_vec(), entry("last-value", 1))], 1, 16, 16);
-        cache.apply(EventKind::Deleted, b"a".to_vec(), Vec::new(), 2);
-        let (replay, _rx) = cache.watch_from(1).unwrap();
+        cache.apply(EventKind::Added, b"seed".to_vec(), b"unrelated".to_vec(), 2);
+        cache.apply(EventKind::Deleted, b"a".to_vec(), Vec::new(), 3);
+        let (replay, _rx) = cache.watch_from(2).unwrap();
         assert_eq!(replay.len(), 1);
         assert_eq!(replay[0].kind, EventKind::Deleted);
         assert_eq!(replay[0].value, b"last-value", "the Deleted WatchEvent must carry the value the key held just before deletion");
@@ -397,8 +403,9 @@ mod tests {
         // boundary) has nothing to retain — falls back to empty rather
         // than panicking or fabricating a value.
         let mut cache = WatchCache::new(vec![], 1, 16, 16);
-        cache.apply(EventKind::Deleted, b"never-seen".to_vec(), Vec::new(), 2);
-        let (replay, _rx) = cache.watch_from(1).unwrap();
+        cache.apply(EventKind::Added, b"seed".to_vec(), b"unrelated".to_vec(), 2);
+        cache.apply(EventKind::Deleted, b"never-seen".to_vec(), Vec::new(), 3);
+        let (replay, _rx) = cache.watch_from(2).unwrap();
         assert_eq!(replay[0].value, Vec::<u8>::new());
     }
 
