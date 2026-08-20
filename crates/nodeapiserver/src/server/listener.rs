@@ -9,15 +9,22 @@
 //! nodelet's exec/logs server is.
 //!
 //! **`GET` and `LIST` against a real resource are now real** (`rest::get`/
-//! `rest::list`, generic over every resource this build knows about, no
-//! authn/authz/admission yet — see `rest`'s own doc comment for exactly
-//! what that means). **Every other verb is still a bring-up stub** — a
-//! `watch`/`create`/... against `/api(s)/.../<resource>` still just
-//! echoes the parsed [`crate::server::path::RequestInfo`] as JSON, not
-//! the real REST dispatch. The real handler chain (authentication ->
-//! authorization -> priority-and-fairness -> admission -> REST,
-//! `docs/APISERVER.md`'s own hard requirement) replaces both once Groups
-//! H-J exist to fill it in.
+//! `rest::list`, generic over every resource this build knows about — see
+//! `rest`'s own doc comment for exactly what's in and out of scope).
+//! **Every other verb is still a bring-up stub** — a `watch`/`create`/...
+//! against `/api(s)/.../<resource>` still just echoes the parsed
+//! [`crate::server::path::RequestInfo`] as JSON, not the real REST
+//! dispatch. Client certificate authentication is now real too
+//! (`super::tls`'s optional `client_ca`, `authn::x509::identity_from_der`
+//! on the verified peer cert) — the resulting `Identity` is threaded
+//! through to `handle` and surfaced in the echo response's own `user`
+//! field for real observability, but **nothing yet checks it before
+//! serving a request**: there is no authorization (Group I) to enforce it
+//! against, so every request — authenticated or not — is still served
+//! the same way. The real handler chain (authentication -> authorization
+//! -> priority-and-fairness -> admission -> REST, `docs/APISERVER.md`'s
+//! own hard requirement) replaces all of this once Groups I/J exist to
+//! fill it in.
 //!
 //! What *is* real now: `/healthz`, and every non-resource discovery route
 //! (`/api`, `/api/{version}`, `/apis`, `/apis/{group}`,
@@ -82,7 +89,25 @@ pub async fn run(cfg: Config) {
             return;
         }
     };
-    let server_config = match cert.server_config() {
+
+    // Group H, first slice: client certificate authentication, offered
+    // but not required (see server::tls's own doc comment). Best-effort
+    // like everything else here — a misconfigured/unreadable CA file
+    // disables client-cert auth for this run rather than stopping the
+    // listener, since `client_ca_file` being set at all is optional in
+    // the first place.
+    let client_ca = match &cfg.client_ca_file {
+        Some(path) => match super::tls::load_client_ca(path) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                warn!(path = %path.display(), error = ?e, "failed to load NODEAPISERVER_CLIENT_CA_FILE; client certificate authentication is disabled for this run");
+                None
+            }
+        },
+        None => None,
+    };
+
+    let server_config = match cert.server_config(client_ca.as_ref()) {
         Ok(c) => c,
         Err(e) => {
             warn!(error = ?e, "failed to build TLS server config; the REST/watch listener will not run");
@@ -141,8 +166,16 @@ pub async fn run(cfg: Config) {
                     return;
                 }
             };
+            // Group H: if the client presented a certificate and it chains
+            // to the configured CA (rustls already verified this during
+            // the handshake above — `with_client_cert_verifier`'s job, not
+            // this code's), extract its identity. `None` either because no
+            // client-cert auth is configured at all, or because this
+            // particular client didn't present one — both are the same
+            // "unauthenticated by x509" outcome from here.
+            let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle(req, storage.clone()));
+            let service = hyper::service::service_fn(move |req| handle(req, storage.clone(), identity.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -274,7 +307,7 @@ fn bad_request_status(path_str: &str, detail: &str) -> serde_json::Value {
     })
 }
 
-async fn handle(req: Request<Incoming>, storage: Option<StorageClient>) -> Result<Response<BoxedBody>, Infallible> {
+async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity: Option<crate::authn::x509::Identity>) -> Result<Response<BoxedBody>, Infallible> {
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -342,6 +375,13 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>) -> Resul
         // "not found" vs. "unreachable" for yet.
     }
 
+    // Surfaced for real observability (this is the only response shape
+    // that ever includes it today), not consulted for any access-control
+    // decision anywhere yet — there is no authorization (Group I) to
+    // enforce it against. `rest::get`/`list` above don't take it either,
+    // for the same reason: nothing yet checks a caller's identity before
+    // serving a read.
+    let user = identity.as_ref().map(|i| serde_json::json!({"username": i.name, "groups": i.groups}));
     let value = serde_json::json!({
         "isResourceRequest": info.is_resource_request,
         "verb": info.verb,
@@ -352,6 +392,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>) -> Resul
         "resource": info.resource,
         "subresource": info.subresource,
         "name": info.name,
+        "user": user,
     });
     Ok(json_response(StatusCode::OK, &value))
 }
