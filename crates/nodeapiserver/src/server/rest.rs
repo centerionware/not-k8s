@@ -50,9 +50,15 @@
 //! confirmed directly against `nodestore`'s own server-side comment
 //! naming this the idiom for "create only if absent," not assumed).
 //! `name_format_violations` also wires `scheme::name_format`'s
-//! validators in for the one resource this crate has actually verified a
-//! real per-type rule for (`namespaces` -> `is_dns1123_label`, matching
-//! upstream's own `ValidateNamespaceName`) — every other resource is
+//! validators in for the core-group resources this crate has actually
+//! verified a real per-type rule for: `namespaces` -> `is_dns1123_label`
+//! (`ValidateNamespaceName`), `services` -> `is_dns1035_label`
+//! (`ValidateServiceName`, ignoring the alpha
+//! `RelaxedServiceNameValidation` feature gate this crate has no
+//! machinery for), and ten resources sharing `is_dns1123_subdomain`
+//! (`serviceaccounts`, `pods`, `replicationcontrollers`, `nodes`,
+//! `limitranges`, `resourcequotas`, `secrets`, `endpoints`,
+//! `persistentvolumes`, `configmaps`) — every other resource is
 //! deliberately left unchecked rather than guessed at; see that
 //! function's own doc comment for how to extend it one verified entry at
 //! a time. `update` runs the exact same two checks. Named honestly, not
@@ -473,6 +479,34 @@ fn name_format_violations(group: &str, resource: &str, name: &str) -> Vec<String
     match (group, resource) {
         ("", "namespaces") => crate::scheme::name_format::is_dns1123_label(name),
         ("", "serviceaccounts") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        // `pkg/apis/core/validation/validation.go` (release-1.34, fetched
+        // and grepped directly), each a literal `var Validate<Kind>Name =
+        // apimachineryvalidation.NameIsDNSSubdomain` declaration: Pod,
+        // ReplicationController, Node, LimitRange, ResourceQuota, Secret,
+        // Endpoints, PersistentVolume, ConfigMap. All ten (including the
+        // two already above) resolve to the core (`""`) group — confirmed
+        // against the vendored `api__v1_openapi.json` `paths` table, not
+        // assumed from this being the "core" validation file (some of its
+        // other `var`s, e.g. `ValidatePriorityClassName`/
+        // `ValidateResourceClaimName`, are for non-core-group resources
+        // and are deliberately NOT wired here until their real group is
+        // verified the same way).
+        ("", "pods") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("", "replicationcontrollers") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("", "nodes") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("", "limitranges") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("", "resourcequotas") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("", "secrets") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("", "endpoints") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("", "persistentvolumes") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("", "configmaps") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        // `ValidateServiceCreate` (same file, lines ~6655-6685, read in
+        // full): normally `ValidateServiceName = NameIsDNS1035Label`,
+        // relaxed to `NameIsDNSLabel` only behind the
+        // `RelaxedServiceNameValidation` feature gate (alpha, default
+        // off). This crate has no feature-gate system, so the honest
+        // default is the gate's default-off behavior: DNS1035Label.
+        ("", "services") => crate::scheme::name_format::is_dns1035_label(name),
         _ => Vec::new(),
     }
 }
@@ -588,9 +622,27 @@ mod tests {
 
     #[test]
     fn name_format_violations_is_empty_for_a_resource_with_no_verified_rule() {
-        // pods has no verified per-type name rule wired in yet -- must not
-        // invent a check for it.
-        assert!(name_format_violations("", "pods", "Not-A-Valid-DNS-Label-But-Unchecked").is_empty());
+        // events has no verified per-type name rule wired in yet -- must
+        // not invent a check for it.
+        assert!(name_format_violations("", "events", "Not-A-Valid-DNS-Label-But-Unchecked").is_empty());
+    }
+
+    #[test]
+    fn name_format_violations_enforces_the_real_dns_subdomain_rule_on_each_verified_resource() {
+        for resource in ["pods", "replicationcontrollers", "nodes", "limitranges", "resourcequotas", "secrets", "endpoints", "persistentvolumes", "configmaps"] {
+            assert!(name_format_violations("", resource, "my-name.example").is_empty(), "{resource} should accept a valid DNS subdomain");
+            assert!(!name_format_violations("", resource, "My_Bad_Name").is_empty(), "{resource} should reject an invalid DNS subdomain");
+        }
+    }
+
+    #[test]
+    fn name_format_violations_enforces_the_real_service_dns1035_rule() {
+        // DNS1035Label: must start with a letter, no leading digit and no
+        // '.' (both allowed in a DNS1123 subdomain) -- proves this isn't
+        // silently sharing the subdomain check.
+        assert!(name_format_violations("", "services", "my-svc").is_empty());
+        assert!(!name_format_violations("", "services", "1-starts-with-digit").is_empty());
+        assert!(!name_format_violations("", "services", "has.a.dot").is_empty());
     }
 
     #[test]
