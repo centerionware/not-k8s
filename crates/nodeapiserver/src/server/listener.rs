@@ -548,7 +548,10 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, namespac
                                 let sa_name = pod.get("spec").and_then(|s| s.get("serviceAccountName")).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
                                 match rest::get(&mut client, None, "", "v1", "serviceaccounts", namespace, &sa_name).await {
                                     Ok(rest::GetOutcome::Found(sa)) => {
-                                        admission::service_account::mutate_with_service_account(pod, &sa, || uuid::Uuid::new_v4().to_string().chars().take(5).collect());
+                                        admission::service_account::mutate_with_service_account(pod, &sa, || {
+                                            let suffix: String = uuid::Uuid::new_v4().to_string().chars().take(5).collect();
+                                            format!("{}{suffix}", admission::service_account::SERVICE_ACCOUNT_VOLUME_PREFIX)
+                                        });
                                     }
                                     Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
                                         return Ok(json_response(

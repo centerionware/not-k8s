@@ -45,7 +45,13 @@
 use serde_json::{json, Value};
 
 pub const DEFAULT_SERVICE_ACCOUNT_NAME: &str = "default";
-const SERVICE_ACCOUNT_VOLUME_PREFIX: &str = "kube-api-access-";
+/// `pub` — `server::listener`'s own real random-name generator needs this
+/// to build the *full* name it hands to [`mutate_with_service_account`]'s
+/// `generate_volume_name` (that closure returns a complete name, not just
+/// a suffix — real upstream's own `s.generateName(ServiceAccountVolumeName
+/// + "-")` does the concatenation before this plugin ever sees the
+/// result, and this port keeps that same division of responsibility).
+pub const SERVICE_ACCOUNT_VOLUME_PREFIX: &str = "kube-api-access-";
 const DEFAULT_API_TOKEN_MOUNT_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount";
 const MIRROR_POD_ANNOTATION_KEY: &str = "kubernetes.io/config.mirror";
 /// Real upstream's own `serviceaccount.WarnOnlyBoundTokenExpirationSeconds`
@@ -200,9 +206,10 @@ fn mount_into_containers(containers: &mut Vec<Value>, volume_mount: &Value) -> b
 
 /// The one real I/O-dependent half: mutates `pod` given the real
 /// `service_account` object [`Decision::NeedsServiceAccountLookup`]
-/// resolved to. `generate_volume_name` supplies the random
-/// `kube-api-access-<suffix>` suffix real upstream's own
-/// `names.SimpleNameGenerator` generates — injected so tests are
+/// resolved to. `generate_volume_name` supplies a **complete** new token
+/// volume name (`SERVICE_ACCOUNT_VOLUME_PREFIX` + a random suffix — real
+/// upstream's own `names.SimpleNameGenerator.GenerateName` does this same
+/// concatenation before handing back a name) — injected so tests are
 /// deterministic; `server::listener` passes a real random generator.
 pub fn mutate_with_service_account(pod: &mut Value, service_account: &Value, generate_volume_name: impl FnOnce() -> String) {
     if should_automount(service_account, pod) {
@@ -250,7 +257,7 @@ mod tests {
     use crate::admission::attributes::Operation;
 
     fn suffix() -> String {
-        "abcde".to_string()
+        format!("{SERVICE_ACCOUNT_VOLUME_PREFIX}abcde")
     }
 
     #[test]
