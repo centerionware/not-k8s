@@ -14,6 +14,12 @@ name: Quick check (x86_64, no artifacts)
 # e2e iteration, just for compile+unit-test correctness instead.
 on:
   workflow_dispatch:
+    inputs:
+      components:
+        description: 'Comma-separated crate names to build+test (e.g. "nodeapiserver" or "nodeapiserver,nodestore"). Empty means every crate this workflow knows about.'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -28,20 +34,38 @@ jobs:
 
       - name: cargo test (native x86_64, debug)
         # No separate `cargo build` step — `cargo test` already compiles
-        # the lib, bins, and test targets for each package before running
+        # the lib/bin/test targets for each package before running
         # anything, so a prior build step would just pay the same
-        # compilation twice for no extra signal.
+        # compilation twice.
         #
         # Under sudo for the same reason build.yml's test job is:
         # nodeproxy's svc.rs nft_check() tests open real netlink/nftables
         # sockets to validate generated ruleset syntax, which needs
         # CAP_NET_ADMIN. sudo -E preserves PATH/CARGO_HOME/RUSTUP_HOME that
         # setup-toolchain put in $GITHUB_ENV/$GITHUB_PATH.
+        env:
+          COMPONENTS_INPUT: ${{ inputs.components }}
         run: |
           set -e
-          sudo -E env "PATH=$PATH" cargo test -p nodelet
-          sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
+          ALL="nodelet nodeproxy nodestore nodescheduler nodecontroller node-leaderelection nodeapiserver notk8s"
+          if [[ -n "$COMPONENTS_INPUT" ]]; then
+            SELECTED="$(echo "$COMPONENTS_INPUT" | tr ',' ' ')"
+          else
+            SELECTED="$ALL"
+          fi
+          echo "Testing: $SELECTED"
+
+          want() {
+            for c in $SELECTED; do [[ "$c" == "$1" ]] && return 0; done
+            return 1
+          }
+
+          if want nodelet; then
+            sudo -E env "PATH=$PATH" cargo test -p nodelet
+            sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
+          fi
           for crate in nodeproxy nodestore nodescheduler nodecontroller node-leaderelection nodeapiserver notk8s; do
+            want "$crate" || continue
             if [[ -d "crates/$crate" ]]; then
               sudo -E env "PATH=$PATH" cargo test -p "$crate"
             else

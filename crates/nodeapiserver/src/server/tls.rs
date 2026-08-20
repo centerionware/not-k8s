@@ -71,8 +71,21 @@ pub fn load_or_generate(cert_dir: &Path, sans: &[String]) -> Result<LoadedCert> 
 mod tests {
     use super::*;
 
+    /// `crate::install_crypto_provider()` runs once at real process
+    /// startup, but nothing calls it in the test binary — rustls needs one
+    /// installed before `ServerConfig::builder()` will build anything.
+    /// Ignoring the error (rather than calling `install_crypto_provider()`
+    /// itself, which `expect()`s) is deliberate: whichever test in this
+    /// binary runs first wins the race to install it, and every other
+    /// test's own attempt would otherwise panic on the guaranteed-to-fail
+    /// second call.
+    fn ensure_crypto_provider() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
     #[test]
     fn generates_and_reloads_a_cert_deterministically_from_disk() {
+        ensure_crypto_provider();
         let dir = tempfile::tempdir().unwrap();
         let sans = vec!["localhost".to_string(), "127.0.0.1".to_string()];
 

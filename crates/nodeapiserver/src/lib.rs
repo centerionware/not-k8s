@@ -64,6 +64,28 @@ pub mod bootstrap;
 
 use anyhow::Result;
 
+/// Installs rustls' default `CryptoProvider`, unless something already did.
+///
+/// rustls 0.23 stopped silently picking one — with more than one call site
+/// able to reach for one lazily (the storage client's TLS, the listener's
+/// own TLS), it needs installing explicitly before anything opens a TLS
+/// connection or builds a `ServerConfig`. Same precedent
+/// `crates/nodelet/src/app.rs::install_crypto_provider()` already
+/// established for exactly this failure mode (there: `kube::Client`
+/// panicking on every startup, invisibly, until it ran as a real service
+/// instead of a bare backgrounded process) — mirrored here rather than
+/// reinvented. `install_default()` errors on a second call, which a
+/// single-purpose binary could treat as impossible but the combined
+/// `notk8s` binary cannot, hence the check rather than an unconditional
+/// `expect()`.
+pub fn install_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("installing default rustls CryptoProvider (no other provider was installed a moment ago)");
+    }
+}
+
 /// Entry point shared by the split `nodeapiserver` binary and the combined
 /// `notk8s` applet dispatch (once Group O adds the `components.sh` row —
 /// docs/APISERVER_PLAN.md finding 11 — this is what it will call).
@@ -75,6 +97,7 @@ use anyhow::Result;
 /// exactly that reason (Group O's job, once there's a real handler chain
 /// behind it).
 pub async fn run() -> Result<()> {
+    install_crypto_provider();
     let cfg = config::Config::from_env()?;
     tracing::info!(
         proto_messages = codegen::proto_fields::PROTO_MESSAGES.len(),
