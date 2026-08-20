@@ -8,7 +8,7 @@ and the same containerd — only the node agent differs. Sibling to
 
 ## Latest result
 
-**[latest/README.md](latest/README.md)** — commit `d5209f9e8323`, [workflow run](https://github.com/centerionware/not-k8s/actions/runs/32411009912).
+**[latest/README.md](latest/README.md)** — commit `76b8b6e58b6c`, [workflow run](https://github.com/centerionware/not-k8s/actions/runs/32423795548).
 
 ## Methodology
 
