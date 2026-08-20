@@ -329,11 +329,38 @@ pre-GA shape this crate doesn't separately model), so a client asking for
 a shape this build doesn't actually build falls back to the legacy form
 rather than silently getting served a possibly-wrong one.
 
-**Not yet landed**: the handler chain itself for actual resource
-requests, `/openapi/v2`. Handler-chain order
-(authentication → authorization → priority-and-fairness → admission → REST)
-is a hard requirement, not a style choice. The throwaway e2e rig described
-above should land as part of this group, not after it.
+The first real resource verb now exists too: `server::rest::get` is a
+generic single-object `GET` — resolves the resource's `Kind` from Group
+A's discovery table (`resolve_kind`, pure, unit-tested), builds the
+`storage::keys::object_key`, does a real `RangeRequest` against nodestore
+via `StorageClient`, and decodes the stored `runtime.Unknown` envelope
+back to JSON via `codec::protobuf` (`decode_stored_object`, resolving the
+schema from the envelope's own `apiVersion`/`kind` — what was actually
+written — not the request path, verified with a real encode-then-decode
+round trip). Generic over every resource this build knows about, no
+per-type Go code, same posture every other Group B/C/E slice has taken.
+`server::listener::run` connects a `StorageClient` at startup
+(best-effort — a nodestore unreachable at boot degrades to `None`,
+falling back to the bring-up echo stub rather than stopping the listener
+from serving discovery, which needs no storage at all) and clones it per
+connection (`StorageClient` wraps a cheap-to-clone `tonic::transport::Channel`,
+same posture `cacher`'s own driver takes). Named honestly, not
+overclaimed: reads go straight to nodestore, bypassing
+`cacher::store::WatchCache` entirely (a real, valid strategy — upstream's
+own quorum-read path takes exactly this shape — not a stand-in for the
+cache; the cache isn't even started yet, since nothing in `lib.rs::run()`
+calls `cacher::driver::reflect()`), no subresources, and **no
+authentication, no authorization, no admission at all** — every request
+reaching `rest::get` is currently treated as allowed, the same
+deliberately-incomplete-but-honest bring-up posture `server::tls`'s own
+self-signed cert already established for this crate.
+
+**Not yet landed**: every other resource verb
+(`list`/`watch`/`create`/`update`/`patch`/`delete`), the real handler
+chain itself (authn -> authz -> APF -> admission -> REST — a hard
+requirement on order, not a style choice, once it exists), `/openapi/v2`.
+The throwaway e2e rig described above should land as part of this group,
+not after it.
 
 **F. Scheme: conversion, defaulting, validation** — **in progress**. The
 largest handwritten chunk. `scheme::defaulting::apply_defaults(schema, value)`
