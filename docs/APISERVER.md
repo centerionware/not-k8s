@@ -217,6 +217,12 @@ type (`pkg/registry/*/*/strategy.go`), which isn't built here yet.
 `object_matches` is now called for real, from `server::rest::list`
 (Group E), filtering every item a real `LIST` request decodes.
 
+`WatchCache`/`SharedCache` also gained a single-key `get()` (`list()`'s
+own equivalent for a `GET` rather than a `LIST`, an `O(log n)` lookup
+into the same `BTreeMap` `list()` already iterates) — a real gap named
+here until now, since a cache with no way to answer "does this one key
+exist" couldn't back a real `GET` at all.
+
 `cacher::registry::CacheRegistry` is the last Group D piece: a
 single-resource cache-registration primitive —
 `CacheRegistry::spawn(storage, group, version, resource)` starts a
