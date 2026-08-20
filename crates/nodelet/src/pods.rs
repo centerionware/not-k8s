@@ -78,7 +78,7 @@ pub struct PodController {
     /// mirror of exactly what `on_referenced_object_changed()` needs,
     /// updated inline by `reconcile()` (volumes are immutable after pod
     /// creation, so this is write-once per pod in practice) and removed on
-    /// teardown. Exists so a ConfigMap/Secret `Apply` event — watched
+    /// teardown. Exists so a ConfigMap/Secret `Apply`/`Delete` event — watched
     /// cluster-wide, real upstream's own kubelet does the same thing via
     /// its config-map-manager, but *this* controller has no informer cache
     /// to consult the way kubelet's does — doesn't have to fall back to a
@@ -371,11 +371,6 @@ impl PodController {
                 }
                 item = cm_stream.next() => {
                     match item {
-                        Some(Ok(Event::Apply(cm))) => {
-                            if let (Some(ns), Some(name)) = (cm.metadata.namespace.clone(), cm.metadata.name.clone()) {
-                                self.on_referenced_object_changed(&ns, &name, ReferencedKind::ConfigMap).await;
-                            }
-                        }
                         // Round 124 (found live in CI): `InitApply` is kube-rs's
                         // own marker for the watch's *initial* relist on
                         // (re)connect — every ConfigMap that already existed
@@ -392,8 +387,7 @@ impl PodController {
                         // initial state from the Pod watch's own InitApply —
                         // this watch's whole purpose is catching *live*
                         // updates after that, not re-doing pod bootstrap.
-                        Some(Ok(Event::InitApply(_))) => {}
-                        Some(Ok(_)) => {}
+                        Some(Ok(ev)) => self.on_referenced_object_event(ev, ReferencedKind::ConfigMap).await,
                         Some(Err(e)) => warn!(error = ?e, "configmap watch error; watcher will retry"),
                         None => {
                             warn!("configmap watch stream ended; restarting");
@@ -404,16 +398,10 @@ impl PodController {
                 }
                 item = sec_stream.next() => {
                     match item {
-                        Some(Ok(Event::Apply(sec))) => {
-                            if let (Some(ns), Some(name)) = (sec.metadata.namespace.clone(), sec.metadata.name.clone()) {
-                                self.on_referenced_object_changed(&ns, &name, ReferencedKind::Secret).await;
-                            }
-                        }
                         // See the ConfigMap arm's own comment above — same
                         // "InitApply isn't a real change" reasoning applies
                         // identically here.
-                        Some(Ok(Event::InitApply(_))) => {}
-                        Some(Ok(_)) => {}
+                        Some(Ok(ev)) => self.on_referenced_object_event(ev, ReferencedKind::Secret).await,
                         Some(Err(e)) => warn!(error = ?e, "secret watch error; watcher will retry"),
                         None => {
                             warn!("secret watch stream ended; restarting");
@@ -426,6 +414,19 @@ impl PodController {
         }
     }
 
+    async fn on_referenced_object_event<T>(&self, event: Event<T>, kind: ReferencedKind)
+    where
+        T: kube::Resource<DynamicType = ()>,
+    {
+        let object = match event {
+            Event::Apply(object) | Event::Delete(object) => object,
+            Event::Init | Event::InitApply(_) | Event::InitDone => return,
+        };
+        if let (Some(ns), Some(name)) = (object.meta().namespace.clone(), object.meta().name.clone()) {
+            self.on_referenced_object_changed(&ns, &name, kind).await;
+        }
+    }
+
     /// A ConfigMap or Secret changed. Re-reconcile every pod on this node
     /// whose volumes reference it, so the bind-mounted files get fresh
     /// content within seconds — no pod/container restart needed, matching
@@ -434,7 +435,7 @@ impl PodController {
     /// those once at container start, by design, and never refreshes them.
     async fn on_referenced_object_changed(&self, namespace: &str, name: &str, kind: ReferencedKind) {
         // Purely local — no I/O — thanks to `pod_refs` (issue #133): a
-        // ConfigMap/Secret `Apply` event is watched cluster-wide (this
+        // ConfigMap/Secret `Apply`/`Delete` event is watched cluster-wide (this
         // controller has no informer cache to consult the way real
         // kubelet's config-map-manager does), so before this cache
         // existed *every* such event, anywhere in the cluster, cost a
