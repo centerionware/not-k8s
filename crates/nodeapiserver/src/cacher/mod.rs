@@ -47,10 +47,11 @@
 //! `list`: only once `has_synced()`, for the reason above — see `rest`'s
 //! own doc comment for the full contract of each).
 //! **Not yet landed**: a per-Kind `SelectableFields` allowlist, and
-//! registering a cache for every resource at boot — today only
-//! `server::listener`'s own `namespaces` proof of concept ever passes
-//! `Some(cache)` to `get`/`list`; every other resource still passes
-//! `None`, same as before caching existed for it.
+//! registering a cache for *every* resource at boot — today
+//! `server::listener`'s own `BOOT_CACHED_RESOURCES` (a deliberately
+//! bounded, reasoned list, not every resource) is what passes
+//! `Some(cache)` to `get`/`list`; every resource outside that list still
+//! passes `None`, same as before caching existed for it.
 
 pub mod store;
 pub mod driver;

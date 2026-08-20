@@ -23,8 +23,9 @@
 //! than trusting the cache to say "not found"; `list`: only once the
 //! cache's own `has_synced()` is true, since an empty `list()` is a
 //! valid answer on its own, not a fallthrough signal the way a `get`
-//! miss is). `server::listener` actually does this for one real resource
-//! (`namespaces`) as a proof of concept; every other resource still
+//! miss is). `server::listener` actually does this for a deliberately
+//! bounded list of resources (`server::listener`'s own
+//! `BOOT_CACHED_RESOURCES`); every resource outside that list still
 //! passes `None` to both. `create`/`update`/`delete` still read/write
 //! straight to `storage::client::StorageClient` directly, bypassing the
 //! cache entirely — a real, valid strategy (upstream's own quorum-read /
@@ -32,7 +33,9 @@
 //! No authentication is consulted *inside*
 //! this module either way — `server::listener` is what applies Group
 //! H/I's identity/RBAC (opt-in, see that module's own doc comment)
-//! before ever calling in here; no admission (Group J) exists at all yet.
+//! before ever calling in here; Group J admission (five unconditional
+//! plugins as of this revision — see `admission`'s own doc comment) is
+//! applied in `server::listener`, also before dispatching in here.
 //! Subresources (`pods/status`, `pods/log`, ...) aren't handled — the
 //! discovery table this module reads doesn't carry them either (a named,
 //! separate skip in `build/discovery_parse.rs`). `list` filters by
@@ -192,8 +195,9 @@ fn split_api_version(api_version: &str) -> (&str, &str) {
 /// "consistent read falls through" posture for exactly this reason.
 /// `None` behaves exactly as before this parameter existed — the only
 /// real call site passing `Some` today is `server::listener`'s own
-/// `namespaces` proof of concept (see that module's own doc comment);
-/// every other resource, and every other caller, still passes `None`.
+/// `BOOT_CACHED_RESOURCES` list (see that module's own doc comment);
+/// every resource outside that list, and every other caller, still
+/// passes `None`.
 pub async fn get(storage: &mut StorageClient, cache: Option<&crate::cacher::store::SharedCache>, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str) -> Result<GetOutcome, Error> {
     if resolve_kind(group, version, resource).is_none() {
         return Ok(GetOutcome::UnknownResource);
@@ -254,7 +258,7 @@ fn list_kind(kind: &str) -> String {
 /// doc comment for why it's a real flag, not inferred from the revision).
 /// An unsynced cache falls through to nodestore exactly as `cache: None`
 /// would. `None` behaves exactly as before this parameter existed; every
-/// call site but `server::listener`'s own `namespaces` proof of concept
+/// call site but `server::listener`'s own `BOOT_CACHED_RESOURCES` list
 /// still passes `None` (same scope `get`'s own cache parameter is at).
 pub async fn list(
     storage: &mut StorageClient,
