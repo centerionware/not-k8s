@@ -32,7 +32,7 @@
 //! `reason`/`message` off exactly this JSON today.
 
 use crate::config::Config;
-use crate::server::{discovery, openapi, path};
+use crate::server::{discovery, openapi, path, version};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -169,6 +169,7 @@ fn route_discovery(parts: &[String]) -> DiscoveryRoute {
             Some(bytes) => DiscoveryRoute::FoundRaw(bytes),
             None => DiscoveryRoute::NotFound,
         },
+        (Some("version"), _, 1) => DiscoveryRoute::Found(version::info()),
         _ => DiscoveryRoute::NotApplicable,
     }
 }
@@ -307,6 +308,13 @@ mod tests {
     #[test]
     fn openapi_v3_an_unvendored_path_is_a_real_not_found() {
         assert!(matches!(route_discovery(&parts("/openapi/v3/apis/totally.made.up/v1")), DiscoveryRoute::NotFound));
+    }
+
+    #[test]
+    fn version_serves_the_real_version_info_document() {
+        let route = route_discovery(&parts("/version"));
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert!(doc.get("gitVersion").is_some());
     }
 
     #[test]
