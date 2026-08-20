@@ -451,16 +451,20 @@ convention (`authentication/request/x509/x509.go`'s
 real `credential_id` extra entry (`X509SHA256=<hex sha256 of the leaf
 cert's DER>`, upstream's own `user.CredentialIDKey`). Mirrors
 `crates/nodelet/src/server/tls.rs::client_identity_from_der`'s
-already-proven pattern in this workspace. **Pure identity-extraction
-primitive only — not yet wired into the listener**: `server::listener`'s
-TLS acceptor doesn't request or verify client certificates at all yet
-(`with_no_client_auth`), so there's no verified peer certificate in scope
-to call this with. Wiring real mTLS into the listener
-(`with_client_cert_verifier`, mirroring `nodelet`'s own
-`load_client_ca`) and threading the resulting identity through the
-handler chain, plus everything else named below (ServiceAccount JWT,
-OIDC, TokenReview, bootstrap tokens, anonymous), is separate, not yet
-done.
+already-proven pattern in this workspace. **Now wired into the listener
+for real**: `NODEAPISERVER_CLIENT_CA_FILE` (optional —
+`config::Config::client_ca_file`) turns on client certificate
+verification at the TLS layer (`server::tls::load_client_ca` +
+`with_client_cert_verifier`, offered but not required, same posture
+`nodelet`'s own `load_client_ca` already established), and the resulting
+verified peer certificate is turned into an `Identity` and threaded
+through to `server::listener::handle`, surfaced in the bring-up echo
+response's own `user` field for real observability. **Authentication
+without authorization**: nothing yet checks this identity before serving
+a request — there is no authorization (Group I) to enforce it against,
+so every request is still served the same way regardless of who (if
+anyone) it authenticated as. Everything else named above (ServiceAccount
+JWT, OIDC, TokenReview, bootstrap tokens, anonymous) is not started.
 
 **I. Authorization** — **not started**. RBAC, Node authorizer, webhook,
 SubjectAccessReview/SelfSubjectAccessReview. PKI primitives (`rcgen`, `p256`,

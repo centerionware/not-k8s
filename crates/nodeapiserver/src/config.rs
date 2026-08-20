@@ -27,6 +27,19 @@ pub struct Config {
     pub nodestore_cert_file: Option<PathBuf>,
     pub nodestore_key_file: Option<PathBuf>,
     pub nodestore_ca_file: Option<PathBuf>,
+    /// A CA bundle to verify *incoming* client certificates against
+    /// (Group H's x509 authenticator, `authn::x509`). `None` (the
+    /// default) means the listener offers no client certificate
+    /// authentication at all — `with_no_client_auth()`, same as before
+    /// this setting existed. Same "optional, offered-not-required"
+    /// posture `crates/nodelet/src/config.rs`'s own `NODELET_CLIENT_CA_FILE`
+    /// already established: a client presenting a cert that chains to
+    /// this CA gets a verified identity, a client presenting none still
+    /// completes the handshake (falls back to whatever other
+    /// authentication this build eventually supports), and a client
+    /// presenting a cert that does *not* chain to this CA fails the TLS
+    /// handshake outright.
+    pub client_ca_file: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -37,6 +50,7 @@ impl Default for Config {
             nodestore_cert_file: None,
             nodestore_key_file: None,
             nodestore_ca_file: None,
+            client_ca_file: None,
         }
     }
 }
@@ -79,6 +93,8 @@ impl Config {
                 set[2]
             ));
         }
+
+        cfg.client_ca_file = path_env("NODEAPISERVER_CLIENT_CA_FILE");
         Ok(cfg)
     }
 }
@@ -155,5 +171,20 @@ mod tests {
         ]);
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.nodestore_cert_file, Some(PathBuf::from("/tmp/cert.pem")));
+    }
+
+    #[test]
+    fn client_ca_file_defaults_to_none_and_is_independent_of_the_nodestore_tls_triple() {
+        let cfg = Config::default();
+        assert_eq!(cfg.client_ca_file, None);
+    }
+
+    #[test]
+    fn client_ca_file_is_read_from_its_own_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_CLIENT_CA_FILE", "/tmp/client-ca.pem");
+        let _cleanup = EnvGuard(&["NODEAPISERVER_CLIENT_CA_FILE"]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.client_ca_file, Some(PathBuf::from("/tmp/client-ca.pem")));
     }
 }
