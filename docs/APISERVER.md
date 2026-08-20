@@ -519,14 +519,17 @@ real `410 Gone` (`errors.NewResourceExpired`'s own shape — the signal
 every real `client-go` informer relists on) rather than silently serving
 a gap. A resource outside `BOOT_CACHED_RESOURCES` (no registered cache)
 falls through to the bring-up echo stub, same posture as `GET`/`LIST`
-already had for an uncached resource. **Named, honest gap**: `WATCH`
-is not yet gated by RBAC or admission — both currently only run inside
-the five-verb (`GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`) block, which
-`watch` deliberately isn't part of; wiring authorization into the watch
-path is real, separate, not-yet-done work.
+already had for an uncached resource. **`WATCH` is now RBAC-gated too**
+(`enforce_rbac`, resolved against a fresh cheap `storage.clone()` since
+`watch` otherwise needs no storage connection at all) — fails closed
+(`500`) if enforcement is on but no storage connection exists to resolve
+rules against, rather than silently degrading to "allow." Group J
+admission deliberately does **not** gate `watch` — matching real
+upstream's own posture (admission never runs on a read, whatever the
+verb), not a gap.
 
-**Not yet landed**: RBAC/admission on `WATCH` (above), `patch`/
-`deletecollection`, the rest of admission (Group J's own section has the
+**Not yet landed**: `patch`/`deletecollection`, the rest of admission
+(Group J's own section has the
 running plugin list), the real handler chain fully unified into one
 ordered dispatcher (authn -> authz -> APF -> admission -> REST — a hard
 requirement on order, not a style choice, once it fully exists; today
