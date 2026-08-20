@@ -128,10 +128,22 @@ reads (`wait_for_revision`, a free function operating on a cloneable
 `Error::TooOld`, the same "relist required" signal real
 etcd/kube-apiserver/client-go informers all key off. Pure and synchronous
 underneath, unit-tested against synthetic events with no live storage
-needed. **Not yet landed**: the driver loop that runs a real
-`storage::client::StorageClient` LIST + `watch()` against nodestore and
-feeds `WatchCache::apply` (reconnect-on-disconnect, bookmark generation on
-a timer), and label/field selector filtering over the cached items.
+needed. `cacher::driver` wires a real `StorageClient` to it: `list()` seeds
+the cache from a `Range` snapshot + its header revision, `watch_from_cache()`
+opens a `Watch` from `revision + 1` (not `revision` — avoids redelivering
+the event the snapshot already reflects), and `apply_watch_response()`
+decodes `mvccpb::Event`s into `WatchCache::apply` calls (`Added` vs
+`Modified` distinguished by `kv.version == 1`, matching `mvccpb::Event`'s
+own doc comment; an empty-events response with a newer header revision
+becomes a `Bookmark`). Decode logic is pure and unit-tested against
+constructed `mvccpb`/`etcdserverpb` values; only the two thin wrappers
+around real `StorageClient` calls need live infrastructure to test
+further. **Not yet landed**, named honestly rather than implied by the
+above: a reconnect-on-disconnect loop (today's driver gives a caller one
+LIST-then-WATCH cycle; noticing the stream end and starting over is still
+the caller's job), bookmark *generation* on a timer (this only turns a
+progress-notify response into a bookmark, it doesn't request one on any
+schedule), and label/field selector filtering over the cached items.
 
 **E. Generic server + handler chain + REST endpoints** — **not started**.
 hyper + h2 + rustls listener, path grammar, full verb set incl.
