@@ -244,14 +244,33 @@ now proves this end to end for one real resource: it spawns a
 `CacheRegistry` cache for `namespaces` (core group — the same resource
 Group F's first verified name-format rule already targets) and `GET`
 consults it whenever a request actually targets `namespaces`; every
-other resource's `GET`, and every `list`/`create`/`update`/`delete`
+other resource's `GET`/`LIST`, and every `create`/`update`/`delete`
 regardless of resource, still reads/writes straight to nodestore. **One
 concrete case, not a general policy** — enumerating every resource
 this build knows about and starting a cache for each at boot is still
 a real, separate, not-yet-made decision (how many at once, in what
 order, whether to wait for sync before serving traffic). **Not yet
-landed**: the per-Kind `SelectableFields` allowlist, registering a
-cache for every resource at boot, and `list` consulting a cache.
+landed**: the per-Kind `SelectableFields` allowlist, and registering a
+cache for every resource at boot.
+
+**Follow-up**: `server::rest::list` now also consults a cache when
+handed one, closing the gap the paragraph above used to name — but it
+can't reuse `get`'s "a miss always falls through" trick, since an empty
+`list()` result is itself a fully valid `200` answer, not a signal to
+fall through the way a `get` miss is. So `SharedCache` gained a real
+`has_synced()` flag (real `client-go` `HasSynced()`, ported): a fresh
+cache starts unsynced, and the first completed `replace()` — the
+reconnect loop's own first `LIST` — marks it permanently synced, never
+un-set by a later relist. This is a genuine flag, not "`revision() > 0`":
+a resource with zero live objects still completes a real `LIST` at
+revision `0` (an empty store has never advanced its revision), which
+would be indistinguishable from "not synced yet" if synced-ness were
+inferred from the revision alone. `list` checks `has_synced()` before
+trusting the cache; an unsynced cache falls through to nodestore exactly
+as `cache: None` would. `server::listener` passes the same
+`namespaces` proof-of-concept cache to `list` that it already passed to
+`get` — no new resource gained caching from this change, just closed
+the `get`/`list` asymmetry for the one resource that already had one.
 
 **E. Generic server + handler chain + REST endpoints** — **in progress**.
 `server::path` is the REST path grammar — a faithful, line-by-line port of

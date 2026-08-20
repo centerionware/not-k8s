@@ -28,23 +28,29 @@
 //! resource and hands back the `SharedCache` it keeps live
 //! (`CacheRegistry::spawn`). The primitive only — it does not yet
 //! enumerate every resource this build knows about and start one for
-//! each at boot (a real integration decision, not built), and nothing
-//! reads from a registered cache yet either — see that module's own doc
-//! comment for exactly what's deferred and why.
+//! each at boot (a real integration decision, not built) — see that
+//! module's own doc comment for exactly what's deferred and why.
 //!
 //! Status: in progress (see docs/APISERVER.md). Landed: the cache core,
-//! `SharedCache`, the LIST/decode/apply logic, the reconnect loop,
-//! bookmark generation, label/field selector parsing+matching, the
-//! adapter onto a decoded `serde_json::Value` object (`object_matches` is
-//! called for real, from `server::rest::list`, Group E), and a
-//! single-resource cache-registration primitive (`registry::CacheRegistry`).
-//! **Not yet landed**: a per-Kind `SelectableFields` allowlist,
-//! registering a cache for every resource at boot, and wiring
-//! `server::rest`'s read verbs to read from a registered cache instead of
-//! calling `StorageClient::range` directly — `rest::get`/`list` still
-//! read straight from nodestore, not the cache (see `rest`'s own doc
-//! comment for why that's a real, valid strategy for now, not a
-//! shortcut).
+//! `SharedCache` (including `has_synced()` — real `client-go`
+//! `HasSynced()`, ported: a fresh cache starts unsynced, the first
+//! completed `replace()` — the reconnect loop's own first `LIST` — marks
+//! it permanently, so a reader can tell "registered but still mid-relist"
+//! apart from "synced, genuinely empty" without guessing from the
+//! revision), the LIST/decode/apply logic, the reconnect loop, bookmark
+//! generation, label/field selector parsing+matching, the adapter onto a
+//! decoded `serde_json::Value` object (`object_matches` is called for
+//! real, from `server::rest::list`, Group E), a single-resource
+//! cache-registration primitive (`registry::CacheRegistry`), and
+//! `server::rest::get`/`list` both now consulting a cache when one is
+//! passed in (`get`: a hit skips nodestore, a miss always falls through;
+//! `list`: only once `has_synced()`, for the reason above — see `rest`'s
+//! own doc comment for the full contract of each).
+//! **Not yet landed**: a per-Kind `SelectableFields` allowlist, and
+//! registering a cache for every resource at boot — today only
+//! `server::listener`'s own `namespaces` proof of concept ever passes
+//! `Some(cache)` to `get`/`list`; every other resource still passes
+//! `None`, same as before caching existed for it.
 
 pub mod store;
 pub mod driver;
