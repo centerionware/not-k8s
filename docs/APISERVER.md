@@ -870,28 +870,37 @@ plugin (`staging/src/k8s.io/pod-security-admission/policy/*.go`, fetched
 and read directly): enforces whichever level a namespace's real
 `pod-security.kubernetes.io/enforce` label requests
 (`baseline`/`restricted`; an absent or unrecognized label means
-`privileged` — upstream's own "no restriction" default). Six of the
-twelve real `baseline`-level checks are ported (each the current,
-latest-`MinimumVersion` variant only): `privileged`, `hostNamespaces`
+`privileged` — upstream's own "no restriction" default). **All twelve
+real `baseline`-level checks are now ported** (each the current,
+latest-`MinimumVersion` variant only — this always enforces whatever the
+newest upstream variant of each check requires, no version-pinned check
+history modeled): `privileged`, `hostNamespaces`
 (`hostNetwork`/`hostPID`/`hostIPC`), `hostPorts`, `hostPathVolumes`,
-`capabilities_baseline` (the real default-capability allowlist), and
+`capabilities_baseline` (the real default-capability allowlist),
 `seccompProfile_baseline` (the 1.19+ field form only — the pre-1.19
 alpha-annotation form is real but long obsolete, skipped rather than
-silently glossed over). **Named, honest under-enforcement**: the other
-six real baseline checks (`sysctls`, `procMount`,
-`hostProbesAndHostLifecycle`, `windowsHostProcess`, `appArmorProfile`,
-`seLinuxOptions`) and every real restricted-level check aren't ported —
-a namespace labeled `restricted` gets only the six baseline checks above
-enforced today, not full restricted enforcement. Same pure-decision/
-real-I/O-step split as every other Group J plugin (`server::rest::get`
-on the target namespace, to read its label, is the one I/O step).
+silently glossed over), `sysctls` (the 1.32+ allowed set, the widest
+upstream has defined), `procMount` (the `hostUsers: false` relaxation is
+ported too, unconditionally rather than behind the feature gate this
+crate doesn't model), `hostProbesAndHostLifecycle` (upstream's own
+newest baseline check, 1.34+), `windowsHostProcess`, `appArmorProfile`
+(both the deprecated annotation form and the real field form), and
+`seLinuxOptions` (the 1.31+ allowed-type set). **Named, honest
+under-enforcement**: every real restricted-level check
+(`runAsNonRoot`, `runAsUser`, `allowPrivilegeEscalation`,
+`capabilities_restricted`, `seccompProfile_restricted`,
+`restrictedVolumes`) isn't ported — a namespace labeled `restricted`
+gets only the full baseline check set above enforced today, not full
+restricted enforcement. Same pure-decision/real-I/O-step split as every
+other Group J plugin (`server::rest::get` on the target namespace, to
+read its label, is the one I/O step).
 
 **Not yet landed**: every other built-in plugin (`ResourceQuota`, …),
-pod-level `LimitRange` enforcement (above), the six not-yet-ported
-baseline `PodSecurity` checks and every restricted-level one (above), a
-generic plugin-chain/registry abstraction (today `server::listener`
-hand-calls each plugin directly, not through any dispatch table),
-mutating/validating webhooks, and ValidatingAdmissionPolicy/
+pod-level `LimitRange` enforcement (above), every restricted-level
+`PodSecurity` check (above), a generic plugin-chain/registry abstraction
+(today `server::listener` hand-calls each plugin directly, not through
+any dispatch table), mutating/validating webhooks, and
+ValidatingAdmissionPolicy/
 MutatingAdmissionPolicy on CEL. **Build the CEL cost budget before wiring
 any CEL-driven admission path** — an unbudgeted CEL evaluator in the
 request path is a denial-of-service surface.
