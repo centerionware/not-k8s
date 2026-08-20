@@ -254,12 +254,23 @@ Group F's first verified name-format rule already targets) and `GET`
 consults it whenever a request actually targets `namespaces`; every
 other resource's `GET`/`LIST`, and every `create`/`update`/`delete`
 regardless of resource, still reads/writes straight to nodestore. **One
-concrete case, not a general policy** — enumerating every resource
-this build knows about and starting a cache for each at boot is still
-a real, separate, not-yet-made decision (how many at once, in what
-order, whether to wait for sync before serving traffic). **Not yet
-landed**: the per-Kind `SelectableFields` allowlist, and registering a
-cache for every resource at boot.
+concrete case, not a general policy** at the time — enumerating *every*
+resource this build knows about and starting a cache for each at boot is
+still a real, separate, not-yet-made decision (how many at once, in what
+order, whether to wait for sync before serving traffic).
+
+**Follow-up**: `server::listener::run` now spawns a bounded, reasoned
+list of resources instead of just `namespaces` —
+`BOOT_CACHED_RESOURCES` (`namespaces`, `pods`, `services`, `secrets`,
+`configmaps`, `endpoints`, `nodes`: the core-group resources a real
+cluster's own kubelets/kube-proxy/controllers read most heavily), and
+`GET`/`LIST` consult one whenever a request targets any resource in that
+list (`cache_registry.get(group, version, resource)` replaced the
+`namespaces`-only special case). This is still a deliberately bounded
+subset, not the general "every resource at boot" policy — that remains
+a real, separate, not-yet-made decision. **Not yet landed**: the
+per-Kind `SelectableFields` allowlist, and registering a cache for every
+resource at boot.
 
 **Follow-up**: `server::rest::list` now also consults a cache when
 handed one, closing the gap the paragraph above used to name — but it
@@ -493,10 +504,12 @@ response**: `server::listener` has no long-lived chunked-response
 machinery yet, and nothing starts a `cacher::registry::CacheRegistry` to
 read events from in the first place.
 
-**Not yet landed**: `watch` end to end (the conversion above, streaming
-HTTP responses, and starting `CacheRegistry` for more than the one
-`namespaces` proof-of-concept resource all need to come together),
-`patch`/`deletecollection`, the rest of admission (Group J's own section
+**Not yet landed**: `watch` end to end (the conversion above and real
+streaming HTTP responses still need to come together —
+`cacher::registry::CacheRegistry` now has several resources registered
+at boot, `server::listener`'s own `BOOT_CACHED_RESOURCES`, but nothing
+reads their events into an actual chunked response yet), `patch`/
+`deletecollection`, the rest of admission (Group J's own section
 has the running plugin list), the real handler chain itself (authn ->
 authz -> APF -> admission -> REST — a hard requirement on order, not a
 style choice, once it fully exists), `/openapi/v2`. The throwaway e2e rig
