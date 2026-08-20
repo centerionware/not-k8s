@@ -150,11 +150,27 @@ and read directly. Real envelope format confirmed against upstream:
 AES-CBC, secretbox, and KMS (v1/v2) are real upstream providers this
 module doesn't build (no CBC/secretbox crate in the dependency tree, no
 KMS gRPC plugin protocol vendored — `ring`, used for AES-GCM, is not a
-*new* dependency, already pulled in transitively by `rustls`). **Not yet
-landed**: wiring any of this into `StorageClient`'s actual read/write
-path, and `EncryptionConfiguration` YAML parsing (which provider(s) apply
-to which resource) — this module is the transform primitives a config
-loader would wire up, not the loader itself.
+*new* dependency, already pulled in transitively by `rustls`).
+**`EncryptionConfiguration` YAML parsing now exists too**
+(`storage::encryption_config`, fetched and read directly against
+`staging/src/k8s.io/apiserver/pkg/apis/apiserver/v1/types_encryption.go`):
+parses the real document shape (`resources: [{resources: [...],
+providers: [...]}]`) into a resolvable set of `encryption::
+PrefixTransformers`, one per resource entry, matched by real upstream's
+own resource-name/wildcard rules (`secrets`, `<resource>.<group>`, `*.`,
+`*.<group>`, `*.*`) with real "earlier entries take precedence"
+first-match-wins resolution. Only `aesgcm`/`identity` build (matching
+`storage::encryption`'s own scope); `aescbc`/`secretbox`/`kms` parse
+structurally but resolve to a real, named error rather than being
+silently dropped or misapplied. **Still not yet landed**: wiring any of
+this into `StorageClient`'s actual read/write path or `cacher`'s
+`Watch` decoding — deliberately not attempted as part of this slice,
+since transparent encryption needs `range`/`put`/`txn`/`watch` to all
+agree at once (a watch cache fed undecrypted ciphertext for even one of
+those paths is a real, silent correctness break, not a partial win), so
+it's scoped as its own dedicated, carefully-verified follow-up rather
+than rolled out gap-by-gap the way most of this crate's other features
+are.
 
 **D. Watch cache** — **in progress**. `cacher::store::WatchCache` is the
 cache core: apply/list/watch_from, bookmarks, RV=0 reads, and consistent
@@ -706,7 +722,9 @@ magnitude a real Kubernetes resource request/limit/quota has ever
 practically used, and returns an error rather than silently losing
 precision on the (unrealistic) values that would overflow that. Built as
 the prerequisite `plugin/pkg/admission/limitranger`/`resourcequota` both
-need for real min/max/ratio comparisons — not yet wired to either.
+need for real min/max/ratio comparisons — **now wired into both**
+(this paragraph was stale about that; see Group J's own section for
+each plugin's current real scope).
 
 **G. Patch + Server-Side Apply** — **in progress**. `patch::json_patch`/
 `patch::merge_patch` wrap the `json-patch` crate for RFC 6902/7386 —
