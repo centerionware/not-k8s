@@ -92,6 +92,11 @@ pub mod discovery;
 /// module's own doc comment for exactly which checks and which parts of
 /// the wire format are and aren't ported).
 pub mod healthz;
+/// `/metrics` — a scoped port of real upstream's own
+/// `apiserver_request_total` counter, rendered as real Prometheus text
+/// exposition format (see that module's own doc comment for exactly
+/// which labels are and aren't tracked).
+pub mod metrics;
 pub mod openapi;
 pub mod version;
 pub mod rest;
