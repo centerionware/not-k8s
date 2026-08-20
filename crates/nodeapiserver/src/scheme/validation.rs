@@ -1,29 +1,35 @@
-//! Structural validation: "is every field the schema says is required
-//! actually present" — driven by `codegen::openapi_meta::REQUIRED_FIELDS`,
-//! the same generic-over-vendored-data posture `scheme::defaulting` takes
-//! for the `"default"` extension.
+//! Structural validation: two generically-derived checks, each driven by
+//! its own flat table over the vendored OpenAPI specs, the same
+//! generic-over-vendored-data posture `scheme::defaulting` takes for the
+//! `"default"` extension.
+//!
+//! - `validate_required` — "is every field the schema says is required
+//!   actually present," driven by `codegen::openapi_meta::REQUIRED_FIELDS`.
+//! - `validate_types` — "does every field that *is* present have the JSON
+//!   kind the schema declares," driven by `codegen::openapi_meta::TYPE_INFO`.
 //!
 //! # What this captures, and what it honestly doesn't
 //!
 //! Real upstream validation (`pkg/apis/*/validation/validation.go`) is
 //! hand-written Go: format checks (RFC 1123 DNS labels, IANA service
 //! names), cross-field consistency ("hostPort requires hostNetwork" isn't
-//! expressible from one field alone), enum membership, numeric ranges.
-//! None of that is derivable from a flat per-schema required-field list,
-//! and this module doesn't attempt it — same honesty `defaulting`'s module
-//! doc holds about conditional defaults. What it *does* correctly handle:
-//! the one structural fact every field-presence-driven form of validation
-//! needs first — a field the OpenAPI schema's own `required` array names
-//! is either present in the object or it isn't, checked recursively
-//! through every nested object/array this crate's `ref_schema` metadata
-//! already threads through defaulting and Strategic Merge Patch.
+//! expressible from one field alone), enum membership (not even present in
+//! the vendored specs — verified empty), numeric ranges. None of that is
+//! derivable from a flat per-schema table, and this module doesn't attempt
+//! it — same honesty `defaulting`'s module doc holds about conditional
+//! defaults. What it *does* correctly handle: the two structural facts
+//! every richer form of validation needs first — is a required field
+//! there at all, and if a field is there, is it even the right kind of
+//! JSON value — both checked recursively through every nested
+//! object/array this crate's `ref_schema` metadata already threads
+//! through defaulting and Strategic Merge Patch.
 //!
 //! Deliberately run *before* defaulting in any real create/update path:
 //! a required field is required in the *user's* input, not required to
-//! survive defaulting — a field this module would reject as missing may
-//! well get filled in by `scheme::defaulting` immediately afterward, and
-//! that's fine; the two are separate questions asked in sequence, not one
-//! combined check.
+//! survive defaulting — a field `validate_required` would reject as
+//! missing may well get filled in by `scheme::defaulting` immediately
+//! afterward, and that's fine; the two are separate questions asked in
+//! sequence, not one combined check.
 
 use crate::codegen;
 use serde_json::Value;
@@ -88,6 +94,99 @@ fn join_path(prefix: &str, field: &str) -> String {
     }
 }
 
+/// One field whose present value's JSON kind doesn't match the schema's
+/// own declared `type`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeMismatch {
+    pub path: String,
+    pub expected: String,
+    pub actual_kind: String,
+}
+
+/// Recursively checks that every field `schema` (and every schema reached
+/// through `ref_schema`) declares a `TYPE_INFO` entry for actually matches
+/// the JSON kind of the present value — an *absent* field is not this
+/// function's concern (that's `validate_required`'s job; the two checks
+/// are deliberately separate, same posture as upstream's own struct-tag
+/// based decoding, which only ever complains about a field it actually
+/// saw). A field with no `TYPE_INFO` entry (an object-typed field, or one
+/// this crate hasn't captured a type for) is skipped by this check, not
+/// flagged — its shape is validated by the `ref_schema` recursion instead.
+pub fn validate_types(schema: &str, value: &Value) -> Vec<TypeMismatch> {
+    let mut out = Vec::new();
+    walk_types(schema, value, "", &mut out);
+    out
+}
+
+fn walk_types(schema: &str, value: &Value, path_prefix: &str, out: &mut Vec<TypeMismatch>) {
+    let Some(obj) = value.as_object() else { return };
+
+    for (field, field_value) in obj {
+        if field_value.is_null() {
+            continue;
+        }
+        let field_path = join_path(path_prefix, field);
+        if let Some(expected) = codegen::type_info_index().get(&(schema, field.as_str())) {
+            if !matches_kind(expected, field_value) {
+                out.push(TypeMismatch {
+                    path: field_path.clone(),
+                    expected: expected.to_string(),
+                    actual_kind: kind_name(field_value).to_string(),
+                });
+                // A value whose top-level kind is already wrong (e.g. a
+                // string where an array was expected) has nothing sane to
+                // recurse into — skip the ref_schema pass below for it.
+                continue;
+            }
+        }
+
+        let Some(fields) = codegen::field_meta_index_by_schema().get(schema) else { continue };
+        let Some(meta) = fields.iter().find(|m| m.field == field) else { continue };
+        let Some(ref_schema) = meta.ref_schema else { continue };
+        match field_value {
+            Value::Object(_) => walk_types(ref_schema, field_value, &field_path, out),
+            Value::Array(items) => {
+                for (i, item) in items.iter().enumerate() {
+                    walk_types(ref_schema, item, &format!("{field_path}[{i}]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn matches_kind(openapi_type: &str, value: &Value) -> bool {
+    match openapi_type {
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "number" => value.is_number(),
+        // JSON has no separate integer literal syntax — a "5.0" from a
+        // permissive encoder is still structurally an integer value, so
+        // accept any numeric value with a zero fractional part rather than
+        // only serde_json's own is_i64()/is_u64() (which reflect how the
+        // number happened to be lexed, not its mathematical value).
+        "integer" => value.as_f64().is_some_and(|f| f.fract() == 0.0),
+        "array" => value.is_array(),
+        // A type this table doesn't otherwise recognize (shouldn't happen
+        // against the real vendored data — codegen.rs's own test locks in
+        // the concrete cases) is treated as unconstrained rather than
+        // rejecting every value, the same fail-open posture the rest of
+        // this crate's generically-derived checks take on unexpected data.
+        _ => true,
+    }
+}
+
+fn kind_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +241,68 @@ mod tests {
     fn a_non_object_value_reports_every_top_level_required_field_missing() {
         let missing = validate_required("io.k8s.api.core.v1.ContainerPort", &json!("not an object"));
         assert_eq!(missing, vec![MissingField { path: "containerPort".to_string() }]);
+    }
+
+    #[test]
+    fn a_correctly_typed_field_produces_no_mismatch() {
+        let value = json!({"hostNetwork": true, "containers": []});
+        assert_eq!(validate_types("io.k8s.api.core.v1.PodSpec", &value), vec![]);
+    }
+
+    #[test]
+    fn a_string_where_a_boolean_is_expected_is_reported() {
+        let value = json!({"hostNetwork": "yes"});
+        let mismatches = validate_types("io.k8s.api.core.v1.PodSpec", &value);
+        assert_eq!(
+            mismatches,
+            vec![TypeMismatch { path: "hostNetwork".to_string(), expected: "boolean".to_string(), actual_kind: "string".to_string() }]
+        );
+    }
+
+    #[test]
+    fn an_absent_field_is_never_a_type_mismatch() {
+        // validate_types only judges fields it actually sees — absence is
+        // validate_required's job, not this function's.
+        assert_eq!(validate_types("io.k8s.api.core.v1.PodSpec", &json!({})), vec![]);
+    }
+
+    #[test]
+    fn a_whole_number_encoded_as_a_json_float_still_counts_as_an_integer() {
+        let value = json!({"activeDeadlineSeconds": 30.0});
+        assert_eq!(validate_types("io.k8s.api.core.v1.PodSpec", &value), vec![]);
+    }
+
+    /// Proves the recursion: a mismatch inside a `ref_schema`-nested array
+    /// element is reported with an indexed path, exactly like
+    /// `validate_required`'s own equivalent case.
+    #[test]
+    fn a_type_mismatch_in_a_nested_array_element_is_reported_with_an_indexed_path() {
+        let value = json!({
+            "containers": [
+                {"name": "app", "stdin": "not-a-bool"},
+            ]
+        });
+        let mismatches = validate_types("io.k8s.api.core.v1.PodSpec", &value);
+        assert_eq!(
+            mismatches,
+            vec![TypeMismatch { path: "containers[0].stdin".to_string(), expected: "boolean".to_string(), actual_kind: "string".to_string() }]
+        );
+    }
+
+    #[test]
+    fn a_field_with_no_type_info_entry_is_never_flagged() {
+        // securityContext is a nested-object field with no TYPE_INFO entry
+        // (its shape is ref_schema's job) — passing it something odd must
+        // not be reported as a *type* mismatch by this function.
+        let value = json!({"securityContext": {"runAsUser": "not-a-number"}});
+        // runAsUser really is typed (integer) on PodSecurityContext, so
+        // this recurses and *does* find that one real mismatch — proving
+        // the recursion reached the nested schema, while the outer
+        // securityContext field itself (untyped in TYPE_INFO) is silent.
+        let mismatches = validate_types("io.k8s.api.core.v1.PodSpec", &value);
+        assert_eq!(
+            mismatches,
+            vec![TypeMismatch { path: "securityContext.runAsUser".to_string(), expected: "integer".to_string(), actual_kind: "string".to_string() }]
+        );
     }
 }
