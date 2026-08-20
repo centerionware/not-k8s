@@ -10,7 +10,7 @@
 //! edges, then reconcile the one pod that changed.
 
 use crate::probes::{self, HealthMap};
-use crate::runtime::{Phase, PodRuntime, RuntimeStatus};
+use crate::runtime::{pod_key, Phase, PodRuntime, RuntimeStatus};
 use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
@@ -19,7 +19,8 @@ use k8s_openapi::api::core::v1::{
     ResourceStatus, Secret, Volume, VolumeMountStatus,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-use kube::api::{DeleteParams, ListParams, Patch, PatchParams, Preconditions};
+use kube::api::{DeleteParams, Patch, PatchParams, Preconditions};
+use kube::core::PartialObjectMeta;
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -72,6 +73,30 @@ pub struct PodController {
     /// `Arc` because `spawn_teardown` hands it to a detached task, which is
     /// what clears the entry once the teardown has actually finished.
     torn_down: Arc<Mutex<HashSet<String>>>,
+    /// Every pod this node currently runs, keyed by `pod_key(ns, name)`, to
+    /// the ConfigMap/Secret names its own volumes reference — a local
+    /// mirror of exactly what `on_referenced_object_changed()` needs,
+    /// updated inline by `reconcile()` (volumes are immutable after pod
+    /// creation, so this is write-once per pod in practice) and removed on
+    /// teardown. Exists so a ConfigMap/Secret `Apply`/`Delete` event — watched
+    /// cluster-wide, real upstream's own kubelet does the same thing via
+    /// its config-map-manager, but *this* controller has no informer cache
+    /// to consult the way kubelet's does — doesn't have to fall back to a
+    /// real `api.list()` RPC against every namespace on the node for each
+    /// one; a single unrelated object changing anywhere in the cluster
+    /// used to cost a full pod list before this existed (issue #133).
+    pod_refs: Mutex<HashMap<String, PodRefs>>,
+}
+
+/// One pod's ConfigMap/Secret volume references, plus its namespace (so
+/// `on_referenced_object_changed()` can skip entries outside the changed
+/// object's own namespace without a second lookup).
+#[derive(Clone, Debug, Default)]
+struct PodRefs {
+    namespace: String,
+    name: String,
+    configmaps: HashSet<String>,
+    secrets: HashSet<String>,
 }
 
 /// Releases a pod's `torn_down` entry when its teardown task ends.
@@ -224,6 +249,7 @@ impl PodController {
             health: probes::new_health_map(),
             probe_tasks: Mutex::new(HashMap::new()),
             torn_down: Arc::new(Mutex::new(HashSet::new())),
+            pod_refs: Mutex::new(HashMap::new()),
         }
     }
 
@@ -294,12 +320,28 @@ impl PodController {
         // doc comment for what happens without it.
         let mut stream = watcher(api, wc).backoff(WatchBackoffPolicy::default()).boxed();
         // ConfigMaps/Secrets have no node-scoping fieldSelector (they aren't
-        // bound to a node), so these watches are cluster-wide. That's fine:
-        // they're rare-write objects and we only react to edges, never poll.
-        let cm_api: Api<ConfigMap> = Api::all(self.client.clone());
+        // bound to a node), so these watches are cluster-wide — every
+        // ConfigMap/Secret write anywhere in the cluster, not just ones any
+        // pod on this node references. That's fine for *how often* it
+        // fires (rare-write objects, react to edges, never poll), but
+        // `on_referenced_object_changed()` only ever needs an object's own
+        // `namespace`/`name` to check the local `pod_refs` cache — so this
+        // watches `PartialObjectMeta<K>` (metadata only), not the full
+        // typed `ConfigMap`/`Secret`. Real, measured cost of the
+        // full-object form (issue #133): a real live flame graph caught
+        // 100% of its (thin) sample inside `serde_json` deserializing a
+        // full object body into typed `k8s_openapi` structs — real
+        // allocation-heavy work `kube-rs` was doing on *every* watch event,
+        // for *every* ConfigMap/Secret in the cluster, before this
+        // controller's own code ever got a chance to decide the object was
+        // irrelevant. `PartialObjectMeta<K>` is `kube-rs`'s own real fix
+        // for exactly this case (`Api<PartialObjectMeta<K>>` requests and
+        // decodes only `ObjectMeta`, not the whole object) — this crate's
+        // own reference-tracking never needed the body at all.
+        let cm_api: Api<PartialObjectMeta<ConfigMap>> = Api::all(self.client.clone());
         let mut cm_stream =
             watcher(cm_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
-        let sec_api: Api<Secret> = Api::all(self.client.clone());
+        let sec_api: Api<PartialObjectMeta<Secret>> = Api::all(self.client.clone());
         let mut sec_stream =
             watcher(sec_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
         // Move the receivers into locals so reconcile methods can borrow `&self`.
@@ -329,11 +371,6 @@ impl PodController {
                 }
                 item = cm_stream.next() => {
                     match item {
-                        Some(Ok(Event::Apply(cm))) => {
-                            if let (Some(ns), Some(name)) = (cm.metadata.namespace.clone(), cm.metadata.name.clone()) {
-                                self.on_referenced_object_changed(&ns, &name, ReferencedKind::ConfigMap).await;
-                            }
-                        }
                         // Round 124 (found live in CI): `InitApply` is kube-rs's
                         // own marker for the watch's *initial* relist on
                         // (re)connect — every ConfigMap that already existed
@@ -350,8 +387,7 @@ impl PodController {
                         // initial state from the Pod watch's own InitApply —
                         // this watch's whole purpose is catching *live*
                         // updates after that, not re-doing pod bootstrap.
-                        Some(Ok(Event::InitApply(_))) => {}
-                        Some(Ok(_)) => {}
+                        Some(Ok(ev)) => self.on_referenced_object_event(ev, ReferencedKind::ConfigMap).await,
                         Some(Err(e)) => warn!(error = ?e, "configmap watch error; watcher will retry"),
                         None => {
                             warn!("configmap watch stream ended; restarting");
@@ -362,16 +398,10 @@ impl PodController {
                 }
                 item = sec_stream.next() => {
                     match item {
-                        Some(Ok(Event::Apply(sec))) => {
-                            if let (Some(ns), Some(name)) = (sec.metadata.namespace.clone(), sec.metadata.name.clone()) {
-                                self.on_referenced_object_changed(&ns, &name, ReferencedKind::Secret).await;
-                            }
-                        }
                         // See the ConfigMap arm's own comment above — same
                         // "InitApply isn't a real change" reasoning applies
                         // identically here.
-                        Some(Ok(Event::InitApply(_))) => {}
-                        Some(Ok(_)) => {}
+                        Some(Ok(ev)) => self.on_referenced_object_event(ev, ReferencedKind::Secret).await,
                         Some(Err(e)) => warn!(error = ?e, "secret watch error; watcher will retry"),
                         None => {
                             warn!("secret watch stream ended; restarting");
@@ -384,6 +414,19 @@ impl PodController {
         }
     }
 
+    async fn on_referenced_object_event<T>(&self, event: Event<T>, kind: ReferencedKind)
+    where
+        T: kube::Resource<DynamicType = ()>,
+    {
+        let object = match event {
+            Event::Apply(object) | Event::Delete(object) => object,
+            Event::Init | Event::InitApply(_) | Event::InitDone => return,
+        };
+        if let (Some(ns), Some(name)) = (object.meta().namespace.clone(), object.meta().name.clone()) {
+            self.on_referenced_object_changed(&ns, &name, kind).await;
+        }
+    }
+
     /// A ConfigMap or Secret changed. Re-reconcile every pod on this node
     /// whose volumes reference it, so the bind-mounted files get fresh
     /// content within seconds — no pod/container restart needed, matching
@@ -391,26 +434,33 @@ impl PodController {
     /// (envFrom/valueFrom) are deliberately NOT covered: kubelet captures
     /// those once at container start, by design, and never refreshes them.
     async fn on_referenced_object_changed(&self, namespace: &str, name: &str, kind: ReferencedKind) {
+        // Purely local — no I/O — thanks to `pod_refs` (issue #133): a
+        // ConfigMap/Secret `Apply`/`Delete` event is watched cluster-wide (this
+        // controller has no informer cache to consult the way real
+        // kubelet's config-map-manager does), so before this cache
+        // existed *every* such event, anywhere in the cluster, cost a
+        // real `api.list()` of every pod on this node in that namespace
+        // — regardless of whether any of them actually referenced the
+        // object that changed. Now the common case (nothing on this node
+        // references it) costs nothing at all.
+        let matching_names: Vec<String> = pods_referencing(&self.pod_refs.lock().unwrap(), namespace, name, kind);
+        if matching_names.is_empty() {
+            return;
+        }
         let api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
-        let lp = ListParams::default().fields(&format!("spec.nodeName={}", self.node_name));
-        let pods = match api.list(&lp).await {
-            Ok(list) => list.items,
-            Err(e) => {
-                warn!(namespace, name, ?kind, error = ?e, "failed to list pods while handling ConfigMap/Secret change");
-                return;
-            }
-        };
-        for pod in pods {
-            let referenced = match kind {
-                ReferencedKind::ConfigMap => referenced_configmap_names(&pod).contains(name),
-                ReferencedKind::Secret => referenced_secret_names(&pod).contains(name),
+        for pod_name in matching_names {
+            let pod = match api.get_opt(&pod_name).await {
+                Ok(Some(pod)) => pod,
+                // Gone since the cache was last updated (deleted between
+                // the watch event firing and this fetch) — its own
+                // teardown path already handled cleanup, nothing to do.
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!(namespace, pod = %pod_name, name, ?kind, error = ?e, "failed to fetch pod while handling ConfigMap/Secret change");
+                    continue;
+                }
             };
-            if !referenced {
-                continue;
-            }
-            if let Some((ns, pname)) = key_parts(&pod) {
-                info!(pod = %format!("{ns}/{pname}"), namespace, name, ?kind, "re-materializing volumes after referenced object changed");
-            }
+            info!(pod = %format!("{namespace}/{pod_name}"), namespace, name, ?kind, "re-materializing volumes after referenced object changed");
             self.reconcile(pod).await;
         }
     }
@@ -477,8 +527,21 @@ impl PodController {
         // teardown() would otherwise have been the only path to.
         if matches!(pod.status.as_ref().and_then(|s| s.phase.as_deref()), Some("Failed") | Some("Succeeded")) {
             self.stop_probe_supervisor(&ns, &name);
+            self.pod_refs.lock().unwrap().remove(&pod_key(&ns, &name));
             return;
         }
+
+        // Keep the local ConfigMap/Secret reference cache current — cheap
+        // (pure local set-building off the spec this reconcile already
+        // has) and correct even though volumes are immutable after pod
+        // creation in practice: it means a pod's very first reconcile
+        // already has its own entry, with no separate "seed the cache on
+        // InitApply" bootstrapping needed. See `on_referenced_object_changed()`
+        // for why this cache exists at all.
+        self.pod_refs
+            .lock()
+            .unwrap()
+            .insert(pod_key(&ns, &name), PodRefs { namespace: ns.clone(), name: name.clone(), configmaps: referenced_configmap_names(&pod), secrets: referenced_secret_names(&pod) });
 
         match self.runtime.ensure_pod(&pod).await {
             Ok(status) => {
@@ -660,6 +723,10 @@ impl PodController {
     /// permanently suppressed.
     fn spawn_teardown(&self, pod: Pod) {
         let Some((ns, name)) = key_parts(&pod) else { return };
+        // Covers both callers (`reconcile()`'s deletionTimestamp branch and
+        // `Event::Delete`) in one place rather than each removing it
+        // separately.
+        self.pod_refs.lock().unwrap().remove(&pod_key(&ns, &name));
 
         // No UID is a real apiserver-watch anomaly, not something normal to
         // dedupe against — fall through to a real teardown rather than
@@ -1288,6 +1355,27 @@ enum ReferencedKind {
     Secret,
 }
 
+/// The pure half of `on_referenced_object_changed()` (issue #133): every
+/// pod name in `pod_refs` whose own namespace matches `namespace` and
+/// whose cached ConfigMap/Secret reference set contains `name` — no I/O,
+/// so this is what a regression test can actually exercise without a
+/// live apiserver. Split out specifically so "does a cluster-wide
+/// ConfigMap/Secret event correctly resolve to only the pods that
+/// reference it, with no apiserver call for an unrelated one" has a real
+/// test, not just the reused `referenced_configmap_names`/
+/// `referenced_secret_names` unit coverage those pull from.
+fn pods_referencing(pod_refs: &HashMap<String, PodRefs>, namespace: &str, name: &str, kind: ReferencedKind) -> Vec<String> {
+    pod_refs
+        .values()
+        .filter(|refs| refs.namespace == namespace)
+        .filter(|refs| match kind {
+            ReferencedKind::ConfigMap => refs.configmaps.contains(name),
+            ReferencedKind::Secret => refs.secrets.contains(name),
+        })
+        .map(|refs| refs.name.clone())
+        .collect()
+}
+
 /// Every ConfigMap name a pod's volumes reference — directly
 /// (`volumes[].configMap.name`) or via a `projected` volume's
 /// `sources[].configMap.name`. Used to decide which pods need
@@ -1370,3 +1458,6 @@ mod tests_retry_backoff;
 #[cfg(test)]
 #[path = "pods_tests/watch_backoff.rs"]
 mod tests_watch_backoff;
+#[cfg(test)]
+#[path = "pods_tests/referenced_object_changed.rs"]
+mod tests_referenced_object_changed;
