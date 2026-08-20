@@ -39,12 +39,11 @@
 //! — see that field's own doc comment for why: enabling RBAC enforcement
 //! before Group O's bootstrap `ClusterRole`/`ClusterRoleBinding` set
 //! exists can lock every request out with no path back in). When
-//! enabled, `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE` all resolve the caller's real rules
-//! (`authz::resolve::rules_for` — the real anonymous identity,
-//! `system:anonymous`/`system:unauthenticated`, when no x509 identity was
-//! established) and deny with a real `403` unless `authz::rbac::rules_allow`
-//! says yes; `WATCH` is **not yet gated** by this (`is_watch`'s own doc
-//! comment names it as a real, separate gap). Group J admission (five
+//! enabled, `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`/`WATCH` all resolve
+//! the caller's real rules (`authz::resolve::rules_for` — the real
+//! anonymous identity, `system:anonymous`/`system:unauthenticated`, when
+//! no x509 identity was established) and deny with a real `403` unless
+//! `authz::rbac::rules_allow` says yes. Group J admission (five
 //! unconditional plugins as of this revision, `admission`'s own doc
 //! comment has the running list) also runs, on the real write verbs only
 //! — real upstream's own admission posture too, admission never gates a
@@ -970,20 +969,52 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
 
     // Group D/E: real `WATCH`, served purely from an already-registered
     // `cacher::CacheRegistry` cache — see `BOOT_CACHED_RESOURCES` for
-    // which resources that is today. No `storage`/`client` needed here at
-    // all (unlike GET/LIST/CREATE/DELETE/UPDATE above): a live cache
-    // already holds everything this handler needs (a snapshot to replay
-    // from, a live event subscription), and if a resource has no
+    // which resources that is today. A live cache already holds
+    // everything the read side of this handler needs (a snapshot to
+    // replay from, a live event subscription), and if a resource has no
     // registered cache, this falls through to the RequestInfo echo below
     // exactly like the "no nodestore connection" case above, rather than
     // claiming a real watch this build can't actually serve.
     //
-    // **Not yet gated by RBAC/admission** — both currently only run
-    // inside the five-verb block above, which `watch` deliberately isn't
-    // part of (see `is_watch`'s own doc comment for why); wiring
-    // `authz`'s checks in here too is real, separate, not-yet-done work,
-    // named honestly rather than silently skipped without comment.
+    // Group I: RBAC, gated by `enforce_rbac` same as every other verb —
+    // resolved against a fresh `storage.clone()` (cheap — a
+    // `tonic::transport::Channel` clone, same as every other real call
+    // site), since `watch` doesn't otherwise need `storage`/`client` at
+    // all. Unlike a request this build can *choose* to allow when RBAC is
+    // off, "enforcement is on but there's no storage connection to
+    // resolve rules against" fails closed (`500`), never silently
+    // degrading to "allow" — the whole reason `enforce_rbac` exists is to
+    // guarantee a denial-capable policy actually ran. Group J admission
+    // intentionally does **not** gate `watch` here, matching real
+    // upstream's own posture (admission never runs on a read, whatever
+    // the verb) — not a gap.
     if is_watch {
+        if enforce_rbac {
+            let (user_name, user_groups): (&str, Vec<String>) = match &identity {
+                Some(id) => (id.name.as_str(), id.groups.clone()),
+                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+            };
+            match storage.clone() {
+                Some(mut client) => {
+                    let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
+                    let attrs = authz::rbac::RequestAttributes {
+                        is_resource_request: true,
+                        verb: &info.verb,
+                        api_group: &info.api_group,
+                        resource: &info.resource,
+                        subresource: &info.subresource,
+                        name: &info.name,
+                        path: "",
+                    };
+                    if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+                        return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+                    }
+                }
+                None => {
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
         if let Some(cache) = cache_registry.get(&info.api_group, &info.api_version, &info.resource) {
             let start_revision = resource_version_query(&query);
             match cache.watch_from(start_revision) {
