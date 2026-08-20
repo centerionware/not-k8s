@@ -40,24 +40,31 @@
 //! feature gate involved for services either way), so this matches both
 //! evaluators' real stable behavior, not a shortcut.
 //!
-//! **`spec.scopes` matching, all six real scope names** — real
-//! upstream's own `ResourceQuota.spec.scopes` lets an operator target a
-//! quota at a subset of pods; a pod must match *every* listed scope for
-//! the quota to apply (real upstream's own all-must-match semantics):
+//! **`spec.scopes` AND `spec.scopeSelector` matching, all six real scope
+//! names** — real upstream's own `ResourceQuota.spec.scopes` lets an
+//! operator target a quota at a subset of pods; a pod must match *every*
+//! listed scope for the quota to apply (real upstream's own
+//! all-must-match semantics, [`quota_matches_pod_scopes`]):
 //! `Terminating`/`NotTerminating` (real upstream's own `IsTerminating`:
 //! `spec.activeDeadlineSeconds` is set and non-negative),
 //! `BestEffort`/`NotBestEffort` (real upstream's own `ComputePodQOS` —
 //! see [`compute_pod_qos`]'s own doc comment for exactly what's ported),
-//! `PriorityClass` (real upstream's own `podMatchesScopeFunc` for the
-//! classic `spec.scopes` list form: an implied `Exists` operator, so
-//! this is genuinely just "does the pod have *any* priority class name
-//! set," not a match against a specific class — that richer per-value
-//! matching is real upstream's own `spec.scopeSelector` field, a
-//! separate, not-yet-modeled feature), and `CrossNamespacePodAffinity`
-//! (real upstream's own `usesCrossNamespacePodAffinity`: a structural
-//! presence check across all four real pod-(anti-)affinity term lists
-//! for an explicit `namespaces` list or any `namespaceSelector` at all —
-//! see [`uses_cross_namespace_pod_affinity`]'s own doc comment).
+//! `PriorityClass` (real upstream's own `podMatchesScopeFunc`: the
+//! classic `spec.scopes` list form implies an `Exists` operator, so
+//! that route alone is genuinely just "does the pod have *any* priority
+//! class name set"), and `CrossNamespacePodAffinity` (real upstream's
+//! own `usesCrossNamespacePodAffinity`: a structural presence check
+//! across all four real pod-(anti-)affinity term lists for an explicit
+//! `namespaces` list or any `namespaceSelector` at all — see
+//! [`uses_cross_namespace_pod_affinity`]'s own doc comment). The richer
+//! **`spec.scopeSelector.matchExpressions`** form is also ported —
+//! `PriorityClass` gains its real `In`/`NotIn`/`DoesNotExist` operators
+//! against a specific set of priority class names (real upstream's own
+//! `podMatchesSelector`, a plain label-selector match against a
+//! synthetic single-key label set), and every other scope name accepts
+//! the same expression form with its operator/values ignored, exactly
+//! matching real upstream's own per-scope-name switch (see
+//! [`scope_requirement_matches`]'s own doc comment).
 //!
 //! **No persisted `status.used` counter, named honestly**: real
 //! upstream's own controller maintains a running `status.used` total on
@@ -187,23 +194,58 @@ fn compute_pod_qos(pod: &Value) -> &'static str {
 /// comment); any genuinely unrecognized scope name (not a real upstream
 /// value at all) auto-matches rather than narrowing, the same "err
 /// toward stricter enforcement, not laxer" posture as everything else
-/// this module doesn't model.
+/// this module doesn't model. The classic `spec.scopes` list form
+/// implies the `Exists` operator for every entry — real upstream's own
+/// `getScopeSelectorsFromQuota` synthesizes exactly that
+/// (`corev1.ScopeSelectorOpExists`) before handing every scope, from
+/// either source, to the same `podMatchesScopeFunc`.
 fn scope_matches(scope: &str, pod: &Value) -> bool {
-    match scope {
+    scope_requirement_matches(scope, "Exists", &[], pod)
+}
+
+/// Real upstream's own `podMatchesScopeFunc`, generalized to the full
+/// `ScopedResourceSelectorRequirement` shape (`scopeName`/`operator`/
+/// `values`) that both `spec.scopes` (via [`scope_matches`]'s implied
+/// `Exists`) and `spec.scopeSelector.matchExpressions` (the real,
+/// richer per-expression form) reduce to. Every scope name except
+/// `PriorityClass` ignores `operator`/`values` entirely, same as real
+/// upstream's own switch (`Terminating`/`NotTerminating`/`BestEffort`/
+/// `NotBestEffort`/`CrossNamespacePodAffinity` never look at the
+/// selector's operator at all). `PriorityClass` is the one real
+/// upstream case that does: `Exists` stays the cheap presence check
+/// (`podMatchesScopeFunc`'s own short-circuit, no selector parsing);
+/// `In`/`NotIn`/`DoesNotExist` fall through to real upstream's own
+/// `podMatchesSelector` — a plain label-selector match against a
+/// synthetic single-key label set (`{PriorityClass:
+/// <pod.spec.priorityClassName>}`, present only when non-empty), ported
+/// as real `labels.Selector` semantics: `In` requires the key present
+/// with a matching value; `NotIn` matches whenever the key is absent OR
+/// its value isn't in `values`; `DoesNotExist` requires the key absent.
+fn scope_requirement_matches(scope_name: &str, operator: &str, values: &[&str], pod: &Value) -> bool {
+    match scope_name {
         "Terminating" => is_terminating(pod),
         "NotTerminating" => !is_terminating(pod),
         "BestEffort" => compute_pod_qos(pod) == "BestEffort",
         "NotBestEffort" => compute_pod_qos(pod) != "BestEffort",
-        // Real upstream's own `podMatchesScopeFunc`: for the classic
-        // `spec.scopes` list form (as opposed to `spec.scopeSelector`'s
-        // richer per-expression operator/values, which this crate
-        // doesn't model at all), a bare `PriorityClass` scope name is
-        // matched with an implied `Exists` operator — real upstream's
-        // own `if selector.Operator == ScopeSelectorOpExists { return
-        // len(pod.Spec.PriorityClassName) != 0 }` — so this is genuinely
-        // just "does the pod have any priority class name set," not a
-        // match against a specific class.
-        "PriorityClass" => pod.get("spec").and_then(|s| s.get("priorityClassName")).and_then(Value::as_str).is_some_and(|s| !s.is_empty()),
+        "PriorityClass" => {
+            let priority_class = pod.get("spec").and_then(|s| s.get("priorityClassName")).and_then(Value::as_str).filter(|s| !s.is_empty());
+            match operator {
+                // Real upstream's own short-circuit: no selector
+                // parsing needed, just "does the pod have any priority
+                // class name set."
+                "Exists" => priority_class.is_some(),
+                "DoesNotExist" => priority_class.is_none(),
+                "In" => priority_class.is_some_and(|pc| values.contains(&pc)),
+                "NotIn" => match priority_class {
+                    Some(pc) => !values.contains(&pc),
+                    None => true,
+                },
+                // Not a real `ScopeSelectorOperator` value at all — err
+                // toward stricter enforcement, not laxer, same posture
+                // as an unrecognized scope name below.
+                _ => true,
+            }
+        }
         "CrossNamespacePodAffinity" => uses_cross_namespace_pod_affinity(pod),
         _ => true,
     }
@@ -244,11 +286,46 @@ fn uses_cross_namespace_pod_affinity(pod: &Value) -> bool {
 }
 
 /// A `ResourceQuota` applies to `pod` only if `pod` matches *every*
-/// scope the quota's own `spec.scopes` lists (real upstream's own
-/// all-must-match semantics) — an absent/empty `spec.scopes` matches
-/// every pod, same as before scope matching existed.
+/// scope selector the quota carries — real upstream's own
+/// `getScopeSelectorsFromQuota` concatenates `spec.scopes` (each
+/// synthesized as an implied-`Exists` requirement) with
+/// `spec.scopeSelector.matchExpressions` (the real, richer per-
+/// expression `scopeName`/`operator`/`values` form) into one list, then
+/// requires every entry in it to match (`generic.Matches`'s own
+/// `matchScope = matchScope && innerMatch` fold). An absent/empty
+/// `spec.scopes` and `spec.scopeSelector` matches every pod, same as
+/// before scope matching existed.
 fn quota_matches_pod_scopes(resource_quota: &Value, pod: &Value) -> bool {
-    resource_quota.get("spec").and_then(|s| s.get("scopes")).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).all(|scope| scope_matches(scope, pod))
+    let scopes_match = resource_quota.get("spec").and_then(|s| s.get("scopes")).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).all(|scope| scope_matches(scope, pod));
+    let selector_matches = resource_quota
+        .get("spec")
+        .and_then(|s| s.get("scopeSelector"))
+        .and_then(|ss| ss.get("matchExpressions"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .all(|expr| {
+            let scope_name = expr.get("scopeName").and_then(Value::as_str).unwrap_or("");
+            let operator = expr.get("operator").and_then(Value::as_str).unwrap_or("Exists");
+            let values: Vec<&str> = expr.get("values").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+            scope_requirement_matches(scope_name, operator, &values, pod)
+        });
+    scopes_match && selector_matches
+}
+
+/// Whether `resource_quota` carries any scope selector at all, from
+/// either real source (`spec.scopes` or `spec.scopeSelector.matchExpressions`)
+/// — used by the evaluators that only ever match an *unscoped* quota
+/// (PVC/service/generic object-count; see each's own doc comment for
+/// why). Real upstream's own `generic.Matches` folds every entry from
+/// both sources through the same `scopeFunc`, so for an evaluator whose
+/// `scopeFunc` is `MatchesNoScopeFunc` (always `false`), the presence of
+/// *any* entry from *either* source — not just `spec.scopes` — makes
+/// `matchScope` false.
+fn quota_has_any_scope_selectors(resource_quota: &Value) -> bool {
+    let has_scopes = resource_quota.get("spec").and_then(|s| s.get("scopes")).and_then(Value::as_array).is_some_and(|s| !s.is_empty());
+    let has_scope_selector = resource_quota.get("spec").and_then(|s| s.get("scopeSelector")).and_then(|ss| ss.get("matchExpressions")).and_then(Value::as_array).is_some_and(|s| !s.is_empty());
+    has_scopes || has_scope_selector
 }
 
 /// Real upstream's own `podComputeUsageHelper`, restricted to the
@@ -429,7 +506,7 @@ pub fn check_pvc_create(pvc: &Value, existing_pvcs: &[Value], resource_quotas: &
     let this_pvc_usage = pvc_usage(pvc);
 
     for resource_quota in resource_quotas {
-        let has_scopes = resource_quota.get("spec").and_then(|s| s.get("scopes")).and_then(Value::as_array).is_some_and(|s| !s.is_empty());
+        let has_scopes = quota_has_any_scope_selectors(resource_quota);
         if has_scopes || !quota_applies_to_pvcs(resource_quota) {
             continue;
         }
@@ -497,7 +574,7 @@ pub fn check_service_create(svc: &Value, existing_services: &[Value], resource_q
     let this_service_usage = service_usage(svc);
 
     for resource_quota in resource_quotas {
-        let has_scopes = resource_quota.get("spec").and_then(|s| s.get("scopes")).and_then(Value::as_array).is_some_and(|s| !s.is_empty());
+        let has_scopes = quota_has_any_scope_selectors(resource_quota);
         if has_scopes || !quota_applies_to_services(resource_quota) {
             continue;
         }
@@ -551,7 +628,7 @@ pub fn check_object_count_create(group: &str, resource: &str, existing_objects: 
     let existing_usage = BTreeMap::from([(key, existing_count)]);
 
     for resource_quota in resource_quotas {
-        let has_scopes = resource_quota.get("spec").and_then(|s| s.get("scopes")).and_then(Value::as_array).is_some_and(|s| !s.is_empty());
+        let has_scopes = quota_has_any_scope_selectors(resource_quota);
         if has_scopes {
             continue;
         }
@@ -988,5 +1065,82 @@ mod tests {
         let mut q = quota("secrets-quota", json!({"count/secrets": "0"}));
         q["spec"]["scopes"] = json!(["BestEffort"]);
         assert!(check_object_count_create("", "secrets", &[], &[q]).is_none());
+    }
+
+    #[test]
+    fn a_scope_selector_priority_class_in_matches_only_the_named_classes() {
+        let mut high = pod_with_cpu_request("new", "999");
+        high["spec"]["priorityClassName"] = json!("high");
+        let mut q = quota("priority-quota", json!({"requests.cpu": "1"}));
+        q["spec"]["scopeSelector"] = json!({"matchExpressions": [{"scopeName": "PriorityClass", "operator": "In", "values": ["high", "critical"]}]});
+        assert!(check_pod_create(&high, &[], &[q.clone()]).is_some(), "priorityClassName=high is in the In list, so the quota applies");
+
+        let mut low = pod_with_cpu_request("new", "999");
+        low["spec"]["priorityClassName"] = json!("low");
+        assert!(check_pod_create(&low, &[], &[q]).is_none(), "priorityClassName=low is not in the In list, so the quota must not apply");
+    }
+
+    #[test]
+    fn a_scope_selector_priority_class_notin_matches_absent_or_unlisted() {
+        let mut q = quota("priority-quota", json!({"requests.cpu": "1"}));
+        q["spec"]["scopeSelector"] = json!({"matchExpressions": [{"scopeName": "PriorityClass", "operator": "NotIn", "values": ["high"]}]});
+
+        let no_priority = pod_with_cpu_request("new", "999");
+        assert!(check_pod_create(&no_priority, &[], &[q.clone()]).is_some(), "no priority class name at all: NotIn matches (key absent)");
+
+        let mut low = pod_with_cpu_request("new", "999");
+        low["spec"]["priorityClassName"] = json!("low");
+        assert!(check_pod_create(&low, &[], &[q.clone()]).is_some(), "priorityClassName=low is not in the disallowed set, so NotIn matches");
+
+        let mut high = pod_with_cpu_request("new", "999");
+        high["spec"]["priorityClassName"] = json!("high");
+        assert!(check_pod_create(&high, &[], &[q]).is_none(), "priorityClassName=high is in the disallowed set, so NotIn must not match");
+    }
+
+    #[test]
+    fn a_scope_selector_priority_class_doesnotexist_requires_no_priority_class() {
+        let mut q = quota("priority-quota", json!({"requests.cpu": "1"}));
+        q["spec"]["scopeSelector"] = json!({"matchExpressions": [{"scopeName": "PriorityClass", "operator": "DoesNotExist"}]});
+
+        let no_priority = pod_with_cpu_request("new", "999");
+        assert!(check_pod_create(&no_priority, &[], &[q.clone()]).is_some());
+
+        let mut with_priority = pod_with_cpu_request("new", "999");
+        with_priority["spec"]["priorityClassName"] = json!("high");
+        assert!(check_pod_create(&with_priority, &[], &[q]).is_none());
+    }
+
+    #[test]
+    fn scopes_and_scope_selector_combine_with_and_semantics() {
+        // BestEffort (from spec.scopes) AND PriorityClass=high (from
+        // spec.scopeSelector) -- real upstream's own
+        // getScopeSelectorsFromQuota concatenation, both must match.
+        let mut q = quota("combo-quota", json!({"pods": "0"}));
+        q["spec"]["scopes"] = json!(["BestEffort"]);
+        q["spec"]["scopeSelector"] = json!({"matchExpressions": [{"scopeName": "PriorityClass", "operator": "In", "values": ["high"]}]});
+
+        // BestEffort but wrong priority class: scopeSelector fails.
+        let mut besteffort_wrong_priority = json!({"metadata": {"name": "new"}, "spec": {"containers": [{"name": "c1"}]}});
+        besteffort_wrong_priority["spec"]["priorityClassName"] = json!("low");
+        assert!(check_pod_create(&besteffort_wrong_priority, &[], &[q.clone()]).is_none());
+
+        // Not BestEffort (has cpu requests) even with the right priority
+        // class: spec.scopes fails.
+        let mut burstable_right_priority = pod_with_cpu_request("new", "1m");
+        burstable_right_priority["spec"]["priorityClassName"] = json!("high");
+        assert!(check_pod_create(&burstable_right_priority, &[], &[q.clone()]).is_none());
+
+        // Both match.
+        let mut both_match = json!({"metadata": {"name": "new"}, "spec": {"containers": [{"name": "c1"}]}});
+        both_match["spec"]["priorityClassName"] = json!("high");
+        assert!(check_pod_create(&both_match, &[], &[q]).is_some());
+    }
+
+    #[test]
+    fn a_scope_selector_alone_makes_the_pvc_evaluator_treat_the_quota_as_scoped() {
+        let pvc = pvc_with_storage("new", "999Gi");
+        let mut q = quota("scoped-quota", json!({"requests.storage": "1Gi"}));
+        q["spec"]["scopeSelector"] = json!({"matchExpressions": [{"scopeName": "PriorityClass", "operator": "Exists"}]});
+        assert!(check_pvc_create(&pvc, &[], &[q]).is_none(), "a spec.scopeSelector alone (no spec.scopes) must also make the PVC evaluator skip this quota");
     }
 }
