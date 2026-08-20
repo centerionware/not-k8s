@@ -16,19 +16,22 @@
 //! (`DELETE /api/v1/namespaces/{ns}/pods/{name}`), `UPDATE`
 //! (`PUT /api/v1/namespaces/{ns}/pods/{name}`), and now `PATCH`
 //! (`PATCH /api/v1/namespaces/{ns}/pods/{name}`, real optimistic
-//! concurrency against the exact revision `patch` itself reads, no
-//! client-submitted `resourceVersion` required — see [`patch`]'s own doc
-//! comment for its three real patch kinds, reusing Group G's
-//! already-landed `patch::json_patch`/`merge_patch`/`strategic_merge`),
-//! and now [`delete_collection`] (`DELETE /api/v1/namespaces/{ns}/pods`,
-//! no name — lists via the same selector filtering [`list`] already has,
-//! then deletes each match, returning the pre-deletion `List` real
-//! upstream's own `Store.DeleteCollection` returns) — `watch` remains
-//! the only verb this build knows about that isn't a generic REST
-//! dispatch (a real streaming response instead, `server::listener`'s own
-//! doc comment). **Neither `PATCH` nor `DELETECOLLECTION` runs through
-//! Group J admission yet**, a named gap — see
-//! `server::listener`'s own doc comment for why. `get` and `list` can both
+//! concurrency against the exact revision `patch_prepare` itself reads,
+//! no client-submitted `resourceVersion` required — see [`patch_prepare`]/
+//! [`patch_persist`]'s own doc comments for the three real patch kinds,
+//! reusing Group G's already-landed `patch::json_patch`/`merge_patch`/
+//! `strategic_merge`, and for why the function is split in two —
+//! `server::listener` runs Group J admission against the real candidate
+//! object in between), and now [`delete_collection`]
+//! (`DELETE /api/v1/namespaces/{ns}/pods`, no name — lists via the same
+//! selector filtering [`list`] already has, then deletes each match,
+//! returning the pre-deletion `List` real upstream's own
+//! `Store.DeleteCollection` returns) — `watch` remains the only verb this
+//! build knows about that isn't a generic REST dispatch (a real
+//! streaming response instead, `server::listener`'s own doc comment).
+//! **`DELETECOLLECTION` alone still doesn't run through Group J
+//! admission**, a small named gap — see `server::listener`'s own doc
+//! comment for why it's small in practice. `get` and `list` can both
 //! consult a `cacher::store::SharedCache` if the caller passes one — see
 //! each function's own doc comment for its exact contract (`get`: a hit
 //! skips nodestore, a miss always falls through to a real `Range` rather
@@ -598,33 +601,49 @@ pub fn patch_kind_for_content_type(content_type: &str) -> Option<PatchKind> {
     }
 }
 
-/// Applies one of this build's three real patch kinds
-/// ([`crate::patch::json_patch`]/[`crate::patch::merge_patch`]/
-/// [`crate::patch::strategic_merge`], all landed in Group G) to a single
-/// existing object, real optimistic concurrency against the exact
-/// revision just read (the same `Txn`-compared-against-`ModRevision`
-/// idiom [`update`] uses — a `PATCH` needs no client-submitted
-/// `resourceVersion` at all, since the object it patches *is* the
-/// current one this call itself just fetched). `metadata.creationTimestamp`/
-/// `uid`/the resource's own namespace are stamped the same way
-/// [`update`] stamps them, via the shared [`persist_update`] tail.
-/// **Not ported**: a JSON Patch (`test` op) failure or a malformed
-/// patch document surfaces generically through [`Error`] rather than a
-/// dedicated outcome variant — named honestly, matching this build's
-/// existing posture of not yet distinguishing every real upstream error
-/// shape.
-pub async fn patch(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value) -> Result<UpdateOutcome, Error> {
+/// The context [`patch_prepare`] hands back to [`patch_persist`] once a
+/// patch has been applied but before it's validated/persisted — enough
+/// to run Group J admission against the real candidate object in
+/// between (`server::listener`'s own `PATCH` branch does exactly this
+/// for `LimitRanger`), without re-fetching or re-applying the patch a
+/// second time.
+pub struct PatchContext {
+    schema: &'static str,
+    kind: &'static str,
+    key: String,
+    existing_kv: mvccpb::KeyValue,
+    existing_object: Value,
+}
+
+pub enum PatchPrepareOutcome {
+    /// The patch applied cleanly; `candidate` is the resulting object,
+    /// not yet validated/defaulted/persisted.
+    Ready(Value, PatchContext),
+    UnknownResource,
+    ObjectNotFound,
+    /// The patch itself couldn't be applied (a JSON Patch `test` op
+    /// failure, or a malformed patch document).
+    Invalid(Vec<String>),
+}
+
+/// Reads the current object and applies one of this build's three real
+/// patch kinds ([`crate::patch::json_patch`]/[`crate::patch::merge_patch`]/
+/// [`crate::patch::strategic_merge`], all landed in Group G) to it —
+/// the "prepare" half of [`patch`], split out so a caller (`server::listener`)
+/// can run Group J admission against the real candidate object before
+/// committing to [`patch_persist`].
+pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value) -> Result<PatchPrepareOutcome, Error> {
     let Some(kind) = resolve_kind(group, version, resource) else {
-        return Ok(UpdateOutcome::UnknownResource);
+        return Ok(PatchPrepareOutcome::UnknownResource);
     };
     let Some(schema) = protobuf::schema_for_gvk(group, version, kind) else {
-        return Ok(UpdateOutcome::UnknownResource);
+        return Ok(PatchPrepareOutcome::UnknownResource);
     };
 
     let key = keys::object_key(group, resource, namespace, name);
     let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
-        return Ok(UpdateOutcome::ObjectNotFound);
+        return Ok(PatchPrepareOutcome::ObjectNotFound);
     };
     let existing_object = decode_stored_object(&existing_kv.value)?;
 
@@ -632,7 +651,7 @@ pub async fn patch(storage: &mut StorageClient, group: &str, version: &str, reso
         PatchKind::Json => {
             let mut object = existing_object.clone();
             if crate::patch::json_patch::apply(&mut object, patch_doc).is_err() {
-                return Ok(UpdateOutcome::Invalid(vec!["the submitted JSON Patch could not be applied".to_string()]));
+                return Ok(PatchPrepareOutcome::Invalid(vec!["the submitted JSON Patch could not be applied".to_string()]));
             }
             object
         }
@@ -644,15 +663,39 @@ pub async fn patch(storage: &mut StorageClient, group: &str, version: &str, reso
         PatchKind::StrategicMerge => crate::patch::strategic_merge::apply(schema, &existing_object, patch_doc),
     };
 
-    let mut violations: Vec<String> = validation::validate_required(schema, &patched).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
-    violations.extend(validation::validate_types(schema, &patched).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+    Ok(PatchPrepareOutcome::Ready(patched, PatchContext { schema, kind, key, existing_kv, existing_object }))
+}
+
+/// The "persist" half of [`patch`]: validates/defaults `candidate` (the
+/// object [`patch_prepare`] produced, possibly further mutated by
+/// admission in between) and writes it with the same real optimistic
+/// concurrency [`update`] uses (`Txn`-compared-against-`ModRevision`,
+/// via the shared [`persist_update`] tail) — no client-submitted
+/// `resourceVersion` needed, since the object being patched *is* the one
+/// [`patch_prepare`] already read.
+pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, context: PatchContext, candidate: Value) -> Result<UpdateOutcome, Error> {
+    let mut violations: Vec<String> = validation::validate_required(context.schema, &candidate).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
+    violations.extend(validation::validate_types(context.schema, &candidate).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
     violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
     if !violations.is_empty() {
         return Ok(UpdateOutcome::Invalid(violations));
     }
 
-    let object = defaulting::apply_defaults(schema, &patched);
-    persist_update(storage, schema, kind, group, version, key, &existing_kv, &existing_object, namespace, object).await
+    let object = defaulting::apply_defaults(context.schema, &candidate);
+    persist_update(storage, context.schema, context.kind, group, version, context.key, &context.existing_kv, &context.existing_object, namespace, object).await
+}
+
+/// Convenience wrapper combining [`patch_prepare`] and [`patch_persist`]
+/// with no admission step in between — what `server::rest::patch` used
+/// to do as one function before the split; kept for any caller that
+/// doesn't need to run admission in the middle (this crate's own tests).
+pub async fn patch(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value) -> Result<UpdateOutcome, Error> {
+    match patch_prepare(storage, group, version, resource, namespace, name, kind_of_patch, patch_doc).await? {
+        PatchPrepareOutcome::Ready(candidate, context) => patch_persist(storage, group, version, resource, namespace, name, context, candidate).await,
+        PatchPrepareOutcome::UnknownResource => Ok(UpdateOutcome::UnknownResource),
+        PatchPrepareOutcome::ObjectNotFound => Ok(UpdateOutcome::ObjectNotFound),
+        PatchPrepareOutcome::Invalid(v) => Ok(UpdateOutcome::Invalid(v)),
+    }
 }
 
 /// `scheme::name_format`'s validators, wired to the resources this crate

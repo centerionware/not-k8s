@@ -69,9 +69,11 @@
 //! (including a real `404` for an unknown group/version rather than a
 //! silent fallthrough), `/openapi/v3`, `/version`, aggregated discovery
 //! v2 (negotiated), and real `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`/
-//! `PATCH`/`DELETECOLLECTION`, gated by opt-in RBAC (Groups H/I) —
-//! `PATCH`/`DELETECOLLECTION` don't yet run Group J admission, a named
-//! gap (`listener`'s own doc comment). `watch`
+//! `PATCH`/`DELETECOLLECTION`, gated by opt-in RBAC (Groups H/I) — `PATCH`
+//! now runs the two Group J plugins that ever apply to an `Update`-shaped
+//! write (`namespace_lifecycle`, `LimitRanger`'s own PVC validation);
+//! `DELETECOLLECTION` alone still doesn't, a small named gap
+//! (`listener`'s own doc comment has why it's small in practice). `watch`
 //! is also real now (a real streaming HTTP response against a
 //! registered cache — this paragraph was stale about that; see
 //! `listener`'s own doc comment for the full, current picture). Every
