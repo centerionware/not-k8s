@@ -14,20 +14,27 @@
 //! including the `ServiceAccount` `system:serviceaccount:<ns>:<name>`
 //! username convention.
 //!
-//! **Both are pure evaluation primitives only — not yet wired to real
-//! `Role`/`RoleBinding`/`ClusterRole`/`ClusterRoleBinding` objects**:
-//! resolving which bindings/rules apply to a given subject in a given
-//! namespace needs those objects fetched from storage (real upstream's
-//! `DefaultRuleResolver`, which combines exactly these two primitives
-//! over real listed/fetched objects), which isn't built yet. Not wired
-//! into `server::listener` either: every request is still served
-//! regardless of the identity `authn::x509` may have established for it
-//! (that module's own doc comment names this same gap from the
-//! authentication side).
+//! `resolve` — the storage-backed half: `rules_for(storage, user_name,
+//! user_groups, namespace)` lists real `ClusterRoleBinding`/`RoleBinding`
+//! objects (via `server::rest::list`, no per-type Go code), keeps the
+//! ones whose subjects apply (`subject`), and resolves each one's
+//! `RoleRef` to a real `Role`/`ClusterRole`'s rules (via
+//! `server::rest::get`) — real upstream's own `DefaultRuleResolver`,
+//! ported. Errors resolving one binding are collected, not fatal
+//! (matching upstream's own "policy rules are purely additive" posture).
+//!
+//! **Not yet wired into `server::listener`**: nothing calls `resolve::rules_for`
+//! from a real request yet, so every request is still served regardless
+//! of the identity `authn::x509` may have established for it (that
+//! module's own doc comment names this same gap from the authentication
+//! side) — the remaining piece is an actual authorization decision
+//! (`rbac::rules_allow` over `resolve::rules_for`'s output) gating
+//! `server::rest::get`/`list` in `server::listener::handle`.
 //!
 //! Status: in progress (see docs/APISERVER.md). The Node authorizer,
 //! webhook authorization, and SubjectAccessReview/SelfSubjectAccessReview
 //! are not started.
 
 pub mod rbac;
+pub mod resolve;
 pub mod subject;
