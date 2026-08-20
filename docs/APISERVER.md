@@ -943,10 +943,13 @@ for the classic `spec.scopes` list form: an implied `Exists` operator,
 so this is genuinely just "does the pod have *any* priority class name
 set," not a match against a specific class — that richer per-value
 matching is real upstream's own `spec.scopeSelector` field, a separate,
-not-yet-modeled feature). `CrossNamespacePodAffinity` isn't evaluated —
-a quota using it is treated as if that one scope always matched, the
-same "err toward stricter than requested, never laxer" posture already
-established. **Substantially scoped, named honestly**:
+not-yet-modeled feature), and `CrossNamespacePodAffinity` (real
+upstream's own `usesCrossNamespacePodAffinity`: a structural presence
+check across all four real pod-(anti-)affinity term lists for an
+explicit `namespaces` list or any `namespaceSelector` at all — not an
+evaluation of what the selector actually matches, same as upstream's
+own check). **All six real scope names are now matched.**
+**Substantially scoped, named honestly**:
 real upstream also tracks services/PVCs/secrets/configmaps/arbitrary
 `count/<resource>` object counts through a whole per-type `Evaluator`
 registry — only the pod evaluator is ported; `ephemeral-storage`/
@@ -962,8 +965,8 @@ same relative position real upstream's own default plugin order uses,
 so quota sees the final, fully-defaulted object.
 
 **Not yet landed**: every other built-in plugin, `ResourceQuota`'s own
-non-pod evaluators/`spec.scopeSelector`/`CrossNamespacePodAffinity`
-scope matching/persisted usage counter (above), a
+non-pod evaluators/`spec.scopeSelector`/persisted usage counter
+(above), a
 generic plugin-chain/registry abstraction (today `server::listener`
 hand-calls each plugin directly, not through
 any dispatch table), mutating/validating webhooks, and
