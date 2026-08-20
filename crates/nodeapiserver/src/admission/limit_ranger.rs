@@ -252,8 +252,12 @@ fn merge_container_resources(container: &mut Value, limit_range: &Value, kind_la
     let container_name = container.get("name").and_then(Value::as_str).unwrap_or("").to_string();
     let Some(container_obj) = container.as_object_mut() else { return Vec::new() };
     let resources = container_obj.entry("resources").or_insert_with(|| json!({})).as_object_mut().expect("resources is always an object here");
-    let requests = resources.entry("requests").or_insert_with(|| json!({})).as_object_mut().expect("requests is always an object here");
-    let limits = resources.entry("limits").or_insert_with(|| json!({})).as_object_mut().expect("limits is always an object here");
+    // Ensure both maps exist up front; each is then re-borrowed with its
+    // own short-lived `get_mut` inside the loop below (never
+    // simultaneously — `requests`/`limits` can't both be held mutably at
+    // once from the same `resources` map).
+    resources.entry("requests").or_insert_with(|| json!({}));
+    resources.entry("limits").or_insert_with(|| json!({}));
 
     let Some(container_limits) = limit_range.get("spec").and_then(|s| s.get("limits")).and_then(Value::as_array) else {
         return Vec::new();
@@ -263,6 +267,7 @@ fn merge_container_resources(container: &mut Value, limit_range: &Value, kind_la
             continue;
         }
         if let Some(default_request) = limit.get("defaultRequest").and_then(Value::as_object) {
+            let requests = resources.get_mut("requests").and_then(Value::as_object_mut).expect("requests was just ensured to exist as an object");
             for (name, value) in default_request {
                 if !requests.contains_key(name) {
                     requests.insert(name.clone(), value.clone());
@@ -271,6 +276,7 @@ fn merge_container_resources(container: &mut Value, limit_range: &Value, kind_la
             }
         }
         if let Some(default_limit) = limit.get("default").and_then(Value::as_object) {
+            let limits = resources.get_mut("limits").and_then(Value::as_object_mut).expect("limits was just ensured to exist as an object");
             for (name, value) in default_limit {
                 if !limits.contains_key(name) {
                     limits.insert(name.clone(), value.clone());
