@@ -118,8 +118,20 @@ table (`pkg/controlplane/instance.go`'s `DefaultResourcePrefixes`, real
 vendoring work of its own) and encryption-at-rest providers. `Lease` RPCs
 are a follow-up, added when a lease-backed subresource needs them.
 
-**D. Watch cache** — **not started**. LIST-then-WATCH init, in-memory
-serving, bookmarks, RV=0/consistent reads, label/field selector filtering.
+**D. Watch cache** — **in progress**. `cacher::store::WatchCache` is the
+cache core: apply/list/watch_from, bookmarks, RV=0 reads, and consistent
+reads (`wait_for_revision`, a free function operating on a cloneable
+`watch::Receiver` rather than a method on the exclusively-owned cache — a
+`&self` method there would conflict with the driver loop's `&mut self`
+`apply()`, caught before it shipped rather than after). A watcher whose
+`start_revision` has fallen out of the retained history window gets
+`Error::TooOld`, the same "relist required" signal real
+etcd/kube-apiserver/client-go informers all key off. Pure and synchronous
+underneath, unit-tested against synthetic events with no live storage
+needed. **Not yet landed**: the driver loop that runs a real
+`storage::client::StorageClient` LIST + `watch()` against nodestore and
+feeds `WatchCache::apply` (reconnect-on-disconnect, bookmark generation on
+a timer), and label/field selector filtering over the cached items.
 
 **E. Generic server + handler chain + REST endpoints** — **not started**.
 hyper + h2 + rustls listener, path grammar, full verb set incl.
