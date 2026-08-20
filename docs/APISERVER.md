@@ -393,18 +393,33 @@ Named honestly as the bring-up floor, not the real thing: no
 exists to orphan from or cascade through in the first place), no
 finalizer handling — an unconditional delete-if-present.
 
-**Authentication and authorization now gate all four real verbs**:
+`server::rest::update` (`PUT`) is real optimistic concurrency, not a
+blind overwrite: reads the current object first, requires the
+submitted body's own `metadata.resourceVersion` to match what's
+actually stored (compared numerically against the current MVCC
+revision, not as opaque strings) — a real `409 Conflict` on a mismatch,
+a real `400` if the client omitted it entirely (real upstream requires
+`resourceVersion` for `PUT`) — then writes with a `Txn` compared
+against that same revision, so a concurrent write between the read and
+this write also loses the race rather than being silently overwritten.
+`metadata.creationTimestamp`/`uid` are always preserved from the
+existing object regardless of what the client submitted (both
+immutable after creation, matching real upstream). No create-on-update
+(`AllowCreateOnUpdate`, real upstream's own opt-in a handful of types
+use, isn't modeled — a `PUT` targeting a name that doesn't exist is a
+real `404`, not a create).
+
+**Authentication and authorization now gate all five real verbs**:
 `authn::x509`'s verified peer identity (Group H) plus opt-in RBAC
 enforcement (Group I, `NODEAPISERVER_ENFORCE_RBAC`) — see those groups'
 own sections for what's real and what's deliberately still opt-in.
 Admission (Group J) doesn't exist at all yet — no plugin gets a say in
 any of this.
 
-**Not yet landed**: every other resource verb
-(`watch`/`update`/`patch`/`deletecollection`), admission (Group J), the
-real handler chain itself (authn -> authz -> APF -> admission -> REST —
-a hard requirement on order, not a style choice, once it fully exists),
-`/openapi/v2`.
+**Not yet landed**: `watch`/`patch`/`deletecollection`, admission
+(Group J), the real handler chain itself (authn -> authz -> APF ->
+admission -> REST — a hard requirement on order, not a style choice,
+once it fully exists), `/openapi/v2`.
 The throwaway e2e rig described above should land as part of this group,
 not after it.
 

@@ -8,12 +8,12 @@
 //! listener with no reason to ever be individually disabled the way
 //! nodelet's exec/logs server is.
 //!
-//! **`GET`, `LIST`, `CREATE`, and single-object `DELETE` against a real
-//! resource are now real** (`rest::get`/`rest::list`/`rest::create`/
-//! `rest::delete`, generic over every resource this build knows about —
-//! see `rest`'s own doc comment for exactly what's in and out of scope).
-//! **Every other verb is still a bring-up stub** — a
-//! `watch`/`update`/`patch`/`deletecollection` against
+//! **`GET`, `LIST`, `CREATE`, single-object `DELETE`, and `UPDATE`
+//! against a real resource are now real** (`rest::get`/`rest::list`/
+//! `rest::create`/`rest::delete`/`rest::update`, generic over every
+//! resource this build knows about — see `rest`'s own doc comment for
+//! exactly what's in and out of scope). **Every other verb is still a
+//! bring-up stub** — a `watch`/`patch`/`deletecollection` against
 //! `/api(s)/.../<resource>` still just echoes the parsed
 //! [`crate::server::path::RequestInfo`] as JSON, not the real REST
 //! dispatch. Client certificate authentication is real
@@ -24,7 +24,7 @@
 //! — see that field's own doc comment for why: enabling RBAC enforcement
 //! before Group O's bootstrap `ClusterRole`/`ClusterRoleBinding` set
 //! exists can lock every request out with no path back in). When
-//! enabled, `GET`/`LIST`/`CREATE`/`DELETE` all resolve the caller's real rules
+//! enabled, `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE` all resolve the caller's real rules
 //! (`authz::resolve::rules_for` — the real anonymous identity,
 //! `system:anonymous`/`system:unauthenticated`, when no x509 identity was
 //! established) and deny with a real `403` unless `authz::rbac::rules_allow`
@@ -167,7 +167,7 @@ pub async fn run(cfg: Config) {
             return;
         }
     };
-    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
+    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
     let enforce_rbac = cfg.enforce_rbac;
 
     loop {
@@ -414,25 +414,62 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity
     // Group E's real resource verbs so far: single-object GET (`get`, not
     // `list`/`watch` — `path::parse` already tells those apart by an empty
     // `name`), LIST (`list`, no name), CREATE (`create`, no name — a POST
-    // to the collection URL), and single-object DELETE (`delete`, name
-    // required — no name means `deletecollection`, still the echo stub).
-    // No subresource (not handled yet — see `rest`'s own doc comment).
-    // Everything else still falls through to the RequestInfo echo below.
-    // `storage` is only ever consumed once (moved into `client` here),
-    // which is why all four verbs share this one `if let` rather than
-    // each checking it separately.
+    // to the collection URL), single-object DELETE (`delete`, name
+    // required — no name means `deletecollection`, still the echo stub),
+    // and UPDATE (`update`, name required — a PUT). No subresource (not
+    // handled yet — see `rest`'s own doc comment). Everything else still
+    // falls through to the RequestInfo echo below. `storage` is only
+    // ever consumed once (moved into `client` here), which is why all
+    // five verbs share this one `if let` rather than each checking it
+    // separately.
     let is_get = info.is_resource_request && info.verb == "get" && !info.name.is_empty() && info.subresource.is_empty();
     let is_list = info.is_resource_request && info.verb == "list" && info.name.is_empty() && info.subresource.is_empty();
     let is_create = info.is_resource_request && info.verb == "create" && info.name.is_empty() && info.subresource.is_empty();
     let is_delete = info.is_resource_request && info.verb == "delete" && !info.name.is_empty() && info.subresource.is_empty();
-    if is_get || is_list || is_create || is_delete {
-        // Captured before `req` is potentially consumed below (`is_create`
+    let is_update = info.is_resource_request && info.verb == "update" && !info.name.is_empty() && info.subresource.is_empty();
+    let has_body = is_create || is_update;
+    if is_get || is_list || is_create || is_delete || is_update {
+        // Captured before `req` is potentially consumed below (`has_body`
         // moves it into `read_body_bytes`) — a borrow of `req.headers()`
         // can't outlive that move.
         let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
 
         if let Some(mut client) = storage {
             let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+
+            // Decode the body once, shared by CREATE and UPDATE (both
+            // take a full submitted object), per its real negotiated
+            // Content-Type. JSON/YAML only for now — a protobuf request
+            // body would need the target schema to decode, which needs
+            // the resource resolved first; named honestly as a real,
+            // separate gap rather than guessed at (see `rest`'s own
+            // module doc comment).
+            let body_value = if has_body {
+                let body_bytes = match read_body_bytes(req).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "reading the request body failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                };
+                let format = content_type.as_deref().and_then(negotiation::content_type).unwrap_or(negotiation::Format::Json);
+                let decoded: Result<serde_json::Value, String> = match format {
+                    negotiation::Format::Json => crate::codec::json::decode(&body_bytes).map_err(|e| e.to_string()),
+                    negotiation::Format::Yaml => crate::codec::yaml::decode(&body_bytes).map_err(|e| e.to_string()),
+                    negotiation::Format::Protobuf => {
+                        return Ok(json_response(
+                            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                            &bad_request_status(&path_str, "protobuf request bodies are not decoded yet for CREATE/UPDATE — use application/json or application/yaml"),
+                        ));
+                    }
+                };
+                match decoded {
+                    Ok(v) => Some(v),
+                    Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e))),
+                }
+            } else {
+                None
+            };
 
             // Group I: authorization, opt-in (see config::Config::enforce_rbac's
             // own doc comment for why this defaults to off rather than
@@ -485,34 +522,9 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity
                     }
                 }
             } else if is_create {
-                // Decode the body per its real negotiated Content-Type.
-                // JSON/YAML only for now — a protobuf
-                // request body would need the target schema to decode,
-                // which needs `resolve_kind` first; named honestly as a
-                // real, separate gap rather than guessed at (see `rest`'s
-                // own module doc comment).
-                let body_bytes = match read_body_bytes(req).await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        warn!(path = %path_str, error = ?e, "reading the request body failed");
-                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-                    }
-                };
-                let format = content_type.as_deref().and_then(negotiation::content_type).unwrap_or(negotiation::Format::Json);
-                let decoded: Result<serde_json::Value, String> = match format {
-                    negotiation::Format::Json => crate::codec::json::decode(&body_bytes).map_err(|e| e.to_string()),
-                    negotiation::Format::Yaml => crate::codec::yaml::decode(&body_bytes).map_err(|e| e.to_string()),
-                    negotiation::Format::Protobuf => {
-                        return Ok(json_response(
-                            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                            &bad_request_status(&path_str, "protobuf request bodies are not decoded yet for CREATE — use application/json or application/yaml"),
-                        ));
-                    }
-                };
-                let body_value = match decoded {
-                    Ok(v) => v,
-                    Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e))),
-                };
+                // `has_body` guarantees this is `Some` — the decode
+                // happened above, before this branch was even chosen.
+                let body_value = body_value.expect("body_value is Some whenever is_create is true (has_body covers it)");
                 match rest::create(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &body_value).await {
                     Ok(rest::CreateOutcome::Created(object)) => return Ok(json_response(StatusCode::CREATED, &object)),
                     Ok(rest::CreateOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
@@ -526,6 +538,26 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity
                     Ok(rest::CreateOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "rest::create failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            } else if is_update {
+                let body_value = body_value.expect("body_value is Some whenever is_update is true (has_body covers it)");
+                match rest::update(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value).await {
+                    Ok(rest::UpdateOutcome::Updated(object)) => return Ok(json_response(StatusCode::OK, &object)),
+                    Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => {
+                        return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                    }
+                    Ok(rest::UpdateOutcome::MissingResourceVersion) => {
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.resourceVersion is required for an update")));
+                    }
+                    Ok(rest::UpdateOutcome::NamespaceMismatch) => {
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.namespace does not match the request URL")));
+                    }
+                    Ok(rest::UpdateOutcome::Conflict) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+                    Ok(rest::UpdateOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "rest::update failed");
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                     }
                 }
