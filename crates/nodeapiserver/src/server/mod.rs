@@ -22,19 +22,22 @@
 //! `APIResourceList` (`/api/v1`, `/apis/{group}/{version}`), driven
 //! entirely by Group A's discovery tables. Wired into `listener`'s actual
 //! routing now, not just a pure builder.
+//! `openapi` — `/openapi/v3` and `/openapi/v3/<path>`, serving every
+//! vendored OpenAPI v3 document verbatim (Group A's `codegen::openapi_v3_docs`),
+//! wired into `listener`'s routing alongside the other discovery routes.
 //!
 //! Status: in progress (see docs/APISERVER.md). Landed: the path grammar,
 //! a real TLS listener proving the grammar and transport work together,
-//! and every discovery document (group-level and per-version) actually
-//! reachable over HTTP, including a real `404` for an unknown group/version
-//! rather than a silent fallthrough. **Not yet landed**: the handler chain
-//! itself for actual resource requests (authn -> authz -> APF -> admission
-//! -> REST — a hard requirement on order, not a style choice, once it
-//! exists), aggregated discovery v2, `/openapi/v2` + `/openapi/v3`,
-//! `/version`.
+//! every group/version discovery document actually reachable over HTTP
+//! (including a real `404` for an unknown group/version rather than a
+//! silent fallthrough), and `/openapi/v3`. **Not yet landed**: the handler
+//! chain itself for actual resource requests (authn -> authz -> APF ->
+//! admission -> REST — a hard requirement on order, not a style choice,
+//! once it exists), aggregated discovery v2, `/openapi/v2`, `/version`.
 
 pub mod path;
 pub mod tls;
 pub mod listener;
 pub mod version_compare;
 pub mod discovery;
+pub mod openapi;
