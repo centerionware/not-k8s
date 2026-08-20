@@ -34,10 +34,13 @@
 //! `application/merge-patch+json`/`application/strategic-merge-patch+json`
 //! — with a real `415` for anything else) — **but doesn't run through
 //! Group J admission yet**, a named gap (this branch's own comment,
-//! right above where it's handled, has the reason). **`deletecollection`
-//! is still a bring-up stub** — a request against it still just echoes
-//! the parsed [`crate::server::path::RequestInfo`] as JSON, not the real
-//! dispatch.
+//! right above where it's handled, has the reason). `deletecollection`
+//! is real too now (`rest::delete_collection` — lists via the same
+//! selector filtering `LIST` already has, then deletes each match; same
+//! no-admission-yet gap as `PATCH`). `watch` is the only remaining
+//! resource verb this build knows about that isn't a real generic REST
+//! dispatch — it's real too, just structurally different (a streaming
+//! response, covered above).
 //! Client certificate authentication is real (`super::tls`'s optional
 //! `client_ca`, `authn::x509::identity_from_der` on the verified peer
 //! cert), surfaced in the echo response's own `user` field for
@@ -673,8 +676,9 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
     // `list`/`watch` — `path::parse` already tells those apart by an empty
     // `name`), LIST (`list`, no name), CREATE (`create`, no name — a POST
     // to the collection URL), single-object DELETE (`delete`, name
-    // required — no name means `deletecollection`, still the echo stub),
-    // and UPDATE (`update`, name required — a PUT). No subresource (not
+    // required — no name means `deletecollection`, now real too — see its
+    // own dedicated branch below), and UPDATE (`update`, name
+    // required — a PUT). No subresource (not
     // handled yet — see `rest`'s own doc comment). Everything else still
     // falls through to the RequestInfo echo below. `storage` is only
     // ever consumed once (moved into `client` here), which is why all
@@ -746,6 +750,29 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             }
             Err(e) => {
                 warn!(path = %path_str, error = ?e, "rest::patch failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+        };
+    }
+    // `deletecollection` is handled in its own branch too, for the same
+    // reason `patch` is: it needs no request body at all (unlike
+    // `create`/`update`), and reuses [`rest::delete_collection`] rather
+    // than the single-object shape the five-verb block below assumes.
+    // **No Group J admission runs on it yet**, the same named gap
+    // `patch`'s own branch already has above — see this crate's
+    // `rest::delete_collection`'s own doc comment for the rest of its
+    // scope.
+    if info.is_resource_request && info.verb == "deletecollection" && info.subresource.is_empty() {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+        return match rest::delete_collection(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector).await {
+            Ok(rest::DeleteCollectionOutcome::Deleted(list)) => Ok(json_response(StatusCode::OK, &list)),
+            Ok(rest::DeleteCollectionOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+            Err(rest::Error::Selector(e)) => Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "rest::delete_collection failed");
                 Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
             }
         };
