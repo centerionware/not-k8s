@@ -9,7 +9,9 @@
 //! `listener` — the real hyper + h2 + rustls listener. **Its request
 //! handler is a real dispatch for every non-resource discovery route**
 //! (`/api`, `/api/{version}`, `/apis`, `/apis/{group}`,
-//! `/apis/{group}/{version}`, plus `/healthz`) **and for `GET`/`LIST`/
+//! `/apis/{group}/{version}`, plus `/healthz`/`/readyz`/`/livez` —
+//! `healthz`, real upstream's own per-check response shape) **and for
+//! `GET`/`LIST`/
 //! `CREATE`/`DELETE`/`UPDATE`** (`rest::get`/`rest::list`/`rest::create`/
 //! `rest::delete`/`rest::update`, against real nodestore data) — **every
 //! other resource verb** (`watch`/`patch`/`deletecollection`) **is still
@@ -76,6 +78,11 @@ pub mod tls;
 pub mod listener;
 pub mod version_compare;
 pub mod discovery;
+/// `/healthz`/`/readyz`/`/livez`'s real per-check response shape, ported
+/// from upstream's own `k8s.io/apiserver/pkg/server/healthz` (see that
+/// module's own doc comment for exactly which checks and which parts of
+/// the wire format are and aren't ported).
+pub mod healthz;
 pub mod openapi;
 pub mod version;
 pub mod rest;

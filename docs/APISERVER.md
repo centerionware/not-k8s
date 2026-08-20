@@ -1093,10 +1093,28 @@ modeled. **The sink is this crate's own `tracing` output**
 working choice consistent with how every other component in this
 workspace already logs, not real upstream's own dedicated
 `--audit-log-path` file with rotation, and not a webhook backend either.
-FlowSchema/PriorityLevelConfiguration queueing; `/metrics`;
-`/healthz`/`/readyz`/`/livez` with per-check verbose output
-(`deploy/setup-control-plane.sh` already polls `/readyz?verbose`) — all
-still **not started**.
+`/healthz`/`/readyz`/`/livez` now have real per-check output too
+(`server::healthz`, a faithful-but-scoped port of real upstream's own
+`k8s.io/apiserver/pkg/server/healthz`, fetched and read directly):
+`/healthz`/`/livez` run just the `ping` check (upstream's own default
+when no checks are explicitly installed); `/readyz` adds a `storage`
+check reflecting whether the listener's own `StorageClient` connection
+is present — a coarser, named-honest signal than real upstream's own
+live per-request etcd ping (this crate's storage connection is
+established once at listener startup, "best-effort, `None` on failure",
+not re-probed per request). Response shape ported exactly: bare `"ok"`
+on full success with no `?verbose`; per-line `[+]<name> ok`/`[-]<name>
+failed: reason withheld` output (upstream's own real "never leak the
+actual error to an unauthenticated caller" posture) followed by `"<name>
+check failed"` and a real `500` on any failure, always verbose
+regardless of the query param; the same per-line output followed by
+`"<name> check passed\n"` on success when `?verbose` is given. Not
+ported: the `log`/`informer-sync`/`shutdown` checks (klog-specific,
+no-informers-here, and no graceful-shutdown machinery respectively) and
+the `?exclude=` query param. `deploy/setup-control-plane.sh` already
+polls `/readyz?verbose`, so this is now genuinely meaningful there, not
+just a bare `200`. FlowSchema/PriorityLevelConfiguration queueing and
+`/metrics` remain **not started**.
 
 **N. Streaming and proxy subresources** — **not started**. exec/attach/
 port-forward/log spliced through to `nodelet:10250`, reusing
