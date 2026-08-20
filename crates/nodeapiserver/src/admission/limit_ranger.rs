@@ -12,22 +12,24 @@
 //! carries a `default`/`defaultRequest` for gets it filled in, and the
 //! pod is annotated `kubernetes.io/limit-ranger` describing what was set
 //! — upstream's own real annotation key and message format, ported
-//! exactly), and **`PersistentVolumeClaim`-level**
+//! exactly), **pod-level** (`LimitTypePod`) aggregate min/max/ratio
+//! enforcement against the pod-wide summed requests/limits
+//! ([`pod_requests`]/[`pod_limits`], real upstream's own
+//! restartable-init-container/sidecar aggregation rules ported exactly —
+//! see their own doc comments), and **`PersistentVolumeClaim`-level**
 //! (`LimitTypePersistentVolumeClaim`) min/max enforcement on
 //! `spec.resources.requests` (upstream's own real behavior: PVCs are
 //! validated, never defaulted — storage is a required part of the spec).
 //!
-//! **Not ported, named honestly as separate follow-up work**: pod-level
-//! (`LimitTypePod`) aggregate min/max/ratio enforcement — upstream sums
-//! request/limits across every container (with real, non-trivial
-//! restartable-init-container/sidecar aggregation rules,
-//! `podRequests`/`podLimits`) and checks the *pod-wide total* against the
-//! same three constraint kinds; genuinely more involved than the
-//! per-container case this module covers, and deliberately left for a
-//! separate slice rather than rushed. Also not ported: the `resize`
-//! subresource path (this crate serves no subresources yet), and
-//! upstream's own live-lookup LRU/singleflight cache for `LimitRange`
-//! objects — this plugin always lists live from storage, same posture
+//! **Not ported, named honestly as separate follow-up work**: the real
+//! `PodLevelResources` feature-gate override (pod-level `spec.resources`
+//! overriding the aggregated per-container total for CPU/memory — an
+//! alpha feature this crate has no feature-gate machinery to model, so
+//! `pod_requests`/`pod_limits` always use the aggregated per-container
+//! total, never a pod-level override), the `resize` subresource path
+//! (this crate serves no subresources yet), and upstream's own
+//! live-lookup LRU/singleflight cache for `LimitRange` objects — this
+//! plugin always lists live from storage, same posture
 //! `namespace_lifecycle` already takes and for the same reason (nothing in
 //! this crate's admission path is served from a potentially-stale cache
 //! to begin with, so there's no staleness to work around).
@@ -176,9 +178,104 @@ fn validate_container_against_limit(limit: &Value, requests: &Value, limits: &Va
     errs
 }
 
-/// Real upstream's own `PodValidateLimitFunc`, container-level only (see
-/// this module's own doc comment for the not-yet-ported pod-level half).
-/// `limit_range` is one `LimitRange` object's full JSON value.
+type ResourceMap = std::collections::BTreeMap<String, Quantity>;
+
+/// Real upstream's own `addResourceList`: adds every entry of a real
+/// `resources.requests`/`resources.limits` JSON object into `acc`,
+/// keyed by resource name, summing with any existing entry.
+fn add_from_value(acc: &mut ResourceMap, list: &Value) {
+    let Some(obj) = list.as_object() else { return };
+    for (name, raw) in obj {
+        let Some(s) = raw.as_str() else { continue };
+        let Ok(q) = Quantity::parse(s) else { continue };
+        acc.entry(name.clone()).and_modify(|existing| *existing = *existing + q).or_insert(q);
+    }
+}
+
+/// Real upstream's own `addResourceList` used map-to-map (its own two
+/// call sites both pass a `ResourceList`, which a `ResourceMap` already
+/// is here — same operation, just not reading from raw JSON).
+fn add_map(acc: &mut ResourceMap, other: &ResourceMap) {
+    for (name, q) in other {
+        acc.entry(name.clone()).and_modify(|existing| *existing = *existing + *q).or_insert(*q);
+    }
+}
+
+/// Real upstream's own `maxResourceList`: sets `acc[name]` to the
+/// greater of its current value (if any) and `other[name]`, for every
+/// resource in `other`.
+fn max_map(acc: &mut ResourceMap, other: &ResourceMap) {
+    for (name, q) in other {
+        acc.entry(name.clone()).and_modify(|existing| *existing = (*existing).max(*q)).or_insert(*q);
+    }
+}
+
+fn resource_value<'a>(container: &'a Value, key: &str, empty: &'a Value) -> &'a Value {
+    container.get("resources").and_then(|r| r.get(key)).unwrap_or(empty)
+}
+
+/// Real upstream's own `podRequests`/`podLimits`, ported exactly (the
+/// same algorithm handles both — `field` selects `"requests"` or
+/// `"limits"`): sums every ordinary container's own value, then folds in
+/// init containers in declaration order — a *restartable* init container
+/// (`restartPolicy: Always`, a real "sidecar" that keeps running
+/// alongside the main containers) adds its own value cumulatively into
+/// both the pod-wide total *and* a running sidecar subtotal (since it's
+/// still consuming resources once the main containers start); an
+/// *ordinary* init container's own value is compared against `own value
+/// + the running sidecar subtotal so far` (it needs at least that much
+/// headroom while it runs, but doesn't itself add to the steady-state
+/// total once it exits) — and only the *maximum* such requirement across
+/// every init container ends up folded into the pod-wide total, since
+/// ordinary init containers run sequentially, never concurrently with
+/// each other.
+fn pod_resource_map(pod: &Value, field: &str) -> ResourceMap {
+    let empty = empty_object();
+    let mut total = ResourceMap::new();
+    for container in pod.get("spec").and_then(|s| s.get("containers")).and_then(Value::as_array).into_iter().flatten() {
+        add_from_value(&mut total, resource_value(container, field, &empty));
+    }
+
+    let mut restartable_init_total = ResourceMap::new();
+    let mut init_total = ResourceMap::new();
+    for container in pod.get("spec").and_then(|s| s.get("initContainers")).and_then(Value::as_array).into_iter().flatten() {
+        let is_sidecar = container.get("restartPolicy").and_then(Value::as_str) == Some("Always");
+        let this_container = if is_sidecar {
+            let mut own = ResourceMap::new();
+            add_from_value(&mut own, resource_value(container, field, &empty));
+            add_map(&mut total, &own);
+            add_map(&mut restartable_init_total, &own);
+            restartable_init_total.clone()
+        } else {
+            let mut own = ResourceMap::new();
+            add_from_value(&mut own, resource_value(container, field, &empty));
+            add_map(&mut own, &restartable_init_total);
+            own
+        };
+        max_map(&mut init_total, &this_container);
+    }
+    max_map(&mut total, &init_total);
+
+    total
+}
+
+pub fn pod_requests(pod: &Value) -> ResourceMap {
+    pod_resource_map(pod, "requests")
+}
+
+pub fn pod_limits(pod: &Value) -> ResourceMap {
+    pod_resource_map(pod, "limits")
+}
+
+fn resource_map_to_value(map: &ResourceMap) -> Value {
+    Value::Object(map.iter().map(|(name, q)| (name.clone(), Value::String(q.to_string()))).collect())
+}
+
+/// Real upstream's own `PodValidateLimitFunc`: container-level
+/// (`LimitTypeContainer`, across both `containers` and `initContainers`)
+/// and pod-level (`LimitTypePod`, against [`pod_requests`]/
+/// [`pod_limits`]'s aggregated totals) enforcement. `limit_range` is one
+/// `LimitRange` object's full JSON value.
 pub fn validate_pod(limit_range: &Value, pod: &Value) -> Vec<String> {
     let mut errs = Vec::new();
     let empty = empty_object();
@@ -186,16 +283,23 @@ pub fn validate_pod(limit_range: &Value, pod: &Value) -> Vec<String> {
         return errs;
     };
     for limit in limits {
-        if limit.get("type").and_then(Value::as_str) != Some("Container") {
-            continue;
-        }
-        for key in ["containers", "initContainers"] {
-            let Some(containers) = pod.get("spec").and_then(|s| s.get(key)).and_then(Value::as_array) else { continue };
-            for container in containers {
-                let requests = container.get("resources").and_then(|r| r.get("requests")).unwrap_or(&empty);
-                let limits_map = container.get("resources").and_then(|r| r.get("limits")).unwrap_or(&empty);
-                errs.extend(validate_container_against_limit(limit, requests, limits_map));
+        match limit.get("type").and_then(Value::as_str) {
+            Some("Container") => {
+                for key in ["containers", "initContainers"] {
+                    let Some(containers) = pod.get("spec").and_then(|s| s.get(key)).and_then(Value::as_array) else { continue };
+                    for container in containers {
+                        let requests = container.get("resources").and_then(|r| r.get("requests")).unwrap_or(&empty);
+                        let limits_map = container.get("resources").and_then(|r| r.get("limits")).unwrap_or(&empty);
+                        errs.extend(validate_container_against_limit(limit, requests, limits_map));
+                    }
+                }
             }
+            Some("Pod") => {
+                let requests = resource_map_to_value(&pod_requests(pod));
+                let limits_map = resource_map_to_value(&pod_limits(pod));
+                errs.extend(validate_container_against_limit(limit, &requests, &limits_map));
+            }
+            _ => {}
         }
     }
     errs
@@ -405,10 +509,78 @@ mod tests {
     }
 
     #[test]
-    fn a_pod_level_limit_type_is_ignored_by_this_container_only_port() {
+    fn pod_level_max_is_enforced_against_the_summed_container_total() {
         let lr = json!({"spec": {"limits": [{"type": "Pod", "max": {"cpu": "1"}}]}});
-        let pod = json!({"spec": {"containers": [{"name": "c1", "resources": {"limits": {"cpu": "999"}}}]}});
-        assert!(validate_pod(&lr, &pod).is_empty(), "LimitTypePod is a named, separate not-yet-ported gap");
+        let pod = json!({"spec": {"containers": [
+            {"name": "c1", "resources": {"limits": {"cpu": "600m"}}},
+            {"name": "c2", "resources": {"limits": {"cpu": "600m"}}},
+        ]}});
+        let errs = validate_pod(&lr, &pod);
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0].contains("maximum cpu"));
+    }
+
+    #[test]
+    fn pod_level_max_passes_when_the_summed_total_is_within_bounds() {
+        let lr = json!({"spec": {"limits": [{"type": "Pod", "max": {"cpu": "1"}}]}});
+        let pod = json!({"spec": {"containers": [
+            {"name": "c1", "resources": {"limits": {"cpu": "400m"}}},
+            {"name": "c2", "resources": {"limits": {"cpu": "400m"}}},
+        ]}});
+        assert!(validate_pod(&lr, &pod).is_empty());
+    }
+
+    #[test]
+    fn pod_requests_sums_ordinary_containers() {
+        let pod = json!({"spec": {"containers": [
+            {"name": "c1", "resources": {"requests": {"cpu": "100m"}}},
+            {"name": "c2", "resources": {"requests": {"cpu": "200m"}}},
+        ]}});
+        assert_eq!(pod_requests(&pod)["cpu"].milli_value(), 300);
+    }
+
+    #[test]
+    fn pod_requests_adds_a_sidecar_cumulatively() {
+        // A restartable init container (restartPolicy: Always) keeps
+        // running alongside the main containers, so its own request
+        // adds to the pod-wide total, not just a transient init-time max.
+        let pod = json!({"spec": {
+            "containers": [{"name": "main", "resources": {"requests": {"cpu": "100m"}}}],
+            "initContainers": [{"name": "sidecar", "restartPolicy": "Always", "resources": {"requests": {"cpu": "50m"}}}],
+        }});
+        assert_eq!(pod_requests(&pod)["cpu"].milli_value(), 150);
+    }
+
+    #[test]
+    fn pod_requests_takes_the_max_of_sequential_init_containers_not_their_sum() {
+        // Ordinary (non-restartable) init containers run one at a time,
+        // sequentially before the main containers start -- the pod-wide
+        // total only needs to cover whichever one needed the most, not
+        // all of them added together.
+        let pod = json!({"spec": {
+            "containers": [{"name": "main", "resources": {"requests": {"cpu": "100m"}}}],
+            "initContainers": [
+                {"name": "init1", "resources": {"requests": {"cpu": "50m"}}},
+                {"name": "init2", "resources": {"requests": {"cpu": "300m"}}},
+            ],
+        }});
+        // max(100m main, 300m largest init) = 300m, not 100m + 50m + 300m.
+        assert_eq!(pod_requests(&pod)["cpu"].milli_value(), 300);
+    }
+
+    #[test]
+    fn pod_requests_folds_a_running_sidecar_total_into_a_sequential_init_containers_own_need() {
+        let pod = json!({"spec": {
+            "containers": [{"name": "main", "resources": {"requests": {"cpu": "50m"}}}],
+            "initContainers": [
+                {"name": "sidecar", "restartPolicy": "Always", "resources": {"requests": {"cpu": "100m"}}},
+                {"name": "init1", "resources": {"requests": {"cpu": "20m"}}},
+            ],
+        }});
+        // main(50m) + sidecar(100m) = 150m pod-wide so far; init1 needs its
+        // own 20m *plus* the already-running sidecar's 100m = 120m while it
+        // runs, which is less than 150m, so the pod-wide total stays 150m.
+        assert_eq!(pod_requests(&pod)["cpu"].milli_value(), 150);
     }
 
     #[test]
