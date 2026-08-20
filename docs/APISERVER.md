@@ -885,20 +885,26 @@ ported too, unconditionally rather than behind the feature gate this
 crate doesn't model), `hostProbesAndHostLifecycle` (upstream's own
 newest baseline check, 1.34+), `windowsHostProcess`, `appArmorProfile`
 (both the deprecated annotation form and the real field form), and
-`seLinuxOptions` (the 1.31+ allowed-type set). **Named, honest
-under-enforcement**: every real restricted-level check
-(`runAsNonRoot`, `runAsUser`, `allowPrivilegeEscalation`,
-`capabilities_restricted`, `seccompProfile_restricted`,
-`restrictedVolumes`) isn't ported — a namespace labeled `restricted`
-gets only the full baseline check set above enforced today, not full
-restricted enforcement. Same pure-decision/real-I/O-step split as every
-other Group J plugin (`server::rest::get` on the target namespace, to
-read its label, is the one I/O step).
+`seLinuxOptions` (the 1.31+ allowed-type set). **All six real
+`restricted`-level checks are ported too**: `runAsNonRoot` (real
+upstream's own three-way pod/container logic), `runAsUser` (forbids
+`runAsUser=0`), `allowPrivilegeEscalation` (Windows-exempt, matching
+upstream's own 1.25+ variant), `capabilities_restricted` (must drop
+`ALL`, may only add `NET_BIND_SERVICE`; Windows-exempt too),
+`seccompProfile_restricted` (same three-way logic as `runAsNonRoot`,
+Windows-exempt), `restrictedVolumes` (the real inline-volume-source
+allowlist). Real upstream's own `OverrideCheckIDs` is ported too: at
+`Restricted`, `hostPathVolumes`/`capabilities_baseline`/
+`seccompProfile_baseline` are suppressed in favor of their
+strictly-stronger restricted equivalents, so a violation isn't reported
+twice for the same root cause. Same pure-decision/real-I/O-step split as
+every other Group J plugin (`server::rest::get` on the target namespace,
+to read its label, is the one I/O step).
 
 **Not yet landed**: every other built-in plugin (`ResourceQuota`, …),
-pod-level `LimitRange` enforcement (above), every restricted-level
-`PodSecurity` check (above), a generic plugin-chain/registry abstraction
-(today `server::listener` hand-calls each plugin directly, not through
+pod-level `LimitRange` enforcement (above), a generic
+plugin-chain/registry abstraction (today `server::listener` hand-calls
+each plugin directly, not through
 any dispatch table), mutating/validating webhooks, and
 ValidatingAdmissionPolicy/
 MutatingAdmissionPolicy on CEL. **Build the CEL cost budget before wiring
