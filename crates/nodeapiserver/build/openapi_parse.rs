@@ -35,6 +35,16 @@ pub struct FieldMeta {
     /// instead of only ever seeing the metadata attached to the field that
     /// references it.
     pub ref_schema: Option<String>,
+    /// The property's own `"default"` value, JSON-encoded (stored as the
+    /// serialized text of the JSON value, parsed back at runtime) — Group
+    /// F's defaulting reads this. Present for both scalar defaults (real
+    /// values like `Protocol` defaulting to `"TCP"`) and structural ones
+    /// (`{}` for a nested-object field, which is what tells defaulting to
+    /// materialize an absent object so its *own* fields' defaults can
+    /// recurse into it) — both are captured the same way; `patch::strategic_merge`
+    /// treats the recursion decision as a separate question from whether a
+    /// default value exists at all.
+    pub default: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +134,7 @@ fn extension_meta(schema_name: &str, field_name: &str, prop: &Value) -> Option<F
         .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
         .unwrap_or_default();
     let ref_schema = resolve_ref_schema(prop);
+    let default = prop.get("default").cloned();
 
     if list_type.is_none()
         && map_type.is_none()
@@ -131,6 +142,7 @@ fn extension_meta(schema_name: &str, field_name: &str, prop: &Value) -> Option<F
         && patch_merge_key.is_none()
         && list_map_keys.is_empty()
         && ref_schema.is_none()
+        && default.is_none()
     {
         return None;
     }
@@ -143,6 +155,7 @@ fn extension_meta(schema_name: &str, field_name: &str, prop: &Value) -> Option<F
         patch_strategy,
         patch_merge_key,
         ref_schema,
+        default,
     })
 }
 
@@ -200,14 +213,18 @@ pub fn render(field_meta: &[FieldMeta], gvks: &[GvkEntry]) -> String {
     out.push_str("    pub patch_strategy: Option<&'static str>,\n");
     out.push_str("    pub patch_merge_key: Option<&'static str>,\n");
     out.push_str("    pub ref_schema: Option<&'static str>,\n");
+    out.push_str("    /// JSON-encoded text of the property's \"default\" value — parse with\n");
+    out.push_str("    /// `serde_json::from_str` to get the real `serde_json::Value`.\n");
+    out.push_str("    pub default_json: Option<&'static str>,\n");
     out.push_str("}\n\n");
 
     out.push_str("pub static FIELD_META: &[FieldMeta] = &[\n");
     for (schema, group) in &by_schema {
         for m in group {
             let keys: Vec<String> = m.list_map_keys.iter().map(|k| format!("{k:?}")).collect();
+            let default_json = m.default.as_ref().map(|v| serde_json::to_string(v).expect("serde_json::Value always serializes"));
             out.push_str(&format!(
-                "    FieldMeta {{ schema: {:?}, field: {:?}, list_type: {}, list_map_keys: &[{}], map_type: {}, patch_strategy: {}, patch_merge_key: {}, ref_schema: {} }},\n",
+                "    FieldMeta {{ schema: {:?}, field: {:?}, list_type: {}, list_map_keys: &[{}], map_type: {}, patch_strategy: {}, patch_merge_key: {}, ref_schema: {}, default_json: {} }},\n",
                 schema,
                 m.field,
                 opt_str(&m.list_type),
@@ -216,6 +233,7 @@ pub fn render(field_meta: &[FieldMeta], gvks: &[GvkEntry]) -> String {
                 opt_str(&m.patch_strategy),
                 opt_str(&m.patch_merge_key),
                 opt_str(&m.ref_schema),
+                opt_str(&default_json),
             ));
         }
     }
