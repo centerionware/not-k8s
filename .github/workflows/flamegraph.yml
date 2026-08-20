@@ -1,21 +1,26 @@
-name: Flamegraph — nodelet, single-pod lifecycle
+name: Flamegraph — nodelet, multi-pod workload lifecycle
 
 # Manual trigger only, same conservative posture as profiling.yml/e2e.yml.
 #
-# Purpose: capture a real CPU flame graph of nodelet across one pod's full
-# lifecycle (create -> Ready -> idle -> delete -> gone) against a real CRI
-# runtime, to get real data on issue #133 (nodelet using far more idle CPU
-# than kubelet once real pods are running) instead of guessing from reading
-# source. Deliberately narrow scope, per the issue's own investigation:
+# Purpose: capture a real CPU flame graph of nodelet across a workload's
+# full lifecycle (create N namespaces/pods -> all Ready -> idle -> delete
+# all -> all gone) against a real CRI runtime, to get real data on issue
+# #133 (nodelet using far more idle CPU than kubelet once real pods are
+# running) instead of guessing from reading source.
 #
-#   - One pod, not a whole workload sweep — this exists to answer "where is
-#     nodelet's own CPU time actually going", which one pod already
-#     answers; profiling.yml's own workload_pod_count sweep (separate,
-#     larger effort) is for the aggregate RSS/CPU comparison against a real
-#     kubelet, not for finding a hot path. Keeping this to one pod keeps a
-#     single dispatch fast.
-#   - nodelet only, no kubelet leg. This isn't a comparison run — it's a
-#     profile of one process. Nothing here builds or runs upstream-kubelet.sh.
+# pod_count defaults to 10, matching #133's own reported reproduction shape
+# (profiling.yml's workload_pod_count) — a single pod was tried first and
+# turned out to be the wrong experiment: nodelet was almost entirely idle
+# for the whole ~24s a lone pod's lifecycle takes (perf only caught 3
+# samples total), too sparse to show anything. Real per-pod cluster
+# activity (ConfigMap/Secret churn, periodic loops with more to look at)
+# needs more than one pod actually present to have anything to sample.
+#
+# Still deliberately narrower than profiling.yml itself: nodelet only, no
+# kubelet leg (this isn't a comparison run, it's a profile of one process
+# — nothing here builds or runs upstream-kubelet.sh), and no RSS/CPU%
+# aggregate measurement (that's profiling.yml's own job) — this exists
+# purely to answer "where is nodelet's own CPU time actually going."
 #
 # The debug binary (not the LTO/stripped release one) is used deliberately:
 # a flame graph is only useful with real function names and unmerged frames.
@@ -37,8 +42,13 @@ on:
         description: "Release tag to fetch nodelet's debug binary from (e.g. v0.6.0). Empty = latest."
         required: false
         default: ""
+      pod_count:
+        description: "Number of namespaces (one pod each) to spin up/idle/tear down — matches #133's own reproduction shape"
+        required: false
+        default: "10"
+        type: string
       idle_seconds:
-        description: "How long to stay idle with the pod Ready before deleting it"
+        description: "How long to stay idle with every pod Ready before deleting them"
         required: false
         default: "15"
         type: string
@@ -85,25 +95,27 @@ jobs:
       - name: Settle before profiling
         run: sleep 15
 
-      - name: Record a flame graph across one pod's full lifecycle
+      - name: Record a flame graph across the workload's full lifecycle
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
           set -e
           sudo chmod +x deploy/profile-process.sh
+          COUNT="${{ inputs.pod_count }}"
+          NS_PREFIX="flamegraph-wl"
 
           # --stop-file: perf records for exactly as long as the real
-          # workload below actually takes (create -> Ready -> idle ->
-          # delete -> gone), not a pre-guessed fixed window — there's
-          # nothing useful to sample once the pod's already torn down, so
-          # padding the recording past that would only dilute the flame
-          # graph with idle-nodelet frames. --duration is still passed as
-          # a safety-cap ceiling in case this stop-file is somehow never
-          # created (a failed kubectl step, etc.).
+          # workload below actually takes (create -> all Ready -> idle ->
+          # delete all -> all gone), not a pre-guessed fixed window —
+          # there's nothing useful to sample once every pod's already torn
+          # down, so padding the recording past that would only dilute the
+          # flame graph with idle-nodelet frames. --duration is still
+          # passed as a safety-cap ceiling in case this stop-file is
+          # somehow never created (a failed kubectl step, etc.).
           STOP_FILE="$(mktemp -u /tmp/flamegraph-stop.XXXXXX)"
           rm -f "$STOP_FILE"
 
-          sudo ./deploy/profile-process.sh --pattern nodelet --label nodelet-single-pod-lifecycle \
+          sudo ./deploy/profile-process.sh --pattern nodelet --label nodelet-workload-lifecycle \
             --duration "${{ inputs.sample_seconds }}" --stop-file "$STOP_FILE" --journal-unit nodelet \
             --output /tmp/flamegraph-out &
           PROFILE_PID=$!
@@ -113,13 +125,16 @@ jobs:
           # isn't wasted on process discovery.
           sleep 3
 
-          echo "==> creating a single plain nginx pod"
-          kubectl apply -f - <<'EOF'
+          echo "==> creating $COUNT namespace(s), one plain nginx pod each"
+          for i in $(seq 0 $((COUNT - 1))); do
+            ns="${NS_PREFIX}-${i}"
+            kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+            kubectl apply -n "$ns" -f - >/dev/null <<EOF
           apiVersion: v1
           kind: Pod
           metadata:
-            name: flamegraph-workload
-            namespace: default
+            name: workload
+            namespace: $ns
           spec:
             containers:
               - name: app
@@ -127,14 +142,27 @@ jobs:
                 ports:
                   - containerPort: 80
           EOF
-          kubectl wait --for=condition=Ready pod/flamegraph-workload --timeout=90s
+          done
+          for i in $(seq 0 $((COUNT - 1))); do
+            kubectl wait --for=condition=Ready "pod/workload" -n "${NS_PREFIX}-${i}" --timeout=120s
+          done
+          echo "==> all $COUNT pods Ready"
 
-          echo "==> idle ${{ inputs.idle_seconds }}s with the pod Ready"
+          echo "==> idle ${{ inputs.idle_seconds }}s with every pod Ready"
           sleep "${{ inputs.idle_seconds }}"
 
-          echo "==> deleting the pod"
-          kubectl delete pod flamegraph-workload --wait=true --timeout=60s
-          echo "==> pod gone; signaling profile-process.sh to stop recording now"
+          echo "==> deleting all $COUNT namespaces"
+          for i in $(seq 0 $((COUNT - 1))); do
+            kubectl delete namespace "${NS_PREFIX}-${i}" --wait=false >/dev/null 2>&1 || true
+          done
+          for i in $(seq 0 $((COUNT - 1))); do
+            ns="${NS_PREFIX}-${i}"
+            for _ in $(seq 1 60); do
+              kubectl get namespace "$ns" >/dev/null 2>&1 || break
+              sleep 1
+            done
+          done
+          echo "==> all namespaces gone; signaling profile-process.sh to stop recording now"
 
           touch "$STOP_FILE"
           wait "$PROFILE_PID"
@@ -175,12 +203,14 @@ jobs:
           cat > "$DEST/README.md" <<EOF
           # nodelet flame graph — ${{ steps.resolve.outputs.tag }}
 
-          Single-pod lifecycle: create a plain \`nginx:1.27-alpine\` pod (no
-          probes), wait for \`Ready\`, idle ${{ inputs.idle_seconds }}s, delete
-          it, wait for it to be gone. \`deploy/profile-process.sh\` attached to
-          the real nodelet PID (\`perf record -F 99 --call-graph dwarf\`, real
-          debug binary — ${{ steps.resolve.outputs.asset }}) for exactly that
-          window — stopped the moment the pod was confirmed gone
+          Workload lifecycle: create ${{ inputs.pod_count }} namespace(s),
+          one plain \`nginx:1.27-alpine\` pod each (no probes), wait for all
+          \`Ready\`, idle ${{ inputs.idle_seconds }}s with all of them
+          running, delete every namespace, wait for all of them gone.
+          \`deploy/profile-process.sh\` attached to the real nodelet PID
+          (\`perf record -F 99 --call-graph dwarf\`, real debug binary —
+          ${{ steps.resolve.outputs.asset }}) for exactly that window —
+          stopped the moment every namespace was confirmed gone
           (\`--stop-file\`), not a pre-guessed fixed duration, so nothing here
           is diluted by idle-nodelet-with-nothing-happening frames.
           ${{ inputs.sample_seconds }}s was the safety-cap ceiling, not the
@@ -190,7 +220,7 @@ jobs:
           - \`perf-report.txt\` / \`perf-self-report.txt\` — textual top-functions
             breakdown (inclusive / self time).
           - \`top-functions.txt\` — the same, pre-sorted top 20.
-          - \`nodelet-single-pod-lifecycle-journal.txt\` — nodelet's own log lines for the sample window.
+          - \`nodelet-workload-lifecycle-journal.txt\` — nodelet's own log lines for the sample window.
           - \`process.txt\` — PID/executable/cmdline identity.
 
           Captured from: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -204,7 +234,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "nothing new to publish"
           else
-            git commit -m "flamegraph: nodelet single-pod lifecycle (${{ steps.resolve.outputs.tag }}, run ${{ github.run_id }})"
+            git commit -m "flamegraph: nodelet workload lifecycle (${{ inputs.pod_count }} pods, ${{ steps.resolve.outputs.tag }}, run ${{ github.run_id }})"
             git push origin flamegraphs
           fi
 
