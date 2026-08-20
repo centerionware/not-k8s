@@ -498,12 +498,17 @@ request handler uses), keeps the ones whose subjects apply, and resolves
 each one's `RoleRef` to a real `Role`/`ClusterRole`'s rules (via
 `server::rest::get`) — real upstream's own `DefaultRuleResolver`
 (`VisitRulesFor`), ported, with the same non-fatal-per-binding-error,
-purely-additive posture. **Still not wired into `server::listener`**:
-nothing calls `resolve::rules_for` from a real request yet, so every
-request is still served regardless of identity — the one remaining
-piece is an actual authorization decision (`rbac::rules_allow` over
-`resolve::rules_for`'s output) gating `server::rest::get`/`list` in
-`server::listener::handle`. Node authorizer, webhook authorization, and
+purely-additive posture. **Now wired into `server::listener`, opt-in**:
+`handle` calls `resolve::rules_for` + `rbac::rules_allow` to gate
+`GET`/`LIST` with a real `403` on denial, gated behind
+`NODEAPISERVER_ENFORCE_RBAC` (`config::Config::enforce_rbac`), **off by
+default** — enabling deny-by-default RBAC before Group O's bootstrap
+`ClusterRole`/`ClusterRoleBinding` set exists (the ~90 `system:` roles
+named below) can lock every request out with no path back in, so this
+stays opt-in until that bootstrap data exists. A request with no
+established x509 identity is evaluated as the real anonymous user/group
+upstream itself uses (`system:anonymous`/`system:unauthenticated`), not
+silently exempted. Node authorizer, webhook authorization, and
 SubjectAccessReview/SelfSubjectAccessReview are not started. PKI
 primitives (`rcgen`, `p256`, `x509-parser`, `pem`) are already in-tree
 from `nodecontroller`'s CSR group.

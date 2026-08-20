@@ -40,6 +40,19 @@ pub struct Config {
     /// presenting a cert that does *not* chain to this CA fails the TLS
     /// handshake outright.
     pub client_ca_file: Option<PathBuf>,
+    /// `NODEAPISERVER_ENFORCE_RBAC` — `false` by default, deliberately:
+    /// enabling this makes `server::rest::get`/`list` deny-by-default
+    /// against real `authz::resolve::rules_for` output (Group I), but
+    /// Group O's cluster-bootstrap `system:` `ClusterRole`/
+    /// `ClusterRoleBinding` set (`docs/APISERVER.md`: "the ~90 `system:`
+    /// ClusterRoles/Bindings from upstream's `bootstrappolicy`") isn't
+    /// built yet. Turning this on against a cluster with no RBAC objects
+    /// provisioned at all — including no `cluster-admin` binding for
+    /// whoever is meant to administer it — locks out every request with
+    /// no path to grant access back. An operator enabling this today is
+    /// expected to have already provisioned their own bootstrap
+    /// `ClusterRoleBinding`s directly against nodestore.
+    pub enforce_rbac: bool,
 }
 
 impl Default for Config {
@@ -51,6 +64,7 @@ impl Default for Config {
             nodestore_key_file: None,
             nodestore_ca_file: None,
             client_ca_file: None,
+            enforce_rbac: false,
         }
     }
 }
@@ -95,6 +109,7 @@ impl Config {
         }
 
         cfg.client_ca_file = path_env("NODEAPISERVER_CLIENT_CA_FILE");
+        cfg.enforce_rbac = matches!(std::env::var("NODEAPISERVER_ENFORCE_RBAC").as_deref(), Ok("1") | Ok("true"));
         Ok(cfg)
     }
 }
@@ -186,5 +201,28 @@ mod tests {
         let _cleanup = EnvGuard(&["NODEAPISERVER_CLIENT_CA_FILE"]);
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.client_ca_file, Some(PathBuf::from("/tmp/client-ca.pem")));
+    }
+
+    #[test]
+    fn enforce_rbac_defaults_to_false() {
+        assert!(!Config::default().enforce_rbac);
+    }
+
+    #[test]
+    fn enforce_rbac_is_enabled_by_1_or_true() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for value in ["1", "true"] {
+            std::env::set_var("NODEAPISERVER_ENFORCE_RBAC", value);
+            let _cleanup = EnvGuard(&["NODEAPISERVER_ENFORCE_RBAC"]);
+            assert!(Config::from_env().unwrap().enforce_rbac, "{value:?} should enable enforcement");
+        }
+    }
+
+    #[test]
+    fn enforce_rbac_rejects_anything_else_as_off() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_ENFORCE_RBAC", "yes");
+        let _cleanup = EnvGuard(&["NODEAPISERVER_ENFORCE_RBAC"]);
+        assert!(!Config::from_env().unwrap().enforce_rbac, "only the literal 1/true should enable it");
     }
 }

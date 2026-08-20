@@ -14,17 +14,24 @@
 //! **Every other verb is still a bring-up stub** — a `watch`/`create`/...
 //! against `/api(s)/.../<resource>` still just echoes the parsed
 //! [`crate::server::path::RequestInfo`] as JSON, not the real REST
-//! dispatch. Client certificate authentication is now real too
-//! (`super::tls`'s optional `client_ca`, `authn::x509::identity_from_der`
-//! on the verified peer cert) — the resulting `Identity` is threaded
-//! through to `handle` and surfaced in the echo response's own `user`
-//! field for real observability, but **nothing yet checks it before
-//! serving a request**: there is no authorization (Group I) to enforce it
-//! against, so every request — authenticated or not — is still served
-//! the same way. The real handler chain (authentication -> authorization
-//! -> priority-and-fairness -> admission -> REST, `docs/APISERVER.md`'s
-//! own hard requirement) replaces all of this once Groups I/J exist to
-//! fill it in.
+//! dispatch. Client certificate authentication is real (`super::tls`'s
+//! optional `client_ca`, `authn::x509::identity_from_der` on the
+//! verified peer cert), surfaced in the echo response's own `user` field
+//! for observability. Authorization is real too, but **opt-in and off by
+//! default** (`config::Config::enforce_rbac`/`NODEAPISERVER_ENFORCE_RBAC` —
+//! see that field's own doc comment for why: enabling RBAC enforcement
+//! before Group O's bootstrap `ClusterRole`/`ClusterRoleBinding` set
+//! exists can lock every request out with no path back in). When
+//! enabled, `GET`/`LIST` resolve the caller's real rules
+//! (`authz::resolve::rules_for` — the real anonymous identity,
+//! `system:anonymous`/`system:unauthenticated`, when no x509 identity was
+//! established) and deny with a real `403` unless `authz::rbac::rules_allow`
+//! says yes. When disabled (the default), every request is still served
+//! the same way regardless of identity, same as before this existed. The
+//! real handler chain (authentication -> authorization ->
+//! priority-and-fairness -> admission -> REST, `docs/APISERVER.md`'s own
+//! hard requirement) replaces all of this once admission (Group J) exists
+//! too.
 //!
 //! What *is* real now: `/healthz`, and every non-resource discovery route
 //! (`/api`, `/api/{version}`, `/apis`, `/apis/{group}`,
@@ -46,6 +53,7 @@
 //! that `client-go`'s own error-decoding path reads `code`/`reason`/
 //! `message` off exactly this JSON today.
 
+use crate::authz;
 use crate::config::Config;
 use crate::codec::negotiation;
 use crate::server::{discovery, openapi, path, rest, version};
@@ -146,7 +154,8 @@ pub async fn run(cfg: Config) {
             return;
         }
     };
-    info!(%addr, storage_connected = storage.is_some(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
+    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, "nodeapiserver: REST/watch listener up (discovery + GET/LIST are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
+    let enforce_rbac = cfg.enforce_rbac;
 
     loop {
         let (tcp, peer) = match listener.accept().await {
@@ -175,7 +184,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle(req, storage.clone(), identity.clone()));
+            let service = hyper::service::service_fn(move |req| handle(req, storage.clone(), identity.clone(), enforce_rbac));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -307,7 +316,31 @@ fn bad_request_status(path_str: &str, detail: &str) -> serde_json::Value {
     })
 }
 
-async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity: Option<crate::authn::x509::Identity>) -> Result<Response<BoxedBody>, Infallible> {
+/// Same minimal `Status` shape again, for an RBAC denial (`enforce_rbac`
+/// only — see this module's own doc comment) — real upstream's
+/// `reason: "Forbidden"`, `code: 403`.
+fn forbidden_status(path_str: &str, user_name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: User {user_name:?} does not have permission for this request (RBAC)"),
+        "reason": "Forbidden",
+        "details": {},
+        "code": 403,
+    })
+}
+
+/// Real upstream's own `user.Anonymous`/`user.AllUnauthenticated`
+/// constants — what a request with no established identity is treated
+/// as for authorization purposes (RBAC then denies it unless some policy
+/// explicitly grants access to `system:anonymous`/`system:unauthenticated`,
+/// same as real upstream).
+const ANONYMOUS_USERNAME: &str = "system:anonymous";
+const UNAUTHENTICATED_GROUP: &str = "system:unauthenticated";
+
+async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity: Option<crate::authn::x509::Identity>, enforce_rbac: bool) -> Result<Response<BoxedBody>, Infallible> {
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -343,6 +376,33 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, identity
     if is_get || is_list {
         if let Some(mut client) = storage {
             let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+
+            // Group I: authorization, opt-in (see config::Config::enforce_rbac's
+            // own doc comment for why this defaults to off rather than
+            // being unconditional the moment identity extraction and RBAC
+            // resolution both exist). A request with no established x509
+            // identity is evaluated as the real anonymous user/group
+            // upstream itself uses, not silently skipped.
+            if enforce_rbac {
+                let (user_name, user_groups): (&str, Vec<String>) = match &identity {
+                    Some(id) => (id.name.as_str(), id.groups.clone()),
+                    None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+                };
+                let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
+                let attrs = authz::rbac::RequestAttributes {
+                    is_resource_request: true,
+                    verb: &info.verb,
+                    api_group: &info.api_group,
+                    resource: &info.resource,
+                    subresource: &info.subresource,
+                    name: &info.name,
+                    path: "",
+                };
+                if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+                }
+            }
+
             if is_get {
                 match rest::get(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
                     Ok(rest::GetOutcome::Found(object)) => return Ok(json_response(StatusCode::OK, &object)),
@@ -529,5 +589,14 @@ mod tests {
         assert_eq!(status["reason"], "BadRequest");
         assert_eq!(status["code"], 400);
         assert!(status["message"].as_str().unwrap().contains("malformed selector"));
+    }
+
+    #[test]
+    fn forbidden_status_names_the_user_and_uses_the_real_rbac_denial_shape() {
+        let status = forbidden_status("/api/v1/pods", "system:anonymous");
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "Forbidden");
+        assert_eq!(status["code"], 403);
+        assert!(status["message"].as_str().unwrap().contains("system:anonymous"));
     }
 }
