@@ -23,18 +23,25 @@
 //! **Partial scope matching** — real upstream's own
 //! `ResourceQuota.spec.scopes` lets an operator target a quota at a
 //! subset of pods; a pod must match *every* listed scope for the quota
-//! to apply (real upstream's own all-must-match semantics). Four of the
+//! to apply (real upstream's own all-must-match semantics). Five of the
 //! six real scope names are evaluated: `Terminating`/`NotTerminating`
 //! (real upstream's own `IsTerminating`: `spec.activeDeadlineSeconds` is
-//! set and non-negative) and `BestEffort`/`NotBestEffort` (real
-//! upstream's own `ComputePodQOS` — see [`compute_pod_qos`]'s own doc
-//! comment for exactly what's ported). **Not evaluated, named
-//! honestly**: `PriorityClass` (a label-selector match against the pod's
-//! `priorityClassName`) and `CrossNamespacePodAffinity` — a quota using
-//! either is silently treated as if that one scope always matched (not
-//! as "the whole quota never applies"), the same "err toward stricter
-//! than requested, never laxer" posture the rest of this module already
-//! takes for what it doesn't model.
+//! set and non-negative), `BestEffort`/`NotBestEffort` (real upstream's
+//! own `ComputePodQOS` — see [`compute_pod_qos`]'s own doc comment for
+//! exactly what's ported), and `PriorityClass` (real upstream's own
+//! `podMatchesScopeFunc` for the classic `spec.scopes` list form: an
+//! implied `Exists` operator, so this is genuinely just "does the pod
+//! have *any* priority class name set," not a match against a specific
+//! class — that richer per-value matching is real upstream's own
+//! `spec.scopeSelector` field, a separate, not-yet-modeled feature).
+//! **Not evaluated, named honestly**: `CrossNamespacePodAffinity` — real
+//! upstream's own check walks every pod (anti-)affinity term looking for
+//! a cross-namespace selector, genuinely more involved than this
+//! module's other scope checks; a quota using it is silently treated as
+//! if that one scope always matched (not as "the whole quota never
+//! applies"), the same "err toward stricter than requested, never
+//! laxer" posture the rest of this module already takes for what it
+//! doesn't model.
 //!
 //! **No persisted `status.used` counter, named honestly**: real
 //! upstream's own controller maintains a running `status.used` total on
@@ -172,6 +179,22 @@ fn scope_matches(scope: &str, pod: &Value) -> bool {
         "NotTerminating" => !is_terminating(pod),
         "BestEffort" => compute_pod_qos(pod) == "BestEffort",
         "NotBestEffort" => compute_pod_qos(pod) != "BestEffort",
+        // Real upstream's own `podMatchesScopeFunc`: for the classic
+        // `spec.scopes` list form (as opposed to `spec.scopeSelector`'s
+        // richer per-expression operator/values, which this crate
+        // doesn't model at all), a bare `PriorityClass` scope name is
+        // matched with an implied `Exists` operator — real upstream's
+        // own `if selector.Operator == ScopeSelectorOpExists { return
+        // len(pod.Spec.PriorityClassName) != 0 }` — so this is genuinely
+        // just "does the pod have any priority class name set," not a
+        // match against a specific class.
+        "PriorityClass" => pod.get("spec").and_then(|s| s.get("priorityClassName")).and_then(Value::as_str).is_some_and(|s| !s.is_empty()),
+        // `CrossNamespacePodAffinity` isn't evaluated — real upstream's
+        // own check walks every pod (anti-)affinity term looking for a
+        // cross-namespace selector, genuinely more involved than this
+        // module's other scope checks; a real, separate, not-yet-ported
+        // gap, treated as always-matching like every other unmodeled
+        // scope this module names.
         _ => true,
     }
 }
@@ -514,10 +537,22 @@ mod tests {
     }
 
     #[test]
-    fn an_unrecognized_scope_name_does_not_narrow_the_quota() {
+    fn an_unmodeled_scope_name_does_not_narrow_the_quota() {
         let pod = pod_with_cpu_request("new", "999");
+        let mut q = quota("affinity-quota", json!({"requests.cpu": "1"}));
+        q["spec"]["scopes"] = json!(["CrossNamespacePodAffinity"]);
+        assert!(check_pod_create(&pod, &[], &[q]).is_some(), "an unmodeled scope must not exempt the pod from an otherwise-applicable quota");
+    }
+
+    #[test]
+    fn a_priorityclass_scoped_quota_applies_only_to_pods_with_a_priority_class() {
+        let mut with_priority = pod_with_cpu_request("new", "999");
+        with_priority["spec"]["priorityClassName"] = json!("high");
         let mut q = quota("priority-quota", json!({"requests.cpu": "1"}));
         q["spec"]["scopes"] = json!(["PriorityClass"]);
-        assert!(check_pod_create(&pod, &[], &[q]).is_some(), "an unmodeled scope must not exempt the pod from an otherwise-applicable quota");
+        assert!(check_pod_create(&with_priority, &[], &[q.clone()]).is_some(), "a pod with a priority class name must be checked");
+
+        let without_priority = pod_with_cpu_request("new", "999");
+        assert!(check_pod_create(&without_priority, &[], &[q]).is_none(), "a pod with no priority class name is out of scope for this quota");
     }
 }
