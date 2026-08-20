@@ -98,7 +98,7 @@ use crate::admission;
 use crate::authz;
 use crate::config::Config;
 use crate::codec::negotiation;
-use crate::server::{discovery, healthz, openapi, path, rest, version};
+use crate::server::{discovery, healthz, metrics, openapi, path, rest, version};
 use crate::storage::client::StorageClient;
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
@@ -614,7 +614,16 @@ async fn handle_with_audit(req: Request<Incoming>, storage: Option<StorageClient
     let response = handle(req, storage, cache_registry, identity, enforce_rbac).await;
 
     if let Ok(resp) = &response {
-        log_audit_event(&method, &path_str, &query, user_agent.as_deref(), audit_identity.as_ref(), &peer, resp.status().as_u16());
+        let status = resp.status().as_u16();
+        log_audit_event(&method, &path_str, &query, user_agent.as_deref(), audit_identity.as_ref(), &peer, status);
+        // Group M: `/metrics`'s own request counter (`server::metrics`) —
+        // recorded from the exact same parsed `RequestInfo` the audit
+        // event above already builds, so a non-resource request (a
+        // discovery route, `/healthz`, ...) is counted under its real
+        // verb with an empty `resource` label, matching real upstream's
+        // own convention for that case.
+        let info = path::parse(&method, &path_str, &query);
+        metrics::record_request(&info.verb, &info.resource, status);
     }
     response
 }
@@ -663,6 +672,10 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
         let (status, body) = healthz::render(check_name, &checks, verbose);
         let code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         return Ok(Response::builder().status(code).header("Content-Type", "text/plain; charset=utf-8").header("X-Content-Type-Options", "nosniff").body(body_from_bytes(body.into_bytes())).unwrap());
+    }
+
+    if path_str == "/metrics" {
+        return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "text/plain; version=0.0.4; charset=utf-8").body(body_from_bytes(metrics::render().into_bytes())).unwrap());
     }
 
     if method == "GET" || method == "HEAD" {
