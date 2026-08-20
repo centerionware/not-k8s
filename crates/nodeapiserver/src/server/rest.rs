@@ -261,6 +261,7 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
     let compare = pb::Compare {
         key: key.clone().into_bytes(),
         result: pb::compare::CompareResult::Equal as i32,
+        target: pb::compare::CompareTarget::Mod as i32,
         target_union: Some(pb::compare::TargetUnion::ModRevision(0)),
         range_end: Vec::new(),
     };
