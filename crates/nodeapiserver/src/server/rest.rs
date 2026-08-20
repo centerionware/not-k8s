@@ -13,10 +13,17 @@
 //! `GET` (single object, `GET /api/v1/namespaces/{ns}/pods/{name}`-shaped),
 //! `LIST` (`GET /api/v1/namespaces/{ns}/pods`-shaped, no name), `CREATE`
 //! (`POST /api/v1/namespaces/{ns}/pods`), single-object `DELETE`
-//! (`DELETE /api/v1/namespaces/{ns}/pods/{name}`), and now `UPDATE`
-//! (`PUT /api/v1/namespaces/{ns}/pods/{name}`) — `watch`/`patch`/
-//! `deletecollection` all remain the bring-up echo stub
-//! (`server::listener`'s own doc comment). `get` and `list` can both
+//! (`DELETE /api/v1/namespaces/{ns}/pods/{name}`), `UPDATE`
+//! (`PUT /api/v1/namespaces/{ns}/pods/{name}`), and now `PATCH`
+//! (`PATCH /api/v1/namespaces/{ns}/pods/{name}`, real optimistic
+//! concurrency against the exact revision `patch` itself reads, no
+//! client-submitted `resourceVersion` required — see [`patch`]'s own doc
+//! comment for its three real patch kinds, reusing Group G's
+//! already-landed `patch::json_patch`/`merge_patch`/`strategic_merge`)
+//! — `watch`/`deletecollection` remain the bring-up echo stub
+//! (`server::listener`'s own doc comment; **`PATCH` also isn't run
+//! through Group J admission yet**, a named gap — see
+//! `server::listener`'s own doc comment for why). `get` and `list` can both
 //! consult a `cacher::store::SharedCache` if the caller passes one — see
 //! each function's own doc comment for its exact contract (`get`: a hit
 //! skips nodestore, a miss always falls through to a real `Range` rather
@@ -119,6 +126,7 @@ use crate::storage::client::{prefix_range_end, Error as StorageError, StorageCli
 use crate::storage::keys;
 use crate::storage::pb::etcdserverpb as pb;
 use crate::storage::pb::etcdserverpb::RangeRequest;
+use crate::storage::pb::mvccpb;
 use serde_json::{json, Value};
 
 #[derive(Debug, thiserror::Error)]
@@ -438,6 +446,9 @@ pub enum UpdateOutcome {
     Conflict,
     NamespaceMismatch,
     Invalid(Vec<String>),
+    /// [`patch`] only: the `Content-Type` wasn't one of the three real
+    /// patch media types this build understands.
+    UnsupportedPatchType,
 }
 
 /// Replaces an existing object. `namespace: None` for a cluster-scoped
@@ -489,7 +500,31 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
         return Ok(UpdateOutcome::Invalid(violations));
     }
 
-    let mut object = defaulting::apply_defaults(schema, body);
+    let object = defaulting::apply_defaults(schema, body);
+    persist_update(storage, schema, kind, group, version, key, &existing_kv, &existing_object, namespace, object).await
+}
+
+/// The tail [`update`] and [`patch`] share once each has its own
+/// candidate object in hand (a defaulted submitted body for `update`, a
+/// patch-applied one for `patch`): preserve `creationTimestamp`/`uid`
+/// from the existing object (real upstream treats both as immutable
+/// after creation, regardless of what the caller's patch/body touched),
+/// stamp the namespace, then a real optimistic-concurrency `Txn`
+/// compared against the exact revision both callers already read —
+/// a concurrent write between that read and this write loses the race
+/// and gets a real `Conflict`, not a silent overwrite.
+async fn persist_update(
+    storage: &mut StorageClient,
+    schema: &str,
+    kind: &str,
+    group: &str,
+    version: &str,
+    key: String,
+    existing_kv: &mvccpb::KeyValue,
+    existing_object: &Value,
+    namespace: Option<&str>,
+    mut object: Value,
+) -> Result<UpdateOutcome, Error> {
     for field in ["creationTimestamp", "uid"] {
         if let Some(existing_value) = existing_object.pointer(&format!("/metadata/{field}")).cloned() {
             set_metadata_field(&mut object, field, existing_value);
@@ -526,6 +561,93 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
     let revision = resp.header.map(|h| h.revision).unwrap_or(0);
     set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
     Ok(UpdateOutcome::Updated(object))
+}
+
+/// The three real patch media types this build understands, and which
+/// `patch::*` module applies each (`content_type_matches_patch_kind`'s
+/// own doc comment covers the one real narrowing: this build has no
+/// per-resource default patch-strategy concept, so a caller must send an
+/// explicit `Content-Type`, unlike real upstream's own
+/// `kubectl patch`, which defaults to strategic-merge for built-in types
+/// and falls back to merge-patch for CRDs when none is given).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchKind {
+    Json,
+    Merge,
+    StrategicMerge,
+}
+
+/// Real upstream's own three patch `Content-Type` media types
+/// (`k8s.io/apimachinery/pkg/types`): `application/json-patch+json`
+/// (RFC 6902), `application/merge-patch+json` (RFC 7386),
+/// `application/strategic-merge-patch+json` (k8s-specific). Server-Side
+/// Apply's own `application/apply-patch+yaml` isn't recognized — Group
+/// G's own doc comment already names SSA/managedFields as not yet
+/// landed.
+pub fn patch_kind_for_content_type(content_type: &str) -> Option<PatchKind> {
+    match content_type.split(';').next().unwrap_or("").trim() {
+        "application/json-patch+json" => Some(PatchKind::Json),
+        "application/merge-patch+json" => Some(PatchKind::Merge),
+        "application/strategic-merge-patch+json" => Some(PatchKind::StrategicMerge),
+        _ => None,
+    }
+}
+
+/// Applies one of this build's three real patch kinds
+/// ([`crate::patch::json_patch`]/[`crate::patch::merge_patch`]/
+/// [`crate::patch::strategic_merge`], all landed in Group G) to a single
+/// existing object, real optimistic concurrency against the exact
+/// revision just read (the same `Txn`-compared-against-`ModRevision`
+/// idiom [`update`] uses — a `PATCH` needs no client-submitted
+/// `resourceVersion` at all, since the object it patches *is* the
+/// current one this call itself just fetched). `metadata.creationTimestamp`/
+/// `uid`/the resource's own namespace are stamped the same way
+/// [`update`] stamps them, via the shared [`persist_update`] tail.
+/// **Not ported**: a JSON Patch (`test` op) failure or a malformed
+/// patch document surfaces generically through [`Error`] rather than a
+/// dedicated outcome variant — named honestly, matching this build's
+/// existing posture of not yet distinguishing every real upstream error
+/// shape.
+pub async fn patch(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value) -> Result<UpdateOutcome, Error> {
+    let Some(kind) = resolve_kind(group, version, resource) else {
+        return Ok(UpdateOutcome::UnknownResource);
+    };
+    let Some(schema) = protobuf::schema_for_gvk(group, version, kind) else {
+        return Ok(UpdateOutcome::UnknownResource);
+    };
+
+    let key = keys::object_key(group, resource, namespace, name);
+    let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
+    let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
+        return Ok(UpdateOutcome::ObjectNotFound);
+    };
+    let existing_object = decode_stored_object(&existing_kv.value)?;
+
+    let patched = match kind_of_patch {
+        PatchKind::Json => {
+            let mut object = existing_object.clone();
+            if crate::patch::json_patch::apply(&mut object, patch_doc).is_err() {
+                return Ok(UpdateOutcome::Invalid(vec!["the submitted JSON Patch could not be applied".to_string()]));
+            }
+            object
+        }
+        PatchKind::Merge => {
+            let mut object = existing_object.clone();
+            crate::patch::merge_patch::apply(&mut object, patch_doc);
+            object
+        }
+        PatchKind::StrategicMerge => crate::patch::strategic_merge::apply(schema, &existing_object, patch_doc),
+    };
+
+    let mut violations: Vec<String> = validation::validate_required(schema, &patched).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
+    violations.extend(validation::validate_types(schema, &patched).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+    violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
+    if !violations.is_empty() {
+        return Ok(UpdateOutcome::Invalid(violations));
+    }
+
+    let object = defaulting::apply_defaults(schema, &patched);
+    persist_update(storage, schema, kind, group, version, key, &existing_kv, &existing_object, namespace, object).await
 }
 
 /// `scheme::name_format`'s validators, wired to the resources this crate
@@ -743,6 +865,27 @@ mod tests {
     fn name_format_violations_enforces_the_real_serviceaccount_rule() {
         assert!(name_format_violations("", "serviceaccounts", "my.sa-name").is_empty());
         assert!(!name_format_violations("", "serviceaccounts", "My_SA").is_empty());
+    }
+
+    #[test]
+    fn patch_kind_for_content_type_recognizes_all_three_real_media_types() {
+        assert_eq!(patch_kind_for_content_type("application/json-patch+json"), Some(PatchKind::Json));
+        assert_eq!(patch_kind_for_content_type("application/merge-patch+json"), Some(PatchKind::Merge));
+        assert_eq!(patch_kind_for_content_type("application/strategic-merge-patch+json"), Some(PatchKind::StrategicMerge));
+    }
+
+    #[test]
+    fn patch_kind_for_content_type_ignores_charset_parameters() {
+        assert_eq!(patch_kind_for_content_type("application/merge-patch+json; charset=utf-8"), Some(PatchKind::Merge));
+    }
+
+    #[test]
+    fn patch_kind_for_content_type_rejects_unknown_or_ssa_media_types() {
+        assert_eq!(patch_kind_for_content_type("application/json"), None);
+        // Server-Side Apply's own media type isn't recognized -- Group G's
+        // own doc comment already names SSA/managedFields as not landed.
+        assert_eq!(patch_kind_for_content_type("application/apply-patch+yaml"), None);
+        assert_eq!(patch_kind_for_content_type(""), None);
     }
 
     #[test]

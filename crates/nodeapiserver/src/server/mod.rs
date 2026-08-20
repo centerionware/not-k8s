@@ -12,13 +12,14 @@
 //! `/apis/{group}/{version}`, plus `/healthz`/`/readyz`/`/livez` —
 //! `healthz`, real upstream's own per-check response shape) **and for
 //! `GET`/`LIST`/
-//! `CREATE`/`DELETE`/`UPDATE`** (`rest::get`/`rest::list`/`rest::create`/
-//! `rest::delete`/`rest::update`, against real nodestore data) — **every
-//! other resource verb** (`watch`/`patch`/`deletecollection`) **is still
+//! `CREATE`/`DELETE`/`UPDATE`/`PATCH`** (`rest::get`/`rest::list`/
+//! `rest::create`/`rest::delete`/`rest::update`/`rest::patch`, against
+//! real nodestore data), **and a real streaming response for `WATCH`**
+//! against a registered cache — **`deletecollection` alone is still
 //! a bring-up stub** that just echoes the parsed `RequestInfo` — see that
 //! module's own doc comment.
 //! `rest` — the real, generic REST verbs so far: `GET`/`LIST`/`CREATE`/
-//! `DELETE`/`UPDATE`, resolving a resource's Kind from Group A's
+//! `DELETE`/`UPDATE`/`PATCH`, resolving a resource's Kind from Group A's
 //! discovery table, reading straight from nodestore (bypassing the watch
 //! cache — named honestly as a real, valid read strategy, not a
 //! shortcut; see that module's own doc comment for exactly what's in and
@@ -66,12 +67,15 @@
 //! every group/version discovery document actually reachable over HTTP
 //! (including a real `404` for an unknown group/version rather than a
 //! silent fallthrough), `/openapi/v3`, `/version`, aggregated discovery
-//! v2 (negotiated), and real `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`,
-//! gated by opt-in RBAC (Groups H/I). **Not yet landed**: `watch`/
-//! `patch`/`deletecollection`, admission (Group J), the real handler
-//! chain (authn -> authz -> APF -> admission -> REST — a hard
-//! requirement on order, not a style choice, once it exists),
-//! `/openapi/v2`.
+//! v2 (negotiated), and real `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`/
+//! `PATCH`, gated by opt-in RBAC (Groups H/I) — `PATCH` doesn't yet run
+//! Group J admission, a named gap (`listener`'s own doc comment). `watch`
+//! is also real now (a real streaming HTTP response against a
+//! registered cache — this paragraph was stale about that; see
+//! `listener`'s own doc comment for the full, current picture). **Not
+//! yet landed**: `deletecollection`, the real handler chain (authn ->
+//! authz -> APF -> admission -> REST — a hard requirement on order, not
+//! a style choice, once it exists), `/openapi/v2`.
 
 pub mod path;
 pub mod tls;
