@@ -909,25 +909,29 @@ twice for the same root cause. Same pure-decision/real-I/O-step split as
 every other Group J plugin (`server::rest::get` on the target namespace,
 to read its label, is the one I/O step).
 
-`admission::resource_quota` is validating, `CREATE`-only, **pods and
-PersistentVolumeClaims** — a faithful-but-substantially-scoped port of
-real upstream's own `ResourceQuota` plugin
+`admission::resource_quota` is validating, `CREATE`-only, **pods,
+PersistentVolumeClaims, and Services** — a faithful-but-substantially-scoped
+port of real upstream's own `ResourceQuota` plugin
 (`staging/src/k8s.io/apiserver/pkg/admission/plugin/resourcequota/controller.go`
-+ `pkg/quota/v1/evaluator/core/{pods,persistent_volume_claims}.go`,
-fetched and read directly): forbids a `Pod`/`PersistentVolumeClaim`
-`CREATE` that would push a namespace's tracked usage
++ `pkg/quota/v1/evaluator/core/{pods,persistent_volume_claims,services}.go`,
+fetched and read directly): forbids a `Pod`/`PersistentVolumeClaim`/
+`Service` `CREATE` that would push a namespace's tracked usage
 (`pods`/`cpu`/`requests.cpu`/`limits.cpu`/`memory`/`requests.memory`/
 `limits.memory` — real upstream's own `podComputeUsageHelper`,
 restricted to this subset — plus `persistentvolumeclaims`/
 `requests.storage` — real upstream's own `pvcEvaluator.Usage`, minus its
 real per-storage-class resource name family and the alpha
 `RecoverVolumeExpansionFailure`-gated `status.allocatedResources`
-comparison) over any `ResourceQuota`'s own `spec.hard`. A `ResourceQuota`
-only applies to PVCs when it's unscoped (`spec.scopes` empty) — real
-upstream's own `pvcEvaluator.Matches` only consults scopes behind the
-alpha `VolumeAttributesClass` feature gate, so this matches its real
-stable-feature-gate-off default, not a shortcut. Reuses `limit_ranger`'s
-own
+comparison — plus `services`/`services.nodeports`/`services.loadbalancers`
+— real upstream's own `serviceEvaluator.Usage`, ported exactly including
+the real `allocateLoadBalancerNodePorts: false` node-port-counting
+carve-out) over any `ResourceQuota`'s own `spec.hard`. A `ResourceQuota`
+only applies to PVCs/Services when it's unscoped (`spec.scopes` empty) —
+real upstream's own `pvcEvaluator.Matches` only consults scopes behind
+the alpha `VolumeAttributesClass` feature gate, and
+`serviceEvaluator.Matches` never consults scopes at all either way, so
+this matches both evaluators' real stable behavior, not a shortcut.
+Reuses `limit_ranger`'s own
 `pod_requests`/`pod_limits` for the aggregation, since real upstream's
 own quota usage function (`PodUsageFunc`) calls the exact same
 underlying helper `limit_ranger` already ported. Terminal pods
@@ -959,11 +963,12 @@ explicit `namespaces` list or any `namespaceSelector` at all — not an
 evaluation of what the selector actually matches, same as upstream's
 own check). **All six real scope names are now matched (for pods).**
 **Substantially scoped, named honestly**:
-real upstream also tracks services/secrets/configmaps/arbitrary
+real upstream also tracks secrets/configmaps/arbitrary
 `count/<resource>` object counts through a whole per-type `Evaluator`
-registry — only the pod and PVC evaluators are ported; `ephemeral-storage`/
-`hugepages-*`/extended resources, and the PVC evaluator's own
-per-storage-class resource family, aren't tracked; and there is **no
+registry — only the pod, PVC, and service evaluators are ported;
+`ephemeral-storage`/`hugepages-*`/extended resources, and the PVC
+evaluator's own per-storage-class resource family, aren't tracked; and
+there is **no
 persisted `status.used` counter** — usage is recomputed live from a
 fresh `Pod` list on every check rather than an incrementally maintained,
 optimistic-lock-protected running total, which means (unlike real
@@ -975,8 +980,8 @@ same relative position real upstream's own default plugin order uses,
 so quota sees the final, fully-defaulted object.
 
 **Not yet landed**: every other built-in plugin, `ResourceQuota`'s own
-non-pod/PVC evaluators/`spec.scopeSelector`/persisted usage counter
-(above), a
+non-pod/PVC/service evaluators/`spec.scopeSelector`/persisted usage
+counter (above), a
 generic plugin-chain/registry abstraction (today `server::listener`
 hand-calls each plugin directly, not through
 any dispatch table), mutating/validating webhooks, and
