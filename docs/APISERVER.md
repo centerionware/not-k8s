@@ -490,8 +490,20 @@ username convention (`MakeUsername`/`MatchesUsername`) and the real
 namespace-defaulting rule (an unqualified `ServiceAccount` subject
 defaults to its binding's own namespace — meaningless on a
 `ClusterRoleBinding`, which has none, so such a subject must name one
-explicitly there). Also pure, also not wired to real binding objects or
-into `server::listener`. Node authorizer, webhook authorization, and
+explicitly there). `authz::resolve::rules_for(storage, user_name,
+user_groups, namespace)` is the storage-backed half that closes the
+loop: lists real `ClusterRoleBinding`/`RoleBinding` objects (via
+`server::rest::list`, no per-type Go code, the same machinery a real
+request handler uses), keeps the ones whose subjects apply, and resolves
+each one's `RoleRef` to a real `Role`/`ClusterRole`'s rules (via
+`server::rest::get`) — real upstream's own `DefaultRuleResolver`
+(`VisitRulesFor`), ported, with the same non-fatal-per-binding-error,
+purely-additive posture. **Still not wired into `server::listener`**:
+nothing calls `resolve::rules_for` from a real request yet, so every
+request is still served regardless of identity — the one remaining
+piece is an actual authorization decision (`rbac::rules_allow` over
+`resolve::rules_for`'s output) gating `server::rest::get`/`list` in
+`server::listener::handle`. Node authorizer, webhook authorization, and
 SubjectAccessReview/SelfSubjectAccessReview are not started. PKI
 primitives (`rcgen`, `p256`, `x509-parser`, `pem`) are already in-tree
 from `nodecontroller`'s CSR group.
