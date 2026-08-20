@@ -56,10 +56,14 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-/// One resource's watch cache. Not `Clone` — a driver loop owns one
-/// exclusively and applies events to it; readers go through the cheaply
-/// cloneable handles [`list`](WatchCache::list)/[`watch_from`](WatchCache::watch_from)
-/// return instead of needing shared mutable access to this struct itself.
+/// One resource's watch cache. Not `Clone`, not `Sync`-friendly to share
+/// bare — every method here is `&self`/`&mut self` with no internal
+/// locking, on purpose (keeps this type trivially unit-testable with no
+/// async runtime needed for the pure logic). A driver loop that calls
+/// [`Self::apply`] and reader tasks that call [`Self::list`]/
+/// [`Self::watch_from`] concurrently need a lock around the whole thing —
+/// [`SharedCache`] is that lock, and is what real callers should hold
+/// instead of a bare `WatchCache`.
 pub struct WatchCache {
     items: BTreeMap<Vec<u8>, CacheEntry>,
     /// Bounded ring of recent events, oldest first — how a watcher whose
@@ -212,6 +216,66 @@ pub async fn wait_for_revision(rx: &mut watch::Receiver<i64>, target: i64) {
     // wait for; there is no further progress this call could ever see.
 }
 
+/// A [`WatchCache`] behind a lock, cheaply cloneable (an `Arc` clone) —
+/// what a driver loop and its readers actually share. `std::sync::RwLock`,
+/// not `tokio::sync::RwLock`: every `WatchCache` method is synchronous with
+/// no `.await` inside it, so a guard is always released well before any
+/// future would need to yield, and the standard library lock avoids the
+/// async-lock overhead for a critical section this short. Multiple readers
+/// ([`Self::list`], [`Self::watch_from`], [`Self::revision`],
+/// [`Self::revision_watch`]) can hold a read lock concurrently; the driver
+/// loop's [`Self::apply`] briefly takes a write lock per event.
+#[derive(Clone)]
+pub struct SharedCache(std::sync::Arc<std::sync::RwLock<WatchCache>>);
+
+impl SharedCache {
+    pub fn new(cache: WatchCache) -> SharedCache {
+        SharedCache(std::sync::Arc::new(std::sync::RwLock::new(cache)))
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, WatchCache> {
+        self.0.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, WatchCache> {
+        self.0.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub fn revision(&self) -> i64 {
+        self.read().revision()
+    }
+
+    pub fn revision_watch(&self) -> watch::Receiver<i64> {
+        self.read().revision_watch()
+    }
+
+    pub fn list(&self) -> (Vec<(Vec<u8>, CacheEntry)>, i64) {
+        self.read().list()
+    }
+
+    pub fn watch_from(&self, start_revision: i64) -> Result<(Vec<WatchEvent>, broadcast::Receiver<WatchEvent>)> {
+        self.read().watch_from(start_revision)
+    }
+
+    pub fn apply(&self, kind: EventKind, key: Vec<u8>, value: Vec<u8>, revision: i64) {
+        self.write().apply(kind, key, value, revision)
+    }
+
+    /// Swaps in an entirely new snapshot — what a reconnect-and-relist does
+    /// after a watch stream ends or hits [`Error::TooOld`]: the old cache's
+    /// data is stale/gone, so this replaces it wholesale rather than trying
+    /// to reconcile it with a fresh LIST. Existing `watch_from`/
+    /// `revision_watch` subscriptions on the *old* inner `WatchCache` are
+    /// still valid (they hold their own `broadcast`/`watch` receiver
+    /// clones, not a reference back into this `SharedCache`) but will never
+    /// receive another event — same as a real watch ending and the client
+    /// needing to call `watch_from` again against the new cache, which is
+    /// exactly what a relist is.
+    pub fn replace(&self, cache: WatchCache) {
+        *self.write() = cache;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +395,52 @@ mod tests {
         let event = rx.recv().await.unwrap();
         assert_eq!(event.revision, 2);
         assert_eq!(event.key, b"a");
+    }
+
+    /// The whole reason `SharedCache` exists: a reader task calling `list()`
+    /// and a writer task calling `apply()` concurrently, on two independent
+    /// clones of the same underlying cache — genuinely concurrent (spawned
+    /// tasks, not sequential calls on one binding), which is exactly what a
+    /// bare `WatchCache` cannot support across `&self`/`&mut self` at the
+    /// same time.
+    #[tokio::test]
+    async fn shared_cache_allows_concurrent_reads_and_a_writer() {
+        let shared = SharedCache::new(WatchCache::new(vec![], 1, 16, 16));
+        let writer = {
+            let shared = shared.clone();
+            tokio::spawn(async move {
+                for rev in 2..=50 {
+                    shared.apply(EventKind::Added, format!("k{rev}").into_bytes(), b"v".to_vec(), rev);
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        let reader = {
+            let shared = shared.clone();
+            tokio::spawn(async move {
+                for _ in 0..50 {
+                    let (_items, _rev) = shared.list();
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            writer.await.unwrap();
+            reader.await.unwrap();
+        })
+        .await
+        .expect("concurrent read/write must not deadlock");
+        assert_eq!(shared.revision(), 50);
+        assert_eq!(shared.list().0.len(), 49);
+    }
+
+    #[test]
+    fn shared_cache_replace_swaps_in_a_fresh_snapshot() {
+        let shared = SharedCache::new(WatchCache::new(vec![(b"a".to_vec(), entry("old", 1))], 1, 16, 16));
+        shared.replace(WatchCache::new(vec![(b"b".to_vec(), entry("new", 10))], 10, 16, 16));
+        assert_eq!(shared.revision(), 10);
+        let (items, _) = shared.list();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].0, b"b");
     }
 }
