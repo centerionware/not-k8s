@@ -7,14 +7,21 @@
 //! namespace's tracked resource usage over any `ResourceQuota` object's
 //! own `spec.hard` limit.
 //!
-//! **Three of real upstream's evaluators** — real upstream's
-//! `ResourceQuota` also tracks `Secret`/`ConfigMap`/arbitrary
-//! `count/<resource>` object counts through a whole per-type `Evaluator`
-//! registry (`pkg/quota/v1/evaluator/core/*.go`); this crate ports the
-//! pod evaluator (real upstream's own `podEvaluator`), the PVC evaluator
-//! (`pvcEvaluator`), and the service evaluator (`serviceEvaluator`) —
-//! together what the overwhelming majority of real `ResourceQuota` usage
-//! actually targets (compute/storage limits + service-type counts).
+//! **Three specialized evaluators, plus the generic one** — real
+//! upstream's own three "special" evaluators (`pkg/quota/v1/evaluator/core/*.go`:
+//! `podEvaluator`, `pvcEvaluator`, `serviceEvaluator` — everything else
+//! real upstream tracks, `Secret`/`ConfigMap`/arbitrary other resource
+//! kinds, goes through one shared, fully generic
+//! `generic.objectCountEvaluator` keyed on the stable `count/<resource>`
+//! (or `count/<resource>.<group>`) convention instead of a per-type
+//! `Evaluator`. This crate ports all four: the three specialized ones
+//! (compute/storage limits + service-type counts — together what the
+//! overwhelming majority of real `ResourceQuota` usage actually targets)
+//! and [`check_object_count_create`], the generic one, which needs no
+//! per-resource registration decision at all since its `count/...` key
+//! is already generic over `(group, resource)` — real upstream's own
+//! `kubectl create quota --hard=count/secrets=10` or
+//! `count/deployments.apps=5` convention, ported exactly.
 //! **Compute/storage/service resources only** — of real upstream's own
 //! `podResources`/`pvcResources`/`serviceResources` tracked-resource
 //! lists, this port covers `pods` (object count), `cpu`/`requests.cpu`,
@@ -505,6 +512,56 @@ pub fn check_service_create(svc: &Value, existing_services: &[Value], resource_q
     None
 }
 
+/// Real upstream's own `generic.ObjectCountQuotaResourceNameFor`: the
+/// stable `count/<resource>` (core group) or `count/<resource>.<group>`
+/// (every other group) quota-resource-name convention — the same one a
+/// real cluster's own `kubectl create quota ... --hard=count/secrets=10`
+/// or `count/deployments.apps=5` relies on.
+pub fn count_quota_resource_name(group: &str, resource: &str) -> String {
+    if group.is_empty() {
+        format!("count/{resource}")
+    } else {
+        format!("count/{resource}.{group}")
+    }
+}
+
+/// Real upstream's own generic `objectCountEvaluator` (real upstream
+/// registers one of these for essentially every resource kind that
+/// isn't a pod/PVC/service — this port doesn't need a per-resource
+/// registration decision at all, since the `count/...` key it checks
+/// against is fully generic over `(group, resource)`): forbids a
+/// `CREATE` of any resource kind that would push the namespace's object
+/// count for that kind over a `ResourceQuota`'s own
+/// [`count_quota_resource_name`] hard limit, if one is set. Safe to call
+/// unconditionally for any resource `CREATE` — a quota with no matching
+/// `count/...` key simply has nothing to check, the same "nothing to
+/// enforce" no-op every other unmatched case in this module already is.
+/// Unscoped quotas only, matching real upstream's own generic evaluator
+/// (no scope matching there either). Deliberately not called for pods/
+/// PVCs/services in `server::listener` — those already get their own
+/// legacy bare-name object-count tracking (`pods`/`persistentvolumeclaims`/
+/// `services`) from their own dedicated evaluators above; running this
+/// too would just be a redundant, wasted list round trip for those three,
+/// not wrong.
+pub fn check_object_count_create(group: &str, resource: &str, existing_objects: &[Value], resource_quotas: &[Value]) -> Option<String> {
+    let key = count_quota_resource_name(group, resource);
+    let one = Quantity::parse("1").expect("literal \"1\" always parses");
+    let existing_count = Quantity::parse(&existing_objects.len().to_string()).unwrap_or(Quantity::ZERO);
+    let this_usage = BTreeMap::from([(key.clone(), one)]);
+    let existing_usage = BTreeMap::from([(key, existing_count)]);
+
+    for resource_quota in resource_quotas {
+        let has_scopes = resource_quota.get("spec").and_then(|s| s.get("scopes")).and_then(Value::as_array).is_some_and(|s| !s.is_empty());
+        if has_scopes {
+            continue;
+        }
+        if let Some(message) = check_quota(resource_quota, &existing_usage, &this_usage) {
+            return Some(message);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -888,5 +945,48 @@ mod tests {
         let mut q = quota("scoped-quota", json!({"services": "0"}));
         q["spec"]["scopes"] = json!(["BestEffort"]);
         assert!(check_service_create(&svc, &[], &[q]).is_none());
+    }
+
+    #[test]
+    fn count_quota_resource_name_uses_the_real_convention() {
+        assert_eq!(count_quota_resource_name("", "secrets"), "count/secrets");
+        assert_eq!(count_quota_resource_name("apps", "deployments"), "count/deployments.apps");
+    }
+
+    #[test]
+    fn object_count_quota_allows_a_create_within_the_hard_limit() {
+        let q = quota("secrets-quota", json!({"count/secrets": "5"}));
+        let existing: Vec<Value> = (0..3).map(|_| json!({})).collect();
+        assert!(check_object_count_create("", "secrets", &existing, &[q]).is_none());
+    }
+
+    #[test]
+    fn object_count_quota_denies_a_create_that_would_exceed_the_hard_limit() {
+        let q = quota("secrets-quota", json!({"count/secrets": "5"}));
+        let existing: Vec<Value> = (0..5).map(|_| json!({})).collect();
+        let denial = check_object_count_create("", "secrets", &existing, &[q]).expect("5 existing + 1 new > hard limit of 5");
+        assert!(denial.contains("count/secrets"));
+    }
+
+    #[test]
+    fn object_count_quota_uses_the_group_qualified_key_for_a_non_core_resource() {
+        let q = quota("deploy-quota", json!({"count/deployments.apps": "1"}));
+        let existing = vec![json!({})];
+        let denial = check_object_count_create("apps", "deployments", &existing, &[q]).expect("1 existing + 1 new > hard limit of 1");
+        assert!(denial.contains("count/deployments.apps"));
+    }
+
+    #[test]
+    fn object_count_quota_ignores_an_unrelated_hard_limit() {
+        let q = quota("secrets-quota", json!({"count/configmaps": "1"}));
+        let existing = vec![json!({}), json!({}), json!({})];
+        assert!(check_object_count_create("", "secrets", &existing, &[q]).is_none());
+    }
+
+    #[test]
+    fn object_count_quota_does_not_apply_when_scoped() {
+        let mut q = quota("secrets-quota", json!({"count/secrets": "0"}));
+        q["spec"]["scopes"] = json!(["BestEffort"]);
+        assert!(check_object_count_create("", "secrets", &[], &[q]).is_none());
     }
 }

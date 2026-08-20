@@ -962,26 +962,47 @@ check across all four real pod-(anti-)affinity term lists for an
 explicit `namespaces` list or any `namespaceSelector` at all — not an
 evaluation of what the selector actually matches, same as upstream's
 own check). **All six real scope names are now matched (for pods).**
-**Substantially scoped, named honestly**:
-real upstream also tracks secrets/configmaps/arbitrary
-`count/<resource>` object counts through a whole per-type `Evaluator`
-registry — only the pod, PVC, and service evaluators are ported;
-`ephemeral-storage`/`hugepages-*`/extended resources, and the PVC
-evaluator's own per-storage-class resource family, aren't tracked; and
+
+On top of the three specialized evaluators, `admission::resource_quota`
+also ports real upstream's **generic `objectCountEvaluator`**
+(`staging/src/k8s.io/apiserver/pkg/quota/v1/generic/evaluator.go`,
+fetched and read directly): `check_object_count_create` covers *every*
+other resource kind — the same real-upstream mechanism that gives a
+plain `ResourceQuota.spec.hard: {count/secrets: "10"}` its meaning —
+through the stable `count/<resource>` (core group) /
+`count/<resource>.<group>` (other groups) key convention
+(`count_quota_resource_name`, a direct port of real upstream's
+`ObjectCountQuotaResourceNameFor`). Like real upstream's own
+`MatchesNoScopeFunc` for this evaluator, it only ever matches an
+*unscoped* `ResourceQuota` — no scope semantics apply to a bare object
+count. Wired in `server::listener` as the `else` arm alongside the
+pod/PVC/service dispatch: any namespaced `CREATE` whose resource isn't
+one of those three specials runs the generic check instead, listing the
+existing objects of that same `(group, resource)` and every
+`ResourceQuota` in the namespace. Real upstream's own registry
+(`pkg/quota/v1/evaluator/core/registry.go`'s `NewEvaluators()`) confirms
+this is the *complete* real evaluator set — three specials plus the
+generic fallback for everything else — so, unlike the pod/PVC/service
+evaluators (each independently a narrowed port of a specialized real
+evaluator), the generic evaluator itself is now a **complete** port.
+**Substantially scoped, named honestly** in the ways real upstream's
+three specialized evaluators track extra resource families:
+`ephemeral-storage`/`hugepages-*`/extended resources and the PVC
+evaluator's own per-storage-class resource family aren't tracked; and
 there is **no
 persisted `status.used` counter** — usage is recomputed live from a
-fresh `Pod` list on every check rather than an incrementally maintained,
-optimistic-lock-protected running total, which means (unlike real
-upstream) two concurrent `CREATE`s that each individually fit under the
-quota can both be admitted, together exceeding it — a real, narrow,
-accepted concurrency gap, not silently glossed over. Placed last among
-this crate's admission blocks (after `LimitRanger`'s own defaulting), the
-same relative position real upstream's own default plugin order uses,
-so quota sees the final, fully-defaulted object.
+fresh object list on every check rather than an incrementally
+maintained, optimistic-lock-protected running total, which means
+(unlike real upstream) two concurrent `CREATE`s that each individually
+fit under the quota can both be admitted, together exceeding it — a
+real, narrow, accepted concurrency gap, not silently glossed over.
+Placed last among this crate's admission blocks (after `LimitRanger`'s
+own defaulting), the same relative position real upstream's own default
+plugin order uses, so quota sees the final, fully-defaulted object.
 
 **Not yet landed**: every other built-in plugin, `ResourceQuota`'s own
-non-pod/PVC/service evaluators/`spec.scopeSelector`/persisted usage
-counter (above), a
+`spec.scopeSelector`/persisted usage counter/extra resource families
+(above), a
 generic plugin-chain/registry abstraction (today `server::listener`
 hand-calls each plugin directly, not through
 any dispatch table), mutating/validating webhooks, and

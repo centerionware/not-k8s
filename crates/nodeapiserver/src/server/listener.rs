@@ -950,6 +950,38 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                         }
                     }
                 }
+            } else if is_create && !info.namespace.is_empty() {
+                // Group J: `ResourceQuota`'s generic object-count
+                // evaluator (`admission::resource_quota::check_object_count_create`'s
+                // own doc comment) — runs for any namespaced resource
+                // `CREATE` that isn't already covered by the pod/PVC/
+                // service evaluators above (a real, deliberate skip, not
+                // an oversight: those three already track their own
+                // legacy bare-name object count). Safe to run
+                // unconditionally: a namespace with no `ResourceQuota`
+                // referencing this resource's `count/...` key has
+                // nothing to enforce.
+                let existing = match rest::list(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, "", "").await {
+                    Ok(rest::ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
+                    Ok(rest::ListOutcome::UnknownResource) => Vec::new(),
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "admission: listing existing objects for ResourceQuota's object-count check failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                };
+                match rest::list(&mut client, None, "", "v1", "resourcequotas", namespace, "", "").await {
+                    Ok(rest::ListOutcome::Found(list)) => {
+                        let quotas = list["items"].as_array().cloned().unwrap_or_default();
+                        if let Some(denial) = admission::resource_quota::check_object_count_create(&info.api_group, &info.resource, &existing, &quotas) {
+                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &denial)));
+                        }
+                    }
+                    Ok(rest::ListOutcome::UnknownResource) => {}
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "admission: listing resource quotas failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
             }
 
             // Group I: authorization, opt-in (see config::Config::enforce_rbac's
