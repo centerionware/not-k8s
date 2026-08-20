@@ -50,9 +50,10 @@ fn main() {
     assert!(!proto_fields.is_empty(), "parsed zero protobuf fields out of {}", proto_dir.display());
     let proto_out = proto_parse::render(&proto_fields, &proto_messages);
 
-    let (field_meta, gvks) = openapi_parse::parse_all(&openapi_dir);
+    let (field_meta, gvks, required) = openapi_parse::parse_all(&openapi_dir);
     assert!(!gvks.is_empty(), "parsed zero discovery GVKs out of {}", openapi_dir.display());
-    let openapi_out = openapi_parse::render(&field_meta, &gvks);
+    assert!(!required.is_empty(), "parsed zero required-field entries out of {}", openapi_dir.display());
+    let openapi_out = openapi_parse::render(&field_meta, &gvks, &required);
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let out_dir = Path::new(&out_dir);
@@ -60,11 +61,12 @@ fn main() {
     std::fs::write(out_dir.join("openapi_meta.rs"), openapi_out).expect("writing openapi_meta.rs");
 
     println!(
-        "cargo:warning=nodeapiserver codegen: {} protobuf fields across {} messages, {} field-meta entries, {} discovery GVKs",
+        "cargo:warning=nodeapiserver codegen: {} protobuf fields across {} messages, {} field-meta entries, {} discovery GVKs, {} required-field entries",
         proto_fields.len(),
         proto_messages.len(),
         field_meta.len(),
-        gvks.len()
+        gvks.len(),
+        required.len()
     );
 
     println!("cargo:rerun-if-changed=proto/rpc.proto");
