@@ -53,7 +53,10 @@
 //! pipeline — each piece above is wired in ad hoc, in the right relative
 //! order for what exists today, not through one shared dispatcher yet.
 //!
-//! What *is* real now: `/healthz`, and every non-resource discovery route
+//! What *is* real now: `/healthz`/`/readyz`/`/livez` (`server::healthz` —
+//! real upstream's own per-check response shape, `?verbose` included; see
+//! that module's own doc comment for exactly which checks are ported),
+//! and every non-resource discovery route
 //! (`/api`, `/api/{version}`, `/apis`, `/apis/{group}`,
 //! `/apis/{group}/{version}`, `/openapi/v3(/...)`, `/version`) is answered
 //! by `server::discovery`/`openapi`/`version`'s real document builders
@@ -77,7 +80,7 @@ use crate::admission;
 use crate::authz;
 use crate::config::Config;
 use crate::codec::negotiation;
-use crate::server::{discovery, openapi, path, rest, version};
+use crate::server::{discovery, healthz, openapi, path, rest, version};
 use crate::storage::client::StorageClient;
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
@@ -636,8 +639,12 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
 
-    if path_str == "/healthz" {
-        return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "text/plain").body(body_from_bytes(b"ok".to_vec())).unwrap());
+    if let Some(check_name) = path_str.strip_prefix('/').filter(|p| matches!(*p, "healthz" | "readyz" | "livez")) {
+        let verbose = path::parse_query(&query).iter().any(|(k, _)| k == "verbose");
+        let checks = healthz::run_checks(check_name, storage.is_some());
+        let (status, body) = healthz::render(check_name, &checks, verbose);
+        let code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        return Ok(Response::builder().status(code).header("Content-Type", "text/plain; charset=utf-8").header("X-Content-Type-Options", "nosniff").body(body_from_bytes(body.into_bytes())).unwrap());
     }
 
     if method == "GET" || method == "HEAD" {
