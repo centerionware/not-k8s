@@ -213,13 +213,36 @@ first draft: a `(major, type, minor)` tuple order would let a higher major
 version at a *lower* maturity outrank a lower major version at GA
 (`v2alpha1` beating `v1`) — the opposite of upstream's documented
 "GA/alpha/beta first, then major and minor," fixed to `(type, major,
-minor)` with a regression test locking in the exact cross-case. Discovery
-is **group-level only** — the per-version `APIResourceList` needs the
-OpenAPI spec's `paths` section, which Group A hasn't vendored/parsed yet,
-named honestly rather than implied — and **not yet wired into the
-listener's routing**. **Not yet landed**: the handler chain itself, wiring
-discovery into real routing, per-version resource discovery, aggregated
-discovery v2, `/openapi/v2` + `/openapi/v3`, `/version`. Handler-chain order
+minor)` with a regression test locking in the exact cross-case.
+`server::discovery::api_resource_list(group, version)` closes the
+per-version gap this doc used to name here: a new Group A parser
+(`build/discovery_parse.rs`) reads every vendored spec's own `paths`
+section — each verb block's `x-kubernetes-action` + its GVK extension —
+grouped by `(group, version, resource)` with verbs and namespaced-ness
+unioned across every path that resource appears on, with `"watch"`
+synthesized whenever `"list"` is present — real bug caught by CI, not
+assumed correct: the modern GET-collection route's own action is `"list"`,
+never `"watch"` literally (that label only appears on the deprecated
+`/watch/`-prefixed legacy route family this parser skips), but every real
+REST storage supporting list also supports watching that same route.
+Verbs and namespaced-ness are also unioned across every path a resource
+appears on: a namespaced resource's own `/namespaces/{namespace}/...`
+path and its "list across all namespaces" sibling both contribute to one
+entry, not two. Correctly
+tells `/api/v1/namespaces` (list `Namespace` objects) apart from
+`/api/v1/namespaces/{namespace}/pods` (list `Pod`s in a namespace) by the
+real path-parameter name the vendored spec uses (`{name}` vs.
+`{namespace}`), not by string-matching "namespaces" as a special case.
+Named, deliberate skips (the parser's own doc comment): subresources
+(`pods/status`, `pods/log`, ...) and the deprecated `/watch/`-prefixed
+path family. `singularName` uses real kube-apiserver's own RESTMapper
+default (lowercased kind) since no per-type override table is vendored;
+`shortNames`/`categories` aren't emitted at all (not present anywhere in
+the vendored spec). **Still not wired into the listener's routing** —
+`api_resource_list` is a pure builder, not yet reachable by an actual
+`GET /api/v1` request. **Not yet landed**: the handler chain itself,
+wiring discovery into real routing, aggregated discovery v2, `/openapi/v2`
++ `/openapi/v3`, `/version`. Handler-chain order
 (authentication → authorization → priority-and-fairness → admission → REST)
 is a hard requirement, not a style choice. The throwaway e2e rig described
 above should land as part of this group, not after it.
