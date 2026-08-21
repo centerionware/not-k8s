@@ -317,7 +317,9 @@ fn parse_field_line(line: &str, message: &str) -> Option<ProtoField> {
     let is_map = ty.starts_with("map<");
     let repeated = label == Some("repeated") || is_map;
     let proto_type = strip_leading_dot(ty).to_string();
-    let json_name = real_x_kubernetes_json_name(name).unwrap_or_else(|| name.to_string());
+    let json_name = real_x_kubernetes_json_name(name)
+        .or_else(|| real_json_name_override(message, name))
+        .unwrap_or_else(|| name.to_string());
 
     Some(ProtoField {
         message: message.to_string(),
@@ -357,6 +359,59 @@ fn real_x_kubernetes_json_name(proto_field_name: &str) -> Option<String> {
         }
     }
     Some(out)
+}
+
+/// A small number of vendored proto fields are capitalized in a way that
+/// does *not* match real upstream's own JSON key -- go-to-protobuf's
+/// generator capitalizes a proto field name whenever the corresponding Go
+/// struct field's `json:"..."` tag is missing a name (relying on Go's
+/// exported-field convention instead), and for most of those fields real
+/// upstream's actual JSON key genuinely is capitalized too (`FieldsV1.Raw`,
+/// `DaemonEndpoint.Port`, `CustomResourceColumnDefinition.JSONPath` --
+/// confirmed against real cluster API responses, left alone). But a few
+/// fields here have an explicit lowercase `json:"..."` tag in real
+/// upstream's own `types.go` that the generated proto simply didn't carry
+/// through, so the proto's capitalized field name is wrong as a JSON key.
+/// Found live: a `ValidatingAdmissionPolicy` round-tripped through a real
+/// `nodestore` and lost `spec.validations[].expression` (and
+/// `spec.variables[].name`/`.expression`) on `update`, because the codec
+/// used the raw capitalized proto name and silently dropped the
+/// lowercase-keyed JSON field as "unknown". `Webhooks` on both webhook
+/// configuration kinds is the same bug (real upstream key is `webhooks`),
+/// caught by auditing every other capitalized field in the same vendored
+/// package rather than waiting for it to also surface live.
+/// `real_x_kubernetes_json_name` is checked first and takes priority; this
+/// table exists for the fields that pattern doesn't cover.
+fn real_json_name_override(message: &str, proto_field_name: &str) -> Option<String> {
+    let lower = match (message, proto_field_name) {
+        (
+            "io.k8s.api.admissionregistration.v1.Validation"
+            | "io.k8s.api.admissionregistration.v1alpha1.Validation"
+            | "io.k8s.api.admissionregistration.v1beta1.Validation",
+            "Expression",
+        ) => true,
+        (
+            "io.k8s.api.admissionregistration.v1.Variable"
+            | "io.k8s.api.admissionregistration.v1alpha1.Variable"
+            | "io.k8s.api.admissionregistration.v1beta1.Variable",
+            "Name" | "Expression",
+        ) => true,
+        (
+            "io.k8s.api.admissionregistration.v1.MutatingWebhookConfiguration"
+            | "io.k8s.api.admissionregistration.v1beta1.MutatingWebhookConfiguration"
+            | "io.k8s.api.admissionregistration.v1.ValidatingWebhookConfiguration"
+            | "io.k8s.api.admissionregistration.v1beta1.ValidatingWebhookConfiguration",
+            "Webhooks",
+        ) => true,
+        _ => false,
+    };
+    lower.then(|| {
+        let mut chars = proto_field_name.chars();
+        match chars.next() {
+            Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+            None => String::new(),
+        }
+    })
 }
 
 /// Renders the parsed table as Rust source: one `ProtoField`-shaped tuple
