@@ -1681,8 +1681,24 @@ glob for next time. Live-tested end to end
 create/get/list/update/delete all genuinely work, zero new application
 code needed — the generic REST machinery really was already sufficient
 the moment the schema existed.
-2) The availability controller — periodic health checks, real
-`Available`/`Unavailable` conditions. 3) Discovery merge — add
+2) **Partially done.** The availability controller's own *decision
+logic* (`aggregator::availability`) — a faithful port of real upstream's
+own two separate controllers (`github.com/kubernetes/kube-aggregator`'s
+`pkg/controllers/status/{local,remote}`, fetched and read directly, a
+genuinely separate GitHub repo from `kubernetes/kubernetes` this time,
+not a staging package): `local` (`spec.service: null`) is always
+`Available` (`Reason: "Local"`); `remote` runs a real pre-flight chain
+before its own discovery-endpoint dial — service existence
+(`ServiceNotFound`), listening on the configured port for a `ClusterIP`
+service only (`ServicePortError`), `EndpointSlice` existence
+(`EndpointsNotFound`), and at least one ready address on that port
+(`MissingEndpoints`) — exact real `Reason` strings, not invented ones.
+Pure, no I/O — not yet wired to a live reconciliation loop, and the
+actual discovery-endpoint dial (real upstream's own "5 concurrent
+`GET`s, any one succeeding is enough" check, `Reason:
+"FailedDiscoveryCheck"`/`"Passed"`) is left to Phase 4, the natural home
+for it since it needs the same dial primitive the reverse proxy itself
+does. 3) Discovery merge — add
 `APIService`-sourced group-versions as a third input alongside the
 static table and Group K's CRD-sourced ones. 4) The actual reverse
 proxy — resolve `spec.service` against live Service/EndpointSlice data,
