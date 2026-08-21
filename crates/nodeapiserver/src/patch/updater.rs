@@ -32,21 +32,30 @@
 //! time but its new config no longer mentions, while adding back anything
 //! any manager (including the applier's own new config) still claims.
 //!
-//! **Not yet landed**: `Updater.Apply` itself — every piece it needs to
-//! orchestrate now exists (`typed_merge::merge`, `prune`, `update`), what
-//! remains is `Apply`'s own outer orchestration (merge the config in,
-//! record the applying manager's new `Set`, prune, then run `update` for
-//! conflict detection) plus the real `managedFields` wire format
-//! (`ManagedFieldsEntry`, `metadata.managedFields`) and
-//! `server::rest`/`application/apply-patch+yaml` wiring — none of that
-//! exists yet. Also not ported: upstream's own `IgnoreFilter`/
-//! `IgnoredFields` (server-managed field exclusion, e.g. `status`) and
+//! `apply()` now also landed — real `Updater.Apply` itself, the piece
+//! this whole arc has been building toward: merges the incoming apply
+//! configuration into the live object (`typed_merge::merge`), records the
+//! applying manager's own new field set, prunes whatever it stopped
+//! claiming, then runs `update()` for real conflict detection against
+//! every other manager.
+//!
+//! **Not yet landed**: the real `managedFields` wire format
+//! (`ManagedFieldsEntry`, `metadata.managedFields[]` — this module works
+//! entirely in terms of `BTreeMap<String, Set>`, not that wire shape) and
+//! `server::rest`/`application/apply-patch+yaml` wiring to actually reach
+//! `apply()` from a real request — both real, separate, not-yet-started
+//! work. Also not ported: upstream's own `IgnoreFilter`/`IgnoredFields`
+//! (server-managed field exclusion, e.g. `status`) and
 //! `reconcileManagedFieldsWithSchemaChanges` (schema atomic<->granular
 //! migration bookkeeping) — both real, both named as separate
-//! not-yet-started work rather than silently dropped.
+//! not-yet-started work rather than silently dropped. `apply()`'s own doc
+//! comment also names one further simplification specific to it: real
+//! upstream's `VersionedSet` carries an `Applied` bool per manager this
+//! crate's plain `Set`-keyed map has no room for.
 
 use super::fieldset::{ensure_named_fields_are_members, remove_items, set_from_object, Set};
 use super::typed_compare::{compare, Comparison};
+use super::typed_merge::merge as typed_merge;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -236,6 +245,83 @@ fn add_back_dangling_items(schema: &str, merged: &Value, pruned: &Value, last_se
     let last_named = ensure_named_fields_are_members(schema, last_set);
     let to_remove = merged_named.difference(&pruned_named).intersection(&last_named);
     remove_items(schema, merged, &to_remove)
+}
+
+/// The result of a successful [`apply`] — real upstream's own three-tuple
+/// return (`*typed.TypedValue, fieldpath.ManagedFields, error`), minus the
+/// error (a rejected apply is `Err` instead, see [`apply`]'s own doc
+/// comment).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Applied {
+    /// The object to persist — `None` when the apply was a genuine no-op
+    /// (the merged-and-pruned result is byte-for-byte identical to the
+    /// live object), matching real upstream's own `returnInputOnNoop`
+    /// short-circuit (this crate never opts into keeping the input on a
+    /// no-op, so this is always upstream's default behavior, not a
+    /// configurable flag).
+    pub object: Option<Value>,
+    /// Every manager's reconciled `Set`, including the applying manager's
+    /// own new one.
+    pub managers: BTreeMap<String, Set>,
+}
+
+/// Real upstream's `Updater.Apply` (`merge/update.go`, fetched and read
+/// directly) — the piece this whole arc has been building toward.
+/// Single-schema-version scoped like every other function in this module
+/// (see the module doc's own note); `managers` is every manager's
+/// *current* `Set`, including `manager`'s own prior entry if it has one
+/// (real upstream's own `lastSet := managers[manager]`, read **before**
+/// it gets overwritten).
+///
+/// 1. Merges `config` into `live` (`typed_merge::merge` — real upstream's
+///    `liveObject.Merge(configObject)`).
+/// 2. Records the applying manager's own new field set as exactly what
+///    `config` itself sets (`fieldset::set_from_object` — real upstream's
+///    `configObject.ToFieldSet()`), replacing whatever it owned before.
+/// 3. Prunes the merged object (`prune()` above) — whatever the applying
+///    manager owned last time but `config` no longer mentions, and nobody
+///    else claims either, is dropped from the object entirely.
+/// 4. Runs `update()` against every *other* manager for real conflict
+///    detection: a field this apply actually changed or added that
+///    another manager currently owns is a conflict, rejected with
+///    `Err(Vec<Conflict>)` unless `force`.
+///
+/// On success, [`Applied::object`] is `None` exactly when the final
+/// result is identical to `live` (a genuine no-op re-apply) — the caller
+/// should treat that the same as upstream's own callers do: nothing to
+/// write back to storage.
+pub fn apply(
+    schema: &str,
+    live: &Value,
+    config: &Value,
+    managers: &BTreeMap<String, Set>,
+    manager: &str,
+    force: bool,
+) -> Result<Applied, Vec<Conflict>> {
+    let merged = typed_merge(schema, live, config);
+
+    let last_set = managers.get(manager).cloned();
+    let new_set = set_from_object(schema, config);
+    let mut managers = managers.clone();
+    managers.insert(manager.to_string(), new_set);
+
+    let pruned = prune(schema, &merged, &managers, last_set.as_ref());
+
+    let others: BTreeMap<String, Set> = managers
+        .iter()
+        .filter(|(m, _)| m.as_str() != manager)
+        .map(|(m, s)| (m.clone(), s.clone()))
+        .collect();
+    let (mut result, _cmp) = update(schema, live, &pruned, &others, force)?;
+    // `update()`'s own contract (see its doc comment) never touches a
+    // manager excluded from the map handed to it -- add the applying
+    // manager's own entry (set above, step 2) back in.
+    if let Some(set) = managers.get(manager) {
+        result.insert(manager.to_string(), set.clone());
+    }
+
+    let object = if &pruned == live { None } else { Some(pruned) };
+    Ok(Applied { object, managers: result })
 }
 
 #[cfg(test)]
@@ -538,5 +624,76 @@ mod tests {
         let managers = BTreeMap::new();
         let result = prune("io.k8s.api.apps.v1.DeploymentSpec", &merged, &managers, Some(&last_set));
         assert_eq!(result, json!({"replicas": 5}), "minReadySeconds pruned (unclaimed), replicas untouched (never in last_set)");
+    }
+
+    // `apply` -- the real Updater.Apply closing orchestration.
+
+    const SCHEMA: &str = "io.k8s.api.apps.v1.DeploymentSpec";
+
+    #[test]
+    fn apply_a_first_ever_apply_creates_the_field_and_claims_it() {
+        let live = json!({});
+        let config = json!({"replicas": 3});
+        let result = apply(SCHEMA, &live, &config, &BTreeMap::new(), "kubectl-apply", false).unwrap();
+        assert_eq!(result.object, Some(json!({"replicas": 3})));
+        assert!(result.managers.get("kubectl-apply").unwrap().has(&path(&["replicas"])));
+    }
+
+    #[test]
+    fn apply_re_applying_an_identical_config_is_a_real_no_op() {
+        let live = json!({"replicas": 3});
+        let config = json!({"replicas": 3});
+        let managers = BTreeMap::from([("kubectl-apply".to_string(), set_of(&[&["replicas"]]))]);
+        let result = apply(SCHEMA, &live, &config, &managers, "kubectl-apply", false).unwrap();
+        assert_eq!(result.object, None, "merged-and-pruned result is identical to live -- nothing to write back");
+    }
+
+    #[test]
+    fn apply_prunes_a_field_the_new_config_stopped_mentioning() {
+        let live = json!({"replicas": 3, "minReadySeconds": 10});
+        let config = json!({"replicas": 5}); // no longer mentions minReadySeconds
+        let managers = BTreeMap::from([(
+            "kubectl-apply".to_string(),
+            set_of(&[&["replicas"], &["minReadySeconds"]]),
+        )]);
+        let result = apply(SCHEMA, &live, &config, &managers, "kubectl-apply", false).unwrap();
+        assert_eq!(result.object, Some(json!({"replicas": 5})));
+        assert!(!result.managers.get("kubectl-apply").unwrap().has(&path(&["minReadySeconds"])));
+    }
+
+    #[test]
+    fn apply_rejects_a_real_conflict_without_force() {
+        let live = json!({"replicas": 3});
+        let config = json!({"replicas": 5});
+        let managers = BTreeMap::from([("hpa-controller".to_string(), set_of(&[&["replicas"]]))]);
+        let err = apply(SCHEMA, &live, &config, &managers, "kubectl-apply", false)
+            .expect_err("hpa-controller owns replicas, which this apply is changing");
+        assert_eq!(err.len(), 1);
+        assert_eq!(err[0].manager, "hpa-controller");
+    }
+
+    #[test]
+    fn apply_forced_takes_ownership_away_from_the_conflicting_manager() {
+        let live = json!({"replicas": 3});
+        let config = json!({"replicas": 5});
+        let managers = BTreeMap::from([("hpa-controller".to_string(), set_of(&[&["replicas"]]))]);
+        let result = apply(SCHEMA, &live, &config, &managers, "kubectl-apply", true).unwrap();
+        assert_eq!(result.object, Some(json!({"replicas": 5})));
+        assert!(result.managers.get("kubectl-apply").unwrap().has(&path(&["replicas"])));
+        assert!(
+            !result.managers.get("hpa-controller").is_some_and(|s| s.has(&path(&["replicas"]))),
+            "hpa-controller must lose ownership of the field this forced apply just took"
+        );
+    }
+
+    #[test]
+    fn apply_does_not_conflict_over_an_unrelated_field_and_both_managers_survive() {
+        let live = json!({"replicas": 3, "minReadySeconds": 10});
+        let config = json!({"replicas": 5});
+        let managers = BTreeMap::from([("hpa-controller".to_string(), set_of(&[&["minReadySeconds"]]))]);
+        let result = apply(SCHEMA, &live, &config, &managers, "kubectl-apply", false).unwrap();
+        assert_eq!(result.object, Some(json!({"replicas": 5, "minReadySeconds": 10})));
+        assert!(result.managers.get("hpa-controller").unwrap().has(&path(&["minReadySeconds"])));
+        assert!(result.managers.get("kubectl-apply").unwrap().has(&path(&["replicas"])));
     }
 }

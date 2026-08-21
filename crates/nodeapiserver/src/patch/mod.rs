@@ -81,17 +81,23 @@
 //! longer mentions, while adding back anything any manager (including the
 //! applier's own new config) still claims.
 //!
+//! **`updater::apply` now lands `Updater.Apply` itself** — the real
+//! Server-Side Apply orchestration this whole Group G SSA arc has been
+//! building toward across `fieldset`/`typed_merge`/`typed_compare`/
+//! `updater`: merge the incoming config into the live object, record the
+//! applying manager's new field set, prune whatever it stopped claiming,
+//! and run real conflict detection against every other manager. Every
+//! real primitive SSA needs is now landed and composed.
+//!
 //! **Not yet landed**: `$patch`/`$setElementOrder`/
 //! `$deleteFromPrimitiveList` directives (named, deliberate
-//! simplifications — see `strategic_merge`'s own doc comment) and
-//! `Updater.Apply` itself: the real `application/apply-patch+yaml` path.
-//! Every piece `Apply` itself needs to orchestrate is now landed
-//! (`typed_merge::merge`, `updater::prune`, `updater::update`); what
-//! remains is `Apply`'s own outer orchestration (`merge` + `prune` +
-//! `update`, plus recording the applying manager's own new `Set`) and the
-//! real `managedFields` wire format (`ManagedFieldsEntry`) +
-//! `server::rest` wiring around it — see `updater`'s own doc comment for
-//! the precise remaining gap.
+//! simplifications — see `strategic_merge`'s own doc comment), and the
+//! two pieces that would make `updater::apply` reachable from a real
+//! request: the real `managedFields` wire format (`ManagedFieldsEntry`,
+//! `metadata.managedFields[]` — this module works in terms of
+//! `BTreeMap<String, Set>`, not that wire shape) and
+//! `server::rest`/`application/apply-patch+yaml` wiring — see `updater`'s
+//! own doc comment for the precise remaining gap.
 
 pub mod fieldset;
 pub mod json_patch;
