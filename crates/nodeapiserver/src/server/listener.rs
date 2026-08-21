@@ -588,6 +588,57 @@ const UNAUTHENTICATED_GROUP: &str = "system:unauthenticated";
 /// reasoned choice today.
 const BOOT_CACHED_RESOURCES: &[(&str, &str, &str)] = &[("", "v1", "namespaces"), ("", "v1", "pods"), ("", "v1", "services"), ("", "v1", "secrets"), ("", "v1", "configmaps"), ("", "v1", "endpoints"), ("", "v1", "nodes")];
 
+/// Group J: persists `ResourceQuota.status.used` after a successful pod
+/// `CREATE` — real upstream's own `quotaAccessor.UpdateQuotaStatus`
+/// (`plugin/pkg/admission/resourcequota/apis/resourcequota/...`),
+/// scoped to the values [`admission::resource_quota::usage_after_pod_create`]
+/// already computed. A bounded retry (3 attempts) on a real optimistic-
+/// concurrency `Conflict` from `rest::update_status` re-reads the quota
+/// and merges again, same "retry on lost race" posture every other write
+/// path in this crate already uses. **Read-modify-write, not
+/// overwrite**: only the keys `usage_after_pod_create` itself tracks are
+/// replaced in the quota's existing `status.used` map — any keys another
+/// evaluator (PVC/service/generic-count, none of which persist a status
+/// yet, a named follow-up) might already hold there survive untouched.
+/// Every failure (quota vanished, storage error, retries exhausted) is
+/// logged and dropped — a status write is bookkeeping, not the
+/// admission decision itself, which has already succeeded by the time
+/// this runs.
+async fn persist_quota_usage_updates(client: &mut StorageClient, namespace: &str, updates: Vec<(String, std::collections::BTreeMap<String, crate::scheme::quantity::Quantity>)>, path_str: &str) {
+    for (quota_name, new_usage) in updates {
+        for _attempt in 0..3 {
+            let current = match rest::get(client, None, "", "v1", "resourcequotas", Some(namespace), &quota_name).await {
+                Ok(rest::GetOutcome::Found(q)) => q,
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => break,
+                Err(e) => {
+                    warn!(path = %path_str, %quota_name, error = ?e, "admission: reading ResourceQuota to persist status.used failed");
+                    break;
+                }
+            };
+            let mut merged: std::collections::BTreeMap<String, crate::scheme::quantity::Quantity> = current
+                .pointer("/status/used")
+                .and_then(serde_json::Value::as_object)
+                .map(|m| m.iter().filter_map(|(k, v)| v.as_str().and_then(|s| crate::scheme::quantity::Quantity::parse(s).ok()).map(|q| (k.clone(), q))).collect())
+                .unwrap_or_default();
+            for (k, v) in &new_usage {
+                merged.insert(k.clone(), *v);
+            }
+            let mut status_body = current.clone();
+            status_body["status"]["used"] = serde_json::Value::Object(merged.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.to_string()))).collect());
+
+            match rest::update_status(client, "", "v1", "resourcequotas", Some(namespace), &quota_name, &status_body).await {
+                Ok(rest::UpdateOutcome::Updated(_)) => break,
+                Ok(rest::UpdateOutcome::Conflict) => continue,
+                Ok(_) => break,
+                Err(e) => {
+                    warn!(path = %path_str, %quota_name, error = ?e, "admission: persisting ResourceQuota.status.used failed");
+                    break;
+                }
+            }
+        }
+    }
+}
+
 /// Group M: wraps every request with a real `audit::event::build_event`
 /// call, logged rather than delegated back into `handle` itself — this
 /// wrapper needs nothing `handle` doesn't already compute internally
@@ -1198,6 +1249,16 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             } else {
                 None
             };
+            // Populated only for the `pods` evaluator (this slice's own
+            // scope — PVC/service/generic-count status persistence are a
+            // named follow-up, same "one evaluator at a time" pattern
+            // this whole module already used while it grew), consumed
+            // after `rest::create` actually succeeds below. Computing
+            // this here (before creation) rather than re-listing after
+            // is deliberate: it's the exact same existing-usage snapshot
+            // `check_pod_create` just used to allow the request, so the
+            // two stay consistent with each other.
+            let mut quota_usage_updates: Vec<(String, std::collections::BTreeMap<String, crate::scheme::quantity::Quantity>)> = Vec::new();
             if let Some(list_resource) = quota_kind {
                 if let Some(new_object) = body_value.as_ref() {
                     let existing = match rest::list(&mut client, None, "", "v1", list_resource, namespace, "", "").await {
@@ -1218,6 +1279,9 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                             };
                             if let Some(denial) = denial {
                                 return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &denial)));
+                            }
+                            if list_resource == "pods" {
+                                quota_usage_updates = admission::resource_quota::usage_after_pod_create(new_object, &existing, &quotas);
                             }
                         }
                         Ok(rest::ListOutcome::UnknownResource) => {
@@ -1378,7 +1442,19 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                 // happened above, before this branch was even chosen.
                 let body_value = body_value.expect("body_value is Some whenever is_create is true (has_body covers it)");
                 match rest::create(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &body_value).await {
-                    Ok(rest::CreateOutcome::Created(object)) => return Ok(json_response(StatusCode::CREATED, &object)),
+                    Ok(rest::CreateOutcome::Created(object)) => {
+                        // Group J: persist `ResourceQuota.status.used` now
+                        // that the object this usage total was computed
+                        // for is genuinely real. Best-effort — a status
+                        // write failing here must never turn an already-
+                        // succeeded create into an error response; the
+                        // request was correctly admitted regardless of
+                        // whether its bookkeeping write lands.
+                        if let Some(ns) = namespace {
+                            persist_quota_usage_updates(&mut client, ns, quota_usage_updates, &path_str).await;
+                        }
+                        return Ok(json_response(StatusCode::CREATED, &object));
+                    }
                     Ok(rest::CreateOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
                     Ok(rest::CreateOutcome::MissingName) => {
                         return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.name is required (generateName is not supported)")));
