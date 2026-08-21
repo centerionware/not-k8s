@@ -1175,6 +1175,10 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
         // moves it into `read_body_bytes`) — a borrow of `req.headers()`
         // can't outlive that move.
         let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+        // Same reasoning — `GET`/`LIST`'s own `Table` negotiation
+        // (`kubectl get`'s real default `Accept` header) needs this
+        // after `req` may already be gone.
+        let wants_table = req.headers().get("accept").and_then(|v| v.to_str().ok()).and_then(negotiation::negotiate).map(|a| a.wants_table()).unwrap_or(false);
 
         if let Some(mut client) = storage {
             let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
@@ -1574,7 +1578,10 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
 
             if is_get {
                 match rest::get(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
-                    Ok(rest::GetOutcome::Found(object)) => return Ok(json_response(StatusCode::OK, &object)),
+                    Ok(rest::GetOutcome::Found(object)) => {
+                        let body = if wants_table { crate::codec::table::convert_to_table(&object) } else { object };
+                        return Ok(json_response(StatusCode::OK, &body));
+                    }
                     Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
                         return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
                     }
@@ -1585,7 +1592,10 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                 }
             } else if is_list {
                 match rest::list(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector).await {
-                    Ok(rest::ListOutcome::Found(list)) => return Ok(json_response(StatusCode::OK, &list)),
+                    Ok(rest::ListOutcome::Found(list)) => {
+                        let body = if wants_table { crate::codec::table::convert_to_table(&list) } else { list };
+                        return Ok(json_response(StatusCode::OK, &body));
+                    }
                     Ok(rest::ListOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
                     // A malformed selector is the client's fault, not a
                     // server failure — real upstream answers this with a
