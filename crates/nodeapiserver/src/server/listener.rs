@@ -989,6 +989,56 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             }
         };
     }
+    // `PATCH .../status` — the patch counterpart to the `PUT` branch just
+    // above, closing the "PUT-only" gap that branch's own doc comment
+    // named. Same no-admission posture as the `PUT` branch (nothing
+    // applicable exists for a status-only write); the only new outcome
+    // to handle is `Invalid` (a malformed patch document), which
+    // `update_status` never itself returns but `rest::patch_status` can.
+    if info.is_resource_request && info.verb == "patch" && !info.name.is_empty() && info.subresource == "status" {
+        let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let Some(kind_of_patch) = content_type.as_deref().and_then(rest::patch_kind_for_content_type) else {
+            return Ok(json_response(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                &bad_request_status(&path_str, "unsupported or missing Content-Type for PATCH -- use application/json-patch+json, application/merge-patch+json, or application/strategic-merge-patch+json"),
+            ));
+        };
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let patch_doc: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+        return match rest::patch_status(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc).await {
+            Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
+            Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+            Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+            // `rest::patch_status` never itself returns these three --
+            // no client-submitted `resourceVersion` is required (the
+            // object being patched is the one this same call just read,
+            // same reasoning `patch_persist` already established), no
+            // body namespace is ever checked, and `UnsupportedPatchType`
+            // is pre-checked above before `rest::patch_status` is ever
+            // called. Kept exhaustive rather than `unreachable!()`.
+            Ok(rest::UpdateOutcome::MissingResourceVersion) | Ok(rest::UpdateOutcome::NamespaceMismatch) | Ok(rest::UpdateOutcome::UnsupportedPatchType) => {
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "rest::patch_status failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+        };
+    }
     // `deletecollection` is handled in its own branch too, for the same
     // reason `patch` is: it needs no request body at all (unlike
     // `create`/`update`), and reuses [`rest::delete_collection`] rather
