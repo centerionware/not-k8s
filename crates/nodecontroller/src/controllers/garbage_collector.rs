@@ -116,6 +116,21 @@ fn from_partial_metadata(partial: PartialObjectMeta<DynamicObject>) -> DynamicOb
     }
 }
 
+/// `Event<K>` has no `map`-to-a-different-`K` method of its own (its real
+/// `modify()` only mutates a value in place, same type in and out) — this
+/// is the per-variant conversion `Event<PartialObjectMeta<DynamicObject>>`
+/// -> `Event<DynamicObject>` needs instead, applying [`from_partial_metadata`]
+/// to whichever variant actually carries an object.
+fn map_partial_metadata_event(event: Event<PartialObjectMeta<DynamicObject>>) -> Event<DynamicObject> {
+    match event {
+        Event::Apply(obj) => Event::Apply(from_partial_metadata(obj)),
+        Event::Delete(obj) => Event::Delete(from_partial_metadata(obj)),
+        Event::InitApply(obj) => Event::InitApply(from_partial_metadata(obj)),
+        Event::Init => Event::Init,
+        Event::InitDone => Event::InitDone,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ObjRecord {
     uid: String,
@@ -397,7 +412,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 // LIST short avoids holding a long-running watch-list request
                 // while CSI sidecars are trying to establish their own.
                 watcher(api, watcher::Config::default())
-                    .map(|ev| ev.map(from_partial_metadata))
+                    .map(|ev| ev.map(map_partial_metadata_event))
                     .boxed()
             };
             let stream = stream
