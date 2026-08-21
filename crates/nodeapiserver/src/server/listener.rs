@@ -886,6 +886,18 @@ async fn handle_with_audit(
         let info = path::parse(&method, &path_str, &query);
         metrics::record_request(&info.verb, &info.resource, status);
         metrics::record_duration(&info.verb, &info.resource, elapsed);
+        // Group M: `apiserver_response_sizes` — only recorded when the
+        // body's own size is known up front (`size_hint().exact()`,
+        // `None` for a `watch`'s unbounded stream) — see `server::
+        // metrics`'s own doc comment for why that's a real, named,
+        // narrower scope than real upstream's own byte-counting
+        // instrumentation, not a silent gap.
+        {
+            use http_body::Body as _;
+            if let Some(size) = resp.body().size_hint().exact() {
+                metrics::record_response_size(&info.verb, &info.resource, size);
+            }
+        }
 
         // Group M (APF): label the response with which FlowSchema/
         // PriorityLevelConfiguration would govern it, real upstream's own
