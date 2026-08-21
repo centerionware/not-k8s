@@ -747,6 +747,21 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
         (None, Some(open_api_schema)) => apiextensions::schema_defaults::apply_defaults(open_api_schema, body),
         (None, None) => body.clone(),
     };
+
+    // CEL Phase 4: real x-kubernetes-validations rule evaluation against
+    // this actual custom resource instance — runs against the
+    // fully-defaulted object (real upstream's own ordering: a rule
+    // commonly assumes a field already carries its real default, not an
+    // absence), `old_value: None` on `CREATE` (real upstream's own
+    // `oldSelf` is simply unavailable then, matching
+    // `apiextensions::cel_evaluate`'s own doc comment).
+    if let Some(open_api_schema) = &resolved.open_api_schema {
+        let rule_violations = apiextensions::cel_evaluate::validate_object(open_api_schema, &object, None);
+        if !rule_violations.is_empty() {
+            return Ok(CreateOutcome::Invalid(rule_violations.into_iter().map(|v| v.to_string()).collect()));
+        }
+    }
+
     set_metadata_field(&mut object, "creationTimestamp", Value::String(now_rfc3339()));
     set_metadata_field(&mut object, "uid", Value::String(uuid::Uuid::new_v4().to_string()));
     if let Some(ns) = namespace {
@@ -907,6 +922,18 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
         (None, Some(open_api_schema)) => apiextensions::schema_defaults::apply_defaults(open_api_schema, body),
         (None, None) => body.clone(),
     };
+
+    // CEL Phase 4: same real rule evaluation `create`'s own CRD branch
+    // runs, `old_value: Some(&existing_object)` this time — real
+    // upstream's own `oldSelf` binding is exactly the object as it was
+    // immediately before this update.
+    if let Some(open_api_schema) = &resolved.open_api_schema {
+        let rule_violations = apiextensions::cel_evaluate::validate_object(open_api_schema, &object, Some(&existing_object));
+        if !rule_violations.is_empty() {
+            return Ok(UpdateOutcome::Invalid(rule_violations.into_iter().map(|v| v.to_string()).collect()));
+        }
+    }
+
     persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
 }
 
@@ -1214,6 +1241,15 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
         (None, Some(open_api_schema)) => apiextensions::schema_defaults::apply_defaults(open_api_schema, &candidate),
         (None, None) => candidate,
     };
+
+    // CEL Phase 4: same real rule evaluation `create`/`update` both run.
+    if let Some(open_api_schema) = &context.open_api_schema {
+        let rule_violations = apiextensions::cel_evaluate::validate_object(open_api_schema, &object, Some(&context.existing_object));
+        if !rule_violations.is_empty() {
+            return Ok(UpdateOutcome::Invalid(rule_violations.into_iter().map(|v| v.to_string()).collect()));
+        }
+    }
+
     persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object).await
 }
 
