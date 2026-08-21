@@ -884,6 +884,57 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             }
         };
     }
+    // The generic `<resource>/status` subresource — its own branch for
+    // the same reason `PATCH` is: the request body here is the caller's
+    // view of the *whole* object (typically a GET's own response,
+    // status field modified), not a patch document, and only
+    // `rest::update_status`'s narrower "replace `.status` only" write
+    // applies, not the general five-verb block's `rest::update`. **No
+    // Group J admission runs here, named honestly**: every admission
+    // plugin that ever applies to an `Update`-shaped write in this crate
+    // (`namespace_lifecycle`'s Terminating-namespace check,
+    // `LimitRanger`'s PVC-minimum check) is specific to a create/full
+    // object write and has nothing meaningful to say about a status-only
+    // replace, so there's nothing to wire here yet either — same
+    // reasoning `deletecollection`'s own doc comment below already gives
+    // for skipping the same two plugins.
+    if info.is_resource_request && info.verb == "update" && !info.name.is_empty() && info.subresource == "status" {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+        return match rest::update_status(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value).await {
+            Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
+            Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+            Ok(rest::UpdateOutcome::MissingResourceVersion) => {
+                Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.resourceVersion is required for an update")))
+            }
+            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+            // `rest::update_status` never itself returns these three --
+            // it runs no structural validation and never checks a body
+            // namespace (see its own doc comment), and
+            // `UnsupportedPatchType` is `rest::patch`-only. Kept
+            // exhaustive rather than `unreachable!()`.
+            Ok(rest::UpdateOutcome::NamespaceMismatch) | Ok(rest::UpdateOutcome::Invalid(_)) | Ok(rest::UpdateOutcome::UnsupportedPatchType) => {
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "rest::update_status failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+        };
+    }
     // `deletecollection` is handled in its own branch too, for the same
     // reason `patch` is: it needs no request body at all (unlike
     // `create`/`update`), and reuses [`rest::delete_collection`] rather

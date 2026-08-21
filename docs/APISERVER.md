@@ -595,6 +595,25 @@ each piece is wired in ad hoc, in the right relative order, not through
 one shared pipeline), `/openapi/v2`. The throwaway e2e rig described
 above should land as part of this group, not after it.
 
+**The generic `<resource>/status` subresource is real too now**
+(`rest::update_status`, wired into `server::listener` as its own `PUT`
+branch): a faithful port of real upstream's own generic
+`GenericStatusREST` (`k8s.io/apiserver/pkg/registry/generic/registry/
+store.go`) — the submitted body's `.status` field replaces the stored
+object's own, every other top-level field (`spec`, most of `metadata`)
+is ignored, real optimistic concurrency (`metadata.resourceVersion` must
+match). This is the first write path in this crate for status data on
+any resource — nothing could persist a `status` write at all before
+this. **Named, honest scope narrowing**: no structural/type validation
+of the status write (real upstream's own per-type status strategies are
+hand-written Go with no generic table to derive them from, same finding
+that already scoped down `scheme::validation` elsewhere), and no Group J
+admission runs on it — every plugin that ever applies to an
+`Update`-shaped write in this build (`namespace_lifecycle`'s
+Terminating-namespace check, `LimitRanger`'s PVC-minimum check) is about
+a create/full-object write and has nothing to say about a status-only
+replace. `PATCH .../status` isn't wired — only `PUT` today.
+
 **F. Scheme: conversion, defaulting, validation** — **in progress**. The
 largest handwritten chunk. `scheme::defaulting::apply_defaults(schema, value)`
 lands the first slice: recursively fills a JSON object's absent fields from

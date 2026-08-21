@@ -512,6 +512,60 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
     persist_update(storage, schema, kind, group, version, key, &existing_kv, &existing_object, namespace, object).await
 }
 
+/// Real upstream's generic status subresource (`GenericStatusREST`,
+/// `k8s.io/apiserver/pkg/registry/generic/registry/store.go`'s own
+/// `StatusREST`): a `PUT` through `<resource>/status` only ever changes
+/// the object's `status` field — every other top-level field on the
+/// submitted body (`spec`, most of `metadata`) is ignored, the existing
+/// object's own spec/metadata survives untouched apart from the same
+/// `creationTimestamp`/`uid` immutability [`persist_update`] already
+/// enforces for a plain `update`. Same real optimistic concurrency as
+/// `update` (submitted `metadata.resourceVersion` must match).
+///
+/// **Named, honest scope narrowing**: this build runs no
+/// structural/type validation on the status write at all (real
+/// upstream's own per-type status strategies — e.g. Pod's
+/// `ValidatePodStatusUpdate` — are genuinely hand-written Go with no
+/// generic table to derive them from, the same "no vendored enum
+/// constraints" finding that already scoped `scheme::validation` down
+/// elsewhere), and the namespace-mismatch check `update` runs against
+/// the body is skipped (moot here — the body's own `metadata`/`spec` are
+/// never read for anything but `resourceVersion`).
+pub async fn update_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value) -> Result<UpdateOutcome, Error> {
+    let Some(kind) = resolve_kind(group, version, resource) else {
+        return Ok(UpdateOutcome::UnknownResource);
+    };
+    let Some(schema) = protobuf::schema_for_gvk(group, version, kind) else {
+        return Ok(UpdateOutcome::UnknownResource);
+    };
+
+    let key = keys::object_key(group, resource, namespace, name);
+    let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
+    let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
+        return Ok(UpdateOutcome::ObjectNotFound);
+    };
+    let existing_object = decode_stored_object(&existing_kv.value)?;
+
+    let Some(submitted_rv) = body.pointer("/metadata/resourceVersion").and_then(Value::as_str).and_then(|s| s.parse::<i64>().ok()) else {
+        return Ok(UpdateOutcome::MissingResourceVersion);
+    };
+    if submitted_rv != existing_kv.mod_revision {
+        return Ok(UpdateOutcome::Conflict);
+    }
+
+    let mut object = existing_object.clone();
+    match body.get("status") {
+        Some(status) => object["status"] = status.clone(),
+        None => {
+            if let Some(map) = object.as_object_mut() {
+                map.remove("status");
+            }
+        }
+    }
+
+    persist_update(storage, schema, kind, group, version, key, &existing_kv, &existing_object, namespace, object).await
+}
+
 /// The tail [`update`] and [`patch`] share once each has its own
 /// candidate object in hand (a defaulted submitted body for `update`, a
 /// patch-applied one for `patch`): preserve `creationTimestamp`/`uid`
