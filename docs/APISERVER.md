@@ -1642,8 +1642,8 @@ used*:
    for a first working CEL path, named honestly as later phases rather
    than silently out of scope.
 
-**L. Aggregation layer** — **Phases 1, 3, 4 done; Phase 2 partially
-done.** `k8s.io/kube-aggregator`'s own `APIService` mechanism
+**L. Aggregation layer** — **all four phases done.**
+`k8s.io/kube-aggregator`'s own `APIService` mechanism
 (`pkg/apis/apiregistration/v1/types.go` + `pkg/apiserver/handler_proxy.go`,
 fetched and read directly): an `APIService` object names a group-version
 this build stops answering itself and instead reverse-proxies to a
@@ -1753,10 +1753,19 @@ mirroring `crates/nodelet/src/server/prom_metrics.rs`'s own established
 cleanly), one process-wide `Mutex<HashMap<...>>` counter table — this
 crate's own request rate never remotely approaches where a real
 lock-free registry would matter. `apiserver_request_duration_seconds`
-(a histogram) and everything else in that real metrics package
-(`apiserver_current_inflight_requests`, `apiserver_watch_events_total`,
-...) are **not ported**, named honestly as separate, larger pieces of
-work. **APF (FlowSchema/PriorityLevelConfiguration queueing) is
+(a histogram, real upstream's own exact bucket boundaries),
+`apiserver_response_sizes` (real upstream's own exponential buckets,
+recorded from `http_body::Body::size_hint().exact()` — not recorded for
+`watch`'s own unbounded stream, named honestly), and
+`apiserver_watch_events_total` (`group`/`version`/`resource` labels,
+incremented once per event actually encoded and written to a client) are
+now ported too — see `server::metrics`'s own module doc for the exact
+scope. **`apiserver_current_inflight_requests` is deliberately NOT
+ported**, checked and rejected rather than skipped by omission: its real
+semantics measure utilization of real upstream's own APF
+concurrency-limiting semaphore, which this build doesn't have yet —
+faking it from a plain in-flight count would misrepresent what a real
+Prometheus dashboard reader expects it to mean. **APF (FlowSchema/PriorityLevelConfiguration queueing) is
 started**: `flowcontrol::flow_schema` ports real upstream's own
 `FlowSchema` matching (`pkg/util/flowcontrol/rule.go`, fetched and read
 directly) — `matches_flow_schema`/`matches_policy_rule`/`matches_subject`
