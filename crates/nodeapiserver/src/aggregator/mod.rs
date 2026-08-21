@@ -42,32 +42,30 @@
 //! attempted**: this build presenting its own client identity to the
 //! backend (real upstream's own front-proxy `X-Remote-User`/`--proxy-
 //! client-cert-file` chain — `client_tls`'s own doc comment names this
-//! honestly), streaming upgrade support (SPDY/websocket — the same real,
-//! separate gap Group N's exec/attach still has), and discovery merge
-//! (Phase 3, below — an aggregated group's own `/apis/{group}/{version}`
-//! document isn't proxied yet, so `kubectl` won't discover it exists even
-//! though a direct resource request to it now actually works).
+//! honestly), and streaming upgrade support (SPDY/websocket — the same
+//! real, separate gap Group N's exec/attach still has).
 //!
-//! **Phase 3 done (group-level only)** — `aggregator::route::
-//! discoverable_group_versions` lists every stored, non-local
-//! `APIService`, runs the same real pre-flight check `aggregate_proxy`
-//! runs before a dial (fresh every call, same Phase-2-gap reasoning as
-//! `aggregate_proxy` itself), and returns the `(group, version)` pairs
-//! that currently pass; `server::discovery::merged_group_version_map`
-//! takes this as a third merge input alongside the static table and
-//! Group K's CRD-sourced one, wired into `/apis`/`/apis/{group}`.
-//! **Deliberately scoped to group-level discovery only** — `/apis/
-//! {group}/{version}`'s own `APIResourceList` (the actual per-version
-//! resource enumeration) is *not* merged, since unlike a CRD (which
-//! declares its own resource shape up front) only the aggregated backend
-//! itself knows its resource list; real upstream's own equivalent is a
-//! live proxied fetch to the backend's own `/apis/{group}/{version}`,
-//! which isn't wired in yet — a real, named, separate remaining gap.
-//! Net effect: `kubectl api-versions` now genuinely sees an aggregated
-//! group; `kubectl api-resources`/`kubectl get <aggregated-resource>`
-//! discovery-driven tooling (client-go's `RESTMapper`) still won't,
-//! though a request that already knows the resource name works via
-//! Phase 4's dispatch regardless of discovery.
+//! **Phase 3 done, including live resource enumeration.**
+//! `aggregator::route::discoverable_group_versions` lists every stored,
+//! non-local `APIService`, runs the same real pre-flight check
+//! `aggregate_proxy` runs before a dial (fresh every call, same
+//! Phase-2-gap reasoning as `aggregate_proxy` itself), and returns the
+//! `(group, version)` pairs that currently pass; `server::discovery::
+//! merged_group_version_map` takes this as a third merge input alongside
+//! the static table and Group K's CRD-sourced one, wired into `/apis`/
+//! `/apis/{group}` (both discovery shapes — legacy and `apidiscovery.
+//! k8s.io/v2`). **`/apis/{group}/{version}`'s own `APIResourceList` is
+//! now a real live proxied fetch too** — `server::listener::handle`
+//! catches a `route_discovery` `NotFound` for exactly that path shape,
+//! checks whether the `(group, version)` is one of the pre-flight-passing
+//! aggregated pairs already fetched for this request, and if so dials
+//! the backend's own `/apis/{group}/{version}` through the same
+//! `aggregate_proxy` Phase 4 already built — real upstream's own
+//! `checkAPIService`-adjacent posture, reusing the identical dial
+//! machinery rather than a second implementation. Net effect: `kubectl
+//! api-resources`/`kubectl get <aggregated-resource>` now both work
+//! against a real aggregated backend, the same as `kubectl
+//! api-versions` already did.
 //!
 //! **Phase 2's remaining gap**: no live reconciliation loop yet that
 //! actually watches `APIService`/Service/EndpointSlice objects and writes
