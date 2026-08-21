@@ -70,7 +70,16 @@ ring = "0.17"
 # needs "http2" too (client-go and kubectl negotiate h2, and watch
 # multiplexing depends on it — CLAUDE.md's own note on why nodelet's http1-
 # only choice doesn't carry over here).
-hyper = { version = "1", features = ["server", "http1", "http2"] }
+# "client" is Group N's own addition: `proxy::http_client` dials
+# nodelet's kubelet-style server directly (`hyper::client::conn::http1::
+# handshake` over a TLS-wrapped stream), the same low-level raw-IO
+# pattern `crates/nodelet/src/server/exec.rs`'s own upstream-CRI proxy
+# already proved out in this workspace — just TLS-wrapped here instead
+# of plaintext-local, since nodelet's own server is a remote host, not a
+# local socket. Pulls in `want`/`pin-project-lite`/`smallvec` — all
+# already common transitive deps elsewhere in this workspace's
+# dependency tree, not a new dependency risk.
+hyper = { version = "1", features = ["server", "http1", "http2", "client"] }
 hyper-util = { workspace = true, features = ["tokio", "server", "server-auto", "server-graceful"] }
 http = "1"
 http-body-util = "0.1"
