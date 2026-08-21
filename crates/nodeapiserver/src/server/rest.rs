@@ -1316,14 +1316,71 @@ pub enum ApplyOutcome {
 /// (`json_patch`/`merge_patch`/`strategic_merge`) just above; this is a
 /// wholly different real orchestration, not a fourth branch of that one.
 ///
+/// A convenience wrapper combining [`apply_prepare`] and
+/// [`apply_persist`] with no admission step in between — the same shape
+/// [`patch`] is to [`patch_prepare`]/[`patch_persist`]. `server::
+/// listener`'s own real request handler calls the two halves directly
+/// instead, so it can run Group J's `LimitRanger` PVC check against the
+/// real candidate object in between, the same way it already does for
+/// the three-patch-kind `PATCH` path.
+///
 /// See [`ApplyOutcome::UnsupportedForCrd`] for the one real, named gap
-/// this first slice doesn't close.
+/// this doesn't close.
 pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, manager: &str, force: bool, config: &Value) -> Result<ApplyOutcome, Error> {
+    match apply_prepare(storage, group, version, resource, namespace, name, manager, force, config).await? {
+        ApplyPrepareOutcome::Ready(candidate, context) => apply_persist(storage, group, version, resource, namespace, context, candidate).await,
+        ApplyPrepareOutcome::UnknownResource => Ok(ApplyOutcome::UnknownResource),
+        ApplyPrepareOutcome::UnsupportedForCrd => Ok(ApplyOutcome::UnsupportedForCrd),
+        ApplyPrepareOutcome::Conflict(c) => Ok(ApplyOutcome::Conflict(c)),
+        ApplyPrepareOutcome::Invalid(v) => Ok(ApplyOutcome::Invalid(v)),
+        ApplyPrepareOutcome::NoOp(v) => Ok(ApplyOutcome::NoOp(v)),
+    }
+}
+
+/// The context [`apply_prepare`] hands back to [`apply_persist`] once the
+/// merged, pruned, conflict-checked, validated, defaulted candidate is
+/// ready — enough for a caller (`server::listener`) to run Group J
+/// admission (`LimitRanger`'s own PVC check) against the real candidate
+/// in between, the same split [`PatchContext`] already exists for.
+#[derive(Debug)]
+pub struct ApplyContext {
+    schema: &'static str,
+    kind: String,
+    key: String,
+    /// `Some((existing_kv, live))` for an update-on-apply (persisted via
+    /// [`persist_update`]'s update-if-matches `Txn`); `None` for
+    /// create-on-apply (persisted via the same create-only-if-absent
+    /// `Txn` idiom [`create`]'s own doc comment names).
+    existing: Option<(mvccpb::KeyValue, Value)>,
+}
+
+#[derive(Debug)]
+pub enum ApplyPrepareOutcome {
+    Ready(Value, ApplyContext),
+    UnknownResource,
+    UnsupportedForCrd,
+    Conflict(Vec<crate::patch::updater::Conflict>),
+    Invalid(Vec<String>),
+    /// The merged-and-pruned result was identical to what's already
+    /// stored (or, for create-on-apply, `config` was itself empty) —
+    /// nothing to persist, `Value` is what to return to the caller.
+    NoOp(Value),
+}
+
+/// The "prepare" half of [`server_side_apply`]: resolves the resource,
+/// reads the current object (if any), runs the real `updater::apply`
+/// orchestration, rebuilds `managedFields`, and validates/defaults the
+/// result — everything short of the actual `Txn` write, so a caller can
+/// run Group J admission against the real candidate object in between
+/// (`server::listener`'s own `PATCH` branch does exactly this for
+/// `LimitRanger`, mirroring how [`patch_prepare`]/[`patch_persist`]
+/// already split for the same reason).
+pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, manager: &str, force: bool, config: &Value) -> Result<ApplyPrepareOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
-        return Ok(ApplyOutcome::UnknownResource);
+        return Ok(ApplyPrepareOutcome::UnknownResource);
     };
     let Some(schema) = resolved.schema else {
-        return Ok(ApplyOutcome::UnsupportedForCrd);
+        return Ok(ApplyPrepareOutcome::UnsupportedForCrd);
     };
 
     let key = keys::object_key(group, resource, namespace, name);
@@ -1333,10 +1390,7 @@ pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         // Create-on-apply: real upstream's own Apply can create a
         // brand-new object when none exists yet (`liveObject` starts
-        // empty) -- `updater::apply` already supports that structurally,
-        // this is just the storage side (a create-only-if-absent `Txn`,
-        // the same real idiom `create`'s own doc comment names, rather
-        // than `persist_update`'s update-if-matches one).
+        // empty) -- `updater::apply` already supports that structurally.
         let live = json!({});
         let no_prior_managers = std::collections::BTreeMap::new();
         let applied = match crate::patch::updater::apply(schema, &live, config, &no_prior_managers, manager, force) {
@@ -1344,12 +1398,12 @@ pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version
             // Unreachable in practice (an empty prior-managers map can
             // never conflict), kept real rather than `unreachable!()` --
             // `updater::apply`'s own contract doesn't promise this.
-            Err(conflicts) => return Ok(ApplyOutcome::Conflict(conflicts)),
+            Err(conflicts) => return Ok(ApplyPrepareOutcome::Conflict(conflicts)),
         };
         let Some(mut object) = applied.object else {
             // The apply configuration was itself empty (merges to `{}`)
             // -- nothing real to create.
-            return Ok(ApplyOutcome::NoOp(live));
+            return Ok(ApplyPrepareOutcome::NoOp(live));
         };
 
         set_metadata_field(&mut object, "creationTimestamp", Value::String(now_rfc3339()));
@@ -1369,36 +1423,11 @@ pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version
         violations.extend(validation::validate_types(schema, &object).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
         violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
         if !violations.is_empty() {
-            return Ok(ApplyOutcome::Invalid(violations));
+            return Ok(ApplyPrepareOutcome::Invalid(violations));
         }
-        let mut object = defaulting::apply_defaults(schema, &object);
+        let object = defaulting::apply_defaults(schema, &object);
 
-        let object_bytes = protobuf::encode_message(schema, &object)?;
-        let envelope = protobuf::wrap_unknown(&api_version, &resolved.kind, &object_bytes);
-        let compare = pb::Compare {
-            key: key.clone().into_bytes(),
-            result: pb::compare::CompareResult::Equal as i32,
-            target: pb::compare::CompareTarget::Mod as i32,
-            target_union: Some(pb::compare::TargetUnion::ModRevision(0)),
-            range_end: Vec::new(),
-        };
-        let envelope = encrypt_for_storage(storage, group, resource, key.as_bytes(), &envelope)?;
-        let put = pb::PutRequest { key: key.into_bytes(), value: envelope, ..Default::default() };
-        let txn = pb::TxnRequest {
-            compare: vec![compare],
-            success: vec![pb::RequestOp { request: Some(pb::request_op::Request::RequestPut(put)) }],
-            failure: vec![],
-        };
-        let resp = storage.txn(txn).await?;
-        if !resp.succeeded {
-            // Lost the race: something else created this key between our
-            // read above and this write -- report it the same way the
-            // update path's own lost race is reported (see below).
-            return Ok(ApplyOutcome::Conflict(Vec::new()));
-        }
-        let revision = resp.header.map(|h| h.revision).unwrap_or(0);
-        set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
-        return Ok(ApplyOutcome::Applied(object));
+        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: None }));
     };
 
     let live = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
@@ -1415,11 +1444,11 @@ pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version
 
     let applied = match crate::patch::updater::apply(schema, &live, config, &managers, manager, force) {
         Ok(a) => a,
-        Err(conflicts) => return Ok(ApplyOutcome::Conflict(conflicts)),
+        Err(conflicts) => return Ok(ApplyPrepareOutcome::Conflict(conflicts)),
     };
 
     let Some(mut object) = applied.object else {
-        return Ok(ApplyOutcome::NoOp(live));
+        return Ok(ApplyPrepareOutcome::NoOp(live));
     };
 
     let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
@@ -1429,21 +1458,57 @@ pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version
     violations.extend(validation::validate_types(schema, &object).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
     violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
     if !violations.is_empty() {
-        return Ok(ApplyOutcome::Invalid(violations));
+        return Ok(ApplyPrepareOutcome::Invalid(violations));
     }
     let object = defaulting::apply_defaults(schema, &object);
 
-    match persist_update(storage, resolved.schema, &resolved.kind, group, version, resource, key, &existing_kv, &live, namespace, object).await? {
+    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: Some((existing_kv, live)) }))
+}
+
+/// The "persist" half of [`server_side_apply`]: writes `object` (the
+/// candidate [`apply_prepare`] produced, possibly further mutated by
+/// admission in between) with whichever real `Txn` idiom
+/// [`ApplyContext::existing`] calls for.
+pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, context: ApplyContext, mut object: Value) -> Result<ApplyOutcome, Error> {
+    let Some((existing_kv, live)) = context.existing else {
+        let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+        let object_bytes = protobuf::encode_message(context.schema, &object)?;
+        let envelope = protobuf::wrap_unknown(&api_version, &context.kind, &object_bytes);
+        let compare = pb::Compare {
+            key: context.key.clone().into_bytes(),
+            result: pb::compare::CompareResult::Equal as i32,
+            target: pb::compare::CompareTarget::Mod as i32,
+            target_union: Some(pb::compare::TargetUnion::ModRevision(0)),
+            range_end: Vec::new(),
+        };
+        let envelope = encrypt_for_storage(storage, group, resource, context.key.as_bytes(), &envelope)?;
+        let put = pb::PutRequest { key: context.key.into_bytes(), value: envelope, ..Default::default() };
+        let txn = pb::TxnRequest {
+            compare: vec![compare],
+            success: vec![pb::RequestOp { request: Some(pb::request_op::Request::RequestPut(put)) }],
+            failure: vec![],
+        };
+        let resp = storage.txn(txn).await?;
+        if !resp.succeeded {
+            // Lost the race: something else created this key between
+            // `apply_prepare`'s own read and this write.
+            return Ok(ApplyOutcome::Conflict(Vec::new()));
+        }
+        let revision = resp.header.map(|h| h.revision).unwrap_or(0);
+        set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
+        return Ok(ApplyOutcome::Applied(object));
+    };
+
+    match persist_update(storage, Some(context.schema), &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object).await? {
         UpdateOutcome::Updated(v) => Ok(ApplyOutcome::Applied(v)),
-        // Lost the optimistic-concurrency race between our read above and
-        // this write -- a real, if rare, "retry and see fresh conflicts"
-        // situation `updater::apply`'s own conflict detection (against
-        // the `managedFields` this function already read) can't catch by
-        // itself, since it never re-reads storage. Reported the same way
-        // as an ownership conflict (an empty list, since no *manager*
-        // conflict was actually detected) rather than inventing a third
-        // outcome variant this early caller-side distinction doesn't
-        // otherwise need.
+        // Lost the optimistic-concurrency race between `apply_prepare`'s
+        // own read and this write -- a real, if rare, "retry and see
+        // fresh conflicts" situation `updater::apply`'s own conflict
+        // detection can't catch by itself, since it never re-reads
+        // storage. Reported the same way as an ownership conflict (an
+        // empty list, since no *manager* conflict was actually detected)
+        // rather than inventing a third outcome variant this early
+        // caller-side distinction doesn't otherwise need.
         UpdateOutcome::Conflict => Ok(ApplyOutcome::Conflict(Vec::new())),
         other => unreachable!("persist_update only ever returns Updated or Conflict for an already-decoded, already-validated object: {other:?}"),
     }
