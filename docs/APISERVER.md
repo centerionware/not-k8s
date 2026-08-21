@@ -1783,9 +1783,34 @@ used*:
    real upstream's own static `UsesOldSelf`/uncorrelatable-schema
    rejection at CRD-acceptance time (an `oldSelf`-referencing rule that
    can't validly correlate old/new values in some schema shapes).
-5. Wire into Group J: ValidatingAdmissionPolicy/MutatingAdmissionPolicy,
-   and `matchConditions` (its own separate, smaller budget) for webhooks
-   and policy bindings.
+5. Wire into Group J: `ValidatingAdmissionPolicy`/`MutatingAdmissionPolicy`
+   and mutating/validating admission webhooks themselves — both still
+   **not started** (neither resource type exists in this crate at all
+   yet, though both are already real, working generic-REST resources
+   structurally — their own OpenAPI/proto vendoring is already present,
+   the same "generic REST just works once the schema exists" finding
+   Group L Phase 1 made for `APIService`, unverified live but likely
+   true here too). **`matchConditions` itself is landed**: `admission::
+   match_conditions::match_conditions` is a faithful port of real
+   upstream's own `matchconditions.Matcher.Match`
+   (`k8s.io/apiserver/pkg/admission/plugin/webhook/matchconditions/
+   matcher.go`, fetched and read directly) — the real CEL pre-filter
+   shared by both webhooks' and `ValidatingAdmissionPolicy`'s own
+   `spec.matchConditions`, all conditions must evaluate `true`, the
+   first real `false` short-circuits the rest even past an earlier
+   condition's own evaluation error, `FailurePolicy::Fail`/`Ignore`
+   both real. Built on `cel_ext::eval_bool_with_vars`/
+   `eval_bool_with_vars_and_deadline`, a real generalization of
+   `eval_bool`/`eval_bool_with_deadline` to an arbitrary named-variable
+   set (`object`/`oldObject`/`request`/`params`, not just `self`/
+   `oldSelf`) — landed in the same PR, `eval_bool`/`eval_bool_with_deadline`
+   now thin wrappers around it, behavior unchanged. **Not yet wired to
+   anything real**: this is the standalone primitive; constructing the
+   real `object`/`oldObject`/`request`/`params` CEL variables from an
+   actual admission request, and the separate `resourceRules`/
+   `namespaceSelector`/`objectSelector` matching engine
+   `ValidatingAdmissionPolicy`/webhooks both also need, remain real,
+   separate, not-yet-started work.
 6. Kubernetes' own CEL extension library (string/list helpers beyond
    base CEL, `isSorted`, quantity parsing, ...) and type-checking a rule
    against its declared schema at CRD-acceptance time (catching a rule
