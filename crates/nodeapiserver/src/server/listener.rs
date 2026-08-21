@@ -96,6 +96,7 @@
 
 use crate::admission;
 use crate::authz;
+use crate::flowcontrol;
 use crate::config::Config;
 use crate::codec::negotiation;
 use crate::server::{discovery, healthz, metrics, openapi, path, rest, version};
@@ -610,10 +611,16 @@ async fn handle_with_audit(req: Request<Incoming>, storage: Option<StorageClient
     let query = req.uri().query().unwrap_or("").to_string();
     let user_agent = req.headers().get("user-agent").and_then(|v| v.to_str().ok()).map(str::to_string);
     let audit_identity = identity.clone();
+    // Group M (APF): a cheap clone (wraps a `tonic::transport::Channel`,
+    // same reasoning PR #107's watch-RBAC-gating clone already
+    // established) so flow-schema resolution below has its own
+    // connection independent of whatever `handle()` does with the one it
+    // owns.
+    let storage_for_pf = storage.clone();
 
-    let response = handle(req, storage, cache_registry, identity, enforce_rbac).await;
+    let mut response = handle(req, storage, cache_registry, identity, enforce_rbac).await;
 
-    if let Ok(resp) = &response {
+    if let Ok(resp) = &mut response {
         let status = resp.status().as_u16();
         log_audit_event(&method, &path_str, &query, user_agent.as_deref(), audit_identity.as_ref(), &peer, status);
         // Group M: `/metrics`'s own request counter (`server::metrics`) —
@@ -624,6 +631,41 @@ async fn handle_with_audit(req: Request<Incoming>, storage: Option<StorageClient
         // own convention for that case.
         let info = path::parse(&method, &path_str, &query);
         metrics::record_request(&info.verb, &info.resource, status);
+
+        // Group M (APF): label the response with which FlowSchema/
+        // PriorityLevelConfiguration would govern it, real upstream's own
+        // observable behavior even before this build does any actual
+        // queuing/limiting — see `flowcontrol::resolve`'s own doc comment.
+        // Only for real resource/non-resource requests handled past
+        // discovery (matching real upstream's own filter chain scope);
+        // skipped entirely when there's no storage connection to resolve
+        // against.
+        if let Some(mut client) = storage_for_pf {
+            let (user_name, user_groups): (&str, Vec<String>) = match audit_identity.as_ref() {
+                Some(id) => (id.name.as_str(), id.groups.clone()),
+                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+            };
+            let digest = flowcontrol::flow_schema::RequestDigest {
+                user_name,
+                user_groups: &user_groups,
+                verb: &info.verb,
+                is_resource_request: info.is_resource_request,
+                api_group: &info.api_group,
+                resource: &info.resource,
+                subresource: &info.subresource,
+                namespace: &info.namespace,
+                path: &path_str,
+            };
+            if let Some(selected) = flowcontrol::resolve::select_for_request(&mut client, &digest).await {
+                if let (Ok(fs), Ok(pl)) = (
+                    hyper::header::HeaderValue::from_str(&selected.flow_schema_uid),
+                    hyper::header::HeaderValue::from_str(&selected.priority_level_uid),
+                ) {
+                    resp.headers_mut().insert(flowcontrol::resolve::FLOW_SCHEMA_UID_HEADER, fs);
+                    resp.headers_mut().insert(flowcontrol::resolve::PRIORITY_LEVEL_UID_HEADER, pl);
+                }
+            }
+        }
     }
     response
 }
