@@ -1718,10 +1718,33 @@ used*:
    glossed over, and not caught by any test since `cel.bind()` isn't
    real, documented `x-kubernetes-validations` authoring practice.
    **Every real primitive `cost()` itself needs is now complete and
-   tested.** What remains for Phase 3 as a whole: wiring a final result
-   into CRD acceptance (compare against `RuntimeCELCostBudget`/
-   `PerCallLimit`, reject a rule whose worst case exceeds budget) — a
-   real, separate, later slice.
+   tested.** `cel_ext::budget::check_rule_cost` is the real accept/reject
+   decision itself, a faithful (if deliberately scoped) port of real
+   upstream's own CRD-acceptance-time static check
+   (`pkg/apis/apiextensions/validation/validation.go`'s own
+   `ValidateCustomResourceDefinitionOpenAPISchema`, fetched and read
+   directly): a rule whose own `cost().max` exceeds real upstream's own
+   `StaticEstimatedCostLimit` (`10_000_000` — confirmed directly,
+   numerically identical to `RuntimeCELCostBudget` but a conceptually
+   distinct constant: one bounds a rule's estimated worst case at
+   CRD-acceptance time, the other bounds actual accumulated runtime cost
+   against one real object) is rejected. **Real, named scope gap found
+   while researching this**: real upstream's own actual comparison is
+   `cr.MaxCost * cardinalityCost.MaxCardinality`
+   (`getExpressionCost`) — accounting for a rule nested under a
+   repeating array/map schema running once per element, not just once.
+   This crate has no `MaxCardinality`/`CELSchemaContext`-equivalent
+   cardinality-propagation concept yet (distinct from `DeclType::
+   max_elements`, which only bounds one node's own element count, not
+   the product of every ancestor's own bound) — real, separate,
+   not-yet-started work; `check_rule_cost` compares a rule's raw,
+   single-evaluation cost only, still a real, useful check on its own.
+   Also not ported: real upstream's own static `ast.OutputType() !=
+   cel.BoolType` rejection (this crate's type-checker-free parser can
+   only discover a non-bool rule at runtime, via `eval_bool`'s existing
+   `Error::NotBool`). **Still not wired into any real CRD-acceptance
+   request path** — finding where in `apiextensions`'s own
+   CRD-establishing flow to call this from is the real remaining work.
 4. Wire into Group K: `x-kubernetes-validations` evaluated in
    `server::rest::create`/`update`/`patch_persist`'s CRD branch, after
    pruning and required/type validation (`apiextensions::
