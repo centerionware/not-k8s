@@ -119,6 +119,7 @@ pub fn kubelet_port(node: &Value, default_port: u16) -> u16 {
         .unwrap_or(default_port)
 }
 
+#[derive(Debug, PartialEq)]
 pub struct Target {
     pub scheme: &'static str,
     pub host: String,
