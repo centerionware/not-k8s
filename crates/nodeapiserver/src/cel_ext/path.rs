@@ -45,11 +45,17 @@ impl Scope {
         Self::default()
     }
 
-    fn push(&mut self, name: &str, path: Vec<String>) {
+    /// `pub(crate)` rather than private — [`super::cost_walk::Coster`]'s
+    /// own `Comprehension` dispatch needs to push/pop a binding directly
+    /// (not through [`with_binding`] below, which would need to borrow
+    /// `Coster`'s own `scope` field and the rest of `Coster` mutably at
+    /// the same time — a real borrow-checker conflict `with_binding`'s
+    /// own closure-based API can't route around here).
+    pub(crate) fn push(&mut self, name: &str, path: Vec<String>) {
         self.bindings.entry(name.to_string()).or_default().push(path);
     }
 
-    fn pop(&mut self, name: &str) {
+    pub(crate) fn pop(&mut self, name: &str) {
         if let Some(stack) = self.bindings.get_mut(name) {
             stack.pop();
         }
