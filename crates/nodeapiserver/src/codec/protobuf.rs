@@ -902,6 +902,50 @@ mod tests {
         assert_eq!(decoded, value);
     }
 
+    /// The second real bug the same live round trip caught, right after the
+    /// first: `Validation.Expression` and `Variable.Name`/`.Expression` are
+    /// capitalized in the vendored proto (a go-to-protobuf quirk, see
+    /// `real_json_name_override`'s own doc comment in `build/proto_parse.rs`)
+    /// but real upstream's actual JSON keys are lowercase -- `update` failed
+    /// validation with "spec.validations[0].expression: Required value"
+    /// because the codec wrote the object with a capitalized key nothing
+    /// downstream recognized.
+    #[test]
+    fn validation_and_variable_round_trip_their_real_lowercase_json_keys() {
+        let validation = "io.k8s.api.admissionregistration.v1.Validation";
+        let value = json!({
+            "expression": "object.spec.replicas <= 5",
+            "message": "too many replicas",
+        });
+        let encoded = encode_message(validation, &value).unwrap();
+        let decoded = decode_message(validation, &encoded).unwrap();
+        assert_eq!(decoded, value);
+
+        let variable = "io.k8s.api.admissionregistration.v1.Variable";
+        let value = json!({
+            "name": "replicas",
+            "expression": "object.spec.replicas",
+        });
+        let encoded = encode_message(variable, &value).unwrap();
+        let decoded = decode_message(variable, &encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    /// Same class of bug as above, on `MutatingWebhookConfiguration`'s and
+    /// `ValidatingWebhookConfiguration`'s own `Webhooks` field -- real
+    /// upstream's JSON key is lowercase `webhooks`.
+    #[test]
+    fn validating_webhook_configuration_round_trips_lowercase_webhooks_key() {
+        let message = "io.k8s.api.admissionregistration.v1.ValidatingWebhookConfiguration";
+        let value = json!({
+            "metadata": {"name": "my-config"},
+            "webhooks": [],
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
+
     #[test]
     fn a_simple_object_meta_round_trips() {
         let message = "io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta";
