@@ -20,14 +20,26 @@
 //! endpoint dial `remote`'s own controller does *after* pre-flight
 //! passes isn't attempted here either (naturally Phase 4's job, the same
 //! `proxy::http_client` primitive the eventual reverse proxy needs too).
+//! **Phase 4 partially started** — `proxy_target::resolve` is the pure
+//! `spec.service` -> real dial `Target` resolution (`proxy::pod_log::
+//! Target` reused directly), choosing real upstream's own
+//! `ClusterIP`-dial strategy (`NewClusterIPServiceResolver`, not the
+//! endpoint-resolving one) since `crates/nodeproxy` already gives this
+//! build real `ClusterIP` routing to rely on — see that module's own
+//! doc comment for the full reasoning. Not yet wired to a live dial
+//! (`proxy::http_client`) or a real request route in `server::listener`;
+//! per-`APIService` TLS trust (`spec.caBundle`/`.insecureSkipTLSVerify`)
+//! isn't attempted yet either.
+//!
+//! **Real build-order correction, found while scoping Phases 3/4**:
+//! `docs/APISERVER.md`'s own Group L section explains why Phase 4 (this
+//! one) has to land before Phase 3 (discovery merge) despite the
+//! numbering — the reverse of every other group's own order so far.
+//!
 //! See `docs/APISERVER.md`'s own Group L section (right after Group K)
-//! for the full plan: why this workspace is unusually well-positioned
-//! for the reverse-proxy half already (a real, live Service/
-//! EndpointSlice watch plus `crates/nodeproxy` in the same repo, and
-//! `proxy::http_client`/`proxy::client_tls` — Group N's own
-//! already-landed dial-and-relay primitives), and how discovery merge
-//! (Phase 3) would likely reuse Group K's own `discovery::*_with_crds`
-//! shape as a third merge input rather than a third parallel
-//! implementation.
+//! for the full plan, including how discovery merge (Phase 3) would
+//! likely reuse Group K's own `discovery::*_with_crds` shape as a third
+//! merge input rather than a third parallel implementation.
 
 pub mod availability;
+pub mod proxy_target;
