@@ -22,23 +22,30 @@
 //! added, this is where the per-version cache would need to come back.
 //!
 //! Landed here: `update()` (the shared conflict-detection/bookkeeping core
-//! both `Update` and `Apply` build on) and `apply_update()` (real upstream's
+//! both `Update` and `Apply` build on), `apply_update()` (real upstream's
 //! `Updater.Update` — the PATCH/PUT path, which always calls `update()` with
-//! `force: true`, since only `Apply` itself ever rejects on conflict).
-//! **Not yet landed**: `Updater.Apply` itself, which additionally needs
-//! `liveObject.Merge(configObject)` (already have — `typed_merge::merge`)
-//! and a real `prune()` step (`RemoveItems`/`addBackOwnedItems`/
-//! `addBackDanglingItems`) that needs a `Set`-driven "remove everything at
-//! these paths" operation on a `Value` this crate doesn't have yet, plus the
-//! real `managedFields` wire format (`ManagedFieldsEntry`,
-//! `metadata.managedFields`) and `server::rest`/`application/apply-patch+yaml`
-//! wiring — none of that exists yet either. Also not ported: upstream's own
-//! `IgnoreFilter`/`IgnoredFields` (server-managed field exclusion, e.g.
-//! `status`) and `reconcileManagedFieldsWithSchemaChanges` (schema
-//! atomic<->granular migration bookkeeping) — both real, both named as
-//! separate not-yet-started work rather than silently dropped.
+//! `force: true`, since only `Apply` itself ever rejects on conflict), and
+//! `prune()` (real upstream's `prune`/`addBackOwnedItems`/
+//! `addBackDanglingItems`, using `fieldset::remove_items`/
+//! `ensure_named_fields_are_members`) — the step `Apply` runs on the
+//! just-merged object to drop whatever the applying manager owned last
+//! time but its new config no longer mentions, while adding back anything
+//! any manager (including the applier's own new config) still claims.
+//!
+//! **Not yet landed**: `Updater.Apply` itself — every piece it needs to
+//! orchestrate now exists (`typed_merge::merge`, `prune`, `update`), what
+//! remains is `Apply`'s own outer orchestration (merge the config in,
+//! record the applying manager's new `Set`, prune, then run `update` for
+//! conflict detection) plus the real `managedFields` wire format
+//! (`ManagedFieldsEntry`, `metadata.managedFields`) and
+//! `server::rest`/`application/apply-patch+yaml` wiring — none of that
+//! exists yet. Also not ported: upstream's own `IgnoreFilter`/
+//! `IgnoredFields` (server-managed field exclusion, e.g. `status`) and
+//! `reconcileManagedFieldsWithSchemaChanges` (schema atomic<->granular
+//! migration bookkeeping) — both real, both named as separate
+//! not-yet-started work rather than silently dropped.
 
-use super::fieldset::Set;
+use super::fieldset::{ensure_named_fields_are_members, remove_items, set_from_object, Set};
 use super::typed_compare::{compare, Comparison};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -161,6 +168,74 @@ pub fn apply_update(
         result.insert(manager.to_string(), set);
     }
     result
+}
+
+/// Real upstream's `(*Updater).prune` (`merge/update.go`, fetched and read
+/// directly), single-schema-version scoped like `update`/`apply_update`
+/// above (no `Converter` — every conversion step real upstream's own
+/// `prune`/`addBackOwnedItems`/`addBackDanglingItems` perform collapses to
+/// the identity here). Called by `Updater.Apply` **before** `update()`, on
+/// the just-merged object, to drop whatever the applying manager owned
+/// last time (`last_set`) but the new apply configuration no longer
+/// mentions at all — real Server-Side Apply's own "fields you stop
+/// applying get removed" contract, not merely "fields you stop applying
+/// stop being *owned*" (`update()` alone only ever adjusts ownership
+/// bookkeeping, never removes a value from the object).
+///
+/// `managers` must already include the applying manager's own **new**
+/// `Set` (the field set of the incoming apply configuration) — matches
+/// real upstream's own call order inside `Apply`, which stores
+/// `managers[manager] = ...` before calling `prune`.
+///
+/// No pruning at all on a first-ever apply (`last_set` is `None` or
+/// empty) — matches real upstream's own `if lastSet == nil ||
+/// lastSet.Set().Empty() { return merged, nil }` short-circuit.
+pub fn prune(schema: &str, merged: &Value, managers: &BTreeMap<String, Set>, last_set: Option<&Set>) -> Value {
+    let Some(last_set) = last_set else {
+        return merged.clone();
+    };
+    if last_set.is_empty() {
+        return merged.clone();
+    }
+
+    let named_last = ensure_named_fields_are_members(schema, last_set);
+    let pruned = remove_items(schema, merged, &named_last);
+    let pruned = add_back_owned_items(schema, merged, &pruned, managers);
+    add_back_dangling_items(schema, merged, &pruned, last_set)
+}
+
+/// Real upstream's `addBackOwnedItems`/`addBackOwnedItemsForVersion`: adds
+/// back any field `remove_items` above just dropped that some manager
+/// (including the applying manager's own new configuration, already
+/// present in `managers` — see `prune`'s own doc comment) still claims to
+/// own. Recomputed from scratch against the original `merged`, not
+/// incrementally against `pruned` — matches real upstream's own
+/// `merged.RemoveItems(mergedSet.Difference(prunedSet.Union(managed)))`.
+fn add_back_owned_items(schema: &str, merged: &Value, pruned: &Value, managers: &BTreeMap<String, Set>) -> Value {
+    let merged_named = ensure_named_fields_are_members(schema, &set_from_object(schema, merged));
+    let pruned_named = ensure_named_fields_are_members(schema, &set_from_object(schema, pruned));
+    let mut managed = Set::new();
+    for set in managers.values() {
+        managed = managed.union(set);
+    }
+    let managed_named = ensure_named_fields_are_members(schema, &managed);
+    let to_remove = merged_named.difference(&pruned_named.union(&managed_named));
+    remove_items(schema, merged, &to_remove)
+}
+
+/// Real upstream's `addBackDanglingItems`: a defensive final pass, only
+/// ever able to matter when something upstream of this crate's own
+/// single-version scope diverges the pipeline's intermediate steps (real
+/// upstream's own comment: fields "unowned or ... owned by Updaters" that
+/// `prune`'s earlier steps shouldn't have dropped) — re-adds anything
+/// still missing from `pruned` relative to `merged` that isn't actually
+/// part of what the applying manager previously owned (`last_set`).
+fn add_back_dangling_items(schema: &str, merged: &Value, pruned: &Value, last_set: &Set) -> Value {
+    let merged_named = ensure_named_fields_are_members(schema, &set_from_object(schema, merged));
+    let pruned_named = ensure_named_fields_are_members(schema, &set_from_object(schema, pruned));
+    let last_named = ensure_named_fields_are_members(schema, last_set);
+    let to_remove = merged_named.difference(&pruned_named).intersection(&last_named);
+    remove_items(schema, merged, &to_remove)
 }
 
 #[cfg(test)]
@@ -391,5 +466,77 @@ mod tests {
             !result.contains_key("kubectl-edit"),
             "removed its only owned field and added nothing else — dropped entirely"
         );
+    }
+
+    // `prune`
+
+    fn set_of(paths: &[&[&str]]) -> Set {
+        let mut s = Set::new();
+        for p in paths {
+            s.insert(&path(p));
+        }
+        s
+    }
+
+    #[test]
+    fn prune_does_nothing_on_a_first_ever_apply() {
+        let merged = json!({"replicas": 3});
+        let result = prune("io.k8s.api.apps.v1.DeploymentSpec", &merged, &BTreeMap::new(), None);
+        assert_eq!(result, merged);
+    }
+
+    #[test]
+    fn prune_does_nothing_when_last_set_is_empty() {
+        let merged = json!({"replicas": 3});
+        let empty = Set::new();
+        let result = prune("io.k8s.api.apps.v1.DeploymentSpec", &merged, &BTreeMap::new(), Some(&empty));
+        assert_eq!(result, merged);
+    }
+
+    #[test]
+    fn prune_drops_a_field_the_applier_owned_before_but_no_longer_claims() {
+        // The applier previously owned "minReadySeconds" but this apply's
+        // config -- now merged into `merged` at whatever value it left it
+        // at -- no longer mentions it, and nobody else claims it either.
+        let merged = json!({"replicas": 5, "minReadySeconds": 10});
+        let last_set = set_of(&[&["replicas"], &["minReadySeconds"]]);
+        let managers = BTreeMap::from([("kubectl-apply".to_string(), set_of(&[&["replicas"]]))]);
+        let result = prune("io.k8s.api.apps.v1.DeploymentSpec", &merged, &managers, Some(&last_set));
+        assert_eq!(result, json!({"replicas": 5}));
+    }
+
+    #[test]
+    fn prune_keeps_a_field_the_applier_still_claims() {
+        let merged = json!({"replicas": 5, "minReadySeconds": 10});
+        let last_set = set_of(&[&["replicas"], &["minReadySeconds"]]);
+        let managers = BTreeMap::from([(
+            "kubectl-apply".to_string(),
+            set_of(&[&["replicas"], &["minReadySeconds"]]),
+        )]);
+        let result = prune("io.k8s.api.apps.v1.DeploymentSpec", &merged, &managers, Some(&last_set));
+        assert_eq!(result, merged, "still claimed by kubectl-apply's own new config, must survive");
+    }
+
+    #[test]
+    fn prune_keeps_a_field_dropped_by_the_applier_but_claimed_by_someone_else() {
+        let merged = json!({"replicas": 5, "minReadySeconds": 10});
+        let last_set = set_of(&[&["replicas"], &["minReadySeconds"]]);
+        let managers = BTreeMap::from([
+            ("kubectl-apply".to_string(), set_of(&[&["replicas"]])),
+            ("hpa-controller".to_string(), set_of(&[&["minReadySeconds"]])),
+        ]);
+        let result = prune("io.k8s.api.apps.v1.DeploymentSpec", &merged, &managers, Some(&last_set));
+        assert_eq!(result, merged, "hpa-controller still owns minReadySeconds, must survive");
+    }
+
+    #[test]
+    fn prune_never_touches_a_field_the_applier_never_previously_owned() {
+        // "replicas" isn't in last_set at all -- prune must leave it
+        // alone regardless of who owns what now.
+        let merged = json!({"replicas": 5, "minReadySeconds": 10});
+        let last_set = set_of(&[&["minReadySeconds"]]);
+        let managers = BTreeMap::new();
+        let result = prune("io.k8s.api.apps.v1.DeploymentSpec", &merged, &managers, Some(&last_set));
+        assert_eq!(result, json!({"replicas": 5}), "minReadySeconds pruned (unclaimed), replicas untouched (never in last_set)");
     }
 }
