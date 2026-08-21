@@ -94,6 +94,44 @@ impl DeclType {
     }
 }
 
+/// Real upstream's own `sizeEstimator.EstimateSize`
+/// (`k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/
+/// compilation.go`, fetched and read directly): walks `path` (as
+/// resolved by [`super::path::resolve_path`]) one `DeclType` level at a
+/// time from `root` — the CRD's own compiled schema — returning that
+/// location's own worst-case [`super::cost::SizeEstimate`]. `None` when
+/// `path` is empty or names a field/shape `root` doesn't have — real
+/// upstream's own "can't provide an estimate" outcome, not an error a
+/// caller needs to handle specially (the same "fall back to unknown"
+/// contract `super::cost::SizeEstimate::unknown()` exists for).
+///
+/// Real upstream's own returned `Min` is always `0`, never derived from
+/// a schema's own `minLength`/`minItems` — confirmed directly, not an
+/// omission on this port's own part.
+pub fn estimate_size(root: &DeclType, path: &[String]) -> Option<super::cost::SizeEstimate> {
+    if path.is_empty() {
+        return None;
+    }
+    // `path[0]` is always the bound root variable itself
+    // (`self`/`oldSelf`) — real upstream's own "cut off self from path,
+    // since we always start there."
+    let mut current = root;
+    for segment in &path[1..] {
+        match (segment.as_str(), &current.shape) {
+            ("@items", Shape::List(elem)) | ("@values", Shape::Map(elem)) => current = elem,
+            // A map's own key is always CEL's plain `string` type, with
+            // no length bound tracked by this path at all — real
+            // upstream's own `apiservercel.StringType` carries no
+            // `MaxElements` override either (`0`, the Go zero value),
+            // confirmed directly rather than assumed narrower.
+            ("@keys", Shape::Map(_)) => return Some(super::cost::SizeEstimate { min: 0, max: 0 }),
+            (name, Shape::Object(fields)) => current = fields.get(name)?,
+            _ => return None,
+        }
+    }
+    Some(super::cost::SizeEstimate { min: 0, max: current.max_elements.max(0) as u64 })
+}
+
 /// Real upstream's own `SchemaDeclType` — `None` for a schema shape this
 /// crate (same as real upstream) declines to expose to CEL at all (an
 /// `additionalProperties`-less object with no `properties` either, or an
@@ -367,5 +405,67 @@ mod tests {
         // when their own element schema can't be resolved.
         let d = decl_type_for(&json!({"type": "object"})).unwrap();
         assert_eq!(d.shape, Shape::Object(Default::default()));
+    }
+
+    // `estimate_size`
+
+    fn path(segments: &[&str]) -> Vec<String> {
+        segments.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn estimate_size_resolves_a_field_path_to_its_own_max_length() {
+        let root = decl_type_for(&json!({
+            "type": "object",
+            "properties": {"name": {"type": "string", "maxLength": 10}},
+        }))
+        .unwrap();
+        let size = estimate_size(&root, &path(&["self", "name"])).unwrap();
+        assert_eq!(size, crate::cel_ext::cost::SizeEstimate { min: 0, max: 40 });
+    }
+
+    #[test]
+    fn estimate_size_walks_items_through_a_list() {
+        let root = decl_type_for(&json!({
+            "type": "object",
+            "properties": {"tags": {"type": "array", "items": {"type": "string", "maxLength": 5}}},
+        }))
+        .unwrap();
+        let size = estimate_size(&root, &path(&["self", "tags", "@items"])).unwrap();
+        assert_eq!(size, crate::cel_ext::cost::SizeEstimate { min: 0, max: 20 });
+    }
+
+    #[test]
+    fn estimate_size_walks_values_through_a_generic_map() {
+        let root = decl_type_for(&json!({
+            "type": "object",
+            "properties": {"labels": {"type": "object", "additionalProperties": {"type": "string", "maxLength": 5}}},
+        }))
+        .unwrap();
+        let size = estimate_size(&root, &path(&["self", "labels", "@values"])).unwrap();
+        assert_eq!(size, crate::cel_ext::cost::SizeEstimate { min: 0, max: 20 });
+    }
+
+    #[test]
+    fn estimate_size_map_keys_are_untracked_same_as_real_upstream() {
+        let root = decl_type_for(&json!({
+            "type": "object",
+            "properties": {"labels": {"type": "object", "additionalProperties": {"type": "string"}}},
+        }))
+        .unwrap();
+        let size = estimate_size(&root, &path(&["self", "labels", "@keys"])).unwrap();
+        assert_eq!(size, crate::cel_ext::cost::SizeEstimate { min: 0, max: 0 });
+    }
+
+    #[test]
+    fn estimate_size_is_none_for_a_field_the_schema_does_not_declare() {
+        let root = decl_type_for(&json!({"type": "object", "properties": {"name": {"type": "string"}}})).unwrap();
+        assert_eq!(estimate_size(&root, &path(&["self", "unknownField"])), None);
+    }
+
+    #[test]
+    fn estimate_size_is_none_for_an_empty_path() {
+        let root = decl_type_for(&json!({"type": "object"})).unwrap();
+        assert_eq!(estimate_size(&root, &[]), None);
     }
 }
