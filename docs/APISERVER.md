@@ -459,8 +459,25 @@ in `lib.rs::run()` calls `cacher::driver::reflect()`), no subresources.
 `list` now filters by label/field selector for real —
 `cacher::selector::object_matches` (Group D's own generic adapter,
 already landed and unit-tested there) wired in unchanged, with a real
-`400 BadRequest` (not a `500`) for a client-malformed selector. `list`'s
-remaining gap is pagination (`continue`/`limit`).
+`400 BadRequest` (not a `500`) for a client-malformed selector.
+**Real pagination now too** (`?limit=`/`?continue=`, `path::RequestInfo`'s
+own `limit`/`continue_token` fields): a paginated request always bypasses
+`cacher::store::WatchCache` and reads directly from nodestore (ordered
+range-scan-with-resume-point is what the underlying store gives for
+free; the cache's own unordered in-memory store doesn't support it), one
+extra `RangeRequest.limit`/`.more` round trip per page. The `continue`
+token is this crate's own opaque encoding (base64 of `<resume-key>\0
+<revision>` — no compatibility requirement with real upstream's own
+token format, since nothing outside this crate's own client/server pair
+ever reads one), where `resume-key` is the last-returned key plus a
+single `0x00` byte — the standard etcd idiom for "the immediate
+lexicographic successor," which is exactly the correct next `Range`
+start. A malformed token is a real `400`
+(`rest::ListOutcome::InvalidContinueToken`), not a `500` or a silently
+wrong resume point. Real upstream's own documented caveat applies here
+too: label/field selector filtering happens *after* the limited range
+fetch, so a page can come back with fewer than `limit` items (even
+zero) despite more matching items existing on later pages.
 
 `server::rest::create` (`POST` to a resource's collection URL) is real
 too: runs Group F's already-landed `scheme::validation::validate_required`/

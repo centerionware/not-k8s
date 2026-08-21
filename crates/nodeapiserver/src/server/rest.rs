@@ -51,13 +51,16 @@
 //! before ever calling in here; Group J admission (five unconditional
 //! plugins as of this revision — see `admission`'s own doc comment) is
 //! applied in `server::listener`, also before dispatching in here.
-//! Subresources (`pods/status`, `pods/log`, ...) aren't handled — the
-//! discovery table this module reads doesn't carry them either (a named,
-//! separate skip in `build/discovery_parse.rs`). `list` filters by
-//! label/field selector for real (`cacher::selector::object_matches`,
-//! wired against every item's own decoded JSON — Group D's own generic
-//! adapter, unchanged here). `list`'s remaining real gaps: no pagination
-//! (`continue`/`limit`), no `resourceVersion`-pinned reads (always reads
+//! The generic `<resource>/status` subresource is real now
+//! (`update_status`/`patch_status`); every other subresource
+//! (`pods/log`, ...) still isn't — the discovery table this module reads
+//! doesn't carry them either (a named, separate skip in
+//! `build/discovery_parse.rs`). `list` filters by label/field selector
+//! for real (`cacher::selector::object_matches`, wired against every
+//! item's own decoded JSON — Group D's own generic adapter, unchanged
+//! here) and paginates for real too (`limit`/`continue_token`, its own
+//! opaque resume-key encoding — see `list`'s own doc comment). `list`'s
+//! remaining real gap: no `resourceVersion`-pinned reads (always reads
 //! at the current revision).
 //!
 //! `create` runs Group F's already-landed `scheme::validation`
@@ -240,6 +243,11 @@ pub enum ListOutcome {
     /// The real `<Kind>List` document, ready to serialize.
     Found(Value),
     UnknownResource,
+    /// The submitted `continue` token didn't decode — not valid base64,
+    /// no `0x00` key/revision separator, or a non-numeric revision.
+    /// Real upstream's own `errors.NewBadRequest("continue token is not
+    /// valid")` shape, not a `500`.
+    InvalidContinueToken,
 }
 
 /// The real `<Kind>List` `kind` value for a resource this build serves —
@@ -261,7 +269,19 @@ fn list_kind(kind: &str) -> String {
 /// `label_selector`/`field_selector` are the raw query-string values
 /// `path::RequestInfo` already captures for `list` (empty means "no
 /// constraint from that half," matching upstream's own `Everything()`
-/// selector semantics).
+/// selector semantics). `limit`/`continue_token` are real pagination —
+/// `limit <= 0` means "no limit" (matching real upstream's own `0`
+/// convention), and a non-empty `continue_token` resumes an earlier
+/// paginated listing (real upstream's own contract: opaque to the
+/// client, only ever handed back verbatim from a prior page's own
+/// `metadata.continue`). A paginated request always bypasses the watch
+/// cache (see below) and reads directly from nodestore, since real
+/// pagination is a genuine ordered range-scan-with-resume-point, which
+/// the cache's own unordered in-memory store doesn't support. Real
+/// upstream's own documented caveat applies here too: label/field
+/// selector filtering happens *after* the limited range fetch, so a
+/// page can come back with fewer than `limit` items (even zero) despite
+/// more matching items existing on later pages.
 ///
 /// `cache`, if given, is consulted first — but only once
 /// [`crate::cacher::store::SharedCache::has_synced`] is true. Unlike
@@ -285,6 +305,8 @@ pub async fn list(
     namespace: Option<&str>,
     label_selector: &str,
     field_selector: &str,
+    limit: i64,
+    continue_token: &str,
 ) -> Result<ListOutcome, Error> {
     let Some(kind) = resolve_kind(group, version, resource) else {
         return Ok(ListOutcome::UnknownResource);
@@ -301,8 +323,15 @@ pub async fn list(
     // exactly as it already scopes the `Range` request on the fallback path.
     let prefix = keys::list_prefix(group, resource, namespace).into_bytes();
 
+    // Real upstream itself doesn't serve a paginated request from its own
+    // watch cache either — a consistent ordered range-scan-with-resume-point
+    // is what the underlying store gives for free and an in-memory
+    // unordered cache doesn't. A paginated request (real `limit`/`continue`,
+    // not the default "everything") always goes straight to nodestore
+    // below, same as an unsynced cache would.
+    let paginated = limit > 0 || !continue_token.is_empty();
     if let Some(cache) = cache {
-        if cache.has_synced() {
+        if cache.has_synced() && !paginated {
             let (entries, revision) = cache.list();
             let items = entries
                 .iter()
@@ -322,8 +351,40 @@ pub async fn list(
     }
 
     let range_end = prefix_range_end(&prefix);
-    let resp = storage.range(RangeRequest { key: prefix, range_end, ..Default::default() }).await?;
-    let revision = resp.header.map(|h| h.revision).unwrap_or(0);
+    // A `continue` token resumes from the exact key its own page left off
+    // at (`encode_continue_token`'s own doc comment covers the "append a
+    // single 0x00 byte" idiom that makes this the correct etcd range
+    // start), at the same revision the listing began at — every page of
+    // one listing sees a consistent snapshot, matching real upstream's
+    // own pagination contract.
+    let (start_key, at_revision) = if continue_token.is_empty() {
+        (prefix, 0)
+    } else {
+        match decode_continue_token(continue_token) {
+            Some((key, revision)) => (key, revision),
+            None => return Ok(ListOutcome::InvalidContinueToken),
+        }
+    };
+    let resp = storage.range(RangeRequest { key: start_key, range_end, limit: limit.max(0), revision: at_revision, ..Default::default() }).await?;
+    let revision = resp.header.map(|h| h.revision).unwrap_or(at_revision);
+    // Real upstream's own documented caveat applies here too: filtering by
+    // label/field selector happens *after* the limited range fetch, so a
+    // page can legitimately come back with fewer than `limit` items (or
+    // even zero) despite there being more matching items on later pages —
+    // this isn't a bug, it's the same trade-off a selector combined with
+    // `limit` has against a real etcd-backed apiserver.
+    let more = resp.more;
+    // The successor marker `encode_continue_token`'s own doc comment
+    // expects — appended *here*, not inside that function, so its own
+    // internal `0x00` push stays purely about the encoding's key/revision
+    // separator (see that function's doc comment for why the two
+    // 0x00 bytes this produces when they land back to back is
+    // deliberate, not a bug).
+    let resume_key = resp.kvs.last().map(|kv| {
+        let mut k = kv.key.clone();
+        k.push(0);
+        k
+    });
     let items = resp
         .kvs
         .iter()
@@ -333,12 +394,65 @@ pub async fn list(
         .filter(|item| selector::object_matches(item, &label_reqs, &field_reqs))
         .collect::<Vec<Value>>();
 
+    let mut metadata = json!({"resourceVersion": revision.to_string()});
+    if more {
+        if let Some(resume_key) = resume_key {
+            metadata["continue"] = json!(encode_continue_token(&resume_key, revision));
+        }
+    }
+
     Ok(ListOutcome::Found(json!({
         "kind": list_kind(kind),
         "apiVersion": group_version,
-        "metadata": {"resourceVersion": revision.to_string()},
+        "metadata": metadata,
         "items": items,
     })))
+}
+
+/// Real upstream's own continuation-token contract: a client must treat
+/// this as fully opaque, never construct or parse one itself. This
+/// build's own encoding (base64 of `<resume-key>\0<revision>`) has no
+/// compatibility requirement with real upstream's own token format,
+/// since nothing outside this crate's own client/server pair ever reads
+/// one.
+///
+/// `resume_key` must already be `list`'s own last-returned key with a
+/// single `0x00` byte appended by the caller (the standard etcd idiom
+/// for "the immediate lexicographic successor of this key" — exactly
+/// the correct next `Range` start to exclude everything already
+/// returned while including everything after it: byte-string
+/// comparison guarantees any real key strictly greater than `last_key`
+/// is always >= `last_key + 0x00`, since `0x00` is the smallest
+/// possible byte). This function then appends *its own* `0x00` as the
+/// key/revision separator — so a real encoded buffer ends up with two
+/// consecutive `0x00` bytes where the successor marker meets the
+/// separator, which is deliberate, not a bug: [`decode_continue_token`]
+/// finds the *last* one to split on, so the successor marker correctly
+/// stays part of the decoded key.
+fn encode_continue_token(resume_key: &[u8], revision: i64) -> String {
+    use base64::Engine;
+    let mut buf = resume_key.to_vec();
+    buf.push(0);
+    buf.extend_from_slice(revision.to_string().as_bytes());
+    base64::engine::general_purpose::STANDARD.encode(buf)
+}
+
+/// The inverse of [`encode_continue_token`]. `None` for anything
+/// malformed (not valid base64, no `0x00` separator, a non-numeric
+/// revision) — surfaced by `list` as a real `ListOutcome::
+/// InvalidContinueToken`, not a panic or a silently-wrong resume point.
+/// Splits on the *last* `0x00` byte rather than the first, defensively:
+/// a resume key built from real object names should never itself
+/// contain one (`DNS-1123` names have no room for a null byte), but
+/// searching from the end costs nothing and removes even that
+/// assumption.
+fn decode_continue_token(token: &str) -> Option<(Vec<u8>, i64)> {
+    use base64::Engine;
+    let buf = base64::engine::general_purpose::STANDARD.decode(token).ok()?;
+    let separator = buf.iter().rposition(|&b| b == 0)?;
+    let (key, rest) = buf.split_at(separator);
+    let revision = std::str::from_utf8(&rest[1..]).ok()?.parse::<i64>().ok()?;
+    Some((key.to_vec(), revision))
 }
 
 #[derive(Debug, PartialEq)]
@@ -993,15 +1107,16 @@ pub enum DeleteCollectionOutcome {
 /// `DELETE`'s own "the object as it was immediately before deletion"
 /// convention already established for one object at a time.
 /// **Named, honest simplification**: real upstream deletes with a
-/// worker pool (`DeleteCollectionWorkers`, concurrent) and paginates the
-/// list internally; this port deletes sequentially and lists in one
-/// shot, since this crate's own `list` doesn't yet paginate either
-/// (`rest`'s own module doc comment already names that as a real,
-/// separate gap). A per-item deletion error *other than* not-found still
-/// aborts the whole call and surfaces as a real `500` — real upstream's
-/// own posture too (`errs <- err` stops the collection short).
+/// worker pool (`DeleteCollectionWorkers`, concurrent); this port
+/// deletes sequentially. It also always lists everything in one
+/// unpaginated shot (`limit: 0`) regardless of how large the collection
+/// is — real upstream's own collection delete paginates its internal
+/// listing too, which this doesn't. A per-item deletion error *other
+/// than* not-found still aborts the whole call and surfaces as a real
+/// `500` — real upstream's own posture too (`errs <- err` stops the
+/// collection short).
 pub async fn delete_collection(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, label_selector: &str, field_selector: &str) -> Result<DeleteCollectionOutcome, Error> {
-    let listed = list(storage, None, group, version, resource, namespace, label_selector, field_selector).await?;
+    let listed = list(storage, None, group, version, resource, namespace, label_selector, field_selector, 0, "").await?;
     let ListOutcome::Found(list_value) = listed else {
         return Ok(DeleteCollectionOutcome::UnknownResource);
     };
@@ -1017,6 +1132,36 @@ pub async fn delete_collection(storage: &mut StorageClient, group: &str, version
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn continue_token_round_trips_the_resume_key_and_revision() {
+        let token = encode_continue_token(b"/registry/pods/default/my-pod\x00", 42);
+        let (key, revision) = decode_continue_token(&token).expect("a token this module encoded must decode");
+        assert_eq!(key, b"/registry/pods/default/my-pod\x00");
+        assert_eq!(revision, 42);
+    }
+
+    #[test]
+    fn continue_token_rejects_invalid_base64() {
+        assert!(decode_continue_token("not valid base64!!!").is_none());
+    }
+
+    #[test]
+    fn continue_token_rejects_a_missing_separator() {
+        use base64::Engine;
+        let no_separator = base64::engine::general_purpose::STANDARD.encode(b"no-null-byte-here");
+        assert!(decode_continue_token(&no_separator).is_none());
+    }
+
+    #[test]
+    fn continue_token_rejects_a_non_numeric_revision() {
+        use base64::Engine;
+        let mut buf = b"/registry/pods/default/x".to_vec();
+        buf.push(0);
+        buf.extend_from_slice(b"not-a-number");
+        let bad = base64::engine::general_purpose::STANDARD.encode(buf);
+        assert!(decode_continue_token(&bad).is_none());
+    }
 
     #[test]
     fn resolve_kind_finds_a_real_known_resource() {
