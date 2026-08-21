@@ -207,11 +207,35 @@ async fn resolve_resource(storage: &mut StorageClient, group: &str, version: &st
     if let Some(kind) = resolve_kind(group, version, resource) {
         return Ok(protobuf::schema_for_gvk(group, version, kind).map(|schema| ResolvedResource { kind: kind.to_string(), schema: Some(schema), open_api_schema: None }));
     }
+    Ok(resolve_crd(storage, group, version, resource).await?.map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema }))
+}
+
+/// The dynamic (CRD-only) half of [`resolve_resource`] — skips the
+/// static `resolve_kind` check entirely, so it's only ever correct to
+/// call once a caller has already ruled that out itself.
+/// `server::listener`'s own `WATCH` dispatch is the other real caller
+/// besides [`resolve_resource`]: `watch` is served straight from an
+/// already-registered `cacher::store::SharedCache` rather than through
+/// any of this module's own generic verb functions, so it has no other
+/// reason to reach into `server::rest` for a CRD-defined resource at
+/// all — it needs only the Kind a matching `Established` CRD resolves
+/// to, both to spawn a cache for it on first watch
+/// (`cacher::registry::CacheRegistry::spawn`, callable at any time, not
+/// just at boot) and to label the watch events it then streams.
+async fn resolve_crd(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<apiextensions::registry::CrdResource>, Error> {
     if group.is_empty() || group == "apiextensions.k8s.io" {
         return Ok(None);
     }
     let crds = list_stored_crds(storage).await?;
-    Ok(apiextensions::registry::resolve_in(crds.iter(), group, version, resource).map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema }))
+    Ok(apiextensions::registry::resolve_in(crds.iter(), group, version, resource))
+}
+
+/// Public wrapper around [`resolve_crd`] for `server::listener`'s own
+/// `WATCH` dispatch (the one caller outside this module that needs
+/// Group K's dynamic registry directly — every other verb goes through
+/// [`resolve_resource`] instead, which this module keeps private).
+pub async fn resolve_dynamic_kind(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<String>, Error> {
+    Ok(resolve_crd(storage, group, version, resource).await?.map(|r| r.kind))
 }
 
 /// A raw `Range` over every stored `CustomResourceDefinition`, decoded —

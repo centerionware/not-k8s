@@ -1325,6 +1325,22 @@ and driven end to end, not assumed from unit tests alone): `GET`/
 `LIST`/`CREATE`/`DELETE`/`DELETECOLLECTION` (`delete_collection` gets
 CRD support for free — it already delegates to `list`/`delete`) for a
 CRD-defined resource, with real schema-driven defaulting on `CREATE`.
+**`WATCH` for CR objects is real too now** — `server::rest::
+resolve_dynamic_kind` exposes Group K's registry directly to
+`server::listener`'s own `WATCH` dispatch, which, on a cache miss for a
+resource its static table has never heard of (never for one it knows but
+simply isn't boot-cached — that still gets no watch support, unchanged),
+resolves it dynamically and lazily spawns a
+`cacher::registry::CacheRegistry` reflector for it right then, on this,
+the resource's own first-ever watch request — `CacheRegistry::spawn` was
+already callable at any time, not just at boot, so this needed no new
+primitive, only the dynamic resolve step in front of it. **Named, honest
+scope**: nothing proactively reacts to a CRD's own lifecycle — a
+reflector spawned this way keeps running for the rest of the process's
+life even if the CRD is later deleted (real upstream's own per-CRD
+informer teardown on deletion isn't modeled), and a CRD that becomes
+`Established` is only ever discovered by the *next* watch request for
+its resource, not eagerly the moment it's created.
 
 **Not yet landed, named honestly** (`apiextensions::mod`'s own doc
 comment carries this list too): `UPDATE`/`PATCH`/the `status` subresource
@@ -1336,12 +1352,7 @@ built-ins-only) a CRD-shaped counterpart — `strategic-merge-patch` in
 particular can't work against a CRD at all without reading
 `x-kubernetes-list-type`/`-list-map-keys` from its schema instead of
 compiled `FIELD_META`, a real, separate piece of work; `JSON Patch`/
-`Merge Patch` need no schema and could be wired for CRDs first. `WATCH`
-for CR objects — needs a `cacher::store::SharedCache` dynamically spawned
-per `Established` CRD (`cacher::driver::reflect`, already exactly the
-right primitive) rather than `server::listener`'s fixed boot-time
-`BOOT_CACHED_RESOURCES` list, a genuinely separate feature since nothing
-today reacts to a CRD becoming `Established` by spawning one. Full
+`Merge Patch` need no schema and could be wired for CRDs first. Full
 structural-schema type/required validation and pruning
 (`x-kubernetes-preserve-unknown-fields`) against the schema —
 `server::rest::create`'s CRD branch runs `apiextensions::schema_defaults`

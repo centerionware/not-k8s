@@ -2019,7 +2019,40 @@ async fn handle(
                 }
             }
         }
-        if let Some(cache) = cache_registry.get(&info.api_group, &info.api_version, &info.resource) {
+        // Group K: an already-registered cache first (unchanged), else —
+        // only when the static table doesn't know this resource at all —
+        // a live check against the dynamic CRD registry, lazily spawning
+        // a cache for it right now on this, its first-ever watch request
+        // (`cacher::registry::CacheRegistry::spawn` is callable at any
+        // time, not just at boot — see its own doc comment). A real
+        // built-in resource simply outside `BOOT_CACHED_RESOURCES` still
+        // gets no watch support, exactly as before Group K existed — only
+        // a resource the static table has never heard of falls through to
+        // the dynamic check, so this never masks a genuine 404 as "maybe
+        // a CRD." **Named, honest scope**: nothing proactively reacts to
+        // a CRD's own lifecycle (becoming `Established`, or being
+        // deleted) — a CRD deleted after its resource was ever watched
+        // once leaves an idle reflector running for the rest of this
+        // process's life, real upstream's own per-CRD informer teardown
+        // isn't modeled yet.
+        let cache_and_kind: Option<(crate::cacher::store::SharedCache, String)> = if let Some(cache) = cache_registry.get(&info.api_group, &info.api_version, &info.resource) {
+            rest::resolve_kind(&info.api_group, &info.api_version, &info.resource).map(|kind| (cache, kind.to_string()))
+        } else if rest::resolve_kind(&info.api_group, &info.api_version, &info.resource).is_some() {
+            None
+        } else if let Some(mut client) = storage.clone() {
+            match rest::resolve_dynamic_kind(&mut client, &info.api_group, &info.api_version, &info.resource).await {
+                Ok(Some(kind)) => Some((cache_registry.spawn(client, &info.api_group, &info.api_version, &info.resource), kind)),
+                Ok(None) => None,
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "watch: resolving a possible CRD-defined resource failed");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if let Some((cache, kind)) = cache_and_kind {
             // Same real label/field selector parsing `rest::list` already
             // runs — a malformed selector is the client's fault, a `400`,
             // not a server failure, checked before the stream even starts
@@ -2043,16 +2076,8 @@ async fn handle(
             let start_revision = resource_version_query(&query);
             match cache.watch_from(start_revision) {
                 Ok((replay, rx)) => {
-                    let Some(kind) = rest::resolve_kind(&info.api_group, &info.api_version, &info.resource) else {
-                        // A cache exists but the discovery table doesn't
-                        // know this (group, version, resource) — shouldn't
-                        // happen in practice (nothing registers a cache
-                        // for an unknown resource), but a real 404 is the
-                        // honest answer if it ever did, not a panic.
-                        return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
-                    };
                     let group_version = if info.api_group.is_empty() { info.api_version.clone() } else { format!("{}/{}", info.api_group, info.api_version) };
-                    let body = watch_response_body(replay, rx, kind.to_string(), group_version, label_reqs, field_reqs, storage.clone(), info.api_group.clone(), info.resource.clone());
+                    let body = watch_response_body(replay, rx, kind, group_version, label_reqs, field_reqs, storage.clone(), info.api_group.clone(), info.resource.clone());
                     // No explicit `Transfer-Encoding` header: hyper's own
                     // h1/h2 connection handling already frames a body with
                     // no known length correctly for whichever protocol
@@ -2068,9 +2093,9 @@ async fn handle(
                 }
             }
         }
-        // No cache registered for this resource — falls through to the
-        // echo stub below, same posture as every other not-yet-served
-        // case in this handler.
+        // No cache registered (or spawnable) for this resource — falls
+        // through to the echo stub below, same posture as every other
+        // not-yet-served case in this handler.
     }
 
     // Surfaced for real observability (this is the only response shape
