@@ -1206,17 +1206,24 @@ non-resource rule matching (verb/apiGroup/resource/namespace, and the
 non-resource URL's real trailing-`*` prefix semantics). `select_flow_schema`
 ports `apihelpers.FlowSchemaSequence`'s own real sort order — lowest
 `matchingPrecedence` wins (defaulting to real upstream's own `1000`
-when unset), ties broken by lexicographically smaller name. **Pure
-matching primitive only**, the same "land the primitive, wire it later"
-split `authz::rbac`/`authz::subject` and `admission::resource_quota`'s
-own evaluators already took in this crate: nothing here fetches a real
-`FlowSchema` from storage, and no request is actually queued, rejected,
-or rate-limited — that concurrency-limiting half of real APF (fair
-queuing, seat borrowing) is a genuinely separate, larger undertaking,
-named honestly as not started, along with the `distinguisherMethod`
-computation (meaningless without queuing) and the two mandatory
-bootstrap `FlowSchema`s real upstream always synthesizes (Group O's
-job).
+when unset), ties broken by lexicographically smaller name.
+`flowcontrol::resolve::select_for_request` is the storage-backed half:
+lists real `FlowSchema`s, selects the governing one, fetches its
+referenced `PriorityLevelConfiguration` by name — **wired into
+`server::listener`'s `handle_with_audit`**, setting the real
+`X-Kubernetes-PF-FlowSchema-UID`/`X-Kubernetes-PF-PriorityLevel-UID`
+response headers (`k8s.io/api/flowcontrol/v1/types.go`'s own
+`ResponseHeaderMatchedFlowSchemaUID`/
+`ResponseHeaderMatchedPriorityLevelConfigurationUID` constants, fetched
+and read directly) on every response that reaches a storage connection.
+Fails open (no header, never a blocked/delayed request) on any
+resolution failure. **Still no actual queuing/limiting** — every request
+still runs at full priority, just correctly labeled; that
+concurrency-limiting half of real APF (fair queuing, seat borrowing) is a
+genuinely separate, larger undertaking, named honestly as not started,
+along with the `distinguisherMethod` computation (meaningless without
+queuing) and the two mandatory bootstrap `FlowSchema`s real upstream
+always synthesizes (Group O's job).
 
 **N. Streaming and proxy subresources** — **not started**. exec/attach/
 port-forward/log spliced through to `nodelet:10250`, reusing
