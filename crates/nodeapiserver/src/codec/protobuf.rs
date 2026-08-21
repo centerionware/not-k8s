@@ -177,6 +177,10 @@ fn encode_scalar_or_message(message: &str, field: &ProtoField, value: &Value, ou
                 // Group K: `apiextensions.v1.JSON` — see `is_json_message`'s
                 // own doc comment.
                 encode_json_value(value)
+            } else if is_json_schema_props_or_array(&nested_message) {
+                encode_json_schema_props_or_array(&nested_message, value)?
+            } else if is_json_schema_props_or_bool(&nested_message) {
+                encode_json_schema_props_or_bool(&nested_message, value)?
             } else {
                 encode_message(&nested_message, value)?
             };
@@ -274,6 +278,10 @@ fn decode_one(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value
                 decode_time_message(&label(), as_bytes(&label(), raw)?)
             } else if is_json_message(&nested_message) {
                 decode_json_message(&label(), as_bytes(&label(), raw)?)
+            } else if is_json_schema_props_or_array(&nested_message) {
+                decode_json_schema_props_or_array(&nested_message, as_bytes(&label(), raw)?)
+            } else if is_json_schema_props_or_bool(&nested_message) {
+                decode_json_schema_props_or_bool(&nested_message, as_bytes(&label(), raw)?)
             } else {
                 decode_message(&nested_message, as_bytes(&label(), raw)?)
             }
@@ -394,6 +402,128 @@ fn decode_json_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
         }
     }
     Ok(Value::Null)
+}
+
+/// Real upstream's own `JSONSchemaPropsOrArray`/`JSONSchemaPropsOrBool` —
+/// the *third* occurrence this codec has needed of the same real
+/// pattern `is_time_message`/`is_json_message` already established: a
+/// Go type with hand-written `MarshalJSON`/`UnmarshalJSON` that doesn't
+/// marshal as its own struct shape at all. `JSONSchemaProps.items` in
+/// real JSON is either a single schema object or an array of schemas —
+/// written completely unwrapped, never as `{"schema": {...}}` or
+/// `{"jSONSchemas": [...]}` — but the vendored proto wraps it as
+/// `JSONSchemaPropsOrArray { schema = 1; repeated jSONSchemas = 2; }`.
+/// `JSONSchemaProps.additionalProperties` is either a bare `true`/`false`
+/// or a schema object — `JSONSchemaPropsOrBool { allows = 1; schema =
+/// 2; }` on the wire. Found live, the same way the other two were: a
+/// stored `CustomResourceDefinition`'s own `items`/`additionalProperties`
+/// silently decoded to an empty object (no `properties`, no `type`,
+/// nothing) on every real read, discovered only once
+/// `tests/crd_roundtrip.rs`'s own strategic-merge-patch-against-a-CRD
+/// test recursed into a list field's `items` schema for real.
+fn is_json_schema_props_or_array(message: &str) -> bool {
+    matches!(message, "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrArray" | "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSONSchemaPropsOrArray")
+}
+
+fn is_json_schema_props_or_bool(message: &str) -> bool {
+    matches!(message, "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrBool" | "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSONSchemaPropsOrBool")
+}
+
+/// The real `JSONSchemaProps` message name for a `...OrArray`/`...OrBool`
+/// wrapper of the same version — `"...v1.JSONSchemaPropsOrArray"` ->
+/// `"...v1.JSONSchemaProps"` — both wrapper messages nest exactly that
+/// type, for exactly the version they themselves belong to.
+fn json_schema_props_message_for(wrapper_message: &str) -> String {
+    let base = wrapper_message.rsplit_once('.').map(|(prefix, _)| prefix).unwrap_or(wrapper_message);
+    format!("{base}.JSONSchemaProps")
+}
+
+fn encode_json_schema_props_or_array(wrapper_message: &str, value: &Value) -> Result<Vec<u8>> {
+    let inner = json_schema_props_message_for(wrapper_message);
+    let mut out = Vec::new();
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                let bytes = encode_message(&inner, item)?;
+                wire::encode_tag(2, WireType::LengthDelimited, &mut out);
+                wire::encode_length_delimited(&bytes, &mut out);
+            }
+        }
+        _ => {
+            let bytes = encode_message(&inner, value)?;
+            wire::encode_tag(1, WireType::LengthDelimited, &mut out);
+            wire::encode_length_delimited(&bytes, &mut out);
+        }
+    }
+    Ok(out)
+}
+
+fn decode_json_schema_props_or_array(wrapper_message: &str, bytes: &[u8]) -> Result<Value> {
+    let inner = json_schema_props_message_for(wrapper_message);
+    let mut pos = 0;
+    let mut schema_bytes: Option<&[u8]> = None;
+    let mut list_items = Vec::new();
+    while pos < bytes.len() {
+        let (field_number, raw) = wire::decode_field(bytes, &mut pos)?;
+        match field_number {
+            1 => schema_bytes = Some(as_bytes("JSONSchemaPropsOrArray.schema", &raw)?),
+            2 => list_items.push(decode_message(&inner, as_bytes("JSONSchemaPropsOrArray.jSONSchemas", &raw)?)?),
+            _ => {}
+        }
+    }
+    if !list_items.is_empty() {
+        return Ok(Value::Array(list_items));
+    }
+    match schema_bytes {
+        Some(b) => decode_message(&inner, b),
+        // Real zero value: no `items` schema was ever actually written
+        // (both fields absent) -- an empty schema, matching what a
+        // never-set `*JSONSchemaProps` field marshals to.
+        None => Ok(Value::Object(Map::new())),
+    }
+}
+
+fn encode_json_schema_props_or_bool(wrapper_message: &str, value: &Value) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    match value {
+        Value::Bool(allows) => {
+            // `false` is proto2's own zero value for an optional bool --
+            // omitted entirely, matching every other scalar field's own
+            // "absent means default" convention this codec already
+            // established elsewhere (`encode_time_string`'s own doc
+            // comment on the epoch case is the same idiom).
+            if *allows {
+                wire::encode_tag(1, WireType::Varint, &mut out);
+                wire::encode_varint(1, &mut out);
+            }
+        }
+        _ => {
+            let inner = json_schema_props_message_for(wrapper_message);
+            let bytes = encode_message(&inner, value)?;
+            wire::encode_tag(2, WireType::LengthDelimited, &mut out);
+            wire::encode_length_delimited(&bytes, &mut out);
+        }
+    }
+    Ok(out)
+}
+
+fn decode_json_schema_props_or_bool(wrapper_message: &str, bytes: &[u8]) -> Result<Value> {
+    let inner = json_schema_props_message_for(wrapper_message);
+    let mut pos = 0;
+    let mut allows = false;
+    let mut schema_bytes: Option<&[u8]> = None;
+    while pos < bytes.len() {
+        let (field_number, raw) = wire::decode_field(bytes, &mut pos)?;
+        match field_number {
+            1 => allows = as_varint("JSONSchemaPropsOrBool.allows", &raw)? != 0,
+            2 => schema_bytes = Some(as_bytes("JSONSchemaPropsOrBool.schema", &raw)?),
+            _ => {}
+        }
+    }
+    match schema_bytes {
+        Some(b) => decode_message(&inner, b),
+        None => Ok(Value::Bool(allows)),
+    }
 }
 
 fn decode_map_entry(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value> {
@@ -651,6 +781,74 @@ mod tests {
     #[test]
     fn json_message_with_no_raw_field_decodes_to_null() {
         assert_eq!(decode_json_message("default", &[]).unwrap(), Value::Null);
+    }
+
+    /// The real bug this whole trio of helpers exists to fix: `items` on
+    /// a real `JSONSchemaProps` (used by every CRD list field) round
+    /// trips as the plain, unwrapped schema object real JSON uses — not
+    /// the `JSONSchemaPropsOrArray` wrapper shape. Found live: a CRD's
+    /// own `items` schema (and therefore every field inside it,
+    /// including `x-kubernetes-list-map-keys` on a nested list) silently
+    /// decoded to an empty object on every real read until
+    /// `tests/crd_roundtrip.rs`'s own strategic-merge-patch test actually
+    /// recursed into one.
+    #[test]
+    fn json_schema_props_items_round_trips_as_a_single_unwrapped_schema() {
+        let message = "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps";
+        let value = json!({"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}}}});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded["items"], json!({"type": "object", "properties": {"name": {"type": "string"}}}));
+    }
+
+    #[test]
+    fn json_schema_props_items_round_trips_as_an_array_of_schemas() {
+        let message = "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps";
+        let value = json!({"type": "array", "items": [{"type": "string"}, {"type": "integer"}]});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded["items"], json!([{"type": "string"}, {"type": "integer"}]));
+    }
+
+    #[test]
+    fn json_schema_props_additional_properties_round_trips_a_bare_bool() {
+        let message = "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps";
+        let value = json!({"type": "object", "additionalProperties": true});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded["additionalProperties"], json!(true));
+    }
+
+    #[test]
+    fn json_schema_props_additional_properties_false_round_trips() {
+        // `allows: false` is proto2's own zero value for that inner
+        // scalar (never written inside the JSONSchemaPropsOrBool
+        // submessage itself), but the *outer* additionalProperties field
+        // is still present (an empty submessage, not an absent one) --
+        // decode must still come back `false`, not `null` or `true`.
+        let message = "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps";
+        let value = json!({"type": "object", "additionalProperties": false});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn an_absent_additional_properties_key_stays_absent_after_a_round_trip() {
+        let message = "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps";
+        let value = json!({"type": "object"});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded.get("additionalProperties"), None, "a key the client never submitted at all must not appear after a round trip");
+    }
+
+    #[test]
+    fn json_schema_props_additional_properties_round_trips_a_nested_schema() {
+        let message = "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps";
+        let value = json!({"type": "object", "additionalProperties": {"type": "string"}});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded["additionalProperties"], json!({"type": "string"}));
     }
 
     #[test]
