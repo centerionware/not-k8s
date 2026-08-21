@@ -109,19 +109,32 @@
 //! RBAC), so there's no "could lock every request out" risk to gate
 //! behind a config flag.
 //!
+//! `match_conditions` — real upstream's own `matchconditions.Matcher`
+//! (the real CEL-based pre-filter shared by both mutating/validating
+//! admission webhooks' own `spec.matchConditions` and
+//! `ValidatingAdmissionPolicy`'s own `spec.matchConditions`), landed as
+//! a pure, standalone primitive — see that module's own doc comment for
+//! why it's "not yet wired to anything real" (neither webhooks nor
+//! `ValidatingAdmissionPolicy` exist in this crate at all yet).
+//!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
 //! other built-in plugin, `ResourceQuota`'s own non-pod evaluators/scope
 //! matching/persisted usage counter (above), a generic plugin-chain/
 //! registry abstraction to run more than one plugin without
 //! `server::listener` hand-calling each by name, mutating/validating
-//! admission webhooks, and ValidatingAdmissionPolicy/
-//! MutatingAdmissionPolicy (CEL-based — this crate already has `cel_ext`
-//! for a different purpose, not yet reused here).
+//! admission webhooks themselves, and `ValidatingAdmissionPolicy`/
+//! `MutatingAdmissionPolicy` themselves (both need real matching against
+//! `resourceRules`/`namespaceSelector`/`objectSelector` and real
+//! `object`/`oldObject`/`request`/`params` CEL variable construction
+//! from an actual admission request — `match_conditions`'s own doc
+//! comment names this precisely; `cel_ext::eval_bool_with_vars` is the
+//! primitive either would bind those variables through).
 
 pub mod attributes;
 pub mod default_storage_class;
 pub mod default_toleration_seconds;
 pub mod limit_ranger;
+pub mod match_conditions;
 pub mod namespace_lifecycle;
 pub mod pod_security;
 pub mod resource_quota;
