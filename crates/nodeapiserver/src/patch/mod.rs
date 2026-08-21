@@ -58,26 +58,27 @@
 //! reconciled map plus the applying manager's own new entry in, the
 //! array to write back out.
 //!
-//! **Server-Side Apply is now reachable from a real request**:
-//! `server::rest::server_side_apply` wires `updater::apply` + `managed_fields`
-//! to real storage, and `server::listener` routes `PATCH` with
+//! **Server-Side Apply is now reachable from a real request, including
+//! create-on-apply**: `server::rest::server_side_apply` wires
+//! `updater::apply` + `managed_fields` to real storage — an
+//! already-existing object reads its stored `managedFields` and persists
+//! through the usual optimistic-concurrency `Txn`; no object at all
+//! creates one through the same create-only-if-absent `Txn` idiom
+//! `rest::create`'s own doc comment names, `updater::apply` run against
+//! an empty `live` either way. `server::listener` routes `PATCH` with
 //! `Content-Type: application/apply-patch+yaml` (`?fieldManager=`
 //! required, `?force=true` honored) into it, with a real `409 Conflict`
-//! on `Err(Vec<Conflict>)`. **Named, honest scope for this first wiring
-//! slice** (`rest::server_side_apply`'s own doc comment): only against an
-//! **already-existing** object (no create-on-apply yet — `updater::apply`
-//! itself already supports it structurally, only the storage-side
-//! create-if-absent `Txn` isn't wired), and only for a built-in resource
-//! (not yet supported for a CRD-defined one, since `updater::apply`'s
-//! primitives key off compiled `FIELD_META`, not a runtime CRD schema).
-//! Only `namespace_lifecycle` admission runs on this path, not
-//! `LimitRanger`'s PVC check the ordinary three-patch-kind branch also
-//! runs — real, separate follow-up.
+//! on `Err(Vec<Conflict>)`. **Named, honest scope remaining**
+//! (`rest::server_side_apply`'s own doc comment): only for a built-in
+//! resource, not yet a CRD-defined one (`updater::apply`'s primitives key
+//! off compiled `FIELD_META`, not a runtime CRD schema); only
+//! `namespace_lifecycle` admission runs on this path, not `LimitRanger`'s
+//! PVC check the ordinary three-patch-kind branch also runs.
 //!
 //! **Not yet landed**: `$patch`/`$setElementOrder`/
 //! `$deleteFromPrimitiveList` directives (named, deliberate
 //! simplifications — see `strategic_merge`'s own doc comment), plus the
-//! two gaps named above (create-on-apply, CRD support).
+//! CRD-support gap named above.
 
 pub mod fieldset;
 pub mod json_patch;

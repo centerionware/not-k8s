@@ -1182,8 +1182,9 @@ async fn handle(
         // slice**: only `namespace_lifecycle` admission runs here, not
         // `LimitRanger`'s PVC check the block below also runs for an
         // ordinary `Update`-shaped patch — real, separate follow-up work,
-        // not an oversight (`rest::server_side_apply`'s own doc comment already
-        // names the bigger gap: no create-on-apply, no CRD support yet).
+        // not an oversight (`rest::server_side_apply`'s own doc comment
+        // names the remaining real gap: no CRD support yet — create-on-
+        // apply against a built-in resource is real and landed).
         if content_type.as_deref().map(is_apply_patch_content_type).unwrap_or(false) {
             let Some(mut client) = storage else {
                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
@@ -1237,7 +1238,7 @@ async fn handle(
             return match rest::server_side_apply(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
                 Ok(rest::ApplyOutcome::Applied(object)) => Ok(json_response(StatusCode::OK, &object)),
                 Ok(rest::ApplyOutcome::NoOp(object)) => Ok(json_response(StatusCode::OK, &object)),
-                Ok(rest::ApplyOutcome::UnknownResource) | Ok(rest::ApplyOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Ok(rest::ApplyOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
                 Ok(rest::ApplyOutcome::UnsupportedForCrd) => {
                     Ok(json_response(StatusCode::NOT_IMPLEMENTED, &bad_request_status(&path_str, "Server-Side Apply is not yet supported for CustomResourceDefinition-defined resources")))
                 }
