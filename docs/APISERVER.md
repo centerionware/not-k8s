@@ -1455,6 +1455,105 @@ validation on the `status` subresource write itself (`update_status`/
 `patch_status` keep the same "no structural checks on status" scope real
 upstream's own generic status strategy has for built-ins too).
 
+**`cel_ext` — the CEL cost budget, a real design pass (2026-08-21), no
+code yet.** Blocks `x-kubernetes-validations` (Group K) and
+ValidatingAdmissionPolicy/MutatingAdmissionPolicy (Group J) both —
+scoped here rather than under either group since it's shared
+infrastructure neither owns.
+
+*Crate choice*: `cel-interpreter` (the `cel-rust` project, MIT-licensed,
+actively maintained). Real, verified API shape (`docs.rs`/repo, fetched
+directly): `Program::compile(expr)` -> `Context::default()` +
+`context.add_variable(name, value)`/`context.add_function(...)` ->
+`program.execute(&context)`. **No built-in cost/step limiting of any
+kind** — confirmed by reading its own docs, not assumed — so the entire
+cost-budget mechanism below is this crate's own responsibility to build
+regardless of which CEL evaluator sits underneath it; picking a
+different crate wouldn't remove this work; it's not a rejected
+shortcut.
+
+*Real upstream's own budget numbers* (`k8s.io/apiserver/pkg/apis/cel/
+config.go` + `pkg/cel/limits.go`, fetched and read directly — the
+project's own vendoring flow only pulls protos/OpenAPI specs, so this is
+new: real Go source with no proto/OpenAPI representation, a genuinely
+different kind of "vendor" than every prior group has needed):
+- `RuntimeCELCostBudget = 10_000_000` — the overall runtime cost budget
+  per `ValidatingAdmissionPolicyBinding` or per CustomResource
+  validation (~1 real second of evaluation).
+- `PerCallLimit = 1_000_000` — the cost limit for one individual CEL
+  expression's own evaluation (~0.1s).
+- `RuntimeCELCostBudgetMatchConditions = 2_500_000` — the separate,
+  smaller budget for `matchConditions` (webhook/policy-binding
+  pre-filters), per object.
+- `CheckFrequency = 100` — real upstream doesn't check "has the budget
+  been exceeded" after every single operation; it checks every 100
+  iterations *within* a comprehension (`all`/`exists`/`map`/`filter`),
+  the real reason a budget check is cheap enough to run at all without
+  itself dominating the cost it's trying to bound.
+- `MaxRequestSizeBytes = 3_145_728` (3MiB) — the real ceiling real
+  upstream's own cost *estimator* (not the runtime evaluator) uses when
+  a string/bytes field has no narrower schema-declared `maxLength` to
+  bound a worst-case comprehension range by.
+- A family of `Min*Size`/`Max*Size` constants (`MinStringSize = 2`,
+  `MinBoolSize = 4`, `MinNumberSize = 1`, `MaxDurationSizeJSON = 32`,
+  `MaxDatetimeSizeJSON = 32`, ...) — the literal-size bounds the same
+  static estimator uses for scalar JSON types when no schema constraint
+  narrows them further.
+
+*The real mechanism is two layers, not one*, and both matter — a naive
+single-layer implementation (either alone) is a real gap, not a
+simplification:
+1. **Static "checked cost" estimation**, run once when a CRD's
+   `x-kubernetes-validations` rule (or a policy's own CEL rule) is first
+   accepted, *before* it's ever evaluated against real data: walks the
+   compiled CEL AST alongside the structural schema, computing a
+   worst-case cost bound from the schema's own `maxItems`/`maxLength`/
+   `maxProperties` (falling back to the `Max*Size` constants above when
+   a field has no such bound) — a rule whose worst case could never fit
+   the budget is rejected at CRD-acceptance time, a real `422`, not
+   discovered lazily on the first CR that happens to trip it.
+2. **Runtime cost accounting** during actual evaluation against a real
+   object: an accumulator charged for each operation (a function call, a
+   comprehension iteration, ...), checked every `CheckFrequency`
+   iterations inside a loop, aborting the evaluation the moment the
+   budget is exceeded — this is what actually stops a pathological real
+   input (not just a pathological *rule*) from consuming unbounded CPU.
+
+*Phased plan, each phase a real, separately verifiable slice, same
+"land the primitive, wire it later" discipline every prior group has
+used*:
+1. Vendor `cel-interpreter`; a pure `cel_ext::eval` wrapping
+   `Program::compile`/`Context`/`.execute` against `serde_json::Value`
+   bound variables (`self` for the value being validated, `oldSelf` on
+   `UPDATE` — real upstream's own two well-known variable names for
+   `x-kubernetes-validations`), no cost accounting yet, no k8s extension
+   functions yet — proves the crate itself round-trips real expressions
+   against real k8s-shaped data.
+2. Runtime cost accounting (layer 2 above) — `PerCallLimit`/
+   `RuntimeCELCostBudget`, checked at `CheckFrequency` granularity.
+   **Must land before this is wired into any real request path** — an
+   unbudgeted evaluator in the request path is a real, unmitigated DoS
+   surface the moment it's reachable, not hardening to add later.
+3. Static checked-cost estimation (layer 1) — real upstream's own
+   defense against a malicious *rule* (not just malicious input), needed
+   before `x-kubernetes-validations` can be accepted at CRD-creation
+   time with any confidence its worst case is actually bounded.
+4. Wire into Group K: `x-kubernetes-validations` evaluated in
+   `server::rest::create`/`update`/`patch_persist`'s CRD branch, after
+   pruning and required/type validation (`apiextensions::
+   schema_validation`'s own existing two checks stay first — CEL rules
+   commonly assume a field already passed basic structural validation).
+5. Wire into Group J: ValidatingAdmissionPolicy/MutatingAdmissionPolicy,
+   and `matchConditions` (its own separate, smaller budget) for webhooks
+   and policy bindings.
+6. Kubernetes' own CEL extension library (string/list helpers beyond
+   base CEL, `isSorted`, quantity parsing, ...) and type-checking a rule
+   against its declared schema at CRD-acceptance time (catching a rule
+   that references a field the schema doesn't have, or compares
+   incompatible types) — real upstream features this build doesn't need
+   for a first working CEL path, named honestly as later phases rather
+   than silently out of scope.
+
 **L. Aggregation layer** — **not started**. `APIService` objects,
 `ServiceResolver`, reverse proxying, discovery merge, availability
 conditions.
