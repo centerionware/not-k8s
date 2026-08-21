@@ -948,13 +948,7 @@ fetched and read directly. Covers the real wildcard semantics
 (`verbs`/`apiGroups`/`resources` `"*"`, the `*/status`-style subresource
 wildcard, the trailing-`*` prefix wildcard `nonResourceURLs` supports,
 and empty `resourceNames` meaning "every name") and the resource vs.
-non-resource request split. **Pure evaluation engine only — not yet
-wired to real `Role`/`RoleBinding`/`ClusterRole`/`ClusterRoleBinding`
-objects**: resolving which `PolicyRule`s apply to a subject in a
-namespace needs those objects fetched from storage (real upstream's
-`DefaultRuleResolver`) — separate, not-yet-started work, same "land the
-primitive, wire it later" split this arc has taken throughout.
-`authz::subject` is the other half `DefaultRuleResolver` combines with
+non-resource request split. `authz::subject` is the other half `DefaultRuleResolver` combines with
 rule matching: does a binding's `Subjects` list include a given
 authenticated user (`pkg/registry/rbac/validation/rule.go`'s
 `appliesTo`/`appliesToUser`, fetched and read directly), including the
@@ -972,8 +966,9 @@ each one's `RoleRef` to a real `Role`/`ClusterRole`'s rules (via
 `server::rest::get`) — real upstream's own `DefaultRuleResolver`
 (`VisitRulesFor`), ported, with the same non-fatal-per-binding-error,
 purely-additive posture. **Now wired into `server::listener`, opt-in**:
-`handle` calls `resolve::rules_for` + `rbac::rules_allow` to gate
-`GET`/`LIST` with a real `403` on denial, gated behind
+`handle` calls `resolve::rules_for` + `rbac::rules_allow` to gate all
+five real CRUD verbs (`GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`) with a
+real `403` on denial, gated behind
 `NODEAPISERVER_ENFORCE_RBAC` (`config::Config::enforce_rbac`), **off by
 default** — enabling deny-by-default RBAC before Group O's bootstrap
 `ClusterRole`/`ClusterRoleBinding` set exists (the ~90 `system:` roles
