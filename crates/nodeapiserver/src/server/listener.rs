@@ -588,20 +588,21 @@ const UNAUTHENTICATED_GROUP: &str = "system:unauthenticated";
 /// reasoned choice today.
 const BOOT_CACHED_RESOURCES: &[(&str, &str, &str)] = &[("", "v1", "namespaces"), ("", "v1", "pods"), ("", "v1", "services"), ("", "v1", "secrets"), ("", "v1", "configmaps"), ("", "v1", "endpoints"), ("", "v1", "nodes")];
 
-/// Group J: persists `ResourceQuota.status.used` after a successful pod
-/// `CREATE` — real upstream's own `quotaAccessor.UpdateQuotaStatus`
+/// Group J: persists `ResourceQuota.status.used` after a successful pod/
+/// PVC/service `CREATE` — real upstream's own
+/// `quotaAccessor.UpdateQuotaStatus`
 /// (`plugin/pkg/admission/resourcequota/apis/resourcequota/...`),
-/// scoped to the values [`admission::resource_quota::usage_after_pod_create`]
+/// scoped to whichever evaluator's own `usage_after_*_create` the caller
 /// already computed. A bounded retry (3 attempts) on a real optimistic-
 /// concurrency `Conflict` from `rest::update_status` re-reads the quota
 /// and merges again, same "retry on lost race" posture every other write
 /// path in this crate already uses. **Read-modify-write, not
-/// overwrite**: only the keys `usage_after_pod_create` itself tracks are
+/// overwrite**: only the keys the calling evaluator itself tracks are
 /// replaced in the quota's existing `status.used` map — any keys another
-/// evaluator (PVC/service/generic-count, none of which persist a status
-/// yet, a named follow-up) might already hold there survive untouched.
-/// Every failure (quota vanished, storage error, retries exhausted) is
-/// logged and dropped — a status write is bookkeeping, not the
+/// evaluator (the generic object-count evaluator doesn't persist a
+/// status yet, a named follow-up) might already hold there survive
+/// untouched. Every failure (quota vanished, storage error, retries
+/// exhausted) is logged and dropped — a status write is bookkeeping, not the
 /// admission decision itself, which has already succeeded by the time
 /// this runs.
 async fn persist_quota_usage_updates(client: &mut StorageClient, namespace: &str, updates: Vec<(String, std::collections::BTreeMap<String, crate::scheme::quantity::Quantity>)>, path_str: &str) {
@@ -1249,12 +1250,11 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             } else {
                 None
             };
-            // Populated only for the `pods` evaluator (this slice's own
-            // scope — PVC/service/generic-count status persistence are a
-            // named follow-up, same "one evaluator at a time" pattern
-            // this whole module already used while it grew), consumed
-            // after `rest::create` actually succeeds below. Computing
-            // this here (before creation) rather than re-listing after
+            // Populated for the pod/PVC/service evaluators (the generic
+            // object-count evaluator doesn't persist its own status.used
+            // yet — a named follow-up), consumed after `rest::create`
+            // actually succeeds below. Computing this here (before
+            // creation) rather than re-listing after
             // is deliberate: it's the exact same existing-usage snapshot
             // `check_pod_create` just used to allow the request, so the
             // two stay consistent with each other.
@@ -1280,9 +1280,11 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                             if let Some(denial) = denial {
                                 return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &denial)));
                             }
-                            if list_resource == "pods" {
-                                quota_usage_updates = admission::resource_quota::usage_after_pod_create(new_object, &existing, &quotas);
-                            }
+                            quota_usage_updates = match list_resource {
+                                "pods" => admission::resource_quota::usage_after_pod_create(new_object, &existing, &quotas),
+                                "persistentvolumeclaims" => admission::resource_quota::usage_after_pvc_create(new_object, &existing, &quotas),
+                                _ => admission::resource_quota::usage_after_service_create(new_object, &existing, &quotas),
+                            };
                         }
                         Ok(rest::ListOutcome::UnknownResource) => {
                             // No `resourcequotas` known to this build —
