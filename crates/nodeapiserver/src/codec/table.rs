@@ -3,6 +3,14 @@
 //! `application/json;as=Table;g=meta.k8s.io;v=v1`
 //! (`codec::negotiation::negotiate`'s own `as=Table` parameters).
 //!
+//! **Wired into `server::listener`**: `GET`/`LIST`'s own real-verb
+//! branches check `Accepted::wants_table()` (captured from the request's
+//! `Accept` header before the body-reading logic can consume `req`) and
+//! run the response through [`convert_to_table`] when set — this was a
+//! real, undocumented gap for a while (the converter existed, correctly
+//! documented as landed, but nothing in `server/` ever called it) until
+//! this wiring closed it.
+//!
 //! # What this captures, and what it honestly doesn't
 //!
 //! Real kube-apiserver has two table converters: a hand-written one per

@@ -113,7 +113,15 @@ honestly: real kube-apiserver's much larger *per-type* printer set
 statuses — hand-written Go, `pkg/printers/internalversion`) isn't
 started — every resource this build serves gets the generic table today,
 same as a fresh CRD does in real kube-apiserver until it earns its own
-printer. Not yet done: any per-type printer, and `PartialObjectMetadata`.
+printer. **Now actually wired into `GET`/`LIST`** (`server::listener`
+checks `Accepted::wants_table()` from the request's own `Accept` header
+and runs the response through `convert_to_table` when set) — a real gap
+found this session: the converter had been landed and correctly
+documented for a while, but nothing in `server/` ever called it, so a
+real `kubectl get pods` against a live nodeapiserver got raw JSON
+instead of the columnar `Table` output every `kubectl get` actually
+negotiates by default. Not yet done: any per-type printer, and
+`PartialObjectMetadata`.
 
 **C. Storage over nodestore** — **in progress**. `storage::client::StorageClient`
 is a real etcd v3 gRPC client to nodestore (`Range`/`Put`/`DeleteRange`/`Txn`/
