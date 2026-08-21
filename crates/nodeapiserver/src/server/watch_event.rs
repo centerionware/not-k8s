@@ -45,6 +45,29 @@ fn decode_event_value(event: &WatchEvent, bytes: &[u8], storage: Option<&Storage
     }
 }
 
+/// Real, load-bearing fix, found live the same way `server::rest::get`'s
+/// own copy of this exact fix was — `tests/apiservice_roundtrip.rs`'s
+/// get-then-update round trip: `resourceVersion` is never actually
+/// *persisted* into a stored object's own bytes (every write path stamps
+/// it onto its own return value only *after* the write that produced the
+/// revision, since it doesn't exist yet while those bytes are still
+/// being built), so a `Added`/`Modified`/`Deleted` watch event's own
+/// decoded object needs it stamped from `event.revision` the same way
+/// every real read path in `server::rest` now does, or a controller that
+/// only ever watches (never a plain `GET`) would see every object with
+/// no `resourceVersion` at all.
+fn stamp_resource_version(object: &mut Value, revision: i64) {
+    // Same shape `server::rest::set_metadata_field` already establishes
+    // (not imported directly -- that one's private to its own module,
+    // and this is the only field this module itself ever needs to set).
+    let Some(map) = object.as_object_mut() else { return };
+    let metadata = map.entry("metadata").or_insert_with(|| json!({}));
+    if !metadata.is_object() {
+        *metadata = json!({});
+    }
+    metadata["resourceVersion"] = Value::String(revision.to_string());
+}
+
 /// Real upstream's own `watch.EventType` string constants.
 pub fn event_type_str(kind: EventKind) -> &'static str {
     match kind {
@@ -69,10 +92,11 @@ pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str, st
     let event_type = event_type_str(event.kind);
     match event.kind {
         EventKind::Added | EventKind::Modified => {
-            let object = match decode_event_value(event, &event.value, storage, group, resource) {
+            let mut object = match decode_event_value(event, &event.value, storage, group, resource) {
                 Ok(o) => o,
                 Err(e) => return Some(Err(e)),
             };
+            stamp_resource_version(&mut object, event.revision);
             Some(Ok(json!({"type": event_type, "object": object})))
         }
         EventKind::Bookmark => Some(Ok(json!({
@@ -91,7 +115,10 @@ pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str, st
                 // pre-delete value, so this is what a real Deleted event
                 // actually carries.
                 match decode_event_value(event, &event.value, storage, group, resource) {
-                    Ok(o) => Some(Ok(json!({"type": event_type, "object": o}))),
+                    Ok(mut o) => {
+                        stamp_resource_version(&mut o, event.revision);
+                        Some(Ok(json!({"type": event_type, "object": o})))
+                    }
                     Err(e) => Some(Err(e)),
                 }
             }
@@ -148,6 +175,21 @@ mod tests {
         let json = to_watch_event_json(&event, "Namespace", "v1", None, "", "namespaces").unwrap().unwrap();
         assert_eq!(json["type"], "DELETED");
         assert_eq!(json["object"]["metadata"]["name"], "goner");
+    }
+
+    /// Real, load-bearing fix — see `stamp_resource_version`'s own doc
+    /// comment: `resourceVersion` is never actually persisted into a
+    /// stored object's own bytes, so every real event kind that carries
+    /// a decoded object needs it stamped from the event's own revision,
+    /// not just the synthetic `Bookmark` case (which already had this).
+    #[test]
+    fn added_modified_and_deleted_all_stamp_the_events_own_revision_as_resource_version() {
+        let envelope = real_namespace_envelope("default");
+        for kind in [EventKind::Added, EventKind::Modified, EventKind::Deleted] {
+            let event = WatchEvent { kind, key: b"k".to_vec(), value: envelope.clone(), revision: 123 };
+            let json = to_watch_event_json(&event, "Namespace", "v1", None, "", "namespaces").expect("must convert").expect("decode must succeed");
+            assert_eq!(json["object"]["metadata"]["resourceVersion"], "123", "{kind:?} event must carry its own real resourceVersion");
+        }
     }
 
     #[test]

@@ -394,7 +394,8 @@ pub async fn get(storage: &mut StorageClient, cache: Option<&crate::cacher::stor
 
     if let Some(cache) = cache {
         if let Some(entry) = cache.get(key.as_bytes()) {
-            let object = decrypt_and_decode(storage, group, resource, key.as_bytes(), &entry.value)?;
+            let mut object = decrypt_and_decode(storage, group, resource, key.as_bytes(), &entry.value)?;
+            set_metadata_field(&mut object, "resourceVersion", Value::String(entry.mod_revision.to_string()));
             return Ok(GetOutcome::Found(object));
         }
     }
@@ -403,7 +404,23 @@ pub async fn get(storage: &mut StorageClient, cache: Option<&crate::cacher::stor
     let Some(kv) = resp.kvs.into_iter().next() else {
         return Ok(GetOutcome::ObjectNotFound);
     };
-    let object = decrypt_and_decode(storage, group, resource, &kv.key, &kv.value)?;
+    let mut object = decrypt_and_decode(storage, group, resource, &kv.key, &kv.value)?;
+    // Real, load-bearing fix, found live (`tests/apiservice_roundtrip.rs`'s
+    // own get-then-update round trip): `resourceVersion` is never
+    // actually *persisted* into the stored object bytes (`create`/
+    // `persist_update` both stamp it onto their own return value only
+    // *after* the write that produced it — the revision doesn't exist
+    // yet while the bytes being written are still being built, so there
+    // is nothing earlier to persist it into either) — matching real
+    // upstream's own posture, where `resourceVersion` is always etcd's
+    // own `mod_revision` read back at serve time, never object content.
+    // A plain read has to do the same real-time stamping every write
+    // path already does, from this exact `Range`'s own `kv.mod_revision`
+    // — every prior write-then-read-back test in this crate happened to
+    // use a `create`/`update` call's own return value directly, which
+    // already carried a real `resourceVersion`, so nothing exercised a
+    // genuine `GET` followed by an `UPDATE` until this one did.
+    set_metadata_field(&mut object, "resourceVersion", Value::String(kv.mod_revision.to_string()));
     Ok(GetOutcome::Found(object))
 }
 
@@ -506,7 +523,16 @@ pub async fn list(
             let items = entries
                 .iter()
                 .filter(|(key, _)| key.starts_with(&prefix))
-                .map(|(key, entry)| decrypt_and_decode(storage, group, resource, key, &entry.value))
+                .map(|(key, entry)| {
+                    // Same real fix `get`'s own doc comment covers: a
+                    // stored object never carries `resourceVersion` as
+                    // persisted content, so every item in a `LIST`
+                    // response needs it stamped from its own live
+                    // revision, the same way real upstream does.
+                    let mut object = decrypt_and_decode(storage, group, resource, key, &entry.value)?;
+                    set_metadata_field(&mut object, "resourceVersion", Value::String(entry.mod_revision.to_string()));
+                    Ok(object)
+                })
                 .collect::<Result<Vec<Value>, Error>>()?
                 .into_iter()
                 .filter(|item| selector::object_matches(item, &label_reqs, &field_reqs))
@@ -558,7 +584,11 @@ pub async fn list(
     let items = resp
         .kvs
         .iter()
-        .map(|kv| decrypt_and_decode(storage, group, resource, &kv.key, &kv.value))
+        .map(|kv| {
+            let mut object = decrypt_and_decode(storage, group, resource, &kv.key, &kv.value)?;
+            set_metadata_field(&mut object, "resourceVersion", Value::String(kv.mod_revision.to_string()));
+            Ok(object)
+        })
         .collect::<Result<Vec<Value>, Error>>()?
         .into_iter()
         .filter(|item| selector::object_matches(item, &label_reqs, &field_reqs))
@@ -1386,7 +1416,8 @@ pub async fn delete(storage: &mut StorageClient, group: &str, version: &str, res
     let Some(prev) = resp.prev_kvs.into_iter().next() else {
         return Ok(DeleteOutcome::ObjectNotFound);
     };
-    let object = decrypt_and_decode(storage, group, resource, &prev.key, &prev.value)?;
+    let mut object = decrypt_and_decode(storage, group, resource, &prev.key, &prev.value)?;
+    set_metadata_field(&mut object, "resourceVersion", Value::String(prev.mod_revision.to_string()));
     Ok(DeleteOutcome::Deleted(object))
 }
 

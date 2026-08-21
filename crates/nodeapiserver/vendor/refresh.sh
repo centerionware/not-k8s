@@ -57,7 +57,18 @@ log "fetched $n openapi-spec files"
 log "fetching **/generated.proto..."
 n=0
 while IFS= read -r path; do
-    [[ "$path" == staging/src/k8s.io/api*/generated.proto ]] || continue
+    # `k8s.io/api*` alone misses real API types whose staging repo name
+    # doesn't start with "api" — found live: `APIService` itself
+    # (`k8s.io/kube-aggregator`) was vendored in openapi-spec/ (that
+    # fetch above has no such filter) but silently missing from protos/,
+    # so `schema_for_gvk` had no compiled schema for it at all despite
+    # `resolve_kind` finding it in the discovery table — a real resource
+    # that looked known but couldn't actually be created. Named
+    # explicitly here rather than widening the glob to something looser
+    # (`k8s.io/*`) that would also start pulling in non-API staging repos
+    # (`k8s.io/client-go`, `k8s.io/code-generator`, ...) with no
+    # generated.proto worth vendoring at all.
+    [[ "$path" == staging/src/k8s.io/api*/generated.proto || "$path" == staging/src/k8s.io/kube-aggregator/*/generated.proto ]] || continue
     # Strip the "staging/src/" prefix so the vendored layout mirrors the
     # real Go import path (k8s.io/api/...) that each .proto's own `package`/
     # `option go_package` lines reference — build.rs's parser resolves
