@@ -60,13 +60,15 @@
 //! reacting to a CRD's own lifecycle (a lazily-spawned watch reflector
 //! keeps running even after its CRD is deleted, and a newly
 //! `Established` CRD is only discovered by the next watch/discovery
-//! request for its resource, not eagerly); gating the `status`
-//! subresource on a CRD's own `spec.versions[].subresources.status`
-//! (currently always available, unconditionally, for every CRD);
-//! pruning/validation on the `status` subresource write itself
-//! (`update_status`/`patch_status` keep the same "no structural checks
-//! on status" scope real upstream's own generic status strategy has for
-//! built-ins too).
+//! request for its resource, not eagerly); pruning/validation on the
+//! `status` subresource write itself (`update_status`/`patch_status`
+//! keep the same "no structural checks on status" scope real upstream's
+//! own generic status strategy has for built-ins too). **Done, not a
+//! gap**: the `status` subresource is now genuinely gated on a CRD's own
+//! `spec.versions[].subresources.status` (`registry::CrdResource::
+//! has_status_subresource`) — a version that never declares it gets a
+//! real `UnknownResource` from `update_status`/`patch_status`, not a
+//! silent write.
 //!
 //! Status: in progress (Group K — see docs/APISERVER.md).
 

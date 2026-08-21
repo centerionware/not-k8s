@@ -1445,6 +1445,15 @@ mechanism, only this one specific, security-relevant consequence of it
 overwhelming common case, must never have this build silently prune the
 object's own identity).
 
+**The `status` subresource is now genuinely gated on the CRD declaring
+it** — `registry::CrdResource::has_status_subresource`
+(`spec.versions[].subresources.status`'s own presence, real upstream's
+own opt-in): `update_status`/`patch_status` return a real
+`UnknownResource` for a version that never declared it, not a silent
+write, live-tested (`tests/crd_roundtrip.rs`'s
+`status_subresource_is_gated_on_the_crd_declaring_it`) both ways — a
+missing declaration rejected, a real one accepted end to end.
+
 **Not yet landed, named honestly** (`apiextensions::mod`'s own doc
 comment carries this list too): enum membership, numeric ranges, format
 checks, and any cross-field consistency rule (`x-kubernetes-validations`

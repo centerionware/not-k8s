@@ -186,6 +186,13 @@ struct ResolvedResource {
     /// `Some(proto message name)` for a built-in; `None` for a CRD.
     schema: Option<&'static str>,
     open_api_schema: Option<Value>,
+    /// Only ever meaningfully `true` for a CRD (`schema: None`) whose
+    /// matched version declares `subresources.status` — always `true`
+    /// for a static built-in, since this crate doesn't model per-type
+    /// subresource declarations for built-ins at all yet (a real,
+    /// separate, wider gap this field doesn't attempt to close — see
+    /// `update_status`/`patch_status`'s own doc comment).
+    has_status_subresource: bool,
 }
 
 /// The single place every real verb in this module decides what
@@ -205,9 +212,11 @@ struct ResolvedResource {
 /// of this function ever listing CRDs to resolve a request for CRDs.
 async fn resolve_resource(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<ResolvedResource>, Error> {
     if let Some(kind) = resolve_kind(group, version, resource) {
-        return Ok(protobuf::schema_for_gvk(group, version, kind).map(|schema| ResolvedResource { kind: kind.to_string(), schema: Some(schema), open_api_schema: None }));
+        return Ok(protobuf::schema_for_gvk(group, version, kind).map(|schema| ResolvedResource { kind: kind.to_string(), schema: Some(schema), open_api_schema: None, has_status_subresource: true }));
     }
-    Ok(resolve_crd(storage, group, version, resource).await?.map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema }))
+    Ok(resolve_crd(storage, group, version, resource)
+        .await?
+        .map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema, has_status_subresource: r.has_status_subresource }))
 }
 
 /// The dynamic (CRD-only) half of [`resolve_resource`] — skips the
@@ -877,10 +886,23 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
 /// the body is skipped (moot here — the body's own `metadata`/`spec` are
 /// never read for anything but `resourceVersion`). [`patch_status`] is
 /// this function's `PATCH` counterpart.
+///
+/// A CRD-defined resource whose matched version never declared
+/// `subresources.status` has no `status` subresource at all — real
+/// upstream doesn't even install this route for such a version — so
+/// this returns `UnknownResource` (a real `404`) rather than silently
+/// serving a status write real upstream itself would refuse. Every
+/// built-in resource this crate resolves through the static table is
+/// unaffected: `resolve_resource` always reports `true` for one, the
+/// same "not modeled per-type yet" scope this crate's own discovery
+/// already has for built-in subresources generally.
 pub async fn update_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
+    if !resolved.has_status_subresource {
+        return Ok(UpdateOutcome::UnknownResource);
+    }
     let kind = resolved.kind.clone();
 
     let key = keys::object_key(group, resource, namespace, name);
@@ -1162,11 +1184,16 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
 /// same whether it arrives via `PUT` (full replace) or `PATCH` (merged).
 /// No client-submitted `resourceVersion` needed, same as `patch_persist`.
 /// Same scope narrowing `update_status` already named: no structural
-/// validation, no Group J admission.
+/// validation, no Group J admission — and the same
+/// `subresources.status`-must-be-declared gate for a CRD-defined
+/// resource (`update_status`'s own doc comment covers why).
 pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
+    if !resolved.has_status_subresource {
+        return Ok(UpdateOutcome::UnknownResource);
+    }
 
     let key = keys::object_key(group, resource, namespace, name);
     let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
