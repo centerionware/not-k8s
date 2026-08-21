@@ -1640,10 +1640,25 @@ functions already are (a static table merged with a dynamically-fetched
 set), likely reusable as a third merge input rather than a third parallel
 implementation.
 
-*Phased plan*: 1) `APIService` as a real, generic-REST-served resource
-(it's cluster-scoped, no special storage needs — should already work
-identically to any other built-in the moment its own GVK is in the
-vendored discovery table, worth confirming rather than assuming).
+*Phased plan*: 1) **Done.** `APIService` as a real, generic-REST-served
+resource — confirmed rather than assumed, and worth confirming turned
+out to matter: `resolve_kind` already found `apiregistration.k8s.io/v1`
+`APIService` (`vendor/openapi-spec/v3` has no group allowlist), but
+`schema_for_gvk` had no compiled schema for it at all — `vendor/
+refresh.sh`'s own proto-fetch glob (`staging/src/k8s.io/api*/generated.
+proto`) misses `k8s.io/kube-aggregator`, `APIService`'s real staging
+repo (it doesn't start with `api`), the exact same "looks known,
+`UnknownResource` in practice" gap Group K's own CRD work found live
+more than once. Fixed by vendoring `k8s.io/kube-aggregator/pkg/apis/
+apiregistration/{v1,v1beta1}/generated.proto` directly (not a full
+`refresh.sh` re-run, which would re-fetch the entire tree against
+whatever `release-1.34` currently points to — real, unrelated drift a
+one-resource fix has no reason to risk) and widening the script's own
+glob for next time. Live-tested end to end
+(`tests/apiservice_roundtrip.rs`) against a real `nodestore`:
+create/get/list/update/delete all genuinely work, zero new application
+code needed — the generic REST machinery really was already sufficient
+the moment the schema existed.
 2) The availability controller — periodic health checks, real
 `Available`/`Unavailable` conditions. 3) Discovery merge — add
 `APIService`-sourced group-versions as a third input alongside the
