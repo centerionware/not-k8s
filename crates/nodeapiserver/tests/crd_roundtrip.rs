@@ -213,6 +213,94 @@ async fn a_crd_defined_resource_routes_through_the_generic_rest_verbs() {
     let _ = child.wait().await;
 }
 
+/// The `UPDATE`/`PATCH` half of Group K: `rest::update` and
+/// `rest::patch_prepare`/`patch_persist` both now resolve a CRD-defined
+/// resource the same way `create`/`get`/`list`/`delete` already did.
+/// `JSON Patch`/`Merge Patch` need no schema and work identically to a
+/// built-in; `strategic-merge-patch` is a real, named gap (`apply_patch`'s
+/// own doc comment) — confirmed here as a clean `Invalid`, not a panic
+/// or a silently-wrong merge.
+#[tokio::test]
+async fn update_and_patch_work_against_a_crd_defined_resource() {
+    let Some(nodestore_bin) = find_nodestore_binary() else {
+        eprintln!("SKIPPED: no nodestore binary available and building one on demand failed");
+        return;
+    };
+    let (mut child, _data_dir, mut storage) = spawn_nodestore(&nodestore_bin, 23802).await;
+
+    rest::create(&mut storage, "apiextensions.k8s.io", "v1", "customresourcedefinitions", None, &a_crd()).await.expect("rest::create(CRD) must not itself error");
+    let widget = json!({
+        "apiVersion": "example.com/v1",
+        "kind": "Widget",
+        "metadata": {"name": "editable-widget", "namespace": "default"},
+        "spec": {"color": "red"},
+    });
+    let created = match rest::create(&mut storage, "example.com", "v1", "widgets", Some("default"), &widget).await.expect("rest::create must not itself error") {
+        rest::CreateOutcome::Created(object) => object,
+        other => panic!("expected Created, got {other:?}"),
+    };
+
+    // 1. A plain PUT (rest::update) -- real optimistic concurrency
+    // (the submitted resourceVersion must match), schema-driven
+    // defaulting still applies since the client's own replacement body
+    // doesn't set `spec.size` either.
+    let mut replacement = created.clone();
+    replacement["spec"]["color"] = json!("blue");
+    replacement["spec"].as_object_mut().unwrap().remove("size");
+    let updated = match rest::update(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", &replacement).await.expect("rest::update must not itself error") {
+        rest::UpdateOutcome::Updated(object) => object,
+        other => panic!("expected Updated, got {other:?}"),
+    };
+    assert_eq!(updated["spec"]["color"], "blue");
+    assert_eq!(updated["spec"]["size"], "small", "the CRD schema's own default must still apply on UPDATE");
+
+    // 2. A JSON Patch (RFC 6902) -- needs no schema at all.
+    let json_patch = json!([{"op": "replace", "path": "/spec/color", "value": "green"}]);
+    let (candidate, context) = match rest::patch_prepare(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", rest::PatchKind::Json, &json_patch)
+        .await
+        .expect("rest::patch_prepare must not itself error")
+    {
+        rest::PatchPrepareOutcome::Ready(candidate, context) => (candidate, context),
+        other => panic!("expected Ready, got {other:?}"),
+    };
+    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", context, candidate).await.expect("rest::patch_persist must not itself error") {
+        rest::UpdateOutcome::Updated(object) => object,
+        other => panic!("expected Updated, got {other:?}"),
+    };
+    assert_eq!(patched["spec"]["color"], "green");
+
+    // 3. A Merge Patch (RFC 7386) -- also needs no schema.
+    let merge_patch = json!({"spec": {"color": "yellow"}});
+    let (candidate, context) = match rest::patch_prepare(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", rest::PatchKind::Merge, &merge_patch)
+        .await
+        .expect("rest::patch_prepare must not itself error")
+    {
+        rest::PatchPrepareOutcome::Ready(candidate, context) => (candidate, context),
+        other => panic!("expected Ready, got {other:?}"),
+    };
+    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", context, candidate).await.expect("rest::patch_persist must not itself error") {
+        rest::UpdateOutcome::Updated(object) => object,
+        other => panic!("expected Updated, got {other:?}"),
+    };
+    assert_eq!(patched["spec"]["color"], "yellow");
+
+    // 4. strategic-merge-patch is a real, named gap for a CRD -- a clean
+    // Invalid, not a panic and not a silently-wrong merge.
+    let strategic_patch = json!({"spec": {"color": "purple"}});
+    match rest::patch_prepare(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", rest::PatchKind::StrategicMerge, &strategic_patch)
+        .await
+        .expect("rest::patch_prepare must not itself error")
+    {
+        rest::PatchPrepareOutcome::Invalid(msgs) => {
+            assert!(msgs.iter().any(|m| m.contains("strategic-merge-patch")), "expected a clear strategic-merge-patch error, got {msgs:?}");
+        }
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
 /// The `WATCH` half of Group K: `server::listener`'s own dispatch, on a
 /// cache miss for a resource its static table doesn't know at all,
 /// resolves it dynamically (`rest::resolve_dynamic_kind`) and lazily
