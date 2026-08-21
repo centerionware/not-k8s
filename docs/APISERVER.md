@@ -1642,123 +1642,52 @@ used*:
    for a first working CEL path, named honestly as later phases rather
    than silently out of scope.
 
-**L. Aggregation layer** — **a real design pass (2026-08-21), no code
-yet**, same "ground it in real upstream source before writing anything"
-discipline every big item this arc has used.
+**L. Aggregation layer** — **Phases 1, 3, 4 done; Phase 2 partially
+done.** `k8s.io/kube-aggregator`'s own `APIService` mechanism
+(`pkg/apis/apiregistration/v1/types.go` + `pkg/apiserver/handler_proxy.go`,
+fetched and read directly): an `APIService` object names a group-version
+this build stops answering itself and instead reverse-proxies to a
+backing `Service`. `aggregator/mod.rs`'s own module doc is the
+authoritative live status — read it, not this paragraph, for the exact
+current scope of each piece; summarized here:
 
-*What it really is* (`k8s.io/kube-aggregator`'s own
-`pkg/apis/apiregistration/v1/types.go` +
-`pkg/apiserver/handler_proxy.go`, fetched and read directly): an
-`APIService` object (`spec.group`/`.version` naming the group-version it
-takes over, `spec.service` naming a backing `Service` by
-namespace/name/port, `spec.caBundle`/`.insecureSkipTLSVerify` for how to
-trust it, `spec.groupPriorityMinimum`/`.versionPriority` for discovery
-ordering) tells this build's own discovery/routing to stop answering a
-group-version itself and instead reverse-proxy every request for it to
-that backing Service — `metrics.k8s.io`/`custom.metrics.k8s.io` (metrics
-server) is the real-world example almost every cluster actually runs
-this for.
+1. **Done.** `APIService` is a real, working generic-REST resource
+   (`tests/apiservice_roundtrip.rs` proves create/get/list/update/delete
+   end to end against a real `nodestore`) — `vendor/refresh.sh`'s
+   proto-fetch glob was missing `k8s.io/kube-aggregator` entirely (it
+   doesn't start with `api*`), fixed by vendoring that package's
+   `generated.proto` directly.
+2. **Partially done.** `aggregator::availability` is the real
+   availability controller's *decision logic* (`local`/`remote`, a
+   faithful port of `kube-aggregator`'s own two controllers) — pure, no
+   I/O. **The one remaining real gap in this whole group**: no live
+   reconciliation loop watches `APIService`/Service/`EndpointSlice` and
+   writes the resulting `Available` condition back to `status.conditions`
+   — `aggregate_proxy`/`discoverable_group_versions` both work around
+   this today by running the same pre-flight check fresh on every
+   request/discovery call instead of reading an already-computed
+   condition (a real, honest substitute — slower, never wrong — not a
+   correctness gap).
+3. **Done.** Discovery merge — `aggregator::route::
+   discoverable_group_versions` (every stored, non-local `APIService`
+   that currently passes pre-flight) feeds `server::discovery::
+   merged_group_version_map` as a third input alongside the static table
+   and Group K's CRD-sourced one, wired into `/apis`/`/apis/{group}`
+   (both legacy and `apidiscovery.k8s.io/v2` shapes) and
+   `/apis/{group}/{version}`'s own `APIResourceList` (a real live
+   proxied fetch, not a builder).
+4. **Done.** The actual reverse proxy — `server::listener::
+   aggregate_proxy`, wired into `handle()`: resolves the one matching
+   `APIService` (`route::resolve`), builds its per-`APIService` TLS trust
+   (`aggregator::client_tls::build_client_config` — real
+   `spec.caBundle`/`.insecureSkipTLSVerify`, `webpki-roots` fallback),
+   and relays the whole request (method/headers/body, any verb) through
+   `proxy::http_client::relay`. **Not attempted**: this build presenting
+   its own client identity to the backend (real upstream's own
+   front-proxy `X-Remote-User`/`--proxy-client-cert-file` chain), and
+   streaming upgrade support (SPDY/websocket — the same gap Group N's
+   exec/attach still has).
 
-*Why this build is unusually well-positioned for the proxy half,
-already*: unlike real kube-apiserver (which needs its own
-`ServiceResolver` abstraction because a real cluster's Service->endpoint
-mapping lives in etcd behind kube-proxy), this workspace already has a
-real, live Service/EndpointSlice watch (Group D's own watch cache) *and*
-a real Service-routing component (`crates/nodeproxy`) in the same repo —
-resolving `spec.service.namespace`/`.name`/`.port` to a real routable
-address doesn't need a new resolver abstraction invented from scratch,
-just a read against data this build (or its sibling `nodeproxy`) already
-has live. `proxy::http_client`/`proxy::client_tls` (Group N, already
-landed for `pods/log`) are the other real, reusable primitive — an
-`APIService` proxy is architecturally the same shape (dial a resolved
-backend over TLS, relay the response unmodified), just resolving the
-target from a Service instead of a Node.
-
-*The availability controller* (`kube-aggregator`'s own
-`pkg/apiserver/available_controller.go`): periodically health-checks
-each `APIService`'s backing Service (or, for a `service: nil`
-"local"/built-in group-version, is trivially always available) and
-writes a real `Available` condition to `status.conditions` — discovery
-merge (below) only ever advertises a group-version whose `APIService` is
-currently `Available`, the same "don't advertise what you can't
-actually serve" posture Group K's own `Established` gate already
-established for CRDs.
-
-*Discovery merge*: real upstream's own `/apis` response is the union of
-every built-in group-version *and* every `Available` `APIService`'s
-group-version, sorted by `groupPriorityMinimum`/`versionPriority` —
-architecturally the same shape Group K's own `discovery::*_with_crds`
-functions already are (a static table merged with a dynamically-fetched
-set), likely reusable as a third merge input rather than a third parallel
-implementation.
-
-*Phased plan*: 1) **Done.** `APIService` as a real, generic-REST-served
-resource — confirmed rather than assumed, and worth confirming turned
-out to matter: `resolve_kind` already found `apiregistration.k8s.io/v1`
-`APIService` (`vendor/openapi-spec/v3` has no group allowlist), but
-`schema_for_gvk` had no compiled schema for it at all — `vendor/
-refresh.sh`'s own proto-fetch glob (`staging/src/k8s.io/api*/generated.
-proto`) misses `k8s.io/kube-aggregator`, `APIService`'s real staging
-repo (it doesn't start with `api`), the exact same "looks known,
-`UnknownResource` in practice" gap Group K's own CRD work found live
-more than once. Fixed by vendoring `k8s.io/kube-aggregator/pkg/apis/
-apiregistration/{v1,v1beta1}/generated.proto` directly (not a full
-`refresh.sh` re-run, which would re-fetch the entire tree against
-whatever `release-1.34` currently points to — real, unrelated drift a
-one-resource fix has no reason to risk) and widening the script's own
-glob for next time. Live-tested end to end
-(`tests/apiservice_roundtrip.rs`) against a real `nodestore`:
-create/get/list/update/delete all genuinely work, zero new application
-code needed — the generic REST machinery really was already sufficient
-the moment the schema existed.
-2) **Partially done.** The availability controller's own *decision
-logic* (`aggregator::availability`) — a faithful port of real upstream's
-own two separate controllers (`github.com/kubernetes/kube-aggregator`'s
-`pkg/controllers/status/{local,remote}`, fetched and read directly, a
-genuinely separate GitHub repo from `kubernetes/kubernetes` this time,
-not a staging package): `local` (`spec.service: null`) is always
-`Available` (`Reason: "Local"`); `remote` runs a real pre-flight chain
-before its own discovery-endpoint dial — service existence
-(`ServiceNotFound`), listening on the configured port for a `ClusterIP`
-service only (`ServicePortError`), `EndpointSlice` existence
-(`EndpointsNotFound`), and at least one ready address on that port
-(`MissingEndpoints`) — exact real `Reason` strings, not invented ones.
-Pure, no I/O — not yet wired to a live reconciliation loop, and the
-actual discovery-endpoint dial (real upstream's own "5 concurrent
-`GET`s, any one succeeding is enough" check, `Reason:
-"FailedDiscoveryCheck"`/`"Passed"`) is left to Phase 4, the natural home
-for it since it needs the same dial primitive the reverse proxy itself
-does. 4) **Partially started.** The actual reverse proxy —
-`aggregator::proxy_target::resolve` is the pure `spec.service` -> real
-dial `Target` resolution (reusing `proxy::pod_log::Target` directly),
-choosing real upstream's own `ClusterIP`-dial strategy
-(`NewClusterIPServiceResolver`, `pkg/apiserver/resolvers.go`, fetched
-and read directly) over its endpoint-resolving one
-(`NewEndpointServiceResolver`) since `crates/nodeproxy` already gives
-this build real `ClusterIP` routing (real nftables DNAT to a live pod)
-to rely on — the same real infrastructure real upstream's own kube-proxy
-provides for that strategy to work at all, not a simplification standing
-in for something missing. Not yet wired to the actual dial
-(`proxy::http_client`'s already-proven pattern) or a real request route
-in `server::listener`; per-`APIService` TLS trust
-(`spec.caBundle`/`.insecureSkipTLSVerify` — a real, *per-APIService*
-`rustls::ClientConfig`, genuinely different from `proxy::client_tls`'s
-single shared nodelet-trust config built once at startup) isn't
-attempted yet either.
-3) Discovery merge — add `APIService`-sourced group-versions as a third
-input alongside the static table and Group K's CRD-sourced ones.
-**Real ordering correction, found while scoping the two**: unlike
-Group K (where a CRD's own CRUD was already fully functional before its
-discovery merge landed — CRDs were simply invisible to `kubectl`, never
-broken), shipping *this* group's discovery merge (originally numbered
-Phase 3, before Phase 4) ahead of the actual proxy dispatch would make
-`kubectl api-resources` advertise a group-version nothing in `handle()`
-actually routes anywhere — a real, user-visible lie, not a harmless
-staging step. Phase 4 has to land first (or atomically with) Phase 3,
-the reverse of every other group's own "land the primitive, wire it
-later" — kept as list item "3)" for continuity with the numbering
-elsewhere in this doc, but treat the *actual* build order as 1, 2, 4,
-3.
 
 **M. APF, audit, observability** — **started**. `audit::event::build_event`
 is a pure builder for one real `audit.k8s.io/v1` `Event` document
