@@ -847,22 +847,32 @@ silently exempted.
 (`authz::sar`, wired into `server::listener` as its own `POST` branch,
 unconditional — not gated by `enforce_rbac`, since answering "would RBAC
 allow this" is a read on the engine's own state, not an enforcement
-decision): both review kinds resolve straight to the same
+decision): `SubjectAccessReview`/`SelfSubjectAccessReview`/
+`LocalSubjectAccessReview` all resolve straight to the same
 `resolve::rules_for`/`rbac::rules_allow` real RBAC uses, no new
-evaluation logic. **A genuine virtual resource, not persisted** — this
-crate's dispatcher checks for it *before* the generic `is_create`
-handling specifically so it never falls through to `rest::create` and
-actually tries to write one to nodestore, matching real upstream's own
-synthetic REST connector (`pkg/registry/authorization/
-subjectaccessreview`, never etcd-backed). Named, honest scope: `denied`/
-`evaluationError` are never populated (real RBAC's own authorizer never
-returns an explicit deny either — only allow/no-opinion — and this
-crate's engine doesn't track which rule matched to build a `reason`
-string). `localsubjectaccessreviews` (namespaced, path-scoped) and
-`selfsubjectrulesreviews` (lists a user's own rules) aren't wired yet —
-same primitives, smaller follow-ups. Node authorizer and webhook
-authorization are not started. PKI primitives (`rcgen`, `p256`,
-`x509-parser`, `pem`) are already in-tree from `nodecontroller`'s CSR
+evaluation logic — `LocalSubjectAccessReview` (the namespaced variant)
+shares the same parsing/response code, with the URL's own namespace
+overriding whatever the body said (matching real upstream's own "the
+namespace is the URL's, not the body's" rule for a namespaced
+subresource). `SelfSubjectRulesReview` is real too, its own branch (a
+different response shape — `resourceRules`/`nonResourceRules`, not a
+single `allowed`): lists every already-resolved `PolicyRule` for one
+namespace, split by which fields each rule actually names
+(`authz::sar::build_rules_status`). **A genuine virtual resource, not
+persisted**, all four kinds — this crate's dispatcher checks for them
+*before* the generic `is_create` handling specifically so none of them
+ever fall through to `rest::create` and actually try to write one to
+nodestore, matching real upstream's own synthetic REST connector
+(`pkg/registry/authorization/subjectaccessreview`, never etcd-backed).
+Named, honest scope: `denied`/per-rule `reason` are never populated on
+`SubjectAccessReviewStatus` (real RBAC's own authorizer never returns an
+explicit deny either — only allow/no-opinion — and this crate's engine
+doesn't track which rule matched to build a `reason` string);
+`SelfSubjectRulesReview`'s own `incomplete`/`evaluationError` **are**
+populated, straight from `resolve::rules_for`'s own per-binding
+resolution errors. Node authorizer and webhook authorization are not
+started. PKI primitives (`rcgen`, `p256`, `x509-parser`, `pem`) are
+already in-tree from `nodecontroller`'s CSR
 group.
 
 **J. Admission** — **started**. `admission::namespace_lifecycle` is a
