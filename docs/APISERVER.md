@@ -1698,13 +1698,24 @@ actual discovery-endpoint dial (real upstream's own "5 concurrent
 `GET`s, any one succeeding is enough" check, `Reason:
 "FailedDiscoveryCheck"`/`"Passed"`) is left to Phase 4, the natural home
 for it since it needs the same dial primitive the reverse proxy itself
-does. 3) Discovery merge — add
-`APIService`-sourced group-versions as a third input alongside the
-static table and Group K's CRD-sourced ones. 4) The actual reverse
-proxy — resolve `spec.service` against live Service/EndpointSlice data,
-dial via `proxy::http_client`'s already-proven pattern, relay the
-response unmodified, matching `pods/log`'s own "transparent proxy, no
-added behavior" posture.
+does. 4) The actual reverse proxy — resolve `spec.service` against live
+Service/EndpointSlice data, dial via `proxy::http_client`'s
+already-proven pattern, relay the response unmodified, matching
+`pods/log`'s own "transparent proxy, no added behavior" posture.
+3) Discovery merge — add `APIService`-sourced group-versions as a third
+input alongside the static table and Group K's CRD-sourced ones.
+**Real ordering correction, found while scoping the two**: unlike
+Group K (where a CRD's own CRUD was already fully functional before its
+discovery merge landed — CRDs were simply invisible to `kubectl`, never
+broken), shipping *this* group's discovery merge (originally numbered
+Phase 3, before Phase 4) ahead of the actual proxy dispatch would make
+`kubectl api-resources` advertise a group-version nothing in `handle()`
+actually routes anywhere — a real, user-visible lie, not a harmless
+staging step. Phase 4 has to land first (or atomically with) Phase 3,
+the reverse of every other group's own "land the primitive, wire it
+later" — kept as list item "3)" for continuity with the numbering
+elsewhere in this doc, but treat the *actual* build order as 1, 2, 4,
+3.
 
 **M. APF, audit, observability** — **started**. `audit::event::build_event`
 is a pure builder for one real `audit.k8s.io/v1` `Event` document
