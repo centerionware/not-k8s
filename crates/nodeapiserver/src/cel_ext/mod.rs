@@ -1,22 +1,26 @@
 //! CEL cost estimation/budget, Kubernetes' extension libraries, and
 //! type-checking against a structural schema.
 //!
-//! Status: **Phase 1 landed** (compile + evaluate one real CEL
-//! expression, no cost accounting yet) — see `docs/APISERVER.md`'s own
-//! `cel_ext` section (right after Group K) for the real, verified full
-//! plan: real upstream's own budget numbers (`RuntimeCELCostBudget`/
-//! `PerCallLimit`/`CheckFrequency`, ..., fetched directly from
-//! `k8s.io/apiserver/pkg/apis/cel/config.go` + `pkg/cel/limits.go` —
-//! genuinely new territory for this crate's own vendoring flow, which
-//! otherwise only pulls protos/OpenAPI specs, not hand-written Go
-//! logic), the real two-layer mechanism (static "checked cost"
-//! estimation at CRD-acceptance time, separate from runtime cost
-//! accounting during real evaluation), and the remaining five-phase
-//! build-out. **Not safe to wire this module into any real request path
-//! (Group J admission or Group K's `x-kubernetes-validations`) until
-//! Phase 2 (runtime cost accounting) lands** — an unbudgeted CEL
-//! evaluator reachable from a real request is a real DoS surface, not
-//! hardening to add later.
+//! Status: **Phase 1 done** (compile + evaluate one real CEL
+//! expression); **Phase 2 partially done** (`eval_bool_with_deadline` —
+//! a real wall-clock deadline, this build's own stand-in for real
+//! upstream's per-operation cost accounting, which needs interpreter
+//! hooks the `cel` crate doesn't expose at all) — see
+//! `docs/APISERVER.md`'s own `cel_ext` section (right after Group K) for
+//! the real, verified full plan: real upstream's own budget numbers
+//! (`RuntimeCELCostBudget`/`PerCallLimit`/`CheckFrequency`, ..., fetched
+//! directly from `k8s.io/apiserver/pkg/apis/cel/config.go` +
+//! `pkg/cel/limits.go` — genuinely new territory for this crate's own
+//! vendoring flow, which otherwise only pulls protos/OpenAPI specs, not
+//! hand-written Go logic), the real two-layer mechanism (static "checked
+//! cost" estimation at CRD-acceptance time, separate from runtime cost
+//! accounting during real evaluation, which a wall-clock deadline alone
+//! only partially covers — see [`eval_bool_with_deadline`]'s own doc
+//! comment for the real, named gap), and the remaining phases.
+//! **Still not safe to wire this module into any real request path**
+//! (Group J admission or Group K's `x-kubernetes-validations`) — a
+//! deadline alone isn't real upstream's own guarantee, and static
+//! checked-cost estimation (Phase 3) hasn't landed at all yet.
 //!
 //! Named `cel_ext`, not `cel` — see the module-map note in `lib.rs` for why
 //! (this crate also depends on the external `cel` crate).
@@ -62,6 +66,11 @@ pub enum Error {
     /// authoring mistake, not silently coerced.
     #[error("the CEL expression evaluated to {0:?}, not a bool -- x-kubernetes-validations rules must be boolean")]
     NotBool(CelValue),
+    /// [`eval_bool_with_deadline`]'s own real cost-budget enforcement —
+    /// see that function's own doc comment for exactly what this does
+    /// and doesn't guarantee.
+    #[error("CEL evaluation did not complete within its deadline")]
+    DeadlineExceeded,
 }
 
 /// Compiles `expr` and evaluates it once against `self` (the value
@@ -74,10 +83,11 @@ pub enum Error {
 /// upstream's own `Rule.Message` semantics (a rule that evaluates
 /// `false` is what triggers the violation).
 ///
-/// **Phase 1 only — no cost accounting**: `docs/APISERVER.md`'s own
-/// `cel_ext` section names this module's own doc comment's warning
-/// again — this function must not be reachable from any real request
-/// path until Phase 2 lands a budget in front of it.
+/// **No cost budget of its own — see [`eval_bool_with_deadline`]**: this
+/// function alone must never be reachable from a real request path
+/// (`docs/APISERVER.md`'s own `cel_ext` section states this repeatedly);
+/// it exists as the pure, directly-testable core the budgeted wrapper
+/// below calls.
 pub fn eval_bool(expr: &str, self_value: &Value, old_self_value: Option<&Value>) -> Result<bool, Error> {
     let program = Program::compile(expr)?;
     let mut ctx = Context::default();
@@ -89,6 +99,50 @@ pub fn eval_bool(expr: &str, self_value: &Value, old_self_value: Option<&Value>)
         CelValue::Bool(b) => Ok(b),
         other => Err(Error::NotBool(other)),
     }
+}
+
+/// Phase 2: a real wall-clock deadline around [`eval_bool`] — this
+/// crate's own stand-in for real upstream's per-operation cost
+/// accounting (`PerCallLimit`/`RuntimeCELCostBudget`, checked every
+/// `CheckFrequency` iterations inside a comprehension), which needs
+/// hooks into the CEL interpreter's own evaluation loop that the `cel`
+/// crate doesn't expose — confirmed by reading `env.rs`/`context.rs`
+/// directly: no cost/step/fuel/interrupt concept exists anywhere in the
+/// crate, not assumed absent from an incomplete search. Real upstream's
+/// own comments on those same constants describe them in wall-clock
+/// terms too ("~0.1 seconds", "~1 second" — `docs/APISERVER.md`'s
+/// `cel_ext` section, fetched directly from `k8s.io/apiserver/pkg/apis/
+/// cel/config.go`), so a deadline bounds the same real property real
+/// upstream's own cost units are calibrated against, not an unrelated
+/// approximation standing in for it.
+///
+/// **Named, honest limitation, load-bearing enough to repeat here, not
+/// just in this module's own top-level doc comment**: unlike real
+/// upstream's own interruption (which reclaims the CPU mid-evaluation
+/// the instant the budget is exceeded), this can only bound how long the
+/// *caller* waits — Rust has no safe mechanism to forcibly terminate an
+/// arbitrary running thread, so the spawned evaluation thread keeps
+/// running to completion (or a crash) in the background rather than
+/// being killed. One pathological expression costs one leaked thread,
+/// not unbounded ones — but this function does not itself limit how
+/// many concurrent evaluations are in flight; a caller relying on this
+/// as its *only* defense against a flood of pathological requests is
+/// trusting a guarantee this function doesn't provide. Real, separate
+/// rate-limiting (Group M's own APF work) is what would have to close
+/// that gap, not this module.
+pub fn eval_bool_with_deadline(expr: &str, self_value: &Value, old_self_value: Option<&Value>, deadline: std::time::Duration) -> Result<bool, Error> {
+    let expr = expr.to_string();
+    let self_value = self_value.clone();
+    let old_self_value = old_self_value.cloned();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // If the receiver already gave up (deadline passed), sending
+        // here simply fails silently -- there is no one left to tell,
+        // matching `mpsc::Sender::send`'s own documented behavior for a
+        // disconnected receiver.
+        let _ = tx.send(eval_bool(&expr, &self_value, old_self_value.as_ref()));
+    });
+    rx.recv_timeout(deadline).unwrap_or(Err(Error::DeadlineExceeded))
 }
 
 #[cfg(test)]
@@ -144,5 +198,31 @@ mod tests {
     fn a_string_field_comparison_works_end_to_end() {
         let value = json!({"metadata": {"name": "widget-1"}});
         assert_eq!(eval_bool(r#"self.metadata.name.startsWith("widget-")"#, &value, None).unwrap(), true);
+    }
+
+    #[test]
+    fn a_fast_expression_completes_well_within_a_generous_deadline() {
+        let value = json!({"spec": {"replicas": 3}});
+        let result = eval_bool_with_deadline("self.spec.replicas > 0", &value, None, std::time::Duration::from_secs(5));
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[test]
+    fn an_expired_deadline_is_a_real_named_error_not_a_hang_or_panic() {
+        // A deadline of 1ns is exceeded before the spawned thread could
+        // possibly finish real work (thread spawn + a channel round trip
+        // alone takes microseconds on any real hardware) -- deterministic
+        // regardless of how fast the actual CEL evaluation itself is,
+        // not a flaky race against machine speed.
+        let value = json!({});
+        let result = eval_bool_with_deadline("1 + 1 == 2", &value, None, std::time::Duration::from_nanos(1));
+        assert!(matches!(result, Err(Error::DeadlineExceeded)), "expected Error::DeadlineExceeded, got {result:?}");
+    }
+
+    #[test]
+    fn a_deadlined_evaluation_still_reports_a_real_compile_error_when_it_has_time_to() {
+        let value = json!({});
+        let result = eval_bool_with_deadline("this is not valid cel (((", &value, None, std::time::Duration::from_secs(5));
+        assert!(matches!(result, Err(Error::Compile(_))), "expected Error::Compile, got {result:?}");
     }
 }
