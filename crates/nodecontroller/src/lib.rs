@@ -34,11 +34,13 @@
 //! Pod-side component (the CSI external-provisioner sidecar, concretely)
 //! that builds its own in-cluster client, since `kube-root-ca.crt` never
 //! existed in any namespace for its projected token volume to mount.
-//! **Group G's dynamic-CSI e2e path is a known, unresolved regression** —
-//! see `docs/CONTROLLER_MANAGER.md`'s Group G section and
-//! `pv_binder.rs`'s module doc for the diagnostic trail; this blocks
-//! merging the whole multi-group PR and must be resolved, not silently
-//! left. Group H's `ephemeral-volume-controller`/`resourceclaim-controller`
+//! **Group G's dynamic-CSI e2e path was diagnosed and fixed before merge**
+//! (the PV binder's missing `storage-provisioner` annotation and
+//! `bind-completed` handoff — see `docs/CONTROLLER_MANAGER.md`'s Group G
+//! section and `pv_binder.rs`'s module doc for the diagnostic trail, and
+//! GitHub issue #30 for the closing writeup) — dynamic provisioning,
+//! filesystem/raw-block PVCs, and VolumeAttachment are all e2e-verified.
+//! Group H's `ephemeral-volume-controller`/`resourceclaim-controller`
 //! (`controllers/resource_claim.rs`) is implemented, pairing with
 //! nodelet's existing DRA consumer side in `runtime/cri/claims.rs`;
 //! `device-taint-eviction-controller` is scoped out (no infrastructure in
@@ -55,11 +57,11 @@
 //! is scoped out (no metrics-server in this project's e2e infrastructure
 //! to verify a real scaling decision against — see
 //! `docs/CONTROLLER_MANAGER.md`'s Group J section). With Group J's
-//! verifiable half done, **every group through J is now implemented**
-//! except the one open item Group G's own section documents (the
-//! dynamic-CSI e2e path, a real regression blocking merge) — see that
-//! section and `pv_binder.rs`'s module doc before assuming this crate is
-//! ready to ship.
+//! verifiable half done, **every group through J is now implemented** at
+//! this crate's documented scope — see `docs/CONTROLLER_MANAGER.md` for
+//! the per-group list of what's deliberately deferred (podgc-controller,
+//! clusterrole-aggregation-controller, HPA, device-taint-eviction,
+//! bootstrap-signer/token-cleaner) before assuming a gap there is a bug.
 //!
 //! Single leader-election lease (`kube-system/kube-controller-manager`,
 //! matching upstream's own name — see `config.rs`) covers the whole
