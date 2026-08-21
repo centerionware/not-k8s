@@ -1672,12 +1672,23 @@ used*:
    single-variable comprehension form's own iteration-variable path
    (`list.all(x, ...)`, real upstream's own `pushIterSingle` narrowed to
    list-only, named honestly — see that module's own doc comment for the
-   real scope). **Every real prerequisite the estimator itself needs is
-   now landed** — only the actual `cost()` AST-walking dispatch that
-   combines them (the biggest remaining piece — real upstream's own
-   per-`Expr`-kind and per-builtin-function cost rules, already fully
-   read and ready to port) and wiring a result into CRD acceptance
-   remain.
+   real scope). **`cel_ext::cost_walk` is the actual `cost()`
+   AST-walking dispatcher itself, started**: real upstream's own
+   `(*coster).cost` (`checker/cost.go`), structural node kinds landed so
+   far (`Literal`/`Ident`/`Select`/`List`/`Map`/`Struct` — a presence
+   test's own real `presenceTestCost` vs. an ordinary select's
+   `selectAndIdentCost` distinction ported exactly). **Not yet landed**:
+   `Call` (real upstream's own `costCall`/`functionCost` — the big
+   per-builtin-function cost table: string traversal, regex, list
+   containment, equality, logical or/and, conditional, each their own
+   real formula, everything else a flat `+1`) and `Comprehension`
+   (`costComprehension` — the loop-cost multiplication, `range size ×
+   per-iteration cost`, the piece that actually makes a pathological
+   `list.all(...)` rule's real worst case visible) — both fall back to
+   `CostEstimate::unknown()` for now rather than under-costing at zero,
+   each its own real follow-up slice with source already fully read and
+   ready to port. Wiring a final result into CRD acceptance is separate,
+   later work too.
 4. Wire into Group K: `x-kubernetes-validations` evaluated in
    `server::rest::create`/`update`/`patch_persist`'s CRD branch, after
    pruning and required/type validation (`apiextensions::
