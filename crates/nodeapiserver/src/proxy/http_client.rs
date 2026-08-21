@@ -16,7 +16,7 @@
 
 use crate::proxy::pod_log::Target;
 use crate::server::listener::{BoxError, BoxedBody};
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Bytes;
 use hyper::{Request, Response, Uri};
 use hyper_util::rt::TokioIo;
@@ -53,6 +53,47 @@ pub enum Error {
 /// transparent proxy, matching real upstream's own `pods/log` handler,
 /// which is also just a transparent reverse proxy to kubelet).
 pub async fn fetch(target: &Target, client_config: Arc<ClientConfig>) -> Result<Response<BoxedBody>, Error> {
+    let mut sender = dial(target, client_config).await?;
+    let uri = build_uri(target)?;
+    let req = Request::builder().method("GET").uri(uri).header(hyper::header::HOST, &target.host).body(Empty::<Bytes>::new().boxed())?;
+    let resp = sender.send_request(req).await.map_err(Error::Request)?;
+    Ok(resp.map(|incoming| incoming.map_err(|e| Box::new(e) as BoxError).boxed()))
+}
+
+/// The generalized sibling [`fetch`] doesn't need: any method, a real
+/// request body, and the caller's own already-filtered header set
+/// forwarded verbatim — `aggregator`'s reverse proxy needs all three
+/// (an aggregated backend is a real transparent proxy for the whole
+/// group-version, not one fixed GET-only endpoint the way `pods/log`
+/// is), while `fetch` stays exactly as it was for that one caller.
+/// `headers` excludes `Host` (set explicitly from `target.host`, same as
+/// `fetch`) and any hop-by-hop header — the caller's job, not this
+/// function's, since what counts as hop-by-hop is a request-parsing
+/// concern, not a dialing one.
+pub async fn relay(target: &Target, client_config: Arc<ClientConfig>, method: &str, headers: &[(String, String)], body: Vec<u8>) -> Result<Response<BoxedBody>, Error> {
+    let mut sender = dial(target, client_config).await?;
+    let uri = build_uri(target)?;
+    let mut builder = Request::builder().method(method).uri(uri).header(hyper::header::HOST, &target.host);
+    for (name, value) in headers {
+        builder = builder.header(name.as_str(), value.as_str());
+    }
+    let req = builder.body(Full::new(Bytes::from(body)).boxed())?;
+    let resp = sender.send_request(req).await.map_err(Error::Request)?;
+    Ok(resp.map(|incoming| incoming.map_err(|e| Box::new(e) as BoxError).boxed()))
+}
+
+fn build_uri(target: &Target) -> Result<Uri, Error> {
+    let uri_str = if target.query.is_empty() { target.path.clone() } else { format!("{}?{}", target.path, target.query) };
+    uri_str.parse().map_err(|e| Error::BuildRequest(http::Error::from(e)))
+}
+
+/// The real TCP+TLS dial and HTTP/1.1 handshake shared by [`fetch`] and
+/// [`relay`] — the only part of either that's actually specific to
+/// "connect to this one target," everything else about a request
+/// (method/headers/body) is the caller's own concern.
+type DialBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
+
+async fn dial(target: &Target, client_config: Arc<ClientConfig>) -> Result<hyper::client::conn::http1::SendRequest<DialBody>, Error> {
     let server_name = ServerName::try_from(target.host.clone()).map_err(|_| Error::InvalidServerName { host: target.host.clone() })?;
 
     let tcp = TcpStream::connect((target.host.as_str(), target.port)).await.map_err(|source| Error::Connect { host: target.host.clone(), port: target.port, source })?;
@@ -60,17 +101,11 @@ pub async fn fetch(target: &Target, client_config: Arc<ClientConfig>) -> Result<
     let tls_stream = connector.connect(server_name, tcp).await.map_err(|source| Error::Tls { host: target.host.clone(), port: target.port, source })?;
     let io = TokioIo::new(tls_stream);
 
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await.map_err(Error::HttpHandshake)?;
+    let (sender, conn) = hyper::client::conn::http1::handshake(io).await.map_err(Error::HttpHandshake)?;
     tokio::spawn(async move {
         if let Err(e) = conn.await {
-            tracing::debug!(error = ?e, "proxy: nodelet connection ended");
+            tracing::debug!(error = ?e, "proxy: connection ended");
         }
     });
-
-    let uri_str = if target.query.is_empty() { target.path.clone() } else { format!("{}?{}", target.path, target.query) };
-    let uri: Uri = uri_str.parse().map_err(|e| Error::BuildRequest(http::Error::from(e)))?;
-    let req = Request::builder().method("GET").uri(uri).header(hyper::header::HOST, &target.host).body(Empty::<Bytes>::new().boxed())?;
-
-    let resp = sender.send_request(req).await.map_err(Error::Request)?;
-    Ok(resp.map(|incoming| incoming.map_err(|e| Box::new(e) as BoxError).boxed()))
+    Ok(sender)
 }
