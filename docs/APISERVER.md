@@ -1389,15 +1389,28 @@ serves for one (`create`/`get`/`list`/`update`/`patch`/`delete`/
 which installs identical generic storage for every CRD, no per-Kind
 verb customization).
 
+**Required/type validation against a CRD's own schema is real now
+too** — `apiextensions::schema_validation` is the runtime-schema sibling
+of `scheme::validation` (which walks this crate's own *compiled*
+`REQUIRED_FIELDS`/`TYPE_INFO` tables for built-in types): same two
+checks (a required field genuinely missing, a present field with the
+wrong JSON kind), same recursive walk, producing the exact same
+`MissingField`/`TypeMismatch` violation shapes so `create`/`update`/
+`patch_persist`'s own violation formatting needed no change to handle
+either kind. Wired into the same three call sites `schema_defaults`
+already was, so a malformed CR is now a genuine `422`, not silently
+accepted.
+
 **Not yet landed, named honestly** (`apiextensions::mod`'s own doc
-comment carries this list too): full structural-schema type/required
-validation and pruning (`x-kubernetes-preserve-unknown-fields`) against
-the schema — `server::rest::create`'s CRD branch runs
-`apiextensions::schema_defaults` but not `scheme::validation`'s
-equivalent (which is compiled-schema-only today); a malformed CR is
-currently accepted, not rejected. `x-kubernetes-validations` CEL (**needs
-the CEL cost budget built first** — Group J's own doc comment names this
-as a real DoS surface, not optional hardening). Conversion webhooks.
+comment carries this list too): `x-kubernetes-preserve-unknown-fields`
+pruning (a separate structural-schema concern — "should this field even
+exist" — `schema_validation` skips an undeclared field rather than
+flagging or stripping it, same posture `scheme::validation` already
+takes); enum membership, numeric ranges, format checks, and any
+cross-field consistency rule (`x-kubernetes-validations` CEL is a CRD
+schema's real mechanism for all of that — **needs the CEL cost budget
+built first**, Group J's own doc comment names this as a real DoS
+surface, not optional hardening). Conversion webhooks.
 
 **L. Aggregation layer** — **not started**. `APIService` objects,
 `ServiceResolver`, reverse proxying, discovery merge, availability
