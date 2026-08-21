@@ -32,6 +32,15 @@
 //! default has no exception for) — see `typed_merge`'s own doc comment
 //! for the full comparison.
 //!
+//! `typed_compare` — Server-Side Apply's own real *diff*
+//! (`typed.TypedValue.Compare`, ported): given a "before" and "after"
+//! object, produces the `Comparison{removed, modified, added}` triple
+//! of `Set`s `Updater.Apply` needs to know which fields an apply
+//! actually *changed* (not just which fields it mentions —
+//! `typed_merge::merge` already answers that structurally), the last of
+//! `merge.Updater`'s own three real prerequisites to land before the
+//! orchestration itself.
+//!
 //! Status: in progress (see docs/APISERVER.md). Landed: RFC 6902/7386,
 //! Strategic Merge Patch's core semantics (recursive object merge,
 //! null-deletes-key, merge-by-key for `patch_strategy: merge` lists),
@@ -43,23 +52,27 @@
 //! `is_empty` — real upstream's own `Set`/`SetNodeMap`/`PathElementSet`
 //! methods; `difference`'s own doc comment names a real, intentional
 //! asymmetry with `recursive_difference` a naive from-memory port would
-//! likely miss), and now `typed_merge::merge` — the real merged *value*
-//! two typed objects combine into. **Not yet landed**: `$patch`/
-//! `$setElementOrder`/`$deleteFromPrimitiveList` directives (named,
-//! deliberate simplifications — see `strategic_merge`'s own doc
-//! comment) and `Updater.Apply` itself: the orchestration that combines
-//! `typed_merge::merge`'s own output with `fieldset::set_from_object`
-//! and the `Set` algebra to do real conflict detection against other
-//! managers' stored `managedFields` and reject a conflicting field
-//! unless `force=true` — the piece that actually closes this arc, not
-//! yet started; nor is `typed.TypedValue.Compare` (the schema-driven
-//! diff `Updater.Apply` itself needs, to know which fields the merge
-//! actually *changed* — a separate walker again, related to but not
-//! reducible to `typed_merge::merge`) or any `application/apply-patch
-//! +yaml` wiring into `server::rest::patch`.
+//! likely miss), `typed_merge::merge` (the real merged *value* two typed
+//! objects combine into), and now `typed_compare::compare` (the real
+//! `{removed, modified, added}` diff between two typed objects — a
+//! field present on only one side is inserted *both* at its own path
+//! and recursively at every leaf beneath it, real upstream's own
+//! genuinely non-redundant rule, confirmed directly against
+//! `compareWalker.compare`'s own source rather than assumed from the
+//! method name alone). **Not yet landed**: `$patch`/`$setElementOrder`/
+//! `$deleteFromPrimitiveList` directives (named, deliberate
+//! simplifications — see `strategic_merge`'s own doc comment) and
+//! `Updater.Apply` itself: the orchestration that combines `typed_merge`/
+//! `typed_compare`'s own output with the `Set` algebra to do real
+//! conflict detection against other managers' stored `managedFields`
+//! and reject a conflicting field unless `force=true` — the piece that
+//! actually closes this arc, all three of its real prerequisites now
+//! landed but the orchestration itself not yet started, nor is any
+//! `application/apply-patch+yaml` wiring into `server::rest::patch`.
 
 pub mod fieldset;
 pub mod json_patch;
 pub mod merge_patch;
 pub mod strategic_merge;
+pub mod typed_compare;
 pub mod typed_merge;
