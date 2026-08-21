@@ -183,6 +183,8 @@ fn encode_scalar_or_message(message: &str, field: &ProtoField, value: &Value, ou
                 encode_json_schema_props_or_bool(&nested_message, value)?
             } else if is_int_or_string_message(&nested_message) {
                 encode_int_or_string(message, field, value)?
+            } else if is_quantity_message(&nested_message) {
+                encode_quantity(message, field, value)?
             } else {
                 encode_message(&nested_message, value)?
             };
@@ -286,6 +288,8 @@ fn decode_one(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value
                 decode_json_schema_props_or_bool(&nested_message, as_bytes(&label(), raw)?)
             } else if is_int_or_string_message(&nested_message) {
                 decode_int_or_string_message(&label(), as_bytes(&label(), raw)?)
+            } else if is_quantity_message(&nested_message) {
+                decode_quantity_message(&label(), as_bytes(&label(), raw)?)
             } else {
                 decode_message(&nested_message, as_bytes(&label(), raw)?)
             }
@@ -369,8 +373,29 @@ fn decode_time_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
 /// real `CustomResourceDefinition` with a schema `default` through this
 /// crate's own protobuf codec until `tests/crd_roundtrip.rs`'s live
 /// round trip did.
+/// `runtime.RawExtension`
+/// (`vendor/protos/k8s.io/apimachinery/pkg/runtime/generated.proto`'s own
+/// `message RawExtension { optional bytes raw = 1; }`, confirmed
+/// directly) shares the *exact same* `{raw: bytes = 1}` wire shape and
+/// "the whole JSON value lives in this one wrapped field" semantics as
+/// `apiextensions.v1.JSON` above — real upstream's own `RawExtension.
+/// MarshalJSON`/`UnmarshalJSON` store/emit `Raw` as the literal embedded
+/// JSON document, not a base64 `bytes` field, identically to `JSON.Raw`.
+/// Found via a deliberate audit pass (not a live failure this time):
+/// after finding four separate real bugs of this exact class live this
+/// session (`Time`, `apiextensions.v1.JSON`, `JSONSchemaPropsOrArray`/
+/// `OrBool`, `IntOrString`), checking the vendored protos for
+/// `RawExtension` ahead of the next real object that happens to carry
+/// one (`Event.regarding`... no — `AdmissionReview.request.object`,
+/// `WatchEvent`-adjacent dynamic fields, CRD conversion webhook payloads,
+/// anywhere upstream models "an arbitrary embedded object"). Reuses
+/// `encode_json_value`/`decode_json_message` directly — no new function
+/// needed, since the wire shape and JSON semantics are identical.
 fn is_json_message(message: &str) -> bool {
-    matches!(message, "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSON" | "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSON")
+    matches!(
+        message,
+        "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSON" | "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSON" | "io.k8s.apimachinery.pkg.runtime.RawExtension"
+    )
 }
 
 /// Encodes an arbitrary JSON `value` as `JSON{raw: <value's own JSON
@@ -478,6 +503,44 @@ fn decode_int_or_string_message(field_label: &str, bytes: &[u8]) -> Result<Value
     } else {
         Ok(Value::from(int_val))
     }
+}
+
+/// `resource.Quantity`/`resource.QuantityValue`
+/// (`vendor/protos/k8s.io/apimachinery/pkg/api/resource/generated.proto`'s
+/// own `message Quantity { optional string string = 1; }` — both
+/// messages share the identical one-field shape, confirmed directly) —
+/// the *fifth* real occurrence of the same well-known-type pattern,
+/// found via the same deliberate audit pass that found `RawExtension`
+/// above: real upstream's own `+protobuf.embed=string` annotation plus a
+/// hand-written `MarshalJSON`/`UnmarshalJSON` (delegating to `Quantity.
+/// String()`) means the JSON representation is a bare string
+/// (`"100m"`, `"1.5Gi"`), never `{"string": "100m"}`. Reused directly by
+/// `scheme::quantity::Quantity`'s own string grammar at the JSON/YAML
+/// codec layer already — this is the same value's *protobuf* wire
+/// shape, a separate layer nothing had exercised live yet.
+fn is_quantity_message(message: &str) -> bool {
+    matches!(message, "io.k8s.apimachinery.pkg.api.resource.Quantity" | "io.k8s.apimachinery.pkg.api.resource.QuantityValue")
+}
+
+fn encode_quantity(message: &str, field: &ProtoField, value: &Value) -> Result<Vec<u8>> {
+    let s = value.as_str().ok_or_else(|| type_mismatch(message, field, "a quantity string", value))?;
+    let mut out = Vec::new();
+    if !s.is_empty() {
+        wire::encode_tag(1, WireType::LengthDelimited, &mut out);
+        wire::encode_length_delimited(s.as_bytes(), &mut out);
+    }
+    Ok(out)
+}
+
+fn decode_quantity_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
+    let mut pos = 0;
+    while pos < bytes.len() {
+        let (field_number, raw) = wire::decode_field(bytes, &mut pos)?;
+        if field_number == 1 {
+            return Ok(Value::String(String::from_utf8_lossy(as_bytes(field_label, &raw)?).into_owned()));
+        }
+    }
+    Ok(Value::String(String::new()))
 }
 
 /// Real upstream's own `JSONSchemaPropsOrArray`/`JSONSchemaPropsOrBool` —
@@ -851,6 +914,43 @@ mod tests {
     fn int_or_string_rejects_a_value_that_is_neither_int_nor_string() {
         let field = ProtoField { message: "ServicePort", json_name: "targetPort", number: 4, repeated: false, map: false, proto_type: "k8s.io.apimachinery.pkg.util.intstr.IntOrString" };
         assert!(encode_int_or_string("ServicePort", &field, &json!(true)).is_err());
+    }
+
+    /// Found via a deliberate audit pass, not a live failure this time —
+    /// `is_quantity_message`'s own doc comment covers why this needed the
+    /// same special case as `IntOrString` before it.
+    #[test]
+    fn resource_field_selector_with_a_real_quantity_divisor_round_trips() {
+        let message = "io.k8s.api.core.v1.ResourceFieldSelector";
+        let value = json!({"resource": "limits.cpu", "divisor": "100m"});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded["divisor"], json!("100m"));
+    }
+
+    #[test]
+    fn quantity_round_trips_a_real_binary_si_value() {
+        let field = ProtoField { message: "ResourceFieldSelector", json_name: "divisor", number: 3, repeated: false, map: false, proto_type: "k8s.io.apimachinery.pkg.api.resource.Quantity" };
+        let bytes = encode_quantity("ResourceFieldSelector", &field, &json!("1.5Gi")).unwrap();
+        assert_eq!(decode_quantity_message("divisor", &bytes).unwrap(), json!("1.5Gi"));
+    }
+
+    /// `runtime.RawExtension` shares `apiextensions.v1.JSON`'s exact wire
+    /// shape and JSON semantics -- `is_json_message`'s own doc comment
+    /// covers why. Verified against a real message that actually embeds
+    /// one: `admissionreview.k8s.io/v1`'s own request/response carries
+    /// `object`/`oldObject` as `runtime.RawExtension` upstream, though
+    /// this crate doesn't have `AdmissionReview` compiled yet -- proven
+    /// here with a synthetic message name instead, exercising exactly the
+    /// same `encode_json_value`/`decode_json_message` code path either
+    /// way (both are driven purely by `is_json_message`'s own match, not
+    /// by anything specific to which real message uses it).
+    #[test]
+    fn raw_extension_is_recognized_by_the_same_json_wrapper_special_case() {
+        assert!(is_json_message("io.k8s.apimachinery.pkg.runtime.RawExtension"));
+        let encoded = encode_json_value(&json!({"kind": "PluginA", "aOption": "foo"}));
+        let decoded = decode_json_message("raw", &encoded).unwrap();
+        assert_eq!(decoded, json!({"kind": "PluginA", "aOption": "foo"}));
     }
 
     #[test]
