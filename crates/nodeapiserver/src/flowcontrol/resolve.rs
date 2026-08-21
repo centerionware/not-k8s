@@ -42,7 +42,7 @@ pub struct Selected {
 /// yet; a request should never be denied because APF bookkeeping itself
 /// failed.
 pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDigest<'_>) -> Option<Selected> {
-    let flow_schemas = match rest::list(storage, None, GROUP, VERSION, "flowschemas", None, "", "").await {
+    let flow_schemas = match rest::list(storage, None, GROUP, VERSION, "flowschemas", None, "", "", 0, "").await {
         Ok(ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
         _ => return None,
     };

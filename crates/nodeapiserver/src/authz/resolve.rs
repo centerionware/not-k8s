@@ -51,24 +51,24 @@ pub struct Resolved {
 pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups: &[String], namespace: &str) -> Resolved {
     let mut resolved = Resolved::default();
 
-    match rest::list(storage, None, GROUP, VERSION, "clusterrolebindings", None, "", "").await {
+    match rest::list(storage, None, GROUP, VERSION, "clusterrolebindings", None, "", "", 0, "").await {
         Ok(ListOutcome::Found(list)) => {
             for item in list["items"].as_array().cloned().unwrap_or_default() {
                 accumulate_binding(storage, &item, user_name, user_groups, "", &mut resolved).await;
             }
         }
-        Ok(ListOutcome::UnknownResource) => resolved.errors.push("clusterrolebindings is unknown to this build".to_string()),
+        Ok(ListOutcome::UnknownResource) | Ok(ListOutcome::InvalidContinueToken) => resolved.errors.push("clusterrolebindings is unknown to this build".to_string()),
         Err(e) => resolved.errors.push(format!("listing clusterrolebindings: {e}")),
     }
 
     if !namespace.is_empty() {
-        match rest::list(storage, None, GROUP, VERSION, "rolebindings", Some(namespace), "", "").await {
+        match rest::list(storage, None, GROUP, VERSION, "rolebindings", Some(namespace), "", "", 0, "").await {
             Ok(ListOutcome::Found(list)) => {
                 for item in list["items"].as_array().cloned().unwrap_or_default() {
                     accumulate_binding(storage, &item, user_name, user_groups, namespace, &mut resolved).await;
                 }
             }
-            Ok(ListOutcome::UnknownResource) => resolved.errors.push("rolebindings is unknown to this build".to_string()),
+            Ok(ListOutcome::UnknownResource) | Ok(ListOutcome::InvalidContinueToken) => resolved.errors.push("rolebindings is unknown to this build".to_string()),
             Err(e) => resolved.errors.push(format!("listing rolebindings: {e}")),
         }
     }

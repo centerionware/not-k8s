@@ -44,6 +44,12 @@ pub struct RequestInfo {
     pub parts: Vec<String>,
     pub field_selector: String,
     pub label_selector: String,
+    /// `?limit=` — `LIST` only, `0` (the default) means "no limit,
+    /// return everything," matching real upstream's own convention.
+    pub limit: i64,
+    /// `?continue=` — `LIST` only, the opaque pagination token from a
+    /// previous page's `metadata.continue`. Empty means "first page."
+    pub continue_token: String,
 }
 
 const API_PREFIXES: [&str; 2] = ["api", "apis"];
@@ -163,6 +169,21 @@ pub fn parse(method: &str, path: &str, query: &str) -> RequestInfo {
         }
         if let Some((_, v)) = params.iter().find(|(k, _)| k == "labelSelector") {
             info.label_selector = v.clone();
+        }
+    }
+
+    // `limit`/`continue` are `LIST`-only — real upstream's own
+    // `ListOptions` carries them on `watch`/`deletecollection` too, but
+    // neither this crate's `watch` (a live stream, not a page) nor its
+    // `deletecollection` (which needs every matching object anyway, to
+    // delete each one) has any use for pagination.
+    if !verb_via_path_prefix && info.verb == "list" {
+        let params = parse_query(query);
+        if let Some((_, v)) = params.iter().find(|(k, _)| k == "limit") {
+            info.limit = v.parse::<i64>().unwrap_or(0);
+        }
+        if let Some((_, v)) = params.iter().find(|(k, _)| k == "continue") {
+            info.continue_token = v.clone();
         }
     }
 
@@ -371,6 +392,28 @@ mod tests {
         assert_eq!(i.verb, "list");
         assert_eq!(i.field_selector, "metadata.name=foo");
         assert_eq!(i.label_selector, "app=web");
+    }
+
+    #[test]
+    fn limit_and_continue_are_captured_for_list() {
+        let i = parse("GET", "/api/v1/pods", "limit=50&continue=abc123");
+        assert_eq!(i.verb, "list");
+        assert_eq!(i.limit, 50);
+        assert_eq!(i.continue_token, "abc123");
+    }
+
+    #[test]
+    fn limit_and_continue_default_to_unset() {
+        let i = parse("GET", "/api/v1/pods", "");
+        assert_eq!(i.limit, 0);
+        assert!(i.continue_token.is_empty());
+    }
+
+    #[test]
+    fn limit_is_not_captured_for_watch_or_deletecollection() {
+        let watch = parse("GET", "/api/v1/pods", "watch=true&limit=50");
+        assert_eq!(watch.verb, "watch");
+        assert_eq!(watch.limit, 0, "limit is LIST-only, even though watch shares VERBS_WITH_SELECTORS");
     }
 
     #[test]
