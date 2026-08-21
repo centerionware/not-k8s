@@ -5,13 +5,17 @@
 //! expression); **Phase 2 partially done** (`eval_bool_with_deadline` —
 //! a real wall-clock deadline, this build's own stand-in for real
 //! upstream's per-operation cost accounting, which needs interpreter
-//! hooks the `cel` crate doesn't expose at all); **Phase 3 started**
-//! (`cost` — the `SizeEstimate`/`CostEstimate` arithmetic primitives
-//! real upstream's own static checked-cost estimator is built on; and
-//! `decl_type` — converts a CRD's own runtime schema into the real
-//! `DeclType` tree the estimator resolves a CEL field-path's size bound
-//! against, see that module's own doc comment for the exact real
-//! algorithm ported) — see `docs/APISERVER.md`'s own
+//! hooks the `cel` crate doesn't expose at all); **Phase 3 in
+//! progress** (`cost` — the `SizeEstimate`/`CostEstimate` arithmetic
+//! primitives real upstream's own static checked-cost estimator is
+//! built on; `decl_type` — converts a CRD's own runtime schema into the
+//! real `DeclType` tree the estimator resolves a CEL field-path's size
+//! bound against, plus `decl_type::estimate_size`, the actual path-walk
+//! lookup; `path` — resolves a CEL expression's own `Select`/`Ident`
+//! chain into the field-path `estimate_size` consumes — every real
+//! prerequisite the estimator itself needs is now landed, only the
+//! actual `cost()` AST-walking dispatch that combines them isn't) — see
+//! `docs/APISERVER.md`'s own
 //! `cel_ext` section (right after Group K) for the real, verified full
 //! plan: real upstream's own budget numbers
 //! (`RuntimeCELCostBudget`/`PerCallLimit`/`CheckFrequency`, ..., fetched
@@ -53,6 +57,7 @@
 
 pub mod cost;
 pub mod decl_type;
+pub mod path;
 
 use cel::{Context, Program, Value as CelValue};
 use serde_json::Value;
