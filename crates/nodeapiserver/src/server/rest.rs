@@ -729,6 +729,15 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
         (None, None) => Vec::new(),
     };
     violations.extend(name_format_violations(group, resource, &name).into_iter().map(|e| format!("metadata.name: {e}")));
+    // Group K / CEL Phase 3: a CustomResourceDefinition's own
+    // `x-kubernetes-validations` rules get their real static cost
+    // checked at CRD-acceptance time, real upstream's own posture
+    // (`apiextensions::cel_validations`'s own doc comment covers the
+    // exact real scope and its one named gap — no `MaxCardinality`
+    // multiplication yet).
+    if group == "apiextensions.k8s.io" && resource == "customresourcedefinitions" {
+        violations.extend(apiextensions::cel_validations::validate_crd_cel_costs(body));
+    }
     if !violations.is_empty() {
         return Ok(CreateOutcome::Invalid(violations));
     }
@@ -884,6 +893,11 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
         (None, None) => Vec::new(),
     };
     violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
+    // Group K / CEL Phase 3: same real static cost check `create`'s own
+    // CRD branch runs.
+    if group == "apiextensions.k8s.io" && resource == "customresourcedefinitions" {
+        violations.extend(apiextensions::cel_validations::validate_crd_cel_costs(body));
+    }
     if !violations.is_empty() {
         return Ok(UpdateOutcome::Invalid(violations));
     }

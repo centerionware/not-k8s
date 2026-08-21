@@ -29,10 +29,16 @@
 //! **not yet accounting for real upstream's own `MaxCardinality`
 //! multiplication** (a rule nested under a repeating array/map could
 //! run once per element; this crate has no cardinality-propagation
-//! concept yet, see that module's own doc comment) — **still not wired
-//! into any real CRD-acceptance request path**, this remains real,
-//! tested, standalone logic until `apiextensions`'s own CRD-establishing
-//! flow calls it. See `docs/APISERVER.md`'s own
+//! concept yet, see that module's own doc comment). **Now wired into a
+//! real CRD-acceptance request path**: `apiextensions::cel_validations`
+//! recursively walks a `CustomResourceDefinition`'s own declared schema
+//! (any nesting level, not just the root) and `server::rest::create`/
+//! `update` both reject a `CustomResourceDefinition` write with a real
+//! `422` when any declared rule's own static cost exceeds budget —
+//! CEL Phase 3's own real closing milestone: a client authoring a
+//! runaway `x-kubernetes-validations` rule finds out at CRD-acceptance
+//! time now, not the first time some real custom resource instance
+//! trips it. See `docs/APISERVER.md`'s own
 //! `cel_ext` section (right after Group K) for the real, verified full
 //! plan: real upstream's own budget numbers
 //! (`RuntimeCELCostBudget`/`PerCallLimit`/`CheckFrequency`, ..., fetched
