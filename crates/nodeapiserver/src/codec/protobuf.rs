@@ -60,6 +60,8 @@ pub enum Error {
     /// after the tag's own wire type has already been read off the wire).
     #[error("field {field:?}'s wire data doesn't have the shape its type requires")]
     UnexpectedWireShape { field: String },
+    #[error("field {field} is not a valid RFC3339 timestamp: {value:?}")]
+    InvalidTimestamp { field: String, value: String },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -153,9 +155,16 @@ fn encode_scalar_or_message(message: &str, field: &ProtoField, value: &Value, ou
             wire::encode_length_delimited(&bytes, out);
         }
         None => {
-            // A message reference — recurse.
             let nested_message = codegen::resolve_message_ref(message, &field.proto_type);
-            let nested_bytes = encode_message(&nested_message, value)?;
+            let nested_bytes = if is_time_message(&nested_message) {
+                // The one genuinely irreducible exception to this
+                // encoder's otherwise fully generic reflection-based
+                // approach — see `encode_time_string`'s own doc comment.
+                let s = value.as_str().ok_or_else(|| type_mismatch(message, field, "RFC3339 timestamp string", value))?;
+                encode_time_string(&format!("{message}.{}", field.json_name), s)?
+            } else {
+                encode_message(&nested_message, value)?
+            };
             wire::encode_tag(field.number, WireType::LengthDelimited, out);
             wire::encode_length_delimited(&nested_bytes, out);
         }
@@ -246,9 +255,70 @@ fn decode_one(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value
         Some(ScalarKind::Bytes) => Ok(Value::String(base64_encode(as_bytes(&label(), raw)?))),
         None => {
             let nested_message = codegen::resolve_message_ref(message, &field.proto_type);
-            decode_message(&nested_message, as_bytes(&label(), raw)?)
+            if is_time_message(&nested_message) {
+                decode_time_message(&label(), as_bytes(&label(), raw)?)
+            } else {
+                decode_message(&nested_message, as_bytes(&label(), raw)?)
+            }
         }
     }
+}
+
+/// Real upstream's own well-known-type special case, confirmed directly
+/// against the vendored proto rather than guessed at: `metav1.Time`
+/// (`staging/src/k8s.io/apimachinery/pkg/apis/meta/v1/generated.proto`'s
+/// own `message Time`) is represented in JSON as a plain RFC3339 string
+/// (`creationTimestamp: "2024-01-01T00:00:00Z"`), but its vendored proto
+/// message wraps `{seconds: int64 = 1, nanos: int32 = 2}` — the same
+/// shape `google.protobuf.Timestamp` uses — because real upstream's own
+/// Go marshaller (`Time.MarshalTo`/`Time.Unmarshal`) hand-converts
+/// between the two. `MicroTime` uses the identical wire shape. This is
+/// the *only* place this otherwise fully generic, reflection-driven
+/// encoder needs a named exception — every other message type really is
+/// just "recurse with the same field-shaped JSON object" the rest of
+/// this module assumes. Found live: nothing exercised this crate's own
+/// `encode_message`/`decode_message` against a real object carrying a
+/// real `creationTimestamp` end to end (through an actual protobuf
+/// round trip against a real datastore) until
+/// `tests/encryption_roundtrip.rs`'s own live round trip did — every
+/// prior test either stayed at the JSON/YAML codec layer (which never
+/// hits this at all) or unit-tested `encode_message`/`decode_message`
+/// with hand-built fixtures that happened never to include a `Time`
+/// field.
+fn is_time_message(message: &str) -> bool {
+    matches!(message, "io.k8s.apimachinery.pkg.apis.meta.v1.Time" | "io.k8s.apimachinery.pkg.apis.meta.v1.MicroTime")
+}
+
+fn encode_time_string(field_label: &str, s: &str) -> Result<Vec<u8>> {
+    let dt = chrono::DateTime::parse_from_rfc3339(s).map_err(|_| Error::InvalidTimestamp { field: field_label.to_string(), value: s.to_string() })?;
+    let mut out = Vec::new();
+    let seconds = dt.timestamp();
+    let nanos = dt.timestamp_subsec_nanos() as i32;
+    if seconds != 0 {
+        wire::encode_tag(1, WireType::Varint, &mut out);
+        wire::encode_varint_i64(seconds, &mut out);
+    }
+    if nanos != 0 {
+        wire::encode_tag(2, WireType::Varint, &mut out);
+        wire::encode_varint_i32(nanos, &mut out);
+    }
+    Ok(out)
+}
+
+fn decode_time_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
+    let mut seconds: i64 = 0;
+    let mut nanos: i32 = 0;
+    let mut pos = 0;
+    while pos < bytes.len() {
+        let (field_number, raw) = wire::decode_field(bytes, &mut pos)?;
+        match field_number {
+            1 => seconds = as_varint(field_label, &raw)? as i64,
+            2 => nanos = as_varint(field_label, &raw)? as i32,
+            _ => {}
+        }
+    }
+    let dt = chrono::DateTime::from_timestamp(seconds, nanos as u32).ok_or_else(|| Error::InvalidTimestamp { field: field_label.to_string(), value: format!("seconds={seconds}, nanos={nanos}") })?;
+    Ok(Value::String(dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)))
 }
 
 fn decode_map_entry(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value> {
@@ -431,6 +501,51 @@ mod tests {
         assert_eq!(decoded.get("uid").unwrap(), "abc-123");
         assert_eq!(decoded.get("generation").unwrap(), &json!(5));
         assert_eq!(decoded.get("labels").unwrap(), &json!({"app": "web", "tier": "frontend"}));
+    }
+
+    /// Found live: nothing exercised `creationTimestamp` through a real
+    /// protobuf round trip before `tests/encryption_roundtrip.rs`'s own
+    /// live datastore round trip did — every `rest::create`/`update`
+    /// call sets this field, so this was a real, previously-undiscovered
+    /// bug blocking every single object this crate ever persisted to a
+    /// real nodestore, silently uncaught because no prior test (unit or
+    /// otherwise) happened to send an `ObjectMeta` through
+    /// `encode_message` with this field actually populated.
+    #[test]
+    fn object_meta_with_a_real_creation_timestamp_round_trips() {
+        let message = "io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta";
+        let value = json!({"name": "my-pod", "creationTimestamp": "2024-01-15T10:30:00Z"});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded["creationTimestamp"], "2024-01-15T10:30:00Z");
+    }
+
+    #[test]
+    fn time_message_round_trips_through_the_real_seconds_nanos_wire_shape() {
+        let bytes = encode_time_string("Time", "2024-01-15T10:30:00Z").unwrap();
+        // Not empty and not a bare string on the wire -- proving this
+        // really did take the {seconds, nanos} message path, not fall
+        // back to string encoding.
+        assert!(!bytes.is_empty());
+        let decoded = decode_time_message("Time", &bytes).unwrap();
+        assert_eq!(decoded, json!("2024-01-15T10:30:00Z"));
+    }
+
+    #[test]
+    fn time_message_handles_the_unix_epoch_with_no_fields_written() {
+        // seconds == 0 and nanos == 0 are both real proto2 "optional"
+        // defaults -- neither field gets written on the wire at all,
+        // matching every other scalar field's own "absent means default"
+        // convention this codec already established elsewhere.
+        let bytes = encode_time_string("Time", "1970-01-01T00:00:00Z").unwrap();
+        assert!(bytes.is_empty());
+        let decoded = decode_time_message("Time", &bytes).unwrap();
+        assert_eq!(decoded, json!("1970-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn encode_time_string_rejects_a_non_rfc3339_value() {
+        assert!(encode_time_string("Time", "not a timestamp").is_err());
     }
 
     #[test]
