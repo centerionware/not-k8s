@@ -184,6 +184,52 @@ fn urlencoding_decode(s: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
+/// Real upstream's own Server-Side Apply media type
+/// (`application/apply-patch+yaml`) — the one `rest::
+/// patch_kind_for_content_type` deliberately doesn't recognize (its own
+/// doc comment), since it isn't one of that function's three patch
+/// kinds; this is the separate check that routes a `PATCH` into
+/// `rest::apply_patch` instead.
+fn is_apply_patch_content_type(content_type: &str) -> bool {
+    content_type.split(';').next().unwrap_or("").trim() == "application/apply-patch+yaml"
+}
+
+/// Real upstream's own required `?fieldManager=` query parameter for
+/// Server-Side Apply — `path::RequestInfo` doesn't carry it, same reason
+/// `resource_version_query` above doesn't come from there either.
+/// `None` when absent, so the caller can reject with a real `400` rather
+/// than inventing a manager name.
+fn field_manager_query(query: &str) -> Option<String> {
+    path::parse_query(query).into_iter().find(|(k, _)| k == "fieldManager").map(|(_, v)| v)
+}
+
+/// Real upstream's own `?force=` query parameter — Server-Side Apply's
+/// conflict-override flag.
+fn force_query(query: &str) -> bool {
+    path::parse_query(query).iter().any(|(k, v)| k == "force" && v == "true")
+}
+
+/// Real upstream's own `Conflict` shape for a Server-Side Apply
+/// ownership conflict — `reason: "Conflict"`, `code: 409`. Same "real
+/// subset, not the full type" posture every other `Status` builder in
+/// this module takes: real upstream's own structured
+/// `Status.details.causes` (one `field.ManagedFieldsConflict` entry per
+/// conflicting manager) isn't built, `message` joins them into one
+/// human-readable string instead.
+fn ssa_conflict_status(path_str: &str, conflicts: &[crate::patch::updater::Conflict]) -> serde_json::Value {
+    let detail = conflicts.iter().map(|c| format!("\"{}\" already owns: {}", c.manager, c.fields.to_json())).collect::<Vec<_>>().join("; ");
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: conflict with existing field manager(s): {detail}"),
+        "reason": "Conflict",
+        "details": {},
+        "code": 409,
+    })
+}
+
 /// Real upstream's own minimal `Status` shape for the `410 Gone` a watch
 /// whose `resourceVersion` has fallen out of the cache's retained history
 /// window gets — `reason: "Gone"`, `code: 410`, matching real
@@ -1124,6 +1170,86 @@ async fn handle(
     // between the two.
     if info.is_resource_request && info.verb == "patch" && !info.name.is_empty() && info.subresource.is_empty() {
         let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+
+        // Server-Side Apply — its own branch, not folded into the
+        // three-patch-kind block below: `rest::patch_kind_for_content_type`
+        // deliberately doesn't recognize this media type (its own doc
+        // comment), the body is YAML (or JSON, a valid subset), and the
+        // real orchestration (`rest::apply_patch`, Group G's `updater::
+        // apply` wired to storage) is a wholly different code path from
+        // the three-patch-kind `rest::patch_prepare`/`patch_persist`
+        // split above. **Named, honest scope for this first wiring
+        // slice**: only `namespace_lifecycle` admission runs here, not
+        // `LimitRanger`'s PVC check the block below also runs for an
+        // ordinary `Update`-shaped patch — real, separate follow-up work,
+        // not an oversight (`rest::apply_patch`'s own doc comment already
+        // names the bigger gap: no create-on-apply, no CRD support yet).
+        if content_type.as_deref().map(is_apply_patch_content_type).unwrap_or(false) {
+            let Some(mut client) = storage else {
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            };
+            let Some(manager) = field_manager_query(&query) else {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "the fieldManager query parameter is required for Server-Side Apply")));
+            };
+            let force = force_query(&query);
+            let body_bytes = match read_body_bytes(req).await {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "reading the request body failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            let config: serde_json::Value = match crate::codec::yaml::decode(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+            };
+            let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+
+            // Group J: `namespace_lifecycle`, same `Update`-shaped check
+            // every other write-shaped verb gets.
+            let admission_attrs = admission::attributes::Attributes { operation: admission::attributes::Operation::Update, group: &info.api_group, resource: &info.resource, namespace: &info.namespace, name: &info.name };
+            match admission::namespace_lifecycle::quick_decision(&admission_attrs) {
+                admission::namespace_lifecycle::QuickDecision::Allow => {}
+                admission::namespace_lifecycle::QuickDecision::Forbidden(msg) => {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+                }
+                admission::namespace_lifecycle::QuickDecision::NeedsNamespaceLookup => {
+                    let namespace_phase = match rest::get(&mut client, None, "", "v1", "namespaces", None, &info.namespace).await {
+                        Ok(rest::GetOutcome::Found(ns)) => Some(ns.get("status").and_then(|s| s.get("phase")).and_then(|p| p.as_str()).unwrap_or("").to_string()),
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                        Err(e) => {
+                            warn!(path = %path_str, error = ?e, "admission: namespace lookup failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    };
+                    match admission::namespace_lifecycle::decide(&admission_attrs, namespace_phase.as_deref()) {
+                        admission::namespace_lifecycle::Decision::Allow => {}
+                        admission::namespace_lifecycle::Decision::Forbidden(msg) => {
+                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+                        }
+                        admission::namespace_lifecycle::Decision::NamespaceNotFound(_) => {
+                            return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                        }
+                    }
+                }
+            }
+
+            return match rest::apply_patch(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
+                Ok(rest::ApplyOutcome::Applied(object)) => Ok(json_response(StatusCode::OK, &object)),
+                Ok(rest::ApplyOutcome::NoOp(object)) => Ok(json_response(StatusCode::OK, &object)),
+                Ok(rest::ApplyOutcome::UnknownResource) | Ok(rest::ApplyOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Ok(rest::ApplyOutcome::UnsupportedForCrd) => {
+                    Ok(json_response(StatusCode::NOT_IMPLEMENTED, &bad_request_status(&path_str, "Server-Side Apply is not yet supported for CustomResourceDefinition-defined resources")))
+                }
+                Ok(rest::ApplyOutcome::Conflict(conflicts)) => Ok(json_response(StatusCode::CONFLICT, &ssa_conflict_status(&path_str, &conflicts))),
+                Ok(rest::ApplyOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "rest::apply_patch failed");
+                    Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+                }
+            };
+        }
+
         let Some(kind_of_patch) = content_type.as_deref().and_then(rest::patch_kind_for_content_type) else {
             return Ok(json_response(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -2612,6 +2738,42 @@ mod tests {
         // generic HTTP tooling does anyway — defensive, not a case real
         // kubectl/client-go traffic would ever hit.
         assert_eq!(resource_version_query("resourceVersion=%34%32"), 42);
+    }
+
+    #[test]
+    fn is_apply_patch_content_type_recognizes_the_real_media_type_and_ignores_charset() {
+        assert!(is_apply_patch_content_type("application/apply-patch+yaml"));
+        assert!(is_apply_patch_content_type("application/apply-patch+yaml; charset=utf-8"));
+        assert!(!is_apply_patch_content_type("application/strategic-merge-patch+json"));
+        assert!(!is_apply_patch_content_type(""));
+    }
+
+    #[test]
+    fn field_manager_query_reads_the_real_param() {
+        assert_eq!(field_manager_query("fieldManager=kubectl-apply"), Some("kubectl-apply".to_string()));
+        assert_eq!(field_manager_query("force=true&fieldManager=kubectl-apply"), Some("kubectl-apply".to_string()));
+        assert_eq!(field_manager_query(""), None);
+        assert_eq!(field_manager_query("force=true"), None);
+    }
+
+    #[test]
+    fn force_query_reads_the_real_param() {
+        assert!(force_query("force=true"));
+        assert!(force_query("fieldManager=x&force=true"));
+        assert!(!force_query(""));
+        assert!(!force_query("force=false"));
+        assert!(!force_query("force=1"));
+    }
+
+    #[test]
+    fn ssa_conflict_status_names_every_conflicting_manager() {
+        let mut fields = crate::patch::fieldset::Set::new();
+        fields.insert(&[crate::patch::fieldset::PathElement::Field("replicas".to_string())]);
+        let conflicts = vec![crate::patch::updater::Conflict { manager: "hpa-controller".to_string(), fields }];
+        let status = ssa_conflict_status("/apis/apps/v1/namespaces/default/deployments/my-app", &conflicts);
+        assert_eq!(status["code"], 409);
+        assert_eq!(status["reason"], "Conflict");
+        assert!(status["message"].as_str().unwrap().contains("hpa-controller"));
     }
 
     #[test]

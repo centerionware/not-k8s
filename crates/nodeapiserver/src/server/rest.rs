@@ -1263,6 +1263,118 @@ pub async fn patch(storage: &mut StorageClient, group: &str, version: &str, reso
     }
 }
 
+/// The outcome of a Server-Side Apply request ([`apply_patch`]).
+#[derive(Debug, PartialEq)]
+pub enum ApplyOutcome {
+    /// The object as written, `metadata.managedFields` rebuilt to
+    /// reflect this apply.
+    Applied(Value),
+    /// The merged-and-pruned result was byte-for-byte identical to the
+    /// object already stored — nothing written, real upstream's own
+    /// no-op contract (`crate::patch::updater::Applied::object`'s own
+    /// doc comment). The caller still gets a real `200` with the
+    /// current object, matching real upstream's own behavior.
+    NoOp(Value),
+    UnknownResource,
+    /// This build doesn't yet support **creating** an object via Apply.
+    /// Real upstream's own Apply *can* create a brand-new object when
+    /// none exists yet (`liveObject` starts empty) — this crate's own
+    /// `crate::patch::updater::apply` already supports that
+    /// structurally (an empty `Value::Object` as `live` works fine), but
+    /// the storage side (a create-if-absent `Txn`, alongside
+    /// `persist_update`'s own update-if-matches one) isn't wired up
+    /// here yet — named honestly as the next slice, not silently folded
+    /// into an unrelated `404`.
+    ObjectNotFound,
+    /// `crate::patch::updater`'s real primitives key off Group A's
+    /// compiled `FIELD_META` table, not a runtime-parsed CRD schema — a
+    /// CRD-defined resource has no `schema` to drive them, so Apply
+    /// isn't supported against one yet (same real gap `apply_patch`'s
+    /// own `patch::strategic_merge` sibling doesn't have, since that one
+    /// has a runtime-schema fallback — `apiextensions::
+    /// schema_strategic_merge` — that Server-Side Apply's own primitives
+    /// have no equivalent of yet).
+    UnsupportedForCrd,
+    /// Another manager owns a field this apply is changing — real
+    /// upstream's own `409 Conflict`, not raised unless `force` is
+    /// false.
+    Conflict(Vec<crate::patch::updater::Conflict>),
+    Invalid(Vec<String>),
+}
+
+/// Server-Side Apply (`PATCH` with `Content-Type: application/apply-
+/// patch+yaml`) against an **already-existing** object — real upstream's
+/// `merge.Updater.Apply`, wired to real storage
+/// (`crate::patch::updater::apply`, `crate::patch::managed_fields`).
+/// `config` is the apply configuration, already decoded from the request
+/// body by the caller (YAML or JSON — real upstream accepts either for
+/// this content type, and this crate's existing content negotiation
+/// already handles both for every other verb).
+///
+/// See [`ApplyOutcome::ObjectNotFound`]/[`ApplyOutcome::UnsupportedForCrd`]
+/// for the two real, named gaps this first slice doesn't close.
+pub async fn apply_patch(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, manager: &str, force: bool, config: &Value) -> Result<ApplyOutcome, Error> {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
+        return Ok(ApplyOutcome::UnknownResource);
+    };
+    let Some(schema) = resolved.schema else {
+        return Ok(ApplyOutcome::UnsupportedForCrd);
+    };
+
+    let key = keys::object_key(group, resource, namespace, name);
+    let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
+    let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
+        return Ok(ApplyOutcome::ObjectNotFound);
+    };
+    let live = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
+
+    let stored_managed_fields = live.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    // A stored `managedFields` this crate can't parse (malformed, or an
+    // entry with a `fieldsType` this crate doesn't understand — see
+    // `managed_fields::parse_managed_fields`'s own doc comment) degrades
+    // to "no prior bookkeeping" rather than failing the whole apply: the
+    // object itself is still perfectly real and applicable, only the
+    // ownership history is unrecoverable.
+    let entries = crate::patch::managed_fields::parse_managed_fields(&stored_managed_fields).unwrap_or_default();
+    let managers = crate::patch::managed_fields::to_managers_map(&entries);
+
+    let applied = match crate::patch::updater::apply(schema, &live, config, &managers, manager, force) {
+        Ok(a) => a,
+        Err(conflicts) => return Ok(ApplyOutcome::Conflict(conflicts)),
+    };
+
+    let Some(mut object) = applied.object else {
+        return Ok(ApplyOutcome::NoOp(live));
+    };
+
+    let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
+    set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
+
+    let mut violations: Vec<String> = validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
+    violations.extend(validation::validate_types(schema, &object).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+    violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
+    if !violations.is_empty() {
+        return Ok(ApplyOutcome::Invalid(violations));
+    }
+    let object = defaulting::apply_defaults(schema, &object);
+
+    match persist_update(storage, resolved.schema, &resolved.kind, group, version, resource, key, &existing_kv, &live, namespace, object).await? {
+        UpdateOutcome::Updated(v) => Ok(ApplyOutcome::Applied(v)),
+        // Lost the optimistic-concurrency race between our read above and
+        // this write -- a real, if rare, "retry and see fresh conflicts"
+        // situation `updater::apply`'s own conflict detection (against
+        // the `managedFields` this function already read) can't catch by
+        // itself, since it never re-reads storage. Reported the same way
+        // as an ownership conflict (an empty list, since no *manager*
+        // conflict was actually detected) rather than inventing a third
+        // outcome variant this early caller-side distinction doesn't
+        // otherwise need.
+        UpdateOutcome::Conflict => Ok(ApplyOutcome::Conflict(Vec::new())),
+        other => unreachable!("persist_update only ever returns Updated or Conflict for an already-decoded, already-validated object: {other:?}"),
+    }
+}
+
 /// `scheme::name_format`'s validators, wired to the resources this crate
 /// has actually verified a real per-type rule for
 /// (`apimachinery/pkg/api/validation/generic.go`, confirmed directly):
