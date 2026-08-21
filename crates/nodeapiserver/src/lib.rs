@@ -60,7 +60,6 @@ pub mod aggregator;
 pub mod flowcontrol;
 pub mod audit;
 pub mod proxy;
-pub mod bootstrap;
 
 use anyhow::Result;
 
