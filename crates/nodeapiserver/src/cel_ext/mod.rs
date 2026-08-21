@@ -12,10 +12,12 @@
 //! real `DeclType` tree the estimator resolves a CEL field-path's size
 //! bound against, plus `decl_type::estimate_size`, the actual path-walk
 //! lookup; `path` — resolves a CEL expression's own `Select`/`Ident`
-//! chain into the field-path `estimate_size` consumes — every real
-//! prerequisite the estimator itself needs is now landed, only the
-//! actual `cost()` AST-walking dispatch that combines them isn't) — see
-//! `docs/APISERVER.md`'s own
+//! chain into the field-path `estimate_size` consumes; `cost_walk` — the
+//! actual `cost()` AST-walking dispatcher, real upstream's own
+//! `(*coster).cost`, structural node kinds only so far
+//! (`Literal`/`Ident`/`Select`/`List`/`Map`/`Struct` — `Call`/
+//! `Comprehension` still return `unknown`, see that module's own doc
+//! comment for the real remaining scope)) — see `docs/APISERVER.md`'s own
 //! `cel_ext` section (right after Group K) for the real, verified full
 //! plan: real upstream's own budget numbers
 //! (`RuntimeCELCostBudget`/`PerCallLimit`/`CheckFrequency`, ..., fetched
@@ -56,6 +58,7 @@
 //! checking either) had cited the wrong, now-inactive crates.io name.
 
 pub mod cost;
+pub mod cost_walk;
 pub mod decl_type;
 pub mod path;
 
