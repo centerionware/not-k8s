@@ -5,9 +5,12 @@
 //! expression); **Phase 2 partially done** (`eval_bool_with_deadline` —
 //! a real wall-clock deadline, this build's own stand-in for real
 //! upstream's per-operation cost accounting, which needs interpreter
-//! hooks the `cel` crate doesn't expose at all) — see
-//! `docs/APISERVER.md`'s own `cel_ext` section (right after Group K) for
-//! the real, verified full plan: real upstream's own budget numbers
+//! hooks the `cel` crate doesn't expose at all); **Phase 3 started**
+//! (`cost` — the `SizeEstimate`/`CostEstimate` arithmetic primitives
+//! real upstream's own static checked-cost estimator is built on, see
+//! that module's own doc comment) — see `docs/APISERVER.md`'s own
+//! `cel_ext` section (right after Group K) for the real, verified full
+//! plan: real upstream's own budget numbers
 //! (`RuntimeCELCostBudget`/`PerCallLimit`/`CheckFrequency`, ..., fetched
 //! directly from `k8s.io/apiserver/pkg/apis/cel/config.go` +
 //! `pkg/cel/limits.go` — genuinely new territory for this crate's own
@@ -20,7 +23,9 @@
 //! **Still not safe to wire this module into any real request path**
 //! (Group J admission or Group K's `x-kubernetes-validations`) — a
 //! deadline alone isn't real upstream's own guarantee, and static
-//! checked-cost estimation (Phase 3) hasn't landed at all yet.
+//! checked-cost estimation (Phase 3) isn't wired to an actual CEL
+//! expression's AST yet, only its own arithmetic primitives are landed
+//! so far.
 //!
 //! Named `cel_ext`, not `cel` — see the module-map note in `lib.rs` for why
 //! (this crate also depends on the external `cel` crate).
@@ -42,6 +47,8 @@
 //! entry recording that crate's `cel-interpreter` -> `cel` migration,
 //! are what caught that this crate's own design pass (written before
 //! checking either) had cited the wrong, now-inactive crates.io name.
+
+pub mod cost;
 
 use cel::{Context, Program, Value as CelValue};
 use serde_json::Value;
