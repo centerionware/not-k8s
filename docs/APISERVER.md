@@ -630,7 +630,9 @@ reusing Group G's already-landed `patch::json_patch`/`merge_patch`/
 `application/strategic-merge-patch+json` —
 `rest::patch_kind_for_content_type`, a real `415` for anything else,
 Server-Side Apply's own `application/apply-patch+yaml` deliberately not
-recognized, matching Group G's own "not yet landed" note), applied to
+recognized by this function — `server::listener` routes it into
+`rest::server_side_apply` instead, a wholly separate real code path now that
+Group G's SSA arc has landed; see that group's own section), applied to
 the object `patch_prepare` itself reads, then persisted by
 `patch_persist` through the same optimistic-concurrency
 `Txn`-compared-against-`ModRevision` tail `rest::update` already used
@@ -871,10 +873,38 @@ correctly, not just parent -> immediate child. Named, deliberate gaps
 (the overwhelming majority) behaves identically either way. **All three
 are now wired into a real `PATCH` verb** (Group E's own section has the
 detail: `server::rest::patch`, selected by real `Content-Type`, real
-optimistic concurrency, admission not yet run on it). **Not yet
-landed**: Server-Side Apply/`managedFields` (structured-merge-diff has no
-Rust crate to reuse), which will build on the same `FIELD_META`
-(`ref_schema` included) this group's patch logic already reads.
+optimistic concurrency, `namespace_lifecycle`/`LimitRanger` admission
+both run on it).
+
+**Server-Side Apply/`managedFields` is now real and reachable from a
+request**, built on the same `FIELD_META` (`ref_schema` included) this
+group's other patch logic reads — a full, faithful port of real
+upstream's `sigs.k8s.io/structured-merge-diff/v6` (fetched and read
+directly, no Rust crate to reuse, confirmed): `patch::fieldset` (the
+`PathElement`/`Set` data structure, its real `fieldsV1` JSON wire shape,
+`set_from_object`/`remove_items`/`ensure_named_fields_are_members`, and
+`Set`'s own algebra), `patch::typed_merge` (the real merge, a deliberate
+sibling of `strategic_merge` differing in two confirmed ways — deduplicated
+set-list union, atomic-map wholesale replacement), `patch::typed_compare`
+(the real diff, `{removed, modified, added}`), `patch::updater`
+(`merge.Updater` itself: `update`/`apply_update`/`prune`/`apply` — real
+conflict detection, pruning fields a manager stops claiming, all
+single-schema-version scoped since this build has no multi-version
+conversion machinery), and `patch::managed_fields` (the real
+`metadata.managedFields[]` wire shape and its conversion to/from the
+`BTreeMap<String, Set>` `updater` operates on). `server::rest::server_side_apply`
+wires all of this to real storage, and `server::listener` routes `PATCH`
+with `Content-Type: application/apply-patch+yaml` into it
+(`?fieldManager=` required, `?force=true` honored, a real `409 Conflict`
+on an unresolved ownership conflict). **Named, honest scope for this
+first wiring slice**: only against an already-existing object (no
+create-on-apply yet — `updater::apply` already supports it structurally,
+only the storage-side create-if-absent `Txn` isn't wired), only for a
+built-in resource (not a CRD-defined one — `updater`'s primitives key off
+compiled `FIELD_META`, not a runtime CRD schema), and only
+`namespace_lifecycle` admission runs on this path (not `LimitRanger`'s
+PVC check). `$patch`/`$setElementOrder`/`$deleteFromPrimitiveList`
+directives remain unported, same as `strategic_merge`'s own gap.
 
 **H. Authentication** — **started**. `authn::x509::identity_from_der`
 derives an `Identity{name, groups, credential_id}` from a client

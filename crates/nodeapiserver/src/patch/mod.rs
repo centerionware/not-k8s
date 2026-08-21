@@ -58,16 +58,26 @@
 //! reconciled map plus the applying manager's own new entry in, the
 //! array to write back out.
 //!
-//! **Every real primitive Server-Side Apply needs is now landed and
-//! composed.** **Not yet landed**: `$patch`/`$setElementOrder`/
+//! **Server-Side Apply is now reachable from a real request**:
+//! `server::rest::server_side_apply` wires `updater::apply` + `managed_fields`
+//! to real storage, and `server::listener` routes `PATCH` with
+//! `Content-Type: application/apply-patch+yaml` (`?fieldManager=`
+//! required, `?force=true` honored) into it, with a real `409 Conflict`
+//! on `Err(Vec<Conflict>)`. **Named, honest scope for this first wiring
+//! slice** (`rest::server_side_apply`'s own doc comment): only against an
+//! **already-existing** object (no create-on-apply yet — `updater::apply`
+//! itself already supports it structurally, only the storage-side
+//! create-if-absent `Txn` isn't wired), and only for a built-in resource
+//! (not yet supported for a CRD-defined one, since `updater::apply`'s
+//! primitives key off compiled `FIELD_META`, not a runtime CRD schema).
+//! Only `namespace_lifecycle` admission runs on this path, not
+//! `LimitRanger`'s PVC check the ordinary three-patch-kind branch also
+//! runs — real, separate follow-up.
+//!
+//! **Not yet landed**: `$patch`/`$setElementOrder`/
 //! `$deleteFromPrimitiveList` directives (named, deliberate
-//! simplifications — see `strategic_merge`'s own doc comment), and the
-//! request-handling glue that would make any of this reachable from a
-//! real client: `server::rest`/`application/apply-patch+yaml` content-type
-//! routing, parsing `metadata.managedFields` off a stored object before
-//! calling `updater::apply`, and a real `409 Conflict` HTTP response on
-//! `Err(Vec<Conflict>)` — see `managed_fields`'s own module doc for the
-//! precise remaining gap.
+//! simplifications — see `strategic_merge`'s own doc comment), plus the
+//! two gaps named above (create-on-apply, CRD support).
 
 pub mod fieldset;
 pub mod json_patch;
