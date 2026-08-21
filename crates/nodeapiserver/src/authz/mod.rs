@@ -35,10 +35,20 @@
 //! evaluated as the real anonymous user/group upstream itself uses
 //! (`system:anonymous`/`system:unauthenticated`), not silently exempted.
 //!
-//! Status: in progress (see docs/APISERVER.md). The Node authorizer,
-//! webhook authorization, and SubjectAccessReview/SelfSubjectAccessReview
-//! are not started.
+//! `sar` — `SubjectAccessReview`/`SelfSubjectAccessReview`, a thin
+//! wiring of `resolve`/`rbac` to real upstream's own virtual (never
+//! persisted) review API — see that module's own doc comment for the
+//! exact shape and scope. **Wired into `server::listener`** as its own
+//! `POST` branch (both review kinds, unconditionally — this doesn't
+//! gate anything itself, it just answers "would RBAC allow this",
+//! independent of whether `enforce_rbac` is even on).
+//!
+//! Status: in progress (see docs/APISERVER.md). The Node authorizer and
+//! webhook authorization are not started;
+//! `localsubjectaccessreviews`/`selfsubjectrulesreviews` aren't wired yet
+//! (named follow-ups, same primitives).
 
 pub mod rbac;
 pub mod resolve;
+pub mod sar;
 pub mod subject;
