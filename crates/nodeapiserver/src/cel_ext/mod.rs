@@ -22,10 +22,17 @@
 //! etc., a deliberate choice, not an oversight), and `Comprehension`'s
 //! own real loop-cost multiplication — see that module's own doc
 //! comment for the exact real scope and the one named gap
-//! (`cel.bind()`'s own distinct cost shape isn't detected)) — **not yet
-//! wired to anything**: no CRD-acceptance-time budget check exists yet,
-//! this is still only real, tested, standalone logic. See
-//! `docs/APISERVER.md`'s own
+//! (`cel.bind()`'s own distinct cost shape isn't detected)); `budget` —
+//! `check_rule_cost`, the real accept/reject decision for one rule
+//! against [`budget::STATIC_ESTIMATED_COST_LIMIT`] (real upstream's own
+//! `StaticEstimatedCostLimit`), scoped to a single rule's own raw cost —
+//! **not yet accounting for real upstream's own `MaxCardinality`
+//! multiplication** (a rule nested under a repeating array/map could
+//! run once per element; this crate has no cardinality-propagation
+//! concept yet, see that module's own doc comment) — **still not wired
+//! into any real CRD-acceptance request path**, this remains real,
+//! tested, standalone logic until `apiextensions`'s own CRD-establishing
+//! flow calls it. See `docs/APISERVER.md`'s own
 //! `cel_ext` section (right after Group K) for the real, verified full
 //! plan: real upstream's own budget numbers
 //! (`RuntimeCELCostBudget`/`PerCallLimit`/`CheckFrequency`, ..., fetched
@@ -65,6 +72,7 @@
 //! are what caught that this crate's own design pass (written before
 //! checking either) had cited the wrong, now-inactive crates.io name.
 
+pub mod budget;
 pub mod cost;
 pub mod cost_walk;
 pub mod decl_type;
