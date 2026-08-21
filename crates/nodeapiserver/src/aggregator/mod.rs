@@ -8,18 +8,25 @@
 //! existed; `vendor/refresh.sh`'s proto-fetch glob was missing
 //! `k8s.io/kube-aggregator` entirely, the real reason it didn't already
 //! work — fixed by vendoring that package's `generated.proto` directly).
-//! **Phase 2 partially done** — `availability` is the real availability
+//! **Phase 2 done** — `availability` is the real availability
 //! controller's *decision logic* (`local`'s own always-`Available`
 //! posture, `remote`'s own real pre-flight chain over an already-fetched
 //! Service/`EndpointSlice`, both a faithful port of
 //! `github.com/kubernetes/kube-aggregator`'s own two controllers, fetched
-//! and read directly) — pure, no I/O, not yet wired to a live
-//! reconciliation loop that actually watches `APIService`/Service/
-//! EndpointSlice objects and writes the resulting condition back
-//! (that's the remaining Phase 2 work), and the actual discovery-
-//! endpoint dial `remote`'s own controller does *after* pre-flight
-//! passes isn't attempted here either (naturally Phase 4's job, the same
-//! `proxy::http_client` primitive the eventual reverse proxy needs too).
+//! and read directly); `reconcile::reconcile_once` is the live loop that
+//! actually runs it — lists every stored `APIService`, runs pre-flight
+//! plus (once that passes) a real discovery-endpoint dial
+//! (`proxy::http_client::fetch`, a named, honest single-dial
+//! simplification of upstream's own 5-concurrent-probe check — see
+//! `reconcile`'s own doc comment), and writes the resulting `Available`
+//! condition to `status.conditions` via `rest::update_status`. Spawned
+//! as a periodic background task from `server::listener::run` (best
+//! effort, same posture the cache-registry spawn loop already has).
+//! **Named, honest scope**: `server::listener::aggregate_proxy`/
+//! `route::discoverable_group_versions` don't consult this loop's
+//! written condition yet — both still recompute pre-flight fresh on
+//! every call, a deliberate, separate follow-up (switching the hot path
+//! over to a cached read).
 //! **Phase 4 done — a genuine live reverse proxy, wired into
 //! `server::listener::handle`.** `route::resolve` finds the one stored,
 //! non-local `APIService` (if any) claiming a request's `(group,
@@ -88,5 +95,6 @@
 
 pub mod availability;
 pub mod client_tls;
+pub mod reconcile;
 pub mod route;
 pub mod proxy_target;

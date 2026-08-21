@@ -483,6 +483,30 @@ pub async fn run(cfg: Config) {
         }
     }
 
+    // Group L Phase 2: the live `APIService` availability reconciliation
+    // loop (`aggregator::reconcile`'s own doc comment covers the real
+    // scope) — best effort, same posture the cache-registry spawn loop
+    // just above already has: no storage at startup just means this
+    // loop never runs, not a reason to stop the listener. A fixed
+    // interval, not watch-driven (`aggregator::reconcile`'s own real
+    // work — a Service/EndpointSlice health check, a live network dial —
+    // is exactly the kind of externally-changing state real upstream's
+    // own controller resyncs periodically for too, not purely reactive
+    // to `APIService` object mutations).
+    if let Some(s) = storage.as_ref() {
+        let mut reconcile_storage = s.clone();
+        tokio::spawn(async move {
+            loop {
+                match crate::aggregator::reconcile::reconcile_once(&mut reconcile_storage).await {
+                    Ok(n) if n > 0 => info!(reconciled = n, "aggregator: reconciled APIService availability"),
+                    Ok(_) => {}
+                    Err(e) => warn!(error = ?e, "aggregator: APIService availability reconciliation pass failed"),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+    }
+
     let addr: SocketAddr = match cfg.bind_addr.parse() {
         Ok(a) => a,
         Err(e) => {

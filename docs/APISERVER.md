@@ -1657,17 +1657,25 @@ current scope of each piece; summarized here:
    proto-fetch glob was missing `k8s.io/kube-aggregator` entirely (it
    doesn't start with `api*`), fixed by vendoring that package's
    `generated.proto` directly.
-2. **Partially done.** `aggregator::availability` is the real
-   availability controller's *decision logic* (`local`/`remote`, a
-   faithful port of `kube-aggregator`'s own two controllers) — pure, no
-   I/O. **The one remaining real gap in this whole group**: no live
-   reconciliation loop watches `APIService`/Service/`EndpointSlice` and
-   writes the resulting `Available` condition back to `status.conditions`
-   — `aggregate_proxy`/`discoverable_group_versions` both work around
-   this today by running the same pre-flight check fresh on every
-   request/discovery call instead of reading an already-computed
-   condition (a real, honest substitute — slower, never wrong — not a
-   correctness gap).
+2. **Done.** `aggregator::availability` is the real availability
+   controller's *decision logic* (`local`/`remote`, a faithful port of
+   `kube-aggregator`'s own two controllers); `aggregator::reconcile::
+   reconcile_once` is the live loop that actually runs it — lists every
+   stored `APIService`, runs pre-flight plus (once that passes) a real
+   discovery-endpoint dial, and writes the resulting `Available`
+   condition to `status.conditions` via `rest::update_status`. Spawned as
+   a periodic (30s) background task from `server::listener::run`.
+   **Named, honest simplification**: the discovery-endpoint dial is a
+   single real request (`proxy::http_client::fetch`), not upstream's own
+   5-concurrent-probe check — one real network round trip either
+   succeeds or it doesn't, and concurrency there only ever buys
+   resilience against one flaky backend replica among several.
+   **Named, honest scope still remaining**: `aggregate_proxy`/
+   `discoverable_group_versions` don't consult this loop's written
+   condition yet — both still recompute pre-flight fresh on every
+   request/discovery call (a real, honest substitute — slower, never
+   wrong, not a correctness gap) rather than reading the cached one; a
+   deliberate, separate follow-up.
 3. **Done.** Discovery merge — `aggregator::route::
    discoverable_group_versions` (every stored, non-local `APIService`
    that currently passes pre-flight) feeds `server::discovery::
