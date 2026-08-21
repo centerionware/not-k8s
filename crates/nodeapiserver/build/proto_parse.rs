@@ -34,8 +34,27 @@ use std::path::Path;
 pub struct ProtoField {
     /// OpenAPI-style qualified message name, e.g. `io.k8s.api.apps.v1.DaemonSetSpec`.
     pub message: String,
-    /// JSON field name — identical to the proto field name (verified,
-    /// finding 6): `selector`, `minReadySeconds`, etc.
+    /// JSON field name — identical to the proto field name for the
+    /// overwhelming majority of fields (verified, finding 6): `selector`,
+    /// `minReadySeconds`, etc. **One real, named exception, found live**:
+    /// `JSONSchemaProps`'s own `x-kubernetes-*` extension fields
+    /// (`x-kubernetes-list-type`, `x-kubernetes-preserve-unknown-fields`,
+    /// ...) have a real Go JSON tag that does *not* follow the standard
+    /// camelCase-from-field-name convention every other vendored field
+    /// does — `xKubernetesListType`'s real JSON key is
+    /// `x-kubernetes-list-type`, kebab-case with a literal `x-` prefix.
+    /// Undetected, this silently drops every one of the seven such
+    /// fields on encode (the protobuf codec's field lookup by JSON key
+    /// never matches a submitted `x-kubernetes-list-type`, so it's
+    /// treated as an unrecognized key and skipped) — found live by
+    /// `tests/crd_roundtrip.rs`'s own strategic-merge-patch-against-a-CRD
+    /// round trip, which stores and rereads a real
+    /// `CustomResourceDefinition` and needs its own
+    /// `x-kubernetes-list-map-keys` to survive that round trip.
+    /// `real_x_kubernetes_json_name` below detects and corrects this one
+    /// specific, well-known family (verified against the actual vendored
+    /// proto: exactly seven fields anywhere in the whole vendored set
+    /// start with `xKubernetes`, all in this one message).
     pub json_name: String,
     pub number: u32,
     pub repeated: bool,
@@ -298,15 +317,46 @@ fn parse_field_line(line: &str, message: &str) -> Option<ProtoField> {
     let is_map = ty.starts_with("map<");
     let repeated = label == Some("repeated") || is_map;
     let proto_type = strip_leading_dot(ty).to_string();
+    let json_name = real_x_kubernetes_json_name(name).unwrap_or_else(|| name.to_string());
 
     Some(ProtoField {
         message: message.to_string(),
-        json_name: name.to_string(),
+        json_name,
         number,
         repeated,
         map: is_map,
         proto_type,
     })
+}
+
+/// Real upstream's own JSON tag for an `x-kubernetes-*` extension field —
+/// see [`ProtoField::json_name`]'s own doc comment for why this exists
+/// at all. `proto_field_name` is the raw identifier as written in the
+/// `.proto` file (e.g. `xKubernetesListType`); returns `None` for any
+/// field that doesn't start with the literal `xKubernetes` prefix (every
+/// other field in the whole vendored set), so this never touches an
+/// unrelated field that merely happens to start with a lowercase `x`.
+/// The transform itself: split on camelCase word boundaries, lowercase,
+/// join with `-` — `xKubernetesListMapKeys` -> `x-kubernetes-list-map-keys`,
+/// confirmed character-by-character against all seven real fields this
+/// pattern covers (`ProtoField::json_name`'s own doc comment names the
+/// exact count).
+fn real_x_kubernetes_json_name(proto_field_name: &str) -> Option<String> {
+    if !proto_field_name.starts_with("xKubernetes") {
+        return None;
+    }
+    let mut out = String::with_capacity(proto_field_name.len() + 4);
+    for (i, ch) in proto_field_name.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                out.push('-');
+            }
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    Some(out)
 }
 
 /// Renders the parsed table as Rust source: one `ProtoField`-shaped tuple
