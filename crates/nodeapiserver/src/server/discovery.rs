@@ -129,14 +129,15 @@ fn group_version_map() -> BTreeMap<&'static str, Vec<&'static str>> {
 /// own resource list is only known to *it* — real upstream's own
 /// `/apis/{group}/{version}` for an aggregated API is itself a live
 /// proxied fetch to the backend, not a locally-synthesizable document,
-/// and that live dial isn't wired into discovery yet (a real, named,
-/// separate remaining gap — this crate's own `aggregate_proxy` only
-/// proxies resource-shaped requests today, not the bare `/apis/{group}/
-/// {version}` discovery path itself). So `kubectl api-versions` (which
-/// only reads `/apis`'s own group/version list) works for an aggregated
-/// API after this; `kubectl api-resources` (which additionally needs
-/// each version's own resource list) still won't show one until that
-/// follow-up lands — named honestly, not silently claimed.
+/// so this module (pure, no I/O) has no business answering it at all.
+/// That live dial *is* wired in, just one layer up: `server::listener::
+/// handle` catches a plain `GET /apis/{group}/{version}` for one of
+/// `aggregated`'s own pairs (this exact function's own `NotFound`
+/// outcome from `api_resource_list_with_crds`, which never had a local
+/// answer for it) and proxies it through `aggregate_proxy` instead of
+/// ever calling into this module for that path. So both `kubectl
+/// api-versions` and `kubectl api-resources` genuinely work against an
+/// aggregated group now.
 fn merged_group_version_map(crds: &[DiscoverableResource], aggregated: &[(String, String)]) -> BTreeMap<String, Vec<String>> {
     let mut groups: BTreeMap<String, Vec<String>> = group_version_map().into_iter().map(|(g, vs)| (g.to_string(), vs.into_iter().map(str::to_string).collect())).collect();
     for r in crds {
@@ -389,12 +390,17 @@ pub fn api_v1_group_discovery_list_with_crds() -> Value {
 /// `(group, version)` resource list also merged with whatever `crds`
 /// provides for that exact group. `aggregated`'s own group/versions
 /// appear too (same [`merged_group_version_map`] input as the legacy
-/// shape), each with an empty `resources` list — real upstream's own
-/// equivalent here would be a live proxied fetch of the aggregated
-/// backend's own `/apis/{group}/{version}` discovery document, still not
-/// wired in (`aggregator::mod`'s own doc comment names this exact gap);
-/// an aggregated group is at least now visible in this shape too, just
-/// not yet populated with its real resources.
+/// shape), each with an empty `resources` list here — this pure builder
+/// has no I/O of its own to actually fetch an aggregated backend's real
+/// resource list. That's not left undone, though: a *plain* `GET
+/// /apis/{group}/{version}` for one of these groups is caught earlier,
+/// in `server::listener::handle`, and answered with a real live proxied
+/// fetch to the backend's own discovery endpoint instead of ever
+/// reaching this function — this empty-`resources` shape is only what
+/// `apidiscovery.k8s.io/v2`'s own aggregated multi-group listing
+/// (`/apis` with `Accept: application/json;as=APIGroupDiscoveryList...`)
+/// shows for an aggregated group, since that one request can't proxy to
+/// N different backends at once the way a single-group request can.
 fn group_discovery_value_with_crds(group: &str, crds: &[DiscoverableResource], aggregated: &[(String, String)]) -> Value {
     let versions = merged_group_version_map(crds, aggregated).remove(group).unwrap_or_default();
     let version_values: Vec<Value> = versions
