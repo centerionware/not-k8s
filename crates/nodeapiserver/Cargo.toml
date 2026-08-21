@@ -26,8 +26,8 @@ path = "src/main.rs"
 # applied here too.
 #
 # Deliberately minimal: only what src/ actually uses today is listed.
-# hyper/h2/tonic/prost (Group C/E), rcgen/p256/x509-parser/pem/jsonwebtoken
-# (Groups H/O), cel (Groups J/K), kube/k8s-openapi (Group F onward) get
+# rcgen/p256/x509-parser/pem/jsonwebtoken (Group O),
+# kube/k8s-openapi (Group F onward) get
 # added as the group that first needs them lands — matching every other
 # crate in this workspace, not speculatively declared up front.
 [dependencies]
@@ -110,6 +110,22 @@ uuid = { version = "1", features = ["v4"] }
 # downloads, actively maintained"). Strategic Merge Patch is k8s-specific
 # and has no crate to reuse — hand-written in patch/strategic_merge.rs.
 json-patch = "4"
+
+# Groups J/K: CEL (x-kubernetes-validations, ValidatingAdmissionPolicy).
+# The `cel-rust` project (github.com/cel-rust/cel-rust) publishes under
+# this name now — `cel-interpreter` was its earlier crates.io name,
+# confirmed still present but no longer the actively-updated one
+# (verified directly against both crates' own crates.io metadata and the
+# upstream repo's own Cargo.toml before picking one, not assumed from
+# whichever name is more commonly referenced online). Default features
+# (regex, chrono) kept: real upstream's own CEL environment for
+# `x-kubernetes-validations` needs both (string pattern matching,
+# Duration/Timestamp comparisons against `metav1.Time`-shaped fields).
+# See `cel_ext`'s own doc comment / `docs/APISERVER.md`'s `cel_ext`
+# section for the full design — this dependency lands with Phase 1 (a
+# pure compile-and-evaluate wrapper, no cost accounting yet, not wired
+# into any real request path until Phase 2 lands).
+cel = "0.14"
 
 [build-dependencies]
 # Group A codegen: parses vendor/openapi-spec/v3/*.json and
