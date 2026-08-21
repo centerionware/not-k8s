@@ -210,11 +210,28 @@ async fn resolve_resource(storage: &mut StorageClient, group: &str, version: &st
     if group.is_empty() || group == "apiextensions.k8s.io" {
         return Ok(None);
     }
-    let crds = match list(storage, None, "apiextensions.k8s.io", "v1", "customresourcedefinitions", None, "", "", 0, "").await? {
-        ListOutcome::Found(list_value) => list_value["items"].as_array().cloned().unwrap_or_default(),
-        ListOutcome::UnknownResource | ListOutcome::InvalidContinueToken => return Ok(None),
-    };
+    let crds = list_stored_crds(storage).await?;
     Ok(apiextensions::registry::resolve_in(crds.iter(), group, version, resource).map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema }))
+}
+
+/// A raw `Range` over every stored `CustomResourceDefinition`, decoded —
+/// deliberately *not* [`list`] itself: [`list`] calls [`resolve_resource`]
+/// to find out what it's listing, and [`resolve_resource`]'s own CRD
+/// fallback needs this same data, so calling back into `list` here would
+/// be a real `async fn` recursion cycle (rejected outright by rustc,
+/// `E0733` — infinitely-sized future, not merely a style objection) even
+/// though it would never actually recurse more than once at runtime (the
+/// CRD group is always resolved by the static table, never this
+/// fallback). `customresourcedefinitions` is always cluster-scoped and
+/// its own resource is never itself encrypted-at-rest-configurable in a
+/// way this function needs to special-case — `decrypt_and_decode`
+/// already handles "no transformer configured for this group/resource"
+/// as a plain pass-through.
+async fn list_stored_crds(storage: &mut StorageClient) -> Result<Vec<Value>, Error> {
+    let prefix = keys::list_prefix("apiextensions.k8s.io", "customresourcedefinitions", None).into_bytes();
+    let range_end = prefix_range_end(&prefix);
+    let resp = storage.range(RangeRequest { key: prefix, range_end, ..Default::default() }).await?;
+    resp.kvs.iter().map(|kv| decrypt_and_decode(storage, "apiextensions.k8s.io", "customresourcedefinitions", &kv.key, &kv.value)).collect()
 }
 
 /// Decodes a value exactly as stored in nodestore — the full `k8s\0`-
@@ -643,10 +660,7 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
     // `status`, same "generic status subresource" posture `update_status`
     // already establishes for every other resource's own status.
     if group == "apiextensions.k8s.io" && resource == "customresourcedefinitions" {
-        let other_crds = match list(storage, None, "apiextensions.k8s.io", "v1", "customresourcedefinitions", None, "", "", 0, "").await? {
-            ListOutcome::Found(list_value) => list_value["items"].as_array().cloned().unwrap_or_default(),
-            ListOutcome::UnknownResource | ListOutcome::InvalidContinueToken => Vec::new(),
-        };
+        let other_crds = list_stored_crds(storage).await?;
         object["status"] = apiextensions::conditions::compute_status(&object, other_crds.iter(), &[], &now_rfc3339());
     }
 
