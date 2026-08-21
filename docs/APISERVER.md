@@ -557,6 +557,22 @@ admission deliberately does **not** gate `watch` — matching real
 upstream's own posture (admission never runs on a read, whatever the
 verb), not a gap.
 
+**`WATCH` now applies the same real label/field selector filtering
+`LIST` already did — a real, previously-undocumented gap found and
+closed the same way the `Table`-conversion wiring gap was**: every
+event on the stream (replay and live alike) is checked against
+`cacher::selector::object_matches` (`watch_event_matches_selector`)
+before it's ever encoded and sent — a `kubectl get pods -w -l
+app=foo` was silently getting *every* pod's events before this,
+matching `LIST`'s own selector only for the initial snapshot, not the
+live stream. A malformed selector is a real `400`, checked before the
+stream even opens, same as `LIST`. `Bookmark` events and any event
+this cache holds no value for always pass through (there's nothing to
+test a selector against); a value this build can't decode also passes
+through unfiltered rather than being silently dropped — filtering
+narrows a watch, it never hides a real event this build failed to
+parse.
+
 **`PATCH` is real too now** (`rest::patch_prepare`/`patch_persist`,
 reusing Group G's already-landed `patch::json_patch`/`merge_patch`/
 `strategic_merge`): the real `Content-Type` selects the patch kind
