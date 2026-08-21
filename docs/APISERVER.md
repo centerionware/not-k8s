@@ -1461,16 +1461,28 @@ ValidatingAdmissionPolicy/MutatingAdmissionPolicy (Group J) both —
 scoped here rather than under either group since it's shared
 infrastructure neither owns.
 
-*Crate choice*: `cel-interpreter` (the `cel-rust` project, MIT-licensed,
-actively maintained). Real, verified API shape (`docs.rs`/repo, fetched
-directly): `Program::compile(expr)` -> `Context::default()` +
-`context.add_variable(name, value)`/`context.add_function(...)` ->
-`program.execute(&context)`. **No built-in cost/step limiting of any
-kind** — confirmed by reading its own docs, not assumed — so the entire
-cost-budget mechanism below is this crate's own responsibility to build
-regardless of which CEL evaluator sits underneath it; picking a
-different crate wouldn't remove this work; it's not a rejected
-shortcut.
+*Crate choice*: `cel` (the `cel-rust` project, MIT-licensed, actively
+maintained — `0.14.3` as of 2026-08-21). **Correction to this section's
+own first draft**: initially written as `cel-interpreter` from external
+web research alone, before noticing `crates/nodescheduler` already
+depends on `cel` for a real, live, already-merged use
+(`framework::plugins::dynamic_resources`'s own DRA `CEL` device-selector
+evaluation) — `cel-interpreter` is that same project's now-inactive
+former crates.io name (confirmed both still resolve, but only `cel` has
+had a release in the last year). Real API shape confirmed directly
+against that already-working code, not docs.rs (whose auto-generated
+summaries disagreed with each other on `Context`'s own basic shape):
+`cel::Program::compile(expr)` -> `cel::Context::default()` +
+`ctx.add_variable(name, value)`/`ctx.add_function(name, f)` ->
+`program.execute(&ctx)` -> `cel::Value::Bool(bool)` on success.
+`Context::add_variable`'s own bound (`TryIntoValue`, confirmed via a
+blanket `impl<T: Serialize> TryIntoValue for T`) means a bare
+`serde_json::Value` binds directly, no manual conversion needed. **No
+built-in cost/step limiting of any kind** — confirmed by reading the
+crate's own source, not assumed — so the entire cost-budget mechanism
+below is this crate's own responsibility to build regardless of which
+CEL evaluator sits underneath it; picking a different crate wouldn't
+remove this work; it's not a rejected shortcut.
 
 *Real upstream's own budget numbers* (`k8s.io/apiserver/pkg/apis/cel/
 config.go` + `pkg/cel/limits.go`, fetched and read directly — the
@@ -1522,13 +1534,15 @@ simplification:
 *Phased plan, each phase a real, separately verifiable slice, same
 "land the primitive, wire it later" discipline every prior group has
 used*:
-1. Vendor `cel-interpreter`; a pure `cel_ext::eval` wrapping
-   `Program::compile`/`Context`/`.execute` against `serde_json::Value`
-   bound variables (`self` for the value being validated, `oldSelf` on
+1. **Done.** `cel_ext::eval_bool` — a pure `cel::Program::compile`/
+   `cel::Context`/`.execute` wrapper against `serde_json::Value` bound
+   variables (`self` for the value being validated, `oldSelf` on
    `UPDATE` — real upstream's own two well-known variable names for
    `x-kubernetes-validations`), no cost accounting yet, no k8s extension
    functions yet — proves the crate itself round-trips real expressions
-   against real k8s-shaped data.
+   against real k8s-shaped data. Not reachable from any real request
+   path yet (nothing calls it outside its own unit tests) — deliberate,
+   see this section's own repeated warning on why.
 2. Runtime cost accounting (layer 2 above) — `PerCallLimit`/
    `RuntimeCELCostBudget`, checked at `CheckFrequency` granularity.
    **Must land before this is wired into any real request path** — an
