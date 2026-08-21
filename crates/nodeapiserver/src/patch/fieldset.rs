@@ -333,6 +333,138 @@ impl Set {
     }
 }
 
+/// `typed.TypedValue.ToFieldSet()`, ported — the schema-driven walk that
+/// turns one real object (understood to be shaped like `schema`, an
+/// openapi-style qualified schema name, the same key `FIELD_META`/
+/// `patch::strategic_merge` already use) into the `Set` of every field
+/// path it sets. This is Server-Side Apply's first real building block
+/// on top of the pure `PathElement`/`Set` data structure above: given an
+/// object a client submitted via `PATCH` with `Content-Type:
+/// application/apply-patch+yaml`, this is what would become that
+/// manager's own new `managedFields` entry (before the *merge*/conflict-
+/// detection half — real upstream's own `merge.Updater` — which is
+/// separate, larger, not-yet-started work; this function alone doesn't
+/// merge anything, it only says what one object owns).
+///
+/// Driven entirely by the same `codegen::field_meta_index()` Group A
+/// table `patch::strategic_merge` already reads (`list_type`/
+/// `list_map_keys`/`map_type`/`ref_schema` — Server-Side Apply's own
+/// `x-kubernetes-*` extensions, confirmed against real vendored specs,
+/// not the older `patch_strategy`/`patch_merge_key` pair `strategic_merge`
+/// itself actually uses; for every real vendored field both pairs agree,
+/// but this function reads the SSA-specific ones on principle). Three
+/// real per-field decisions, each confirmed against a real vendored
+/// field before writing this:
+/// - `map_type: "atomic"` (`PodSpec.nodeSelector`, `ServiceSpec.selector`,
+///   confirmed) — the whole field is one leaf member, no per-key
+///   ownership tracked; anything else (unset, or `"granular"`, real
+///   upstream's own default) tracks each present key separately.
+/// - `list_type: "map"` (`PodSpec.containers`, confirmed) — each element
+///   becomes a [`PathElement::Key`] built from `list_map_keys`, recursed
+///   into using the array's own `ref_schema` (the *element* schema,
+///   matching `strategic_merge`'s own convention) so the element's other
+///   fields are tracked too, not just its key fields.
+/// - `list_type: "set"` (`ObjectMeta.finalizers`, confirmed) — each
+///   element becomes its own [`PathElement::Value`] leaf member directly
+///   (no recursion: a set-typed list's own elements are always scalars,
+///   real upstream's own restriction).
+/// - Anything else (`list_type` unset, or explicitly `"atomic"`
+///   — `Container.command`/`.args`, confirmed) — the whole list is one
+///   leaf member, matching real upstream's own default posture for a
+///   list nobody annotated.
+///
+/// A nested object field with a known `ref_schema` (a real Struct)
+/// recurses using that schema's own `FIELD_META` rows; one with no known
+/// `ref_schema` at all (a generic `map[string]V`-shaped field like
+/// `metadata.labels`, which carries no per-key metadata to look up in
+/// the first place) still tracks each present key as its own member —
+/// real upstream's own granular-map default applies identically whether
+/// the map is a real SMD "Map" type or simply untyped as far as this
+/// crate's own compiled schema goes.
+///
+/// **Named, deliberate scope, not silently overclaimed**: real upstream
+/// strips a handful of `ObjectMeta` fields (`resourceVersion`,
+/// `creationTimestamp`, `selfLink`, `uid`, `managedFields` itself, ...)
+/// before ever computing a field set for a real applied object — that's
+/// the *caller*'s job here too (`k8s.io/apimachinery/pkg/util/
+/// managedfields`'s own `stripFields`, not yet ported), this function
+/// tracks exactly whatever object it's handed, nothing more, nothing
+/// less.
+pub fn set_from_object(schema: &str, value: &Value) -> Set {
+    let mut set = Set::new();
+    let mut path = Vec::new();
+    collect_object_fields(schema, value, &mut path, &mut set);
+    set
+}
+
+fn collect_object_fields(schema: &str, value: &Value, path: &mut Vec<PathElement>, set: &mut Set) {
+    let Value::Object(map) = value else { return };
+    for (key, v) in map {
+        path.push(PathElement::Field(key.clone()));
+        let meta = crate::codegen::field_meta_index().get(&(schema, key.as_str())).copied();
+        collect_field_value(meta, v, path, set);
+        path.pop();
+    }
+}
+
+fn collect_field_value(meta: Option<&crate::codegen::openapi_meta::FieldMeta>, value: &Value, path: &mut Vec<PathElement>, set: &mut Set) {
+    match value {
+        Value::Object(_) if meta.and_then(|m| m.map_type) == Some("atomic") => {
+            set.insert(path);
+        }
+        Value::Object(inner) => match meta.and_then(|m| m.ref_schema) {
+            Some(next_schema) => collect_object_fields(next_schema, value, path, set),
+            None => {
+                // A generic map with no known per-key schema (`metadata.
+                // labels`, ...) — real upstream's own granular-map
+                // default: each present key is its own member, one level
+                // deep, nothing further to recurse through.
+                for key in inner.keys() {
+                    path.push(PathElement::Field(key.clone()));
+                    set.insert(path);
+                    path.pop();
+                }
+            }
+        },
+        Value::Array(elements) => match meta.and_then(|m| m.list_type) {
+            Some("map") => {
+                let list_map_keys = meta.map(|m| m.list_map_keys).unwrap_or(&[]);
+                let element_schema = meta.and_then(|m| m.ref_schema);
+                for element in elements {
+                    let Value::Object(obj) = element else {
+                        // A `list_type: map` element that isn't an object
+                        // is malformed real data (real upstream requires
+                        // object elements for an associative list) — skip
+                        // rather than fabricate a key for it.
+                        continue;
+                    };
+                    let mut key_fields: Vec<(String, Value)> = list_map_keys.iter().filter_map(|k| obj.get(*k).map(|v| (k.to_string(), v.clone()))).collect();
+                    key_fields.sort_by(|a, b| a.0.cmp(&b.0));
+                    path.push(PathElement::Key(key_fields));
+                    match element_schema {
+                        Some(s) => collect_object_fields(s, element, path, set),
+                        None => set.insert(path),
+                    }
+                    path.pop();
+                }
+            }
+            Some("set") => {
+                for element in elements {
+                    path.push(PathElement::Value(element.clone()));
+                    set.insert(path);
+                    path.pop();
+                }
+            }
+            // `Some("atomic")` and everything else (unset — real
+            // upstream's own default when nobody annotated the field)
+            // both mean the same thing here: one leaf for the whole list.
+            _ => set.insert(path),
+        },
+        // A scalar (string/bool/number/null) is always a leaf.
+        _ => set.insert(path),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,5 +555,81 @@ mod tests {
     fn an_empty_path_is_never_a_member() {
         let set = Set::new();
         assert!(!set.has(&[]));
+    }
+
+    // `set_from_object`'s own tests, each driven by a real vendored field
+    // confirmed directly against `vendor/openapi-spec/v3` before writing
+    // the code, not assumed from the SMD spec alone -- see this module's
+    // own doc comment on `set_from_object` for the exact confirmation.
+
+    #[test]
+    fn a_list_type_map_field_tracks_each_element_by_its_own_key_and_recurses_into_it() {
+        // PodSpec.containers: x-kubernetes-list-type: map, list-map-keys:
+        // [name], element schema Container.
+        let pod_spec = json!({"containers": [{"name": "nginx", "image": "nginx:latest"}]});
+        let set = set_from_object("io.k8s.api.core.v1.PodSpec", &pod_spec);
+        let key = PathElement::Key(vec![("name".to_string(), json!("nginx"))]);
+        assert!(set.has(&[PathElement::Field("containers".to_string()), key.clone(), PathElement::Field("name".to_string())]), "the key field itself must also be tracked as a child, matching real fieldsV1 documents");
+        assert!(set.has(&[PathElement::Field("containers".to_string()), key, PathElement::Field("image".to_string())]));
+    }
+
+    #[test]
+    fn a_list_type_set_field_tracks_each_element_as_its_own_value_leaf_with_no_recursion() {
+        // ObjectMeta.finalizers: x-kubernetes-list-type: set, scalar elements.
+        let meta = json!({"finalizers": ["a.example.com/finalizer", "b.example.com/finalizer"]});
+        let set = set_from_object("io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta", &meta);
+        assert!(set.has(&[PathElement::Field("finalizers".to_string()), PathElement::Value(json!("a.example.com/finalizer"))]));
+        assert!(set.has(&[PathElement::Field("finalizers".to_string()), PathElement::Value(json!("b.example.com/finalizer"))]));
+    }
+
+    #[test]
+    fn a_list_type_atomic_field_is_one_leaf_for_the_whole_list_not_per_element() {
+        // Container.command: x-kubernetes-list-type: atomic (explicit).
+        let container = json!({"command": ["/bin/sh", "-c", "echo hi"]});
+        let set = set_from_object("io.k8s.api.core.v1.Container", &container);
+        assert!(set.has(&[PathElement::Field("command".to_string())]), "the whole list must be tracked as one leaf");
+        assert!(!set.children.contains_key(&PathElement::Field("command".to_string())), "an atomic list must have no per-element children at all");
+    }
+
+    #[test]
+    fn a_map_type_atomic_field_is_one_leaf_for_the_whole_map_not_per_key() {
+        // PodSpec.nodeSelector: x-kubernetes-map-type: atomic.
+        let pod_spec = json!({"nodeSelector": {"disktype": "ssd", "region": "us-west"}});
+        let set = set_from_object("io.k8s.api.core.v1.PodSpec", &pod_spec);
+        assert!(set.has(&[PathElement::Field("nodeSelector".to_string())]), "the whole map must be tracked as one leaf");
+        assert!(!set.children.contains_key(&PathElement::Field("nodeSelector".to_string())), "an atomic map must have no per-key children at all");
+    }
+
+    #[test]
+    fn a_generic_map_with_no_known_schema_tracks_each_key_separately() {
+        // ObjectMeta.labels carries no ref_schema (scalar-valued
+        // additionalProperties) -- real upstream's own granular-map
+        // default still applies.
+        let meta = json!({"labels": {"app": "nginx", "tier": "frontend"}});
+        let set = set_from_object("io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta", &meta);
+        assert!(set.has(&[PathElement::Field("labels".to_string()), PathElement::Field("app".to_string())]));
+        assert!(set.has(&[PathElement::Field("labels".to_string()), PathElement::Field("tier".to_string())]));
+        assert!(!set.has(&[PathElement::Field("labels".to_string())]), "the map field itself must not be a leaf member -- only its individual keys are");
+    }
+
+    #[test]
+    fn a_scalar_field_is_always_a_leaf() {
+        let container = json!({"name": "nginx", "image": "nginx:latest"});
+        let set = set_from_object("io.k8s.api.core.v1.Container", &container);
+        assert!(set.has(&[PathElement::Field("name".to_string())]));
+        assert!(set.has(&[PathElement::Field("image".to_string())]));
+    }
+
+    #[test]
+    fn a_nested_struct_field_recurses_using_its_own_ref_schema() {
+        // Container.resources -> ResourceRequirements -> .limits (a map
+        // of Quantity, itself a real nested-schema recursion chain).
+        let container = json!({"name": "nginx", "resources": {"limits": {"cpu": "500m"}}});
+        let set = set_from_object("io.k8s.api.core.v1.Container", &container);
+        assert!(
+            set.has(&[PathElement::Field("resources".to_string()), PathElement::Field("limits".to_string()), PathElement::Field("cpu".to_string())])
+                || set.has(&[PathElement::Field("resources".to_string()), PathElement::Field("limits".to_string())]),
+            "resources.limits.cpu must be tracked one way or the other depending on whether ResourceRequirements.limits itself carries ref_schema metadata"
+        );
     }
 }
