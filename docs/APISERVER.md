@@ -170,20 +170,35 @@ own resource-name/wildcard rules (`secrets`, `<resource>.<group>`, `*.`,
 first-match-wins resolution. Only `aesgcm`/`identity` build (matching
 `storage::encryption`'s own scope); `aescbc`/`secretbox`/`kms` parse
 structurally but resolve to a real, named error rather than being
-silently dropped or misapplied. **`NODEAPISERVER_ENCRYPTION_CONFIG_FILE`
-now loads and validates the file at listener startup**
-(`config::Config::encryption_config_file` +
-`server::listener::run`) — a misconfigured file is a loud startup
-warning now, ahead of the wiring that would actually need it, rather
-than a silently-inert setting. **Still not yet landed**: wiring any of
-this into `StorageClient`'s actual read/write path or `cacher`'s
-`Watch` decoding — deliberately not attempted as part of this slice,
-since transparent encryption needs `range`/`put`/`txn`/`watch` to all
-agree at once (a watch cache fed undecrypted ciphertext for even one of
-those paths is a real, silent correctness break, not a partial win), so
-it's scoped as its own dedicated, carefully-verified follow-up rather
-than rolled out gap-by-gap the way most of this crate's other features
-are.
+silently dropped or misapplied. `NODEAPISERVER_ENCRYPTION_CONFIG_FILE`
+loads and validates the file at listener startup
+(`config::Config::encryption_config_file`) — a misconfigured file is a
+loud startup warning.
+
+**Milestone: encryption-at-rest is genuinely wired end to end now** —
+`range`/`put`/`txn` (via the shared `persist_update` tail every write
+verb funnels through) and `watch` all agree, the correctness
+requirement this doc used to name as the reason this was deferred.
+`StorageClient` carries the parsed config (`with_encryption`, attached
+once right after `connect`, before any clone — including every
+long-running cache-reflect loop — is made) and exposes
+`transformers_for(group, resource)`. Two functions in `server::rest`
+are the entire wiring surface: `decrypt_and_decode` (the encrypted-aware
+counterpart to `decode_stored_object` — every real read call site in
+the crate uses this instead, `get`/`list`/`update`/`patch_prepare`/
+`update_status`/`patch_status`/`delete`, plus `watch`'s own event
+decoding in `server::watch_event`) and `encrypt_for_storage` (called at
+both real `PutRequest` construction sites, `create` and
+`persist_update`). Both use the object's own etcd key as AES-GCM's
+authenticated data, matching real upstream's own
+`dataCtx.AuthenticatedData()` convention exactly. A resource with no
+matching entry in the loaded config is written/read as-is, unchanged
+from before this wiring existed — encryption is opt-in per resource,
+never a blanket switch. Named, honest gap: the real `stale` flag
+`transform_from_storage` returns (upstream's own "this was encrypted
+under a non-primary key, rewrite it with the current one next write" —
+a key-rotation migration signal) is read but discarded; there's no
+background re-encryption sweep to act on it yet.
 
 **D. Watch cache** — **in progress**. `cacher::store::WatchCache` is the
 cache core: apply/list/watch_from, bookmarks, RV=0 reads, and consistent
