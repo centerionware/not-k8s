@@ -896,10 +896,10 @@ conversion machinery), and `patch::managed_fields` (the real
 wires all of this to real storage, and `server::listener` routes `PATCH`
 with `Content-Type: application/apply-patch+yaml` into it
 (`?fieldManager=` required, `?force=true` honored, a real `409 Conflict`
-on an unresolved ownership conflict). **Named, honest scope for this
-first wiring slice**: only against an already-existing object (no
-create-on-apply yet — `updater::apply` already supports it structurally,
-only the storage-side create-if-absent `Txn` isn't wired), only for a
+on an unresolved ownership conflict). **Create-on-apply is real too**: no
+object at this key creates one through the same create-only-if-absent
+`Txn` idiom `rest::create` uses, `updater::apply` run against an empty
+`live` either way. **Named, honest scope remaining**: only for a
 built-in resource (not a CRD-defined one — `updater`'s primitives key off
 compiled `FIELD_META`, not a runtime CRD schema), and only
 `namespace_lifecycle` admission runs on this path (not `LimitRanger`'s
