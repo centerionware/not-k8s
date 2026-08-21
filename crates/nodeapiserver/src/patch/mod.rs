@@ -20,32 +20,46 @@
 //! decisions confirmed against a real vendored field before writing the
 //! code — see `set_from_object`'s own doc comment).
 //!
+//! `typed_merge` — Server-Side Apply's own real *merge*
+//! (`typed.mergingWalker`, ported): combines a live object with an
+//! incoming apply configuration into the merged result, reading the
+//! same SSA-specific `FIELD_META` columns `fieldset::set_from_object`
+//! does. A real, deliberate sibling of `strategic_merge`, not a
+//! duplicate — the two differ in two confirmed, real ways
+//! (`list_type: "set"` real deduplicated-union merging, which SMP has
+//! no equivalent concept of at all; `map_type: "atomic"` wholesale
+//! replacement, which SMP's own "every object field merges recursively"
+//! default has no exception for) — see `typed_merge`'s own doc comment
+//! for the full comparison.
+//!
 //! Status: in progress (see docs/APISERVER.md). Landed: RFC 6902/7386,
 //! Strategic Merge Patch's core semantics (recursive object merge,
 //! null-deletes-key, merge-by-key for `patch_strategy: merge` lists),
 //! `fieldset::{PathElement, Set}` (pure, unit-tested against real
 //! `fieldsV1` shapes including the easy-to-miss `"."`-marker case),
 //! `fieldset::set_from_object` (one real object in, the `Set` of
-//! everything it owns out), and now `Set`'s own algebra
+//! everything it owns out), `Set`'s own algebra
 //! (`union`/`intersection`/`difference`/`recursive_difference`/
 //! `is_empty` — real upstream's own `Set`/`SetNodeMap`/`PathElementSet`
-//! methods, ported to this crate's own `BTreeMap`-backed tree rather
-//! than upstream's sorted-`Vec` `SetNodeMap`, same real semantics
-//! either way; `difference`'s own doc comment names the real,
-//! intentional asymmetry with `recursive_difference` that a naive
-//! from-memory port would likely miss). **Not yet landed**: `$patch`/
+//! methods; `difference`'s own doc comment names a real, intentional
+//! asymmetry with `recursive_difference` a naive from-memory port would
+//! likely miss), and now `typed_merge::merge` — the real merged *value*
+//! two typed objects combine into. **Not yet landed**: `$patch`/
 //! `$setElementOrder`/`$deleteFromPrimitiveList` directives (named,
 //! deliberate simplifications — see `strategic_merge`'s own doc
-//! comment) and the actual Server-Side Apply *merge*/conflict-detection
-//! algorithm (`merge.Updater` — combining `set_from_object`'s own output
-//! for the incoming request with the existing object's stored
-//! `managedFields`, running the real 3-way merge using the `Set`
-//! algebra now available, and rejecting a conflicting field unless
-//! `force=true` — a genuinely separate, larger piece these primitives
-//! are real building blocks toward, not a claim it's done) or any
-//! `application/apply-patch+yaml` wiring into `server::rest::patch`.
+//! comment) and `Updater.Apply` itself: the orchestration that combines
+//! `typed_merge::merge`'s own output with `fieldset::set_from_object`
+//! and the `Set` algebra to do real conflict detection against other
+//! managers' stored `managedFields` and reject a conflicting field
+//! unless `force=true` — the piece that actually closes this arc, not
+//! yet started; nor is `typed.TypedValue.Compare` (the schema-driven
+//! diff `Updater.Apply` itself needs, to know which fields the merge
+//! actually *changed* — a separate walker again, related to but not
+//! reducible to `typed_merge::merge`) or any `application/apply-patch
+//! +yaml` wiring into `server::rest::patch`.
 
 pub mod fieldset;
 pub mod json_patch;
 pub mod merge_patch;
 pub mod strategic_merge;
+pub mod typed_merge;
