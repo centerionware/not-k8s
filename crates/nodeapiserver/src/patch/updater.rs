@@ -1,0 +1,395 @@
+//! Server-Side Apply's `merge.Updater` orchestration — ported from real
+//! upstream `sigs.k8s.io/structured-merge-diff/v6/merge.Updater`'s own
+//! `update`/`Update` (`merge/update.go`, fetched and read directly, not
+//! reconstructed from memory). This is the piece `docs/APISERVER.md` and
+//! this crate's `patch` module doc have named as the closing orchestration
+//! all three of Group G's real SSA prerequisites (`fieldset::set_from_object`,
+//! `typed_merge::merge`, `typed_compare::compare`) exist to feed.
+//!
+//! # Named, deliberate scope for this slice
+//!
+//! Real upstream's `update()` caches one `Comparison` **per manager's own
+//! recorded API version** (`versions map[fieldpath.APIVersion]*typed.
+//! Comparison`), since two managers can have last written the object at
+//! different served versions and a `Converter` re-converts old/new into each
+//! one before comparing. This build has **no multi-version conversion
+//! machinery at all** — confirmed: no CRD conversion webhooks, no
+//! `Converter` equivalent anywhere in the crate, `nodeapiserver` serves
+//! exactly one storage schema per resource — so every manager's `Set` here
+//! is assumed to already be expressed against the one `schema` being
+//! compared, collapsing upstream's per-version `Comparison` cache down to
+//! one shared `Comparison` computed once. If multi-version storage is ever
+//! added, this is where the per-version cache would need to come back.
+//!
+//! Landed here: `update()` (the shared conflict-detection/bookkeeping core
+//! both `Update` and `Apply` build on) and `apply_update()` (real upstream's
+//! `Updater.Update` — the PATCH/PUT path, which always calls `update()` with
+//! `force: true`, since only `Apply` itself ever rejects on conflict).
+//! **Not yet landed**: `Updater.Apply` itself, which additionally needs
+//! `liveObject.Merge(configObject)` (already have — `typed_merge::merge`)
+//! and a real `prune()` step (`RemoveItems`/`addBackOwnedItems`/
+//! `addBackDanglingItems`) that needs a `Set`-driven "remove everything at
+//! these paths" operation on a `Value` this crate doesn't have yet, plus the
+//! real `managedFields` wire format (`ManagedFieldsEntry`,
+//! `metadata.managedFields`) and `server::rest`/`application/apply-patch+yaml`
+//! wiring — none of that exists yet either. Also not ported: upstream's own
+//! `IgnoreFilter`/`IgnoredFields` (server-managed field exclusion, e.g.
+//! `status`) and `reconcileManagedFieldsWithSchemaChanges` (schema
+//! atomic<->granular migration bookkeeping) — both real, both named as
+//! separate not-yet-started work rather than silently dropped.
+
+use super::fieldset::Set;
+use super::typed_compare::{compare, Comparison};
+use serde_json::Value;
+use std::collections::BTreeMap;
+
+/// One other manager's ownership conflicting with what this write would
+/// change — real upstream's own `managers[manager] = fieldpath.
+/// NewVersionedSet(conflictSet, ...)` entry, surfaced as the caller's error
+/// (a real `409 Conflict` at the HTTP layer, not built here).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Conflict {
+    pub manager: String,
+    pub fields: Set,
+}
+
+/// Real upstream's `(*Updater).update`, single-schema-version scoped (see
+/// module doc). `managers` is every *other* manager's currently-owned
+/// `Set`, keyed by manager name — the applying manager must **not** be a key
+/// of this map (matches real upstream's own `if manager == workflow {
+/// continue }` skip; callers exclude it up front rather than this function
+/// filtering it out, since `apply_update` below needs the excluded entry
+/// back for its own bookkeeping).
+///
+/// On success, returns the reconciled map — every other manager's `Set`
+/// with the fields this write just changed (real upstream: `compare.
+/// Modified.Union(compare.Added)`) taken away from whichever manager used to
+/// own them, and any field this write *removed* taken away from every other
+/// manager too — plus the `old.Compare(new)` result the caller needs for its
+/// own bookkeeping. Manager entries left empty by this are dropped, exactly
+/// like real upstream's own trailing cleanup loop.
+///
+/// On conflict (`force == false` and at least one other manager currently
+/// owns a field this write is changing), returns every conflicting manager
+/// instead — real upstream's own `ConflictsFromManagers` error.
+pub fn update(
+    schema: &str,
+    old: &Value,
+    new: &Value,
+    managers: &BTreeMap<String, Set>,
+    force: bool,
+) -> Result<(BTreeMap<String, Set>, Comparison), Vec<Conflict>> {
+    let cmp = compare(schema, old, new);
+    let changed = cmp.modified.union(&cmp.added);
+
+    let mut conflicts = Vec::new();
+    for (manager, manager_set) in managers {
+        let conflict_set = manager_set.intersection(&changed);
+        if !conflict_set.is_empty() {
+            conflicts.push(Conflict {
+                manager: manager.clone(),
+                fields: conflict_set,
+            });
+        }
+    }
+
+    if !force && !conflicts.is_empty() {
+        return Err(conflicts);
+    }
+
+    let mut result = managers.clone();
+    for conflict in &conflicts {
+        if let Some(set) = result.get(&conflict.manager) {
+            result.insert(conflict.manager.clone(), set.difference(&conflict.fields));
+        }
+    }
+    if !cmp.removed.is_empty() {
+        for set in result.values_mut() {
+            *set = set.difference(&cmp.removed);
+        }
+    }
+    result.retain(|_, set| !set.is_empty());
+
+    Ok((result, cmp))
+}
+
+/// Real upstream's `Updater.Update` — the PATCH/PUT write path (not
+/// `Apply`). `live` is the object before this write (an empty object for a
+/// CREATE, matching upstream's own doc comment: "liveObject must be the
+/// original object (empty if this is a CREATE call)"), `new` is the object
+/// as it is about to be persisted. `managers` is every manager's *current*
+/// `Set` including `manager`'s own prior entry, if any.
+///
+/// Always calls `update()` with `force: true` — real upstream's own
+/// hardcoded `s.update(..., manager, true)` inside `Update`: an ordinary
+/// write never rejects on conflict, only `Apply` does — so this never
+/// itself returns a conflict.
+///
+/// Returns the full reconciled manager map, including `manager`'s own new
+/// entry: real upstream's `managers[manager].Set().Difference(compare.
+/// Removed).Union(compare.Modified).Union(compare.Added)` — the applying
+/// manager keeps every field it already owned that this write didn't touch
+/// or remove, plus every field this write actually changed or added (not
+/// "every field this write's body mentions" — a PUT/PATCH re-sending an
+/// unchanged value doesn't newly claim it away from whoever already owned
+/// it, since an unchanged field isn't in `compare.Modified`/`Added` at all).
+pub fn apply_update(
+    schema: &str,
+    live: &Value,
+    new: &Value,
+    managers: &BTreeMap<String, Set>,
+    manager: &str,
+) -> BTreeMap<String, Set> {
+    let others: BTreeMap<String, Set> = managers
+        .iter()
+        .filter(|(m, _)| m.as_str() != manager)
+        .map(|(m, s)| (m.clone(), s.clone()))
+        .collect();
+
+    let (mut result, cmp) = update(schema, live, new, &others, true)
+        .expect("force: true never returns Err — see update()'s own doc comment");
+
+    let existing = managers.get(manager).cloned().unwrap_or_default();
+    let set = existing
+        .difference(&cmp.removed)
+        .union(&cmp.modified)
+        .union(&cmp.added);
+
+    if set.is_empty() {
+        result.remove(manager);
+    } else {
+        result.insert(manager.to_string(), set);
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::patch::fieldset::PathElement;
+    use serde_json::json;
+
+    fn path(fields: &[&str]) -> Vec<PathElement> {
+        fields
+            .iter()
+            .map(|f| PathElement::Field(f.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn update_no_conflict_disjoint_fields() {
+        let old = json!({"replicas": 3});
+        let new = json!({"replicas": 5});
+        let mut other = Set::new();
+        other.insert(&path(&["minReadySeconds"]));
+        let managers = BTreeMap::from([("other-controller".to_string(), other.clone())]);
+
+        let (result, cmp) = update(
+            "io.k8s.api.apps.v1.DeploymentSpec",
+            &old,
+            &new,
+            &managers,
+            false,
+        )
+        .expect("no conflict: other-controller doesn't own replicas");
+
+        assert!(cmp.modified.has(&path(&["replicas"])));
+        assert_eq!(result.get("other-controller"), Some(&other));
+    }
+
+    #[test]
+    fn update_conflict_rejected_without_force() {
+        let old = json!({"replicas": 3});
+        let new = json!({"replicas": 5});
+        let mut other = Set::new();
+        other.insert(&path(&["replicas"]));
+        let managers = BTreeMap::from([("other-controller".to_string(), other)]);
+
+        let err = update(
+            "io.k8s.api.apps.v1.DeploymentSpec",
+            &old,
+            &new,
+            &managers,
+            false,
+        )
+        .expect_err("other-controller owns replicas, which this write is changing");
+
+        assert_eq!(err.len(), 1);
+        assert_eq!(err[0].manager, "other-controller");
+        assert!(err[0].fields.has(&path(&["replicas"])));
+    }
+
+    #[test]
+    fn update_conflict_forced_takes_ownership() {
+        let old = json!({"replicas": 3});
+        let new = json!({"replicas": 5});
+        let mut other = Set::new();
+        other.insert(&path(&["replicas"]));
+        other.insert(&path(&["minReadySeconds"]));
+        let managers = BTreeMap::from([("other-controller".to_string(), other)]);
+
+        let (result, _) = update(
+            "io.k8s.api.apps.v1.DeploymentSpec",
+            &old,
+            &new,
+            &managers,
+            true,
+        )
+        .expect("force: true never rejects");
+
+        let remaining = result
+            .get("other-controller")
+            .expect("other-controller keeps minReadySeconds");
+        assert!(!remaining.has(&path(&["replicas"])), "taken by this write");
+        assert!(remaining.has(&path(&["minReadySeconds"])), "untouched field stays owned");
+    }
+
+    #[test]
+    fn update_removed_field_dropped_from_every_manager() {
+        let old = json!({"replicas": 3, "minReadySeconds": 10});
+        let new = json!({"replicas": 3});
+        let mut other = Set::new();
+        other.insert(&path(&["minReadySeconds"]));
+        other.insert(&path(&["replicas"]));
+        let managers = BTreeMap::from([("other-controller".to_string(), other)]);
+
+        let (result, cmp) = update(
+            "io.k8s.api.apps.v1.DeploymentSpec",
+            &old,
+            &new,
+            &managers,
+            false,
+        )
+        .expect("removing a field this write doesn't own is not a conflict");
+
+        assert!(cmp.removed.has(&path(&["minReadySeconds"])));
+        let remaining = result
+            .get("other-controller")
+            .expect("other-controller keeps replicas");
+        assert!(!remaining.has(&path(&["minReadySeconds"])), "removed everywhere, not just the writer's own set");
+        assert!(remaining.has(&path(&["replicas"])));
+    }
+
+    #[test]
+    fn update_manager_dropped_once_its_set_is_empty() {
+        let old = json!({"replicas": 3});
+        let new = json!({"replicas": 5});
+        let mut other = Set::new();
+        other.insert(&path(&["replicas"]));
+        let managers = BTreeMap::from([("other-controller".to_string(), other)]);
+
+        let (result, _) = update(
+            "io.k8s.api.apps.v1.DeploymentSpec",
+            &old,
+            &new,
+            &managers,
+            true,
+        )
+        .unwrap();
+
+        assert!(
+            !result.contains_key("other-controller"),
+            "left with an empty Set, must be dropped entirely, not kept as an empty entry"
+        );
+    }
+
+    #[test]
+    fn apply_update_create_grants_full_set() {
+        // liveObject empty (CREATE case, per real upstream's own doc comment).
+        let live = json!({});
+        let new = json!({"replicas": 3});
+        let managers = BTreeMap::new();
+
+        let result = apply_update(
+            "io.k8s.api.apps.v1.DeploymentSpec",
+            &live,
+            &new,
+            &managers,
+            "kubectl-create",
+        );
+
+        let mine = result.get("kubectl-create").expect("first write claims replicas");
+        assert!(mine.has(&path(&["replicas"])));
+    }
+
+    #[test]
+    fn apply_update_unchanged_field_stays_owned_by_original_writer() {
+        // kubectl-create owns replicas from a prior write; this PUT resends
+        // the exact same value for replicas but changes minReadySeconds.
+        // real semantics: an unchanged field is neither Modified nor Added,
+        // so the second writer must NOT take ownership of it.
+        let mut creator_set = Set::new();
+        creator_set.insert(&path(&["replicas"]));
+        let managers = BTreeMap::from([("kubectl-create".to_string(), creator_set)]);
+
+        let live = json!({"replicas": 3});
+        let new = json!({"replicas": 3, "minReadySeconds": 10});
+
+        let result = apply_update(
+            "io.k8s.api.apps.v1.DeploymentSpec",
+            &live,
+            &new,
+            &managers,
+            "kubectl-edit",
+        );
+
+        assert!(
+            result.get("kubectl-create").expect("still owns replicas").has(&path(&["replicas"]))
+        );
+        assert!(
+            result
+                .get("kubectl-edit")
+                .expect("owns the field it actually changed")
+                .has(&path(&["minReadySeconds"]))
+        );
+        assert!(
+            !result.get("kubectl-edit").unwrap().has(&path(&["replicas"])),
+            "resending an identical value must not transfer ownership"
+        );
+    }
+
+    #[test]
+    fn apply_update_writer_keeps_prior_fields_this_write_didnt_touch() {
+        let mut mine = Set::new();
+        mine.insert(&path(&["replicas"]));
+        let managers = BTreeMap::from([("kubectl-edit".to_string(), mine)]);
+
+        let live = json!({"replicas": 3});
+        let new = json!({"replicas": 3, "minReadySeconds": 10});
+
+        let result = apply_update(
+            "io.k8s.api.apps.v1.DeploymentSpec",
+            &live,
+            &new,
+            &managers,
+            "kubectl-edit",
+        );
+
+        let mine = result.get("kubectl-edit").unwrap();
+        assert!(mine.has(&path(&["replicas"])), "prior ownership retained");
+        assert!(mine.has(&path(&["minReadySeconds"])), "plus the newly-added field");
+    }
+
+    #[test]
+    fn apply_update_removes_manager_left_with_nothing() {
+        let mut mine = Set::new();
+        mine.insert(&path(&["minReadySeconds"]));
+        let managers = BTreeMap::from([("kubectl-edit".to_string(), mine)]);
+
+        let live = json!({"minReadySeconds": 10});
+        let new = json!({});
+
+        let result = apply_update(
+            "io.k8s.api.apps.v1.DeploymentSpec",
+            &live,
+            &new,
+            &managers,
+            "kubectl-edit",
+        );
+
+        assert!(
+            !result.contains_key("kubectl-edit"),
+            "removed its only owned field and added nothing else — dropped entirely"
+        );
+    }
+}
