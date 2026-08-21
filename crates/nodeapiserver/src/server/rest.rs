@@ -530,7 +530,8 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
 /// constraints" finding that already scoped `scheme::validation` down
 /// elsewhere), and the namespace-mismatch check `update` runs against
 /// the body is skipped (moot here — the body's own `metadata`/`spec` are
-/// never read for anything but `resourceVersion`).
+/// never read for anything but `resourceVersion`). [`patch_status`] is
+/// this function's `PATCH` counterpart.
 pub async fn update_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value) -> Result<UpdateOutcome, Error> {
     let Some(kind) = resolve_kind(group, version, resource) else {
         return Ok(UpdateOutcome::UnknownResource);
@@ -680,12 +681,37 @@ pub enum PatchPrepareOutcome {
     Invalid(Vec<String>),
 }
 
+/// Applies one of this build's three real patch kinds
+/// ([`crate::patch::json_patch`]/[`crate::patch::merge_patch`]/
+/// [`crate::patch::strategic_merge`], all landed in Group G) to
+/// `existing`. Shared by [`patch_prepare`] (patches the whole object)
+/// and [`patch_status`] (patches the whole object too — real upstream's
+/// own subresource PATCH semantics: the patch document can reference
+/// any path, only the final write is restricted to `.status` — the
+/// restriction happens at persist time, not by scoping what the patch
+/// itself can touch).
+fn apply_patch(kind_of_patch: PatchKind, schema: &'static str, existing: &Value, patch_doc: &Value) -> Result<Value, String> {
+    match kind_of_patch {
+        PatchKind::Json => {
+            let mut object = existing.clone();
+            if crate::patch::json_patch::apply(&mut object, patch_doc).is_err() {
+                return Err("the submitted JSON Patch could not be applied".to_string());
+            }
+            Ok(object)
+        }
+        PatchKind::Merge => {
+            let mut object = existing.clone();
+            crate::patch::merge_patch::apply(&mut object, patch_doc);
+            Ok(object)
+        }
+        PatchKind::StrategicMerge => Ok(crate::patch::strategic_merge::apply(schema, existing, patch_doc)),
+    }
+}
+
 /// Reads the current object and applies one of this build's three real
-/// patch kinds ([`crate::patch::json_patch`]/[`crate::patch::merge_patch`]/
-/// [`crate::patch::strategic_merge`], all landed in Group G) to it —
-/// the "prepare" half of [`patch`], split out so a caller (`server::listener`)
-/// can run Group J admission against the real candidate object before
-/// committing to [`patch_persist`].
+/// patch kinds to it — the "prepare" half of [`patch`], split out so a
+/// caller (`server::listener`) can run Group J admission against the
+/// real candidate object before committing to [`patch_persist`].
 pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value) -> Result<PatchPrepareOutcome, Error> {
     let Some(kind) = resolve_kind(group, version, resource) else {
         return Ok(PatchPrepareOutcome::UnknownResource);
@@ -701,20 +727,9 @@ pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &s
     };
     let existing_object = decode_stored_object(&existing_kv.value)?;
 
-    let patched = match kind_of_patch {
-        PatchKind::Json => {
-            let mut object = existing_object.clone();
-            if crate::patch::json_patch::apply(&mut object, patch_doc).is_err() {
-                return Ok(PatchPrepareOutcome::Invalid(vec!["the submitted JSON Patch could not be applied".to_string()]));
-            }
-            object
-        }
-        PatchKind::Merge => {
-            let mut object = existing_object.clone();
-            crate::patch::merge_patch::apply(&mut object, patch_doc);
-            object
-        }
-        PatchKind::StrategicMerge => crate::patch::strategic_merge::apply(schema, &existing_object, patch_doc),
+    let patched = match apply_patch(kind_of_patch, schema, &existing_object, patch_doc) {
+        Ok(object) => object,
+        Err(msg) => return Ok(PatchPrepareOutcome::Invalid(vec![msg])),
     };
 
     Ok(PatchPrepareOutcome::Ready(patched, PatchContext { schema, kind, key, existing_kv, existing_object }))
@@ -737,6 +752,51 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
 
     let object = defaulting::apply_defaults(context.schema, &candidate);
     persist_update(storage, context.schema, context.kind, group, version, context.key, &context.existing_kv, &context.existing_object, namespace, object).await
+}
+
+/// `PATCH .../status` — the patch counterpart to [`update_status`],
+/// closing the "PUT-only" gap `docs/APISERVER.md` named for it. Applies
+/// the patch to the whole existing object (same
+/// [`apply_patch`] `patch_prepare` uses — real upstream's own subresource
+/// PATCH semantics let the patch document reference any path), then
+/// takes only the result's own `.status` field and merges it onto the
+/// existing object exactly the way `update_status` does, so a
+/// `strategic-merge-patch+json` `{"status": {...}}` document behaves the
+/// same whether it arrives via `PUT` (full replace) or `PATCH` (merged).
+/// No client-submitted `resourceVersion` needed, same as `patch_persist`.
+/// Same scope narrowing `update_status` already named: no structural
+/// validation, no Group J admission.
+pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value) -> Result<UpdateOutcome, Error> {
+    let Some(kind) = resolve_kind(group, version, resource) else {
+        return Ok(UpdateOutcome::UnknownResource);
+    };
+    let Some(schema) = protobuf::schema_for_gvk(group, version, kind) else {
+        return Ok(UpdateOutcome::UnknownResource);
+    };
+
+    let key = keys::object_key(group, resource, namespace, name);
+    let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
+    let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
+        return Ok(UpdateOutcome::ObjectNotFound);
+    };
+    let existing_object = decode_stored_object(&existing_kv.value)?;
+
+    let patched = match apply_patch(kind_of_patch, schema, &existing_object, patch_doc) {
+        Ok(object) => object,
+        Err(msg) => return Ok(UpdateOutcome::Invalid(vec![msg])),
+    };
+
+    let mut object = existing_object.clone();
+    match patched.get("status") {
+        Some(status) => object["status"] = status.clone(),
+        None => {
+            if let Some(map) = object.as_object_mut() {
+                map.remove("status");
+            }
+        }
+    }
+
+    persist_update(storage, schema, kind, group, version, key, &existing_kv, &existing_object, namespace, object).await
 }
 
 /// Convenience wrapper combining [`patch_prepare`] and [`patch_persist`]
