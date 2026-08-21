@@ -53,7 +53,7 @@ fn prune_in_place(schema: &Value, value: &mut Value, is_root: bool) {
 
     if let Some(obj) = value.as_object_mut() {
         let properties = schema.get("properties").and_then(Value::as_object);
-        let additional_schema = schema.get("additionalProperties").filter(|v| v.is_object());
+        let additional_properties = schema.get("additionalProperties");
         let keys: Vec<String> = obj.keys().cloned().collect();
         for key in keys {
             if is_root && ALWAYS_PRESERVED_TOP_LEVEL_FIELDS.contains(&key.as_str()) {
@@ -65,18 +65,24 @@ fn prune_in_place(schema: &Value, value: &mut Value, is_root: bool) {
                         prune_in_place(prop_schema, child, false);
                     }
                 }
-                // Not declared in `properties` -- either kept and
-                // recursively pruned via a schema-shaped
-                // `additionalProperties` (a real "map of X" CRD field,
-                // same convention `schema_defaults` already treats this
-                // way), or dropped outright.
-                None => match additional_schema {
-                    Some(add_schema) => {
+                // Not declared in `properties` -- what happens next
+                // depends on `additionalProperties`: a schema-shaped one
+                // keeps the key and recurses pruning *its* value (a real
+                // "map of X" CRD field, same convention `schema_defaults`
+                // already treats this way); a bare `true` keeps the key
+                // *and* its value completely as-is (real upstream's own
+                // "no constraint on other keys at all" escape hatch --
+                // there's no schema to recurse into either); anything
+                // else (a bare `false`, or `additionalProperties` simply
+                // absent) is this level's real default -- drop it.
+                None => match additional_properties {
+                    Some(add) if add.is_object() => {
                         if let Some(child) = obj.get_mut(&key) {
-                            prune_in_place(add_schema, child, false);
+                            prune_in_place(add, child, false);
                         }
                     }
-                    None => {
+                    Some(Value::Bool(true)) => {}
+                    _ => {
                         obj.remove(&key);
                     }
                 },
