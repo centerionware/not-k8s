@@ -14,9 +14,11 @@
 //! resource this build knows about — see `rest`'s own doc comment for
 //! exactly what's in and out of scope). `run()` also spawns a real
 //! `cacher::registry::CacheRegistry` cache for `BOOT_CACHED_RESOURCES` —
-//! a deliberately bounded, reasoned list of core-group resources (the
-//! ones a real cluster's own kubelets/kube-proxy/controllers read most
-//! heavily), not every resource this build knows about — and `GET`/`LIST`
+//! a deliberately bounded, reasoned list (mostly core-group, plus real
+//! `crates/nodeproxy`'s own actual `discovery.k8s.io/v1` `EndpointSlice`
+//! dependency) of the resources a real cluster's own kubelets/kube-proxy/
+//! controllers read most heavily, not every resource this build knows
+//! about — and `GET`/`LIST`
 //! consult one whenever the request targets a resource in that list
 //! (`rest::get`/`rest::list`'s own `Option<&SharedCache>` parameter);
 //! every other resource still reads straight from nodestore (see
@@ -470,10 +472,12 @@ pub async fn run(cfg: Config) {
     // own doc comment: spawning on the order of 90 concurrent,
     // long-running reconnect loops at startup needs an ordering/pacing
     // decision this crate hasn't made) — `BOOT_CACHED_RESOURCES` is a
-    // reasoned, small subset instead: the core-group resources a real
-    // cluster's own kubelets/kube-proxy/controllers read most heavily
-    // (GET/LIST-heavy, write-light), not an attempt at the general
-    // policy. `StorageClient::clone()` is cheap (a `tonic::transport::Channel`
+    // reasoned, small subset instead: the resources a real cluster's own
+    // kubelets/kube-proxy/controllers read most heavily (GET/LIST-heavy,
+    // write-light) -- mostly core-group, plus real `crates/nodeproxy`'s
+    // own actual `discovery.k8s.io/v1` `EndpointSlice` dependency, not
+    // an attempt at the general policy. `StorageClient::clone()` is
+    // cheap (a `tonic::transport::Channel`
     // clone), so registering several of these costs no extra real
     // connections.
     let cache_registry = crate::cacher::CacheRegistry::new();
@@ -849,7 +853,22 @@ const UNAUTHENTICATED_GROUP: &str = "system:unauthenticated";
 /// single-resource (`namespaces`) proof of concept. See the call site's
 /// own doc comment for why this list, not "every resource," is the
 /// reasoned choice today.
-const BOOT_CACHED_RESOURCES: &[(&str, &str, &str)] = &[("", "v1", "namespaces"), ("", "v1", "pods"), ("", "v1", "services"), ("", "v1", "secrets"), ("", "v1", "configmaps"), ("", "v1", "endpoints"), ("", "v1", "nodes")];
+const BOOT_CACHED_RESOURCES: &[(&str, &str, &str)] = &[
+    ("", "v1", "namespaces"),
+    ("", "v1", "pods"),
+    ("", "v1", "services"),
+    ("", "v1", "secrets"),
+    ("", "v1", "configmaps"),
+    ("", "v1", "endpoints"),
+    ("", "v1", "nodes"),
+    // Real `crates/nodeproxy` watches `EndpointSlice`, not the legacy
+    // core/v1 `Endpoints` API this list already carried above
+    // (`crates/nodeproxy/src/svc.rs`'s own doc comment: "Backends come
+    // from `EndpointSlice` (not the legacy `Endpoints` API)") -- the
+    // resource this list's own stated rationale ("kube-proxy... read
+    // most heavily") actually meant was missing entirely until now.
+    ("discovery.k8s.io", "v1", "endpointslices"),
+];
 
 /// Group J: persists `ResourceQuota.status.used` after a successful pod/
 /// PVC/service `CREATE`, or the generic object-count evaluator's own

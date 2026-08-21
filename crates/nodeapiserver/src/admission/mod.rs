@@ -1,12 +1,12 @@
 //! Group J: admission control. Real upstream chains many built-in plugins
 //! (`NamespaceLifecycle`, `LimitRanger`, `ServiceAccount`, `ResourceQuota`,
-//! ...) plus mutating/validating webhooks and
+//! `PodSecurity`, ...) plus mutating/validating webhooks and
 //! ValidatingAdmissionPolicy/MutatingAdmissionPolicy ahead of every
-//! write — none of that chaining machinery exists yet, only the first
-//! plugin, landed and wired directly (no generic `Interface`/registry
-//! abstraction to hang a second plugin off of yet — see this module's own
-//! "not yet landed" note below for why that's a deliberate order, not an
-//! oversight).
+//! write. **Seven built-in plugins are now landed and wired** (listed
+//! below) — but still no generic `Interface`/registry abstraction to run
+//! them through: `server::listener` hand-calls each by name in a fixed
+//! order (see this module's own "not yet landed" note below for why
+//! that's a deliberate order, not an oversight).
 //!
 //! `attributes` — the minimal `(operation, group, resource, namespace,
 //! name)` tuple a plugin decides against, a real-upstream-`Attributes`
