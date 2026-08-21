@@ -555,7 +555,7 @@ fn wants_aggregated_discovery(accept_header: Option<&str>) -> bool {
 /// of `customresourcedefinitions`) only when the path actually starts
 /// with `apis`, rather than paying that cost on every single discovery
 /// request — see that call site's own comment.
-fn route_discovery(parts: &[String], accept_header: Option<&str>, crds: &[crate::apiextensions::registry::DiscoverableResource]) -> DiscoveryRoute {
+fn route_discovery(parts: &[String], accept_header: Option<&str>, crds: &[crate::apiextensions::registry::DiscoverableResource], aggregated: &[(String, String)]) -> DiscoveryRoute {
     let seg = |i: usize| parts.get(i).map(String::as_str);
     match (seg(0), seg(1), parts.len()) {
         (Some("api"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Found(discovery::api_v1_group_discovery_list_with_crds()),
@@ -564,9 +564,14 @@ fn route_discovery(parts: &[String], accept_header: Option<&str>, crds: &[crate:
             Some(doc) => DiscoveryRoute::Found(doc),
             None => DiscoveryRoute::NotFound,
         },
+        // Group L Phase 3: aggregated-discovery-v2 (`api_group_discovery_
+        // list_with_crds`) doesn't merge `aggregated` yet -- a real,
+        // separate, named gap (this legacy shape is the one this slice
+        // closes; the v2 shape is a follow-up, same scoping style every
+        // other slice this arc uses).
         (Some("apis"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Found(discovery::api_group_discovery_list_with_crds(crds)),
-        (Some("apis"), _, 1) => DiscoveryRoute::Found(discovery::api_group_list_with_crds(crds)),
-        (Some("apis"), _, 2) => match discovery::api_group_with_crds(&parts[1], crds) {
+        (Some("apis"), _, 1) => DiscoveryRoute::Found(discovery::api_group_list_with_crds(crds, aggregated)),
+        (Some("apis"), _, 2) => match discovery::api_group_with_crds(&parts[1], crds, aggregated) {
             Some(doc) => DiscoveryRoute::Found(doc),
             None => DiscoveryRoute::NotFound,
         },
@@ -971,21 +976,36 @@ async fn handle(
         // itself answers `NotApplicable` for and which the generic REST
         // dispatch further down handles instead — that path, by far the
         // hottest one in practice, never pays this extra `LIST`.
-        let crds = if parts.first().map(String::as_str) == Some("apis") && parts.len() <= 3 {
+        let (crds, aggregated) = if parts.first().map(String::as_str) == Some("apis") && parts.len() <= 3 {
             match storage.clone() {
-                Some(mut client) => match rest::list_all_crds(&mut client).await {
-                    Ok(crds) => crate::apiextensions::registry::discoverable_resources(crds.iter()),
-                    Err(e) => {
-                        warn!(path = %path_str, error = ?e, "discovery: fetching CRDs for the dynamic resource merge failed");
-                        Vec::new()
-                    }
-                },
-                None => Vec::new(),
+                Some(mut client) => {
+                    let crds = match rest::list_all_crds(&mut client).await {
+                        Ok(crds) => crate::apiextensions::registry::discoverable_resources(crds.iter()),
+                        Err(e) => {
+                            warn!(path = %path_str, error = ?e, "discovery: fetching CRDs for the dynamic resource merge failed");
+                            Vec::new()
+                        }
+                    };
+                    // Group L Phase 3: the same real gate, the same
+                    // bounded cost — only paid for a discovery-shaped
+                    // request, never the hot resource-request path.
+                    // `discovery::merged_group_version_map`'s own doc
+                    // comment covers why this is group-level only.
+                    let aggregated = match aggregator::route::discoverable_group_versions(&mut client).await {
+                        Ok(pairs) => pairs,
+                        Err(e) => {
+                            warn!(path = %path_str, error = ?e, "discovery: fetching aggregated APIServices for the dynamic group merge failed");
+                            Vec::new()
+                        }
+                    };
+                    (crds, aggregated)
+                }
+                None => (Vec::new(), Vec::new()),
             }
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
-        match route_discovery(&parts, accept_header, &crds) {
+        match route_discovery(&parts, accept_header, &crds, &aggregated) {
             DiscoveryRoute::Found(doc) => return Ok(json_response(StatusCode::OK, &doc)),
             DiscoveryRoute::FoundRaw(bytes) => {
                 return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "application/json").body(body_from_bytes(bytes.to_vec())).unwrap());
@@ -2317,14 +2337,14 @@ mod tests {
 
     #[test]
     fn api_root_serves_api_versions() {
-        let route = route_discovery(&parts("/api"), None, &[]);
+        let route = route_discovery(&parts("/api"), None, &[], &[]);
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert_eq!(doc["kind"], "APIVersions");
     }
 
     #[test]
     fn api_v1_serves_the_core_group_resource_list() {
-        let route = route_discovery(&parts("/api/v1"), None, &[]);
+        let route = route_discovery(&parts("/api/v1"), None, &[], &[]);
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert_eq!(doc["kind"], "APIResourceList");
         assert_eq!(doc["groupVersion"], "v1");
@@ -2332,7 +2352,7 @@ mod tests {
 
     #[test]
     fn apis_root_serves_the_group_list() {
-        let route = route_discovery(&parts("/apis"), None, &[]);
+        let route = route_discovery(&parts("/apis"), None, &[], &[]);
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert_eq!(doc["kind"], "APIGroupList");
     }
@@ -2340,7 +2360,7 @@ mod tests {
     #[test]
     fn apis_root_serves_aggregated_discovery_when_the_client_asks_for_it() {
         let accept = "application/json;as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io";
-        let route = route_discovery(&parts("/apis"), Some(accept), &[]);
+        let route = route_discovery(&parts("/apis"), Some(accept), &[], &[]);
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert_eq!(doc["kind"], "APIGroupDiscoveryList");
     }
@@ -2348,7 +2368,7 @@ mod tests {
     #[test]
     fn api_root_serves_aggregated_discovery_when_the_client_asks_for_it() {
         let accept = "application/json;as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io";
-        let route = route_discovery(&parts("/api"), Some(accept), &[]);
+        let route = route_discovery(&parts("/api"), Some(accept), &[], &[]);
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert_eq!(doc["kind"], "APIGroupDiscoveryList");
         assert_eq!(doc["items"][0]["metadata"]["name"], "");
@@ -2360,14 +2380,14 @@ mod tests {
         // which this build doesn't separately model — must not be served
         // the v2 shape as if it matched.
         let accept = "application/json;as=APIGroupDiscoveryList;v=v2beta1;g=apidiscovery.k8s.io";
-        let route = route_discovery(&parts("/apis"), Some(accept), &[]);
+        let route = route_discovery(&parts("/apis"), Some(accept), &[], &[]);
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert_eq!(doc["kind"], "APIGroupList", "an unmatched as= version must fall back to the legacy shape, not silently serve v2 anyway");
     }
 
     #[test]
     fn apis_group_serves_the_group_document() {
-        let route = route_discovery(&parts("/apis/apps"), None, &[]);
+        let route = route_discovery(&parts("/apis/apps"), None, &[], &[]);
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert_eq!(doc["kind"], "APIGroup");
         assert_eq!(doc["name"], "apps");
@@ -2375,7 +2395,7 @@ mod tests {
 
     #[test]
     fn apis_group_version_serves_the_resource_list() {
-        let route = route_discovery(&parts("/apis/apps/v1"), None, &[]);
+        let route = route_discovery(&parts("/apis/apps/v1"), None, &[], &[]);
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert_eq!(doc["kind"], "APIResourceList");
         assert_eq!(doc["groupVersion"], "apps/v1");
@@ -2383,28 +2403,28 @@ mod tests {
 
     #[test]
     fn an_unknown_group_is_a_real_not_found_not_a_fallthrough() {
-        assert!(matches!(route_discovery(&parts("/apis/totally.made.up"), None, &[]), DiscoveryRoute::NotFound));
-        assert!(matches!(route_discovery(&parts("/apis/apps/v999"), None, &[]), DiscoveryRoute::NotFound));
-        assert!(matches!(route_discovery(&parts("/api/v999"), None, &[]), DiscoveryRoute::NotFound));
+        assert!(matches!(route_discovery(&parts("/apis/totally.made.up"), None, &[], &[]), DiscoveryRoute::NotFound));
+        assert!(matches!(route_discovery(&parts("/apis/apps/v999"), None, &[], &[]), DiscoveryRoute::NotFound));
+        assert!(matches!(route_discovery(&parts("/api/v999"), None, &[], &[]), DiscoveryRoute::NotFound));
     }
 
     #[test]
     fn a_resource_shaped_path_is_not_applicable_to_discovery_routing() {
-        assert!(matches!(route_discovery(&parts("/api/v1/namespaces/default/pods"), None, &[]), DiscoveryRoute::NotApplicable));
-        assert!(matches!(route_discovery(&parts("/apis/apps/v1/namespaces/default/deployments"), None, &[]), DiscoveryRoute::NotApplicable));
-        assert!(matches!(route_discovery(&parts("/"), None, &[]), DiscoveryRoute::NotApplicable));
+        assert!(matches!(route_discovery(&parts("/api/v1/namespaces/default/pods"), None, &[], &[]), DiscoveryRoute::NotApplicable));
+        assert!(matches!(route_discovery(&parts("/apis/apps/v1/namespaces/default/deployments"), None, &[], &[]), DiscoveryRoute::NotApplicable));
+        assert!(matches!(route_discovery(&parts("/"), None, &[], &[]), DiscoveryRoute::NotApplicable));
     }
 
     #[test]
     fn openapi_v3_root_serves_the_root_index() {
-        let route = route_discovery(&parts("/openapi/v3"), None, &[]);
+        let route = route_discovery(&parts("/openapi/v3"), None, &[], &[]);
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert!(doc["paths"].as_object().unwrap().contains_key("apis/apps/v1"));
     }
 
     #[test]
     fn openapi_v3_a_multi_segment_path_serves_the_raw_vendored_document() {
-        let route = route_discovery(&parts("/openapi/v3/apis/apps/v1"), None, &[]);
+        let route = route_discovery(&parts("/openapi/v3/apis/apps/v1"), None, &[], &[]);
         let DiscoveryRoute::FoundRaw(bytes) = route else { panic!("expected FoundRaw") };
         let parsed: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert!(parsed.get("openapi").is_some());
@@ -2412,12 +2432,12 @@ mod tests {
 
     #[test]
     fn openapi_v3_an_unvendored_path_is_a_real_not_found() {
-        assert!(matches!(route_discovery(&parts("/openapi/v3/apis/totally.made.up/v1"), None, &[]), DiscoveryRoute::NotFound));
+        assert!(matches!(route_discovery(&parts("/openapi/v3/apis/totally.made.up/v1"), None, &[], &[]), DiscoveryRoute::NotFound));
     }
 
     #[test]
     fn version_serves_the_real_version_info_document() {
-        let route = route_discovery(&parts("/version"), None, &[]);
+        let route = route_discovery(&parts("/version"), None, &[], &[]);
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert!(doc.get("gitVersion").is_some());
     }
