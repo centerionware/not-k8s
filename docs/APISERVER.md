@@ -1590,9 +1590,68 @@ used*:
    for a first working CEL path, named honestly as later phases rather
    than silently out of scope.
 
-**L. Aggregation layer** — **not started**. `APIService` objects,
-`ServiceResolver`, reverse proxying, discovery merge, availability
-conditions.
+**L. Aggregation layer** — **a real design pass (2026-08-21), no code
+yet**, same "ground it in real upstream source before writing anything"
+discipline every big item this arc has used.
+
+*What it really is* (`k8s.io/kube-aggregator`'s own
+`pkg/apis/apiregistration/v1/types.go` +
+`pkg/apiserver/handler_proxy.go`, fetched and read directly): an
+`APIService` object (`spec.group`/`.version` naming the group-version it
+takes over, `spec.service` naming a backing `Service` by
+namespace/name/port, `spec.caBundle`/`.insecureSkipTLSVerify` for how to
+trust it, `spec.groupPriorityMinimum`/`.versionPriority` for discovery
+ordering) tells this build's own discovery/routing to stop answering a
+group-version itself and instead reverse-proxy every request for it to
+that backing Service — `metrics.k8s.io`/`custom.metrics.k8s.io` (metrics
+server) is the real-world example almost every cluster actually runs
+this for.
+
+*Why this build is unusually well-positioned for the proxy half,
+already*: unlike real kube-apiserver (which needs its own
+`ServiceResolver` abstraction because a real cluster's Service->endpoint
+mapping lives in etcd behind kube-proxy), this workspace already has a
+real, live Service/EndpointSlice watch (Group D's own watch cache) *and*
+a real Service-routing component (`crates/nodeproxy`) in the same repo —
+resolving `spec.service.namespace`/`.name`/`.port` to a real routable
+address doesn't need a new resolver abstraction invented from scratch,
+just a read against data this build (or its sibling `nodeproxy`) already
+has live. `proxy::http_client`/`proxy::client_tls` (Group N, already
+landed for `pods/log`) are the other real, reusable primitive — an
+`APIService` proxy is architecturally the same shape (dial a resolved
+backend over TLS, relay the response unmodified), just resolving the
+target from a Service instead of a Node.
+
+*The availability controller* (`kube-aggregator`'s own
+`pkg/apiserver/available_controller.go`): periodically health-checks
+each `APIService`'s backing Service (or, for a `service: nil`
+"local"/built-in group-version, is trivially always available) and
+writes a real `Available` condition to `status.conditions` — discovery
+merge (below) only ever advertises a group-version whose `APIService` is
+currently `Available`, the same "don't advertise what you can't
+actually serve" posture Group K's own `Established` gate already
+established for CRDs.
+
+*Discovery merge*: real upstream's own `/apis` response is the union of
+every built-in group-version *and* every `Available` `APIService`'s
+group-version, sorted by `groupPriorityMinimum`/`versionPriority` —
+architecturally the same shape Group K's own `discovery::*_with_crds`
+functions already are (a static table merged with a dynamically-fetched
+set), likely reusable as a third merge input rather than a third parallel
+implementation.
+
+*Phased plan*: 1) `APIService` as a real, generic-REST-served resource
+(it's cluster-scoped, no special storage needs — should already work
+identically to any other built-in the moment its own GVK is in the
+vendored discovery table, worth confirming rather than assuming).
+2) The availability controller — periodic health checks, real
+`Available`/`Unavailable` conditions. 3) Discovery merge — add
+`APIService`-sourced group-versions as a third input alongside the
+static table and Group K's CRD-sourced ones. 4) The actual reverse
+proxy — resolve `spec.service` against live Service/EndpointSlice data,
+dial via `proxy::http_client`'s already-proven pattern, relay the
+response unmodified, matching `pods/log`'s own "transparent proxy, no
+added behavior" posture.
 
 **M. APF, audit, observability** — **started**. `audit::event::build_event`
 is a pure builder for one real `audit.k8s.io/v1` `Event` document
