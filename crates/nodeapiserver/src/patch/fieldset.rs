@@ -590,6 +590,138 @@ fn collect_field_value(meta: Option<&crate::codegen::openapi_meta::FieldMeta>, v
     }
 }
 
+/// Real upstream's `TypedValue.RemoveItems` (`typed/remove.go`'s
+/// `removingWalker`/`removeItemsWithSchema`, fetched and read directly),
+/// **removal mode only** (`shouldExtract: false`) — upstream's own
+/// `shouldExtract: true` mode ("keep only the paths named by `to_remove`",
+/// the opposite operation) has no caller anywhere in this build, so it
+/// isn't ported.
+///
+/// Structurally the mirror image of `set_from_object`'s own per-field
+/// dispatch, reading the exact same `FIELD_META` columns
+/// (`list_type`/`list_map_keys`/`map_type`/`ref_schema`): a field/element
+/// named exactly by `to_remove` (a member, not just a path with children)
+/// is dropped entirely; a field/element with children tracked under it in
+/// `to_remove` (but not itself a member) is kept but recursed into with
+/// that child subtree; anything `to_remove` doesn't mention at all is kept
+/// unchanged. An atomic map/list matched this way is removed wholesale
+/// (real upstream: `if t.ElementRelationship == schema.Atomic { return nil
+/// }` in removal mode) — real upstream's own edge case for an atomic field
+/// somehow carrying children in `to_remove`, which `set_from_object` itself
+/// never produces (an atomic field is always inserted as a single leaf,
+/// never given children), kept here only because upstream defines the
+/// behavior, not because this crate's own callers can trigger it.
+///
+/// A container left with nothing after a *partial* removal (not itself
+/// exactly matched) is kept as an empty `{}`/`[]`, never converted to
+/// `null` — real upstream's own "preserve the empty container structure"
+/// comment, confirmed directly in `doMap`/`doList`.
+pub fn remove_items(schema: &str, value: &Value, to_remove: &Set) -> Value {
+    remove_object_fields(schema, value, to_remove)
+}
+
+fn remove_object_fields(schema: &str, value: &Value, to_remove: &Set) -> Value {
+    let Value::Object(map) = value else {
+        return value.clone();
+    };
+    let mut new_map = Map::new();
+    for (key, v) in map {
+        let pe = PathElement::Field(key.clone());
+        if to_remove.members.contains(&pe) {
+            // Exactly named by the set being removed -- drop the whole field.
+            continue;
+        }
+        match to_remove.children.get(&pe) {
+            Some(subset) if !subset.is_empty() => {
+                let meta = crate::codegen::field_meta_index().get(&(schema, key.as_str())).copied();
+                let was_map = matches!(v, Value::Object(_));
+                let was_list = matches!(v, Value::Array(_));
+                let removed = remove_field_value(meta, v, subset);
+                let removed = match removed {
+                    Value::Null if was_map => Value::Object(Map::new()),
+                    Value::Null if was_list => Value::Array(Vec::new()),
+                    other => other,
+                };
+                new_map.insert(key.clone(), removed);
+            }
+            _ => {
+                new_map.insert(key.clone(), v.clone());
+            }
+        }
+    }
+    Value::Object(new_map)
+}
+
+fn remove_field_value(meta: Option<&crate::codegen::openapi_meta::FieldMeta>, value: &Value, subset: &Set) -> Value {
+    match value {
+        Value::Object(_) if meta.and_then(|m| m.map_type) == Some("atomic") => Value::Null,
+        Value::Object(_) => match meta.and_then(|m| m.ref_schema) {
+            Some(next_schema) => remove_object_fields(next_schema, value, subset),
+            None => {
+                let Value::Object(map) = value else { unreachable!() };
+                let mut new_map = Map::new();
+                for (k, v) in map {
+                    let pe = PathElement::Field(k.clone());
+                    if subset.members.contains(&pe) {
+                        continue;
+                    }
+                    new_map.insert(k.clone(), v.clone());
+                }
+                Value::Object(new_map)
+            }
+        },
+        Value::Array(elements) => match meta.and_then(|m| m.list_type) {
+            Some("map") => {
+                let list_map_keys = meta.map(|m| m.list_map_keys).unwrap_or(&[]);
+                let element_schema = meta.and_then(|m| m.ref_schema);
+                let mut new_items = Vec::new();
+                for element in elements {
+                    let Value::Object(obj) = element else {
+                        new_items.push(element.clone());
+                        continue;
+                    };
+                    let mut key_fields: Vec<(String, Value)> = list_map_keys.iter().filter_map(|k| obj.get(*k).map(|v| (k.to_string(), v.clone()))).collect();
+                    key_fields.sort_by(|a, b| a.0.cmp(&b.0));
+                    let pe = PathElement::Key(key_fields);
+                    if subset.members.contains(&pe) {
+                        continue;
+                    }
+                    if let Some(element_subset) = subset.children.get(&pe) {
+                        if !element_subset.is_empty() {
+                            let removed = match element_schema {
+                                Some(s) => remove_object_fields(s, element, element_subset),
+                                None => element.clone(),
+                            };
+                            new_items.push(removed);
+                            continue;
+                        }
+                    }
+                    new_items.push(element.clone());
+                }
+                Value::Array(new_items)
+            }
+            Some("set") => {
+                let mut new_items = Vec::new();
+                for element in elements {
+                    let pe = PathElement::Value(element.clone());
+                    if subset.members.contains(&pe) {
+                        continue;
+                    }
+                    new_items.push(element.clone());
+                }
+                Value::Array(new_items)
+            }
+            // Atomic, or no annotation at all (real upstream's own default
+            // for an unset list) -- both mean "the whole list, or nothing".
+            _ => Value::Null,
+        },
+        // A scalar has no children to recurse into; real upstream's own
+        // `doScalar` always returns the value unchanged (only the caller's
+        // exact-member check above ever removes a scalar).
+        _ => value.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -853,5 +985,78 @@ mod tests {
     fn is_empty_is_false_once_anything_is_inserted() {
         let s = set_of(&[&[f("spec")]]);
         assert!(!s.is_empty());
+    }
+
+    // `remove_items` -- real `TypedValue.RemoveItems`, removal mode only.
+
+    #[test]
+    fn remove_items_drops_an_exactly_named_scalar_field() {
+        let value = json!({"replicas": 3, "minReadySeconds": 10});
+        let to_remove = set_of(&[&[f("replicas")]]);
+        let result = remove_items("io.k8s.api.apps.v1.DeploymentSpec", &value, &to_remove);
+        assert_eq!(result, json!({"minReadySeconds": 10}));
+    }
+
+    #[test]
+    fn remove_items_leaves_fields_it_was_not_told_to_touch_alone() {
+        let value = json!({"replicas": 3, "minReadySeconds": 10});
+        let to_remove = set_of(&[&[f("selector")]]); // names a field this object doesn't even have
+        let result = remove_items("io.k8s.api.apps.v1.DeploymentSpec", &value, &to_remove);
+        assert_eq!(result, value);
+    }
+
+    #[test]
+    fn remove_items_drops_a_whole_associative_list_element_by_its_key() {
+        let value = json!({"containers": [
+            {"name": "nginx", "image": "nginx:latest"},
+            {"name": "sidecar", "image": "busybox"},
+        ]});
+        let key = PathElement::Key(vec![("name".to_string(), json!("sidecar"))]);
+        let to_remove = set_of(&[&[f("containers"), key]]);
+        let result = remove_items("io.k8s.api.core.v1.PodSpec", &value, &to_remove);
+        assert_eq!(result, json!({"containers": [{"name": "nginx", "image": "nginx:latest"}]}));
+    }
+
+    #[test]
+    fn remove_items_removes_one_field_within_an_associative_list_element_leaving_the_rest() {
+        let value = json!({"containers": [
+            {"name": "nginx", "image": "nginx:latest", "command": ["/bin/sh"]},
+        ]});
+        let key = PathElement::Key(vec![("name".to_string(), json!("nginx"))]);
+        let to_remove = set_of(&[&[f("containers"), key, f("command")]]);
+        let result = remove_items("io.k8s.api.core.v1.PodSpec", &value, &to_remove);
+        assert_eq!(result, json!({"containers": [{"name": "nginx", "image": "nginx:latest"}]}));
+    }
+
+    #[test]
+    fn remove_items_removes_one_key_from_a_generic_map_field_leaving_the_field_and_the_rest() {
+        let value = json!({"labels": {"app": "nginx", "tier": "frontend"}});
+        let to_remove = set_of(&[&[f("labels"), f("app")]]);
+        let result = remove_items("io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta", &value, &to_remove);
+        assert_eq!(result, json!({"labels": {"tier": "frontend"}}));
+    }
+
+    #[test]
+    fn remove_items_removing_every_key_of_a_generic_map_preserves_it_as_an_empty_object() {
+        let value = json!({"labels": {"app": "nginx"}});
+        let to_remove = set_of(&[&[f("labels"), f("app")]]);
+        let result = remove_items("io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta", &value, &to_remove);
+        assert_eq!(result, json!({"labels": {}}), "the field itself wasn't exactly matched, only a child of it -- must survive as {{}}, not vanish or become null");
+    }
+
+    #[test]
+    fn remove_items_drops_a_set_typed_list_element_by_value() {
+        let value = json!({"finalizers": ["a.example.com/f", "b.example.com/f"]});
+        let to_remove = set_of(&[&[f("finalizers"), PathElement::Value(json!("a.example.com/f"))]]);
+        let result = remove_items("io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta", &value, &to_remove);
+        assert_eq!(result, json!({"finalizers": ["b.example.com/f"]}));
+    }
+
+    #[test]
+    fn remove_items_exactly_naming_the_whole_field_drops_it_even_with_no_further_children() {
+        let value = json!({"nodeSelector": {"disktype": "ssd"}, "restartPolicy": "Always"});
+        let to_remove = set_of(&[&[f("nodeSelector")]]);
+        let result = remove_items("io.k8s.api.core.v1.PodSpec", &value, &to_remove);
+        assert_eq!(result, json!({"restartPolicy": "Always"}));
     }
 }

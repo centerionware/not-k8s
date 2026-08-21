@@ -64,16 +64,22 @@
 //! write path (`apply_update()`, real upstream's `Updater.Update`),
 //! single-schema-version scoped since this build has no multi-version
 //! conversion machinery at all — see `updater`'s own doc comment.
+//! `fieldset::remove_items` also now landed — real `TypedValue.
+//! RemoveItems`/`removeItemsWithSchema` (removal mode only), the
+//! `Set`-driven "drop everything at these paths from this `Value`"
+//! primitive `Updater.Apply`'s own `prune()` step needs.
+//!
 //! **Not yet landed**: `$patch`/`$setElementOrder`/
 //! `$deleteFromPrimitiveList` directives (named, deliberate
 //! simplifications — see `strategic_merge`'s own doc comment) and
-//! `Updater.Apply` itself: the real `application/apply-patch+yaml` path,
-//! needing `liveObject.Merge(configObject)` (already have —
-//! `typed_merge::merge`) plus a real `prune()` step this crate has no
-//! `Value`-removal primitive for yet, the real `managedFields` wire
-//! format (`ManagedFieldsEntry`), and `server::rest` wiring — none of
-//! that exists yet, see `updater`'s own doc comment for the precise
-//! remaining gap.
+//! `Updater.Apply` itself: the real `application/apply-patch+yaml` path.
+//! Every primitive `prune()` itself needs is now landed
+//! (`typed_merge::merge`, `fieldset::remove_items`); `prune()`'s own
+//! orchestration (`RemoveItems` + `addBackOwnedItems`/
+//! `addBackDanglingItems`) and `Apply`'s outer orchestration around it are
+//! what remain, plus the real `managedFields` wire format
+//! (`ManagedFieldsEntry`) and `server::rest` wiring — see `updater`'s own
+//! doc comment for the precise remaining gap.
 
 pub mod fieldset;
 pub mod json_patch;
