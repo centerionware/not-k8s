@@ -35,6 +35,17 @@ pub struct CrdResource {
     /// full type/required validation against it isn't done yet (Group
     /// K's own doc comment in `docs/APISERVER.md` names this honestly).
     pub open_api_schema: Option<Value>,
+    /// Whether the matched version's own `subresources.status` is
+    /// present — real upstream only serves `GET`/`PUT`/`PATCH .../status`
+    /// for a CRD version that opts in this way (`spec.versions[].
+    /// subresources: {status: {}}`); a CRD with no such key has no
+    /// `status` subresource at all, matching every other resource that
+    /// simply doesn't have one (a real `404`, not a silent fallthrough
+    /// to the main object). Only the key's *presence* matters — real
+    /// upstream's own `CustomResourceSubresourceStatus` carries no
+    /// fields of its own to configure (an empty object `{}` is the only
+    /// valid non-absent value).
+    pub has_status_subresource: bool,
 }
 
 /// Real upstream's own `Established` condition
@@ -84,7 +95,8 @@ pub fn resolve(crd: &Value, group: &str, version: &str, resource: &str) -> Optio
     let kind = crd.pointer("/spec/names/kind").and_then(Value::as_str)?.to_string();
     let namespaced = crd.pointer("/spec/scope").and_then(Value::as_str) == Some("Namespaced");
     let open_api_schema = matched_version.pointer("/schema/openAPIV3Schema").cloned();
-    Some(CrdResource { kind, namespaced, open_api_schema })
+    let has_status_subresource = matched_version.pointer("/subresources/status").is_some();
+    Some(CrdResource { kind, namespaced, open_api_schema, has_status_subresource })
 }
 
 /// Scans every CRD in `crds` for one that resolves `(group, version,
@@ -170,6 +182,15 @@ mod tests {
         assert_eq!(resolved.kind, "Widget");
         assert!(resolved.namespaced);
         assert!(resolved.open_api_schema.is_some());
+        assert!(!resolved.has_status_subresource, "established_crd()'s own fixture never declares subresources.status");
+    }
+
+    #[test]
+    fn a_version_declaring_subresources_status_reports_it() {
+        let mut crd = established_crd();
+        crd["spec"]["versions"][0]["subresources"] = json!({"status": {}});
+        let resolved = resolve(&crd, "example.com", "v1", "widgets").expect("should resolve");
+        assert!(resolved.has_status_subresource);
     }
 
     #[test]
