@@ -111,7 +111,51 @@ pub fn encode_message(message: &str, value: &Value) -> Result<Vec<u8>> {
         };
         encode_field(message, field, field_value, &mut out)?;
     }
+    // Real upstream Go-struct-embedding fields (`inline_embedded_fields`'s
+    // own doc comment): JSON has no wrapper key for these at all, so the
+    // loop above never matches them by name. Encode each one using this
+    // same outer object again -- `encode_message`'s own recursion (via
+    // `encode_scalar_or_message`) picks out only the keys the nested
+    // message actually declares, so this is safe even when several
+    // embedded levels chain (`NamedRuleWithOperations` -> `RuleWithOperations`
+    // -> `Rule`) or when the object doesn't carry every nested field.
+    for field in codegen::proto_fields::PROTO_FIELDS.iter().filter(|f| f.message == message) {
+        if is_inline_embedded_field(message, field.json_name) {
+            encode_field(message, field, value, &mut out)?;
+        }
+    }
     Ok(out)
+}
+
+/// Real upstream Go struct embedding: a field declared as `Foo \`json:",inline"\``
+/// has every one of `Foo`'s own fields flattened directly into the
+/// *enclosing* JSON object with no wrapper key at all, while the
+/// generated proto keeps it as an ordinary named nested-message field
+/// (`optional Foo foo = N`) — confirmed directly against the vendored
+/// `.proto` (`NamedRuleWithOperations.ruleWithOperations` and
+/// `RuleWithOperations.rule`, both in
+/// `vendor/protos/k8s.io/api/admissionregistration/v1/generated.proto`,
+/// matching real upstream's own `k8s.io/api/admissionregistration/v1/types.go`
+/// struct embedding). Found live: `ValidatingAdmissionPolicy`'s own
+/// `spec.matchConstraints.resourceRules[]` round-tripped through a real
+/// `nodestore` as entirely empty objects (every field but
+/// `resourceNames` silently dropped) until this was special-cased —
+/// every other message type in this codec really is just "recurse with
+/// the same field-shaped JSON object", this is the one place two levels
+/// of real upstream embedding needed a named exception.
+fn is_inline_embedded_field(message: &str, json_name: &str) -> bool {
+    // v1alpha1/v1beta1's own `NamedRuleWithOperations.ruleWithOperations`
+    // both reference `v1`'s `RuleWithOperations` directly (confirmed in
+    // the vendored proto -- neither version has its own copy of that
+    // message), so a single `v1` entry for the inner field covers every
+    // API version.
+    matches!(
+        (message, json_name),
+        ("io.k8s.api.admissionregistration.v1.NamedRuleWithOperations", "ruleWithOperations")
+            | ("io.k8s.api.admissionregistration.v1beta1.NamedRuleWithOperations", "ruleWithOperations")
+            | ("io.k8s.api.admissionregistration.v1alpha1.NamedRuleWithOperations", "ruleWithOperations")
+            | ("io.k8s.api.admissionregistration.v1.RuleWithOperations", "rule")
+    )
 }
 
 fn encode_field(message: &str, field: &ProtoField, value: &Value, out: &mut Vec<u8>) -> Result<()> {
@@ -236,7 +280,14 @@ pub fn decode_message(message: &str, bytes: &[u8]) -> Result<Value> {
             continue;
         };
         let decoded = decode_one(message, field, &raw)?;
-        if field.map {
+        if is_inline_embedded_field(message, field.json_name) {
+            // Real upstream Go-struct-embedding (`is_inline_embedded_field`'s
+            // own doc comment): the nested message's own fields belong
+            // flattened directly into this same object, not nested under
+            // a `ruleWithOperations`/`rule` wrapper key JSON never has.
+            let Value::Object(nested) = decoded else { unreachable!("an embedded field always decodes to a JSON object") };
+            obj.extend(nested);
+        } else if field.map {
             let Value::Object(map) = obj.entry(field.json_name).or_insert_with(|| Value::Object(Map::new())) else {
                 unreachable!("map field always inserts a JSON object");
             };
@@ -826,6 +877,78 @@ pub fn schema_for_gvk(group: &str, version: &str, kind: &str) -> Option<&'static
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The real bug that motivated `is_inline_embedded_field`: found live
+    /// via a `ValidatingAdmissionPolicy` round trip against a real
+    /// `nodestore` -- `apiGroups`/`apiVersions`/`resources`/`operations`/
+    /// `scope` all silently vanished on write because they belong to two
+    /// levels of real upstream Go struct embedding
+    /// (`NamedRuleWithOperations` -> `RuleWithOperations` -> `Rule`) that
+    /// JSON flattens but the vendored proto keeps as nested message
+    /// fields with no JSON key of their own.
+    #[test]
+    fn named_rule_with_operations_round_trips_its_doubly_embedded_fields() {
+        let message = "io.k8s.api.admissionregistration.v1.NamedRuleWithOperations";
+        let value = json!({
+            "resourceNames": ["a", "b"],
+            "operations": ["CREATE", "UPDATE"],
+            "apiGroups": ["apps"],
+            "apiVersions": ["v1"],
+            "resources": ["deployments"],
+            "scope": "Namespaced",
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    /// The second real bug the same live round trip caught, right after the
+    /// first: `Validation.Expression` and `Variable.Name`/`.Expression` are
+    /// capitalized in the vendored proto (a go-to-protobuf quirk, see
+    /// `real_json_name_override`'s own doc comment in `build/proto_parse.rs`)
+    /// but real upstream's actual JSON keys are lowercase -- `update` failed
+    /// validation with "spec.validations[0].expression: Required value"
+    /// because the codec wrote the object with a capitalized key nothing
+    /// downstream recognized.
+    #[test]
+    fn validation_and_variable_round_trip_their_real_lowercase_json_keys() {
+        let validation = "io.k8s.api.admissionregistration.v1.Validation";
+        let value = json!({
+            "expression": "object.spec.replicas <= 5",
+            "message": "too many replicas",
+        });
+        let encoded = encode_message(validation, &value).unwrap();
+        let decoded = decode_message(validation, &encoded).unwrap();
+        assert_eq!(decoded, value);
+
+        let variable = "io.k8s.api.admissionregistration.v1.Variable";
+        let value = json!({
+            "name": "replicas",
+            "expression": "object.spec.replicas",
+        });
+        let encoded = encode_message(variable, &value).unwrap();
+        let decoded = decode_message(variable, &encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    /// Same class of bug as above, on `MutatingWebhookConfiguration`'s and
+    /// `ValidatingWebhookConfiguration`'s own `Webhooks` field -- real
+    /// upstream's JSON key is lowercase `webhooks`. Uses a non-empty
+    /// webhooks list: an empty `repeated` field genuinely produces no wire
+    /// bytes at all (true of every `repeated` field in this codec, not
+    /// specific to this bug), so it can never round-trip as a present-but-
+    /// empty array -- that's not what this test is checking.
+    #[test]
+    fn validating_webhook_configuration_round_trips_lowercase_webhooks_key() {
+        let message = "io.k8s.api.admissionregistration.v1.ValidatingWebhookConfiguration";
+        let value = json!({
+            "metadata": {"name": "my-config"},
+            "webhooks": [{"name": "my-webhook.example.com"}],
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
 
     #[test]
     fn a_simple_object_meta_round_trips() {
