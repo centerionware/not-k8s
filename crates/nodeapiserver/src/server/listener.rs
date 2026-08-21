@@ -855,7 +855,17 @@ async fn handle_with_audit(
     // owns.
     let storage_for_pf = storage.clone();
 
+    // Group M: `apiserver_request_duration_seconds`'s own start time —
+    // measured around the exact same `handle()` call the audit event and
+    // `apiserver_request_total` are both already keyed off of. For
+    // `watch` specifically this measures time-to-first-byte (when
+    // `handle()` returns the still-streaming response), not the full
+    // stream lifetime — the identical, already-named caveat
+    // `log_audit_event`'s own `ResponseComplete`-at-stream-start choice
+    // has, not a new gap this metric introduces.
+    let start = std::time::Instant::now();
     let mut response = handle(req, storage, cache_registry, identity, enforce_rbac, kubelet_tls).await;
+    let elapsed = start.elapsed().as_secs_f64();
 
     if let Ok(resp) = &mut response {
         let status = resp.status().as_u16();
@@ -868,6 +878,7 @@ async fn handle_with_audit(
         // own convention for that case.
         let info = path::parse(&method, &path_str, &query);
         metrics::record_request(&info.verb, &info.resource, status);
+        metrics::record_duration(&info.verb, &info.resource, elapsed);
 
         // Group M (APF): label the response with which FlowSchema/
         // PriorityLevelConfiguration would govern it, real upstream's own
