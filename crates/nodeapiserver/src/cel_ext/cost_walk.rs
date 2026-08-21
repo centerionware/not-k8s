@@ -39,16 +39,24 @@
 //! default: `FixedCostEstimate(1)` plus the sum of every argument's own
 //! cost.
 //!
-//! `Comprehension` is still not dispatched — `CostEstimate::unknown()`,
-//! its own real follow-up slice (the loop-cost multiplication, needing
-//! this module's own [`Coster`] to track the iteration variable's
-//! bound path through [`super::path::Scope`], which now exists here for
-//! exactly that reason).
+//! `Comprehension` is dispatched too (real upstream's own
+//! `costComprehension`): the range's own real element count times the
+//! combined per-iteration cost of the loop condition and step — an
+//! unknown range size (no schema, or a genuinely unresolvable path)
+//! correctly saturates the resulting cost to "effectively unbounded"
+//! rather than silently under-counting a pathological
+//! `list.all(...)`-shaped rule at a small fixed number. **Named, honest
+//! gap**: real upstream's own `cel.bind()` macro reuses this same AST
+//! shape with a distinctive signature its own `isBind`/`costBind` costs
+//! completely differently (once, not multiplied by a loop) — not
+//! detected here, see [`Coster::cost_comprehension`]'s own doc comment
+//! for why that's an acceptable, named simplification rather than a
+//! silent gap.
 
 use super::cost::{CostEstimate, SizeEstimate, CONST_COST, LIST_CREATE_BASE_COST, MAP_CREATE_BASE_COST, REGEX_STRING_LENGTH_COST_FACTOR, SELECT_AND_IDENT_COST, STRING_TRAVERSAL_COST_FACTOR, STRUCT_CREATE_BASE_COST};
 use super::decl_type::{estimate_size, DeclType};
-use super::path::{resolve_path, Scope};
-use cel::common::ast::{CallExpr, EntryExpr, Expr, LiteralValue};
+use super::path::{comprehension_iter_path, resolve_path, Scope};
+use cel::common::ast::{CallExpr, ComprehensionExpr, EntryExpr, Expr, LiteralValue};
 use cel::IdedExpr;
 use std::collections::HashMap;
 
@@ -122,7 +130,7 @@ impl<'a> Coster<'a> {
                 .add(CostEstimate::fixed(STRUCT_CREATE_BASE_COST)),
             Expr::Call(call) => self.cost_call(call),
             // Named, honest gap -- see this module's own doc comment.
-            Expr::Comprehension(_) => CostEstimate::unknown(),
+            Expr::Comprehension(comp) => self.cost_comprehension(comp),
             Expr::Unspecified => CostEstimate::default(),
         }
     }
@@ -139,6 +147,50 @@ impl<'a> Coster<'a> {
             sum = sum.add(self.cost(target));
         }
         sum.add(self.function_cost(call, arg_cost_sum))
+    }
+
+    /// Real upstream's own `costComprehension` — the loop-cost
+    /// multiplication that makes a pathological `list.all(...)` rule's
+    /// real worst case visible: the range's own element count times the
+    /// combined per-iteration cost of the loop condition and step,
+    /// plus the fixed cost of evaluating the range/accumulator-init/
+    /// result expressions once each.
+    ///
+    /// **Named, honest gap**: real upstream's own `cel.bind()` macro
+    /// reuses this same `Comprehension` AST shape with a distinctive
+    /// signature (an empty-list `iter_range`, a literal `false`
+    /// `loop_cond`) that its own `isBind`/`costBind` detects and costs
+    /// completely differently (no loop multiplication at all — a bind
+    /// evaluates its body exactly once). This port doesn't detect that
+    /// case: an actual `cel.bind()` expression would multiply its real
+    /// body cost by its own empty range's size (`0`), silently
+    /// *under*-costing it to `{0,0}` for the loop-cost term — a real,
+    /// named simplification, not caught by any test here because
+    /// `cel.bind()` isn't real, documented `x-kubernetes-validations`
+    /// authoring practice (this crate's own `docs/APISERVER.md` names
+    /// no use of it anywhere in this arc).
+    fn cost_comprehension(&mut self, comp: &ComprehensionExpr) -> CostEstimate {
+        let mut sum = self.cost(&comp.iter_range);
+        sum = sum.add(self.cost(&comp.accu_init));
+
+        // See this module's own top-level doc comment: only the
+        // single-variable form gets a real path, so only it can benefit
+        // from a schema-driven size lookup inside the loop body.
+        let iter_path = comprehension_iter_path(comp, &self.scope);
+        if let Some(path) = iter_path.clone() {
+            self.scope.push(&comp.iter_var, path);
+        }
+        let loop_cost = self.cost(&comp.loop_cond);
+        let step_cost = self.cost(&comp.loop_step);
+        if iter_path.is_some() {
+            self.scope.pop(&comp.iter_var);
+        }
+
+        sum = sum.add(self.cost(&comp.result));
+
+        let range_size = self.size_or_unknown(&comp.iter_range);
+        let range_cost = range_size.multiply_by_cost(step_cost.add(loop_cost));
+        sum.add(range_cost)
     }
 
     /// Real upstream's own `functionCost` — see this module's own doc
@@ -285,8 +337,40 @@ mod tests {
     }
 
     #[test]
-    fn a_comprehension_is_still_unknown() {
-        assert_eq!(cost(&compile("self.list.all(x, x > 0)")), CostEstimate::unknown());
+    fn a_comprehension_with_no_schema_has_an_effectively_unbounded_max_cost() {
+        // Without a schema, self.list's own range size is unknown -- the
+        // real loop-cost multiplication (range size * per-iteration cost)
+        // saturates the max bound, correctly signaling "could be
+        // anything" rather than silently under-costing at a small
+        // number.
+        let result = cost(&compile("self.list.all(x, x > 0)"));
+        assert_eq!(result.max, u64::MAX);
+        assert!(result.min > 0, "the fixed, range-independent part of the cost is still real: {result:?}");
+    }
+
+    #[test]
+    fn a_comprehension_with_a_real_max_items_bound_has_a_real_bounded_cost() {
+        let root = crate::cel_ext::decl_type::decl_type_for(&json!({
+            "type": "object",
+            "properties": {"list": {"type": "array", "items": {"type": "integer"}, "maxItems": 5}},
+        }))
+        .unwrap();
+        let expr = compile("self.list.all(x, x > 0)");
+        let result = Coster::new(Some(&root)).cost(&expr);
+        assert!(result.max < 1000, "expected a real bounded cost from the real maxItems: 5 constraint, got {result:?}");
+        assert!(result.max > result.min, "the loop-cost term should genuinely scale with the range's own real size");
+    }
+
+    #[test]
+    fn an_empty_iteration_range_never_multiplies_up_to_an_unbounded_cost() {
+        // range size 0 (an inline empty-list literal) times any
+        // per-iteration cost is still 0 -- the loop-cost *term* is fully
+        // determined (real upstream's own formula, not a special case
+        // this port added), so the overall estimate stays a real, exact
+        // fixed number rather than saturating the way an unknown range
+        // does.
+        let result = cost(&compile("[].all(x, x > 0)"));
+        assert_eq!(result.max, result.min, "a genuinely empty range has a fully determined, non-unbounded cost");
     }
 
     #[test]
