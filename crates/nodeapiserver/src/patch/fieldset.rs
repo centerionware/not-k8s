@@ -271,6 +271,131 @@ impl Set {
         }
     }
 
+    /// No members and every child (recursively) also empty — real
+    /// upstream's own `Set.Empty`. A node with child *entries* that are
+    /// each themselves empty still counts as empty; this module never
+    /// actually constructs such a node (every insertion point below
+    /// checks emptiness before inserting), but the check itself has to
+    /// be recursive to match upstream's own definition exactly, not just
+    /// `self.children.is_empty()`.
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty() && self.children.values().all(Set::is_empty)
+    }
+
+    /// Fields present in either `self` or `other` — real upstream's own
+    /// `Set.Union` (`fieldpath/set.go`/`pathelementmap.go`, ported;
+    /// merge-sort-shaped in Go, expressed here with `BTreeMap`'s own
+    /// sorted-map operations to the identical real effect since this
+    /// module's own `children` is already a `BTreeMap`, not the
+    /// sorted-`Vec` upstream's own `SetNodeMap` uses).
+    pub fn union(&self, other: &Set) -> Set {
+        let mut members = self.members.clone();
+        for m in &other.members {
+            if !members.contains(m) {
+                members.push(m.clone());
+            }
+        }
+        members.sort();
+        let mut children = self.children.clone();
+        for (pe, other_child) in &other.children {
+            match children.get_mut(pe) {
+                Some(existing) => *existing = existing.union(other_child),
+                None => {
+                    children.insert(pe.clone(), other_child.clone());
+                }
+            }
+        }
+        Set { members, children }
+    }
+
+    /// Fields present in both `self` and `other` — real upstream's own
+    /// `Set.Intersection`. An empty resulting child node is dropped
+    /// entirely, never inserted — matching upstream's own `if
+    /// !res.Empty()` guard (a `Set` with an empty child entry would
+    /// otherwise be a real, if harmless, structural divergence from what
+    /// `to_json`/`from_json` would ever themselves produce).
+    pub fn intersection(&self, other: &Set) -> Set {
+        let mut members = self.members.clone();
+        members.retain(|m| other.members.contains(m));
+        let mut children = BTreeMap::new();
+        for (pe, child) in &self.children {
+            if let Some(other_child) = other.children.get(pe) {
+                let res = child.intersection(other_child);
+                if !res.is_empty() {
+                    children.insert(pe.clone(), res);
+                }
+            }
+        }
+        Set { members, children }
+    }
+
+    /// Fields present in `self` but not `other` — real upstream's own
+    /// `Set.Difference`. **A real, intentional asymmetry, confirmed
+    /// directly against upstream's own doc comment, not an oversight**:
+    /// this only ever descends into `other`'s own *child* entries at each
+    /// level, never checks whether `other` owns the same path as a plain
+    /// leaf `member` instead — so `parent - child = parent` (a subtree
+    /// `self` tracks in depth survives untouched if `other` only owns
+    /// that same path shallowly, as one leaf) and `child - parent =
+    /// {empty}` is instead handled the moment `self` itself only ever
+    /// owns that path as a leaf too (`self.members`'s own difference
+    /// against `other.members` at that same level already removes it).
+    /// [`recursive_difference`] is the sibling that *does* also treat an
+    /// `other` leaf as canceling a whole `self` subtree — reach for that
+    /// one when upstream's own real usage needs it (SSA's own "remove
+    /// fields the previous apply owned but the new one doesn't" step
+    /// uses plain `Difference`, not `RecursiveDifference` — named here so
+    /// a future caller doesn't reach for the wrong one by symmetry alone).
+    pub fn difference(&self, other: &Set) -> Set {
+        let mut members = self.members.clone();
+        members.retain(|m| !other.members.contains(m));
+        let mut children = BTreeMap::new();
+        for (pe, child) in &self.children {
+            match other.children.get(pe) {
+                Some(other_child) => {
+                    let diff = child.difference(other_child);
+                    if !diff.is_empty() {
+                        children.insert(pe.clone(), diff);
+                    }
+                }
+                None => {
+                    children.insert(pe.clone(), child.clone());
+                }
+            }
+        }
+        Set { members, children }
+    }
+
+    /// Fields present in `self` but not `other`, where an `other` field
+    /// present *at all* (leaf member or non-empty subtree) removes the
+    /// matching `self` subtree **in its entirety**, not just the exact
+    /// overlapping paths — real upstream's own `Set.RecursiveDifference`,
+    /// its own doc comment's example: `self` owning `a.b.c` and `other`
+    /// owning `a.b` (as a leaf) recursive-differences down to just `a`,
+    /// since the whole `a.b` node — everything beneath it — is dropped.
+    pub fn recursive_difference(&self, other: &Set) -> Set {
+        let mut members = self.members.clone();
+        members.retain(|m| !other.members.contains(m));
+        let mut children = BTreeMap::new();
+        for (pe, child) in &self.children {
+            if other.members.contains(pe) {
+                continue; // `other` owns this whole path as a leaf -- drop self's entire subtree here
+            }
+            match other.children.get(pe) {
+                Some(other_child) => {
+                    let diff = child.recursive_difference(other_child);
+                    if !diff.is_empty() {
+                        children.insert(pe.clone(), diff);
+                    }
+                }
+                None => {
+                    children.insert(pe.clone(), child.clone());
+                }
+            }
+        }
+        Set { members, children }
+    }
+
     /// `fieldpath/serialize.go`'s own `ToJSON`/`emitContentsV1`, ported.
     pub fn to_json(&self) -> Value {
         self.emit(false)
@@ -631,5 +756,102 @@ mod tests {
                 || set.has(&[PathElement::Field("resources".to_string()), PathElement::Field("limits".to_string())]),
             "resources.limits.cpu must be tracked one way or the other depending on whether ResourceRequirements.limits itself carries ref_schema metadata"
         );
+    }
+
+    // `Set` algebra (`union`/`intersection`/`difference`/
+    // `recursive_difference`) -- each built from two small hand-built
+    // sets rather than a real object, so the exact tree shape under test
+    // is unambiguous.
+
+    fn set_of(paths: &[&[PathElement]]) -> Set {
+        let mut s = Set::new();
+        for p in paths {
+            s.insert(p);
+        }
+        s
+    }
+
+    fn f(name: &str) -> PathElement {
+        PathElement::Field(name.to_string())
+    }
+
+    #[test]
+    fn union_combines_members_from_both_sides() {
+        let a = set_of(&[&[f("spec"), f("replicas")]]);
+        let b = set_of(&[&[f("spec"), f("selector")]]);
+        let u = a.union(&b);
+        assert!(u.has(&[f("spec"), f("replicas")]));
+        assert!(u.has(&[f("spec"), f("selector")]));
+    }
+
+    #[test]
+    fn union_merges_a_shared_child_node_rather_than_overwriting_it() {
+        let a = set_of(&[&[f("metadata"), f("labels"), f("app")]]);
+        let b = set_of(&[&[f("metadata"), f("labels"), f("tier")]]);
+        let u = a.union(&b);
+        assert!(u.has(&[f("metadata"), f("labels"), f("app")]), "the union must not lose a's own child under a shared parent");
+        assert!(u.has(&[f("metadata"), f("labels"), f("tier")]));
+    }
+
+    #[test]
+    fn intersection_keeps_only_paths_present_on_both_sides() {
+        let a = set_of(&[&[f("spec"), f("replicas")], &[f("spec"), f("selector")]]);
+        let b = set_of(&[&[f("spec"), f("replicas")]]);
+        let i = a.intersection(&b);
+        assert!(i.has(&[f("spec"), f("replicas")]));
+        assert!(!i.has(&[f("spec"), f("selector")]));
+    }
+
+    #[test]
+    fn intersection_of_disjoint_sets_is_empty() {
+        let a = set_of(&[&[f("spec"), f("replicas")]]);
+        let b = set_of(&[&[f("status"), f("readyReplicas")]]);
+        assert!(a.intersection(&b).is_empty());
+    }
+
+    #[test]
+    fn difference_removes_shared_leaves() {
+        let a = set_of(&[&[f("spec"), f("replicas")], &[f("spec"), f("selector")]]);
+        let b = set_of(&[&[f("spec"), f("replicas")]]);
+        let d = a.difference(&b);
+        assert!(!d.has(&[f("spec"), f("replicas")]));
+        assert!(d.has(&[f("spec"), f("selector")]));
+    }
+
+    #[test]
+    fn difference_of_a_set_with_itself_is_empty() {
+        let a = set_of(&[&[f("spec"), f("replicas")], &[f("metadata"), f("labels"), f("app")]]);
+        assert!(a.difference(&a).is_empty());
+    }
+
+    /// The real, intentional asymmetry `difference`'s own doc comment
+    /// names: a subtree survives a plain `difference` against a shallow
+    /// leaf at the same path in `other`, but not against
+    /// `recursive_difference`.
+    #[test]
+    fn plain_difference_does_not_let_an_others_leaf_cancel_a_selfs_subtree() {
+        let a = set_of(&[&[f("a"), f("b"), f("c")]]);
+        let b = set_of(&[&[f("a")]]); // "a" owned as a shallow leaf, not a subtree
+        let d = a.difference(&b);
+        assert!(d.has(&[f("a"), f("b"), f("c")]), "difference must leave self's own deeper subtree alone here");
+    }
+
+    #[test]
+    fn recursive_difference_drops_a_whole_subtree_when_others_leaf_matches_its_root() {
+        let a = set_of(&[&[f("a"), f("b"), f("c")]]);
+        let b = set_of(&[&[f("a"), f("b")]]);
+        let d = a.recursive_difference(&b);
+        assert!(!d.has(&[f("a"), f("b"), f("c")]), "the entire a.b subtree must be gone");
+    }
+
+    #[test]
+    fn is_empty_is_true_for_a_freshly_constructed_set() {
+        assert!(Set::new().is_empty());
+    }
+
+    #[test]
+    fn is_empty_is_false_once_anything_is_inserted() {
+        let s = set_of(&[&[f("spec")]]);
+        assert!(!s.is_empty());
     }
 }
