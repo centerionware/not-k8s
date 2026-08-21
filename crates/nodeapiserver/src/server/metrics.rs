@@ -22,10 +22,28 @@
 //! bucket boundaries (its own doc comment: "customize buckets
 //! significantly, to empower both" SLO verification and regression
 //! tracking, so these aren't arbitrary and shouldn't be re-picked).
-//! Everything else in that package
-//! (`apiserver_current_inflight_requests`, `apiserver_watch_events_total`,
-//! `apiserver_response_sizes`, ...) is still **not ported** — genuinely
-//! separate, larger pieces of work, not a quick follow-up to these two.
+//! `apiserver_watch_events_total` (`group`/`version`/`resource` labels,
+//! confirmed directly) is ported too — incremented at the exact point
+//! real upstream's own `WatchEvents.WithLabelValues(...).Inc()` is
+//! called: once per event actually encoded and written to a watch
+//! client's connection (`server::listener::encode_watch_event`), not per
+//! event this build merely considered and filtered out by a selector.
+//! **`apiserver_current_inflight_requests` is deliberately NOT
+//! ported**, checked and rejected rather than skipped by omission: its
+//! real semantics (`metrics.go`'s own doc comment: "Maximal number of
+//! currently used inflight request limit... in last second") measure
+//! utilization of real upstream's own APF concurrency-limiting semaphore
+//! (`request_kind`: `mutating`/`readonly`), sampled once per second by
+//! its own ticker — not a plain "requests currently being handled"
+//! count. This build has no concurrency limiter at all yet (Group M's
+//! own doc comment: APF's fair-queuing/seat-borrowing half is a
+//! genuinely separate, larger, not-yet-started undertaking) — faking
+//! this metric from raw in-flight request counts would misrepresent
+//! what it actually measures to anyone reading a real Prometheus
+//! dashboard, so it's skipped entirely rather than approximated.
+//! `apiserver_response_sizes` and everything else in that package are
+//! still **not ported** either — genuinely separate, smaller-value
+//! pieces of work, not a quick follow-up to these three.
 //!
 //! One process-wide counter table (`std::sync::Mutex<HashMap<...>>`,
 //! the same "good enough, no lock contention that matters at this scale"
@@ -109,6 +127,47 @@ pub fn record_request(verb: &str, resource: &str, code: u16) {
     *counters.entry(key).or_insert(0) += 1;
 }
 
+/// `(group, version, resource)` — `apiserver_watch_events_total`'s own
+/// real label set (`metrics.go`'s own `WatchEvents`, confirmed directly)
+/// — a genuinely different key shape from both [`CounterKey`] (`verb`
+/// instead of `group`/`version`) and [`HistogramKey`], not reused.
+type WatchEventKey = (String, String, String);
+
+fn watch_event_counters() -> &'static Mutex<HashMap<WatchEventKey, u64>> {
+    static WATCH_EVENT_COUNTERS: OnceLock<Mutex<HashMap<WatchEventKey, u64>>> = OnceLock::new();
+    WATCH_EVENT_COUNTERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Records one event actually written to a watch client's own
+/// connection — real upstream's own increment point too
+/// (`WatchEvents.WithLabelValues(...).Inc()`, called once per event
+/// sent, not per event this build merely considered and filtered out).
+/// `group` is `""` for the core group, matching every other real
+/// upstream group-label convention this crate already follows.
+pub fn record_watch_event(group: &str, version: &str, resource: &str) {
+    let key = (group.to_string(), version.to_string(), resource.to_string());
+    let mut counters = watch_event_counters().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    *counters.entry(key).or_insert(0) += 1;
+}
+
+fn render_watch_event_counts(counts: &[(WatchEventKey, u64)]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# HELP apiserver_watch_events_total Number of events sent in watch clients.");
+    let _ = writeln!(out, "# TYPE apiserver_watch_events_total counter");
+    let mut sorted: Vec<&(WatchEventKey, u64)> = counts.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    for ((group, version, resource), count) in sorted {
+        let _ = writeln!(
+            out,
+            "apiserver_watch_events_total{{group=\"{}\",version=\"{}\",resource=\"{}\"}} {count}",
+            escape_label_value(group),
+            escape_label_value(version),
+            escape_label_value(resource),
+        );
+    }
+    out
+}
+
 fn escape_label_value(v: &str) -> String {
     v.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
 }
@@ -178,7 +237,11 @@ pub fn render() -> String {
     let histogram_snapshot: Vec<(HistogramKey, HistogramSnapshot)> = histograms.iter().map(|(k, h)| (k.clone(), (h.bucket_counts.clone(), h.sum, h.count))).collect();
     drop(histograms);
 
-    render_counts(&counter_snapshot) + &render_histograms(&histogram_snapshot)
+    let watch_event_counters = watch_event_counters().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let watch_event_snapshot: Vec<(WatchEventKey, u64)> = watch_event_counters.iter().map(|(k, &v)| (k.clone(), v)).collect();
+    drop(watch_event_counters);
+
+    render_counts(&counter_snapshot) + &render_histograms(&histogram_snapshot) + &render_watch_event_counts(&watch_event_snapshot)
 }
 
 #[cfg(test)]
@@ -256,5 +319,21 @@ mod tests {
         let text = render();
         assert!(text.contains("apiserver_request_duration_seconds_bucket{verb=\"list\",resource=\"a-duration-key-unique-to-this-test-2\",le=\"60\"} 0"));
         assert!(text.contains("apiserver_request_duration_seconds_bucket{verb=\"list\",resource=\"a-duration-key-unique-to-this-test-2\",le=\"+Inf\"} 1"));
+    }
+
+    #[test]
+    fn render_watch_event_counts_produces_real_prometheus_text_exposition_format() {
+        let counts = vec![(("apps".to_string(), "v1".to_string(), "deployments".to_string()), 5u64)];
+        let text = render_watch_event_counts(&counts);
+        assert!(text.contains("# HELP apiserver_watch_events_total"));
+        assert!(text.contains("# TYPE apiserver_watch_events_total counter"));
+        assert!(text.contains("apiserver_watch_events_total{group=\"apps\",version=\"v1\",resource=\"deployments\"} 5"));
+    }
+
+    #[test]
+    fn record_watch_event_and_render_round_trip() {
+        record_watch_event("", "v1", "a-watch-resource-unique-to-this-test");
+        let text = render();
+        assert!(text.contains("apiserver_watch_events_total{group=\"\",version=\"v1\",resource=\"a-watch-resource-unique-to-this-test\"} "));
     }
 }
