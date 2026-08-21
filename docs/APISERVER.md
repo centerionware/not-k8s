@@ -20,6 +20,31 @@ Branching: `nodeapiserver` is a long-lived integration branch (pushed to
 cluster boots with **no k3s installed** and the full unfiltered
 `test-e2e.sh` suite passes.
 
+**Working on this branch, real gotchas hit repeatedly:**
+- **`git fetch origin nodeapiserver` right after every merge, before
+  branching the next slice off it.** Skipping this once produced a PR
+  whose diff showed already-merged files as brand new — caught by
+  `git branch --show-current` before pushing, fixed with a rebase. Also
+  confirm that command shows a sub-branch, not `nodeapiserver` itself,
+  before a slice's first commit — it's easy to commit straight onto the
+  integration branch by accident mid-session.
+- **Dispatch `quick-check.yml -f components=nodeapiserver` for the
+  iterate/verify loop**, not `build.yml` — much faster, and doesn't waste
+  compute on this repo's other crates. `build.yml`'s own per-crate loop
+  is hardcoded and has, at least once, silently never included
+  `nodeapiserver` at all (a genuinely green `build.yml` run that proved
+  nothing about this crate) — `quick-check.yml` is what actually caught
+  that.
+- **The commit-message lint (`CONTRIBUTING.md`) checks every individual
+  commit in a PR, not just the final squash title** — a 100+ char header
+  buried three commits back in an otherwise-fine PR still fails CI. If a
+  reword is needed and `git rebase -i` isn't available in the sandbox
+  (it commonly isn't), do it non-interactively: `git branch -f
+  <tmp> <base>`, `git checkout <tmp>`, `git cherry-pick --no-commit
+  <sha> && git commit -m "<fixed message>"`, cherry-pick the rest in
+  order, then move the real branch to `<tmp>` and
+  `git push --force-with-lease`.
+
 ## The end goal, stated precisely
 
 Full behavioural parity with real kube-apiserver against this project's own
