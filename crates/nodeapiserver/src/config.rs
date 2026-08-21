@@ -56,19 +56,26 @@ pub struct Config {
     /// `NODEAPISERVER_ENCRYPTION_CONFIG_FILE` — a real
     /// `apiserver.config.k8s.io/v1` `EncryptionConfiguration` YAML
     /// document (`storage::encryption_config::parse`, Group C). `None`
-    /// (the default) means no encryption-at-rest. **Loaded and
-    /// validated at startup only — not yet consulted by any read/write
-    /// path**: `storage::encryption`/`storage::encryption_config` exist
-    /// and are unit-tested, but wiring them into `StorageClient`'s
-    /// actual `range`/`put`/`txn`/`watch` calls is real, separate,
-    /// security-relevant work this crate hasn't done yet (needs all
-    /// four to agree at once — a watch cache fed undecrypted ciphertext
-    /// for even one of them is a silent correctness break, not a
-    /// partial win — see `storage::encryption_config`'s own doc
-    /// comment). Loading it now, ahead of that wiring, means a
-    /// misconfigured file is caught at startup rather than only once
-    /// the wiring exists to actually need it.
+    /// (the default) means no encryption-at-rest. Loaded and validated
+    /// at startup, then attached to `StorageClient`
+    /// (`with_encryption`) — genuinely wired into every real
+    /// `range`/`put`/`txn`/`watch` path now (`server::rest::
+    /// decrypt_and_decode`/`encrypt_for_storage`), verified against a
+    /// real live nodestore (`tests/encryption_roundtrip.rs`).
     pub encryption_config_file: Option<PathBuf>,
+    /// `NODEAPISERVER_KUBELET_CLIENT_CERT_FILE`/`_KEY_FILE` — the
+    /// client identity `proxy::client_tls` presents when dialing
+    /// nodelet's own kubelet-style server for `pods/log` (Group N). Raw
+    /// DER (not PEM), matching `crates/nodelet/src/server/tls.rs`'s own
+    /// persisted-as-DER convention. `None` (either unset, or only one of
+    /// the pair set — same "both or neither" discipline the nodestore
+    /// TLS triple already enforces) connects with no client identity at
+    /// all, which only works against a nodelet that itself has no
+    /// `NODELET_CLIENT_CA_FILE` configured (a real, named limitation:
+    /// this build has no bearer-token credential nodelet's own
+    /// `TokenReview` fallback path would accept).
+    pub kubelet_client_cert_file: Option<PathBuf>,
+    pub kubelet_client_key_file: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -82,6 +89,8 @@ impl Default for Config {
             client_ca_file: None,
             enforce_rbac: false,
             encryption_config_file: None,
+            kubelet_client_cert_file: None,
+            kubelet_client_key_file: None,
         }
     }
 }
@@ -128,6 +137,8 @@ impl Config {
         cfg.client_ca_file = path_env("NODEAPISERVER_CLIENT_CA_FILE");
         cfg.enforce_rbac = matches!(std::env::var("NODEAPISERVER_ENFORCE_RBAC").as_deref(), Ok("1") | Ok("true"));
         cfg.encryption_config_file = path_env("NODEAPISERVER_ENCRYPTION_CONFIG_FILE");
+        cfg.kubelet_client_cert_file = path_env("NODEAPISERVER_KUBELET_CLIENT_CERT_FILE");
+        cfg.kubelet_client_key_file = path_env("NODEAPISERVER_KUBELET_CLIENT_KEY_FILE");
         Ok(cfg)
     }
 }
@@ -229,6 +240,19 @@ mod tests {
         let _cleanup = EnvGuard(&["NODEAPISERVER_ENCRYPTION_CONFIG_FILE"]);
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.encryption_config_file, Some(PathBuf::from("/tmp/encryption-config.yaml")));
+    }
+
+    #[test]
+    fn kubelet_client_cert_key_default_to_none_and_are_read_from_their_own_env_vars() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(Config::default().kubelet_client_cert_file, None);
+        assert_eq!(Config::default().kubelet_client_key_file, None);
+        std::env::set_var("NODEAPISERVER_KUBELET_CLIENT_CERT_FILE", "/tmp/kubelet-client.der");
+        std::env::set_var("NODEAPISERVER_KUBELET_CLIENT_KEY_FILE", "/tmp/kubelet-client-key.der");
+        let _cleanup = EnvGuard(&["NODEAPISERVER_KUBELET_CLIENT_CERT_FILE", "NODEAPISERVER_KUBELET_CLIENT_KEY_FILE"]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.kubelet_client_cert_file, Some(PathBuf::from("/tmp/kubelet-client.der")));
+        assert_eq!(cfg.kubelet_client_key_file, Some(PathBuf::from("/tmp/kubelet-client-key.der")));
     }
 
     #[test]

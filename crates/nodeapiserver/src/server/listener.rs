@@ -97,6 +97,7 @@
 use crate::admission;
 use crate::authz;
 use crate::flowcontrol;
+use crate::proxy;
 use crate::config::Config;
 use crate::codec::negotiation;
 use crate::server::{discovery, healthz, metrics, openapi, path, rest, version};
@@ -445,6 +446,27 @@ pub async fn run(cfg: Config) {
     info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, cached_resources = BOOT_CACHED_RESOURCES.len(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
     let enforce_rbac = cfg.enforce_rbac;
 
+    // Group N: built once at startup, not per request — the TLS config
+    // itself doesn't depend on which pod/node a given `pods/log` request
+    // targets, only on this crate's own static configuration
+    // (`NODEAPISERVER_KUBELET_CLIENT_CERT_FILE`/`_KEY_FILE`). Best-effort
+    // like everything else here: a misconfigured cert/key pair falls
+    // back to no client identity (the same "connects, but nodelet's own
+    // TokenReview fallback path has nothing to accept" situation an
+    // unset config already produces), logged rather than stopping the
+    // listener.
+    let kubelet_client_cert_key = match (&cfg.kubelet_client_cert_file, &cfg.kubelet_client_key_file) {
+        (Some(cert), Some(key)) => Some((cert.as_path(), key.as_path())),
+        _ => None,
+    };
+    let kubelet_tls = std::sync::Arc::new(match crate::proxy::client_tls::build_client_config(kubelet_client_cert_key) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = ?e, "failed to build the kubelet-proxy TLS client config with the configured client cert; falling back to no client identity");
+            crate::proxy::client_tls::build_client_config(None).expect("a client config with no client cert must always succeed")
+        }
+    });
+
     loop {
         let (tcp, peer) = match listener.accept().await {
             Ok(v) => v,
@@ -456,6 +478,7 @@ pub async fn run(cfg: Config) {
         let acceptor = acceptor.clone();
         let storage = storage.clone();
         let cache_registry = cache_registry.clone();
+        let kubelet_tls = kubelet_tls.clone();
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
@@ -473,7 +496,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), enforce_rbac, peer));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), enforce_rbac, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -639,6 +662,24 @@ fn admission_forbidden_status(path_str: &str, detail: &str) -> serde_json::Value
     })
 }
 
+/// Real upstream's own shape for a proxy subresource (`pods/log`, ...)
+/// whose dial to the real backend (nodelet) itself failed — `reason:
+/// "" ` (upstream doesn't set one for this case either), `code: 502`,
+/// distinct from [`internal_error_status`]'s `500` because the fault is
+/// nodelet/the network, not this process.
+fn bad_gateway_status(path_str: &str, detail: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: {detail}"),
+        "reason": "",
+        "details": {},
+        "code": 502,
+    })
+}
+
 /// Real upstream's own `AlreadyExists` shape for a `CREATE` that lost the
 /// create-only-if-absent race — `reason: "AlreadyExists"`, `code: 409`.
 fn conflict_status(path_str: &str) -> serde_json::Value {
@@ -759,7 +800,15 @@ async fn persist_quota_usage_updates(client: &mut StorageClient, namespace: &str
 /// filters this crate's own log output by that target today. See
 /// `audit::event`'s own doc comment for exactly which real `Event`
 /// fields are populated and which stage/level this always uses.
-async fn handle_with_audit(req: Request<Incoming>, storage: Option<StorageClient>, cache_registry: crate::cacher::CacheRegistry, identity: Option<crate::authn::x509::Identity>, enforce_rbac: bool, peer: SocketAddr) -> Result<Response<BoxedBody>, Infallible> {
+async fn handle_with_audit(
+    req: Request<Incoming>,
+    storage: Option<StorageClient>,
+    cache_registry: crate::cacher::CacheRegistry,
+    identity: Option<crate::authn::x509::Identity>,
+    enforce_rbac: bool,
+    peer: SocketAddr,
+    kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
+) -> Result<Response<BoxedBody>, Infallible> {
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -772,7 +821,7 @@ async fn handle_with_audit(req: Request<Incoming>, storage: Option<StorageClient
     // owns.
     let storage_for_pf = storage.clone();
 
-    let mut response = handle(req, storage, cache_registry, identity, enforce_rbac).await;
+    let mut response = handle(req, storage, cache_registry, identity, enforce_rbac, kubelet_tls).await;
 
     if let Ok(resp) = &mut response {
         let status = resp.status().as_u16();
@@ -857,7 +906,14 @@ fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Opti
     })
 }
 
-async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_registry: crate::cacher::CacheRegistry, identity: Option<crate::authn::x509::Identity>, enforce_rbac: bool) -> Result<Response<BoxedBody>, Infallible> {
+async fn handle(
+    req: Request<Incoming>,
+    storage: Option<StorageClient>,
+    cache_registry: crate::cacher::CacheRegistry,
+    identity: Option<crate::authn::x509::Identity>,
+    enforce_rbac: bool,
+    kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
+) -> Result<Response<BoxedBody>, Infallible> {
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -1294,6 +1350,110 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
         response_body["status"] = crate::authn::self_review::build_status(username, &groups);
         return Ok(json_response(StatusCode::CREATED, &response_body));
     }
+    // Group N: `pods/log` — a genuine live proxy to nodelet's own
+    // `/containerLogs` endpoint (`crates/nodelet/src/server/logs.rs`),
+    // not a stub. See `proxy::pod_log`/`proxy::client_tls`/
+    // `proxy::http_client`'s own doc comments for the full design; this
+    // branch is just the dispatch glue: fetch the pod, fetch its node,
+    // resolve the target (`proxy::pod_log::log_location`), dial nodelet
+    // for real, relay its response — status, headers, streaming body —
+    // back unmodified. Checked before the generic `is_get` handling below
+    // (which requires an empty `subresource`), same "specific virtual/
+    // special-cased routes before the generic verb block" ordering every
+    // other early-return branch above already uses.
+    if info.is_resource_request && info.api_group.is_empty() && info.resource == "pods" && info.subresource == "log" && !info.name.is_empty() && (method == "GET" || method == "HEAD") {
+        let Some(mut client) = storage.clone() else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+
+        // Group I: `pods/log` is its own distinct resource for RBAC
+        // purposes -- a role granting `get` on `pods` does NOT imply
+        // `pods/log`, real upstream's own subresource-is-a-separate-
+        // resource rule -- so this checks the subresource explicitly
+        // rather than reusing whatever the plain `pods` `get` branch
+        // below would decide.
+        if enforce_rbac {
+            let (user_name, user_groups): (&str, Vec<String>) = match &identity {
+                Some(id) => (id.name.as_str(), id.groups.clone()),
+                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+            };
+            let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
+            let attrs = authz::rbac::RequestAttributes {
+                is_resource_request: true,
+                verb: "get",
+                api_group: &info.api_group,
+                resource: &info.resource,
+                subresource: &info.subresource,
+                name: &info.name,
+                path: &path_str,
+            };
+            if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+                return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+            }
+        }
+
+        let pod = match rest::get(&mut client, None, "", "v1", "pods", namespace, &info.name).await {
+            Ok(rest::GetOutcome::Found(object)) => object,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "proxy: fetching the pod for pods/log failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let node_name = pod.get("spec").and_then(|s| s.get("nodeName")).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+        if node_name.is_empty() {
+            return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "pod has not yet been scheduled to a node")));
+        }
+        // Nodes are cluster-scoped -- `namespace: None`, matching every
+        // other cluster-scoped `rest::get` call in this module.
+        let node = match rest::get(&mut client, None, "", "v1", "nodes", None, &node_name).await {
+            Ok(rest::GetOutcome::Found(object)) => object,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                warn!(path = %path_str, node = %node_name, "proxy: pod's own node not found for pods/log");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "proxy: fetching the pod's node for pods/log failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+
+        let query_pairs = path::parse_query(&query);
+        let container = query_pairs.iter().find(|(k, _)| k == "container").map(|(_, v)| v.clone()).unwrap_or_default();
+        let target = match proxy::pod_log::log_location(&pod, &node, &container, &query_pairs) {
+            Ok(t) => t,
+            Err(proxy::pod_log::Error::NoDefaultContainer { pod_name, candidates }) => {
+                let detail = if candidates.is_empty() {
+                    format!("a container name must be specified for pod {pod_name}")
+                } else {
+                    format!("a container name must be specified for pod {pod_name}, choose one of: {candidates:?}")
+                };
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &detail)));
+            }
+            Err(proxy::pod_log::Error::UnknownContainer { pod_name, container }) => {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &format!("container {container} is not valid for pod {pod_name}"))));
+            }
+            Err(proxy::pod_log::Error::PodNotScheduled) => {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "pod has not yet been scheduled to a node")));
+            }
+            Err(proxy::pod_log::Error::NoNodeAddress) => {
+                warn!(path = %path_str, node = %node_name, "proxy: node has no address of any preferred type for pods/log");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+
+        return match proxy::http_client::fetch(&target, kubelet_tls).await {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                warn!(path = %path_str, node = %node_name, error = ?e, "proxy: dialing nodelet for pods/log failed");
+                Ok(json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(&path_str, &e.to_string())))
+            }
+        };
+    }
+
     let has_body = is_create || is_update;
     if is_get || is_list || is_create || is_delete || is_update {
         // Captured before `req` is potentially consumed below (`has_body`
