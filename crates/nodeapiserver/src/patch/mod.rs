@@ -59,16 +59,21 @@
 //! and recursively at every leaf beneath it, real upstream's own
 //! genuinely non-redundant rule, confirmed directly against
 //! `compareWalker.compare`'s own source rather than assumed from the
-//! method name alone). **Not yet landed**: `$patch`/`$setElementOrder`/
+//! method name alone), and now `updater` — real `merge.Updater`'s own
+//! conflict-detection/bookkeeping core (`update()`) plus the PATCH/PUT
+//! write path (`apply_update()`, real upstream's `Updater.Update`),
+//! single-schema-version scoped since this build has no multi-version
+//! conversion machinery at all — see `updater`'s own doc comment.
+//! **Not yet landed**: `$patch`/`$setElementOrder`/
 //! `$deleteFromPrimitiveList` directives (named, deliberate
 //! simplifications — see `strategic_merge`'s own doc comment) and
-//! `Updater.Apply` itself: the orchestration that combines `typed_merge`/
-//! `typed_compare`'s own output with the `Set` algebra to do real
-//! conflict detection against other managers' stored `managedFields`
-//! and reject a conflicting field unless `force=true` — the piece that
-//! actually closes this arc, all three of its real prerequisites now
-//! landed but the orchestration itself not yet started, nor is any
-//! `application/apply-patch+yaml` wiring into `server::rest::patch`.
+//! `Updater.Apply` itself: the real `application/apply-patch+yaml` path,
+//! needing `liveObject.Merge(configObject)` (already have —
+//! `typed_merge::merge`) plus a real `prune()` step this crate has no
+//! `Value`-removal primitive for yet, the real `managedFields` wire
+//! format (`ManagedFieldsEntry`), and `server::rest` wiring — none of
+//! that exists yet, see `updater`'s own doc comment for the precise
+//! remaining gap.
 
 pub mod fieldset;
 pub mod json_patch;
@@ -76,3 +81,4 @@ pub mod merge_patch;
 pub mod strategic_merge;
 pub mod typed_compare;
 pub mod typed_merge;
+pub mod updater;
