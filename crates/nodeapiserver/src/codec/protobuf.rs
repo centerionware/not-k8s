@@ -933,13 +933,17 @@ mod tests {
 
     /// Same class of bug as above, on `MutatingWebhookConfiguration`'s and
     /// `ValidatingWebhookConfiguration`'s own `Webhooks` field -- real
-    /// upstream's JSON key is lowercase `webhooks`.
+    /// upstream's JSON key is lowercase `webhooks`. Uses a non-empty
+    /// webhooks list: an empty `repeated` field genuinely produces no wire
+    /// bytes at all (true of every `repeated` field in this codec, not
+    /// specific to this bug), so it can never round-trip as a present-but-
+    /// empty array -- that's not what this test is checking.
     #[test]
     fn validating_webhook_configuration_round_trips_lowercase_webhooks_key() {
         let message = "io.k8s.api.admissionregistration.v1.ValidatingWebhookConfiguration";
         let value = json!({
             "metadata": {"name": "my-config"},
-            "webhooks": [],
+            "webhooks": [{"name": "my-webhook.example.com"}],
         });
         let encoded = encode_message(message, &value).unwrap();
         let decoded = decode_message(message, &encoded).unwrap();
