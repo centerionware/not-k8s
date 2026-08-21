@@ -45,7 +45,7 @@ pub struct CrdResource {
 /// (see that module's own doc comment for why), but the *check* here is
 /// the same either way: a stored document either carries the condition
 /// or it doesn't.
-fn is_established(crd: &Value) -> bool {
+pub fn is_established(crd: &Value) -> bool {
     crd.pointer("/status/conditions")
         .and_then(Value::as_array)
         .into_iter()
@@ -98,6 +98,44 @@ pub fn resolve(crd: &Value, group: &str, version: &str, resource: &str) -> Optio
 /// panicking or erroring.
 pub fn resolve_in<'a>(crds: impl IntoIterator<Item = &'a Value>, group: &str, version: &str, resource: &str) -> Option<CrdResource> {
     crds.into_iter().find_map(|crd| resolve(crd, group, version, resource))
+}
+
+/// One `(group, version, resource)` a served, `Established` CRD makes
+/// discoverable — `server::discovery`'s own dynamic-merge counterpart to
+/// Group A's static `codegen::openapi_meta::DISCOVERY_GVKS` table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiscoverableResource {
+    pub group: String,
+    pub version: String,
+    pub resource: String,
+    pub kind: String,
+    pub namespaced: bool,
+}
+
+/// Every `(group, version, resource)` triple every served, `Established`
+/// CRD in `crds` provides — one entry per served version, since real
+/// upstream's own discovery lists a resource once per version it serves
+/// (`/apis/{group}/{version}` is scoped to exactly one version already,
+/// same as this build's own static `api_resource_list`). Reuses
+/// [`resolve`] itself for each candidate triple rather than re-deriving
+/// the same served/`Established` logic a second way, so there's exactly
+/// one place that logic lives.
+pub fn discoverable_resources<'a>(crds: impl IntoIterator<Item = &'a Value>) -> Vec<DiscoverableResource> {
+    let mut out = Vec::new();
+    for crd in crds {
+        let (Some(group), Some(resource), Some(versions)) =
+            (crd.pointer("/spec/group").and_then(Value::as_str), crd.pointer("/spec/names/plural").and_then(Value::as_str), crd.pointer("/spec/versions").and_then(Value::as_array))
+        else {
+            continue;
+        };
+        for v in versions {
+            let Some(version) = v.get("name").and_then(Value::as_str) else { continue };
+            if let Some(resolved) = resolve(crd, group, version, resource) {
+                out.push(DiscoverableResource { group: group.to_string(), version: version.to_string(), resource: resource.to_string(), kind: resolved.kind, namespaced: resolved.namespaced });
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -174,5 +212,21 @@ mod tests {
     fn resolve_in_returns_none_when_nothing_matches() {
         let crds = vec![established_crd()];
         assert_eq!(resolve_in(crds.iter(), "nope.com", "v1", "widgets"), None);
+    }
+
+    #[test]
+    fn discoverable_resources_lists_only_served_versions_of_established_crds() {
+        let crds = vec![established_crd()];
+        let resources = discoverable_resources(crds.iter());
+        // v1 is served, v1beta1 isn't -- exactly one entry, not two.
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0], DiscoverableResource { group: "example.com".to_string(), version: "v1".to_string(), resource: "widgets".to_string(), kind: "Widget".to_string(), namespaced: true });
+    }
+
+    #[test]
+    fn discoverable_resources_skips_a_crd_not_yet_established() {
+        let mut crd = established_crd();
+        crd["status"]["conditions"] = json!([]);
+        assert!(discoverable_resources([&crd]).is_empty());
     }
 }
