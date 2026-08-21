@@ -65,6 +65,7 @@
 use anyhow::{Context, Result};
 use futures::stream::{select_all, BoxStream, StreamExt};
 use kube::api::{Api, DeleteParams, DynamicObject, Preconditions, PropagationPolicy};
+use kube::core::PartialObjectMeta;
 use kube::discovery::{verbs, Discovery, Scope};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -88,6 +89,46 @@ fn should_watch(
 
 fn gvk_key(ar: &kube::discovery::ApiResource) -> String {
     format!("{}/{}", ar.api_version, ar.kind)
+}
+
+/// `State`'s own bookkeeping (`handle_apply`/`handle_delete`/`owner_uids_of`)
+/// only ever reads `.metadata` off a `DynamicObject` — never `.data`, the
+/// `#[serde(flatten)]`'d rest of the object (spec/status/Secret/ConfigMap
+/// payloads, ...). For a kind with no shared typed watch to piggyback on
+/// (see `run()`'s own comment), that flattened field is otherwise a real,
+/// paid-for cost with nothing to show for it: it forces every LIST/WATCH
+/// response for that kind to build a full `serde_json::Value` tree just to
+/// be thrown away. Real profiling on issue #40 found exactly this shape —
+/// ~28% of sampled idle CPU inside `serde_json` call stacks tied to this
+/// controller's own dynamic watches. `PartialObjectMeta<DynamicObject>`
+/// makes `Api`/`watcher` negotiate the apiserver's metadata-only response
+/// (`Accept: application/json;as=PartialObjectMetadata;...`) automatically
+/// — the same `metadataInformer` mechanism upstream's real garbage
+/// collector uses for exactly this reason — so the flattened body is never
+/// sent by the apiserver, let alone deserialized here. `data: Value::Null`
+/// mirrors `watch::as_dynamic()`'s own placeholder for the shared-watch
+/// case, keeping `State`'s methods unchanged either way.
+fn from_partial_metadata(partial: PartialObjectMeta<DynamicObject>) -> DynamicObject {
+    DynamicObject {
+        types: partial.types,
+        metadata: partial.metadata,
+        data: serde_json::Value::Null,
+    }
+}
+
+/// `Event<K>` has no `map`-to-a-different-`K` method of its own (its real
+/// `modify()` only mutates a value in place, same type in and out) — this
+/// is the per-variant conversion `Event<PartialObjectMeta<DynamicObject>>`
+/// -> `Event<DynamicObject>` needs instead, applying [`from_partial_metadata`]
+/// to whichever variant actually carries an object.
+fn map_partial_metadata_event(event: Event<PartialObjectMeta<DynamicObject>>) -> Event<DynamicObject> {
+    match event {
+        Event::Apply(obj) => Event::Apply(from_partial_metadata(obj)),
+        Event::Delete(obj) => Event::Delete(from_partial_metadata(obj)),
+        Event::InitApply(obj) => Event::InitApply(from_partial_metadata(obj)),
+        Event::Init => Event::Init,
+        Event::InitDone => Event::InitDone,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -360,12 +401,19 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             {
                 stream
             } else {
-                let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
+                // Metadata-only: this controller never reads anything but
+                // `.metadata` off these events (see `from_partial_metadata`'s
+                // own comment for why, and issue #40 for the profiling data
+                // that found the full-body path expensive).
+                let api: Api<PartialObjectMeta<DynamicObject>> =
+                    Api::all_with(client.clone(), &ar);
                 // Discovery can yield dozens of resource kinds. Admit one
                 // ordinary LIST+WATCH at a time below; keeping the initial
                 // LIST short avoids holding a long-running watch-list request
                 // while CSI sidecars are trying to establish their own.
-                watcher(api, watcher::Config::default()).boxed()
+                watcher(api, watcher::Config::default())
+                    .map(|ev| ev.map(map_partial_metadata_event))
+                    .boxed()
             };
             let stream = stream
                 .map(move |ev| (key_for_stream.clone(), ev))
