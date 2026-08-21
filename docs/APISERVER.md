@@ -1267,10 +1267,93 @@ MutatingAdmissionPolicy on CEL. **Build the CEL cost budget before wiring
 any CEL-driven admission path** — an unbudgeted CEL evaluator in the
 request path is a denial-of-service surface.
 
-**K. CRDs (apiextensions)** — **not started**. Dynamic storage
-registration, structural schemas, pruning, defaulting,
-`x-kubernetes-validations` CEL with type-checking, conversion webhooks,
-`established`/`namesAccepted` condition machinery.
+**K. CRDs (apiextensions)** — **in progress**. Found on inspection, not
+assumed: `CustomResourceDefinition` itself needed *zero* new plumbing —
+`apiextensions.k8s.io/v1` is a real group in the vendored OpenAPI/proto
+sets (Group A's codegen has no group allowlist, it walks every `.json`
+under `vendor/openapi-spec/v3`), so `resolve_kind`/`schema_for_gvk`
+already served it and `server::rest`'s generic verbs already stored/read
+it correctly before this group's own code existed. The actual gap was
+narrower than the whole feature list below suggests: making the
+resources a CRD *defines* — which have no compiled schema at all, since
+an operator's own schema doesn't exist until they submit one — routable
+through the same generic verb dispatch.
+
+`apiextensions::registry` (pure): resolves `(group, version, resource)`
+against a decoded `CustomResourceDefinition` document — matches
+`spec.group`/`spec.names.plural`, requires the CRD to be `Established`
+(`status.conditions`) and the requested version to be `served`, and
+returns the matched version's own `spec.versions[].schema.
+openAPIV3Schema`. `server::rest::resolve_resource` is the new single
+choke point every real verb now goes through: the static
+`resolve_kind`/`schema_for_gvk` pair first (no I/O, the common case),
+falling back to a live `LIST` of `customresourcedefinitions` (itself
+served by the *static* path, so this never recurses) only on a miss.
+`apiextensions::schema_defaults` (pure): a faithful, scoped-down port of
+real upstream's own structural-schema `Default` algorithm
+(`k8s.io/apiextensions-apiserver/pkg/apiserver/schema/defaulting`) —
+walks `properties`/`items`/schema-shaped `additionalProperties`
+recursively, filling in `default` wherever a value is absent or
+explicitly `null`, and (matching real upstream exactly) never
+recursively defaults *into* a value it just applied a default to.
+`apiextensions::conditions` (pure): computes a CRD's own
+`NamesAccepted`/`Established`/`storedVersions` status — a real,
+synchronous naming-conflict check against every other already-
+`Established` CRD in the same group (`plural`/`singular`/`kind`/
+`listKind`/`shortNames`, `pkg/apiserver/validation`, fetched and read
+directly), with `storedVersions` accumulating rather than being
+overwritten (real upstream's own migration-tracking invariant). **A
+deliberate, named divergence from real upstream's architecture, not an
+oversight**: real `kube-apiserver` computes both conditions from a
+separate, asynchronous in-process controller
+(`pkg/controller/establish`) that only flips `Established` once it has
+confirmed the CRD's storage was actually installed; this build computes
+both synchronously, right on `CREATE` of the CRD object itself
+(`server::rest::create`'s own CRD special case), because it has no
+separate controller-manager loop that could own that reconciliation
+in-process the way real upstream's does (and, per the user's own framing
+of this build's scope: *"it's up to operators to WATCH/LIST CRDs and
+react to them, apiserver just has to track them and set some defaults as
+defined by the CRD's own spec"* — an async establishing controller
+exists in real upstream to protect against exactly the kind of
+distributed-consistency problem a single-process build with no separate
+storage-installation step to wait on doesn't have).
+
+**Real, wired, and live-tested now** (`tests/crd_roundtrip.rs`, the CRD
+analogue of `tests/encryption_roundtrip.rs` — a real `nodestore` spawned
+and driven end to end, not assumed from unit tests alone): `GET`/
+`LIST`/`CREATE`/`DELETE`/`DELETECOLLECTION` (`delete_collection` gets
+CRD support for free — it already delegates to `list`/`delete`) for a
+CRD-defined resource, with real schema-driven defaulting on `CREATE`.
+
+**Not yet landed, named honestly** (`apiextensions::mod`'s own doc
+comment carries this list too): `UPDATE`/`PATCH`/the `status` subresource
+for CR objects — `update`/`patch_prepare`/`update_status`/`patch_status`
+still resolve purely through the static table, so those verbs are a real
+`404` against a CRD-defined resource today, not a silent no-op, until a
+follow-up slice gives `PatchContext` (currently `schema: &'static str`,
+built-ins-only) a CRD-shaped counterpart — `strategic-merge-patch` in
+particular can't work against a CRD at all without reading
+`x-kubernetes-list-type`/`-list-map-keys` from its schema instead of
+compiled `FIELD_META`, a real, separate piece of work; `JSON Patch`/
+`Merge Patch` need no schema and could be wired for CRDs first. `WATCH`
+for CR objects — needs a `cacher::store::SharedCache` dynamically spawned
+per `Established` CRD (`cacher::driver::reflect`, already exactly the
+right primitive) rather than `server::listener`'s fixed boot-time
+`BOOT_CACHED_RESOURCES` list, a genuinely separate feature since nothing
+today reacts to a CRD becoming `Established` by spawning one. Full
+structural-schema type/required validation and pruning
+(`x-kubernetes-preserve-unknown-fields`) against the schema —
+`server::rest::create`'s CRD branch runs `apiextensions::schema_defaults`
+but not `scheme::validation`'s equivalent (which is compiled-schema-only
+today); a malformed CR is currently accepted, not rejected.
+`x-kubernetes-validations` CEL (**needs the CEL cost budget built
+first** — Group J's own doc comment names this as a real DoS surface,
+not optional hardening). Conversion webhooks. Discovery merge — a CRD's
+resource doesn't appear in `/apis/<group>/<version>` discovery output
+yet even though it's genuinely routable, since Group E's discovery table
+is still the static, build-time one; a client that already knows the
+URL works, `kubectl` discovery-driven commands don't yet.
 
 **L. Aggregation layer** — **not started**. `APIService` objects,
 `ServiceResolver`, reverse proxying, discovery merge, availability

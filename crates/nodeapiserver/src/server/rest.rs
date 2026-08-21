@@ -129,6 +129,7 @@
 //! doesn't exist is rejected, not created — real upstream's
 //! `AllowCreateOnUpdate` opt-in a handful of types use isn't modeled).
 
+use crate::apiextensions;
 use crate::cacher::selector::{self, ParseError};
 use crate::codec::protobuf;
 use crate::codegen;
@@ -172,6 +173,67 @@ pub fn resolve_kind(group: &str, version: &str, resource: &str) -> Option<&'stat
     codegen::api_resources_by_group_version().get(&(group, version))?.iter().find(|r| r.resource == resource).map(|r| r.kind)
 }
 
+/// What [`resolve_resource`] found `(group, version, resource)` to be —
+/// either a built-in with a compiled proto schema (`resolve_kind`/
+/// `schema_for_gvk`, unchanged from before Group K existed), or a
+/// CRD-defined resource (`apiextensions::registry`), which has no
+/// compiled schema at all: its body is stored/read as plain JSON, and
+/// defaulting (when `open_api_schema` is present) walks that schema at
+/// runtime instead of a compiled `FIELD_META` table
+/// (`apiextensions::schema_defaults`).
+struct ResolvedResource {
+    kind: String,
+    /// `Some(proto message name)` for a built-in; `None` for a CRD.
+    schema: Option<&'static str>,
+    open_api_schema: Option<Value>,
+}
+
+/// The single place every real verb in this module decides what
+/// `(group, version, resource)` actually is: the static, build-time
+/// table first (no I/O, the overwhelmingly common case), falling back to
+/// a live `LIST` of `CustomResourceDefinition`s only on a miss — Group
+/// K's dynamic resource registry. `None` either way means a genuine
+/// `UnknownResource` outcome to the caller, exactly as `resolve_kind`
+/// alone used to mean.
+///
+/// **The CRD group itself is never recursed into** (`group.is_empty()`
+/// covers the core group, which by definition has no CRDs in it
+/// either): a request for `apiextensions.k8s.io/v1/customresourcedefinitions`
+/// is always answered by the static table (Group A's codegen already
+/// covers it — a `CustomResourceDefinition` is a real, compiled built-in
+/// type, only the resources *it defines* are dynamic), so there's no risk
+/// of this function ever listing CRDs to resolve a request for CRDs.
+async fn resolve_resource(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<ResolvedResource>, Error> {
+    if let Some(kind) = resolve_kind(group, version, resource) {
+        return Ok(protobuf::schema_for_gvk(group, version, kind).map(|schema| ResolvedResource { kind: kind.to_string(), schema: Some(schema), open_api_schema: None }));
+    }
+    if group.is_empty() || group == "apiextensions.k8s.io" {
+        return Ok(None);
+    }
+    let crds = list_stored_crds(storage).await?;
+    Ok(apiextensions::registry::resolve_in(crds.iter(), group, version, resource).map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema }))
+}
+
+/// A raw `Range` over every stored `CustomResourceDefinition`, decoded —
+/// deliberately *not* [`list`] itself: [`list`] calls [`resolve_resource`]
+/// to find out what it's listing, and [`resolve_resource`]'s own CRD
+/// fallback needs this same data, so calling back into `list` here would
+/// be a real `async fn` recursion cycle (rejected outright by rustc,
+/// `E0733` — infinitely-sized future, not merely a style objection) even
+/// though it would never actually recurse more than once at runtime (the
+/// CRD group is always resolved by the static table, never this
+/// fallback). `customresourcedefinitions` is always cluster-scoped and
+/// its own resource is never itself encrypted-at-rest-configurable in a
+/// way this function needs to special-case — `decrypt_and_decode`
+/// already handles "no transformer configured for this group/resource"
+/// as a plain pass-through.
+async fn list_stored_crds(storage: &mut StorageClient) -> Result<Vec<Value>, Error> {
+    let prefix = keys::list_prefix("apiextensions.k8s.io", "customresourcedefinitions", None).into_bytes();
+    let range_end = prefix_range_end(&prefix);
+    let resp = storage.range(RangeRequest { key: prefix, range_end, ..Default::default() }).await?;
+    resp.kvs.iter().map(|kv| decrypt_and_decode(storage, "apiextensions.k8s.io", "customresourcedefinitions", &kv.key, &kv.value)).collect()
+}
+
 /// Decodes a value exactly as stored in nodestore — the full `k8s\0`-
 /// prefixed `runtime.Unknown` envelope `codec::protobuf::wrap_unknown`
 /// produces — back into JSON. Pure and unit-tested with a real encoded
@@ -182,8 +244,18 @@ pub fn resolve_kind(group: &str, version: &str, resource: &str) -> Option<&'stat
 pub fn decode_stored_object(bytes: &[u8]) -> Result<Value, protobuf::Error> {
     let (api_version, kind, object_bytes) = protobuf::unwrap_unknown(bytes)?;
     let (group, version) = split_api_version(&api_version);
-    let schema = protobuf::schema_for_gvk(group, version, &kind).ok_or_else(|| protobuf::Error::UnknownMessage(format!("{api_version}/{kind}")))?;
-    protobuf::decode_message(schema, &object_bytes)
+    match protobuf::schema_for_gvk(group, version, &kind) {
+        Some(schema) => protobuf::decode_message(schema, &object_bytes),
+        // Group K: no compiled schema for this Kind at all -- a CRD-
+        // defined object, which `server::rest`'s write side always
+        // stores as raw JSON in the envelope's `raw` field rather than
+        // protobuf-encoding it (there's no compiled schema to encode
+        // *with* either). A genuinely unknown, non-CRD Kind decodes to
+        // the same `Json` error a malformed CRD body would -- this
+        // function has no registry to tell the two apart, and both are
+        // real "can't decode this" outcomes either way.
+        None => Ok(serde_json::from_slice(&object_bytes).map_err(protobuf::Error::Json)?),
+    }
 }
 
 /// Group C: the encrypted-aware counterpart to [`decode_stored_object`] —
@@ -270,7 +342,7 @@ fn split_api_version(api_version: &str) -> (&str, &str) {
 /// every resource outside that list, and every other caller, still
 /// passes `None`.
 pub async fn get(storage: &mut StorageClient, cache: Option<&crate::cacher::store::SharedCache>, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str) -> Result<GetOutcome, Error> {
-    if resolve_kind(group, version, resource).is_none() {
+    if resolve_resource(storage, group, version, resource).await?.is_none() {
         return Ok(GetOutcome::UnknownResource);
     }
     let key = keys::object_key(group, resource, namespace, name);
@@ -360,9 +432,10 @@ pub async fn list(
     limit: i64,
     continue_token: &str,
 ) -> Result<ListOutcome, Error> {
-    let Some(kind) = resolve_kind(group, version, resource) else {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(ListOutcome::UnknownResource);
     };
+    let kind = resolved.kind.as_str();
     let label_reqs = if label_selector.is_empty() { Vec::new() } else { selector::parse_label_selector(label_selector)? };
     let field_reqs = if field_selector.is_empty() { Vec::new() } else { selector::parse_field_selector(field_selector)? };
 
@@ -535,12 +608,10 @@ pub enum CreateOutcome {
 /// submitted object, decoded but otherwise untouched — this function
 /// validates and defaults it, it doesn't trust it.
 pub async fn create(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, body: &Value) -> Result<CreateOutcome, Error> {
-    let Some(kind) = resolve_kind(group, version, resource) else {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(CreateOutcome::UnknownResource);
     };
-    let Some(schema) = protobuf::schema_for_gvk(group, version, kind) else {
-        return Ok(CreateOutcome::UnknownResource);
-    };
+    let kind = resolved.kind.as_str();
 
     let Some(name) = body.pointer("/metadata/name").and_then(Value::as_str).filter(|n| !n.is_empty()) else {
         return Ok(CreateOutcome::MissingName);
@@ -553,23 +624,52 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
         }
     }
 
-    let mut violations: Vec<String> = validation::validate_required(schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
-    violations.extend(validation::validate_types(schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+    let mut violations: Vec<String> = match resolved.schema {
+        Some(schema) => {
+            let mut v: Vec<String> = validation::validate_required(schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
+            v.extend(validation::validate_types(schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+            v
+        }
+        // Group K: full structural-schema validation against a CRD's own
+        // openAPIV3Schema isn't landed yet (docs/APISERVER.md's Group K
+        // section names this honestly) -- a CRD-defined object's own
+        // required/type checks aren't run, only defaulting is.
+        None => Vec::new(),
+    };
     violations.extend(name_format_violations(group, resource, &name).into_iter().map(|e| format!("metadata.name: {e}")));
     if !violations.is_empty() {
         return Ok(CreateOutcome::Invalid(violations));
     }
 
-    let mut object = defaulting::apply_defaults(schema, body);
+    let mut object = match (resolved.schema, &resolved.open_api_schema) {
+        (Some(schema), _) => defaulting::apply_defaults(schema, body),
+        (None, Some(open_api_schema)) => apiextensions::schema_defaults::apply_defaults(open_api_schema, body),
+        (None, None) => body.clone(),
+    };
     set_metadata_field(&mut object, "creationTimestamp", Value::String(now_rfc3339()));
     set_metadata_field(&mut object, "uid", Value::String(uuid::Uuid::new_v4().to_string()));
     if let Some(ns) = namespace {
         set_metadata_field(&mut object, "namespace", Value::String(ns.to_string()));
     }
 
+    // Group K: a CustomResourceDefinition's own `status` is entirely
+    // server-computed (`apiextensions::conditions`'s own doc comment
+    // covers why this build computes it synchronously right here rather
+    // than through a separate async establishing controller) — never
+    // trusted from whatever the client's submitted body carried under
+    // `status`, same "generic status subresource" posture `update_status`
+    // already establishes for every other resource's own status.
+    if group == "apiextensions.k8s.io" && resource == "customresourcedefinitions" {
+        let other_crds = list_stored_crds(storage).await?;
+        object["status"] = apiextensions::conditions::compute_status(&object, other_crds.iter(), &[], &now_rfc3339());
+    }
+
     let key = keys::object_key(group, resource, namespace, &name);
     let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
-    let object_bytes = protobuf::encode_message(schema, &object)?;
+    let object_bytes = match resolved.schema {
+        Some(schema) => protobuf::encode_message(schema, &object)?,
+        None => serde_json::to_vec(&object).map_err(protobuf::Error::Json)?,
+    };
     let envelope = protobuf::wrap_unknown(&api_version, kind, &object_bytes);
 
     // Real upstream's own create-only-if-absent idiom, confirmed against
@@ -1126,7 +1226,7 @@ pub enum DeleteOutcome {
 /// Deletes a single object. `namespace: None` for a cluster-scoped
 /// resource, same convention as [`get`]/[`list`]/[`create`].
 pub async fn delete(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str) -> Result<DeleteOutcome, Error> {
-    if resolve_kind(group, version, resource).is_none() {
+    if resolve_resource(storage, group, version, resource).await?.is_none() {
         return Ok(DeleteOutcome::UnknownResource);
     }
     let key = keys::object_key(group, resource, namespace, name);
