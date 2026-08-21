@@ -982,7 +982,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
         // own "containers are immutable after create" posture, see
         // `admission::limit_ranger::applies_to`'s own doc comment).
         if admission::limit_ranger::applies_to(admission::attributes::Operation::Update, &info.api_group, &info.resource, &info.subresource) {
-            match rest::list(&mut client, None, "", "v1", "limitranges", namespace, "", "").await {
+            match rest::list(&mut client, None, "", "v1", "limitranges", namespace, "", "", 0, "").await {
                 Ok(rest::ListOutcome::Found(list)) => {
                     for limit_range in list["items"].as_array().cloned().unwrap_or_default() {
                         let errs = admission::limit_ranger::validate_pvc(&limit_range, &candidate);
@@ -991,7 +991,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                         }
                     }
                 }
-                Ok(rest::ListOutcome::UnknownResource) => {}
+                Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {}
                 Err(e) => {
                     warn!(path = %path_str, error = ?e, "admission: listing limit ranges failed");
                     return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
@@ -1390,12 +1390,12 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             if is_create {
                 if let Some(pvc) = body_value.as_mut() {
                     if admission::default_storage_class::applies_to(&info.api_group, &info.resource, &info.subresource) {
-                        match rest::list(&mut client, None, "storage.k8s.io", "v1", "storageclasses", None, "", "").await {
+                        match rest::list(&mut client, None, "storage.k8s.io", "v1", "storageclasses", None, "", "", 0, "").await {
                             Ok(rest::ListOutcome::Found(list)) => {
                                 let classes = list["items"].as_array().cloned().unwrap_or_default();
                                 admission::default_storage_class::mutate(pvc, &classes);
                             }
-                            Ok(rest::ListOutcome::UnknownResource) => {
+                            Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {
                                 // This build's own discovery table doesn't
                                 // know `storageclasses` at all — treat the
                                 // same as "no default class exists" rather
@@ -1430,7 +1430,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                 };
                 if let Some(operation) = operation {
                     if admission::limit_ranger::applies_to(operation, &info.api_group, &info.resource, &info.subresource) {
-                        match rest::list(&mut client, None, "", "v1", "limitranges", namespace, "", "").await {
+                        match rest::list(&mut client, None, "", "v1", "limitranges", namespace, "", "", 0, "").await {
                             Ok(rest::ListOutcome::Found(list)) => {
                                 let limit_ranges = list["items"].as_array().cloned().unwrap_or_default();
                                 if let Some(body) = body_value.as_mut() {
@@ -1449,7 +1449,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                                     }
                                 }
                             }
-                            Ok(rest::ListOutcome::UnknownResource) => {
+                            Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {
                                 // No `limitranges` known to this build at
                                 // all — same "nothing to enforce" no-op as
                                 // an empty list.
@@ -1527,15 +1527,15 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             let mut quota_usage_updates: Vec<(String, std::collections::BTreeMap<String, crate::scheme::quantity::Quantity>)> = Vec::new();
             if let Some(list_resource) = quota_kind {
                 if let Some(new_object) = body_value.as_ref() {
-                    let existing = match rest::list(&mut client, None, "", "v1", list_resource, namespace, "", "").await {
+                    let existing = match rest::list(&mut client, None, "", "v1", list_resource, namespace, "", "", 0, "").await {
                         Ok(rest::ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
-                        Ok(rest::ListOutcome::UnknownResource) => Vec::new(),
+                        Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => Vec::new(),
                         Err(e) => {
                             warn!(path = %path_str, error = ?e, resource = list_resource, "admission: listing existing objects for ResourceQuota failed");
                             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                         }
                     };
-                    match rest::list(&mut client, None, "", "v1", "resourcequotas", namespace, "", "").await {
+                    match rest::list(&mut client, None, "", "v1", "resourcequotas", namespace, "", "", 0, "").await {
                         Ok(rest::ListOutcome::Found(list)) => {
                             let quotas = list["items"].as_array().cloned().unwrap_or_default();
                             let denial = match list_resource {
@@ -1552,7 +1552,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                                 _ => admission::resource_quota::usage_after_service_create(new_object, &existing, &quotas),
                             };
                         }
-                        Ok(rest::ListOutcome::UnknownResource) => {
+                        Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {
                             // No `resourcequotas` known to this build —
                             // same "nothing to enforce" no-op as an empty
                             // list.
@@ -1574,15 +1574,15 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                 // unconditionally: a namespace with no `ResourceQuota`
                 // referencing this resource's `count/...` key has
                 // nothing to enforce.
-                let existing = match rest::list(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, "", "").await {
+                let existing = match rest::list(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, "", "", 0, "").await {
                     Ok(rest::ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
-                    Ok(rest::ListOutcome::UnknownResource) => Vec::new(),
+                    Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => Vec::new(),
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "admission: listing existing objects for ResourceQuota's object-count check failed");
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                     }
                 };
-                match rest::list(&mut client, None, "", "v1", "resourcequotas", namespace, "", "").await {
+                match rest::list(&mut client, None, "", "v1", "resourcequotas", namespace, "", "", 0, "").await {
                     Ok(rest::ListOutcome::Found(list)) => {
                         let quotas = list["items"].as_array().cloned().unwrap_or_default();
                         if let Some(denial) = admission::resource_quota::check_object_count_create(&info.api_group, &info.resource, &existing, &quotas) {
@@ -1590,7 +1590,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                         }
                         quota_usage_updates = admission::resource_quota::usage_after_object_count_create(&info.api_group, &info.resource, &existing, &quotas);
                     }
-                    Ok(rest::ListOutcome::UnknownResource) => {}
+                    Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {}
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "admission: listing resource quotas failed");
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
@@ -1697,12 +1697,15 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                     }
                 }
             } else if is_list {
-                match rest::list(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector).await {
+                match rest::list(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector, info.limit, &info.continue_token).await {
                     Ok(rest::ListOutcome::Found(list)) => {
                         let body = if wants_table { crate::codec::table::convert_to_table(&list) } else { list };
                         return Ok(json_response(StatusCode::OK, &body));
                     }
                     Ok(rest::ListOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                    Ok(rest::ListOutcome::InvalidContinueToken) => {
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "continue token is not valid")));
+                    }
                     // A malformed selector is the client's fault, not a
                     // server failure — real upstream answers this with a
                     // 400, not a 500.
