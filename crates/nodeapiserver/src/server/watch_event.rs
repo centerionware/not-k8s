@@ -6,11 +6,10 @@
 //! `staging/src/k8s.io/apimachinery/pkg/watch/watch.go`'s own
 //! `EventType` constants.
 //!
-//! **Pure conversion only — not yet wired into an actual streaming HTTP
-//! response.** `server::listener` has no long-lived, chunked-response
-//! machinery yet, and nothing in `lib.rs::run()` starts a
-//! `cacher::registry::CacheRegistry` to read events from in the first
-//! place; both are separate, not-yet-started work.
+//! **Wired into a real streaming HTTP response** —
+//! `server::listener::watch_response_body` encodes every event through
+//! [`to_watch_event_json`] as a newline-terminated JSON document (this
+//! doc comment used to say neither existed yet; both have for a while).
 //!
 //! `Deleted` events carry the real last-known object state: real
 //! upstream's own `WatchEvent.Object` doc comment says a `Deleted`
@@ -24,8 +23,27 @@
 //! placeholder object with no real spec/status data.
 
 use crate::cacher::store::{EventKind, WatchEvent};
-use crate::server::rest::decode_stored_object;
+use crate::server::rest::{decode_stored_object, decrypt_and_decode, Error};
+use crate::storage::client::StorageClient;
 use serde_json::{json, Value};
+
+/// Decodes `bytes` (the value half of `event`), decrypting first when
+/// `storage` is given and has a matching transformer for `(group,
+/// resource)` — Group C's encryption-at-rest, wired into `WATCH` the
+/// same way every other real read path in this crate is
+/// (`server::rest::decrypt_and_decode`, shared code, not a separate
+/// reimplementation here). `storage: None` (matching this crate's own
+/// "fail open on missing infrastructure, not on failed decryption"
+/// posture used elsewhere — e.g. `flowcontrol::resolve`'s own doc
+/// comment) falls back to a plain decode, same as before this wiring
+/// existed; a real event should never be hidden because there was no
+/// storage handle to check for a transformer.
+fn decode_event_value(event: &WatchEvent, bytes: &[u8], storage: Option<&StorageClient>, group: &str, resource: &str) -> Result<Value, Error> {
+    match storage {
+        Some(s) => decrypt_and_decode(s, group, resource, &event.key, bytes),
+        None => Ok(decode_stored_object(bytes)?),
+    }
+}
 
 /// Real upstream's own `watch.EventType` string constants.
 pub fn event_type_str(kind: EventKind) -> &'static str {
@@ -47,11 +65,11 @@ pub fn event_type_str(kind: EventKind) -> &'static str {
 /// `WatchCache` itself can't retain a value for — see this module's own
 /// doc comment) — an honest `None`, not a bug papered over with an
 /// invented placeholder object.
-pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str) -> Option<Result<Value, crate::codec::protobuf::Error>> {
+pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str, storage: Option<&StorageClient>, group: &str, resource: &str) -> Option<Result<Value, Error>> {
     let event_type = event_type_str(event.kind);
     match event.kind {
         EventKind::Added | EventKind::Modified => {
-            let object = match decode_stored_object(&event.value) {
+            let object = match decode_event_value(event, &event.value, storage, group, resource) {
                 Ok(o) => o,
                 Err(e) => return Some(Err(e)),
             };
@@ -72,7 +90,7 @@ pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str) ->
                 // The common case now: `WatchCache::apply` retains the
                 // pre-delete value, so this is what a real Deleted event
                 // actually carries.
-                match decode_stored_object(&event.value) {
+                match decode_event_value(event, &event.value, storage, group, resource) {
                     Ok(o) => Some(Ok(json!({"type": event_type, "object": o}))),
                     Err(e) => Some(Err(e)),
                 }
@@ -101,7 +119,7 @@ mod tests {
         let envelope = real_namespace_envelope("default");
         for kind in [EventKind::Added, EventKind::Modified] {
             let event = WatchEvent { kind, key: b"k".to_vec(), value: envelope.clone(), revision: 7 };
-            let json = to_watch_event_json(&event, "Namespace", "v1").expect("Added/Modified must always convert").expect("decode must succeed");
+            let json = to_watch_event_json(&event, "Namespace", "v1", None, "", "namespaces").expect("Added/Modified must always convert").expect("decode must succeed");
             assert_eq!(json["type"], if kind == EventKind::Added { "ADDED" } else { "MODIFIED" });
             assert_eq!(json["object"]["metadata"]["name"], "default");
         }
@@ -110,7 +128,7 @@ mod tests {
     #[test]
     fn bookmark_carries_only_kind_apiversion_and_resource_version() {
         let event = WatchEvent { kind: EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 42 };
-        let json = to_watch_event_json(&event, "Pod", "v1").unwrap().unwrap();
+        let json = to_watch_event_json(&event, "Pod", "v1", None, "", "pods").unwrap().unwrap();
         assert_eq!(json["type"], "BOOKMARK");
         assert_eq!(json["object"]["kind"], "Pod");
         assert_eq!(json["object"]["apiVersion"], "v1");
@@ -120,14 +138,14 @@ mod tests {
     #[test]
     fn deleted_with_no_retained_value_is_a_named_none_not_a_fabrication() {
         let event = WatchEvent { kind: EventKind::Deleted, key: b"k".to_vec(), value: Vec::new(), revision: 9 };
-        assert!(to_watch_event_json(&event, "Pod", "v1").is_none());
+        assert!(to_watch_event_json(&event, "Pod", "v1", None, "", "pods").is_none());
     }
 
     #[test]
     fn deleted_with_a_real_value_decodes_it_honestly() {
         let envelope = real_namespace_envelope("goner");
         let event = WatchEvent { kind: EventKind::Deleted, key: b"k".to_vec(), value: envelope, revision: 9 };
-        let json = to_watch_event_json(&event, "Namespace", "v1").unwrap().unwrap();
+        let json = to_watch_event_json(&event, "Namespace", "v1", None, "", "namespaces").unwrap().unwrap();
         assert_eq!(json["type"], "DELETED");
         assert_eq!(json["object"]["metadata"]["name"], "goner");
     }
@@ -135,7 +153,7 @@ mod tests {
     #[test]
     fn a_corrupt_stored_value_is_a_real_error_not_a_panic() {
         let event = added_event(b"not a real envelope".to_vec(), 1);
-        let result = to_watch_event_json(&event, "Namespace", "v1").expect("Added must attempt a decode");
+        let result = to_watch_event_json(&event, "Namespace", "v1", None, "", "namespaces").expect("Added must attempt a decode");
         assert!(result.is_err());
     }
 }
