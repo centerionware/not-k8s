@@ -1342,26 +1342,29 @@ informer teardown on deletion isn't modeled), and a CRD that becomes
 `Established` is only ever discovered by the *next* watch request for
 its resource, not eagerly the moment it's created.
 
-**`UPDATE`/`PATCH` (`JSON Patch`/`Merge Patch`) are real for CR objects
-now too** — `update`/`patch_prepare`/`patch_persist`/`update_status`/
-`patch_status` all resolve through `resolve_resource` the same way
-`create` does, with the same "no structural validation, schema-driven
+**`UPDATE`/`PATCH` are real for CR objects now — all three real patch
+kinds, `strategic-merge-patch` included** — `update`/`patch_prepare`/
+`patch_persist`/`update_status`/`patch_status` all resolve through
+`resolve_resource` the same way `create` does, with the same "no
+structural validation beyond pruning/required/type, schema-driven
 defaulting where a schema exists" scope. `PatchContext` widened from a
 compiled-only `schema: &'static str` to `Option<&'static str>` plus a
 carried-through `open_api_schema: Option<Value>`.
-`x-kubernetes-list-type`/`-list-map-keys`-driven `strategic-merge-patch`
-is a real, deliberate exception, not attempted: `crate::patch::
-strategic_merge`'s own merge-key resolution walks a *compiled*
-`ref_schema`, and a CRD's schema is a runtime `openAPIV3Schema` this
-crate has no strategic-merge interpreter for — an explicit
-`application/strategic-merge-patch+json` against a CRD gets a clean
-`422`/`Invalid` naming exactly that, not a silently-wrong merge or a
-panic (real upstream's own `kubectl patch` already falls back to
-merge-patch for a CRD when no `Content-Type` is given, so this is an
-unusual request in practice, not the common case). Live-tested
-(`tests/crd_roundtrip.rs`'s `update_and_patch_work_against_a_crd_defined_resource`)
-against a real `nodestore`, including the strategic-merge-patch
-rejection itself.
+`apiextensions::schema_strategic_merge` is the runtime-schema sibling of
+`crate::patch::strategic_merge`: a list field merges by key when its own
+schema names `x-kubernetes-list-type: map` +
+`x-kubernetes-list-map-keys` — a real array of field names (composite
+keys), matched against *every* named key, a genuine improvement over the
+compiled path's single `patch_merge_key` (built-in types in the vendored
+spec never need more than one key, which is why that simplification was
+safe there — not a reason to cap the CRD path the same way). Live-tested
+(`tests/crd_roundtrip.rs`'s `update_and_patch_work_against_a_crd_defined_resource`
+for the scalar-replacement case, and the dedicated
+`strategic_merge_patch_merges_a_crd_list_field_by_its_own_x_kubernetes_list_map_keys`
+for the real by-key list-merge behavior — one patched element merges by
+key, an untouched sibling survives unchanged, and a non-matching element
+appends, proving this is a genuine merge rather than a replace that
+happened to look right) against a real `nodestore`.
 
 **Discovery merge is real too** — `/apis`, `/apis/{group}`,
 `/apis/{group}/{version}`, and their aggregated-discovery-v2 counterparts
