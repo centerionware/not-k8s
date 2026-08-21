@@ -1698,10 +1698,23 @@ actual discovery-endpoint dial (real upstream's own "5 concurrent
 `GET`s, any one succeeding is enough" check, `Reason:
 "FailedDiscoveryCheck"`/`"Passed"`) is left to Phase 4, the natural home
 for it since it needs the same dial primitive the reverse proxy itself
-does. 4) The actual reverse proxy — resolve `spec.service` against live
-Service/EndpointSlice data, dial via `proxy::http_client`'s
-already-proven pattern, relay the response unmodified, matching
-`pods/log`'s own "transparent proxy, no added behavior" posture.
+does. 4) **Partially started.** The actual reverse proxy —
+`aggregator::proxy_target::resolve` is the pure `spec.service` -> real
+dial `Target` resolution (reusing `proxy::pod_log::Target` directly),
+choosing real upstream's own `ClusterIP`-dial strategy
+(`NewClusterIPServiceResolver`, `pkg/apiserver/resolvers.go`, fetched
+and read directly) over its endpoint-resolving one
+(`NewEndpointServiceResolver`) since `crates/nodeproxy` already gives
+this build real `ClusterIP` routing (real nftables DNAT to a live pod)
+to rely on — the same real infrastructure real upstream's own kube-proxy
+provides for that strategy to work at all, not a simplification standing
+in for something missing. Not yet wired to the actual dial
+(`proxy::http_client`'s already-proven pattern) or a real request route
+in `server::listener`; per-`APIService` TLS trust
+(`spec.caBundle`/`.insecureSkipTLSVerify` — a real, *per-APIService*
+`rustls::ClientConfig`, genuinely different from `proxy::client_tls`'s
+single shared nodelet-trust config built once at startup) isn't
+attempted yet either.
 3) Discovery merge — add `APIService`-sourced group-versions as a third
 input alongside the static table and Group K's CRD-sourced ones.
 **Real ordering correction, found while scoping the two**: unlike
