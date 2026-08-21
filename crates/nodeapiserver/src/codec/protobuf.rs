@@ -62,6 +62,17 @@ pub enum Error {
     UnexpectedWireShape { field: String },
     #[error("field {field} is not a valid RFC3339 timestamp: {value:?}")]
     InvalidTimestamp { field: String, value: String },
+    /// Group K: a CRD-defined object's body has no compiled proto schema
+    /// at all (there's nothing in `vendor/protos` for an arbitrary
+    /// operator-defined `CustomResourceDefinition` — real upstream never
+    /// generates one either), so `server::rest`'s decode/encode of it
+    /// falls back to `application/json` for the body instead — this
+    /// variant is that fallback's own decode failure (malformed JSON, not
+    /// a schema mismatch). The encode side (`serde_json::to_vec`, called
+    /// straight from `server::rest`) reuses this same variant for
+    /// symmetry rather than adding a near-duplicate.
+    #[error("stored object body is not valid JSON: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 type Result<T> = std::result::Result<T, Error>;
