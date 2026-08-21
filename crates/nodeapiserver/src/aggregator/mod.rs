@@ -22,11 +22,15 @@
 //! condition to `status.conditions` via `rest::update_status`. Spawned
 //! as a periodic background task from `server::listener::run` (best
 //! effort, same posture the cache-registry spawn loop already has).
-//! **Named, honest scope**: `server::listener::aggregate_proxy`/
-//! `route::discoverable_group_versions` don't consult this loop's
-//! written condition yet — both still recompute pre-flight fresh on
-//! every call, a deliberate, separate follow-up (switching the hot path
-//! over to a cached read).
+//! Its written condition is now consulted too
+//! (`availability::cached_available`): `route::discoverable_group_versions`
+//! trusts a decisive cached answer outright (zero extra I/O either way);
+//! `server::listener::aggregate_proxy` short-circuits straight to `503`
+//! on a cached `Available: False` (skipping the Service/`EndpointSlice`
+//! fetch), but still runs the full fresh check on `True`/unknown, since
+//! it needs the backing Service fetched regardless to resolve the dial
+//! target — this only ever saves the *negative*-path I/O, not the
+//! positive one.
 //! **Phase 4 done — a genuine live reverse proxy, wired into
 //! `server::listener::handle`.** `route::resolve` finds the one stored,
 //! non-local `APIService` (if any) claiming a request's `(group,
