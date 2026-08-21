@@ -74,18 +74,24 @@
 //! a formerly wholly-owned struct field (tracked only via its leaves)
 //! can actually be matched and pruned as a whole.
 //!
+//! `updater::prune` now also landed — real `Updater.prune`/
+//! `addBackOwnedItems`/`addBackDanglingItems` (single-schema-version
+//! scoped like `update`/`apply_update`), the step that drops whatever the
+//! applying manager owned last time but its new apply configuration no
+//! longer mentions, while adding back anything any manager (including the
+//! applier's own new config) still claims.
+//!
 //! **Not yet landed**: `$patch`/`$setElementOrder`/
 //! `$deleteFromPrimitiveList` directives (named, deliberate
 //! simplifications — see `strategic_merge`'s own doc comment) and
 //! `Updater.Apply` itself: the real `application/apply-patch+yaml` path.
-//! Every primitive `prune()` itself needs is now landed
-//! (`typed_merge::merge`, `fieldset::remove_items`,
-//! `fieldset::ensure_named_fields_are_members`); `prune()`'s own
-//! orchestration (`RemoveItems` + `addBackOwnedItems`/
-//! `addBackDanglingItems`) and `Apply`'s outer orchestration around it are
-//! what remain, plus the real `managedFields` wire format
-//! (`ManagedFieldsEntry`) and `server::rest` wiring — see `updater`'s own
-//! doc comment for the precise remaining gap.
+//! Every piece `Apply` itself needs to orchestrate is now landed
+//! (`typed_merge::merge`, `updater::prune`, `updater::update`); what
+//! remains is `Apply`'s own outer orchestration (`merge` + `prune` +
+//! `update`, plus recording the applying manager's own new `Set`) and the
+//! real `managedFields` wire format (`ManagedFieldsEntry`) +
+//! `server::rest` wiring around it — see `updater`'s own doc comment for
+//! the precise remaining gap.
 
 pub mod fieldset;
 pub mod json_patch;
