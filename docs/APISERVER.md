@@ -1698,12 +1698,30 @@ used*:
    machinery (`cel_ext::cost_walk::Coster`, the stateful walker this
    needs — a bare `cost()` free function remains for callers with no
    schema at all). Everything else not named falls to real upstream's
-   own O(1) default too. **Not yet landed**: `Comprehension`
-   (`costComprehension` — the loop-cost multiplication, `range size ×
-   per-iteration cost`, the piece that actually makes a pathological
-   `list.all(...)` rule's real worst case visible), still returning
-   `CostEstimate::unknown()` rather than under-costing at zero. Wiring a
-   final result into CRD acceptance is separate, later work too.
+   own O(1) default too.
+   **`Comprehension` is landed too — the `cost()` dispatcher is now
+   complete for every real AST node kind.** Real upstream's own
+   `costComprehension`: the range's own real element count (from a
+   schema-bounded `maxItems`, when one exists) times the combined
+   per-iteration cost of the loop condition and step — an unknown range
+   size (no schema, or an unresolvable path) correctly saturates the
+   resulting cost to "effectively unbounded" rather than silently
+   under-counting a pathological `list.all(...)`-shaped rule at a small
+   fixed number; a schema-bounded range instead produces a real, finite
+   worst-case number, live-verified against a real `maxItems`-bounded
+   test fixture. **Named, honest gap**: real upstream's own `cel.bind()`
+   macro reuses this identical AST shape with a distinctive signature
+   (`isBind`/`costBind`) real upstream costs completely differently (its
+   body runs once, never multiplied by a loop) — not detected here, so
+   an actual `cel.bind()` expression's own empty-range shape would
+   *under*-cost its loop term to `{0,0}`; named rather than silently
+   glossed over, and not caught by any test since `cel.bind()` isn't
+   real, documented `x-kubernetes-validations` authoring practice.
+   **Every real primitive `cost()` itself needs is now complete and
+   tested.** What remains for Phase 3 as a whole: wiring a final result
+   into CRD acceptance (compare against `RuntimeCELCostBudget`/
+   `PerCallLimit`, reject a rule whose worst case exceeds budget) — a
+   real, separate, later slice.
 4. Wire into Group K: `x-kubernetes-validations` evaluated in
    `server::rest::create`/`update`/`patch_persist`'s CRD branch, after
    pruning and required/type validation (`apiextensions::

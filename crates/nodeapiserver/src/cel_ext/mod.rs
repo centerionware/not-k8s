@@ -5,23 +5,26 @@
 //! expression); **Phase 2 partially done** (`eval_bool_with_deadline` —
 //! a real wall-clock deadline, this build's own stand-in for real
 //! upstream's per-operation cost accounting, which needs interpreter
-//! hooks the `cel` crate doesn't expose at all); **Phase 3 in
-//! progress** (`cost` — the `SizeEstimate`/`CostEstimate` arithmetic
-//! primitives real upstream's own static checked-cost estimator is
-//! built on; `decl_type` — converts a CRD's own runtime schema into the
-//! real `DeclType` tree the estimator resolves a CEL field-path's size
-//! bound against, plus `decl_type::estimate_size`, the actual path-walk
-//! lookup; `path` — resolves a CEL expression's own `Select`/`Ident`
-//! chain into the field-path `estimate_size` consumes; `cost_walk` — the
-//! actual `cost()` AST-walking dispatcher, real upstream's own
-//! `(*coster).cost`/`costCall`/`functionCost`: every structural node
-//! kind, plus `Call` for the real, unambiguous string functions
-//! (`matches`/`contains`/`startsWith`/`endsWith`) and the real O(1)
-//! default for everything else (including every operator this crate's
-//! type-checker-free AST can't type-specialize — `+`/`==`/`<`/etc., a
-//! deliberate choice, not an oversight, see that module's own doc
-//! comment). `Comprehension` still returns `unknown`, its own real
-//! follow-up slice (the loop-cost multiplication).) — see
+//! hooks the `cel` crate doesn't expose at all); **Phase 3's own
+//! `cost()` dispatcher is now fully landed** (`cost` — the
+//! `SizeEstimate`/`CostEstimate` arithmetic primitives; `decl_type` — a
+//! CRD's own runtime schema converted into the real `DeclType` tree,
+//! plus `decl_type::estimate_size`, the path-walk lookup; `path` —
+//! resolves a CEL expression's own `Select`/`Ident` chain (and a
+//! single-variable comprehension's own iteration path) into the field
+//! path `estimate_size` consumes; `cost_walk` — the actual `cost()`
+//! AST-walking dispatcher itself, real upstream's own `(*coster).cost`/
+//! `costCall`/`functionCost`/`costComprehension`, every node kind now
+//! dispatched: structural nodes, `Call` for the real unambiguous string
+//! functions (`matches`/`contains`/`startsWith`/`endsWith`) plus the
+//! real O(1) default for everything else (including every operator this
+//! crate's type-checker-free AST can't type-specialize — `+`/`==`/`<`/
+//! etc., a deliberate choice, not an oversight), and `Comprehension`'s
+//! own real loop-cost multiplication — see that module's own doc
+//! comment for the exact real scope and the one named gap
+//! (`cel.bind()`'s own distinct cost shape isn't detected)) — **not yet
+//! wired to anything**: no CRD-acceptance-time budget check exists yet,
+//! this is still only real, tested, standalone logic. See
 //! `docs/APISERVER.md`'s own
 //! `cel_ext` section (right after Group K) for the real, verified full
 //! plan: real upstream's own budget numbers
