@@ -1225,11 +1225,33 @@ along with the `distinguisherMethod` computation (meaningless without
 queuing) and the two mandatory bootstrap `FlowSchema`s real upstream
 always synthesizes (Group O's job).
 
-**N. Streaming and proxy subresources** — **not started**. exec/attach/
-port-forward/log spliced through to `nodelet:10250`, reusing
-`crates/nodelet/src/server/exec.rs`'s raw-upgrade-splice pattern (proven in
-production here already — no SPDY/WebSocket crate needed on either end);
-node/service/pod proxy subresources.
+**N. Streaming and proxy subresources** — **started**. `proxy::pod_log`
+ports real upstream's own `pods/log` target resolution
+(`pkg/registry/core/pod/strategy.go`'s `LogLocation`/
+`validateContainer`, plus the node connection-info resolution
+`pkg/kubelet/client/kubelet_client.go`'s
+`NodeConnectionInfoGetter.GetConnectionInfo` performs — preferred
+address-type walk, real upstream's own default order `Hostname,
+InternalDNS, InternalIP, ExternalDNS, ExternalIP` from
+`cmd/kube-apiserver/app/options/options.go`, plus the
+`daemonEndpoints.kubeletEndpoint.port`-or-default-10250 port fallback —
+all fetched and read directly). Container defaulting (single-container
+pods default automatically, `containers` + `initContainers` combined,
+matching real upstream's own `AllFeatureEnabledContainers` visit) and
+explicit-container validation both faithfully ported, real per-error
+variants for "no default container"/"unknown container"/"pod not
+scheduled"/"no node address" rather than one generic failure. **Pure
+target-resolution only — not wired to a live proxy yet**: nothing here
+makes an HTTP request or talks to nodelet. Wiring this into
+`server::listener` as a real live proxy needs credential material
+nodeapiserver can present that nodelet's own bearer-token `TokenReview`
+authenticator (`crates/nodelet/src/server/auth.rs`) will accept — this
+build doesn't implement the `TokenReview` subresource nodelet's
+authenticator calls back into yet, a real, separate, not-yet-solved
+problem, named honestly rather than glossed over. exec/attach/
+port-forward (would reuse `crates/nodelet/src/server/exec.rs`'s proven
+raw-upgrade-splice pattern once the same credential problem is solved)
+and node/service proxy subresources remain entirely unstarted.
 
 **O. Cluster bootstrap — the k3s replacement half** — **not started, and
 deliberately not `nodeapiserver`'s own code** (decided 2026-08-21, before
