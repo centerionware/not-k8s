@@ -64,18 +64,17 @@ pub async fn resolve(storage: &mut StorageClient, group: &str, version: &str) ->
 /// comment covers why this is scoped to group-level discovery only, not
 /// `/apis/{group}/{version}`'s own resource list. Runs the exact same
 /// real pre-flight chain `server::listener::aggregate_proxy` runs before
-/// ever attempting a dial (`availability::preflight_check`, fresh every
-/// call — Phase 2's own reconciliation loop still doesn't exist to cache
-/// this instead), so a registered but currently-unavailable backend
-/// (its Service deleted, no ready endpoints, ...) is correctly left out
-/// of discovery rather than advertised and then failing every real
-/// request — matching real upstream's own "only an `Available`
-/// `APIService`'s group-version appears in discovery" posture. One
-/// `Service` GET + one `EndpointSlice` LIST per registered `APIService`
-/// — bounded by the same small real-world cardinality `resolve`'s own
-/// doc comment already assumes, not a per-request-path cost (only paid
-/// for an `/apis`-prefixed discovery request, same gate `server::
-/// listener::handle` already applies to the CRD fetch).
+/// ever attempting a dial, so a registered but currently-unavailable
+/// backend (its Service deleted, no ready endpoints, ...) is correctly
+/// left out of discovery rather than advertised and then failing every
+/// real request — matching real upstream's own "only an `Available`
+/// `APIService`'s group-version appears in discovery" posture. Prefers
+/// `aggregator::reconcile`'s own already-computed condition when one
+/// exists (`availability::cached_available` — zero extra I/O), falling
+/// back to a fresh `preflight_check` (one `Service` GET + one
+/// `EndpointSlice` LIST, bounded by the same small real-world
+/// cardinality `resolve`'s own doc comment already assumes) only for an
+/// `APIService` the reconciliation loop hasn't reached yet.
 pub async fn discoverable_group_versions(storage: &mut StorageClient) -> Result<Vec<(String, String)>, Error> {
     let list = match rest::list(storage, None, "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
         rest::ListOutcome::Found(list) => list,
@@ -87,6 +86,19 @@ pub async fn discoverable_group_versions(storage: &mut StorageClient) -> Result<
         let Some(service_ref) = api_service.pointer("/spec/service") else { continue };
         let Some(group) = api_service.pointer("/spec/group").and_then(Value::as_str) else { continue };
         let Some(version) = api_service.pointer("/spec/version").and_then(Value::as_str) else { continue };
+        // `aggregator::reconcile`'s own already-computed condition, when
+        // one exists, answers this without any I/O at all -- real
+        // correctness is unaffected either way (`cached_available`'s own
+        // doc comment: `None` falls through to the fresh check below,
+        // never trusted as the only signal on a freshly-registered
+        // `APIService` the reconciliation loop hasn't reached yet).
+        if let Some(available) = availability::cached_available(&api_service) {
+            if available {
+                out.push((group.to_string(), version.to_string()));
+            }
+            continue;
+        }
+
         let namespace = service_ref.get("namespace").and_then(Value::as_str).unwrap_or("");
         let name = service_ref.get("name").and_then(Value::as_str).unwrap_or("");
         let port = service_ref.get("port").and_then(Value::as_i64).unwrap_or(443);

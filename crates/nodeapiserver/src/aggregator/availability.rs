@@ -136,6 +136,33 @@ pub fn preflight_check(namespace: &str, name: &str, port: i64, service: Option<&
     Ok(())
 }
 
+/// Reads back the `Available` condition `aggregator::reconcile::
+/// reconcile_once` already wrote to `status.conditions`, if any —
+/// `Some(true)`/`Some(false)` for a real, already-computed `True`/
+/// `False` status, `None` when no `Available` condition exists yet (a
+/// freshly-created `APIService` the reconciliation loop hasn't reached
+/// on its first pass) or its `status` is `"Unknown"` (real upstream's
+/// own third `ConditionStatus`, never written by this crate's own
+/// controller today but handled the same conservative way a caller
+/// should treat any condition it can't confidently act on: fall back to
+/// computing it fresh).
+///
+/// Callers use this to skip the real I/O `preflight_check` needs
+/// (fetching the backing Service/`EndpointSlice`s) when a fresh,
+/// decisive cached answer already exists — never trusted as the *only*
+/// signal on a `None` (real correctness would otherwise regress for the
+/// first ~30s after a new `APIService` is registered, before the
+/// reconciliation loop's first pass reaches it).
+pub fn cached_available(api_service: &Value) -> Option<bool> {
+    let conditions = api_service.pointer("/status/conditions").and_then(Value::as_array)?;
+    let available = conditions.iter().find(|c| c.get("type").and_then(Value::as_str) == Some("Available"))?;
+    match available.get("status").and_then(Value::as_str) {
+        Some("True") => Some(true),
+        Some("False") => Some(false),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +244,30 @@ mod tests {
         let service = json!({"spec": {"ports": []}});
         let err = preflight_check("kube-system", "metrics-server", 443, Some(&service), &[]).unwrap_err();
         assert_eq!(err.reason, "ServicePortError", "an absent spec.type must still run the ClusterIP checks, real upstream's own default");
+    }
+
+    #[test]
+    fn cached_available_reads_a_true_condition() {
+        let api_service = json!({"status": {"conditions": [{"type": "Available", "status": "True"}]}});
+        assert_eq!(cached_available(&api_service), Some(true));
+    }
+
+    #[test]
+    fn cached_available_reads_a_false_condition() {
+        let api_service = json!({"status": {"conditions": [{"type": "Available", "status": "False"}]}});
+        assert_eq!(cached_available(&api_service), Some(false));
+    }
+
+    #[test]
+    fn cached_available_is_none_when_no_available_condition_exists_yet() {
+        assert_eq!(cached_available(&json!({})), None);
+        assert_eq!(cached_available(&json!({"status": {"conditions": []}})), None);
+        assert_eq!(cached_available(&json!({"status": {"conditions": [{"type": "SomeOtherType", "status": "True"}]}})), None);
+    }
+
+    #[test]
+    fn cached_available_is_none_for_an_unknown_status_rather_than_a_guess() {
+        let api_service = json!({"status": {"conditions": [{"type": "Available", "status": "Unknown"}]}});
+        assert_eq!(cached_available(&api_service), None);
     }
 }
