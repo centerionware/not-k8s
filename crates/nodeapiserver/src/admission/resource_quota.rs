@@ -607,6 +607,43 @@ pub fn check_pod_create(pod: &Value, existing_pods: &[Value], resource_quotas: &
     None
 }
 
+/// The persisted-`status.used` half of [`check_pod_create`]: once a
+/// request is admitted, this is the post-create usage total for every
+/// quota `check_pod_create` considered — real upstream's own admission
+/// plugin persists exactly this via an optimistic-concurrency retry loop
+/// (`quotaAccessor.UpdateQuotaStatus`), the piece this crate's own
+/// `resource_quota` doc comment used to name as its one remaining gap.
+/// Kept as a separate function rather than folding into
+/// `check_pod_create` itself: computing it is wasted work on the
+/// overwhelmingly common "just tell me allow/deny" call, including this
+/// module's own existing unit tests. Returns `(quota_name, new_total)`
+/// pairs — `new_total` only carries the keys this pod evaluator itself
+/// tracks (`pod_usage`'s own keys), not a full merge with whatever a
+/// quota's `status.used` might already hold for other evaluators'
+/// resources (PVC storage, service counts, ...) — merging onto the
+/// existing persisted value without clobbering those is the caller's
+/// job (`server::listener`'s own persist step reads-modifies-writes).
+pub fn usage_after_pod_create(pod: &Value, existing_pods: &[Value], resource_quotas: &[Value]) -> Vec<(String, BTreeMap<String, Quantity>)> {
+    let this_pod_usage = pod_usage(pod);
+    let mut updates = Vec::new();
+
+    for resource_quota in resource_quotas {
+        if !quota_applies(resource_quota) || !quota_matches_pod_scopes(resource_quota, pod) {
+            continue;
+        }
+        let mut existing_usage = BTreeMap::new();
+        for existing in existing_pods {
+            if counts_toward_quota(existing) && quota_matches_pod_scopes(resource_quota, existing) {
+                existing_usage = add_maps(&existing_usage, &pod_usage(existing));
+            }
+        }
+        let new_total = add_maps(&existing_usage, &this_pod_usage);
+        let name = resource_quota.get("metadata").and_then(|m| m.get("name")).and_then(Value::as_str).unwrap_or("").to_string();
+        updates.push((name, new_total));
+    }
+    updates
+}
+
 pub fn applies_to_pvc(operation: crate::admission::attributes::Operation, group: &str, resource: &str, subresource: &str) -> bool {
     group.is_empty() && resource == "persistentvolumeclaims" && subresource.is_empty() && operation == crate::admission::attributes::Operation::Create
 }
@@ -829,6 +866,26 @@ mod tests {
         let q = quota("ephemeral-quota", json!({"requests.ephemeral-storage": "4Gi"}));
         let denial = check_pod_create(&pod, &[existing], &[q]).expect("2Gi + 3Gi > 4Gi");
         assert!(denial.contains("requests.ephemeral-storage"));
+    }
+
+    #[test]
+    fn usage_after_pod_create_sums_the_new_total_per_matching_quota() {
+        let pod = pod_with_cpu_request("new", "1");
+        let existing = pod_with_cpu_request("existing", "1");
+        let q = quota("cpu-quota", json!({"requests.cpu": "10"}));
+        let updates = usage_after_pod_create(&pod, &[existing], &[q]);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].0, "cpu-quota");
+        assert_eq!(updates[0].1.get("requests.cpu"), Some(&Quantity::parse("2").unwrap()));
+    }
+
+    #[test]
+    fn usage_after_pod_create_skips_a_non_matching_quota() {
+        let pod = pod_with_cpu_request("new", "1");
+        // Tracks only `count/services` -- never applies to a pod check at
+        // all (same fixture `a_quota_tracking_only_service_count_never_applies_to_pods` uses).
+        let q = quota("svc-quota", json!({"count/services": "1"}));
+        assert!(usage_after_pod_create(&pod, &[], &[q]).is_empty());
     }
 
     #[test]
