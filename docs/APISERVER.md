@@ -1627,6 +1627,29 @@ used*:
    defense against a malicious *rule* (not just malicious input), needed
    before `x-kubernetes-validations` can be accepted at CRD-creation
    time with any confidence its worst case is actually bounded.
+   **Started**: `cel_ext::cost` — the real `SizeEstimate`/`CostEstimate`
+   min/max-range arithmetic (`cel-go`'s own `checker/cost.go` +
+   `common/cost/cost.go`, fetched and read directly), the primitive
+   every other piece of the estimator is built on. Real finding, worth
+   recording: the `cel` crate's `Program::expression()` exposes a real,
+   fully walkable AST (`Call`/`Comprehension`/`Ident`/`List`/`Literal`/
+   `Map`/`Select`/`Struct`, all `pub`, confirmed directly in the
+   vendored crate source) — **no CEL type-checker is needed to walk
+   it**, only for the two narrow places real upstream's own algorithm
+   consults resolved *type* info (deciding whether a `Select`'s operand
+   is itself indexable, and a comprehension's range-container kind when
+   entry-size tracking alone doesn't resolve it) — both approximable
+   with a named, honest simplification rather than requiring a real
+   type-checker subsystem. **Not yet landed**: the path resolver
+   (turning a `Select`/`Ident` chain into a field path,
+   `self.spec.foo`-shaped), the schema-driven size lookup (walking a
+   CRD's own runtime `openAPIV3Schema` `Value` for a path's
+   `maxLength`/`maxItems`/`maxProperties`, the same `apiextensions::
+   schema_*` walking convention already established elsewhere, falling
+   back to the real `Max*Size` constants), and the actual `cost()`
+   AST-walking dispatch itself (the biggest remaining piece — real
+   upstream's own per-`Expr`-kind and per-builtin-function cost rules,
+   already fully read and ready to port).
 4. Wire into Group K: `x-kubernetes-validations` evaluated in
    `server::rest::create`/`update`/`patch_persist`'s CRD branch, after
    pruning and required/type validation (`apiextensions::
