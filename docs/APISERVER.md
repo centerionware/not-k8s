@@ -1401,16 +1401,38 @@ either kind. Wired into the same three call sites `schema_defaults`
 already was, so a malformed CR is now a genuine `422`, not silently
 accepted.
 
+**`x-kubernetes-preserve-unknown-fields` pruning is real too** —
+`apiextensions::schema_pruning`, a faithful (if scoped-down) port of real
+upstream's own recursive pruning walk
+(`k8s.io/apiextensions-apiserver/pkg/apiserver/schema/pruning`): drops
+any object key the schema's own `properties` doesn't declare (a
+schema-shaped `additionalProperties` keeps the key but still recurses
+into pruning its value; a bare `additionalProperties: true`, or
+`x-kubernetes-preserve-unknown-fields: true` at any level, stops pruning
+for that whole subtree), real upstream's own default posture for a
+structural (`v1`) schema. Run *before* validation and defaulting in
+`create`/`update`/`patch_persist` (matching real upstream's own order —
+a default the schema names is by definition declared, so pruning never
+removes one, and validation sees the object as it will actually be
+stored). **Named, honest simplification**: `apiVersion`/`kind`/
+`metadata` are hard-coded as always preserved at the object's own top
+level, standing in for real upstream's schema-*completion* step (which
+auto-injects those three into a CRD's effective schema regardless of
+what the operator wrote) — this module doesn't implement that general
+mechanism, only this one specific, security-relevant consequence of it
+(an operator's schema that only ever describes `spec`/`status`, the
+overwhelming common case, must never have this build silently prune the
+object's own identity).
+
 **Not yet landed, named honestly** (`apiextensions::mod`'s own doc
-comment carries this list too): `x-kubernetes-preserve-unknown-fields`
-pruning (a separate structural-schema concern — "should this field even
-exist" — `schema_validation` skips an undeclared field rather than
-flagging or stripping it, same posture `scheme::validation` already
-takes); enum membership, numeric ranges, format checks, and any
-cross-field consistency rule (`x-kubernetes-validations` CEL is a CRD
-schema's real mechanism for all of that — **needs the CEL cost budget
-built first**, Group J's own doc comment names this as a real DoS
-surface, not optional hardening). Conversion webhooks.
+comment carries this list too): enum membership, numeric ranges, format
+checks, and any cross-field consistency rule (`x-kubernetes-validations`
+CEL is a CRD schema's real mechanism for all of that — **needs the CEL
+cost budget built first**, Group J's own doc comment names this as a
+real DoS surface, not optional hardening). Conversion webhooks. Pruning/
+validation on the `status` subresource write itself (`update_status`/
+`patch_status` keep the same "no structural checks on status" scope real
+upstream's own generic status strategy has for built-ins too).
 
 **L. Aggregation layer** — **not started**. `APIService` objects,
 `ServiceResolver`, reverse proxying, discovery merge, availability

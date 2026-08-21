@@ -458,3 +458,46 @@ async fn create_rejects_a_crd_defined_object_that_violates_its_own_schema() {
     let _ = child.kill().await;
     let _ = child.wait().await;
 }
+
+/// Structural-schema pruning (`apiextensions::schema_pruning`) — a
+/// client-submitted field the CRD's own schema doesn't declare is
+/// silently dropped on `CREATE`, while `metadata` survives untouched
+/// even though `a_crd()`'s own schema never mentions it at all (the
+/// overwhelmingly common real case: an operator's schema only ever
+/// describes `spec`/`status`).
+#[tokio::test]
+async fn create_prunes_a_field_the_crd_schema_does_not_declare() {
+    let Some(nodestore_bin) = find_nodestore_binary() else {
+        eprintln!("SKIPPED: no nodestore binary available and building one on demand failed");
+        return;
+    };
+    let (mut child, _data_dir, mut storage) = spawn_nodestore(&nodestore_bin, 23804).await;
+
+    rest::create(&mut storage, "apiextensions.k8s.io", "v1", "customresourcedefinitions", None, &a_crd()).await.expect("rest::create(CRD) must not itself error");
+
+    let widget = json!({
+        "apiVersion": "example.com/v1",
+        "kind": "Widget",
+        "metadata": {"name": "pruned-widget", "namespace": "default", "annotations": {"a": "b"}},
+        "spec": {"color": "red", "totallyUndeclaredField": "should be dropped"},
+    });
+    let created = match rest::create(&mut storage, "example.com", "v1", "widgets", Some("default"), &widget).await.expect("rest::create must not itself error") {
+        rest::CreateOutcome::Created(object) => object,
+        other => panic!("expected Created, got {other:?}"),
+    };
+    assert_eq!(created["spec"]["color"], "red", "a declared field must survive");
+    assert!(created["spec"].get("totallyUndeclaredField").is_none(), "an undeclared field must be pruned, got {created}");
+    assert_eq!(created["metadata"]["annotations"], json!({"a": "b"}), "metadata must survive even though the CRD schema never declares it");
+
+    // Reading it back confirms the pruned shape was what was actually
+    // persisted, not just what create()'s own in-memory return value
+    // happened to show.
+    let read_back = match rest::get(&mut storage, None, "example.com", "v1", "widgets", Some("default"), "pruned-widget").await.expect("rest::get must not error") {
+        rest::GetOutcome::Found(object) => object,
+        other => panic!("expected Found, got {other:?}"),
+    };
+    assert!(read_back["spec"].get("totallyUndeclaredField").is_none());
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}

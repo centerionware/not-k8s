@@ -660,6 +660,20 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
         }
     }
 
+    // Group K: structural-schema pruning runs before validation/defaulting,
+    // matching real upstream's own order — a field the schema doesn't
+    // declare is silently dropped here rather than surfacing as a
+    // validation error, the same way real upstream's own CRD handler
+    // behaves (`apiextensions::schema_pruning`'s own doc comment).
+    let pruned_body;
+    let body: &Value = match &resolved.open_api_schema {
+        Some(open_api_schema) => {
+            pruned_body = apiextensions::schema_pruning::prune(open_api_schema, body);
+            &pruned_body
+        }
+        None => body,
+    };
+
     let mut violations: Vec<String> = match (resolved.schema, &resolved.open_api_schema) {
         (Some(schema), _) => {
             let mut v: Vec<String> = validation::validate_required(schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
@@ -804,6 +818,17 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
     if submitted_rv != existing_kv.mod_revision {
         return Ok(UpdateOutcome::Conflict);
     }
+
+    // Group K: same pruning `create` runs, same order (before validation/
+    // defaulting).
+    let pruned_body;
+    let body: &Value = match &resolved.open_api_schema {
+        Some(open_api_schema) => {
+            pruned_body = apiextensions::schema_pruning::prune(open_api_schema, body);
+            &pruned_body
+        }
+        None => body,
+    };
 
     let mut violations: Vec<String> = match (resolved.schema, &resolved.open_api_schema) {
         (Some(schema), _) => {
@@ -1091,6 +1116,15 @@ pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &s
 /// `resourceVersion` needed, since the object being patched *is* the one
 /// [`patch_prepare`] already read.
 pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, context: PatchContext, candidate: Value) -> Result<UpdateOutcome, Error> {
+    // Group K: same pruning `create`/`update` run, same order (before
+    // validation/defaulting) — `candidate` is already owned, so this
+    // just reassigns it rather than needing the borrow-juggling
+    // `create`/`update` need for their own `&Value` parameter.
+    let candidate = match &context.open_api_schema {
+        Some(open_api_schema) => apiextensions::schema_pruning::prune(open_api_schema, &candidate),
+        None => candidate,
+    };
+
     let mut violations: Vec<String> = match (context.schema, &context.open_api_schema) {
         (Some(schema), _) => {
             let mut v: Vec<String> = validation::validate_required(schema, &candidate).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
