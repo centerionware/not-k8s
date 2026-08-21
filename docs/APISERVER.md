@@ -1231,14 +1231,25 @@ port-forward/log spliced through to `nodelet:10250`, reusing
 production here already — no SPDY/WebSocket crate needed on either end);
 node/service/pod proxy subresources.
 
-**O. Cluster bootstrap — the k3s replacement half** — **not started**.
-Cluster PKI generation (CA, serving cert, SA signing keypair, per-component
-client certs, kubeconfig emission), the ~90 `system:` ClusterRoles/Bindings
-from upstream's `bootstrappolicy`, the `kubernetes` default Service +
-endpoint reconciler, CoreDNS + flannel manifests moved into `deploy/`. Then
-rewrite `deploy/setup-control-plane.sh` to stop installing k3s entirely, plus
-the `components.sh` row + `notk8s` applet (`components.sh:6` and
-`deploy/measure.sh:98` already name `nodeapiserver` in anticipation).
+**O. Cluster bootstrap — the k3s replacement half** — **not started, and
+deliberately not `nodeapiserver`'s own code** (decided 2026-08-21, before
+any of it was written): cluster PKI generation (CA, serving cert, SA
+signing keypair, per-component client certs, kubeconfig emission), the
+~90 `system:` ClusterRoles/Bindings from upstream's `bootstrappolicy`,
+the `kubernetes` default Service + endpoint reconciler, and CoreDNS +
+flannel manifests moved into `deploy/` don't belong inside the API
+server binary itself — real upstream doesn't put this logic in
+`kube-apiserver` either (it's spread across cluster-provisioning tooling
+outside the binary). This build's equivalent is its own separate crate/
+component — a `clusterbootstrap` app, forked into its own long-lived
+integration branch the same way `nodeapiserver` itself was, following
+the established component pattern (`deploy/lib/components.sh`'s table +
+a `notk8s` applet — `components.sh:6` and `deploy/measure.sh:98` already
+name `nodeapiserver` in anticipation, `clusterbootstrap` needs the same
+treatment when its own branch starts). `deploy/setup-control-plane.sh`
+still needs rewriting to stop installing k3s entirely once both
+`nodeapiserver` and `clusterbootstrap` exist — that wiring is
+`clusterbootstrap`'s own job, not folded back into `nodeapiserver`.
 
 ## Final acceptance
 
