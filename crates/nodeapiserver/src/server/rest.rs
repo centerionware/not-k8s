@@ -761,12 +761,10 @@ pub enum UpdateOutcome {
 /// object regardless of what the client submitted — real upstream
 /// treats both as immutable after creation.
 pub async fn update(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value) -> Result<UpdateOutcome, Error> {
-    let Some(kind) = resolve_kind(group, version, resource) else {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
-    let Some(schema) = protobuf::schema_for_gvk(group, version, kind) else {
-        return Ok(UpdateOutcome::UnknownResource);
-    };
+    let kind = resolved.kind.clone();
 
     let key = keys::object_key(group, resource, namespace, name);
     let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
@@ -792,15 +790,28 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
         return Ok(UpdateOutcome::Conflict);
     }
 
-    let mut violations: Vec<String> = validation::validate_required(schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
-    violations.extend(validation::validate_types(schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+    let mut violations: Vec<String> = match resolved.schema {
+        Some(schema) => {
+            let mut v: Vec<String> = validation::validate_required(schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
+            v.extend(validation::validate_types(schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+            v
+        }
+        // Group K: same scope narrowing `create`'s own CRD branch names —
+        // full structural-schema validation against a CRD's own
+        // openAPIV3Schema isn't landed yet.
+        None => Vec::new(),
+    };
     violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
     if !violations.is_empty() {
         return Ok(UpdateOutcome::Invalid(violations));
     }
 
-    let object = defaulting::apply_defaults(schema, body);
-    persist_update(storage, schema, kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
+    let object = match (resolved.schema, &resolved.open_api_schema) {
+        (Some(schema), _) => defaulting::apply_defaults(schema, body),
+        (None, Some(open_api_schema)) => apiextensions::schema_defaults::apply_defaults(open_api_schema, body),
+        (None, None) => body.clone(),
+    };
+    persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
 }
 
 /// Real upstream's generic status subresource (`GenericStatusREST`,
@@ -824,12 +835,10 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
 /// never read for anything but `resourceVersion`). [`patch_status`] is
 /// this function's `PATCH` counterpart.
 pub async fn update_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value) -> Result<UpdateOutcome, Error> {
-    let Some(kind) = resolve_kind(group, version, resource) else {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
-    let Some(schema) = protobuf::schema_for_gvk(group, version, kind) else {
-        return Ok(UpdateOutcome::UnknownResource);
-    };
+    let kind = resolved.kind.clone();
 
     let key = keys::object_key(group, resource, namespace, name);
     let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
@@ -855,7 +864,7 @@ pub async fn update_status(storage: &mut StorageClient, group: &str, version: &s
         }
     }
 
-    persist_update(storage, schema, kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
+    persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
 }
 
 /// The tail [`update`] and [`patch`] share once each has its own
@@ -869,7 +878,7 @@ pub async fn update_status(storage: &mut StorageClient, group: &str, version: &s
 /// and gets a real `Conflict`, not a silent overwrite.
 async fn persist_update(
     storage: &mut StorageClient,
-    schema: &str,
+    schema: Option<&str>,
     kind: &str,
     group: &str,
     version: &str,
@@ -890,7 +899,10 @@ async fn persist_update(
     }
 
     let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
-    let object_bytes = protobuf::encode_message(schema, &object)?;
+    let object_bytes = match schema {
+        Some(schema) => protobuf::encode_message(schema, &object)?,
+        None => serde_json::to_vec(&object).map_err(protobuf::Error::Json)?,
+    };
     let envelope = protobuf::wrap_unknown(&api_version, kind, &object_bytes);
 
     let compare = pb::Compare {
@@ -956,8 +968,14 @@ pub fn patch_kind_for_content_type(content_type: &str) -> Option<PatchKind> {
 /// for `LimitRanger`), without re-fetching or re-applying the patch a
 /// second time.
 pub struct PatchContext {
-    schema: &'static str,
-    kind: &'static str,
+    /// `None` for a CRD-defined resource — see [`apply_patch`]'s own doc
+    /// comment for what that rules out (`strategic-merge-patch`) and
+    /// what it doesn't (`JSON Patch`/`Merge Patch`, and
+    /// [`patch_persist`]'s own schema-driven defaulting, which falls
+    /// back to `open_api_schema` in exactly this case).
+    schema: Option<&'static str>,
+    open_api_schema: Option<Value>,
+    kind: String,
     key: String,
     existing_kv: mvccpb::KeyValue,
     existing_object: Value,
@@ -983,7 +1001,21 @@ pub enum PatchPrepareOutcome {
 /// any path, only the final write is restricted to `.status` — the
 /// restriction happens at persist time, not by scoping what the patch
 /// itself can touch).
-fn apply_patch(kind_of_patch: PatchKind, schema: &'static str, existing: &Value, patch_doc: &Value) -> Result<Value, String> {
+///
+/// `schema` is `None` for a CRD-defined resource — `JSON Patch`/`Merge
+/// Patch` need no schema at all and work identically either way, but
+/// `strategic-merge-patch` fundamentally can't: real upstream's own
+/// `patch_merge_key`/`patch_strategy` come from
+/// `x-kubernetes-list-type`/`-list-map-keys` on a *compiled* schema
+/// (`crate::patch::strategic_merge`'s own `ref_schema` walk), and a
+/// CRD's schema is a runtime `openAPIV3Schema` this crate has no
+/// strategic-merge interpreter for yet — a real, separate piece of work,
+/// not attempted here. Real upstream's own `kubectl patch` already falls
+/// back to merge-patch for a CRD when no `Content-Type` is given
+/// (`patch_kind_for_content_type`'s own doc comment), so an explicit
+/// `application/strategic-merge-patch+json` against a CRD is already an
+/// unusual request, not the common case this rejects.
+fn apply_patch(kind_of_patch: PatchKind, schema: Option<&str>, existing: &Value, patch_doc: &Value) -> Result<Value, String> {
     match kind_of_patch {
         PatchKind::Json => {
             let mut object = existing.clone();
@@ -997,7 +1029,10 @@ fn apply_patch(kind_of_patch: PatchKind, schema: &'static str, existing: &Value,
             crate::patch::merge_patch::apply(&mut object, patch_doc);
             Ok(object)
         }
-        PatchKind::StrategicMerge => Ok(crate::patch::strategic_merge::apply(schema, existing, patch_doc)),
+        PatchKind::StrategicMerge => match schema {
+            Some(schema) => Ok(crate::patch::strategic_merge::apply(schema, existing, patch_doc)),
+            None => Err("strategic-merge-patch is not supported for CRD-defined resources -- use application/json-patch+json or application/merge-patch+json instead".to_string()),
+        },
     }
 }
 
@@ -1006,10 +1041,7 @@ fn apply_patch(kind_of_patch: PatchKind, schema: &'static str, existing: &Value,
 /// caller (`server::listener`) can run Group J admission against the
 /// real candidate object before committing to [`patch_persist`].
 pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value) -> Result<PatchPrepareOutcome, Error> {
-    let Some(kind) = resolve_kind(group, version, resource) else {
-        return Ok(PatchPrepareOutcome::UnknownResource);
-    };
-    let Some(schema) = protobuf::schema_for_gvk(group, version, kind) else {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(PatchPrepareOutcome::UnknownResource);
     };
 
@@ -1020,12 +1052,15 @@ pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &s
     };
     let existing_object = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
 
-    let patched = match apply_patch(kind_of_patch, schema, &existing_object, patch_doc) {
+    let patched = match apply_patch(kind_of_patch, resolved.schema, &existing_object, patch_doc) {
         Ok(object) => object,
         Err(msg) => return Ok(PatchPrepareOutcome::Invalid(vec![msg])),
     };
 
-    Ok(PatchPrepareOutcome::Ready(patched, PatchContext { schema, kind, key, existing_kv, existing_object }))
+    Ok(PatchPrepareOutcome::Ready(
+        patched,
+        PatchContext { schema: resolved.schema, open_api_schema: resolved.open_api_schema, kind: resolved.kind, key, existing_kv, existing_object },
+    ))
 }
 
 /// The "persist" half of [`patch`]: validates/defaults `candidate` (the
@@ -1036,15 +1071,26 @@ pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &s
 /// `resourceVersion` needed, since the object being patched *is* the one
 /// [`patch_prepare`] already read.
 pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, context: PatchContext, candidate: Value) -> Result<UpdateOutcome, Error> {
-    let mut violations: Vec<String> = validation::validate_required(context.schema, &candidate).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
-    violations.extend(validation::validate_types(context.schema, &candidate).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+    let mut violations: Vec<String> = match context.schema {
+        Some(schema) => {
+            let mut v: Vec<String> = validation::validate_required(schema, &candidate).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
+            v.extend(validation::validate_types(schema, &candidate).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+            v
+        }
+        // Group K: same scope narrowing `create`'s own CRD branch names.
+        None => Vec::new(),
+    };
     violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
     if !violations.is_empty() {
         return Ok(UpdateOutcome::Invalid(violations));
     }
 
-    let object = defaulting::apply_defaults(context.schema, &candidate);
-    persist_update(storage, context.schema, context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object).await
+    let object = match (context.schema, &context.open_api_schema) {
+        (Some(schema), _) => defaulting::apply_defaults(schema, &candidate),
+        (None, Some(open_api_schema)) => apiextensions::schema_defaults::apply_defaults(open_api_schema, &candidate),
+        (None, None) => candidate,
+    };
+    persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object).await
 }
 
 /// `PATCH .../status` — the patch counterpart to [`update_status`],
@@ -1060,10 +1106,7 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
 /// Same scope narrowing `update_status` already named: no structural
 /// validation, no Group J admission.
 pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value) -> Result<UpdateOutcome, Error> {
-    let Some(kind) = resolve_kind(group, version, resource) else {
-        return Ok(UpdateOutcome::UnknownResource);
-    };
-    let Some(schema) = protobuf::schema_for_gvk(group, version, kind) else {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
 
@@ -1074,7 +1117,7 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
     };
     let existing_object = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
 
-    let patched = match apply_patch(kind_of_patch, schema, &existing_object, patch_doc) {
+    let patched = match apply_patch(kind_of_patch, resolved.schema, &existing_object, patch_doc) {
         Ok(object) => object,
         Err(msg) => return Ok(UpdateOutcome::Invalid(vec![msg])),
     };
@@ -1089,7 +1132,7 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
         }
     }
 
-    persist_update(storage, schema, kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
+    persist_update(storage, resolved.schema, &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
 }
 
 /// Convenience wrapper combining [`patch_prepare`] and [`patch_persist`]
