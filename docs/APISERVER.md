@@ -821,12 +821,18 @@ verification at the TLS layer (`server::tls::load_client_ca` +
 `nodelet`'s own `load_client_ca` already established), and the resulting
 verified peer certificate is turned into an `Identity` and threaded
 through to `server::listener::handle`, surfaced in the bring-up echo
-response's own `user` field for real observability. **Authentication
-without authorization**: nothing yet checks this identity before serving
-a request — there is no authorization (Group I) to enforce it against,
-so every request is still served the same way regardless of who (if
-anyone) it authenticated as. Everything else named above (ServiceAccount
-JWT, OIDC, TokenReview, bootstrap tokens, anonymous) is not started.
+response's own `user` field for real observability. **Authorization now
+does check this identity too** (Group I's `enforce_rbac`, opt-in — see
+that section below; this doc line used to say authentication had no
+authorization to enforce against, stale since Group I landed).
+`authn::self_review` is real too now — `SelfSubjectReview`
+(`kubectl auth whoami`), wired into `server::listener` as its own `POST`
+branch, purely reflecting whatever identity `x509` (or the anonymous
+fallback) already produced into the real `UserInfo` shape, no new
+authentication logic, never persisted (same virtual-resource posture
+`authz::sar`'s review kinds established). Everything else named above
+(ServiceAccount JWT, OIDC, TokenReview, bootstrap tokens, anonymous) is
+not started.
 
 **I. Authorization** — **started**. `authz::rbac` is the RBAC
 rule-matching primitive — a faithful port of real upstream's own
