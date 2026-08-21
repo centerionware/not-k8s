@@ -68,8 +68,7 @@ resources:
 #[tokio::test]
 async fn secrets_are_genuinely_encrypted_at_rest_and_decrypt_back_correctly() {
     let Some(nodestore_bin) = find_nodestore_binary() else {
-        eprintln!("SKIPPED: no nodestore binary found (build it alongside nodeapiserver, e.g. quick-check.yml -f components=nodestore,nodeapiserver, or bin/nodestore locally)");
-        return;
+        panic!("DIAGNOSTIC: no nodestore binary found -- searched {:?}", PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
     };
 
     let data_dir = tempfile::tempdir().expect("creating a scratch nodestore data dir");
