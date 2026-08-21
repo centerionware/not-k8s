@@ -38,7 +38,23 @@
 //! CEL Phase 3's own real closing milestone: a client authoring a
 //! runaway `x-kubernetes-validations` rule finds out at CRD-acceptance
 //! time now, not the first time some real custom resource instance
-//! trips it. See `docs/APISERVER.md`'s own
+//! trips it.
+//!
+//! **Phase 4 started**: `apiextensions::cel_evaluate::validate_object`
+//! is the real *runtime* half — actually running a schema's own
+//! `x-kubernetes-validations` rules against a real custom resource
+//! instance's own value (not just checking they're affordable), `self`/
+//! `oldSelf` bound per schema level, each rule capped by
+//! [`eval_bool_with_deadline`]'s own wall-clock stand-in
+//! (`PerCallLimit`'s real ~0.1s). Wired into `server::rest::create`/
+//! `update`/`patch_persist`'s existing CRD branches — a real custom
+//! resource that fails its own declared rule now gets a real `422` with
+//! the rule's own declared `message`. **Named, honest gap**: no
+//! aggregate `RuntimeCELCostBudget` wall-clock/cost ceiling across every
+//! rule evaluated for one object — each rule is capped individually,
+//! not the sum, since this crate has no real runtime cost-accounting
+//! mechanism (Phase 2's own still-open gap) to enforce a shared budget
+//! against. See `docs/APISERVER.md`'s own
 //! `cel_ext` section (right after Group K) for the real, verified full
 //! plan: real upstream's own budget numbers
 //! (`RuntimeCELCostBudget`/`PerCallLimit`/`CheckFrequency`, ..., fetched

@@ -1758,20 +1758,31 @@ used*:
    `CustomResourceDefinition` write specifically, alongside the existing
    required/type/name-format checks — a client authoring a runaway rule
    now gets a real `422` at CRD-acceptance time.
-4. Real upstream's own runtime evaluation of `x-kubernetes-validations`
-   against an actual custom resource instance (`server::rest::create`/
-   `update`/`patch_persist`'s own CRD branch, after pruning and
-   required/type validation — `apiextensions::schema_validation`'s own
-   existing two checks stay first, CEL rules commonly assume a field
-   already passed basic structural validation) is still **not started**
-   — everything landed so far is the CRD-acceptance-time *cost* check on
-   the rules themselves, not actually running them against real data
-   yet. That needs `eval_bool_with_deadline` (Phase 2, already landed)
-   wired to real `self`/`oldSelf` bindings from the submitted/existing
-   object, gated by the real `RuntimeCELCostBudget` accumulator across
-   every rule in one request (Phase 2's own remaining "still not wired
-   into any real request path" gap, distinct from the static check this
-   item closes).
+4. **Done.** Real upstream's own runtime evaluation of
+   `x-kubernetes-validations` against an actual custom resource instance
+   — `apiextensions::cel_evaluate::validate_object`, real upstream's own
+   `customResourceStrategy.Validate`/`ValidateUpdate`
+   (`k8s.io/apiextensions-apiserver/pkg/registry/customresource/
+   strategy.go`, fetched and read directly), scoped to just the rule
+   evaluation itself (defaulting/pruning/structural validation are
+   already their own modules, not duplicated here). Recursively walks
+   the schema *and* the real object together (`apiextensions::
+   schema_validation`'s own data-driven recursion convention), `self`/
+   `oldSelf` bound per schema level (`oldSelf` genuinely unavailable on
+   `CREATE`, not just empty), each rule capped by
+   `eval_bool_with_deadline` (Phase 2, already landed) at real upstream's
+   own `PerCallLimit` (~0.1s). Wired into `server::rest::create`/
+   `update`/`patch_persist`'s existing CRD branches, after pruning and
+   required/type validation, against the fully-defaulted object (real
+   upstream's own ordering — a rule commonly assumes a field already
+   carries its real default). **Named, honest gap**: no aggregate
+   `RuntimeCELCostBudget` ceiling across every rule evaluated for one
+   object — each rule is capped individually, not the sum, since this
+   crate has no real runtime cost-accounting mechanism (Phase 2's own
+   still-open gap) to enforce a shared budget against; also not ported:
+   real upstream's own static `UsesOldSelf`/uncorrelatable-schema
+   rejection at CRD-acceptance time (an `oldSelf`-referencing rule that
+   can't validly correlate old/new values in some schema shapes).
 5. Wire into Group J: ValidatingAdmissionPolicy/MutatingAdmissionPolicy,
    and `matchConditions` (its own separate, smaller budget) for webhooks
    and policy bindings.
