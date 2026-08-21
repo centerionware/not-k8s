@@ -85,13 +85,31 @@ fn walk(schema: &Value, value: &Value, old_value: Option<&Value>, path: &str, ou
         }
     }
 
-    let Some(obj) = value.as_object() else { return };
-
-    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
-        for (name, prop_schema) in properties {
-            let Some(current) = obj.get(name) else { continue };
-            let old_current = old_value.and_then(|o| o.get(name));
-            walk(prop_schema, current, old_current, &join_path(path, name), out);
+    // Real upstream's own three real container shapes -- `properties`/
+    // `additionalProperties` only make sense to descend when `value` is
+    // itself an object, `items` only when it's an array. **Real bug
+    // caught by CI, fixed same PR**: an earlier draft gated all three
+    // behind one shared `value.as_object()` binding, which silently made
+    // `items` unreachable for every real array value (a JSON array's own
+    // `.as_object()` is always `None`) — no test in this file ever
+    // recursed into a real array until the one that caught it.
+    if let Some(obj) = value.as_object() {
+        if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+            for (name, prop_schema) in properties {
+                let Some(current) = obj.get(name) else { continue };
+                let old_current = old_value.and_then(|o| o.get(name));
+                walk(prop_schema, current, old_current, &join_path(path, name), out);
+            }
+        }
+        // A real nested schema only, never the boolean
+        // `additionalProperties: true/false` shorthand -- same
+        // distinction `cel_ext::decl_type`'s own conversion already
+        // draws for the same reason.
+        if let Some(additional) = schema.get("additionalProperties").filter(|a| a.is_object()) {
+            for (key, val) in obj {
+                let old_val = old_value.and_then(|o| o.get(key));
+                walk(additional, val, old_val, &format!("{path}[{key}]"), out);
+            }
         }
     }
     if let Some(items_schema) = schema.get("items") {
@@ -101,15 +119,6 @@ fn walk(schema: &Value, value: &Value, old_value: Option<&Value>, path: &str, ou
                 let old_item = old_items.and_then(|o| o.get(i));
                 walk(items_schema, item, old_item, &format!("{path}[{i}]"), out);
             }
-        }
-    }
-    // A real nested schema only, never the boolean `additionalProperties:
-    // true/false` shorthand -- same distinction `cel_ext::decl_type`'s
-    // own conversion already draws for the same reason.
-    if let Some(additional) = schema.get("additionalProperties").filter(|a| a.is_object()) {
-        for (key, val) in obj {
-            let old_val = old_value.and_then(|o| o.get(key));
-            walk(additional, val, old_val, &format!("{path}[{key}]"), out);
         }
     }
 }
