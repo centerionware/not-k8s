@@ -1657,14 +1657,27 @@ used*:
    returns `nil` — k8s supplies **only** size estimates to cel-go's own
    estimator, never call-cost overrides, so the entire real per-
    builtin-function cost table lives in cel-go's own `checker/cost.go`
-   alone, with nothing k8s-specific to additionally port there. **Not
-   yet landed**: the path resolver (turning a `Select`/`Ident` chain
-   into a field path, walking it against a `DeclType` tree exactly the
-   way real upstream's own `sizeEstimator.EstimateSize` does — a small
-   remaining piece now that `decl_type` exists), and the actual `cost()`
-   AST-walking dispatch itself (the biggest remaining piece — real
-   upstream's own per-`Expr`-kind and per-builtin-function cost rules,
-   already fully read and ready to port).
+   alone, with nothing k8s-specific to additionally port there.
+   `decl_type::estimate_size` is real upstream's own
+   `sizeEstimator.EstimateSize` itself, landed in the same PR: walks a
+   resolved path one `DeclType` level at a time (`@items`/`@values`/
+   `@keys`/a named field), returning that location's own `SizeEstimate`
+   — confirmed real upstream's own `Min` is always `0` here, never
+   derived from `minLength`/`minItems`, and a map's own `@keys` size is
+   untracked (`{0, 0}`, real upstream's own `StringType` carries no
+   `MaxElements` override for keys either). **Also landed**: `cel_ext::
+   path` — resolves a CEL expression's own `Select`/`Ident` chain into
+   the field path `estimate_size` consumes (real upstream's own
+   `coster.getPath`/`costIdent`/`costSelect`), including the
+   single-variable comprehension form's own iteration-variable path
+   (`list.all(x, ...)`, real upstream's own `pushIterSingle` narrowed to
+   list-only, named honestly — see that module's own doc comment for the
+   real scope). **Every real prerequisite the estimator itself needs is
+   now landed** — only the actual `cost()` AST-walking dispatch that
+   combines them (the biggest remaining piece — real upstream's own
+   per-`Expr`-kind and per-builtin-function cost rules, already fully
+   read and ready to port) and wiring a result into CRD acceptance
+   remain.
 4. Wire into Group K: `x-kubernetes-validations` evaluated in
    `server::rest::create`/`update`/`patch_persist`'s CRD branch, after
    pruning and required/type validation (`apiextensions::
