@@ -1276,16 +1276,6 @@ pub enum ApplyOutcome {
     /// current object, matching real upstream's own behavior.
     NoOp(Value),
     UnknownResource,
-    /// This build doesn't yet support **creating** an object via Apply.
-    /// Real upstream's own Apply *can* create a brand-new object when
-    /// none exists yet (`liveObject` starts empty) — this crate's own
-    /// `crate::patch::updater::apply` already supports that
-    /// structurally (an empty `Value::Object` as `live` works fine), but
-    /// the storage side (a create-if-absent `Txn`, alongside
-    /// `persist_update`'s own update-if-matches one) isn't wired up
-    /// here yet — named honestly as the next slice, not silently folded
-    /// into an unrelated `404`.
-    ObjectNotFound,
     /// `crate::patch::updater`'s real primitives key off Group A's
     /// compiled `FIELD_META` table, not a runtime-parsed CRD schema — a
     /// CRD-defined resource has no `schema` to drive them, so Apply
@@ -1303,21 +1293,31 @@ pub enum ApplyOutcome {
 }
 
 /// Server-Side Apply (`PATCH` with `Content-Type: application/apply-
-/// patch+yaml`) against an **already-existing** object — real upstream's
-/// `merge.Updater.Apply`, wired to real storage
-/// (`crate::patch::updater::apply`, `crate::patch::managed_fields`).
-/// `config` is the apply configuration, already decoded from the request
-/// body by the caller (YAML or JSON — real upstream accepts either for
-/// this content type, and this crate's existing content negotiation
-/// already handles both for every other verb).
+/// patch+yaml`) — real upstream's `merge.Updater.Apply`, wired to real
+/// storage (`crate::patch::updater::apply`,
+/// `crate::patch::managed_fields`). `config` is the apply configuration,
+/// already decoded from the request body by the caller (YAML or JSON —
+/// real upstream accepts either for this content type, and this crate's
+/// existing content negotiation already handles both for every other
+/// verb).
+///
+/// Handles both real cases: an already-existing object (reads its
+/// stored `managedFields`, runs `updater::apply` against it, persists
+/// with the same optimistic-concurrency `Txn` every other write verb
+/// uses) and **create-on-apply** (no object exists at this key yet —
+/// real upstream's own Apply can create one, `liveObject` starting
+/// empty; this branch runs the identical `updater::apply` orchestration
+/// against an empty `live`, then persists with the same
+/// create-only-if-absent `Txn` idiom `create`'s own doc comment names,
+/// rather than `persist_update`'s update-if-matches one).
 ///
 /// Named `server_side_apply`, not `apply_patch` — that name is already
 /// this module's own private helper for the three ordinary patch kinds
 /// (`json_patch`/`merge_patch`/`strategic_merge`) just above; this is a
 /// wholly different real orchestration, not a fourth branch of that one.
 ///
-/// See [`ApplyOutcome::ObjectNotFound`]/[`ApplyOutcome::UnsupportedForCrd`]
-/// for the two real, named gaps this first slice doesn't close.
+/// See [`ApplyOutcome::UnsupportedForCrd`] for the one real, named gap
+/// this first slice doesn't close.
 pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, manager: &str, force: bool, config: &Value) -> Result<ApplyOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(ApplyOutcome::UnknownResource);
@@ -1328,9 +1328,79 @@ pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version
 
     let key = keys::object_key(group, resource, namespace, name);
     let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
+    let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
-        return Ok(ApplyOutcome::ObjectNotFound);
+        // Create-on-apply: real upstream's own Apply can create a
+        // brand-new object when none exists yet (`liveObject` starts
+        // empty) -- `updater::apply` already supports that structurally,
+        // this is just the storage side (a create-only-if-absent `Txn`,
+        // the same real idiom `create`'s own doc comment names, rather
+        // than `persist_update`'s update-if-matches one).
+        let live = json!({});
+        let no_prior_managers = std::collections::BTreeMap::new();
+        let applied = match crate::patch::updater::apply(schema, &live, config, &no_prior_managers, manager, force) {
+            Ok(a) => a,
+            // Unreachable in practice (an empty prior-managers map can
+            // never conflict), kept real rather than `unreachable!()` --
+            // `updater::apply`'s own contract doesn't promise this.
+            Err(conflicts) => return Ok(ApplyOutcome::Conflict(conflicts)),
+        };
+        let Some(mut object) = applied.object else {
+            // The apply configuration was itself empty (merges to `{}`)
+            // -- nothing real to create.
+            return Ok(ApplyOutcome::NoOp(live));
+        };
+
+        set_metadata_field(&mut object, "creationTimestamp", Value::String(now_rfc3339()));
+        set_metadata_field(&mut object, "uid", Value::String(uuid::Uuid::new_v4().to_string()));
+        // The object's identity comes from the URL, same as every other
+        // verb here (`persist_update` forces `namespace` from the URL
+        // the same unconditional way) -- not from whatever `config`'s
+        // own body happened to say.
+        set_metadata_field(&mut object, "name", Value::String(name.to_string()));
+        if let Some(ns) = namespace {
+            set_metadata_field(&mut object, "namespace", Value::String(ns.to_string()));
+        }
+        let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&[], &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
+        set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
+
+        let mut violations: Vec<String> = validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
+        violations.extend(validation::validate_types(schema, &object).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+        violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
+        if !violations.is_empty() {
+            return Ok(ApplyOutcome::Invalid(violations));
+        }
+        let mut object = defaulting::apply_defaults(schema, &object);
+
+        let object_bytes = protobuf::encode_message(schema, &object)?;
+        let envelope = protobuf::wrap_unknown(&api_version, &resolved.kind, &object_bytes);
+        let compare = pb::Compare {
+            key: key.clone().into_bytes(),
+            result: pb::compare::CompareResult::Equal as i32,
+            target: pb::compare::CompareTarget::Mod as i32,
+            target_union: Some(pb::compare::TargetUnion::ModRevision(0)),
+            range_end: Vec::new(),
+        };
+        let envelope = encrypt_for_storage(storage, group, resource, key.as_bytes(), &envelope)?;
+        let put = pb::PutRequest { key: key.into_bytes(), value: envelope, ..Default::default() };
+        let txn = pb::TxnRequest {
+            compare: vec![compare],
+            success: vec![pb::RequestOp { request: Some(pb::request_op::Request::RequestPut(put)) }],
+            failure: vec![],
+        };
+        let resp = storage.txn(txn).await?;
+        if !resp.succeeded {
+            // Lost the race: something else created this key between our
+            // read above and this write -- report it the same way the
+            // update path's own lost race is reported (see below).
+            return Ok(ApplyOutcome::Conflict(Vec::new()));
+        }
+        let revision = resp.header.map(|h| h.revision).unwrap_or(0);
+        set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
+        return Ok(ApplyOutcome::Applied(object));
     };
+
     let live = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
 
     let stored_managed_fields = live.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
@@ -1352,7 +1422,6 @@ pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version
         return Ok(ApplyOutcome::NoOp(live));
     };
 
-    let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
     let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
     set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
 
