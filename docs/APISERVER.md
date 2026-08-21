@@ -100,8 +100,18 @@ string — verified empty for anything else via a codegen-table-driven test,
 not just grepped once and assumed), nested messages, repeated (unpacked —
 verified spec-correct for proto2, not just simpler), `map<K, V>`, and the
 `k8s\x00` + `runtime.Unknown` envelope (`wrap_unknown`/`unwrap_unknown`).
-`codec::json`/`codec::yaml` are thin wrappers; `codec::negotiation` parses
-`Accept`/`Content-Type` including `kubectl get`'s `as=Table;g=...;v=...`
+One real, named exception to "JSON field name identical to the proto
+field name" found live by Group K's own strategic-merge-patch work: a
+`JSONSchemaProps`'s seven `x-kubernetes-*` extension fields
+(`x-kubernetes-list-type`, `x-kubernetes-preserve-unknown-fields`, ...)
+have a real Go JSON tag that doesn't follow the standard
+camelCase-from-field-name convention every other vendored field does —
+undetected, a submitted CRD silently lost all seven on protobuf encode
+(the field lookup by JSON key never matched, so they were treated as
+unrecognized and skipped). `build/proto_parse.rs`'s
+`real_x_kubernetes_json_name` now detects and corrects this one specific
+family. `codec::json`/`codec::yaml` are thin wrappers; `codec::negotiation`
+parses `Accept`/`Content-Type` including `kubectl get`'s `as=Table;g=...;v=...`
 parameters. `codec::table::convert_to_table` lands the generic default
 `Table` converter — a faithful port of real upstream's own
 `defaultTableConvertor` (`k8s.io/apiserver/pkg/registry/rest/table.go`,
