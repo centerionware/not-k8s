@@ -1263,7 +1263,7 @@ pub async fn patch(storage: &mut StorageClient, group: &str, version: &str, reso
     }
 }
 
-/// The outcome of a Server-Side Apply request ([`apply_patch`]).
+/// The outcome of a Server-Side Apply request ([`server_side_apply`]).
 #[derive(Debug, PartialEq)]
 pub enum ApplyOutcome {
     /// The object as written, `metadata.managedFields` rebuilt to
@@ -1289,7 +1289,7 @@ pub enum ApplyOutcome {
     /// `crate::patch::updater`'s real primitives key off Group A's
     /// compiled `FIELD_META` table, not a runtime-parsed CRD schema — a
     /// CRD-defined resource has no `schema` to drive them, so Apply
-    /// isn't supported against one yet (same real gap `apply_patch`'s
+    /// isn't supported against one yet (same real gap `server_side_apply`'s
     /// own `patch::strategic_merge` sibling doesn't have, since that one
     /// has a runtime-schema fallback — `apiextensions::
     /// schema_strategic_merge` — that Server-Side Apply's own primitives
@@ -1311,9 +1311,14 @@ pub enum ApplyOutcome {
 /// this content type, and this crate's existing content negotiation
 /// already handles both for every other verb).
 ///
+/// Named `server_side_apply`, not `apply_patch` — that name is already
+/// this module's own private helper for the three ordinary patch kinds
+/// (`json_patch`/`merge_patch`/`strategic_merge`) just above; this is a
+/// wholly different real orchestration, not a fourth branch of that one.
+///
 /// See [`ApplyOutcome::ObjectNotFound`]/[`ApplyOutcome::UnsupportedForCrd`]
 /// for the two real, named gaps this first slice doesn't close.
-pub async fn apply_patch(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, manager: &str, force: bool, config: &Value) -> Result<ApplyOutcome, Error> {
+pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, manager: &str, force: bool, config: &Value) -> Result<ApplyOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(ApplyOutcome::UnknownResource);
     };

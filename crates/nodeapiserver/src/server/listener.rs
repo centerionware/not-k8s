@@ -189,7 +189,7 @@ fn urlencoding_decode(s: &str) -> std::borrow::Cow<'_, str> {
 /// patch_kind_for_content_type` deliberately doesn't recognize (its own
 /// doc comment), since it isn't one of that function's three patch
 /// kinds; this is the separate check that routes a `PATCH` into
-/// `rest::apply_patch` instead.
+/// `rest::server_side_apply` instead.
 fn is_apply_patch_content_type(content_type: &str) -> bool {
     content_type.split(';').next().unwrap_or("").trim() == "application/apply-patch+yaml"
 }
@@ -1175,14 +1175,14 @@ async fn handle(
         // three-patch-kind block below: `rest::patch_kind_for_content_type`
         // deliberately doesn't recognize this media type (its own doc
         // comment), the body is YAML (or JSON, a valid subset), and the
-        // real orchestration (`rest::apply_patch`, Group G's `updater::
+        // real orchestration (`rest::server_side_apply`, Group G's `updater::
         // apply` wired to storage) is a wholly different code path from
         // the three-patch-kind `rest::patch_prepare`/`patch_persist`
         // split above. **Named, honest scope for this first wiring
         // slice**: only `namespace_lifecycle` admission runs here, not
         // `LimitRanger`'s PVC check the block below also runs for an
         // ordinary `Update`-shaped patch — real, separate follow-up work,
-        // not an oversight (`rest::apply_patch`'s own doc comment already
+        // not an oversight (`rest::server_side_apply`'s own doc comment already
         // names the bigger gap: no create-on-apply, no CRD support yet).
         if content_type.as_deref().map(is_apply_patch_content_type).unwrap_or(false) {
             let Some(mut client) = storage else {
@@ -1234,7 +1234,7 @@ async fn handle(
                 }
             }
 
-            return match rest::apply_patch(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
+            return match rest::server_side_apply(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
                 Ok(rest::ApplyOutcome::Applied(object)) => Ok(json_response(StatusCode::OK, &object)),
                 Ok(rest::ApplyOutcome::NoOp(object)) => Ok(json_response(StatusCode::OK, &object)),
                 Ok(rest::ApplyOutcome::UnknownResource) | Ok(rest::ApplyOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
@@ -1244,7 +1244,7 @@ async fn handle(
                 Ok(rest::ApplyOutcome::Conflict(conflicts)) => Ok(json_response(StatusCode::CONFLICT, &ssa_conflict_status(&path_str, &conflicts))),
                 Ok(rest::ApplyOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
                 Err(e) => {
-                    warn!(path = %path_str, error = ?e, "rest::apply_patch failed");
+                    warn!(path = %path_str, error = ?e, "rest::server_side_apply failed");
                     Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
                 }
             };

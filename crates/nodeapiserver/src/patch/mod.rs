@@ -59,12 +59,12 @@
 //! array to write back out.
 //!
 //! **Server-Side Apply is now reachable from a real request**:
-//! `server::rest::apply_patch` wires `updater::apply` + `managed_fields`
+//! `server::rest::server_side_apply` wires `updater::apply` + `managed_fields`
 //! to real storage, and `server::listener` routes `PATCH` with
 //! `Content-Type: application/apply-patch+yaml` (`?fieldManager=`
 //! required, `?force=true` honored) into it, with a real `409 Conflict`
 //! on `Err(Vec<Conflict>)`. **Named, honest scope for this first wiring
-//! slice** (`rest::apply_patch`'s own doc comment): only against an
+//! slice** (`rest::server_side_apply`'s own doc comment): only against an
 //! **already-existing** object (no create-on-apply yet — `updater::apply`
 //! itself already supports it structurally, only the storage-side
 //! create-if-absent `Txn` isn't wired), and only for a built-in resource

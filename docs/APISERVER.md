@@ -631,7 +631,7 @@ reusing Group G's already-landed `patch::json_patch`/`merge_patch`/
 `rest::patch_kind_for_content_type`, a real `415` for anything else,
 Server-Side Apply's own `application/apply-patch+yaml` deliberately not
 recognized by this function — `server::listener` routes it into
-`rest::apply_patch` instead, a wholly separate real code path now that
+`rest::server_side_apply` instead, a wholly separate real code path now that
 Group G's SSA arc has landed; see that group's own section), applied to
 the object `patch_prepare` itself reads, then persisted by
 `patch_persist` through the same optimistic-concurrency
@@ -892,7 +892,7 @@ conflict detection, pruning fields a manager stops claiming, all
 single-schema-version scoped since this build has no multi-version
 conversion machinery), and `patch::managed_fields` (the real
 `metadata.managedFields[]` wire shape and its conversion to/from the
-`BTreeMap<String, Set>` `updater` operates on). `server::rest::apply_patch`
+`BTreeMap<String, Set>` `updater` operates on). `server::rest::server_side_apply`
 wires all of this to real storage, and `server::listener` routes `PATCH`
 with `Content-Type: application/apply-patch+yaml` into it
 (`?fieldManager=` required, `?force=true` honored, a real `409 Conflict`
