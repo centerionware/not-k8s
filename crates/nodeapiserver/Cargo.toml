@@ -96,6 +96,13 @@ rcgen = "0.13"
 # is the precedent this module's identity extraction mirrors) — reusing an
 # already-proven-in-this-workspace pattern, not reinventing one.
 x509-parser = "0.16"
+# aggregator::client_tls's own "no spec.caBundle, no
+# insecureSkipTLSVerify" fallback — real upstream's own documented
+# default is "system trust roots on the apiserver," which this build has
+# no host-trust-store reader for; a bundled Mozilla root set is the
+# named, deliberate substitute. Already resolved in Cargo.lock at 1.0.9
+# (pulled transitively elsewhere in the workspace already).
+webpki-roots = "1"
 
 # Group E's server::rest::create: real metadata.creationTimestamp/uid.
 # chrono is already a pinned workspace dependency (every other crate here

@@ -47,8 +47,18 @@ use std::sync::Arc;
 /// startup); only the certificate-chain-to-a-trusted-root check is
 /// skipped.
 #[derive(Debug)]
-struct AcceptAnyServerCert {
+pub(crate) struct AcceptAnyServerCert {
     provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl AcceptAnyServerCert {
+    /// `pub(crate)` rather than private: `aggregator::client_tls`'s own
+    /// `spec.insecureSkipTLSVerify: true` posture is the exact same real
+    /// verifier this module already built for nodelet's own default trust
+    /// posture -- reused directly rather than duplicated.
+    pub(crate) fn new(provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
+        AcceptAnyServerCert { provider }
+    }
 }
 
 impl ServerCertVerifier for AcceptAnyServerCert {

@@ -181,6 +181,8 @@ fn encode_scalar_or_message(message: &str, field: &ProtoField, value: &Value, ou
                 encode_json_schema_props_or_array(&nested_message, value)?
             } else if is_json_schema_props_or_bool(&nested_message) {
                 encode_json_schema_props_or_bool(&nested_message, value)?
+            } else if is_int_or_string_message(&nested_message) {
+                encode_int_or_string(message, field, value)?
             } else {
                 encode_message(&nested_message, value)?
             };
@@ -282,6 +284,8 @@ fn decode_one(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value
                 decode_json_schema_props_or_array(&nested_message, as_bytes(&label(), raw)?)
             } else if is_json_schema_props_or_bool(&nested_message) {
                 decode_json_schema_props_or_bool(&nested_message, as_bytes(&label(), raw)?)
+            } else if is_int_or_string_message(&nested_message) {
+                decode_int_or_string_message(&label(), as_bytes(&label(), raw)?)
             } else {
                 decode_message(&nested_message, as_bytes(&label(), raw)?)
             }
@@ -402,6 +406,78 @@ fn decode_json_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
         }
     }
     Ok(Value::Null)
+}
+
+/// Real upstream's own `intstr.IntOrString`
+/// (`vendor/protos/k8s.io/apimachinery/pkg/util/intstr/generated.proto`'s
+/// own `message IntOrString { optional int64 type = 1; optional int32
+/// intVal = 2; optional string strVal = 3; }`, confirmed directly) — the
+/// *fourth* occurrence of the same real `is_time_message` pattern: a Go
+/// type (`intstr.IntOrString`) with hand-written `MarshalJSON`/
+/// `UnmarshalJSON` that produces/consumes a plain scalar (a bare number
+/// or a bare string — `targetPort: 8080` or `targetPort: "https"` are
+/// both real, valid JSON for this field) rather than its own compiled
+/// struct shape. Used all over the vendored schema wherever a field can
+/// name either a numeric or a named value (`Service.spec.ports[].
+/// targetPort`, `NetworkPolicyPort.port`, ...). **Found live**, the same
+/// way every prior occurrence was: nothing exercised a real object
+/// carrying a real `IntOrString` field through this codec's own protobuf
+/// round trip until `tests/aggregator_proxy_roundtrip.rs`'s live
+/// `Service.spec.ports[].targetPort` did — every prior test either
+/// stayed at the JSON/YAML codec layer or happened not to submit an
+/// object with this field populated.
+fn is_int_or_string_message(message: &str) -> bool {
+    message == "io.k8s.apimachinery.pkg.util.intstr.IntOrString"
+}
+
+/// Real upstream's own `Type` discriminator convention (`intstr.Int = 0`,
+/// `intstr.String = 1`, confirmed directly against
+/// `pkg/util/intstr/intstr.go`): a JSON number encodes as `{type: 0,
+/// intVal: N}` (`type: 0` is proto2 `optional`'s own zero value, so
+/// nothing is written for it — same "omit an explicit zero" posture
+/// every other optional scalar field in this codec already takes), a
+/// JSON string as `{type: 1, strVal: S}`.
+fn encode_int_or_string(message: &str, field: &ProtoField, value: &Value) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    if let Some(n) = value.as_i64() {
+        wire::encode_tag(2, WireType::Varint, &mut out);
+        wire::encode_varint_i32(n as i32, &mut out);
+    } else if let Some(s) = value.as_str() {
+        wire::encode_tag(1, WireType::Varint, &mut out);
+        wire::encode_varint_i64(1, &mut out);
+        wire::encode_tag(3, WireType::LengthDelimited, &mut out);
+        wire::encode_length_delimited(s.as_bytes(), &mut out);
+    } else {
+        return Err(type_mismatch(message, field, "an int or a string (IntOrString)", value));
+    }
+    Ok(out)
+}
+
+/// Decodes an `IntOrString{type, intVal, strVal}` message body back into
+/// the plain scalar it represents — `type == 1` (String) means
+/// `strVal`, anything else (including the field being entirely absent,
+/// real upstream's own zero value) means `intVal` (defaulting to `0`,
+/// matching a `nil`-equivalent `IntOrString{}`'s own real JSON
+/// marshalling: `0`, not `null`).
+fn decode_int_or_string_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
+    let mut ty: i64 = 0;
+    let mut int_val: i32 = 0;
+    let mut str_val: Option<String> = None;
+    let mut pos = 0;
+    while pos < bytes.len() {
+        let (field_number, raw) = wire::decode_field(bytes, &mut pos)?;
+        match field_number {
+            1 => ty = as_varint(field_label, &raw)? as i64,
+            2 => int_val = as_varint(field_label, &raw)? as u32 as i32,
+            3 => str_val = Some(String::from_utf8_lossy(as_bytes(field_label, &raw)?).into_owned()),
+            _ => {}
+        }
+    }
+    if ty == 1 {
+        Ok(Value::String(str_val.unwrap_or_default()))
+    } else {
+        Ok(Value::from(int_val))
+    }
 }
 
 /// Real upstream's own `JSONSchemaPropsOrArray`/`JSONSchemaPropsOrBool` —
@@ -734,6 +810,47 @@ mod tests {
         assert!(!bytes.is_empty());
         let decoded = decode_time_message("Time", &bytes).unwrap();
         assert_eq!(decoded, json!("2024-01-15T10:30:00Z"));
+    }
+
+    /// Real bug, found live: `tests/aggregator_proxy_roundtrip.rs`'s own
+    /// live `Service.spec.ports[].targetPort: 8443` (a plain JSON number)
+    /// failed to decode with `NotAnObject("...IntOrString")` -- nothing
+    /// in this codec had a special case for `intstr.IntOrString` at all
+    /// before this fix, so `encode_field`'s generic `encode_message`
+    /// fallback tried (and `decode_one`'s `decode_message` fallback would
+    /// have tried) to treat the plain scalar as a fields-shaped object.
+    #[test]
+    fn service_port_with_a_real_numeric_target_port_round_trips() {
+        let message = "io.k8s.api.core.v1.ServicePort";
+        let value = json!({"name": "https", "port": 443, "targetPort": 8443});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded["targetPort"], json!(8443));
+    }
+
+    #[test]
+    fn service_port_with_a_real_named_target_port_round_trips() {
+        let message = "io.k8s.api.core.v1.ServicePort";
+        let value = json!({"name": "https", "port": 443, "targetPort": "https"});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded["targetPort"], json!("https"));
+    }
+
+    #[test]
+    fn int_or_string_encodes_a_number_with_no_type_tag_written() {
+        // type == 0 (Int) is proto2 optional's own zero value -- omitted
+        // on the wire, same "don't write an explicit zero" posture every
+        // other optional scalar field in this codec already takes.
+        let bytes = encode_int_or_string("ServicePort", &ProtoField { message: "ServicePort", json_name: "targetPort", number: 4, repeated: false, map: false, proto_type: "k8s.io.apimachinery.pkg.util.intstr.IntOrString" }, &json!(8443)).unwrap();
+        let decoded = decode_int_or_string_message("targetPort", &bytes).unwrap();
+        assert_eq!(decoded, json!(8443));
+    }
+
+    #[test]
+    fn int_or_string_rejects_a_value_that_is_neither_int_nor_string() {
+        let field = ProtoField { message: "ServicePort", json_name: "targetPort", number: 4, repeated: false, map: false, proto_type: "k8s.io.apimachinery.pkg.util.intstr.IntOrString" };
+        assert!(encode_int_or_string("ServicePort", &field, &json!(true)).is_err());
     }
 
     #[test]
