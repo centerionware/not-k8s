@@ -1543,11 +1543,24 @@ used*:
    against real k8s-shaped data. Not reachable from any real request
    path yet (nothing calls it outside its own unit tests) — deliberate,
    see this section's own repeated warning on why.
-2. Runtime cost accounting (layer 2 above) — `PerCallLimit`/
-   `RuntimeCELCostBudget`, checked at `CheckFrequency` granularity.
-   **Must land before this is wired into any real request path** — an
-   unbudgeted evaluator in the request path is a real, unmitigated DoS
-   surface the moment it's reachable, not hardening to add later.
+2. **Partially done.** `eval_bool_with_deadline` — a real wall-clock
+   deadline around evaluation, this build's own stand-in for real
+   upstream's per-operation `PerCallLimit`/`RuntimeCELCostBudget`/
+   `CheckFrequency` accounting, which needs interpreter-level hooks the
+   `cel` crate doesn't expose at all (confirmed by reading `env.rs`/
+   `context.rs` directly). Real upstream's own comments on those
+   constants describe them in wall-clock terms too ("~0.1s"/"~1s"),
+   so this bounds the same real property, not an unrelated
+   approximation. **Named, honest limitation**: bounds how long the
+   *caller* waits, not the CPU the spawned evaluation thread actually
+   consumes — Rust has no safe way to forcibly kill an arbitrary running
+   thread, so a pathological expression still runs to completion in the
+   background; this alone does not bound how many concurrent evaluations
+   can be in flight either (that's separate rate-limiting, Group M's own
+   APF work). **Still not wired into any real request path** — a
+   deadline alone isn't the same guarantee real upstream's own
+   interruption provides, and this module's own doc comment says so
+   again at the call site itself, not just here.
 3. Static checked-cost estimation (layer 1) — real upstream's own
    defense against a malicious *rule* (not just malicious input), needed
    before `x-kubernetes-validations` can be accepted at CRD-creation
