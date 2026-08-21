@@ -212,8 +212,8 @@ fn resource_expired_status(path_str: &str) -> serde_json::Value {
 /// key this cache never held a value for — see that module's own doc
 /// comment) — the event is silently skipped from the stream rather than
 /// breaking it, since there is nothing real to report for it.
-fn encode_watch_event(event: &crate::cacher::store::WatchEvent, kind: &str, api_version: &str) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
-    match crate::server::watch_event::to_watch_event_json(event, kind, api_version) {
+fn encode_watch_event(event: &crate::cacher::store::WatchEvent, kind: &str, api_version: &str, storage: Option<&StorageClient>, group: &str, resource: &str) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
+    match crate::server::watch_event::to_watch_event_json(event, kind, api_version, storage, group, resource) {
         None => None,
         Some(Ok(json)) => {
             let mut bytes = serde_json::to_vec(&json).unwrap_or_default();
@@ -249,14 +249,25 @@ fn encode_watch_event(event: &crate::cacher::store::WatchEvent, kind: &str, api_
 /// being silently dropped — filtering a watch is a narrowing, never a
 /// hiding, mechanism; a real decode failure is a `warn!`, not a
 /// swallowed event.
-fn watch_event_matches_selector(event: &crate::cacher::store::WatchEvent, label_reqs: &[crate::cacher::selector::Requirement], field_reqs: &[crate::cacher::selector::FieldRequirement]) -> bool {
+fn watch_event_matches_selector(
+    event: &crate::cacher::store::WatchEvent,
+    label_reqs: &[crate::cacher::selector::Requirement],
+    field_reqs: &[crate::cacher::selector::FieldRequirement],
+    storage: Option<&StorageClient>,
+    group: &str,
+    resource: &str,
+) -> bool {
     if label_reqs.is_empty() && field_reqs.is_empty() {
         return true;
     }
     if event.value.is_empty() {
         return true;
     }
-    match rest::decode_stored_object(&event.value) {
+    let decoded = match storage {
+        Some(s) => rest::decrypt_and_decode(s, group, resource, &event.key, &event.value),
+        None => rest::decode_stored_object(&event.value).map_err(rest::Error::from),
+    };
+    match decoded {
         Ok(object) => crate::cacher::selector::object_matches(&object, label_reqs, field_reqs),
         Err(e) => {
             warn!(error = ?e, "watch: failed to decode a cached value for selector filtering; letting the event through unfiltered");
@@ -288,6 +299,9 @@ fn watch_response_body(
     api_version: String,
     label_reqs: Vec<crate::cacher::selector::Requirement>,
     field_reqs: Vec<crate::cacher::selector::FieldRequirement>,
+    storage: Option<StorageClient>,
+    group: String,
+    resource: String,
 ) -> BoxedBody {
     use http_body_util::{BodyExt, StreamBody};
     use tokio_stream::wrappers::BroadcastStream;
@@ -296,8 +310,13 @@ fn watch_response_body(
     let replay_stream = tokio_stream::iter(replay);
     let live_stream = BroadcastStream::new(rx).map_while(|res| res.ok());
     let events = replay_stream.chain(live_stream);
-    let filtered = events.filter(move |event| watch_event_matches_selector(event, &label_reqs, &field_reqs));
-    let frames = filtered.filter_map(move |event| encode_watch_event(&event, &kind, &api_version));
+    // Cloned once per closure (`StorageClient` wraps a cheap-to-clone
+    // `tonic::transport::Channel`, same posture every other real call
+    // site in this crate already takes) — `filter`/`filter_map` each need
+    // their own `'static`-owned copy of the encryption-lookup context.
+    let (storage_for_filter, group_for_filter, resource_for_filter) = (storage.clone(), group.clone(), resource.clone());
+    let filtered = events.filter(move |event| watch_event_matches_selector(event, &label_reqs, &field_reqs, storage_for_filter.as_ref(), &group_for_filter, &resource_for_filter));
+    let frames = filtered.filter_map(move |event| encode_watch_event(&event, &kind, &api_version, storage.as_ref(), &group, &resource));
     StreamBody::new(frames).boxed()
 }
 
@@ -343,37 +362,17 @@ pub async fn run(cfg: Config) {
     };
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
-    // Best-effort, matching every other failure in this function: a
-    // nodestore that isn't reachable yet at startup shouldn't stop the
-    // listener from serving discovery (which needs no storage at all) —
-    // `rest::get` degrades to the bring-up echo stub when this is `None`
-    // (see its own call site's comment). Connected once here and cloned
-    // per connection below: `StorageClient` wraps a cheap-to-clone
-    // `tonic::transport::Channel`, the same "clone per use, don't share a
-    // `&mut` behind a lock" posture `cacher`'s own driver takes.
-    let storage = match StorageClient::connect(&cfg).await {
-        Ok(c) => Some(c),
-        Err(e) => {
-            warn!(error = ?e, "failed to connect to nodestore at startup; resource GET requests will fall back to the bring-up echo stub until this succeeds");
-            None
-        }
-    };
-
-    // Group C: load and validate `EncryptionConfiguration` at startup,
-    // ahead of the wiring that would actually consult it — a
-    // misconfigured file is a real, loud startup failure this way,
-    // rather than a silent no-op until that wiring exists (see
-    // `config::Config::encryption_config_file`'s own doc comment for
-    // why this stays load-only for now). `_encryption_config` is
-    // genuinely unused past this point — named with a leading
-    // underscore rather than left unbound, so it's unmistakable in a
-    // future diff that wiring it in means using this binding, not
-    // reloading the file a second time.
-    let _encryption_config = match &cfg.encryption_config_file {
+    // Group C: load and validate `EncryptionConfiguration` *before*
+    // connecting to nodestore — a misconfigured file is a real, loud
+    // startup failure this way, and the parsed config needs to be ready
+    // to attach to `storage` the moment it exists, before any clone of
+    // it (the cache-registry spawn loop below, or a per-connection clone
+    // in the accept loop) gets made without it.
+    let encryption_config = match &cfg.encryption_config_file {
         Some(path) => match std::fs::read_to_string(path) {
             Ok(yaml) => match crate::storage::encryption_config::parse(&yaml) {
                 Ok(parsed) => {
-                    info!(path = %path.display(), entries = parsed.entries.len(), "nodeapiserver: loaded EncryptionConfiguration (not yet wired into any read/write path)");
+                    info!(path = %path.display(), entries = parsed.entries.len(), "nodeapiserver: loaded EncryptionConfiguration");
                     Some(parsed)
                 }
                 Err(e) => {
@@ -387,6 +386,26 @@ pub async fn run(cfg: Config) {
             }
         },
         None => None,
+    };
+
+    // Best-effort, matching every other failure in this function: a
+    // nodestore that isn't reachable yet at startup shouldn't stop the
+    // listener from serving discovery (which needs no storage at all) —
+    // `rest::get` degrades to the bring-up echo stub when this is `None`
+    // (see its own call site's comment). Connected once here and cloned
+    // per connection below: `StorageClient` wraps a cheap-to-clone
+    // `tonic::transport::Channel`, the same "clone per use, don't share a
+    // `&mut` behind a lock" posture `cacher`'s own driver takes.
+    // `with_encryption` attaches Group C's config to `storage` right
+    // away — before `cache_registry.spawn` below ever clones it — so
+    // every clone made from this point on (including every long-running
+    // background reflect loop) carries it too.
+    let storage = match StorageClient::connect(&cfg).await {
+        Ok(c) => Some(c.with_encryption(encryption_config)),
+        Err(e) => {
+            warn!(error = ?e, "failed to connect to nodestore at startup; resource GET requests will fall back to the bring-up echo stub until this succeeds");
+            None
+        }
     };
 
     // Group D: a real, deliberately bounded first expansion beyond the
@@ -1873,7 +1892,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                         return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
                     };
                     let group_version = if info.api_group.is_empty() { info.api_version.clone() } else { format!("{}/{}", info.api_group, info.api_version) };
-                    let body = watch_response_body(replay, rx, kind.to_string(), group_version, label_reqs, field_reqs);
+                    let body = watch_response_body(replay, rx, kind.to_string(), group_version, label_reqs, field_reqs, storage.clone(), info.api_group.clone(), info.resource.clone());
                     // No explicit `Transfer-Encoding` header: hyper's own
                     // h1/h2 connection handling already frames a body with
                     // no known length correctly for whichever protocol
@@ -2110,7 +2129,7 @@ mod tests {
     #[test]
     fn encode_watch_event_produces_a_newline_terminated_json_line() {
         let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 9 };
-        let frame = encode_watch_event(&event, "Pod", "v1").expect("Bookmark always converts").expect("Bookmark conversion never fails");
+        let frame = encode_watch_event(&event, "Pod", "v1", None, "", "pods").expect("Bookmark always converts").expect("Bookmark conversion never fails");
         let bytes = frame.into_data().unwrap();
         assert!(bytes.ends_with(b"\n"));
         let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
@@ -2121,7 +2140,7 @@ mod tests {
     #[test]
     fn encode_watch_event_skips_a_deleted_event_with_no_retained_value() {
         let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Deleted, key: b"k".to_vec(), value: Vec::new(), revision: 9 };
-        assert!(encode_watch_event(&event, "Pod", "v1").is_none());
+        assert!(encode_watch_event(&event, "Pod", "v1", None, "", "pods").is_none());
     }
 
     fn envelope_for(name: &str, labels: serde_json::Value) -> Vec<u8> {
@@ -2134,7 +2153,7 @@ mod tests {
     fn watch_event_matches_selector_passes_bookmarks_and_valueless_events_through() {
         let reqs = crate::cacher::selector::parse_label_selector("env=prod").unwrap();
         let bookmark = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 1 };
-        assert!(watch_event_matches_selector(&bookmark, &reqs, &[]));
+        assert!(watch_event_matches_selector(&bookmark, &reqs, &[], None, "", ""));
     }
 
     #[test]
@@ -2142,14 +2161,14 @@ mod tests {
         let reqs = crate::cacher::selector::parse_label_selector("env=prod").unwrap();
         let matching = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Added, key: b"a".to_vec(), value: envelope_for("a", serde_json::json!({"env": "prod"})), revision: 1 };
         let non_matching = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Added, key: b"b".to_vec(), value: envelope_for("b", serde_json::json!({"env": "dev"})), revision: 2 };
-        assert!(watch_event_matches_selector(&matching, &reqs, &[]));
-        assert!(!watch_event_matches_selector(&non_matching, &reqs, &[]));
+        assert!(watch_event_matches_selector(&matching, &reqs, &[], None, "", ""));
+        assert!(!watch_event_matches_selector(&non_matching, &reqs, &[], None, "", ""));
     }
 
     #[test]
     fn watch_event_matches_selector_is_a_no_op_with_no_selector() {
         let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Added, key: b"a".to_vec(), value: envelope_for("a", serde_json::json!({})), revision: 1 };
-        assert!(watch_event_matches_selector(&event, &[], &[]));
+        assert!(watch_event_matches_selector(&event, &[], &[], None, "", ""));
     }
 
     #[tokio::test]
@@ -2183,7 +2202,7 @@ mod tests {
         // artificially closing the channel first).
         drop(shared);
 
-        let body = watch_response_body(replay, rx, "Namespace".to_string(), "v1".to_string(), Vec::new(), Vec::new());
+        let body = watch_response_body(replay, rx, "Namespace".to_string(), "v1".to_string(), Vec::new(), Vec::new(), None, String::new(), "namespaces".to_string());
         let collected = body.collect().await.unwrap().to_bytes();
         let text = String::from_utf8(collected.to_vec()).unwrap();
         assert_eq!(text.lines().count(), 1);
