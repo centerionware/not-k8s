@@ -660,17 +660,20 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
         }
     }
 
-    let mut violations: Vec<String> = match resolved.schema {
-        Some(schema) => {
+    let mut violations: Vec<String> = match (resolved.schema, &resolved.open_api_schema) {
+        (Some(schema), _) => {
             let mut v: Vec<String> = validation::validate_required(schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
             v.extend(validation::validate_types(schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
             v
         }
-        // Group K: full structural-schema validation against a CRD's own
-        // openAPIV3Schema isn't landed yet (docs/APISERVER.md's Group K
-        // section names this honestly) -- a CRD-defined object's own
-        // required/type checks aren't run, only defaulting is.
-        None => Vec::new(),
+        // Group K: real required/type validation against a CRD's own
+        // openAPIV3Schema, when it has one.
+        (None, Some(open_api_schema)) => {
+            let mut v: Vec<String> = apiextensions::schema_validation::validate_required(open_api_schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
+            v.extend(apiextensions::schema_validation::validate_types(open_api_schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+            v
+        }
+        (None, None) => Vec::new(),
     };
     violations.extend(name_format_violations(group, resource, &name).into_iter().map(|e| format!("metadata.name: {e}")));
     if !violations.is_empty() {
@@ -802,16 +805,19 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
         return Ok(UpdateOutcome::Conflict);
     }
 
-    let mut violations: Vec<String> = match resolved.schema {
-        Some(schema) => {
+    let mut violations: Vec<String> = match (resolved.schema, &resolved.open_api_schema) {
+        (Some(schema), _) => {
             let mut v: Vec<String> = validation::validate_required(schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
             v.extend(validation::validate_types(schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
             v
         }
-        // Group K: same scope narrowing `create`'s own CRD branch names —
-        // full structural-schema validation against a CRD's own
-        // openAPIV3Schema isn't landed yet.
-        None => Vec::new(),
+        // Group K: same scope `create`'s own CRD branch runs.
+        (None, Some(open_api_schema)) => {
+            let mut v: Vec<String> = apiextensions::schema_validation::validate_required(open_api_schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
+            v.extend(apiextensions::schema_validation::validate_types(open_api_schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+            v
+        }
+        (None, None) => Vec::new(),
     };
     violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
     if !violations.is_empty() {
@@ -1085,14 +1091,19 @@ pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &s
 /// `resourceVersion` needed, since the object being patched *is* the one
 /// [`patch_prepare`] already read.
 pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, context: PatchContext, candidate: Value) -> Result<UpdateOutcome, Error> {
-    let mut violations: Vec<String> = match context.schema {
-        Some(schema) => {
+    let mut violations: Vec<String> = match (context.schema, &context.open_api_schema) {
+        (Some(schema), _) => {
             let mut v: Vec<String> = validation::validate_required(schema, &candidate).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
             v.extend(validation::validate_types(schema, &candidate).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
             v
         }
-        // Group K: same scope narrowing `create`'s own CRD branch names.
-        None => Vec::new(),
+        // Group K: same scope `create`'s own CRD branch runs.
+        (None, Some(open_api_schema)) => {
+            let mut v: Vec<String> = apiextensions::schema_validation::validate_required(open_api_schema, &candidate).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
+            v.extend(apiextensions::schema_validation::validate_types(open_api_schema, &candidate).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+            v
+        }
+        (None, None) => Vec::new(),
     };
     violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
     if !violations.is_empty() {

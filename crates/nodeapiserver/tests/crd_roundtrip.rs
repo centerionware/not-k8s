@@ -372,3 +372,89 @@ async fn watching_a_crd_defined_resource_lazily_spawns_a_cache_and_streams_real_
     let _ = child.kill().await;
     let _ = child.wait().await;
 }
+
+/// Real required/type validation against a CRD's own schema
+/// (`apiextensions::schema_validation`) — a separate small CRD (its own
+/// dedicated schema declaring `required: ["color"]`) rather than
+/// widening `a_crd()`'s own shared fixture, which every other test in
+/// this file already relies on accepting a `spec` with no `color` set.
+#[tokio::test]
+async fn create_rejects_a_crd_defined_object_that_violates_its_own_schema() {
+    let Some(nodestore_bin) = find_nodestore_binary() else {
+        eprintln!("SKIPPED: no nodestore binary available and building one on demand failed");
+        return;
+    };
+    let (mut child, _data_dir, mut storage) = spawn_nodestore(&nodestore_bin, 23803).await;
+
+    let strict_crd = json!({
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {"name": "gadgets.example.com"},
+        "spec": {
+            "group": "example.com",
+            "scope": "Namespaced",
+            "names": {"plural": "gadgets", "singular": "gadget", "kind": "Gadget", "listKind": "GadgetList"},
+            "versions": [{
+                "name": "v1",
+                "served": true,
+                "storage": true,
+                "schema": {
+                    "openAPIV3Schema": {
+                        "type": "object",
+                        "properties": {
+                            "spec": {
+                                "type": "object",
+                                "required": ["color"],
+                                "properties": {"color": {"type": "string"}, "weight": {"type": "integer"}},
+                            },
+                        },
+                    },
+                },
+            }],
+        },
+    });
+    rest::create(&mut storage, "apiextensions.k8s.io", "v1", "customresourcedefinitions", None, &strict_crd).await.expect("rest::create(CRD) must not itself error");
+
+    // Missing the required `color` field entirely.
+    let missing_required = json!({
+        "apiVersion": "example.com/v1",
+        "kind": "Gadget",
+        "metadata": {"name": "bad-gadget-1", "namespace": "default"},
+        "spec": {"weight": 3},
+    });
+    match rest::create(&mut storage, "example.com", "v1", "gadgets", Some("default"), &missing_required).await.expect("rest::create must not itself error") {
+        rest::CreateOutcome::Invalid(violations) => {
+            assert!(violations.iter().any(|v| v.contains("spec.color") && v.contains("Required")), "expected a spec.color required violation, got {violations:?}");
+        }
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+
+    // color present but the wrong JSON kind.
+    let wrong_type = json!({
+        "apiVersion": "example.com/v1",
+        "kind": "Gadget",
+        "metadata": {"name": "bad-gadget-2", "namespace": "default"},
+        "spec": {"color": "red", "weight": "not-a-number"},
+    });
+    match rest::create(&mut storage, "example.com", "v1", "gadgets", Some("default"), &wrong_type).await.expect("rest::create must not itself error") {
+        rest::CreateOutcome::Invalid(violations) => {
+            assert!(violations.iter().any(|v| v.contains("spec.weight") && v.contains("integer")), "expected a spec.weight type violation, got {violations:?}");
+        }
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+
+    // A genuinely valid object still succeeds.
+    let valid = json!({
+        "apiVersion": "example.com/v1",
+        "kind": "Gadget",
+        "metadata": {"name": "good-gadget", "namespace": "default"},
+        "spec": {"color": "blue", "weight": 5},
+    });
+    match rest::create(&mut storage, "example.com", "v1", "gadgets", Some("default"), &valid).await.expect("rest::create must not itself error") {
+        rest::CreateOutcome::Created(object) => assert_eq!(object["spec"]["color"], "blue"),
+        other => panic!("expected Created, got {other:?}"),
+    }
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
