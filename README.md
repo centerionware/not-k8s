@@ -1,3 +1,8 @@
+The scope of this project has changed to slowly become a full kubernetes distro but in rust. I'm one guy with some tools. this readme is pretty out of date. the only component that's not merged to the main branch is apiserver and it's being actively worked on. it's targeting upstream 1.34 plus DRA, and after all the parts are made and a new bootstrap method is made I'll begin to retarget it to the latest (1.36.3 at this time afaik). it can still operate as kubelet and Kube-proxy replacements with an upstream control plane, and if I have anything to say about it always will. 
+
+I don't expect it to be bug free, or security problem free, because this is a friggin massive undertaking done by one guy and two/three ai agents. I do have 30+ years of experience coding though so methinks that gives me an edge when it comes to understanding what it's actually outputting. I try to review a lot of the code manually but it's so much, and I'm not being paid for this (yet?) so don't expect me to review everything.
+
+
 # not-k8s
 
 **A drop-in kubelet replacement small enough to run where kubelet won't fit.**
