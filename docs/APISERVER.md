@@ -1124,13 +1124,28 @@ claim's own `<class>.storageclass.storage.k8s.io/...` key,
 suffixed form, same as real upstream's own `MatchingResources`'
 `strings.HasSuffix` check). **Substantially scoped, named honestly** in
 the one resource-family gap now left: real upstream's three specialized
-evaluators track no further families this crate doesn't; there is **no
-persisted `status.used` counter** — usage is recomputed live from a
-fresh object list on every check rather than an incrementally
-maintained, optimistic-lock-protected running total, which means
-(unlike real upstream) two concurrent `CREATE`s that each individually
-fit under the quota can both be admitted, together exceeding it — a
-real, narrow, accepted concurrency gap, not silently glossed over.
+evaluators track no further families this crate doesn't. **The
+persisted `status.used` counter now exists for the pod evaluator**
+(`admission::resource_quota::usage_after_pod_create` +
+`server::listener::persist_quota_usage_updates`): once a pod `CREATE` is
+admitted, the same post-create usage total the check just verified is
+written back to each matching quota's real `status.used` via
+`rest::update_status` (Group E's own new generic `/status` subresource),
+with a bounded (3-attempt) retry on a real optimistic-concurrency
+`Conflict`, read-modify-write so it never clobbers keys another
+evaluator's own status data might hold. **The underlying admit-time
+concurrency gap is still real and still named honestly, not closed by
+this**: usage is still recomputed live from a fresh object list at
+*check* time (not read from the persisted counter, which this build
+never treats as authoritative for the check itself — only for what gets
+reported afterward) — two concurrent `CREATE`s that each individually
+fit can still both be admitted, together exceeding the quota, exactly
+as before. What's new is that `status.used` genuinely reflects real
+usage afterward (`kubectl describe resourcequota` now shows accurate
+data) rather than never being written at all. The PVC/service/generic
+evaluators don't persist their own `status.used` yet — a named,
+narrower follow-up now that the pod evaluator's own plumbing
+(`rest::update_status`, the retry loop) exists to extend.
 Placed last among this crate's admission blocks (after `LimitRanger`'s
 own defaulting), the same relative position real upstream's own default
 plugin order uses, so quota sees the final, fully-defaulted object.
