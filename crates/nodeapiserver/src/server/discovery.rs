@@ -364,9 +364,9 @@ fn group_discovery_value(group: &str) -> Value {
 /// The dynamic counterpart to [`api_group_discovery_list`] — see
 /// [`merged_group_version_map`]'s own doc comment for where `crds`
 /// comes from.
-pub fn api_group_discovery_list_with_crds(crds: &[DiscoverableResource]) -> Value {
-    let groups = merged_group_version_map(crds, &[]);
-    let items: Vec<Value> = groups.keys().map(|group| group_discovery_value_with_crds(group, crds)).collect();
+pub fn api_group_discovery_list_with_crds(crds: &[DiscoverableResource], aggregated: &[(String, String)]) -> Value {
+    let groups = merged_group_version_map(crds, aggregated);
+    let items: Vec<Value> = groups.keys().map(|group| group_discovery_value_with_crds(group, crds, aggregated)).collect();
     json!({
         "kind": "APIGroupDiscoveryList",
         "apiVersion": "apidiscovery.k8s.io/v2",
@@ -387,9 +387,16 @@ pub fn api_v1_group_discovery_list_with_crds() -> Value {
 
 /// Same shape [`group_discovery_value`] builds, with every
 /// `(group, version)` resource list also merged with whatever `crds`
-/// provides for that exact group.
-fn group_discovery_value_with_crds(group: &str, crds: &[DiscoverableResource]) -> Value {
-    let versions = merged_group_version_map(crds, &[]).remove(group).unwrap_or_default();
+/// provides for that exact group. `aggregated`'s own group/versions
+/// appear too (same [`merged_group_version_map`] input as the legacy
+/// shape), each with an empty `resources` list — real upstream's own
+/// equivalent here would be a live proxied fetch of the aggregated
+/// backend's own `/apis/{group}/{version}` discovery document, still not
+/// wired in (`aggregator::mod`'s own doc comment names this exact gap);
+/// an aggregated group is at least now visible in this shape too, just
+/// not yet populated with its real resources.
+fn group_discovery_value_with_crds(group: &str, crds: &[DiscoverableResource], aggregated: &[(String, String)]) -> Value {
+    let versions = merged_group_version_map(crds, aggregated).remove(group).unwrap_or_default();
     let version_values: Vec<Value> = versions
         .iter()
         .map(|version| {
@@ -658,12 +665,27 @@ mod tests {
     #[test]
     fn aggregated_discovery_merges_a_crd_group_too() {
         let crds = [a_widget_crd_resource()];
-        let list = api_group_discovery_list_with_crds(&crds);
+        let list = api_group_discovery_list_with_crds(&crds, &[]);
         let items = list["items"].as_array().unwrap();
         let group = items.iter().find(|g| g["metadata"]["name"] == "example.com").expect("example.com should be discoverable");
         let v1 = group["versions"].as_array().unwrap().iter().find(|v| v["version"] == "v1").expect("v1 should be present");
         let widgets = v1["resources"].as_array().unwrap().iter().find(|r| r["resource"] == "widgets").expect("widgets should be discoverable");
         assert_eq!(widgets["responseKind"], json!({"group": "example.com", "version": "v1", "kind": "Widget"}));
         assert_eq!(widgets["scope"], "Namespaced");
+    }
+
+    /// Group L Phase 3's own remaining gap, closed: an aggregated
+    /// group/version now shows up in the v2 shape too, matching the
+    /// legacy shape's own merge -- with an empty `resources` list, since
+    /// only the backend itself knows what it serves (`aggregator::mod`'s
+    /// own doc comment names the still-not-done live-proxy piece).
+    #[test]
+    fn aggregated_discovery_merges_an_aggregated_apiservice_group_too() {
+        let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
+        let list = api_group_discovery_list_with_crds(&[], &aggregated);
+        let items = list["items"].as_array().unwrap();
+        let group = items.iter().find(|g| g["metadata"]["name"] == "metrics.k8s.io").expect("metrics.k8s.io should be discoverable");
+        let v1beta1 = group["versions"].as_array().unwrap().iter().find(|v| v["version"] == "v1beta1").expect("v1beta1 should be present");
+        assert_eq!(v1beta1["resources"], json!([]), "an aggregated group's own resources aren't known statically yet");
     }
 }

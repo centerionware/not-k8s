@@ -571,12 +571,7 @@ fn route_discovery(parts: &[String], accept_header: Option<&str>, crds: &[crate:
             Some(doc) => DiscoveryRoute::Found(doc),
             None => DiscoveryRoute::NotFound,
         },
-        // Group L Phase 3: aggregated-discovery-v2 (`api_group_discovery_
-        // list_with_crds`) doesn't merge `aggregated` yet -- a real,
-        // separate, named gap (this legacy shape is the one this slice
-        // closes; the v2 shape is a follow-up, same scoping style every
-        // other slice this arc uses).
-        (Some("apis"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Found(discovery::api_group_discovery_list_with_crds(crds)),
+        (Some("apis"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Found(discovery::api_group_discovery_list_with_crds(crds, aggregated)),
         (Some("apis"), _, 1) => DiscoveryRoute::Found(discovery::api_group_list_with_crds(crds, aggregated)),
         (Some("apis"), _, 2) => match discovery::api_group_with_crds(&parts[1], crds, aggregated) {
             Some(doc) => DiscoveryRoute::Found(doc),
