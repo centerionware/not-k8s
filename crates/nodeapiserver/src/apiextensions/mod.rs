@@ -12,6 +12,12 @@
 //! no compiled `FIELD_META` for an arbitrary operator-defined schema the
 //! way built-in types get from Group A's codegen).
 //!
+//! `schema_validation` — the required/type-checking sibling of
+//! `schema_defaults`, same runtime-schema walk, producing
+//! `scheme::validation`'s own `MissingField`/`TypeMismatch` shapes so
+//! every real call site already knows how to report either kind
+//! identically.
+//!
 //! `GET`/`LIST`/`CREATE`/`UPDATE`/`PATCH` (`JSON Patch`/`Merge Patch`
 //! only)/`DELETE`/`DELETECOLLECTION`/`WATCH`/the `status` subresource are
 //! all real for CRD-defined resources now
@@ -19,30 +25,40 @@
 //! write verbs; `server::rest::resolve_dynamic_kind` +
 //! `cacher::registry::CacheRegistry::spawn`, called lazily from
 //! `server::listener`'s own `WATCH` dispatch on a resource's first-ever
-//! watch request, for `WATCH`). `strategic-merge-patch` against a CRD is
-//! a real, deliberate exception — a clean `Invalid`, not a silently-wrong
-//! merge — since it needs `x-kubernetes-list-type`/`-list-map-keys`
-//! resolution from a *runtime* schema this crate has no interpreter for
-//! yet (`crate::patch::strategic_merge` only walks a *compiled*
+//! watch request, for `WATCH`), and `CREATE`/`UPDATE`/`PATCH` now run
+//! real required/type validation against a CRD's own schema too
+//! (`schema_validation`, wired the same place `schema_defaults` already
+//! was). `strategic-merge-patch` against a CRD is a real, deliberate
+//! exception — a clean `Invalid`, not a silently-wrong merge — since it
+//! needs `x-kubernetes-list-type`/`-list-map-keys` resolution from a
+//! *runtime* schema this crate has no interpreter for yet
+//! (`crate::patch::strategic_merge` only walks a *compiled*
 //! `ref_schema`). `discoverable_resources` (this module's own registry
 //! submodule) also drives `server::discovery`'s dynamic merge: a served,
 //! `Established` CRD's resources now genuinely appear in `/apis`/
 //! `/apis/{group}`/`/apis/{group}/{version}` and their aggregated-v2
 //! counterparts, not just at their own already-known URL.
 //!
-//! **Not yet landed, named honestly**: full structural-schema
-//! type/required validation and pruning
-//! (`x-kubernetes-preserve-unknown-fields`); `x-kubernetes-validations`
-//! CEL; conversion webhooks; reacting to a CRD's own lifecycle (a
-//! lazily-spawned watch reflector keeps running even after its CRD is
-//! deleted, and a newly `Established` CRD is only discovered by the next
-//! watch request for its resource, not eagerly, nor by the next
-//! discovery request until then either); gating the `status` subresource
-//! on a CRD's own `spec.versions[].subresources.status` (currently
-//! always available, unconditionally, for every CRD).
+//! **Not yet landed, named honestly**: `x-kubernetes-preserve-unknown-
+//! fields` pruning (a separate structural-schema concern — "should this
+//! field even exist" rather than "is this field's value the right
+//! shape" — `schema_validation` doesn't flag or strip an undeclared
+//! field, it just skips it, same posture `scheme::validation` already
+//! takes); enum membership, numeric ranges, format checks (RFC 1123
+//! labels, ...) and any cross-field consistency rule
+//! (`x-kubernetes-validations` CEL is a CRD schema's real mechanism for
+//! all of that — needs the CEL cost budget built first, a named DoS
+//! surface, not optional hardening); conversion webhooks; reacting to a
+//! CRD's own lifecycle (a lazily-spawned watch reflector keeps running
+//! even after its CRD is deleted, and a newly `Established` CRD is only
+//! discovered by the next watch/discovery request for its resource, not
+//! eagerly); gating the `status` subresource on a CRD's own
+//! `spec.versions[].subresources.status` (currently always available,
+//! unconditionally, for every CRD).
 //!
 //! Status: in progress (Group K — see docs/APISERVER.md).
 
 pub mod conditions;
 pub mod registry;
 pub mod schema_defaults;
+pub mod schema_validation;
