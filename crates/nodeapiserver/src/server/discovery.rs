@@ -35,9 +35,20 @@
 //! `as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io` gets this shape
 //! instead of the legacy one.
 
+use crate::apiextensions::registry::DiscoverableResource;
 use crate::codegen;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+
+/// Every real, generic verb `server::rest` serves for a CRD-defined
+/// resource as of Group K's own current scope (`create`/`get`/`list`/
+/// `update`/`patch`/`delete`/`deletecollection`/`watch` — see
+/// `apiextensions::mod`'s own doc comment for the exact landed set) —
+/// real upstream's own `crdHandler` installs identical generic storage
+/// for every CRD (`pkg/apiserver/customresource_handler.go`), so this
+/// build's own uniform verb list for every CRD-backed resource matches
+/// that same "no per-Kind customization" posture, not an approximation.
+const CRD_VERBS: &[&str] = &["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"];
 
 /// `/api` — the legacy, groupless core group's own version list. This
 /// build always serves exactly `v1` for the core group (verified: every
@@ -94,6 +105,69 @@ fn group_version_map() -> BTreeMap<&'static str, Vec<&'static str>> {
     groups
 }
 
+/// The dynamic counterpart to [`group_version_map`]: the static table,
+/// folded together with whatever `(group, version)` pairs `crds`
+/// provides — `server::listener`'s own discovery routing fetches `crds`
+/// live (`rest::list_all_crds`, one `LIST` of `customresourcedefinitions`,
+/// only for an `/apis`-prefixed request) and passes them in; this module
+/// stays free of any I/O itself, same posture the rest of it already has.
+/// Owned `String`s throughout (unlike `group_version_map`'s own
+/// `&'static str`), since a CRD's own group/version strings are never
+/// `'static` — this build's own well-founded reason every `*_with_crds`
+/// function below exists as a genuinely separate function from its
+/// static-only counterpart rather than a shared generic.
+fn merged_group_version_map(crds: &[DiscoverableResource]) -> BTreeMap<String, Vec<String>> {
+    let mut groups: BTreeMap<String, Vec<String>> = group_version_map().into_iter().map(|(g, vs)| (g.to_string(), vs.into_iter().map(str::to_string).collect())).collect();
+    for r in crds {
+        let versions = groups.entry(r.group.clone()).or_default();
+        if !versions.contains(&r.version) {
+            versions.push(r.version.clone());
+        }
+    }
+    for versions in groups.values_mut() {
+        versions.sort_unstable_by(|a, b| super::version_compare::compare_kube_aware_versions(b, a));
+    }
+    groups
+}
+
+/// `/apis`, merging in every group a served, `Established` CRD provides
+/// on top of the static table — see [`merged_group_version_map`]'s own
+/// doc comment for where `crds` comes from.
+pub fn api_group_list_with_crds(crds: &[DiscoverableResource]) -> Value {
+    let groups = merged_group_version_map(crds);
+    let list: Vec<Value> = groups.keys().map(|group| api_group_value_owned(group, &groups[group])).collect();
+    json!({
+        "kind": "APIGroupList",
+        "apiVersion": "v1",
+        "groups": list,
+    })
+}
+
+/// `/apis/{group}`, merged — `None` if this build serves no such group
+/// at all, neither statically nor via any CRD.
+pub fn api_group_with_crds(group: &str, crds: &[DiscoverableResource]) -> Option<Value> {
+    let groups = merged_group_version_map(crds);
+    let versions = groups.get(group)?;
+    Some(api_group_value_owned(group, versions))
+}
+
+/// Same shape [`api_group_value`] builds, over owned `String` versions
+/// instead of `&'static str` — see [`merged_group_version_map`]'s own
+/// doc comment for why that split exists.
+fn api_group_value_owned(group: &str, versions: &[String]) -> Value {
+    let group_version = |v: &str| format!("{group}/{v}");
+    let version_values: Vec<Value> = versions.iter().map(|v| json!({"groupVersion": group_version(v), "version": v})).collect();
+    let preferred = versions.first().map(|v| json!({"groupVersion": group_version(v), "version": v})).unwrap_or(json!({}));
+    json!({
+        "kind": "APIGroup",
+        "apiVersion": "v1",
+        "name": group,
+        "versions": version_values,
+        "preferredVersion": preferred,
+        "serverAddressByClientCIDRs": [],
+    })
+}
+
 fn api_group_value(group: &str, versions: &[&str]) -> Value {
     let group_version = |v: &str| format!("{group}/{v}");
     let version_values: Vec<Value> = versions.iter().map(|v| json!({"groupVersion": group_version(v), "version": v})).collect();
@@ -143,6 +217,52 @@ pub fn api_resource_list(group: &str, version: &str) -> Option<Value> {
         "groupVersion": group_version,
         "resources": list,
     }))
+}
+
+/// The dynamic counterpart to [`api_resource_list`]: `None` only when
+/// this build serves the exact `(group, version)` neither statically nor
+/// via any CRD in `crds` — a group+version a CRD alone provides (the
+/// overwhelmingly common CRD case, since a CRD's own group is never also
+/// a built-in one) still returns `Some`, just with `resources` built
+/// entirely from `crds`.
+pub fn api_resource_list_with_crds(group: &str, version: &str, crds: &[DiscoverableResource]) -> Option<Value> {
+    let static_resources = codegen::api_resources_by_group_version().get(&(group, version));
+    let dynamic: Vec<&DiscoverableResource> = crds.iter().filter(|r| r.group == group && r.version == version).collect();
+    if static_resources.is_none() && dynamic.is_empty() {
+        return None;
+    }
+    let group_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    let mut list: Vec<Value> = static_resources
+        .map(|resources| {
+            let mut sorted: Vec<&codegen::api_resources::ApiResource> = resources.iter().copied().collect();
+            sorted.sort_by_key(|r| r.resource);
+            sorted
+                .iter()
+                .map(|r| {
+                    let mut verbs: Vec<&str> = r.verbs.to_vec();
+                    verbs.sort_unstable();
+                    json!({"name": r.resource, "singularName": r.kind.to_lowercase(), "namespaced": r.namespaced, "kind": r.kind, "verbs": verbs})
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    list.extend(dynamic.iter().map(|r| crd_api_resource_value(r)));
+    list.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    Some(json!({
+        "kind": "APIResourceList",
+        "apiVersion": "v1",
+        "groupVersion": group_version,
+        "resources": list,
+    }))
+}
+
+/// Same shape [`api_resource_list`]'s own per-resource entries use, for
+/// one CRD-provided resource — `CRD_VERBS` in place of a compiled
+/// per-type verb list, since every CRD-backed resource genuinely
+/// supports the same generic set (this module's own doc comment on
+/// `CRD_VERBS`).
+fn crd_api_resource_value(r: &DiscoverableResource) -> Value {
+    json!({"name": r.resource, "singularName": r.kind.to_lowercase(), "namespaced": r.namespaced, "kind": r.kind, "verbs": CRD_VERBS})
 }
 
 /// Aggregated discovery v2 (`apidiscovery.k8s.io/v2`'s `APIGroupDiscoveryList`
@@ -208,6 +328,70 @@ fn group_discovery_value(group: &str) -> Value {
     json!({
         "metadata": {"name": group},
         "versions": version_values,
+    })
+}
+
+/// The dynamic counterpart to [`api_group_discovery_list`] — see
+/// [`merged_group_version_map`]'s own doc comment for where `crds`
+/// comes from.
+pub fn api_group_discovery_list_with_crds(crds: &[DiscoverableResource]) -> Value {
+    let groups = merged_group_version_map(crds);
+    let items: Vec<Value> = groups.keys().map(|group| group_discovery_value_with_crds(group, crds)).collect();
+    json!({
+        "kind": "APIGroupDiscoveryList",
+        "apiVersion": "apidiscovery.k8s.io/v2",
+        "metadata": {},
+        "items": items,
+    })
+}
+
+/// The dynamic counterpart to [`api_v1_group_discovery_list`] — the core
+/// group never has any CRDs of its own (a CRD's `spec.group` is never
+/// empty, real upstream's own CRD validation requires a non-empty
+/// group), so this exists only for symmetry with every other
+/// `*_with_crds` function, not because `crds` ever actually changes its
+/// output.
+pub fn api_v1_group_discovery_list_with_crds() -> Value {
+    api_v1_group_discovery_list()
+}
+
+/// Same shape [`group_discovery_value`] builds, with every
+/// `(group, version)` resource list also merged with whatever `crds`
+/// provides for that exact group.
+fn group_discovery_value_with_crds(group: &str, crds: &[DiscoverableResource]) -> Value {
+    let versions = merged_group_version_map(crds).remove(group).unwrap_or_default();
+    let version_values: Vec<Value> = versions
+        .iter()
+        .map(|version| {
+            let resources = codegen::api_resources_by_group_version().get(&(group, version.as_str()));
+            let mut sorted: Vec<&codegen::api_resources::ApiResource> = resources.map(|r| r.iter().copied().collect()).unwrap_or_default();
+            sorted.sort_by_key(|r| r.resource);
+            let mut resource_values: Vec<Value> = sorted.iter().map(|r| api_resource_discovery_value(group, version, r)).collect();
+            resource_values.extend(crds.iter().filter(|r| r.group == group && &r.version == version).map(crd_resource_discovery_value));
+            json!({
+                "version": version,
+                "resources": resource_values,
+                "freshness": "Current",
+            })
+        })
+        .collect();
+
+    json!({
+        "metadata": {"name": group},
+        "versions": version_values,
+    })
+}
+
+/// Same shape [`api_resource_discovery_value`] builds, for one
+/// CRD-provided resource — `CRD_VERBS` in place of a compiled per-type
+/// verb list, same reasoning [`crd_api_resource_value`] already states.
+fn crd_resource_discovery_value(r: &DiscoverableResource) -> Value {
+    json!({
+        "resource": r.resource,
+        "responseKind": {"group": r.group, "version": r.version, "kind": r.kind},
+        "scope": if r.namespaced { "Namespaced" } else { "Cluster" },
+        "singularResource": r.kind.to_lowercase(),
+        "verbs": CRD_VERBS,
     })
 }
 
@@ -345,5 +529,82 @@ mod tests {
         let versions: Vec<&str> = resource_group["versions"].as_array().unwrap().iter().map(|v| v["version"].as_str().unwrap()).collect();
         assert!(versions.len() > 1, "expected a genuinely multi-version group, got {versions:?}");
         assert_eq!(versions[0], "v1", "the GA version must be preferred over any beta");
+    }
+
+    fn a_widget_crd_resource() -> DiscoverableResource {
+        DiscoverableResource { group: "example.com".to_string(), version: "v1".to_string(), resource: "widgets".to_string(), kind: "Widget".to_string(), namespaced: true }
+    }
+
+    #[test]
+    fn a_crd_group_with_no_static_counterpart_appears_in_the_group_list() {
+        let crds = [a_widget_crd_resource()];
+        let list = api_group_list_with_crds(&crds);
+        let names: Vec<&str> = list["groups"].as_array().unwrap().iter().map(|g| g["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"example.com"), "expected the CRD's own group to be discoverable, got {names:?}");
+        // Every static group must still be present too -- the merge adds,
+        // it never replaces.
+        assert!(names.contains(&"apps"));
+    }
+
+    #[test]
+    fn a_crd_only_group_document_carries_its_own_version_as_preferred() {
+        let crds = [a_widget_crd_resource()];
+        let group = api_group_with_crds("example.com", &crds).expect("the CRD's own group must resolve");
+        assert_eq!(group["preferredVersion"]["version"], "v1");
+        assert_eq!(group["preferredVersion"]["groupVersion"], "example.com/v1");
+    }
+
+    #[test]
+    fn a_group_neither_static_nor_crd_provided_is_still_none() {
+        let crds = [a_widget_crd_resource()];
+        assert!(api_group_with_crds("totally.made.up", &crds).is_none());
+    }
+
+    #[test]
+    fn a_crd_resource_appears_in_its_own_group_versions_resource_list_with_every_real_generic_verb() {
+        let crds = [a_widget_crd_resource()];
+        let list = api_resource_list_with_crds("example.com", "v1", &crds).expect("example.com/v1 must resolve dynamically");
+        assert_eq!(list["groupVersion"], "example.com/v1");
+        let resources = list["resources"].as_array().unwrap();
+        let widgets = resources.iter().find(|r| r["name"] == "widgets").expect("widgets should be listed");
+        assert_eq!(widgets["kind"], "Widget");
+        assert_eq!(widgets["namespaced"], true);
+        assert_eq!(widgets["singularName"], "widget");
+        let verbs: Vec<&str> = widgets["verbs"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        for expected in ["create", "get", "list", "update", "patch", "delete", "deletecollection", "watch"] {
+            assert!(verbs.contains(&expected), "expected {expected:?} among {verbs:?}");
+        }
+    }
+
+    #[test]
+    fn a_crd_resource_still_sits_alongside_static_resources_in_a_shared_group_version() {
+        // A pathological but real-shaped case: a CRD happens to share a
+        // group+version with a static resource this build already knows
+        // about (unlikely for a real cluster's own core/apps groups, but
+        // the merge logic itself must not silently drop either side).
+        let crds = [DiscoverableResource { group: "apps".to_string(), version: "v1".to_string(), resource: "widgets".to_string(), kind: "Widget".to_string(), namespaced: true }];
+        let list = api_resource_list_with_crds("apps", "v1", &crds).expect("apps/v1 must still resolve");
+        let names: Vec<&str> = list["resources"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"deployments"), "the static apps/v1 resources must still be present");
+        assert!(names.contains(&"widgets"), "the CRD-provided resource must be merged in too");
+    }
+
+    #[test]
+    fn a_group_version_provided_only_by_a_crd_is_none_without_it_and_some_with_it() {
+        assert!(api_resource_list_with_crds("example.com", "v1", &[]).is_none());
+        let crds = [a_widget_crd_resource()];
+        assert!(api_resource_list_with_crds("example.com", "v1", &crds).is_some());
+    }
+
+    #[test]
+    fn aggregated_discovery_merges_a_crd_group_too() {
+        let crds = [a_widget_crd_resource()];
+        let list = api_group_discovery_list_with_crds(&crds);
+        let items = list["items"].as_array().unwrap();
+        let group = items.iter().find(|g| g["metadata"]["name"] == "example.com").expect("example.com should be discoverable");
+        let v1 = group["versions"].as_array().unwrap().iter().find(|v| v["version"] == "v1").expect("v1 should be present");
+        let widgets = v1["resources"].as_array().unwrap().iter().find(|r| r["resource"] == "widgets").expect("widgets should be discoverable");
+        assert_eq!(widgets["responseKind"], json!({"group": "example.com", "version": "v1", "kind": "Widget"}));
+        assert_eq!(widgets["scope"], "Namespaced");
     }
 }

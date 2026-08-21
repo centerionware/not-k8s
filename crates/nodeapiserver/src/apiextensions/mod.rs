@@ -24,18 +24,22 @@
 //! merge — since it needs `x-kubernetes-list-type`/`-list-map-keys`
 //! resolution from a *runtime* schema this crate has no interpreter for
 //! yet (`crate::patch::strategic_merge` only walks a *compiled*
-//! `ref_schema`). **Not yet landed, named honestly**: full
-//! structural-schema type/required validation and pruning
+//! `ref_schema`). `discoverable_resources` (this module's own registry
+//! submodule) also drives `server::discovery`'s dynamic merge: a served,
+//! `Established` CRD's resources now genuinely appear in `/apis`/
+//! `/apis/{group}`/`/apis/{group}/{version}` and their aggregated-v2
+//! counterparts, not just at their own already-known URL.
+//!
+//! **Not yet landed, named honestly**: full structural-schema
+//! type/required validation and pruning
 //! (`x-kubernetes-preserve-unknown-fields`); `x-kubernetes-validations`
-//! CEL; conversion webhooks; discovery merge (a CRD's resource doesn't
-//! appear in `/apis/<group>/<version>` discovery output yet, even though
-//! it's genuinely routable — Group E's discovery table is still the
-//! static, build-time one); reacting to a CRD's own lifecycle (a
+//! CEL; conversion webhooks; reacting to a CRD's own lifecycle (a
 //! lazily-spawned watch reflector keeps running even after its CRD is
 //! deleted, and a newly `Established` CRD is only discovered by the next
-//! watch request for its resource, not eagerly); gating the `status`
-//! subresource on a CRD's own `spec.versions[].subresources.status`
-//! (currently always available, unconditionally, for every CRD).
+//! watch request for its resource, not eagerly, nor by the next
+//! discovery request until then either); gating the `status` subresource
+//! on a CRD's own `spec.versions[].subresources.status` (currently
+//! always available, unconditionally, for every CRD).
 //!
 //! Status: in progress (Group K — see docs/APISERVER.md).
 

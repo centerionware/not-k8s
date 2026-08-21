@@ -238,6 +238,18 @@ pub async fn resolve_dynamic_kind(storage: &mut StorageClient, group: &str, vers
     Ok(resolve_crd(storage, group, version, resource).await?.map(|r| r.kind))
 }
 
+/// Every stored `CustomResourceDefinition`, decoded — `server::listener`'s
+/// own discovery-merge call site is the other real caller outside this
+/// module that needs the raw documents (not just one resolved GVR): it
+/// merges every served, `Established` CRD's own resources into
+/// `/apis`/`/apis/{group}`/`/apis/{group}/{version}` discovery output
+/// (`apiextensions::registry::discoverable_resources` does the actual
+/// filtering/shaping). Public so that call site doesn't need its own
+/// copy of the raw-`Range`-plus-decode this module already has.
+pub async fn list_all_crds(storage: &mut StorageClient) -> Result<Vec<Value>, Error> {
+    list_stored_crds(storage).await
+}
+
 /// A raw `Range` over every stored `CustomResourceDefinition`, decoded —
 /// deliberately *not* [`list`] itself: [`list`] calls [`resolve_resource`]
 /// to find out what it's listing, and [`resolve_resource`]'s own CRD

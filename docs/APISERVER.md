@@ -1363,19 +1363,41 @@ unusual request in practice, not the common case). Live-tested
 against a real `nodestore`, including the strategic-merge-patch
 rejection itself.
 
+**Discovery merge is real too** — `/apis`, `/apis/{group}`,
+`/apis/{group}/{version}`, and their aggregated-discovery-v2 counterparts
+now include every served, `Established` CRD's own resources alongside
+the static table, so `kubectl` (and anything else that discovers
+resources rather than hardcoding a URL) can see a CRD-defined resource
+for the first time. `apiextensions::registry::discoverable_resources`
+turns a list of decoded CRDs into flat `(group, version, resource, kind,
+namespaced)` entries (reusing `resolve` itself, so there's exactly one
+place the served/`Established` logic lives); `server::discovery` gained
+a parallel `*_with_crds` function for each of its existing pure builders
+rather than widening their signatures in place, specifically to avoid
+touching over a dozen already-passing static-only unit tests for a
+change that's purely additive. `server::listener`'s own discovery
+routing fetches the CRD list live (one `LIST` of
+`customresourcedefinitions`) only for a genuinely `/apis`-shaped
+discovery path (3 or fewer path segments) — a resource-shaped request
+under the same prefix (`/apis/{group}/{version}/namespaces/...`, by far
+the hottest real traffic) costs nothing extra, and neither does any
+`/api`/`/openapi/v3`/`/version` request (the core group never has CRDs
+in it at all — a CRD's own `spec.group` is never empty). Every CRD-backed
+resource reports the same real generic verb set this build now actually
+serves for one (`create`/`get`/`list`/`update`/`patch`/`delete`/
+`deletecollection`/`watch` — matching real upstream's own `crdHandler`,
+which installs identical generic storage for every CRD, no per-Kind
+verb customization).
+
 **Not yet landed, named honestly** (`apiextensions::mod`'s own doc
-comment carries this list too): full structural-schema type/required validation and pruning
-(`x-kubernetes-preserve-unknown-fields`) against the schema —
-`server::rest::create`'s CRD branch runs `apiextensions::schema_defaults`
-but not `scheme::validation`'s equivalent (which is compiled-schema-only
-today); a malformed CR is currently accepted, not rejected.
-`x-kubernetes-validations` CEL (**needs the CEL cost budget built
-first** — Group J's own doc comment names this as a real DoS surface,
-not optional hardening). Conversion webhooks. Discovery merge — a CRD's
-resource doesn't appear in `/apis/<group>/<version>` discovery output
-yet even though it's genuinely routable, since Group E's discovery table
-is still the static, build-time one; a client that already knows the
-URL works, `kubectl` discovery-driven commands don't yet.
+comment carries this list too): full structural-schema type/required
+validation and pruning (`x-kubernetes-preserve-unknown-fields`) against
+the schema — `server::rest::create`'s CRD branch runs
+`apiextensions::schema_defaults` but not `scheme::validation`'s
+equivalent (which is compiled-schema-only today); a malformed CR is
+currently accepted, not rejected. `x-kubernetes-validations` CEL (**needs
+the CEL cost budget built first** — Group J's own doc comment names this
+as a real DoS surface, not optional hardening). Conversion webhooks.
 
 **L. Aggregation layer** — **not started**. `APIService` objects,
 `ServiceResolver`, reverse proxying, discovery merge, availability
