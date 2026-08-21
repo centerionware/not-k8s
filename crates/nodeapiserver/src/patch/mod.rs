@@ -24,19 +24,26 @@
 //! Strategic Merge Patch's core semantics (recursive object merge,
 //! null-deletes-key, merge-by-key for `patch_strategy: merge` lists),
 //! `fieldset::{PathElement, Set}` (pure, unit-tested against real
-//! `fieldsV1` shapes including the easy-to-miss `"."`-marker case), and
-//! now `fieldset::set_from_object` — one real object in, the `Set` of
-//! everything it owns out. **Not yet landed**: `$patch`/
+//! `fieldsV1` shapes including the easy-to-miss `"."`-marker case),
+//! `fieldset::set_from_object` (one real object in, the `Set` of
+//! everything it owns out), and now `Set`'s own algebra
+//! (`union`/`intersection`/`difference`/`recursive_difference`/
+//! `is_empty` — real upstream's own `Set`/`SetNodeMap`/`PathElementSet`
+//! methods, ported to this crate's own `BTreeMap`-backed tree rather
+//! than upstream's sorted-`Vec` `SetNodeMap`, same real semantics
+//! either way; `difference`'s own doc comment names the real,
+//! intentional asymmetry with `recursive_difference` that a naive
+//! from-memory port would likely miss). **Not yet landed**: `$patch`/
 //! `$setElementOrder`/`$deleteFromPrimitiveList` directives (named,
 //! deliberate simplifications — see `strategic_merge`'s own doc
 //! comment) and the actual Server-Side Apply *merge*/conflict-detection
 //! algorithm (`merge.Updater` — combining `set_from_object`'s own output
 //! for the incoming request with the existing object's stored
-//! `managedFields`, running the real 3-way merge, and rejecting a
-//! conflicting field unless `force=true` — a genuinely separate, larger
-//! piece `set_from_object` is a real building block toward, not a claim
-//! it's done) or any `application/apply-patch+yaml` wiring into
-//! `server::rest::patch`.
+//! `managedFields`, running the real 3-way merge using the `Set`
+//! algebra now available, and rejecting a conflicting field unless
+//! `force=true` — a genuinely separate, larger piece these primitives
+//! are real building blocks toward, not a claim it's done) or any
+//! `application/apply-patch+yaml` wiring into `server::rest::patch`.
 
 pub mod fieldset;
 pub mod json_patch;
