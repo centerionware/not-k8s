@@ -1640,13 +1640,28 @@ used*:
    is itself indexable, and a comprehension's range-container kind when
    entry-size tracking alone doesn't resolve it) — both approximable
    with a named, honest simplification rather than requiring a real
-   type-checker subsystem. **Not yet landed**: the path resolver
-   (turning a `Select`/`Ident` chain into a field path,
-   `self.spec.foo`-shaped), the schema-driven size lookup (walking a
-   CRD's own runtime `openAPIV3Schema` `Value` for a path's
-   `maxLength`/`maxItems`/`maxProperties`, the same `apiextensions::
-   schema_*` walking convention already established elsewhere, falling
-   back to the real `Max*Size` constants), and the actual `cost()`
+   type-checker subsystem. **Also started**: `cel_ext::decl_type` — the
+   schema-driven size lookup's own prerequisite, a faithful port of real
+   upstream's `SchemaDeclType` (`k8s.io/apiserver/pkg/cel/common/
+   schemas.go`, fetched and read directly): recursively converts a CRD's
+   own runtime `openAPIV3Schema` `Value` (the same `apiextensions::
+   schema_*` walking convention already established elsewhere) into a
+   `DeclType` tree, each node carrying a real `max_elements` worst-case
+   bound — the schema's own explicit `maxLength`/`maxItems`/
+   `maxProperties` when declared, else a real derived bound from
+   `MaxRequestSizeBytes` (`k8s.io/apiserver/pkg/cel/limits.go`'s own
+   `Min*Size`/`Max*SizeJSON` constants and `estimateMax*` formulas,
+   fetched and read directly, all now confirmed and ported). Real
+   finding: k8s's own `sizeEstimator.EstimateCallCost` (`k8s.io/
+   apiextensions-apiserver/.../schema/cel/compilation.go`) always
+   returns `nil` — k8s supplies **only** size estimates to cel-go's own
+   estimator, never call-cost overrides, so the entire real per-
+   builtin-function cost table lives in cel-go's own `checker/cost.go`
+   alone, with nothing k8s-specific to additionally port there. **Not
+   yet landed**: the path resolver (turning a `Select`/`Ident` chain
+   into a field path, walking it against a `DeclType` tree exactly the
+   way real upstream's own `sizeEstimator.EstimateSize` does — a small
+   remaining piece now that `decl_type` exists), and the actual `cost()`
    AST-walking dispatch itself (the biggest remaining piece — real
    upstream's own per-`Expr`-kind and per-builtin-function cost rules,
    already fully read and ready to port).
