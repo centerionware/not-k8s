@@ -308,6 +308,36 @@ pub async fn run(cfg: Config) {
         }
     };
 
+    // Group C: load and validate `EncryptionConfiguration` at startup,
+    // ahead of the wiring that would actually consult it — a
+    // misconfigured file is a real, loud startup failure this way,
+    // rather than a silent no-op until that wiring exists (see
+    // `config::Config::encryption_config_file`'s own doc comment for
+    // why this stays load-only for now). `_encryption_config` is
+    // genuinely unused past this point — named with a leading
+    // underscore rather than left unbound, so it's unmistakable in a
+    // future diff that wiring it in means using this binding, not
+    // reloading the file a second time.
+    let _encryption_config = match &cfg.encryption_config_file {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(yaml) => match crate::storage::encryption_config::parse(&yaml) {
+                Ok(parsed) => {
+                    info!(path = %path.display(), entries = parsed.entries.len(), "nodeapiserver: loaded EncryptionConfiguration (not yet wired into any read/write path)");
+                    Some(parsed)
+                }
+                Err(e) => {
+                    warn!(path = %path.display(), error = ?e, "invalid NODEAPISERVER_ENCRYPTION_CONFIG_FILE; continuing with no encryption-at-rest");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!(path = %path.display(), error = ?e, "failed to read NODEAPISERVER_ENCRYPTION_CONFIG_FILE; continuing with no encryption-at-rest");
+                None
+            }
+        },
+        None => None,
+    };
+
     // Group D: a real, deliberately bounded first expansion beyond the
     // original one-resource (`namespaces`) proof of concept. Registering
     // a cache for every resource this build knows about at boot is still

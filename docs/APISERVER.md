@@ -170,7 +170,12 @@ own resource-name/wildcard rules (`secrets`, `<resource>.<group>`, `*.`,
 first-match-wins resolution. Only `aesgcm`/`identity` build (matching
 `storage::encryption`'s own scope); `aescbc`/`secretbox`/`kms` parse
 structurally but resolve to a real, named error rather than being
-silently dropped or misapplied. **Still not yet landed**: wiring any of
+silently dropped or misapplied. **`NODEAPISERVER_ENCRYPTION_CONFIG_FILE`
+now loads and validates the file at listener startup**
+(`config::Config::encryption_config_file` +
+`server::listener::run`) — a misconfigured file is a loud startup
+warning now, ahead of the wiring that would actually need it, rather
+than a silently-inert setting. **Still not yet landed**: wiring any of
 this into `StorageClient`'s actual read/write path or `cacher`'s
 `Watch` decoding — deliberately not attempted as part of this slice,
 since transparent encryption needs `range`/`put`/`txn`/`watch` to all

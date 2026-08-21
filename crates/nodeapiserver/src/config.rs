@@ -53,6 +53,22 @@ pub struct Config {
     /// expected to have already provisioned their own bootstrap
     /// `ClusterRoleBinding`s directly against nodestore.
     pub enforce_rbac: bool,
+    /// `NODEAPISERVER_ENCRYPTION_CONFIG_FILE` — a real
+    /// `apiserver.config.k8s.io/v1` `EncryptionConfiguration` YAML
+    /// document (`storage::encryption_config::parse`, Group C). `None`
+    /// (the default) means no encryption-at-rest. **Loaded and
+    /// validated at startup only — not yet consulted by any read/write
+    /// path**: `storage::encryption`/`storage::encryption_config` exist
+    /// and are unit-tested, but wiring them into `StorageClient`'s
+    /// actual `range`/`put`/`txn`/`watch` calls is real, separate,
+    /// security-relevant work this crate hasn't done yet (needs all
+    /// four to agree at once — a watch cache fed undecrypted ciphertext
+    /// for even one of them is a silent correctness break, not a
+    /// partial win — see `storage::encryption_config`'s own doc
+    /// comment). Loading it now, ahead of that wiring, means a
+    /// misconfigured file is caught at startup rather than only once
+    /// the wiring exists to actually need it.
+    pub encryption_config_file: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -65,6 +81,7 @@ impl Default for Config {
             nodestore_ca_file: None,
             client_ca_file: None,
             enforce_rbac: false,
+            encryption_config_file: None,
         }
     }
 }
@@ -110,6 +127,7 @@ impl Config {
 
         cfg.client_ca_file = path_env("NODEAPISERVER_CLIENT_CA_FILE");
         cfg.enforce_rbac = matches!(std::env::var("NODEAPISERVER_ENFORCE_RBAC").as_deref(), Ok("1") | Ok("true"));
+        cfg.encryption_config_file = path_env("NODEAPISERVER_ENCRYPTION_CONFIG_FILE");
         Ok(cfg)
     }
 }
@@ -201,6 +219,16 @@ mod tests {
         let _cleanup = EnvGuard(&["NODEAPISERVER_CLIENT_CA_FILE"]);
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.client_ca_file, Some(PathBuf::from("/tmp/client-ca.pem")));
+    }
+
+    #[test]
+    fn encryption_config_file_defaults_to_none_and_is_read_from_its_own_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(Config::default().encryption_config_file, None);
+        std::env::set_var("NODEAPISERVER_ENCRYPTION_CONFIG_FILE", "/tmp/encryption-config.yaml");
+        let _cleanup = EnvGuard(&["NODEAPISERVER_ENCRYPTION_CONFIG_FILE"]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.encryption_config_file, Some(PathBuf::from("/tmp/encryption-config.yaml")));
     }
 
     #[test]
