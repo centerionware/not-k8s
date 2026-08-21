@@ -899,12 +899,15 @@ with `Content-Type: application/apply-patch+yaml` into it
 on an unresolved ownership conflict). **Create-on-apply is real too**: no
 object at this key creates one through the same create-only-if-absent
 `Txn` idiom `rest::create` uses, `updater::apply` run against an empty
-`live` either way. **Named, honest scope remaining**: only for a
-built-in resource (not a CRD-defined one — `updater`'s primitives key off
-compiled `FIELD_META`, not a runtime CRD schema), and only
-`namespace_lifecycle` admission runs on this path (not `LimitRanger`'s
-PVC check). `$patch`/`$setElementOrder`/`$deleteFromPrimitiveList`
-directives remain unported, same as `strategic_merge`'s own gap.
+`live` either way. `rest::apply_prepare`/`apply_persist`'s own split (the
+same shape `patch_prepare`/`patch_persist` already has) lets both
+`namespace_lifecycle` *and* `LimitRanger` admission run against the real
+candidate object, matching the ordinary three-patch-kind `PATCH`
+branch's own coverage exactly. **Named, honest scope remaining**: only
+for a built-in resource (not a CRD-defined one — `updater`'s primitives
+key off compiled `FIELD_META`, not a runtime CRD schema).
+`$patch`/`$setElementOrder`/`$deleteFromPrimitiveList` directives remain
+unported, same as `strategic_merge`'s own gap.
 
 **H. Authentication** — **started**. `authn::x509::identity_from_der`
 derives an `Identity{name, groups, credential_id}` from a client
