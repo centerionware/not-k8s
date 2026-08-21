@@ -26,15 +26,13 @@
 //! standard prefix->range-end helper), and the key layout matches real
 //! upstream exactly, override table included. `resourceVersion ==
 //! nodestore's MVCC revision` (finding 3) and
-//! optimistic-concurrency-via-`Txn` are real. Encryption-at-rest
-//! transform primitives (`Identity`, AES-256-GCM) and their
-//! `EncryptionConfiguration` YAML config loader both now exist, but
-//! neither is **wired into `StorageClient`'s own read/write path or
-//! `cacher`'s `Watch` decoding** yet — a real, separate, deliberately
-//! not-yet-started piece of work (see `encryption_config`'s own doc
-//! comment for why transparent encryption needs every one of
-//! `range`/`put`/`txn`/`watch` to agree before it's safe to turn on at
-//! all, not just some of them).
+//! optimistic-concurrency-via-`Txn` are real. **Encryption-at-rest is
+//! wired end to end now** — `range`/`put`/`txn`/`watch` all agree
+//! (`StorageClient::with_encryption` attaches the loaded config,
+//! `server::rest::decrypt_and_decode`/`encrypt_for_storage` are the
+//! entire wiring surface, one shared pair every real verb and `watch`
+//! funnels through — see `docs/APISERVER.md`'s own Group C section for
+//! the full account).
 
 pub mod pb;
 pub mod client;

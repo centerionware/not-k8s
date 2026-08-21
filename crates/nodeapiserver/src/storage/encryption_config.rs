@@ -3,14 +3,14 @@
 //! this one turns a real `apiserver.config.k8s.io/v1`
 //! `EncryptionConfiguration` document, fetched and read directly from
 //! `staging/src/k8s.io/apiserver/pkg/apis/apiserver/v1/types_encryption.go`,
-//! into a resolvable set of them). **Not yet wired into
-//! `storage::client::StorageClient`'s actual read/write path or into
-//! `cacher`'s `Watch` decoding** — genuinely separate follow-up work
-//! (transparent encryption needs every one of `range`/`put`/`txn`/
-//! `watch` to agree, and `watch`'s own raw `mvccpb::Event` stream feeds
-//! Group D's cache directly; wiring only some of those paths would leave
-//! `WATCH` silently serving ciphertext for an encrypted resource, a real
-//! correctness risk worth its own dedicated, carefully-verified slice).
+//! into a resolvable set of them). **Wired end to end now**:
+//! `storage::client::StorageClient::with_encryption` attaches the parsed
+//! config, and `server::rest::decrypt_and_decode`/`encrypt_for_storage`
+//! are the shared wiring surface every real read/write verb — `range`/
+//! `put`/`txn`/`watch` all included — funnels through (see
+//! `docs/APISERVER.md`'s own Group C section for the full account of
+//! why this was deferred until it could be done for all of them at
+//! once, not gap-by-gap).
 //!
 //! Parses into `serde_json::Value` rather than a derived typed struct —
 //! same "round-trips through `Value`, no separate YAML-shaped type"

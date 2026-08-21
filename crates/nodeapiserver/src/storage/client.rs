@@ -10,6 +10,7 @@
 //! machinery.
 
 use crate::config::Config;
+use crate::storage::encryption_config::EncryptionConfig;
 use crate::storage::pb::etcdserverpb::kv_client::KvClient;
 use crate::storage::pb::etcdserverpb::lease_client::LeaseClient;
 use crate::storage::pb::etcdserverpb::watch_client::WatchClient;
@@ -19,8 +20,14 @@ use crate::storage::pb::etcdserverpb::{
     LeaseTimeToLiveResponse, PutRequest, PutResponse, RangeRequest, RangeResponse, TxnRequest, TxnResponse, WatchCreateRequest,
     WatchRequest, WatchResponse,
 };
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+// `tonic::transport::Identity` (a client TLS identity) and
+// `storage::encryption::Identity` (the no-op encryption provider) share a
+// name — this module only ever needs the former, so the import stays
+// unqualified and `encryption_config`'s own `Identity` is never named here
+// at all (nothing in this file constructs one).
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 #[derive(Debug, thiserror::Error)]
@@ -38,17 +45,39 @@ pub enum Error {
 type Result<T> = std::result::Result<T, Error>;
 
 /// A connected client. Cheap to clone (an inner `tonic::transport::Channel`
-/// is itself a cheap-to-clone multiplexed connection handle) — same
-/// posture `kube::Client` and every other gRPC client in this workspace
-/// takes. `Debug` is needed for `Result::expect_err` in this module's own
-/// tests (which requires the `Ok` type to be `Debug` even when only the
-/// `Err` case is exercised) — the tonic-generated client fields all derive
-/// it already, so this costs nothing.
-#[derive(Clone, Debug)]
+/// is itself a cheap-to-clone multiplexed connection handle, and
+/// `encryption` is an `Arc`) — same posture `kube::Client` and every other
+/// gRPC client in this workspace takes.
+#[derive(Clone)]
 pub struct StorageClient {
     kv: KvClient<Channel>,
     watch: WatchClient<Channel>,
     lease: LeaseClient<Channel>,
+    /// Group C: encryption-at-rest, attached once via [`with_encryption`]
+    /// right after [`connect`] (see `server::listener::run`'s own
+    /// sequencing) so every clone made after that point — including every
+    /// one `cacher::CacheRegistry::spawn` hands to a background reflect
+    /// loop — carries it too. `None` means no encryption configured,
+    /// unchanged behavior from before this field existed.
+    ///
+    /// [`with_encryption`]: StorageClient::with_encryption
+    /// [`connect`]: StorageClient::connect
+    encryption: Option<Arc<EncryptionConfig>>,
+}
+
+/// Manual, not derived: `EncryptionConfig` deliberately doesn't implement
+/// `Debug` (it holds `Box<dyn Transformer>`, real upstream's own key
+/// material behind a trait object — see `storage::encryption`'s own doc
+/// comment), so a `#[derive(Debug)]` here would have required threading
+/// that all the way down. `Debug` is needed for `Result::expect_err` in
+/// this module's own tests (which requires the `Ok` type to be `Debug`
+/// even when only the `Err` case is exercised) — reporting whether
+/// encryption is configured, not the configuration itself, is all that's
+/// ever actually useful in a debug print here anyway.
+impl std::fmt::Debug for StorageClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StorageClient").field("encryption_configured", &self.encryption.is_some()).finish()
+    }
 }
 
 impl StorageClient {
@@ -78,7 +107,36 @@ impl StorageClient {
             kv: KvClient::new(channel.clone()),
             watch: WatchClient::new(channel.clone()),
             lease: LeaseClient::new(channel),
+            encryption: None,
         })
+    }
+
+    /// Attaches encryption-at-rest configuration, consuming and returning
+    /// `self` so a caller can chain it directly onto [`connect`]'s own
+    /// result. Takes `self` rather than `&mut self` for the same reason
+    /// every other builder-style setter in this crate does: it reads
+    /// naturally at the one real call site
+    /// (`server::listener::run`, right after `connect` succeeds and
+    /// before any clone is handed to `cacher::CacheRegistry::spawn` — see
+    /// that call site's own comment for why the ordering matters).
+    ///
+    /// [`connect`]: StorageClient::connect
+    pub fn with_encryption(mut self, config: Option<EncryptionConfig>) -> StorageClient {
+        self.encryption = config.map(Arc::new);
+        self
+    }
+
+    /// The transformer chain that applies to `(group, resource)`, if
+    /// encryption is configured at all and some entry's own
+    /// resource-name/wildcard match covers it
+    /// (`storage::encryption_config::transformers_for`). `None` means
+    /// "write/read this object's bytes as-is" — no encryption configured
+    /// at all, or configured but this particular resource isn't covered
+    /// by any entry (real upstream's own behavior too: an
+    /// `EncryptionConfiguration` is opt-in per resource, not a blanket
+    /// switch).
+    pub(crate) fn transformers_for(&self, group: &str, resource: &str) -> Option<&crate::storage::encryption::PrefixTransformers> {
+        crate::storage::encryption_config::transformers_for(self.encryption.as_deref()?, group, resource)
     }
 
     /// `revision <= 0` means "the current revision" — matches etcd's own
