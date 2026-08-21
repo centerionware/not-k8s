@@ -1742,14 +1742,36 @@ used*:
    Also not ported: real upstream's own static `ast.OutputType() !=
    cel.BoolType` rejection (this crate's type-checker-free parser can
    only discover a non-bool rule at runtime, via `eval_bool`'s existing
-   `Error::NotBool`). **Still not wired into any real CRD-acceptance
-   request path** — finding where in `apiextensions`'s own
-   CRD-establishing flow to call this from is the real remaining work.
-4. Wire into Group K: `x-kubernetes-validations` evaluated in
-   `server::rest::create`/`update`/`patch_persist`'s CRD branch, after
-   pruning and required/type validation (`apiextensions::
-   schema_validation`'s own existing two checks stay first — CEL rules
-   commonly assume a field already passed basic structural validation).
+   `Error::NotBool`).
+   **Now wired into a real CRD-acceptance request path — this closes
+   Phase 3's own real remaining item.** `apiextensions::cel_validations::
+   validate_schema_cel_costs` is real upstream's own recursive schema
+   walk (`ValidateCustomResourceDefinitionOpenAPISchema`, scoped to its
+   CEL-cost half), checking every `x-kubernetes-validations` rule at
+   *every* schema level (not just the root — a nested rule's own `self`
+   genuinely means "the value here," so `decl_type_for` runs fresh
+   against each level it's found at, not the whole schema's own root)
+   against a real cost budget. `validate_crd_cel_costs` walks every
+   declared `spec.versions[]` and formats each real violation into the
+   same `Vec<String>` shape every other structural check already
+   produces. `server::rest::create`/`update` both call it for a
+   `CustomResourceDefinition` write specifically, alongside the existing
+   required/type/name-format checks — a client authoring a runaway rule
+   now gets a real `422` at CRD-acceptance time.
+4. Real upstream's own runtime evaluation of `x-kubernetes-validations`
+   against an actual custom resource instance (`server::rest::create`/
+   `update`/`patch_persist`'s own CRD branch, after pruning and
+   required/type validation — `apiextensions::schema_validation`'s own
+   existing two checks stay first, CEL rules commonly assume a field
+   already passed basic structural validation) is still **not started**
+   — everything landed so far is the CRD-acceptance-time *cost* check on
+   the rules themselves, not actually running them against real data
+   yet. That needs `eval_bool_with_deadline` (Phase 2, already landed)
+   wired to real `self`/`oldSelf` bindings from the submitted/existing
+   object, gated by the real `RuntimeCELCostBudget` accumulator across
+   every rule in one request (Phase 2's own remaining "still not wired
+   into any real request path" gap, distinct from the static check this
+   item closes).
 5. Wire into Group J: ValidatingAdmissionPolicy/MutatingAdmissionPolicy,
    and `matchConditions` (its own separate, smaller budget) for webhooks
    and policy bindings.
