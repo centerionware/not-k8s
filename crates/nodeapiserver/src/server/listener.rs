@@ -214,12 +214,18 @@ fn resource_expired_status(path_str: &str) -> serde_json::Value {
 /// key this cache never held a value for — see that module's own doc
 /// comment) — the event is silently skipped from the stream rather than
 /// breaking it, since there is nothing real to report for it.
-fn encode_watch_event(event: &crate::cacher::store::WatchEvent, kind: &str, api_version: &str, storage: Option<&StorageClient>, group: &str, resource: &str) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
+fn encode_watch_event(event: &crate::cacher::store::WatchEvent, kind: &str, api_version: &str, storage: Option<&StorageClient>, group: &str, resource: &str, version: &str) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
     match crate::server::watch_event::to_watch_event_json(event, kind, api_version, storage, group, resource) {
         None => None,
         Some(Ok(json)) => {
             let mut bytes = serde_json::to_vec(&json).unwrap_or_default();
             bytes.push(b'\n');
+            // Group M: `apiserver_watch_events_total` -- real upstream's
+            // own increment point too (`metrics.go`'s own `WatchEvents.
+            // WithLabelValues(...).Inc()`, called once per event actually
+            // written to a watch client's connection, not per event this
+            // build merely considered and filtered out).
+            metrics::record_watch_event(group, version, resource);
             Some(Ok(hyper::body::Frame::data(hyper::body::Bytes::from(bytes))))
         }
         Some(Err(e)) => Some(Err(Box::new(e) as BoxError)),
@@ -304,6 +310,7 @@ fn watch_response_body(
     storage: Option<StorageClient>,
     group: String,
     resource: String,
+    version: String,
 ) -> BoxedBody {
     use http_body_util::{BodyExt, StreamBody};
     use tokio_stream::wrappers::BroadcastStream;
@@ -318,7 +325,7 @@ fn watch_response_body(
     // their own `'static`-owned copy of the encryption-lookup context.
     let (storage_for_filter, group_for_filter, resource_for_filter) = (storage.clone(), group.clone(), resource.clone());
     let filtered = events.filter(move |event| watch_event_matches_selector(event, &label_reqs, &field_reqs, storage_for_filter.as_ref(), &group_for_filter, &resource_for_filter));
-    let frames = filtered.filter_map(move |event| encode_watch_event(&event, &kind, &api_version, storage.as_ref(), &group, &resource));
+    let frames = filtered.filter_map(move |event| encode_watch_event(&event, &kind, &api_version, storage.as_ref(), &group, &resource, &version));
     StreamBody::new(frames).boxed()
 }
 
@@ -2188,7 +2195,7 @@ async fn handle(
             match cache.watch_from(start_revision) {
                 Ok((replay, rx)) => {
                     let group_version = if info.api_group.is_empty() { info.api_version.clone() } else { format!("{}/{}", info.api_group, info.api_version) };
-                    let body = watch_response_body(replay, rx, kind, group_version, label_reqs, field_reqs, storage.clone(), info.api_group.clone(), info.resource.clone());
+                    let body = watch_response_body(replay, rx, kind, group_version, label_reqs, field_reqs, storage.clone(), info.api_group.clone(), info.resource.clone(), info.api_version.clone());
                     // No explicit `Transfer-Encoding` header: hyper's own
                     // h1/h2 connection handling already frames a body with
                     // no known length correctly for whichever protocol
@@ -2532,7 +2539,7 @@ mod tests {
     #[test]
     fn encode_watch_event_produces_a_newline_terminated_json_line() {
         let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 9 };
-        let frame = encode_watch_event(&event, "Pod", "v1", None, "", "pods").expect("Bookmark always converts").expect("Bookmark conversion never fails");
+        let frame = encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1").expect("Bookmark always converts").expect("Bookmark conversion never fails");
         let bytes = frame.into_data().unwrap();
         assert!(bytes.ends_with(b"\n"));
         let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
@@ -2543,7 +2550,7 @@ mod tests {
     #[test]
     fn encode_watch_event_skips_a_deleted_event_with_no_retained_value() {
         let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Deleted, key: b"k".to_vec(), value: Vec::new(), revision: 9 };
-        assert!(encode_watch_event(&event, "Pod", "v1", None, "", "pods").is_none());
+        assert!(encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1").is_none());
     }
 
     fn envelope_for(name: &str, labels: serde_json::Value) -> Vec<u8> {
@@ -2605,7 +2612,7 @@ mod tests {
         // artificially closing the channel first).
         drop(shared);
 
-        let body = watch_response_body(replay, rx, "Namespace".to_string(), "v1".to_string(), Vec::new(), Vec::new(), None, String::new(), "namespaces".to_string());
+        let body = watch_response_body(replay, rx, "Namespace".to_string(), "v1".to_string(), Vec::new(), Vec::new(), None, String::new(), "namespaces".to_string(), "v1".to_string());
         let collected = body.collect().await.unwrap().to_bytes();
         let text = String::from_utf8(collected.to_vec()).unwrap();
         assert_eq!(text.lines().count(), 1);
