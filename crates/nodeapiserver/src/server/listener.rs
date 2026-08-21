@@ -589,7 +589,8 @@ const UNAUTHENTICATED_GROUP: &str = "system:unauthenticated";
 const BOOT_CACHED_RESOURCES: &[(&str, &str, &str)] = &[("", "v1", "namespaces"), ("", "v1", "pods"), ("", "v1", "services"), ("", "v1", "secrets"), ("", "v1", "configmaps"), ("", "v1", "endpoints"), ("", "v1", "nodes")];
 
 /// Group J: persists `ResourceQuota.status.used` after a successful pod/
-/// PVC/service `CREATE` — real upstream's own
+/// PVC/service `CREATE`, or the generic object-count evaluator's own
+/// `count/<resource>` fallback — real upstream's own
 /// `quotaAccessor.UpdateQuotaStatus`
 /// (`plugin/pkg/admission/resourcequota/apis/resourcequota/...`),
 /// scoped to whichever evaluator's own `usage_after_*_create` the caller
@@ -598,10 +599,11 @@ const BOOT_CACHED_RESOURCES: &[(&str, &str, &str)] = &[("", "v1", "namespaces"),
 /// and merges again, same "retry on lost race" posture every other write
 /// path in this crate already uses. **Read-modify-write, not
 /// overwrite**: only the keys the calling evaluator itself tracks are
-/// replaced in the quota's existing `status.used` map — any keys another
-/// evaluator (the generic object-count evaluator doesn't persist a
-/// status yet, a named follow-up) might already hold there survive
-/// untouched. Every failure (quota vanished, storage error, retries
+/// replaced in the quota's existing `status.used` map — every
+/// `ResourceQuota` evaluator this crate has now persists its own
+/// `status.used` this way, so the read-modify-write is what keeps them
+/// from clobbering each other's keys, not a "some evaluator doesn't
+/// persist yet" gap. Every failure (quota vanished, storage error, retries
 /// exhausted) is logged and dropped — a status write is bookkeeping, not the
 /// admission decision itself, which has already succeeded by the time
 /// this runs.
@@ -1322,6 +1324,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                         if let Some(denial) = admission::resource_quota::check_object_count_create(&info.api_group, &info.resource, &existing, &quotas) {
                             return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &denial)));
                         }
+                        quota_usage_updates = admission::resource_quota::usage_after_object_count_create(&info.api_group, &info.resource, &existing, &quotas);
                     }
                     Ok(rest::ListOutcome::UnknownResource) => {}
                     Err(e) => {

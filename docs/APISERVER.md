@@ -1125,32 +1125,32 @@ suffixed form, same as real upstream's own `MatchingResources`'
 `strings.HasSuffix` check). **Substantially scoped, named honestly** in
 the one resource-family gap now left: real upstream's three specialized
 evaluators track no further families this crate doesn't. **The
-persisted `status.used` counter now exists for all three specialized
-evaluators — pod, PVC, and service** (`admission::resource_quota::
+persisted `status.used` counter now exists for every `ResourceQuota`
+evaluator this crate has — pod, PVC, service, and the generic
+object-count `count/<resource>` fallback** (`admission::resource_quota::
 usage_after_pod_create`/`usage_after_pvc_create`/
-`usage_after_service_create` + `server::listener::
-persist_quota_usage_updates`, one shared persist routine driven by
-whichever evaluator's own update list the caller passes): once a
-`CREATE` is admitted, the same post-create usage total the check just
-verified is written back to each matching quota's real `status.used`
-via `rest::update_status` (Group E's own generic `/status`
-subresource), with a bounded (3-attempt) retry on a real
-optimistic-concurrency `Conflict`, read-modify-write so it never
-clobbers keys another evaluator's own status data might hold. **The
-underlying admit-time concurrency gap is still real and still named
-honestly, not closed by this**: usage is still recomputed live from a
-fresh object list at *check* time (not read from the persisted
-counter, which this build never treats as authoritative for the check
-itself — only for what gets reported afterward) — two concurrent
-`CREATE`s that each individually fit can still both be admitted,
-together exceeding the quota, exactly as before. What's new is that
-`status.used` genuinely reflects real usage afterward (`kubectl
-describe resourcequota` now shows accurate data) rather than never
-being written at all. The generic object-count evaluator (the
-`count/<resource>` fallback for everything the three specialized
-evaluators don't cover) doesn't persist its own `status.used` yet — a
-named, narrower follow-up now that the shared persist plumbing exists
-to extend.
+`usage_after_service_create`/`usage_after_object_count_create` +
+`server::listener::persist_quota_usage_updates`, one shared persist
+routine driven by whichever evaluator's own update list the caller
+passes): once a `CREATE` is admitted, the same post-create usage total
+the check just verified is written back to each matching quota's real
+`status.used` via `rest::update_status` (Group E's own generic
+`/status` subresource), with a bounded (3-attempt) retry on a real
+optimistic-concurrency `Conflict`, read-modify-write so no evaluator's
+own status keys ever clobber another's. **The underlying admit-time
+concurrency gap is still real and still named honestly, not closed by
+this**: usage is still recomputed live from a fresh object list at
+*check* time (not read from the persisted counter, which this build
+never treats as authoritative for the check itself — only for what
+gets reported afterward) — two concurrent `CREATE`s that each
+individually fit can still both be admitted, together exceeding the
+quota, exactly as before. What's new is that `status.used` genuinely
+reflects real usage afterward (`kubectl describe resourcequota` now
+shows accurate data) rather than never being written at all. This
+closes `resource_quota`'s persisted-counter gap completely — the
+remaining, still-real gap is the concurrency race itself, which needs
+a genuinely different mechanism (in-flight reservation tracking, not
+just persistence) to close.
 Placed last among this crate's admission blocks (after `LimitRanger`'s
 own defaulting), the same relative position real upstream's own default
 plugin order uses, so quota sees the final, fully-defaulted object.

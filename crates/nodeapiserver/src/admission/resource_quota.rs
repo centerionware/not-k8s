@@ -844,6 +844,28 @@ pub fn check_object_count_create(group: &str, resource: &str, existing_objects: 
     None
 }
 
+/// The persisted-`status.used` half of [`check_object_count_create`] —
+/// see [`usage_after_pod_create`]'s own doc comment for the shape and
+/// reasoning. This closes the last remaining `ResourceQuota` evaluator
+/// that didn't yet persist its own `status.used`: every evaluator this
+/// crate has now does.
+pub fn usage_after_object_count_create(group: &str, resource: &str, existing_objects: &[Value], resource_quotas: &[Value]) -> Vec<(String, BTreeMap<String, Quantity>)> {
+    let key = count_quota_resource_name(group, resource);
+    let one = Quantity::parse("1").expect("literal \"1\" always parses");
+    let existing_count = Quantity::parse(&existing_objects.len().to_string()).unwrap_or(Quantity::ZERO);
+    let new_total = BTreeMap::from([(key, existing_count + one)]);
+    let mut updates = Vec::new();
+
+    for resource_quota in resource_quotas {
+        if quota_has_any_scope_selectors(resource_quota) {
+            continue;
+        }
+        let name = resource_quota.get("metadata").and_then(|m| m.get("name")).and_then(Value::as_str).unwrap_or("").to_string();
+        updates.push((name, new_total.clone()));
+    }
+    updates
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1407,6 +1429,16 @@ mod tests {
         let q = quota("secrets-quota", json!({"count/secrets": "5"}));
         let existing: Vec<Value> = (0..3).map(|_| json!({})).collect();
         assert!(check_object_count_create("", "secrets", &existing, &[q]).is_none());
+    }
+
+    #[test]
+    fn usage_after_object_count_create_adds_one_for_the_new_object() {
+        let q = quota("secrets-quota", json!({"count/secrets": "10"}));
+        let existing: Vec<Value> = (0..3).map(|_| json!({})).collect();
+        let updates = usage_after_object_count_create("", "secrets", &existing, &[q]);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].0, "secrets-quota");
+        assert_eq!(updates[0].1.get("count/secrets"), Some(&Quantity::parse("4").unwrap()));
     }
 
     #[test]
