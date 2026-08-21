@@ -95,6 +95,7 @@
 //! `message` off exactly this JSON today.
 
 use crate::admission;
+use crate::aggregator;
 use crate::authz;
 use crate::flowcontrol;
 use crate::proxy;
@@ -685,6 +686,26 @@ fn bad_gateway_status(path_str: &str, detail: &str) -> serde_json::Value {
         "reason": "",
         "details": {},
         "code": 502,
+    })
+}
+
+/// Real upstream's own `ServiceUnavailable` shape — used here when an
+/// aggregated `APIService`'s own pre-flight check
+/// (`aggregator::availability::preflight_check`) fails: the backing
+/// Service/EndpointSlice state itself is the fault, not this process nor
+/// the backend's own dial (that's [`bad_gateway_status`]'s case
+/// instead), matching real upstream's own `errors.NewServiceUnavailable`
+/// for the identical real situation.
+fn service_unavailable_status(path_str: &str, detail: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: {detail}"),
+        "reason": "ServiceUnavailable",
+        "details": {},
+        "code": 503,
     })
 }
 
@@ -1380,6 +1401,34 @@ async fn handle(
         let mut response_body = body_value;
         response_body["status"] = crate::authn::self_review::build_status(username, &groups);
         return Ok(json_response(StatusCode::CREATED, &response_body));
+    }
+    // Group L: aggregated APIs (`APIService`) — a genuine live reverse
+    // proxy to a real aggregated backend now, Phase 4's remaining wiring.
+    // Checked before the generic verb dispatch (every other special-cased
+    // route in this function is too), and before `pods/log` right below
+    // since an aggregated group could in principle define its own `pods`
+    // resource — the check itself costs nothing extra for the vastly more
+    // common non-aggregated request (`aggregator::route::resolve` is a
+    // bounded `LIST` of `APIService`s only, not per-item I/O, and a
+    // request with an empty `api_group` — the core group — short-circuits
+    // inside it immediately). See `aggregator::route`/`::client_tls`/
+    // `::availability`/`::proxy_target`'s own doc comments for the full
+    // design; `aggregate_proxy` below is the dispatch glue, same split
+    // `pods/log`'s own branch already established. **Discovery merge
+    // (Phase 3) is still not done** — an aggregated group's own
+    // `/apis/{group}/{version}` discovery document isn't proxied yet, a
+    // real, separate, named gap (`aggregator::mod`'s own doc comment);
+    // only resource-shaped requests under an already-known `(group,
+    // version)` reach this branch at all, matching real upstream's own
+    // "resource requests only" scope for its aggregation proxy handler.
+    if info.is_resource_request && !info.api_group.is_empty() {
+        if let Some(mut client) = storage.clone() {
+            match aggregator::route::resolve(&mut client, &info.api_group, &info.api_version).await {
+                Ok(Some(api_service)) => return Ok(aggregate_proxy(req, &method, &api_service, client, &path_str, &query).await),
+                Ok(None) => {}
+                Err(e) => warn!(path = %path_str, error = ?e, "aggregation: looking up a matching APIService failed"),
+            }
+        }
     }
     // Group N: `pods/log` — a genuine live proxy to nodelet's own
     // `/containerLogs` endpoint (`crates/nodelet/src/server/logs.rs`),
@@ -2149,6 +2198,113 @@ async fn handle(
         "user": user,
     });
     Ok(json_response(StatusCode::OK, &value))
+}
+
+/// Request headers this build never forwards to an aggregated backend —
+/// hop-by-hop headers (`Connection`'s own listed value plus the fixed
+/// standard set, RFC 7230 §6.1) and `Host` (rebuilt from the resolved
+/// target instead, same as `proxy::http_client::fetch`'s own posture for
+/// nodelet).
+const HOP_BY_HOP_HEADERS: &[&str] = &["host", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade"];
+
+/// Group L Phase 4's dispatch glue for one already-matched, non-local
+/// `APIService`: fetch its backing Service and `EndpointSlice`s, run the
+/// same real pre-flight chain `aggregator::availability::preflight_check`
+/// would run before a live discovery-endpoint dial (this build has no
+/// periodic reconciliation loop writing `status.conditions` yet — Phase
+/// 2's remaining gap, `aggregator::mod`'s own doc comment — so this
+/// checks fresh on every single request instead, a real, honest
+/// substitute: slower than reading an already-computed condition, never
+/// wrong), resolve the actual dial target (`aggregator::proxy_target`),
+/// build this backend's own TLS trust (`aggregator::client_tls`), and
+/// relay the whole request — method, headers minus [`HOP_BY_HOP_HEADERS`],
+/// body — unmodified (`proxy::http_client::relay`). A real transparent
+/// proxy, matching real upstream's own aggregation posture exactly:
+/// nothing about the request or response is inspected or altered beyond
+/// what dialing itself requires.
+async fn aggregate_proxy(req: Request<Incoming>, method: &str, api_service: &serde_json::Value, mut client: StorageClient, path_str: &str, query: &str) -> Response<BoxedBody> {
+    let Some(service_ref) = api_service.pointer("/spec/service") else {
+        // `aggregator::route::resolve` already filters this out -- reached
+        // only if the stored object changed between that check and here.
+        return json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(path_str, "APIService has no backing service"));
+    };
+    let namespace = service_ref.get("namespace").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+    let name = service_ref.get("name").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+    let port = service_ref.get("port").and_then(serde_json::Value::as_i64).unwrap_or(443);
+
+    let service = match rest::get(&mut client, None, "", "v1", "services", Some(&namespace), &name).await {
+        Ok(rest::GetOutcome::Found(object)) => Some(object),
+        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+        Err(e) => {
+            warn!(path = %path_str, error = ?e, "aggregation: fetching the backing service failed");
+            return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+        }
+    };
+    let endpoint_slices = match rest::list(&mut client, None, "discovery.k8s.io", "v1", "endpointslices", Some(&namespace), &format!("kubernetes.io/service-name={name}"), "", 0, "").await {
+        Ok(rest::ListOutcome::Found(list)) => list.get("items").and_then(serde_json::Value::as_array).cloned().unwrap_or_default(),
+        Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => Vec::new(),
+        Err(e) => {
+            warn!(path = %path_str, error = ?e, "aggregation: listing endpointslices for the backing service failed");
+            return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+        }
+    };
+    if let Err(condition) = aggregator::availability::preflight_check(&namespace, &name, port, service.as_ref(), &endpoint_slices) {
+        warn!(path = %path_str, reason = condition.reason, message = %condition.message, "aggregation: pre-flight check failed, not attempting the backend dial");
+        return json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(path_str, &condition.message));
+    }
+    let Some(service) = service else {
+        return json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(path_str, "backing service not found"));
+    };
+
+    let target = match aggregator::proxy_target::resolve(api_service, &service, path_str, query) {
+        Ok(t) => t,
+        Err(aggregator::proxy_target::Error::Local) => return json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(path_str, "APIService has no backing service")),
+        Err(aggregator::proxy_target::Error::NoClusterIp) => return json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(path_str, "backing service has no clusterIP to dial")),
+    };
+
+    let insecure_skip_tls_verify = api_service.pointer("/spec/insecureSkipTLSVerify").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let ca_bundle_pem = match api_service.pointer("/spec/caBundle").and_then(serde_json::Value::as_str) {
+        Some(b64) if !b64.is_empty() => {
+            use base64::Engine;
+            match base64::engine::general_purpose::STANDARD.decode(b64) {
+                Ok(bytes) => Some(bytes),
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "aggregation: spec.caBundle is not valid base64");
+                    return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+                }
+            }
+        }
+        _ => None,
+    };
+    let client_config = match aggregator::client_tls::build_client_config(ca_bundle_pem.as_deref(), insecure_skip_tls_verify) {
+        Ok(cfg) => std::sync::Arc::new(cfg),
+        Err(e) => {
+            warn!(path = %path_str, error = ?e, "aggregation: building the backend TLS client config failed");
+            return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+        }
+    };
+
+    let headers = req
+        .headers()
+        .iter()
+        .filter(|(name, _)| !HOP_BY_HOP_HEADERS.contains(&name.as_str().to_ascii_lowercase().as_str()))
+        .filter_map(|(name, value)| value.to_str().ok().map(|v| (name.as_str().to_string(), v.to_string())))
+        .collect::<Vec<_>>();
+    let body = match read_body_bytes(req).await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(path = %path_str, error = ?e, "aggregation: reading the request body failed");
+            return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+        }
+    };
+
+    match proxy::http_client::relay(&target, client_config, method, &headers, body).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            warn!(path = %path_str, host = %target.host, error = ?e, "aggregation: dialing the backend failed");
+            json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(path_str, &e.to_string()))
+        }
+    }
 }
 
 #[cfg(test)]
