@@ -7,8 +7,11 @@
 //! upstream's per-operation cost accounting, which needs interpreter
 //! hooks the `cel` crate doesn't expose at all); **Phase 3 started**
 //! (`cost` — the `SizeEstimate`/`CostEstimate` arithmetic primitives
-//! real upstream's own static checked-cost estimator is built on, see
-//! that module's own doc comment) — see `docs/APISERVER.md`'s own
+//! real upstream's own static checked-cost estimator is built on; and
+//! `decl_type` — converts a CRD's own runtime schema into the real
+//! `DeclType` tree the estimator resolves a CEL field-path's size bound
+//! against, see that module's own doc comment for the exact real
+//! algorithm ported) — see `docs/APISERVER.md`'s own
 //! `cel_ext` section (right after Group K) for the real, verified full
 //! plan: real upstream's own budget numbers
 //! (`RuntimeCELCostBudget`/`PerCallLimit`/`CheckFrequency`, ..., fetched
@@ -49,6 +52,7 @@
 //! checking either) had cited the wrong, now-inactive crates.io name.
 
 pub mod cost;
+pub mod decl_type;
 
 use cel::{Context, Program, Value as CelValue};
 use serde_json::Value;
