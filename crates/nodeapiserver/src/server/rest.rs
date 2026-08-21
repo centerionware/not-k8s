@@ -133,6 +133,7 @@ use crate::cacher::selector::{self, ParseError};
 use crate::codec::protobuf;
 use crate::codegen;
 use crate::scheme::{defaulting, validation};
+use crate::storage::encryption::Transformer;
 use crate::storage::client::{prefix_range_end, Error as StorageError, StorageClient};
 use crate::storage::keys;
 use crate::storage::pb::etcdserverpb as pb;
@@ -148,6 +149,8 @@ pub enum Error {
     Decode(#[from] protobuf::Error),
     #[error("invalid selector: {0}")]
     Selector(#[from] ParseError),
+    #[error("encryption transform failed: {0}")]
+    Encryption(#[from] crate::storage::encryption::Error),
 }
 
 #[derive(Debug, PartialEq)]
@@ -181,6 +184,55 @@ pub fn decode_stored_object(bytes: &[u8]) -> Result<Value, protobuf::Error> {
     let (group, version) = split_api_version(&api_version);
     let schema = protobuf::schema_for_gvk(group, version, &kind).ok_or_else(|| protobuf::Error::UnknownMessage(format!("{api_version}/{kind}")))?;
     protobuf::decode_message(schema, &object_bytes)
+}
+
+/// Group C: the encrypted-aware counterpart to [`decode_stored_object`] —
+/// decrypts `bytes` first when `storage` has a matching transformer for
+/// `(group, resource)`, else decodes them as-is. Every real read call
+/// site in this module (`get`, `list`, `update`'s own existing-object
+/// read, `patch_prepare`, `update_status`, `patch_status`, `delete`, ...)
+/// uses this instead of calling `decode_stored_object` directly, so
+/// decryption happens in exactly one place regardless of which read path
+/// is asking — the same centralization
+/// `storage::encryption_config`'s own module doc comment named as the
+/// reason this wiring was deferred until it could be done once, for
+/// everything, rather than gap-by-gap.
+///
+/// `key` is the object's own real etcd key — required as AES-GCM's
+/// authenticated data (`storage::encryption::Transformer`'s own doc
+/// comment: "so a ciphertext can't be copied to a different key and
+/// still decrypt"), matching real upstream's own
+/// `dataCtx.AuthenticatedData()` convention exactly. The real upstream
+/// `stale` flag `transform_from_storage` returns (real upstream's own
+/// signal that a value was encrypted under a non-primary key — a
+/// migration-in-progress marker meaning "rewrite this with the current
+/// primary key next time it's written") is intentionally discarded here:
+/// this build has nowhere to act on it yet (no background re-encryption
+/// sweep), a named, narrower gap than the wiring itself, not silently
+/// dropped without comment.
+pub(crate) fn decrypt_and_decode(storage: &StorageClient, group: &str, resource: &str, key: &[u8], bytes: &[u8]) -> Result<Value, Error> {
+    match storage.transformers_for(group, resource) {
+        Some(transformers) => {
+            let (plaintext, _stale) = transformers.transform_from_storage(bytes, key)?;
+            Ok(decode_stored_object(&plaintext)?)
+        }
+        None => Ok(decode_stored_object(bytes)?),
+    }
+}
+
+/// The write-side counterpart to [`decrypt_and_decode`]: encrypts `bytes`
+/// (a real `wrap_unknown` envelope) when `storage` has a matching
+/// transformer for `(group, resource)`, else returns it unchanged. Both
+/// real `PutRequest` construction sites in this crate (`create`,
+/// `persist_update`, the latter shared by `update`/`patch`/
+/// `update_status`/`patch_status`) call this immediately before building
+/// the request — nothing this crate writes to nodestore ever bypasses
+/// this when encryption is actually configured for its resource.
+pub(crate) fn encrypt_for_storage(storage: &StorageClient, group: &str, resource: &str, key: &[u8], bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    match storage.transformers_for(group, resource) {
+        Some(transformers) => Ok(transformers.transform_to_storage(bytes, key)?),
+        None => Ok(bytes.to_vec()),
+    }
 }
 
 /// `""` -> `("", "")` (never real — `apiVersion` is empty only for a
@@ -225,7 +277,7 @@ pub async fn get(storage: &mut StorageClient, cache: Option<&crate::cacher::stor
 
     if let Some(cache) = cache {
         if let Some(entry) = cache.get(key.as_bytes()) {
-            let object = decode_stored_object(&entry.value)?;
+            let object = decrypt_and_decode(storage, group, resource, key.as_bytes(), &entry.value)?;
             return Ok(GetOutcome::Found(object));
         }
     }
@@ -234,7 +286,7 @@ pub async fn get(storage: &mut StorageClient, cache: Option<&crate::cacher::stor
     let Some(kv) = resp.kvs.into_iter().next() else {
         return Ok(GetOutcome::ObjectNotFound);
     };
-    let object = decode_stored_object(&kv.value)?;
+    let object = decrypt_and_decode(storage, group, resource, &kv.key, &kv.value)?;
     Ok(GetOutcome::Found(object))
 }
 
@@ -336,8 +388,8 @@ pub async fn list(
             let items = entries
                 .iter()
                 .filter(|(key, _)| key.starts_with(&prefix))
-                .map(|(_, entry)| decode_stored_object(&entry.value))
-                .collect::<Result<Vec<Value>, protobuf::Error>>()?
+                .map(|(key, entry)| decrypt_and_decode(storage, group, resource, key, &entry.value))
+                .collect::<Result<Vec<Value>, Error>>()?
                 .into_iter()
                 .filter(|item| selector::object_matches(item, &label_reqs, &field_reqs))
                 .collect::<Vec<Value>>();
@@ -388,8 +440,8 @@ pub async fn list(
     let items = resp
         .kvs
         .iter()
-        .map(|kv| decode_stored_object(&kv.value))
-        .collect::<Result<Vec<Value>, protobuf::Error>>()?
+        .map(|kv| decrypt_and_decode(storage, group, resource, &kv.key, &kv.value))
+        .collect::<Result<Vec<Value>, Error>>()?
         .into_iter()
         .filter(|item| selector::object_matches(item, &label_reqs, &field_reqs))
         .collect::<Vec<Value>>();
@@ -532,6 +584,7 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
         target_union: Some(pb::compare::TargetUnion::ModRevision(0)),
         range_end: Vec::new(),
     };
+    let envelope = encrypt_for_storage(storage, group, resource, key.as_bytes(), &envelope)?;
     let put = pb::PutRequest { key: key.into_bytes(), value: envelope, ..Default::default() };
     let txn = pb::TxnRequest {
         compare: vec![compare],
@@ -596,7 +649,7 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(UpdateOutcome::ObjectNotFound);
     };
-    let existing_object = decode_stored_object(&existing_kv.value)?;
+    let existing_object = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
 
     if let (Some(ns), Some(body_ns)) = (namespace, body.pointer("/metadata/namespace").and_then(Value::as_str)) {
         if !body_ns.is_empty() && body_ns != ns {
@@ -623,7 +676,7 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
     }
 
     let object = defaulting::apply_defaults(schema, body);
-    persist_update(storage, schema, kind, group, version, key, &existing_kv, &existing_object, namespace, object).await
+    persist_update(storage, schema, kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
 }
 
 /// Real upstream's generic status subresource (`GenericStatusREST`,
@@ -659,7 +712,7 @@ pub async fn update_status(storage: &mut StorageClient, group: &str, version: &s
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(UpdateOutcome::ObjectNotFound);
     };
-    let existing_object = decode_stored_object(&existing_kv.value)?;
+    let existing_object = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
 
     let Some(submitted_rv) = body.pointer("/metadata/resourceVersion").and_then(Value::as_str).and_then(|s| s.parse::<i64>().ok()) else {
         return Ok(UpdateOutcome::MissingResourceVersion);
@@ -678,7 +731,7 @@ pub async fn update_status(storage: &mut StorageClient, group: &str, version: &s
         }
     }
 
-    persist_update(storage, schema, kind, group, version, key, &existing_kv, &existing_object, namespace, object).await
+    persist_update(storage, schema, kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
 }
 
 /// The tail [`update`] and [`patch`] share once each has its own
@@ -696,6 +749,7 @@ async fn persist_update(
     kind: &str,
     group: &str,
     version: &str,
+    resource: &str,
     key: String,
     existing_kv: &mvccpb::KeyValue,
     existing_object: &Value,
@@ -722,6 +776,7 @@ async fn persist_update(
         target_union: Some(pb::compare::TargetUnion::ModRevision(existing_kv.mod_revision)),
         range_end: Vec::new(),
     };
+    let envelope = encrypt_for_storage(storage, group, resource, key.as_bytes(), &envelope)?;
     let put = pb::PutRequest { key: key.into_bytes(), value: envelope, ..Default::default() };
     let txn = pb::TxnRequest {
         compare: vec![compare],
@@ -839,7 +894,7 @@ pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &s
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(PatchPrepareOutcome::ObjectNotFound);
     };
-    let existing_object = decode_stored_object(&existing_kv.value)?;
+    let existing_object = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
 
     let patched = match apply_patch(kind_of_patch, schema, &existing_object, patch_doc) {
         Ok(object) => object,
@@ -865,7 +920,7 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
     }
 
     let object = defaulting::apply_defaults(context.schema, &candidate);
-    persist_update(storage, context.schema, context.kind, group, version, context.key, &context.existing_kv, &context.existing_object, namespace, object).await
+    persist_update(storage, context.schema, context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object).await
 }
 
 /// `PATCH .../status` — the patch counterpart to [`update_status`],
@@ -893,7 +948,7 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(UpdateOutcome::ObjectNotFound);
     };
-    let existing_object = decode_stored_object(&existing_kv.value)?;
+    let existing_object = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
 
     let patched = match apply_patch(kind_of_patch, schema, &existing_object, patch_doc) {
         Ok(object) => object,
@@ -910,7 +965,7 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
         }
     }
 
-    persist_update(storage, schema, kind, group, version, key, &existing_kv, &existing_object, namespace, object).await
+    persist_update(storage, schema, kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
 }
 
 /// Convenience wrapper combining [`patch_prepare`] and [`patch_persist`]
@@ -1079,7 +1134,7 @@ pub async fn delete(storage: &mut StorageClient, group: &str, version: &str, res
     let Some(prev) = resp.prev_kvs.into_iter().next() else {
         return Ok(DeleteOutcome::ObjectNotFound);
     };
-    let object = decode_stored_object(&prev.value)?;
+    let object = decrypt_and_decode(storage, group, resource, &prev.key, &prev.value)?;
     Ok(DeleteOutcome::Deleted(object))
 }
 
