@@ -562,6 +562,22 @@ fn wants_aggregated_discovery(accept_header: Option<&str>) -> bool {
 /// of `customresourcedefinitions`) only when the path actually starts
 /// with `apis`, rather than paying that cost on every single discovery
 /// request — see that call site's own comment.
+/// The pure decision half of Group L Phase 3's live discovery proxy: is
+/// `parts` exactly a bare `/apis/{group}/{version}` path (`route_discovery`'s
+/// own `NotFound` outcome for it means no local answer exists at all —
+/// not statically, not via a CRD), and does `aggregated` (the same
+/// pre-flight-gated live list `server::listener::handle`'s own caller
+/// already fetched) claim that exact `(group, version)`? `Some` hands
+/// back borrowed references into `parts`/`aggregated` themselves — no
+/// cloning needed, the caller only ever uses them for one more `resolve`
+/// call before either succeeding or falling through to a real `404`.
+fn aggregated_discovery_group_version<'a>(parts: &'a [String], aggregated: &'a [(String, String)]) -> Option<(&'a str, &'a str)> {
+    if parts.len() != 3 || parts[0] != "apis" {
+        return None;
+    }
+    aggregated.iter().find(|(g, v)| g == &parts[1] && v == &parts[2]).map(|(g, v)| (g.as_str(), v.as_str()))
+}
+
 fn route_discovery(parts: &[String], accept_header: Option<&str>, crds: &[crate::apiextensions::registry::DiscoverableResource], aggregated: &[(String, String)]) -> DiscoveryRoute {
     let seg = |i: usize| parts.get(i).map(String::as_str);
     match (seg(0), seg(1), parts.len()) {
@@ -1035,7 +1051,33 @@ async fn handle(
             DiscoveryRoute::FoundRaw(bytes) => {
                 return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "application/json").body(body_from_bytes(bytes.to_vec())).unwrap());
             }
-            DiscoveryRoute::NotFound => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+            DiscoveryRoute::NotFound => {
+                // Group L Phase 3's own last named gap, closed: a real
+                // `GET /apis/{group}/{version}` for an aggregated group
+                // real upstream itself answers with a *live* fetch to
+                // the backend's own discovery endpoint (`checkAPIService`'s
+                // own discovery-check dial reused for real traffic too) —
+                // this build had no compiled/CRD/discovery-merge answer
+                // for that path at all (`discovery::merged_group_version_
+                // map`'s own doc comment names this exact gap), so it's
+                // the one real case where falling through to `aggregate_
+                // proxy` on a `NotFound` (rather than the resource-shaped
+                // dispatch's own early check) is correct: `route_discovery`
+                // already ruled out every local answer, and `aggregated`
+                // (fetched above, same real pre-flight-gated list
+                // `aggregate_proxy` itself would recompute) is the one
+                // remaining source of truth. Any other `NotFound` (a
+                // genuinely unserved group/version) still falls through
+                // to the real `404` below unchanged.
+                if let Some((group, version)) = aggregated_discovery_group_version(&parts, &aggregated) {
+                    if let Some(mut client) = storage.clone() {
+                        if let Ok(Some(api_service)) = aggregator::route::resolve(&mut client, group, version).await {
+                            return Ok(aggregate_proxy(req, &method, &api_service, client, &path_str, &query).await);
+                        }
+                    }
+                }
+                return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+            }
             DiscoveryRoute::NotApplicable => {}
         }
     }
@@ -2424,6 +2466,35 @@ mod tests {
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert_eq!(doc["kind"], "APIResourceList");
         assert_eq!(doc["groupVersion"], "apps/v1");
+    }
+
+    #[test]
+    fn aggregated_discovery_group_version_matches_a_real_apis_group_version_path() {
+        let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
+        assert_eq!(aggregated_discovery_group_version(&parts("/apis/metrics.k8s.io/v1beta1"), &aggregated), Some(("metrics.k8s.io", "v1beta1")));
+    }
+
+    #[test]
+    fn aggregated_discovery_group_version_is_none_for_a_group_not_in_the_aggregated_list() {
+        let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
+        assert_eq!(aggregated_discovery_group_version(&parts("/apis/apps/v1"), &aggregated), None);
+    }
+
+    #[test]
+    fn aggregated_discovery_group_version_requires_exactly_three_apis_segments() {
+        let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
+        assert_eq!(aggregated_discovery_group_version(&parts("/apis/metrics.k8s.io"), &aggregated), None, "a group-only path must not match");
+        assert_eq!(
+            aggregated_discovery_group_version(&parts("/apis/metrics.k8s.io/v1beta1/nodes"), &aggregated),
+            None,
+            "a resource-shaped path is handled by the resource-request aggregation branch, not this one"
+        );
+    }
+
+    #[test]
+    fn aggregated_discovery_group_version_ignores_a_matching_version_under_a_different_top_level_prefix() {
+        let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
+        assert_eq!(aggregated_discovery_group_version(&parts("/api/metrics.k8s.io/v1beta1"), &aggregated), None);
     }
 
     #[test]
