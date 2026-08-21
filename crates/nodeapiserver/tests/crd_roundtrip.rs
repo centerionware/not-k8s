@@ -217,9 +217,10 @@ async fn a_crd_defined_resource_routes_through_the_generic_rest_verbs() {
 /// `rest::patch_prepare`/`patch_persist` both now resolve a CRD-defined
 /// resource the same way `create`/`get`/`list`/`delete` already did.
 /// `JSON Patch`/`Merge Patch` need no schema and work identically to a
-/// built-in; `strategic-merge-patch` is a real, named gap (`apply_patch`'s
-/// own doc comment) — confirmed here as a clean `Invalid`, not a panic
-/// or a silently-wrong merge.
+/// built-in; `strategic-merge-patch` is real too now
+/// (`apiextensions::schema_strategic_merge`) — the scalar-replacement
+/// case here, `strategic_merge_patch_merges_a_crd_list_field_by_its_own_x_kubernetes_list_map_keys`
+/// below is the real by-key list-merge case.
 #[tokio::test]
 async fn update_and_patch_work_against_a_crd_defined_resource() {
     let Some(nodestore_bin) = find_nodestore_binary() else {
@@ -284,18 +285,110 @@ async fn update_and_patch_work_against_a_crd_defined_resource() {
     };
     assert_eq!(patched["spec"]["color"], "yellow");
 
-    // 4. strategic-merge-patch is a real, named gap for a CRD -- a clean
-    // Invalid, not a panic and not a silently-wrong merge.
+    // 4. strategic-merge-patch against a CRD is real now too --
+    // a_crd()'s own schema has no list field, so this exercises just the
+    // scalar-replacement case; the dedicated test below proves the real
+    // by-key list-merge behavior.
     let strategic_patch = json!({"spec": {"color": "purple"}});
-    match rest::patch_prepare(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", rest::PatchKind::StrategicMerge, &strategic_patch)
+    let (candidate, context) = match rest::patch_prepare(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", rest::PatchKind::StrategicMerge, &strategic_patch)
         .await
         .expect("rest::patch_prepare must not itself error")
     {
-        rest::PatchPrepareOutcome::Invalid(msgs) => {
-            assert!(msgs.iter().any(|m| m.contains("strategic-merge-patch")), "expected a clear strategic-merge-patch error, got {msgs:?}");
-        }
-        other => panic!("expected Invalid, got {other:?}"),
-    }
+        rest::PatchPrepareOutcome::Ready(candidate, context) => (candidate, context),
+        other => panic!("expected Ready, got {other:?}"),
+    };
+    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", context, candidate).await.expect("rest::patch_persist must not itself error") {
+        rest::UpdateOutcome::Updated(object) => object,
+        other => panic!("expected Updated, got {other:?}"),
+    };
+    assert_eq!(patched["spec"]["color"], "purple");
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+/// The real by-key list-merge half of strategic-merge-patch against a
+/// CRD: a dedicated small CRD schema declaring `x-kubernetes-list-type:
+/// map` / `x-kubernetes-list-map-keys` on a `ports` field, proving a
+/// patch element matching an existing one by key merges into it while a
+/// non-matching one appends — the same real behavior
+/// `crate::patch::strategic_merge`'s own compiled path gives built-in
+/// types, now genuinely available for a CRD too.
+#[tokio::test]
+async fn strategic_merge_patch_merges_a_crd_list_field_by_its_own_x_kubernetes_list_map_keys() {
+    let Some(nodestore_bin) = find_nodestore_binary() else {
+        eprintln!("SKIPPED: no nodestore binary available and building one on demand failed");
+        return;
+    };
+    let (mut child, _data_dir, mut storage) = spawn_nodestore(&nodestore_bin, 23805).await;
+
+    let crd = json!({
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {"name": "services.example.com"},
+        "spec": {
+            "group": "example.com",
+            "scope": "Namespaced",
+            "names": {"plural": "services", "singular": "service", "kind": "ExampleService", "listKind": "ExampleServiceList"},
+            "versions": [{
+                "name": "v1",
+                "served": true,
+                "storage": true,
+                "schema": {
+                    "openAPIV3Schema": {
+                        "type": "object",
+                        "properties": {
+                            "spec": {
+                                "type": "object",
+                                "properties": {
+                                    "ports": {
+                                        "type": "array",
+                                        "x-kubernetes-list-type": "map",
+                                        "x-kubernetes-list-map-keys": ["name"],
+                                        "items": {"type": "object", "properties": {"name": {"type": "string"}, "port": {"type": "integer"}}},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }],
+        },
+    });
+    rest::create(&mut storage, "apiextensions.k8s.io", "v1", "customresourcedefinitions", None, &crd).await.expect("rest::create(CRD) must not itself error");
+
+    let object = json!({
+        "apiVersion": "example.com/v1",
+        "kind": "ExampleService",
+        "metadata": {"name": "svc", "namespace": "default"},
+        "spec": {"ports": [{"name": "http", "port": 80}, {"name": "https", "port": 443}]},
+    });
+    rest::create(&mut storage, "example.com", "v1", "services", Some("default"), &object).await.expect("rest::create must not itself error");
+
+    // Patches "http" (matches by name -> merges the port) and adds
+    // "metrics" (no match -> appends) in one patch, leaving "https"
+    // completely untouched -- proves this is a real merge, not a
+    // wholesale replace that happened to look right.
+    let patch = json!({"spec": {"ports": [{"name": "http", "port": 8080}, {"name": "metrics", "port": 9090}]}});
+    let (candidate, context) = match rest::patch_prepare(&mut storage, "example.com", "v1", "services", Some("default"), "svc", rest::PatchKind::StrategicMerge, &patch)
+        .await
+        .expect("rest::patch_prepare must not itself error")
+    {
+        rest::PatchPrepareOutcome::Ready(candidate, context) => (candidate, context),
+        other => panic!("expected Ready, got {other:?}"),
+    };
+    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "services", Some("default"), "svc", context, candidate).await.expect("rest::patch_persist must not itself error") {
+        rest::UpdateOutcome::Updated(object) => object,
+        other => panic!("expected Updated, got {other:?}"),
+    };
+    let ports = patched["spec"]["ports"].as_array().expect("ports must be an array");
+    assert_eq!(ports.len(), 3, "http merged, https untouched, metrics appended: {ports:?}");
+    let http = ports.iter().find(|p| p["name"] == "http").expect("http must still be present");
+    assert_eq!(http["port"], 8080, "http's own port must have been merged, not left alone");
+    let https = ports.iter().find(|p| p["name"] == "https").expect("https must be untouched");
+    assert_eq!(https["port"], 443);
+    let metrics = ports.iter().find(|p| p["name"] == "metrics").expect("metrics must have been appended");
+    assert_eq!(metrics["port"], 9090);
 
     let _ = child.kill().await;
     let _ = child.wait().await;

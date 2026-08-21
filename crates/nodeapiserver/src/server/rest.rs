@@ -1048,19 +1048,17 @@ pub enum PatchPrepareOutcome {
 /// itself can touch).
 ///
 /// `schema` is `None` for a CRD-defined resource — `JSON Patch`/`Merge
-/// Patch` need no schema at all and work identically either way, but
-/// `strategic-merge-patch` fundamentally can't: real upstream's own
-/// `patch_merge_key`/`patch_strategy` come from
-/// `x-kubernetes-list-type`/`-list-map-keys` on a *compiled* schema
-/// (`crate::patch::strategic_merge`'s own `ref_schema` walk), and a
-/// CRD's schema is a runtime `openAPIV3Schema` this crate has no
-/// strategic-merge interpreter for yet — a real, separate piece of work,
-/// not attempted here. Real upstream's own `kubectl patch` already falls
-/// back to merge-patch for a CRD when no `Content-Type` is given
-/// (`patch_kind_for_content_type`'s own doc comment), so an explicit
-/// `application/strategic-merge-patch+json` against a CRD is already an
-/// unusual request, not the common case this rejects.
-fn apply_patch(kind_of_patch: PatchKind, schema: Option<&str>, existing: &Value, patch_doc: &Value) -> Result<Value, String> {
+/// Patch` need no schema at all and work identically either way;
+/// `strategic-merge-patch` uses `open_api_schema` instead in that case
+/// (`apiextensions::schema_strategic_merge`, the runtime-schema sibling
+/// of `crate::patch::strategic_merge`'s own compiled-`ref_schema` walk).
+/// `open_api_schema` is `None` too only for a CRD version whose own
+/// document carries no schema at all (a real, if unusual, case this
+/// build's own read path already tolerates elsewhere — a malformed/
+/// legacy document, `apiextensions::registry::CrdResource`'s own doc
+/// comment) — a `strategic-merge-patch` against one has no schema of any
+/// kind to interpret, a real `Invalid`, not a panic.
+fn apply_patch(kind_of_patch: PatchKind, schema: Option<&str>, open_api_schema: Option<&Value>, existing: &Value, patch_doc: &Value) -> Result<Value, String> {
     match kind_of_patch {
         PatchKind::Json => {
             let mut object = existing.clone();
@@ -1074,9 +1072,10 @@ fn apply_patch(kind_of_patch: PatchKind, schema: Option<&str>, existing: &Value,
             crate::patch::merge_patch::apply(&mut object, patch_doc);
             Ok(object)
         }
-        PatchKind::StrategicMerge => match schema {
-            Some(schema) => Ok(crate::patch::strategic_merge::apply(schema, existing, patch_doc)),
-            None => Err("strategic-merge-patch is not supported for CRD-defined resources -- use application/json-patch+json or application/merge-patch+json instead".to_string()),
+        PatchKind::StrategicMerge => match (schema, open_api_schema) {
+            (Some(schema), _) => Ok(crate::patch::strategic_merge::apply(schema, existing, patch_doc)),
+            (None, Some(open_api_schema)) => Ok(apiextensions::schema_strategic_merge::apply(open_api_schema, existing, patch_doc)),
+            (None, None) => Err("strategic-merge-patch: this resource has no known schema to interpret x-kubernetes-list-type/-list-map-keys against".to_string()),
         },
     }
 }
@@ -1097,7 +1096,7 @@ pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &s
     };
     let existing_object = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
 
-    let patched = match apply_patch(kind_of_patch, resolved.schema, &existing_object, patch_doc) {
+    let patched = match apply_patch(kind_of_patch, resolved.schema, resolved.open_api_schema.as_ref(), &existing_object, patch_doc) {
         Ok(object) => object,
         Err(msg) => return Ok(PatchPrepareOutcome::Invalid(vec![msg])),
     };
@@ -1176,7 +1175,7 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
     };
     let existing_object = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
 
-    let patched = match apply_patch(kind_of_patch, resolved.schema, &existing_object, patch_doc) {
+    let patched = match apply_patch(kind_of_patch, resolved.schema, resolved.open_api_schema.as_ref(), &existing_object, patch_doc) {
         Ok(object) => object,
         Err(msg) => return Ok(UpdateOutcome::Invalid(vec![msg])),
     };
