@@ -1342,18 +1342,29 @@ informer teardown on deletion isn't modeled), and a CRD that becomes
 `Established` is only ever discovered by the *next* watch request for
 its resource, not eagerly the moment it's created.
 
+**`UPDATE`/`PATCH` (`JSON Patch`/`Merge Patch`) are real for CR objects
+now too** — `update`/`patch_prepare`/`patch_persist`/`update_status`/
+`patch_status` all resolve through `resolve_resource` the same way
+`create` does, with the same "no structural validation, schema-driven
+defaulting where a schema exists" scope. `PatchContext` widened from a
+compiled-only `schema: &'static str` to `Option<&'static str>` plus a
+carried-through `open_api_schema: Option<Value>`.
+`x-kubernetes-list-type`/`-list-map-keys`-driven `strategic-merge-patch`
+is a real, deliberate exception, not attempted: `crate::patch::
+strategic_merge`'s own merge-key resolution walks a *compiled*
+`ref_schema`, and a CRD's schema is a runtime `openAPIV3Schema` this
+crate has no strategic-merge interpreter for — an explicit
+`application/strategic-merge-patch+json` against a CRD gets a clean
+`422`/`Invalid` naming exactly that, not a silently-wrong merge or a
+panic (real upstream's own `kubectl patch` already falls back to
+merge-patch for a CRD when no `Content-Type` is given, so this is an
+unusual request in practice, not the common case). Live-tested
+(`tests/crd_roundtrip.rs`'s `update_and_patch_work_against_a_crd_defined_resource`)
+against a real `nodestore`, including the strategic-merge-patch
+rejection itself.
+
 **Not yet landed, named honestly** (`apiextensions::mod`'s own doc
-comment carries this list too): `UPDATE`/`PATCH`/the `status` subresource
-for CR objects — `update`/`patch_prepare`/`update_status`/`patch_status`
-still resolve purely through the static table, so those verbs are a real
-`404` against a CRD-defined resource today, not a silent no-op, until a
-follow-up slice gives `PatchContext` (currently `schema: &'static str`,
-built-ins-only) a CRD-shaped counterpart — `strategic-merge-patch` in
-particular can't work against a CRD at all without reading
-`x-kubernetes-list-type`/`-list-map-keys` from its schema instead of
-compiled `FIELD_META`, a real, separate piece of work; `JSON Patch`/
-`Merge Patch` need no schema and could be wired for CRDs first. Full
-structural-schema type/required validation and pruning
+comment carries this list too): full structural-schema type/required validation and pruning
 (`x-kubernetes-preserve-unknown-fields`) against the schema —
 `server::rest::create`'s CRD branch runs `apiextensions::schema_defaults`
 but not `scheme::validation`'s equivalent (which is compiled-schema-only
