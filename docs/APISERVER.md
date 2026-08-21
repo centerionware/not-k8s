@@ -324,8 +324,11 @@ order, whether to wait for sync before serving traffic).
 **Follow-up**: `server::listener::run` now spawns a bounded, reasoned
 list of resources instead of just `namespaces` —
 `BOOT_CACHED_RESOURCES` (`namespaces`, `pods`, `services`, `secrets`,
-`configmaps`, `endpoints`, `nodes`: the core-group resources a real
-cluster's own kubelets/kube-proxy/controllers read most heavily), and
+`configmaps`, `endpoints`, `nodes`, `discovery.k8s.io/v1`
+`endpointslices`: the resources a real cluster's own kubelets/kube-proxy/
+controllers read most heavily — mostly core-group, plus real
+`crates/nodeproxy`'s own actual `EndpointSlice` dependency, not the
+legacy `endpoints` API it might look like it'd need), and
 `GET`/`LIST` consult one whenever a request targets any resource in that
 list (`cache_registry.get(group, version, resource)` replaced the
 `namespaces`-only special case). This is still a deliberately bounded
