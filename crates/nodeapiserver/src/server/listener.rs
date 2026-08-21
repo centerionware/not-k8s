@@ -238,7 +238,57 @@ fn encode_watch_event(event: &crate::cacher::store::WatchEvent, kind: &str, api_
 /// connection handling picks chunked transfer-encoding (h1) or native
 /// framing (h2) automatically for a body with no known `Content-Length`,
 /// no explicit opt-in needed here.
-fn watch_response_body(replay: Vec<crate::cacher::store::WatchEvent>, rx: tokio::sync::broadcast::Receiver<crate::cacher::store::WatchEvent>, kind: String, api_version: String) -> BoxedBody {
+/// `true` when `event` should reach the client — real upstream's own
+/// `WatchCache`/`cacheWatcher` narrows a watch to matching objects too,
+/// not just the initial `LIST`'s own selector filtering. `Bookmark`
+/// events and any event this cache never retained a value for (an old
+/// `Deleted` with no captured prior state) always pass through — there's
+/// no object to test a selector against, the same "nothing to filter"
+/// case `label_reqs.is_empty() && field_reqs.is_empty()` short-circuits.
+/// A value this build can't decode also passes through rather than
+/// being silently dropped — filtering a watch is a narrowing, never a
+/// hiding, mechanism; a real decode failure is a `warn!`, not a
+/// swallowed event.
+fn watch_event_matches_selector(event: &crate::cacher::store::WatchEvent, label_reqs: &[crate::cacher::selector::Requirement], field_reqs: &[crate::cacher::selector::FieldRequirement]) -> bool {
+    if label_reqs.is_empty() && field_reqs.is_empty() {
+        return true;
+    }
+    if event.value.is_empty() {
+        return true;
+    }
+    match rest::decode_stored_object(&event.value) {
+        Ok(object) => crate::cacher::selector::object_matches(&object, label_reqs, field_reqs),
+        Err(e) => {
+            warn!(error = ?e, "watch: failed to decode a cached value for selector filtering; letting the event through unfiltered");
+            true
+        }
+    }
+}
+
+/// The real streaming `watch` response body: every already-retained
+/// history event past `start_revision` (`replay`), then every live event
+/// as it arrives on `rx`, each filtered by [`watch_event_matches_selector`]
+/// (the same real label/field selector `LIST` already applies, now
+/// applied to a live stream too) and encoded by [`encode_watch_event`]. A
+/// `broadcast::Receiver::recv()` `Lagged` error (the watcher fell behind
+/// the channel's bounded capacity) ends the stream rather than skipping
+/// silently past the gap — real kube-apiserver's own posture for a
+/// watcher that falls too far behind: close the connection, the client's
+/// own `client-go` Reflector relists. `StreamBody`/`Frame` come from
+/// `http_body_util`/`hyper::body` — `BoxedBody` (a boxed `http_body::Body`
+/// trait object) is what lets this coexist with every other, non-streaming
+/// `Response<BoxedBody>` this listener already returns; hyper's own h1/h2
+/// connection handling picks chunked transfer-encoding (h1) or native
+/// framing (h2) automatically for a body with no known `Content-Length`,
+/// no explicit opt-in needed here.
+fn watch_response_body(
+    replay: Vec<crate::cacher::store::WatchEvent>,
+    rx: tokio::sync::broadcast::Receiver<crate::cacher::store::WatchEvent>,
+    kind: String,
+    api_version: String,
+    label_reqs: Vec<crate::cacher::selector::Requirement>,
+    field_reqs: Vec<crate::cacher::selector::FieldRequirement>,
+) -> BoxedBody {
     use http_body_util::{BodyExt, StreamBody};
     use tokio_stream::wrappers::BroadcastStream;
     use tokio_stream::StreamExt;
@@ -246,7 +296,8 @@ fn watch_response_body(replay: Vec<crate::cacher::store::WatchEvent>, rx: tokio:
     let replay_stream = tokio_stream::iter(replay);
     let live_stream = BroadcastStream::new(rx).map_while(|res| res.ok());
     let events = replay_stream.chain(live_stream);
-    let frames = events.filter_map(move |event| encode_watch_event(&event, &kind, &api_version));
+    let filtered = events.filter(move |event| watch_event_matches_selector(event, &label_reqs, &field_reqs));
+    let frames = filtered.filter_map(move |event| encode_watch_event(&event, &kind, &api_version));
     StreamBody::new(frames).boxed()
 }
 
@@ -1762,6 +1813,26 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             }
         }
         if let Some(cache) = cache_registry.get(&info.api_group, &info.api_version, &info.resource) {
+            // Same real label/field selector parsing `rest::list` already
+            // runs — a malformed selector is the client's fault, a `400`,
+            // not a server failure, checked before the stream even starts
+            // (matching `list`'s own "fail before doing any work" posture).
+            let label_reqs = if info.label_selector.is_empty() {
+                Vec::new()
+            } else {
+                match crate::cacher::selector::parse_label_selector(&info.label_selector) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+                }
+            };
+            let field_reqs = if info.field_selector.is_empty() {
+                Vec::new()
+            } else {
+                match crate::cacher::selector::parse_field_selector(&info.field_selector) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+                }
+            };
             let start_revision = resource_version_query(&query);
             match cache.watch_from(start_revision) {
                 Ok((replay, rx)) => {
@@ -1774,7 +1845,7 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
                         return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
                     };
                     let group_version = if info.api_group.is_empty() { info.api_version.clone() } else { format!("{}/{}", info.api_group, info.api_version) };
-                    let body = watch_response_body(replay, rx, kind.to_string(), group_version);
+                    let body = watch_response_body(replay, rx, kind.to_string(), group_version, label_reqs, field_reqs);
                     // No explicit `Transfer-Encoding` header: hyper's own
                     // h1/h2 connection handling already frames a body with
                     // no known length correctly for whichever protocol
@@ -2025,6 +2096,34 @@ mod tests {
         assert!(encode_watch_event(&event, "Pod", "v1").is_none());
     }
 
+    fn envelope_for(name: &str, labels: serde_json::Value) -> Vec<u8> {
+        let schema = crate::codec::protobuf::schema_for_gvk("", "v1", "Namespace").unwrap();
+        let object_bytes = crate::codec::protobuf::encode_message(schema, &serde_json::json!({"metadata": {"name": name, "labels": labels}})).unwrap();
+        crate::codec::protobuf::wrap_unknown("v1", "Namespace", &object_bytes)
+    }
+
+    #[test]
+    fn watch_event_matches_selector_passes_bookmarks_and_valueless_events_through() {
+        let reqs = crate::cacher::selector::parse_label_selector("env=prod").unwrap();
+        let bookmark = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 1 };
+        assert!(watch_event_matches_selector(&bookmark, &reqs, &[]));
+    }
+
+    #[test]
+    fn watch_event_matches_selector_filters_on_labels() {
+        let reqs = crate::cacher::selector::parse_label_selector("env=prod").unwrap();
+        let matching = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Added, key: b"a".to_vec(), value: envelope_for("a", serde_json::json!({"env": "prod"})), revision: 1 };
+        let non_matching = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Added, key: b"b".to_vec(), value: envelope_for("b", serde_json::json!({"env": "dev"})), revision: 2 };
+        assert!(watch_event_matches_selector(&matching, &reqs, &[]));
+        assert!(!watch_event_matches_selector(&non_matching, &reqs, &[]));
+    }
+
+    #[test]
+    fn watch_event_matches_selector_is_a_no_op_with_no_selector() {
+        let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Added, key: b"a".to_vec(), value: envelope_for("a", serde_json::json!({})), revision: 1 };
+        assert!(watch_event_matches_selector(&event, &[], &[]));
+    }
+
     #[tokio::test]
     async fn watch_response_body_streams_the_replay_then_live_events() {
         use http_body_util::BodyExt;
@@ -2056,7 +2155,7 @@ mod tests {
         // artificially closing the channel first).
         drop(shared);
 
-        let body = watch_response_body(replay, rx, "Namespace".to_string(), "v1".to_string());
+        let body = watch_response_body(replay, rx, "Namespace".to_string(), "v1".to_string(), Vec::new(), Vec::new());
         let collected = body.collect().await.unwrap().to_bytes();
         let text = String::from_utf8(collected.to_vec()).unwrap();
         assert_eq!(text.lines().count(), 1);
