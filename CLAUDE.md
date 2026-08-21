@@ -362,9 +362,33 @@ and why, and leave the PR open.
 `quick-check.yml` is the tightest loop: manual (`workflow_dispatch`), native
 x86_64 debug build + full unit tests, no musl/cross targets, no artifact
 upload at all — just "does this compile and pass its own tests," as fast as
-possible. Reach for this while iterating on a branch; it does **not**
-replace a merge-path gate (`build.yml`/`e2e.yml` per the merge protocol
-below still apply before anything merges).
+possible. Takes an optional `components` input (comma-separated crate
+names — `gh workflow run quick-check.yml --ref <branch> -f
+components=nodeapiserver`, or `nodeapiserver,nodestore` for several) to
+build+test only the named crate(s) instead of the whole workspace.
+**Always pass it when iterating on one crate** — forgetting it silently
+falls back to every crate in the workspace, several times slower and
+exactly the cost `quick-check.yml` exists to avoid. This input only
+exists on a branch whose own tree already has it; a long-lived
+integration branch forked before the input was added needs `main`
+merged into it first, or the dispatch fails with "Unexpected inputs
+provided" (that means the branch's own copy of the workflow file is
+stale, not that the workflow itself is broken). **`quick-check.yml`
+only runs `cargo build`/`cargo test` — it verifies Rust code and
+nothing else.** A change to `deploy/lib/*.sh`, `deploy/*.sh`, or a
+workflow file itself gets zero signal from a green `quick-check.yml`
+run; that kind of change still needs the real test (`test-e2e.sh` /
+`e2e.yml`'s `only` input for a shell change, or actually dispatching the
+workflow being edited for a CI-file change) — don't treat a green
+`quick-check.yml` as covering anything outside the Rust crates it
+builds. Reach for this while iterating on a branch, and also as the
+actual merge gate for each slice of a long PR-per-slice arc into its own
+integration branch (e.g. the `nodeapiserver` sub-branches) — green
+`quick-check.yml` is what that loop
+merges on, **not** `build.yml` (which produces and uploads a real
+artifact every dispatch, wasted churn for a tight iterate loop). It does
+**not** replace the merge-path gate to `main` — `build.yml`/`e2e.yml` per
+the merge protocol below still apply before anything merges to `main`.
 
 `build.yml` is the one that also produces something installable: manual
 (`workflow_dispatch`), builds both crates and runs the full unit tests, no
