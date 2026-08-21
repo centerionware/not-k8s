@@ -68,12 +68,15 @@
 //! an empty `live` either way. `server::listener` routes `PATCH` with
 //! `Content-Type: application/apply-patch+yaml` (`?fieldManager=`
 //! required, `?force=true` honored) into it, with a real `409 Conflict`
-//! on `Err(Vec<Conflict>)`. **Named, honest scope remaining**
-//! (`rest::server_side_apply`'s own doc comment): only for a built-in
-//! resource, not yet a CRD-defined one (`updater::apply`'s primitives key
-//! off compiled `FIELD_META`, not a runtime CRD schema); only
-//! `namespace_lifecycle` admission runs on this path, not `LimitRanger`'s
-//! PVC check the ordinary three-patch-kind branch also runs.
+//! on `Err(Vec<Conflict>)`. `rest::apply_prepare`/`apply_persist`'s own
+//! split (the same shape `patch_prepare`/`patch_persist` already has)
+//! lets `namespace_lifecycle` *and* `LimitRanger` admission both run
+//! against the real candidate object, matching the ordinary
+//! three-patch-kind `PATCH` branch's own coverage exactly. **Named,
+//! honest scope remaining** (`rest::server_side_apply`'s own doc
+//! comment): only for a built-in resource, not yet a CRD-defined one
+//! (`updater::apply`'s primitives key off compiled `FIELD_META`, not a
+//! runtime CRD schema).
 //!
 //! **Not yet landed**: `$patch`/`$setElementOrder`/
 //! `$deleteFromPrimitiveList` directives (named, deliberate
