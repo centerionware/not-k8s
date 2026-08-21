@@ -173,6 +173,10 @@ fn encode_scalar_or_message(message: &str, field: &ProtoField, value: &Value, ou
                 // approach — see `encode_time_string`'s own doc comment.
                 let s = value.as_str().ok_or_else(|| type_mismatch(message, field, "RFC3339 timestamp string", value))?;
                 encode_time_string(&format!("{message}.{}", field.json_name), s)?
+            } else if is_json_message(&nested_message) {
+                // Group K: `apiextensions.v1.JSON` — see `is_json_message`'s
+                // own doc comment.
+                encode_json_value(value)
             } else {
                 encode_message(&nested_message, value)?
             };
@@ -268,6 +272,8 @@ fn decode_one(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value
             let nested_message = codegen::resolve_message_ref(message, &field.proto_type);
             if is_time_message(&nested_message) {
                 decode_time_message(&label(), as_bytes(&label(), raw)?)
+            } else if is_json_message(&nested_message) {
+                decode_json_message(&label(), as_bytes(&label(), raw)?)
             } else {
                 decode_message(&nested_message, as_bytes(&label(), raw)?)
             }
@@ -330,6 +336,64 @@ fn decode_time_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
     }
     let dt = chrono::DateTime::from_timestamp(seconds, nanos as u32).ok_or_else(|| Error::InvalidTimestamp { field: field_label.to_string(), value: format!("seconds={seconds}, nanos={nanos}") })?;
     Ok(Value::String(dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)))
+}
+
+/// Group K's own well-known-type special case, the same shape
+/// `is_time_message` already established and confirmed directly against
+/// the vendored proto rather than guessed: `apiextensions.v1.JSON`
+/// (`vendor/protos/k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/
+/// v1/generated.proto`'s own `message JSON { optional bytes raw = 1; }`)
+/// is how a `CustomResourceDefinition`'s own schema represents an
+/// arbitrary JSON value — `JSONSchemaProps.default`/`.example`/`.enum`/
+/// `.const`, wherever an operator's own schema can name a literal value
+/// of any shape. In JSON the field is just that value directly (a
+/// `default: "small"` looks exactly like every other scalar field), but
+/// on the wire it's this one-field wrapper message whose `raw` holds the
+/// value's own JSON encoding as bytes — real upstream's Go type
+/// (`apiextensions.JSON`, a `[]byte` with hand-written `MarshalJSON`/
+/// `UnmarshalJSON`) does the identical two-faced trick `metav1.Time`
+/// does, just wrapping a whole JSON document instead of a timestamp.
+/// Found live, the same way `is_time_message` was: nothing exercised a
+/// real `CustomResourceDefinition` with a schema `default` through this
+/// crate's own protobuf codec until `tests/crd_roundtrip.rs`'s live
+/// round trip did.
+fn is_json_message(message: &str) -> bool {
+    matches!(message, "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSON" | "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSON")
+}
+
+/// Encodes an arbitrary JSON `value` as `JSON{raw: <value's own JSON
+/// bytes>}` — infallible: `serde_json::Value`'s own `Serialize` impl
+/// never itself produces a `serde_json::Error` (unlike parsing, which
+/// can fail on malformed input, or serializing a type with a
+/// hand-written fallible `Serialize`, `Value` is already fully validated
+/// data). Omits the `raw` field entirely when `value` serializes to
+/// nothing — can't happen for any real `serde_json::Value`, only kept as
+/// "don't write a spurious empty tag" symmetry with every other optional
+/// field this codec encodes.
+fn encode_json_value(value: &Value) -> Vec<u8> {
+    let raw = serde_json::to_vec(value).unwrap_or_default();
+    let mut out = Vec::new();
+    if !raw.is_empty() {
+        wire::encode_tag(1, WireType::LengthDelimited, &mut out);
+        wire::encode_length_delimited(&raw, &mut out);
+    }
+    out
+}
+
+/// Decodes a `JSON{raw: bytes}` message body back into the JSON value it
+/// wraps. No `raw` field present at all is real upstream's own zero
+/// value for the message (an operator's schema simply didn't set this
+/// particular literal) — `Value::Null`, matching what a `nil` `apiextensions.JSON`
+/// marshals to in Go, not an error.
+fn decode_json_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
+    let mut pos = 0;
+    while pos < bytes.len() {
+        let (field_number, raw) = wire::decode_field(bytes, &mut pos)?;
+        if field_number == 1 {
+            return serde_json::from_slice(as_bytes(field_label, &raw)?).map_err(Error::Json);
+        }
+    }
+    Ok(Value::Null)
 }
 
 fn decode_map_entry(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value> {
@@ -557,6 +621,36 @@ mod tests {
     #[test]
     fn encode_time_string_rejects_a_non_rfc3339_value() {
         assert!(encode_time_string("Time", "not a timestamp").is_err());
+    }
+
+    /// Found live, the same way `object_meta_with_a_real_creation_
+    /// timestamp_round_trips` was: nothing exercised a real
+    /// `CustomResourceDefinition`'s own schema `default` through
+    /// `encode_message`/`decode_message` until `tests/crd_roundtrip.rs`'s
+    /// live round trip did, and it hit exactly this same class of bug —
+    /// `JSONSchemaProps.default` is an `apiextensions.v1.JSON` message,
+    /// not a plain scalar, and this codec had no special case for it yet.
+    #[test]
+    fn json_schema_props_default_round_trips_through_the_real_json_wire_shape() {
+        let message = "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps";
+        let value = json!({"type": "string", "default": "small"});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded["default"], "small");
+        assert_eq!(decoded["type"], "string");
+    }
+
+    #[test]
+    fn json_message_round_trips_a_non_scalar_default() {
+        let bytes = encode_json_value(&json!({"a": 1, "b": [true, null]}));
+        assert!(!bytes.is_empty());
+        let decoded = decode_json_message("default", &bytes).unwrap();
+        assert_eq!(decoded, json!({"a": 1, "b": [true, null]}));
+    }
+
+    #[test]
+    fn json_message_with_no_raw_field_decodes_to_null() {
+        assert_eq!(decode_json_message("default", &[]).unwrap(), Value::Null);
     }
 
     #[test]
