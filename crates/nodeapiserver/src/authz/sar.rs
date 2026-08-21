@@ -18,17 +18,23 @@
 //! right fallback for each). [`build_status`] renders the real
 //! `SubjectAccessReviewStatus` shape.
 //!
+//! [`build_rules_status`] is `SelfSubjectRulesReview`'s own real
+//! `SubjectRulesReviewStatus` shape — every already-resolved
+//! `PolicyRule` for one namespace, split into `resourceRules`/
+//! `nonResourceRules` by which fields each rule actually names.
+//!
+//! `LocalSubjectAccessReview` (the namespaced variant — the namespace
+//! comes from the URL, not the body) shares [`parse_spec`]/
+//! [`build_status`] unchanged; `server::listener`'s own branch overrides
+//! the parsed `namespace` with the URL's own after parsing.
+//!
 //! **Named, honest scope**: `evaluationError`/per-rule `reason` aren't
-//! populated (this crate's RBAC engine doesn't track *which* rule
-//! matched, only whether any did) and `denied` is never set — real
-//! RBAC's own authorizer (`plugin/pkg/auth/authorizer/rbac/rbac.go`)
+//! populated on [`build_status`] (this crate's RBAC engine doesn't track
+//! *which* rule matched, only whether any did) and `denied` is never set
+//! — real RBAC's own authorizer (`plugin/pkg/auth/authorizer/rbac/rbac.go`)
 //! never returns an explicit `DecisionDeny` either, only `DecisionAllow`/
 //! `DecisionNoOpinion`, so omitting `denied` here matches real RBAC's own
-//! behavior, not a shortcut. `localsubjectaccessreviews` (a namespaced
-//! variant, path-scoped rather than spec-scoped) and
-//! `selfsubjectrulesreviews` (lists a user's own rules rather than
-//! answering one question) aren't wired yet — separate, smaller
-//! follow-ups reusing the same primitives here.
+//! behavior, not a shortcut.
 
 use serde_json::Value;
 
@@ -103,6 +109,42 @@ pub fn build_status(allowed: bool) -> Value {
     serde_json::json!({"allowed": allowed})
 }
 
+/// `SelfSubjectRulesReview`'s own real `SubjectRulesReviewStatus` shape:
+/// every `PolicyRule` a subject's own already-resolved rule set
+/// (`authz::resolve::rules_for`'s own output) carries, split into real
+/// upstream's `ResourceRule`/`NonResourceRule` — a rule contributes a
+/// `ResourceRule` entry when it names any `resources` and/or a
+/// `NonResourceRule` entry when it names any `nonResourceURLs` (a rule
+/// naming both, unusual but not invalid, contributes to both lists,
+/// matching real upstream's own `RulesFor` conversion, which makes the
+/// same per-field decision rather than treating a rule as one kind or
+/// the other). `incomplete`/`evaluationError` are set from
+/// `resolve::Resolved::errors` — a non-empty error list means real
+/// upstream's own "the rules found are correct, but the list may not be
+/// complete" caveat applies here too.
+pub fn build_rules_status(rules: &[crate::authz::rbac::PolicyRule], errors: &[String]) -> Value {
+    let mut resource_rules = Vec::new();
+    let mut non_resource_rules = Vec::new();
+    for rule in rules {
+        if !rule.resources.is_empty() {
+            resource_rules.push(serde_json::json!({
+                "verbs": rule.verbs,
+                "apiGroups": rule.api_groups,
+                "resources": rule.resources,
+                "resourceNames": rule.resource_names,
+            }));
+        }
+        if !rule.non_resource_urls.is_empty() {
+            non_resource_rules.push(serde_json::json!({"verbs": rule.verbs, "nonResourceURLs": rule.non_resource_urls}));
+        }
+    }
+    let mut status = serde_json::json!({"resourceRules": resource_rules, "nonResourceRules": non_resource_rules, "incomplete": !errors.is_empty()});
+    if !errors.is_empty() {
+        status["evaluationError"] = serde_json::json!(errors.join("; "));
+    }
+    status
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +203,26 @@ mod tests {
     fn build_status_shape() {
         assert_eq!(build_status(true), json!({"allowed": true}));
         assert_eq!(build_status(false), json!({"allowed": false}));
+    }
+
+    #[test]
+    fn build_rules_status_splits_resource_and_non_resource_rules() {
+        use crate::authz::rbac::PolicyRule;
+        let rules = vec![
+            PolicyRule { verbs: vec!["get".to_string()], api_groups: vec!["".to_string()], resources: vec!["pods".to_string()], resource_names: vec![], non_resource_urls: vec![] },
+            PolicyRule { verbs: vec!["get".to_string()], api_groups: vec![], resources: vec![], resource_names: vec![], non_resource_urls: vec!["/healthz".to_string()] },
+        ];
+        let status = build_rules_status(&rules, &[]);
+        assert_eq!(status["resourceRules"].as_array().unwrap().len(), 1);
+        assert_eq!(status["nonResourceRules"].as_array().unwrap().len(), 1);
+        assert_eq!(status["incomplete"], json!(false));
+        assert!(status.get("evaluationError").is_none());
+    }
+
+    #[test]
+    fn build_rules_status_marks_incomplete_on_a_resolution_error() {
+        let status = build_rules_status(&[], &["failed to resolve RoleBinding x".to_string()]);
+        assert_eq!(status["incomplete"], json!(true));
+        assert_eq!(status["evaluationError"], json!("failed to resolve RoleBinding x"));
     }
 }
