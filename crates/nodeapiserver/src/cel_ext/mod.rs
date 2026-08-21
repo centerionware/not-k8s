@@ -209,13 +209,28 @@ mod tests {
 
     #[test]
     fn an_expired_deadline_is_a_real_named_error_not_a_hang_or_panic() {
-        // A deadline of 1ns is exceeded before the spawned thread could
-        // possibly finish real work (thread spawn + a channel round trip
-        // alone takes microseconds on any real hardware) -- deterministic
-        // regardless of how fast the actual CEL evaluation itself is,
-        // not a flaky race against machine speed.
+        // A trivial expression like `1 + 1 == 2` races the deadline
+        // rather than reliably losing to it: `mpsc::Receiver::
+        // recv_timeout` returns whatever's already in the channel
+        // immediately, ignoring the requested duration entirely, if the
+        // spawned thread happens to finish and send before the caller
+        // even reaches the `recv_timeout` call -- genuinely possible for
+        // near-instant work regardless of how small the deadline is,
+        // caught for real on a busy single-core CI runner (a thread
+        // spawn there can itself context-switch straight into the new
+        // thread before the parent resumes).
+        //
+        // A real CEL expression forced to do a bounded but substantial
+        // amount of interpreter work -- a triple-nested `all()` over a
+        // 100-element list, one million individual arithmetic
+        // comparisons walked by a tree-walking interpreter -- cannot
+        // finish before the parent thread reaches `recv_timeout` on any
+        // real hardware, so this is deterministic instead of a race.
+        let nums: Vec<i64> = (0..100).collect();
+        let list = format!("{nums:?}");
+        let expr = format!("{list}.all(x, {list}.all(y, {list}.all(z, x + y + z >= -3)))");
         let value = json!({});
-        let result = eval_bool_with_deadline("1 + 1 == 2", &value, None, std::time::Duration::from_nanos(1));
+        let result = eval_bool_with_deadline(&expr, &value, None, std::time::Duration::from_micros(1));
         assert!(matches!(result, Err(Error::DeadlineExceeded)), "expected Error::DeadlineExceeded, got {result:?}");
     }
 
