@@ -722,6 +722,82 @@ fn remove_field_value(meta: Option<&crate::codegen::openapi_meta::FieldMeta>, va
     }
 }
 
+/// Real upstream's `Set.EnsureNamedFieldsAreMembers` (`fieldpath/set.go`,
+/// fetched and read directly) — promotes a path tracked only as "has
+/// children" in `set` up to a full member too, wherever it names a real
+/// declared struct field of `schema` (real upstream's own doc comment:
+/// "a set made of `a.b.c` will end-up also owning `a` if it's a named
+/// field[,] but not `a.b` if it's a map"). A `Key`/`Value`/`Index` path
+/// element (an associative-list element's own identity, a set-list/atomic
+/// list element) is never promoted this way — matches real upstream's own
+/// `pathElement.FieldName != nil` guard — nor is a generic map's own key
+/// (not a declared schema field, so `FIELD_META` naturally has no entry
+/// for it, the same real distinction real upstream's own `FindField`
+/// check draws).
+///
+/// `prune()`'s own real reason to need this: a manager's `Set` from a
+/// prior apply may only ever have recorded a struct field's *leaves* as
+/// members (e.g. `containers[name=nginx].image`, never `containers`
+/// itself) — but `remove_items`'s own exact-match check on a field only
+/// fires for an actual member, so without this promotion a formerly
+/// wholly-owned struct field could never be pruned as a whole.
+pub fn ensure_named_fields_are_members(schema: &str, set: &Set) -> Set {
+    let mut members = set.members.clone();
+    for pe in set.children.keys() {
+        if let PathElement::Field(name) = pe {
+            if is_declared_field(schema, name) && !members.contains(pe) {
+                members.push(pe.clone());
+            }
+        }
+    }
+
+    let mut children = BTreeMap::new();
+    for (pe, child) in &set.children {
+        let next_schema = match pe {
+            // A named struct field recurses into its own `ref_schema`
+            // when it has one; when it doesn't (a scalar, a generic map's
+            // uniform value type, an atomic list/map) there is nothing
+            // further to promote, so the sentinel `""` (no real schema is
+            // ever named that) guarantees no accidental promotion from a
+            // same-named field of the *parent* schema leaking through.
+            PathElement::Field(name) => crate::codegen::field_meta_index()
+                .get(&(schema, name.as_str()))
+                .and_then(|m| m.ref_schema)
+                .unwrap_or(""),
+            // A `Key`/`Value`/`Index` child is one element of the list
+            // this same `schema` already denotes (real upstream's own
+            // `atom.List.ElementType` — the list's element schema *is*
+            // the current level's `schema`, already threaded in by
+            // whichever `Field` arm led here).
+            _ => schema,
+        };
+        children.insert(pe.clone(), ensure_named_fields_are_members(next_schema, child));
+    }
+
+    Set { members, children }
+}
+
+/// Whether `schema` actually declares a property named `name` — real
+/// upstream's own `atom.Map.FindField`, approximated here without a
+/// dedicated codegen table by combining two existing ones: `FIELD_META`
+/// (only fields carrying `x-kubernetes-*`/`default`/`$ref` metadata — most
+/// nested-object and annotated fields) union `TYPE_INFO` (every field with
+/// a declared OpenAPI `"type"`, **including** `"object"` — confirmed
+/// directly: `TYPE_INFO`'s own collection has no type-value filter at all,
+/// only "does `prop.get(\"type\")` exist", so a plain `type: object` field
+/// like `ObjectMeta.labels`, which carries no `x-kubernetes-*` annotation
+/// and so has no `FIELD_META` entry, is still covered by `TYPE_INFO`
+/// alone). The only real gap between this union and true schema knowledge:
+/// a nested-object field with *neither* a declared `"type"` key *nor* any
+/// `x-kubernetes-*`/`default` metadata (a bare `allOf: [{$ref: ...}]` with
+/// no sibling `"type"` and no interesting extension) — genuinely rare
+/// (every such case checked while building this crate's own SSA/patch
+/// modules turned out to carry a `$ref` and thus a `FIELD_META` entry via
+/// `ref_schema` already).
+fn is_declared_field(schema: &str, name: &str) -> bool {
+    crate::codegen::field_meta_index().contains_key(&(schema, name)) || crate::codegen::type_info_index().contains_key(&(schema, name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1058,5 +1134,43 @@ mod tests {
         let to_remove = set_of(&[&[f("nodeSelector")]]);
         let result = remove_items("io.k8s.api.core.v1.PodSpec", &value, &to_remove);
         assert_eq!(result, json!({"restartPolicy": "Always"}));
+    }
+
+    // `ensure_named_fields_are_members`
+
+    #[test]
+    fn promotes_a_named_struct_field_that_only_has_leaf_children() {
+        // Only "labels.app" was ever tracked as a member -- "labels"
+        // itself, a real declared ObjectMeta field, must be promoted too.
+        let set = set_of(&[&[f("labels"), f("app")]]);
+        let promoted = ensure_named_fields_are_members("io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta", &set);
+        assert!(promoted.members.contains(&f("labels")), "labels is a real ObjectMeta field, must be promoted");
+        assert!(promoted.has(&[f("labels"), f("app")]), "the original leaf must survive the promotion");
+    }
+
+    #[test]
+    fn promotes_a_named_list_field_but_never_the_associative_key_itself() {
+        let key = PathElement::Key(vec![("name".to_string(), json!("nginx"))]);
+        let set = set_of(&[&[f("containers"), key.clone(), f("image")]]);
+        let promoted = ensure_named_fields_are_members("io.k8s.api.core.v1.PodSpec", &set);
+        assert!(promoted.members.contains(&f("containers")), "containers is a real PodSpec field, must be promoted");
+        let containers_children = &promoted.children[&f("containers")];
+        assert!(!containers_children.members.contains(&key), "a Key path element is never promoted to a member");
+        assert!(containers_children.has(&[key, f("image")]), "the original leaf must survive");
+    }
+
+    #[test]
+    fn already_present_members_are_not_duplicated() {
+        let mut set = set_of(&[&[f("labels")], &[f("labels"), f("app")]]);
+        set.insert(&[f("labels")]); // already a member (the "." marker case)
+        let promoted = ensure_named_fields_are_members("io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta", &set);
+        assert_eq!(promoted.members.iter().filter(|pe| **pe == f("labels")).count(), 1, "must not duplicate an already-present member");
+    }
+
+    #[test]
+    fn a_set_with_no_children_at_all_is_unchanged() {
+        let set = set_of(&[&[f("replicas")]]);
+        let promoted = ensure_named_fields_are_members("io.k8s.api.apps.v1.DeploymentSpec", &set);
+        assert_eq!(promoted, set);
     }
 }

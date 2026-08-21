@@ -67,14 +67,20 @@
 //! `fieldset::remove_items` also now landed — real `TypedValue.
 //! RemoveItems`/`removeItemsWithSchema` (removal mode only), the
 //! `Set`-driven "drop everything at these paths from this `Value`"
-//! primitive `Updater.Apply`'s own `prune()` step needs.
+//! primitive `Updater.Apply`'s own `prune()` step needs — and
+//! `fieldset::ensure_named_fields_are_members` (real `Set.
+//! EnsureNamedFieldsAreMembers`), which `prune()` itself needs to run
+//! against a manager's own prior `Set` before calling `remove_items`, so
+//! a formerly wholly-owned struct field (tracked only via its leaves)
+//! can actually be matched and pruned as a whole.
 //!
 //! **Not yet landed**: `$patch`/`$setElementOrder`/
 //! `$deleteFromPrimitiveList` directives (named, deliberate
 //! simplifications — see `strategic_merge`'s own doc comment) and
 //! `Updater.Apply` itself: the real `application/apply-patch+yaml` path.
 //! Every primitive `prune()` itself needs is now landed
-//! (`typed_merge::merge`, `fieldset::remove_items`); `prune()`'s own
+//! (`typed_merge::merge`, `fieldset::remove_items`,
+//! `fieldset::ensure_named_fields_are_members`); `prune()`'s own
 //! orchestration (`RemoveItems` + `addBackOwnedItems`/
 //! `addBackDanglingItems`) and `Apply`'s outer orchestration around it are
 //! what remain, plus the real `managedFields` wire format
