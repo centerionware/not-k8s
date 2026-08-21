@@ -146,11 +146,27 @@ pub enum Error {
 /// it exists as the pure, directly-testable core the budgeted wrapper
 /// below calls.
 pub fn eval_bool(expr: &str, self_value: &Value, old_self_value: Option<&Value>) -> Result<bool, Error> {
+    let mut vars = vec![("self", self_value)];
+    if let Some(old) = old_self_value {
+        vars.push(("oldSelf", old));
+    }
+    eval_bool_with_vars(expr, &vars)
+}
+
+/// The general form [`eval_bool`] is a convenience wrapper around:
+/// compiles `expr`, binds every `(name, value)` pair in `vars`,
+/// evaluates once. Real upstream's own `matchConditions`
+/// (`k8s.io/apiserver/pkg/admission/plugin/webhook/matchconditions`,
+/// `ValidatingAdmissionPolicy`'s own `spec.validations`, ...) binds a
+/// wholly different real variable set (`object`/`oldObject`/`request`/
+/// `params`, not `self`/`oldSelf`) — this is the shared primitive both
+/// real variable-naming conventions this crate supports are built from,
+/// rather than a second copy of the same compile-bind-execute sequence.
+pub fn eval_bool_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<bool, Error> {
     let program = Program::compile(expr)?;
     let mut ctx = Context::default();
-    ctx.add_variable("self", self_value.clone()).map_err(|_| Error::Bind { name: "self" })?;
-    if let Some(old) = old_self_value {
-        ctx.add_variable("oldSelf", old.clone()).map_err(|_| Error::Bind { name: "oldSelf" })?;
+    for (name, value) in vars.iter().copied() {
+        ctx.add_variable(name, value.clone()).map_err(|_| Error::Bind { name })?;
     }
     match program.execute(&ctx)? {
         CelValue::Bool(b) => Ok(b),
@@ -188,16 +204,27 @@ pub fn eval_bool(expr: &str, self_value: &Value, old_self_value: Option<&Value>)
 /// rate-limiting (Group M's own APF work) is what would have to close
 /// that gap, not this module.
 pub fn eval_bool_with_deadline(expr: &str, self_value: &Value, old_self_value: Option<&Value>, deadline: std::time::Duration) -> Result<bool, Error> {
+    let mut vars = vec![("self", self_value)];
+    if let Some(old) = old_self_value {
+        vars.push(("oldSelf", old));
+    }
+    eval_bool_with_vars_and_deadline(expr, &vars, deadline)
+}
+
+/// The general form [`eval_bool_with_deadline`] is a convenience wrapper
+/// around — see [`eval_bool_with_vars`]'s own doc comment for why a
+/// second real variable-naming convention needs this.
+pub fn eval_bool_with_vars_and_deadline(expr: &str, vars: &[(&'static str, &Value)], deadline: std::time::Duration) -> Result<bool, Error> {
     let expr = expr.to_string();
-    let self_value = self_value.clone();
-    let old_self_value = old_self_value.cloned();
+    let owned_vars: Vec<(&'static str, Value)> = vars.iter().map(|(name, value)| (*name, (*value).clone())).collect();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        let borrowed: Vec<(&'static str, &Value)> = owned_vars.iter().map(|(name, value)| (*name, value)).collect();
         // If the receiver already gave up (deadline passed), sending
         // here simply fails silently -- there is no one left to tell,
         // matching `mpsc::Sender::send`'s own documented behavior for a
         // disconnected receiver.
-        let _ = tx.send(eval_bool(&expr, &self_value, old_self_value.as_ref()));
+        let _ = tx.send(eval_bool_with_vars(&expr, &borrowed));
     });
     rx.recv_timeout(deadline).unwrap_or(Err(Error::DeadlineExceeded))
 }
@@ -296,5 +323,34 @@ mod tests {
         let value = json!({});
         let result = eval_bool_with_deadline("this is not valid cel (((", &value, None, std::time::Duration::from_secs(5));
         assert!(matches!(result, Err(Error::Compile(_))), "expected Error::Compile, got {result:?}");
+    }
+
+    #[test]
+    fn eval_bool_with_vars_binds_an_arbitrary_variable_set() {
+        let object = json!({"name": "x"});
+        let old_object = json!({"name": "y"});
+        let result = eval_bool_with_vars("object.name != oldObject.name", &[("object", &object), ("oldObject", &old_object)]);
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[test]
+    fn eval_bool_with_vars_supports_a_real_variable_name_other_than_self_or_old_self() {
+        let request = json!({"operation": "CREATE"});
+        let result = eval_bool_with_vars("request.operation == 'CREATE'", &[("request", &request)]);
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[test]
+    fn eval_bool_backed_by_eval_bool_with_vars_is_unchanged_for_self_and_old_self() {
+        let value = json!({"replicas": 3});
+        let old = json!({"replicas": 2});
+        assert_eq!(eval_bool("self.replicas > oldSelf.replicas", &value, Some(&old)).unwrap(), true);
+    }
+
+    #[test]
+    fn eval_bool_with_vars_and_deadline_binds_the_same_arbitrary_variable_set() {
+        let object = json!({"name": "x"});
+        let result = eval_bool_with_vars_and_deadline("object.name == 'x'", &[("object", &object)], std::time::Duration::from_secs(5));
+        assert_eq!(result.unwrap(), true);
     }
 }
