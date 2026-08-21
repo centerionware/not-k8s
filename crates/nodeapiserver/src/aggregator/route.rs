@@ -17,6 +17,7 @@
 //! cardinality assumption `apiextensions::registry::resolve_in` already
 //! makes for CRDs.
 
+use crate::aggregator::availability;
 use crate::server::rest;
 use crate::storage::client::StorageClient;
 use serde_json::Value;
@@ -54,6 +55,55 @@ pub async fn resolve(storage: &mut StorageClient, group: &str, version: &str) ->
         .flatten()
         .find(|svc| svc.pointer("/spec/group").and_then(Value::as_str) == Some(group) && svc.pointer("/spec/version").and_then(Value::as_str) == Some(version) && svc.pointer("/spec/service").is_some());
     Ok(matched.cloned())
+}
+
+/// Group L Phase 3's own real question: every `(group, version)` this
+/// build should advertise in `/apis`/`/apis/{group}` on top of the
+/// static table and any CRD, sourced from stored, non-local
+/// `APIService`s — `discovery::merged_group_version_map`'s own doc
+/// comment covers why this is scoped to group-level discovery only, not
+/// `/apis/{group}/{version}`'s own resource list. Runs the exact same
+/// real pre-flight chain `server::listener::aggregate_proxy` runs before
+/// ever attempting a dial (`availability::preflight_check`, fresh every
+/// call — Phase 2's own reconciliation loop still doesn't exist to cache
+/// this instead), so a registered but currently-unavailable backend
+/// (its Service deleted, no ready endpoints, ...) is correctly left out
+/// of discovery rather than advertised and then failing every real
+/// request — matching real upstream's own "only an `Available`
+/// `APIService`'s group-version appears in discovery" posture. One
+/// `Service` GET + one `EndpointSlice` LIST per registered `APIService`
+/// — bounded by the same small real-world cardinality `resolve`'s own
+/// doc comment already assumes, not a per-request-path cost (only paid
+/// for an `/apis`-prefixed discovery request, same gate `server::
+/// listener::handle` already applies to the CRD fetch).
+pub async fn discoverable_group_versions(storage: &mut StorageClient) -> Result<Vec<(String, String)>, Error> {
+    let list = match rest::list(storage, None, "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
+        rest::ListOutcome::Found(list) => list,
+        rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken => return Ok(Vec::new()),
+    };
+    let candidates: Vec<Value> = list.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut out = Vec::new();
+    for api_service in candidates {
+        let Some(service_ref) = api_service.pointer("/spec/service") else { continue };
+        let Some(group) = api_service.pointer("/spec/group").and_then(Value::as_str) else { continue };
+        let Some(version) = api_service.pointer("/spec/version").and_then(Value::as_str) else { continue };
+        let namespace = service_ref.get("namespace").and_then(Value::as_str).unwrap_or("");
+        let name = service_ref.get("name").and_then(Value::as_str).unwrap_or("");
+        let port = service_ref.get("port").and_then(Value::as_i64).unwrap_or(443);
+
+        let service = match rest::get(storage, None, "", "v1", "services", Some(namespace), name).await? {
+            rest::GetOutcome::Found(object) => Some(object),
+            rest::GetOutcome::ObjectNotFound | rest::GetOutcome::UnknownResource => None,
+        };
+        let endpoint_slices = match rest::list(storage, None, "discovery.k8s.io", "v1", "endpointslices", Some(namespace), &format!("kubernetes.io/service-name={name}"), "", 0, "").await? {
+            rest::ListOutcome::Found(list) => list.get("items").and_then(Value::as_array).cloned().unwrap_or_default(),
+            rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken => Vec::new(),
+        };
+        if availability::preflight_check(namespace, name, port, service.as_ref(), &endpoint_slices).is_ok() {
+            out.push((group.to_string(), version.to_string()));
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
