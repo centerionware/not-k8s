@@ -68,7 +68,10 @@ resources:
 #[tokio::test]
 async fn secrets_are_genuinely_encrypted_at_rest_and_decrypt_back_correctly() {
     let Some(nodestore_bin) = find_nodestore_binary() else {
-        panic!("DIAGNOSTIC: no nodestore binary found -- searched {:?}", PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+        let debug_dir = repo_root.as_ref().map(|r| r.join("target/debug"));
+        let listing = debug_dir.as_ref().map(|d| std::fs::read_dir(d).map(|entries| entries.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>()));
+        panic!("DIAGNOSTIC: no nodestore binary found -- repo_root={repo_root:?} target/debug listing={listing:?}");
     };
 
     let data_dir = tempfile::tempdir().expect("creating a scratch nodestore data dir");
