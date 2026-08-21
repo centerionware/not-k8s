@@ -108,11 +108,16 @@ async fn spawn_nodestore(nodestore_bin: &std::path::Path, port: u16) -> (tokio::
 /// build's own dispatch resolved actually reached the backend unchanged.
 async fn spawn_https_echo_server() -> (std::net::SocketAddr, Vec<u8>) {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let key_pair = rcgen::KeyPair::generate().expect("generating a key pair");
+    // The real bug this test itself hit in CI: generating a *second*,
+    // unrelated key pair via `rcgen::KeyPair::generate()` instead of
+    // reusing the one `generate_simple_self_signed` already produced and
+    // signed the cert with (`CertifiedKey.key_pair`) -- rustls's own
+    // `InconsistentKeys(KeyMismatch)` caught it immediately, exactly the
+    // real failure a genuinely mismatched cert/key pair should produce.
     let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).expect("generating a self-signed cert");
     let cert_der = cert.cert.der().clone();
     let cert_pem = cert.cert.pem();
-    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
 
     let server_config = rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(vec![cert_der], key_der).expect("building the server TLS config");
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
