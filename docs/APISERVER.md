@@ -699,6 +699,28 @@ build (`namespace_lifecycle`'s Terminating-namespace check,
 `LimitRanger`'s PVC-minimum check) is about a create/full-object write
 and has nothing to say about a status-only replace.
 
+**Real, crate-wide bug found live and fixed** (Group L's own
+`tests/apiservice_roundtrip.rs` — a plain get-then-update round trip,
+never previously exercised since every prior write-then-read-back test
+happened to reuse a `create`/`update` call's own return value directly):
+`rest::get`/`list`/`delete` never stamped `metadata.resourceVersion` on
+the object(s) they returned, for *any* resource, built-in or CRD.
+Root cause: `resourceVersion` is never actually persisted into a stored
+object's own bytes — `create`/`persist_update` both stamp it onto their
+own return value only *after* the write that produces the revision,
+since it doesn't exist yet while those bytes are still being built,
+matching real upstream's own posture (`resourceVersion` is always
+etcd's `mod_revision`, read back at serve time, never object content).
+A plain read has to do that same stamping itself, from its own `Range`/
+`DeleteRange` response's `mod_revision` — nothing did, so a genuine
+`GET` followed by an `UPDATE` (the single most common real
+kubectl/controller workflow: read, modify, write back with the read
+`resourceVersion`) was silently broken for every resource this build
+serves. Fixed in `get`/`list` (both the cache and direct-nodestore
+paths) and `delete`; `server::watch_event::to_watch_event_json` had the
+identical gap for `Added`/`Modified`/`Deleted` watch events (only the
+synthetic `Bookmark` case already stamped one) and got the same fix.
+
 **F. Scheme: conversion, defaulting, validation** — **in progress**. The
 largest handwritten chunk. `scheme::defaulting::apply_defaults(schema, value)`
 lands the first slice: recursively fills a JSON object's absent fields from
