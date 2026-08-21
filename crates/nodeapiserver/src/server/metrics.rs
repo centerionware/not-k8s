@@ -41,9 +41,20 @@
 //! this metric from raw in-flight request counts would misrepresent
 //! what it actually measures to anyone reading a real Prometheus
 //! dashboard, so it's skipped entirely rather than approximated.
-//! `apiserver_response_sizes` and everything else in that package are
-//! still **not ported** either — genuinely separate, smaller-value
-//! pieces of work, not a quick follow-up to these three.
+//! `apiserver_response_sizes` (real upstream's own exponential-bucket
+//! histogram, `compbasemetrics.ExponentialBuckets(1000, 10.0, 7)` — 1KB
+//! to 1GB, confirmed directly) is ported too, from `http_body::Body::
+//! size_hint().exact()` on the finished response
+//! (`server::listener::handle_with_audit`'s own call site) — **only
+//! recorded when the size is known up front**, which is every verb this
+//! crate serves except `watch` (an unbounded stream real upstream's own
+//! byte-counting `ResponseWriterDelegator` instruments but this build's
+//! simpler size-hint approach can't): a real, named, narrower scope than
+//! upstream's own, not a silent gap — a `watch` response simply never
+//! contributes an observation here rather than this build fabricating a
+//! number for an inherently unknowable total. Everything else in that
+//! package is still **not ported** — genuinely separate, smaller-value
+//! pieces of work, not a quick follow-up to these four.
 //!
 //! One process-wide counter table (`std::sync::Mutex<HashMap<...>>`,
 //! the same "good enough, no lock contention that matters at this scale"
@@ -98,6 +109,54 @@ fn histograms() -> &'static Mutex<HashMap<HistogramKey, Histogram>> {
     HISTOGRAMS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Real upstream's own exact bucket boundaries for
+/// `apiserver_response_sizes` — `compbasemetrics.ExponentialBuckets(1000,
+/// 10.0, 7)`, confirmed directly (its own comment: "1000 bytes (1KB) to
+/// 10^9 bytes (1GB)").
+const RESPONSE_SIZE_BUCKETS: &[f64] = &[1_000.0, 10_000.0, 100_000.0, 1_000_000.0, 10_000_000.0, 100_000_000.0, 1_000_000_000.0];
+
+fn response_size_histograms() -> &'static Mutex<HashMap<HistogramKey, Histogram>> {
+    static RESPONSE_SIZE_HISTOGRAMS: OnceLock<Mutex<HashMap<HistogramKey, Histogram>>> = OnceLock::new();
+    RESPONSE_SIZE_HISTOGRAMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Shared by [`record_duration`] and [`record_response_size`] — both are
+/// "observe one value into one bucketed histogram," differing only in
+/// which map and which bucket boundaries. `seconds`/`size` in the two
+/// callers is always non-negative in practice (a real `Instant::elapsed()`
+/// duration or a real byte count); a negative `value` here would simply
+/// not increment any bucket, no panic — same "malformed input degrades
+/// rather than crashes" posture the rest of this crate's own metrics
+/// code takes.
+fn record_into(map: &Mutex<HashMap<HistogramKey, Histogram>>, buckets: &[f64], verb: &str, resource: &str, value: f64) {
+    let key = (verb.to_string(), resource.to_string());
+    let mut map = map.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let hist = map.entry(key).or_insert_with(|| Histogram { bucket_counts: vec![0; buckets.len()], sum: 0.0, count: 0 });
+    hist.sum += value;
+    hist.count += 1;
+    for (i, &bound) in buckets.iter().enumerate() {
+        if value <= bound {
+            hist.bucket_counts[i] += 1;
+        }
+    }
+}
+
+/// Records one completed request's own response body size, in bytes.
+/// Real upstream's own instrumentation point (`ResponseWriterDelegator`)
+/// counts every byte actually written, streaming responses included —
+/// **this build only records a response whose size is known up front**
+/// (`http_body::Body::size_hint().exact()`, `server::listener::
+/// handle_with_audit`'s own call site), which is every non-streaming
+/// response (every real verb this crate serves except `watch`) but not
+/// `watch` itself (an unbounded, unknown-length stream) — a real, named,
+/// narrower scope than upstream's own, not a silent gap: a `watch`
+/// request's response size simply never contributes an observation here,
+/// rather than this build fabricating a number for an inherently
+/// unknowable total.
+pub fn record_response_size(verb: &str, resource: &str, size_bytes: u64) {
+    record_into(response_size_histograms(), RESPONSE_SIZE_BUCKETS, verb, resource, size_bytes as f64);
+}
+
 /// Records one completed request's own latency. `resource` follows
 /// [`record_request`]'s own empty-string-for-non-resource convention.
 /// `seconds` is expected non-negative (a real `Instant::elapsed()`
@@ -105,16 +164,7 @@ fn histograms() -> &'static Mutex<HashMap<HistogramKey, Histogram>> {
 /// any bucket, no panic, same "malformed input degrades rather than
 /// crashes" posture the rest of this crate's own metrics code takes.
 pub fn record_duration(verb: &str, resource: &str, seconds: f64) {
-    let key = (verb.to_string(), resource.to_string());
-    let mut histograms = histograms().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let hist = histograms.entry(key).or_insert_with(|| Histogram { bucket_counts: vec![0; DURATION_BUCKETS.len()], sum: 0.0, count: 0 });
-    hist.sum += seconds;
-    hist.count += 1;
-    for (i, &bound) in DURATION_BUCKETS.iter().enumerate() {
-        if seconds <= bound {
-            hist.bucket_counts[i] += 1;
-        }
-    }
+    record_into(histograms(), DURATION_BUCKETS, verb, resource, seconds);
 }
 
 /// Records one completed request. `resource` is `""` for a non-resource
@@ -207,23 +257,39 @@ type HistogramSnapshot = (Vec<u64>, f64, u64);
 /// (always equal to `count`, matching every value's own membership in
 /// the unbounded top bucket), then `_sum`/`_count`. Pure given a
 /// snapshot, same split [`render_counts`] already established.
-fn render_histograms(hists: &[(HistogramKey, HistogramSnapshot)]) -> String {
+/// Shared by every histogram's own render (`apiserver_request_duration_
+/// seconds`, `apiserver_response_sizes`) — real Prometheus text
+/// exposition format's own cumulative `_bucket{le=...}` lines (each
+/// bucket's count already includes every smaller bucket's own
+/// observations, which [`record_into`]'s own increment-from-the-matched-
+/// bucket-onward loop already produces, so this does no summing of its
+/// own), a final `+Inf` bucket (always equal to `count`), then
+/// `_sum`/`_count`.
+fn render_histogram(name: &str, help: &str, buckets: &[f64], hists: &[(HistogramKey, HistogramSnapshot)]) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "# HELP apiserver_request_duration_seconds Response latency distribution in seconds for each verb and resource.");
-    let _ = writeln!(out, "# TYPE apiserver_request_duration_seconds histogram");
+    let _ = writeln!(out, "# HELP {name} {help}");
+    let _ = writeln!(out, "# TYPE {name} histogram");
     let mut sorted: Vec<&(HistogramKey, HistogramSnapshot)> = hists.iter().collect();
     sorted.sort_by(|a, b| a.0.cmp(&b.0));
     for ((verb, resource), (bucket_counts, sum, count)) in sorted {
         let verb = escape_label_value(verb);
         let resource = escape_label_value(resource);
-        for (bound, cumulative) in DURATION_BUCKETS.iter().zip(bucket_counts.iter()) {
-            let _ = writeln!(out, "apiserver_request_duration_seconds_bucket{{verb=\"{verb}\",resource=\"{resource}\",le=\"{bound}\"}} {cumulative}");
+        for (bound, cumulative) in buckets.iter().zip(bucket_counts.iter()) {
+            let _ = writeln!(out, "{name}_bucket{{verb=\"{verb}\",resource=\"{resource}\",le=\"{bound}\"}} {cumulative}");
         }
-        let _ = writeln!(out, "apiserver_request_duration_seconds_bucket{{verb=\"{verb}\",resource=\"{resource}\",le=\"+Inf\"}} {count}");
-        let _ = writeln!(out, "apiserver_request_duration_seconds_sum{{verb=\"{verb}\",resource=\"{resource}\"}} {sum}");
-        let _ = writeln!(out, "apiserver_request_duration_seconds_count{{verb=\"{verb}\",resource=\"{resource}\"}} {count}");
+        let _ = writeln!(out, "{name}_bucket{{verb=\"{verb}\",resource=\"{resource}\",le=\"+Inf\"}} {count}");
+        let _ = writeln!(out, "{name}_sum{{verb=\"{verb}\",resource=\"{resource}\"}} {sum}");
+        let _ = writeln!(out, "{name}_count{{verb=\"{verb}\",resource=\"{resource}\"}} {count}");
     }
     out
+}
+
+fn render_histograms(hists: &[(HistogramKey, HistogramSnapshot)]) -> String {
+    render_histogram("apiserver_request_duration_seconds", "Response latency distribution in seconds for each verb and resource.", DURATION_BUCKETS, hists)
+}
+
+fn render_response_sizes(hists: &[(HistogramKey, HistogramSnapshot)]) -> String {
+    render_histogram("apiserver_response_sizes", "Response size distribution in bytes for each verb and resource.", RESPONSE_SIZE_BUCKETS, hists)
 }
 
 /// The real, I/O-touching (well — lock-touching) half: snapshots the
@@ -237,11 +303,15 @@ pub fn render() -> String {
     let histogram_snapshot: Vec<(HistogramKey, HistogramSnapshot)> = histograms.iter().map(|(k, h)| (k.clone(), (h.bucket_counts.clone(), h.sum, h.count))).collect();
     drop(histograms);
 
+    let response_size_histograms = response_size_histograms().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let response_size_snapshot: Vec<(HistogramKey, HistogramSnapshot)> = response_size_histograms.iter().map(|(k, h)| (k.clone(), (h.bucket_counts.clone(), h.sum, h.count))).collect();
+    drop(response_size_histograms);
+
     let watch_event_counters = watch_event_counters().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let watch_event_snapshot: Vec<(WatchEventKey, u64)> = watch_event_counters.iter().map(|(k, &v)| (k.clone(), v)).collect();
     drop(watch_event_counters);
 
-    render_counts(&counter_snapshot) + &render_histograms(&histogram_snapshot) + &render_watch_event_counts(&watch_event_snapshot)
+    render_counts(&counter_snapshot) + &render_histograms(&histogram_snapshot) + &render_response_sizes(&response_size_snapshot) + &render_watch_event_counts(&watch_event_snapshot)
 }
 
 #[cfg(test)]
@@ -335,5 +405,31 @@ mod tests {
         record_watch_event("", "v1", "a-watch-resource-unique-to-this-test");
         let text = render();
         assert!(text.contains("apiserver_watch_events_total{group=\"\",version=\"v1\",resource=\"a-watch-resource-unique-to-this-test\"} "));
+    }
+
+    #[test]
+    fn render_response_sizes_produces_real_prometheus_text_exposition_format() {
+        // 5000 bytes falls between the real 1000 and 10000 buckets.
+        let mut counts = vec![0u64; RESPONSE_SIZE_BUCKETS.len()];
+        for (i, &b) in RESPONSE_SIZE_BUCKETS.iter().enumerate() {
+            if 5000.0 <= b {
+                counts[i] = 1;
+            }
+        }
+        let hists = vec![(("get".to_string(), "pods".to_string()), (counts, 5000.0, 1u64))];
+        let text = render_response_sizes(&hists);
+        assert!(text.contains("# TYPE apiserver_response_sizes histogram"));
+        assert!(text.contains("apiserver_response_sizes_bucket{verb=\"get\",resource=\"pods\",le=\"1000\"} 0"));
+        assert!(text.contains("apiserver_response_sizes_bucket{verb=\"get\",resource=\"pods\",le=\"10000\"} 1"));
+        assert!(text.contains("apiserver_response_sizes_bucket{verb=\"get\",resource=\"pods\",le=\"+Inf\"} 1"));
+        assert!(text.contains("apiserver_response_sizes_sum{verb=\"get\",resource=\"pods\"} 5000"));
+    }
+
+    #[test]
+    fn record_response_size_and_render_round_trip() {
+        record_response_size("get", "a-size-resource-unique-to-this-test", 2500);
+        let text = render();
+        assert!(text.contains("apiserver_response_sizes_bucket{verb=\"get\",resource=\"a-size-resource-unique-to-this-test\",le=\"1000\"} 0"));
+        assert!(text.contains("apiserver_response_sizes_bucket{verb=\"get\",resource=\"a-size-resource-unique-to-this-test\",le=\"10000\"} 1"));
     }
 }

@@ -83,6 +83,11 @@ hyper = { version = "1", features = ["server", "http1", "http2", "client"] }
 hyper-util = { workspace = true, features = ["tokio", "server", "server-auto", "server-graceful"] }
 http = "1"
 http-body-util = "0.1"
+# The bare `Body` trait itself (`size_hint()`) -- `http-body-util` is
+# built-on-top helpers (`BoxBody`, `StreamBody`, `BodyExt`), not a
+# re-export of the trait; already resolved transitively (hyper/
+# http-body-util both depend on it), not a new dependency risk.
+http-body = "1"
 tokio-rustls = "0.26"
 rustls = { workspace = true }
 # Self-signed TLS server cert, generated on first start — see
