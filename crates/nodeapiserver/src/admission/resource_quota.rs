@@ -679,6 +679,30 @@ pub fn check_pvc_create(pvc: &Value, existing_pvcs: &[Value], resource_quotas: &
     None
 }
 
+/// The persisted-`status.used` half of [`check_pvc_create`] — see
+/// [`usage_after_pod_create`]'s own doc comment for the shape and
+/// reasoning (this is the same pattern applied to the PVC evaluator, its
+/// own named follow-up).
+pub fn usage_after_pvc_create(pvc: &Value, existing_pvcs: &[Value], resource_quotas: &[Value]) -> Vec<(String, BTreeMap<String, Quantity>)> {
+    let this_pvc_usage = pvc_usage(pvc);
+    let mut updates = Vec::new();
+
+    for resource_quota in resource_quotas {
+        let has_scopes = quota_has_any_scope_selectors(resource_quota);
+        if has_scopes || !quota_applies_to_pvcs(resource_quota) {
+            continue;
+        }
+        let mut existing_usage = BTreeMap::new();
+        for existing in existing_pvcs {
+            existing_usage = add_maps(&existing_usage, &pvc_usage(existing));
+        }
+        let new_total = add_maps(&existing_usage, &this_pvc_usage);
+        let name = resource_quota.get("metadata").and_then(|m| m.get("name")).and_then(Value::as_str).unwrap_or("").to_string();
+        updates.push((name, new_total));
+    }
+    updates
+}
+
 pub fn applies_to_service(operation: crate::admission::attributes::Operation, group: &str, resource: &str, subresource: &str) -> bool {
     group.is_empty() && resource == "services" && subresource.is_empty() && operation == crate::admission::attributes::Operation::Create
 }
@@ -745,6 +769,29 @@ pub fn check_service_create(svc: &Value, existing_services: &[Value], resource_q
         }
     }
     None
+}
+
+/// The persisted-`status.used` half of [`check_service_create`] — see
+/// [`usage_after_pod_create`]'s own doc comment for the shape and
+/// reasoning.
+pub fn usage_after_service_create(svc: &Value, existing_services: &[Value], resource_quotas: &[Value]) -> Vec<(String, BTreeMap<String, Quantity>)> {
+    let this_service_usage = service_usage(svc);
+    let mut updates = Vec::new();
+
+    for resource_quota in resource_quotas {
+        let has_scopes = quota_has_any_scope_selectors(resource_quota);
+        if has_scopes || !quota_applies_to_services(resource_quota) {
+            continue;
+        }
+        let mut existing_usage = BTreeMap::new();
+        for existing in existing_services {
+            existing_usage = add_maps(&existing_usage, &service_usage(existing));
+        }
+        let new_total = add_maps(&existing_usage, &this_service_usage);
+        let name = resource_quota.get("metadata").and_then(|m| m.get("name")).and_then(Value::as_str).unwrap_or("").to_string();
+        updates.push((name, new_total));
+    }
+    updates
 }
 
 /// Real upstream's own `generic.ObjectCountQuotaResourceNameFor`: the
@@ -1257,6 +1304,17 @@ mod tests {
         assert!(check_pvc_create(&pvc, &[], &[q]).is_none(), "a bronze-class PVC must not be charged against a gold-scoped quota key");
     }
 
+    #[test]
+    fn usage_after_pvc_create_sums_the_new_total() {
+        let pvc = pvc_with_storage("new", "1Gi");
+        let existing = pvc_with_storage("existing", "2Gi");
+        let q = quota("pvc-quota", json!({"requests.storage": "10Gi"}));
+        let updates = usage_after_pvc_create(&pvc, &[existing], &[q]);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].0, "pvc-quota");
+        assert_eq!(updates[0].1.get("requests.storage"), Some(&Quantity::parse("3Gi").unwrap()));
+    }
+
     fn cluster_ip_service(name: &str) -> Value {
         json!({"metadata": {"name": name}, "spec": {"type": "ClusterIP", "ports": [{"port": 80}]}})
     }
@@ -1325,6 +1383,17 @@ mod tests {
         let mut q = quota("scoped-quota", json!({"services": "0"}));
         q["spec"]["scopes"] = json!(["BestEffort"]);
         assert!(check_service_create(&svc, &[], &[q]).is_none());
+    }
+
+    #[test]
+    fn usage_after_service_create_sums_the_new_total() {
+        let svc = cluster_ip_service("new");
+        let existing = cluster_ip_service("existing");
+        let q = quota("svc-quota", json!({"services": "10"}));
+        let updates = usage_after_service_create(&svc, &[existing], &[q]);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].0, "svc-quota");
+        assert_eq!(updates[0].1.get("services"), Some(&Quantity::parse("2").unwrap()));
     }
 
     #[test]
