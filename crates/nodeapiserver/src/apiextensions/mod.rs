@@ -72,6 +72,7 @@
 //!
 //! Status: in progress (Group K — see docs/APISERVER.md).
 
+pub mod cel_evaluate;
 pub mod cel_validations;
 pub mod conditions;
 pub mod registry;
