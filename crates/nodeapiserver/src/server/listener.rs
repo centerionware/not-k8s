@@ -1065,6 +1065,66 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             }
         };
     }
+    // Group I: `SubjectAccessReview`/`SelfSubjectAccessReview` — its own
+    // branch, checked before the generic `is_create` handling below,
+    // because it's a virtual resource: real upstream never persists
+    // either kind to storage (`pkg/registry/authorization/
+    // subjectaccessreview`'s own synthetic REST connector), and letting
+    // this fall through to the generic `rest::create` path would
+    // actually try to write one to nodestore — a real, wrong side
+    // effect this early return prevents. Unconditional, not gated by
+    // `enforce_rbac`: answering "would RBAC allow this" is a read on the
+    // RBAC engine's own state, not itself an enforcement decision.
+    if info.is_resource_request
+        && info.api_group == "authorization.k8s.io"
+        && matches!(info.resource.as_str(), "subjectaccessreviews" | "selfsubjectaccessreviews")
+        && info.verb == "create"
+        && info.subresource.is_empty()
+    {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let (fallback_user, fallback_groups): (&str, Vec<String>) = match &identity {
+            Some(id) => (id.name.as_str(), id.groups.clone()),
+            None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        };
+        let spec = body_value.get("spec").cloned().unwrap_or_default();
+        let review = match authz::sar::parse_spec(&spec, fallback_user, &fallback_groups) {
+            Ok(r) => r,
+            Err(msg) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &msg))),
+        };
+        // Non-resource rules are only ever granted via ClusterRoleBindings
+        // in real RBAC too (a namespace-scoped RoleBinding can't grant a
+        // non-resource-URL permission) -- resolving with an empty
+        // namespace naturally restricts to just those, no separate branch
+        // needed.
+        let resolve_namespace = if review.is_resource { review.namespace.as_str() } else { "" };
+        let resolved = authz::resolve::rules_for(&mut client, &review.user_name, &review.user_groups, resolve_namespace).await;
+        let attrs = authz::rbac::RequestAttributes {
+            is_resource_request: review.is_resource,
+            verb: &review.verb,
+            api_group: &review.group,
+            resource: &review.resource,
+            subresource: &review.subresource,
+            name: &review.name,
+            path: &review.path,
+        };
+        let allowed = authz::rbac::rules_allow(&attrs, &resolved.rules);
+        let mut response_body = body_value;
+        response_body["status"] = authz::sar::build_status(allowed);
+        return Ok(json_response(StatusCode::CREATED, &response_body));
+    }
     let has_body = is_create || is_update;
     if is_get || is_list || is_create || is_delete || is_update {
         // Captured before `req` is potentially consumed below (`has_body`
