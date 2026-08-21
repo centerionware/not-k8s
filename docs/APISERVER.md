@@ -110,7 +110,15 @@ undetected, a submitted CRD silently lost all seven on protobuf encode
 (the field lookup by JSON key never matched, so they were treated as
 unrecognized and skipped). `build/proto_parse.rs`'s
 `real_x_kubernetes_json_name` now detects and corrects this one specific
-family. `codec::json`/`codec::yaml` are thin wrappers; `codec::negotiation`
+family. A second, related finding from the same work: `JSONSchemaProps.
+items`/`.additionalProperties` are `JSONSchemaPropsOrArray`/
+`JSONSchemaPropsOrBool` on the wire — real upstream's own custom-marshaled
+Go types (the same "doesn't marshal as its own struct shape" pattern
+`metav1.Time`/`apiextensions.v1.JSON` already needed a codec exception
+for) that write completely unwrapped in real JSON (a plain schema
+object, or a plain array/bool), not as `{"schema": ...}`/`{"allows":
+...}` — `codec::protobuf`'s `is_json_schema_props_or_array`/
+`_or_bool` now handle both. `codec::json`/`codec::yaml` are thin wrappers; `codec::negotiation`
 parses `Accept`/`Content-Type` including `kubectl get`'s `as=Table;g=...;v=...`
 parameters. `codec::table::convert_to_table` lands the generic default
 `Table` converter — a faithful port of real upstream's own
