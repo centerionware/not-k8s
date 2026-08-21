@@ -377,10 +377,12 @@ async fn strategic_merge_patch_merges_a_crd_list_field_by_its_own_x_kubernetes_l
         rest::PatchPrepareOutcome::Ready(candidate, context) => (candidate, context),
         other => panic!("expected Ready, got {other:?}"),
     };
+    eprintln!("DEBUG candidate after patch_prepare (before patch_persist): {candidate}");
     let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "services", Some("default"), "svc", context, candidate).await.expect("rest::patch_persist must not itself error") {
         rest::UpdateOutcome::Updated(object) => object,
         other => panic!("expected Updated, got {other:?}"),
     };
+    eprintln!("DEBUG patched after patch_persist: {patched}");
     let ports = patched["spec"]["ports"].as_array().expect("ports must be an array");
     assert_eq!(ports.len(), 3, "http merged, https untouched, metrics appended: {ports:?}");
     let http = ports.iter().find(|p| p["name"] == "http").expect("http must still be present");
