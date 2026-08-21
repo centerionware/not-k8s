@@ -38,15 +38,15 @@
 //! `sar` — `SubjectAccessReview`/`SelfSubjectAccessReview`, a thin
 //! wiring of `resolve`/`rbac` to real upstream's own virtual (never
 //! persisted) review API — see that module's own doc comment for the
-//! exact shape and scope. **Wired into `server::listener`** as its own
-//! `POST` branch (both review kinds, unconditionally — this doesn't
-//! gate anything itself, it just answers "would RBAC allow this",
-//! independent of whether `enforce_rbac` is even on).
+//! exact shape and scope. **Wired into `server::listener`**, unconditionally
+//! (this doesn't gate anything itself, it just answers requests against
+//! the RBAC engine's own state, independent of whether `enforce_rbac` is
+//! even on): `SubjectAccessReview`/`SelfSubjectAccessReview`/
+//! `LocalSubjectAccessReview` share one `POST` branch,
+//! `SelfSubjectRulesReview` has its own (different response shape).
 //!
 //! Status: in progress (see docs/APISERVER.md). The Node authorizer and
-//! webhook authorization are not started;
-//! `localsubjectaccessreviews`/`selfsubjectrulesreviews` aren't wired yet
-//! (named follow-ups, same primitives).
+//! webhook authorization are not started.
 
 pub mod rbac;
 pub mod resolve;

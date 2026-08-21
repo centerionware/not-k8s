@@ -1065,19 +1065,20 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             }
         };
     }
-    // Group I: `SubjectAccessReview`/`SelfSubjectAccessReview` — its own
-    // branch, checked before the generic `is_create` handling below,
-    // because it's a virtual resource: real upstream never persists
-    // either kind to storage (`pkg/registry/authorization/
-    // subjectaccessreview`'s own synthetic REST connector), and letting
-    // this fall through to the generic `rest::create` path would
-    // actually try to write one to nodestore — a real, wrong side
-    // effect this early return prevents. Unconditional, not gated by
-    // `enforce_rbac`: answering "would RBAC allow this" is a read on the
-    // RBAC engine's own state, not itself an enforcement decision.
+    // Group I: `SubjectAccessReview`/`SelfSubjectAccessReview`/
+    // `LocalSubjectAccessReview` — its own branch, checked before the
+    // generic `is_create` handling below, because it's a virtual
+    // resource: real upstream never persists any of the three kinds to
+    // storage (`pkg/registry/authorization/subjectaccessreview`'s own
+    // synthetic REST connector), and letting this fall through to the
+    // generic `rest::create` path would actually try to write one to
+    // nodestore — a real, wrong side effect this early return prevents.
+    // Unconditional, not gated by `enforce_rbac`: answering "would RBAC
+    // allow this" is a read on the RBAC engine's own state, not itself
+    // an enforcement decision.
     if info.is_resource_request
         && info.api_group == "authorization.k8s.io"
-        && matches!(info.resource.as_str(), "subjectaccessreviews" | "selfsubjectaccessreviews")
+        && matches!(info.resource.as_str(), "subjectaccessreviews" | "selfsubjectaccessreviews" | "localsubjectaccessreviews")
         && info.verb == "create"
         && info.subresource.is_empty()
     {
@@ -1100,10 +1101,21 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
             None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
         };
         let spec = body_value.get("spec").cloned().unwrap_or_default();
-        let review = match authz::sar::parse_spec(&spec, fallback_user, &fallback_groups) {
+        let mut review = match authz::sar::parse_spec(&spec, fallback_user, &fallback_groups) {
             Ok(r) => r,
             Err(msg) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &msg))),
         };
+        // `LocalSubjectAccessReview`'s own real semantics: the namespace
+        // is the URL's, not whatever (if anything) the submitted
+        // `resourceAttributes.namespace` said — the same "the URL is
+        // authoritative over the body" rule `rest::update`'s own
+        // namespace-mismatch check already establishes elsewhere in this
+        // crate, applied here as an override rather than a rejection
+        // since a `LocalSubjectAccessReview` isn't required to name a
+        // namespace in its body at all.
+        if info.resource == "localsubjectaccessreviews" {
+            review.namespace = info.namespace.clone();
+        }
         // Non-resource rules are only ever granted via ClusterRoleBindings
         // in real RBAC too (a namespace-scoped RoleBinding can't grant a
         // non-resource-URL permission) -- resolving with an empty
@@ -1123,6 +1135,38 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
         let allowed = authz::rbac::rules_allow(&attrs, &resolved.rules);
         let mut response_body = body_value;
         response_body["status"] = authz::sar::build_status(allowed);
+        return Ok(json_response(StatusCode::CREATED, &response_body));
+    }
+    // `SelfSubjectRulesReview` — lists the caller's own resolved rules
+    // for one namespace, rather than answering a single allow/deny
+    // question. Same virtual-resource/no-persistence reasoning as the
+    // branch above, its own separate branch only because the response
+    // shape (`resourceRules`/`nonResourceRules`, not `allowed`) and
+    // input (`spec.namespace`, no attributes to parse) are different
+    // enough not to share code cleanly.
+    if info.is_resource_request && info.api_group == "authorization.k8s.io" && info.resource == "selfsubjectrulesreviews" && info.verb == "create" && info.subresource.is_empty() {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let (user_name, user_groups): (&str, Vec<String>) = match &identity {
+            Some(id) => (id.name.as_str(), id.groups.clone()),
+            None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        };
+        let review_namespace = body_value.pointer("/spec/namespace").and_then(serde_json::Value::as_str).unwrap_or("");
+        let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, review_namespace).await;
+        let mut response_body = body_value;
+        response_body["status"] = authz::sar::build_rules_status(&resolved.rules, &resolved.errors);
         return Ok(json_response(StatusCode::CREATED, &response_body));
     }
     let has_body = is_create || is_update;
