@@ -6,15 +6,11 @@
 //! address-type walk + `daemonEndpoints` port fallback), all fetched and
 //! read directly from `kubernetes/kubernetes` at `release-1.34`.
 //!
-//! **Pure target-resolution only** — the same "land the primitive, wire
-//! it later" split this whole arc uses: nothing here makes an HTTP
-//! request or talks to nodelet. Wiring this into `server::listener` as a
-//! real live proxy needs credential material nodeapiserver can present
-//! that nodelet's own bearer-token `TokenReview` authenticator
-//! (`crates/nodelet/src/server/auth.rs`) will accept — a real, separate,
-//! not-yet-solved problem (this build doesn't implement the
-//! `TokenReview` subresource nodelet's authenticator calls back into
-//! yet), named honestly as not started rather than glossed over.
+//! **Pure target-resolution only** — nothing here makes an HTTP request
+//! or talks to nodelet itself; that's `proxy::http_client`'s job, with
+//! `proxy::client_tls` supplying the TLS client identity, both wired
+//! into the real `GET .../pods/{name}/log` dispatch in
+//! `server::listener::handle`.
 
 use serde_json::Value;
 

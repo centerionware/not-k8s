@@ -1366,11 +1366,11 @@ along with the `distinguisherMethod` computation (meaningless without
 queuing) and the two mandatory bootstrap `FlowSchema`s real upstream
 always synthesizes (Group O's job).
 
-**N. Streaming and proxy subresources** — **started**. `proxy::pod_log`
-ports real upstream's own `pods/log` target resolution
-(`pkg/registry/core/pod/strategy.go`'s `LogLocation`/
-`validateContainer`, plus the node connection-info resolution
-`pkg/kubelet/client/kubelet_client.go`'s
+**N. Streaming and proxy subresources** — **`pods/log` is a genuine live
+proxy now, wired end to end.** `proxy::pod_log` ports real upstream's own
+`pods/log` target resolution (`pkg/registry/core/pod/strategy.go`'s
+`LogLocation`/`validateContainer`, plus the node connection-info
+resolution `pkg/kubelet/client/kubelet_client.go`'s
 `NodeConnectionInfoGetter.GetConnectionInfo` performs — preferred
 address-type walk, real upstream's own default order `Hostname,
 InternalDNS, InternalIP, ExternalDNS, ExternalIP` from
@@ -1381,18 +1381,46 @@ pods default automatically, `containers` + `initContainers` combined,
 matching real upstream's own `AllFeatureEnabledContainers` visit) and
 explicit-container validation both faithfully ported, real per-error
 variants for "no default container"/"unknown container"/"pod not
-scheduled"/"no node address" rather than one generic failure. **Pure
-target-resolution only — not wired to a live proxy yet**: nothing here
-makes an HTTP request or talks to nodelet. Wiring this into
-`server::listener` as a real live proxy needs credential material
-nodeapiserver can present that nodelet's own bearer-token `TokenReview`
-authenticator (`crates/nodelet/src/server/auth.rs`) will accept — this
-build doesn't implement the `TokenReview` subresource nodelet's
-authenticator calls back into yet, a real, separate, not-yet-solved
-problem, named honestly rather than glossed over. exec/attach/
-port-forward (would reuse `crates/nodelet/src/server/exec.rs`'s proven
-raw-upgrade-splice pattern once the same credential problem is solved)
-and node/service proxy subresources remain entirely unstarted.
+scheduled"/"no node address" rather than one generic failure, each mapped
+to its own HTTP status in `server::listener`'s dedicated `pods/log`
+dispatch branch.
+
+The credential problem this section previously named as unsolved is
+solved by a different mechanism than the one it anticipated: rather than
+nodeapiserver satisfying nodelet's bearer-token `TokenReview`
+authenticator, `proxy::client_tls` builds a real `rustls::ClientConfig`
+that dials nodelet's mTLS listener directly — insecure-by-default server-
+cert verification (real upstream's own posture when no
+`--kubelet-certificate-authority` is configured, `KubeletClientConfig`'s
+`transportConfig()` sets `cfg.TLS.Insecure = true` whenever `!cfg.HasCA()`,
+mirrored faithfully by `AcceptAnyServerCert`, which still cryptographically
+verifies the handshake signature) plus an optional client certificate
+(`NODEAPISERVER_KUBELET_CLIENT_CERT_FILE`/`_KEY_FILE`, raw DER matching
+`crates/nodelet/src/server/tls.rs`'s own convention) that authenticates
+via nodelet's `NODELET_CLIENT_CA_FILE` x509 path instead of a
+`TokenReview` round trip — the same one shared client identity real
+`kube-apiserver` itself presents to every kubelet via its own single
+`--kubelet-client-certificate`, not unique per node. `proxy::http_client`
+does the actual dial, reusing `crates/nodelet/src/server/exec.rs`'s own
+proven low-level `hyper::client::conn::http1::handshake` pattern with a
+TLS layer wrapped around the TCP stream first. `server::listener::run`
+builds the `rustls::ClientConfig` once at startup (falling back to no
+client identity on a misconfigured cert/key pair, logged rather than
+fatal) and threads it through every connection; `handle()`'s own
+`pods/log` branch fetches the pod, fetches its node, resolves the target,
+dials nodelet, and relays its response — status, headers, and a still-
+streaming body for `follow=true` — back completely unmodified, gated by
+the same `enforce_rbac` RBAC check every other verb branch uses (`get`
+on `pods/log`, a distinct resource from plain `pods` for RBAC purposes,
+matching real upstream's own subresource-is-a-separate-resource rule). A
+dial failure surfaces as a real `502`, not a `500` — the fault is
+nodelet/the network, not this process.
+
+exec/attach/port-forward (would reuse `crates/nodelet/src/server/
+exec.rs`'s proven raw-upgrade-splice pattern, which this crate's `pods/
+log` wiring doesn't need for a plain GET) and node/service proxy
+subresources remain entirely unstarted, though they'd reuse the same
+`client_tls`/`http_client` primitives.
 
 **O. Cluster bootstrap — the k3s replacement half** — **not started, and
 deliberately not `nodeapiserver`'s own code** (decided 2026-08-21, before
