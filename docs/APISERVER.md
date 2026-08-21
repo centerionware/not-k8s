@@ -1784,13 +1784,33 @@ used*:
    rejection at CRD-acceptance time (an `oldSelf`-referencing rule that
    can't validly correlate old/new values in some schema shapes).
 5. Wire into Group J: `ValidatingAdmissionPolicy`/`MutatingAdmissionPolicy`
-   and mutating/validating admission webhooks themselves — both still
-   **not started** (neither resource type exists in this crate at all
-   yet, though both are already real, working generic-REST resources
-   structurally — their own OpenAPI/proto vendoring is already present,
-   the same "generic REST just works once the schema exists" finding
-   Group L Phase 1 made for `APIService`, unverified live but likely
-   true here too). **`matchConditions` itself is landed**: `admission::
+   and mutating/validating admission webhooks themselves — the actual
+   *admission enforcement* (matching a request to a policy, running its
+   rules against it) is still **not started**. But
+   `ValidatingAdmissionPolicy` itself is now **confirmed, live, working
+   generic CRUD** (`tests/validating_admission_policy_roundtrip.rs`, a
+   real round trip against a real `nodestore`: create/get/list/update/
+   delete all pass) — the same "generic REST just works once the schema
+   exists" finding Group L Phase 1 made for `APIService`, now verified
+   live rather than assumed. Getting there found and fixed two real,
+   previously-latent codec bugs (neither specific to VAP — both apply to
+   any resource hitting the same proto shapes): (a) real upstream Go
+   struct embedding — `NamedRuleWithOperations` → `RuleWithOperations` →
+   `Rule` flattens in JSON with no wrapper key, but the vendored proto
+   keeps each as an ordinary nested message field, so every field past
+   `resourceNames` silently vanished on write until
+   `codec::protobuf::is_inline_embedded_field` special-cased it; (b)
+   `go-to-protobuf` capitalizes a field name whenever the Go struct's own
+   `json` tag omits an explicit name, and while most of those really are
+   capitalized in real upstream's JSON too (`FieldsV1.Raw`,
+   `DaemonEndpoint.Port`, `CustomResourceColumnDefinition.JSONPath` —
+   confirmed, left alone), `Validation.Expression`,
+   `Variable.Name`/`.Expression`, and both webhook configs' `Webhooks`
+   field are not — real upstream's own lowercase `json` tag didn't carry
+   through codegen, fixed via `build/proto_parse.rs`'s new
+   `real_json_name_override` table (audited every capitalized field in
+   the whole vendored proto tree, not just the one that broke live).
+   **`matchConditions` itself is landed**: `admission::
    match_conditions::match_conditions` is a faithful port of real
    upstream's own `matchconditions.Matcher.Match`
    (`k8s.io/apiserver/pkg/admission/plugin/webhook/matchconditions/
