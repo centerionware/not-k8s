@@ -1670,12 +1670,13 @@ current scope of each piece; summarized here:
    5-concurrent-probe check — one real network round trip either
    succeeds or it doesn't, and concurrency there only ever buys
    resilience against one flaky backend replica among several.
-   **Named, honest scope still remaining**: `aggregate_proxy`/
-   `discoverable_group_versions` don't consult this loop's written
-   condition yet — both still recompute pre-flight fresh on every
-   request/discovery call (a real, honest substitute — slower, never
-   wrong, not a correctness gap) rather than reading the cached one; a
-   deliberate, separate follow-up.
+   `aggregate_proxy`/`discoverable_group_versions` now consult this
+   loop's written condition too (`availability::cached_available`):
+   `discoverable_group_versions` trusts a decisive cached answer outright
+   (zero I/O); `aggregate_proxy` short-circuits straight to `503` on a
+   cached `Available: False`, skipping the Service/`EndpointSlice` fetch
+   — still runs the full fresh check on `True`/unknown, since resolving
+   the actual dial target needs the backing Service fetched regardless.
 3. **Done.** Discovery merge — `aggregator::route::
    discoverable_group_versions` (every stored, non-local `APIService`
    that currently passes pre-flight) feeds `server::discovery::
