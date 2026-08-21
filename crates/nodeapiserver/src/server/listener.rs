@@ -1250,6 +1250,31 @@ async fn handle(req: Request<Incoming>, storage: Option<StorageClient>, cache_re
         response_body["status"] = authz::sar::build_rules_status(&resolved.rules, &resolved.errors);
         return Ok(json_response(StatusCode::CREATED, &response_body));
     }
+    // `SelfSubjectReview` (`kubectl auth whoami`) — the simplest of this
+    // crate's virtual resources: no storage, no RBAC, purely reflects
+    // whatever identity `authn::x509` (or the real anonymous fallback)
+    // already produced. Same "checked before generic `is_create`, never
+    // persisted" reasoning as every other review kind above.
+    if info.is_resource_request && info.api_group == "authentication.k8s.io" && info.resource == "selfsubjectreviews" && info.verb == "create" && info.subresource.is_empty() {
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let (username, groups): (&str, Vec<String>) = match &identity {
+            Some(id) => (id.name.as_str(), id.groups.clone()),
+            None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        };
+        let mut response_body = body_value;
+        response_body["status"] = crate::authn::self_review::build_status(username, &groups);
+        return Ok(json_response(StatusCode::CREATED, &response_body));
+    }
     let has_body = is_create || is_update;
     if is_get || is_list || is_create || is_delete || is_update {
         // Captured before `req` is potentially consumed below (`has_body`

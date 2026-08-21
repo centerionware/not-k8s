@@ -19,8 +19,16 @@
 //! why), so by default this is still genuinely "who are you" without "are
 //! you allowed."
 //!
+//! `self_review` — `SelfSubjectReview` (`kubectl auth whoami`), a thin
+//! reflection of whatever identity `x509` (or the anonymous fallback)
+//! already produced, no new authentication logic. **Wired into
+//! `server::listener`** as its own `POST` branch, same virtual-resource
+//! (never persisted) posture `authz::sar`'s review kinds already
+//! established.
+//!
 //! Status: in progress (see docs/APISERVER.md). Everything else named
 //! above (ServiceAccount JWT, OIDC, TokenReview, bootstrap tokens,
 //! anonymous) is not started.
 
+pub mod self_review;
 pub mod x509;
