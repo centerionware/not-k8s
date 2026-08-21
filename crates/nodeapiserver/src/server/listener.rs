@@ -1199,16 +1199,17 @@ async fn handle(
         // three-patch-kind block below: `rest::patch_kind_for_content_type`
         // deliberately doesn't recognize this media type (its own doc
         // comment), the body is YAML (or JSON, a valid subset), and the
-        // real orchestration (`rest::server_side_apply`, Group G's `updater::
-        // apply` wired to storage) is a wholly different code path from
-        // the three-patch-kind `rest::patch_prepare`/`patch_persist`
-        // split above. **Named, honest scope for this first wiring
-        // slice**: only `namespace_lifecycle` admission runs here, not
-        // `LimitRanger`'s PVC check the block below also runs for an
-        // ordinary `Update`-shaped patch — real, separate follow-up work,
-        // not an oversight (`rest::server_side_apply`'s own doc comment
-        // names the remaining real gap: no CRD support yet — create-on-
-        // apply against a built-in resource is real and landed).
+        // real orchestration (`rest::apply_prepare`/`apply_persist`,
+        // Group G's `updater::apply` wired to storage) is a wholly
+        // different code path from the three-patch-kind `rest::
+        // patch_prepare`/`patch_persist` split above -- but the *same
+        // shape* of split, for the same reason: so both
+        // `namespace_lifecycle` and `LimitRanger` admission can run
+        // against the real candidate object in between, matching the
+        // three-patch-kind branch's own coverage exactly. **Named,
+        // honest scope remaining** (`rest::server_side_apply`'s own doc
+        // comment): no CRD support yet — create-on-apply against a
+        // built-in resource is real and landed.
         if content_type.as_deref().map(is_apply_patch_content_type).unwrap_or(false) {
             let Some(mut client) = storage else {
                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
@@ -1259,7 +1260,44 @@ async fn handle(
                 }
             }
 
-            return match rest::server_side_apply(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
+            let (candidate, apply_context) = match rest::apply_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
+                Ok(rest::ApplyPrepareOutcome::Ready(candidate, context)) => (candidate, context),
+                Ok(rest::ApplyPrepareOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Ok(rest::ApplyPrepareOutcome::UnsupportedForCrd) => {
+                    return Ok(json_response(StatusCode::NOT_IMPLEMENTED, &bad_request_status(&path_str, "Server-Side Apply is not yet supported for CustomResourceDefinition-defined resources")));
+                }
+                Ok(rest::ApplyPrepareOutcome::Conflict(conflicts)) => return Ok(json_response(StatusCode::CONFLICT, &ssa_conflict_status(&path_str, &conflicts))),
+                Ok(rest::ApplyPrepareOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                Ok(rest::ApplyPrepareOutcome::NoOp(object)) => return Ok(json_response(StatusCode::OK, &object)),
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "rest::apply_prepare failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+
+            // Group J: `LimitRanger`'s own PVC-`Update` validation — the
+            // same real candidate object this build's own three-patch-
+            // kind `PATCH` branch below already gates the same way (its
+            // own comment covers why this is PVC-only).
+            if admission::limit_ranger::applies_to(admission::attributes::Operation::Update, &info.api_group, &info.resource, "") {
+                match rest::list(&mut client, None, "", "v1", "limitranges", namespace, "", "", 0, "").await {
+                    Ok(rest::ListOutcome::Found(list)) => {
+                        for limit_range in list["items"].as_array().cloned().unwrap_or_default() {
+                            let errs = admission::limit_ranger::validate_pvc(&limit_range, &candidate);
+                            if !errs.is_empty() {
+                                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &errs.join("; "))));
+                            }
+                        }
+                    }
+                    Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "admission: listing limit ranges failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            }
+
+            return match rest::apply_persist(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, apply_context, candidate).await {
                 Ok(rest::ApplyOutcome::Applied(object)) => Ok(json_response(StatusCode::OK, &object)),
                 Ok(rest::ApplyOutcome::NoOp(object)) => Ok(json_response(StatusCode::OK, &object)),
                 Ok(rest::ApplyOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
@@ -1269,7 +1307,7 @@ async fn handle(
                 Ok(rest::ApplyOutcome::Conflict(conflicts)) => Ok(json_response(StatusCode::CONFLICT, &ssa_conflict_status(&path_str, &conflicts))),
                 Ok(rest::ApplyOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
                 Err(e) => {
-                    warn!(path = %path_str, error = ?e, "rest::server_side_apply failed");
+                    warn!(path = %path_str, error = ?e, "rest::apply_persist failed");
                     Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
                 }
             };
