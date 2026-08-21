@@ -967,6 +967,7 @@ pub fn patch_kind_for_content_type(content_type: &str) -> Option<PatchKind> {
 /// between (`server::listener`'s own `PATCH` branch does exactly this
 /// for `LimitRanger`), without re-fetching or re-applying the patch a
 /// second time.
+#[derive(Debug)]
 pub struct PatchContext {
     /// `None` for a CRD-defined resource — see [`apply_patch`]'s own doc
     /// comment for what that rules out (`strategic-merge-patch`) and
@@ -981,6 +982,7 @@ pub struct PatchContext {
     existing_object: Value,
 }
 
+#[derive(Debug)]
 pub enum PatchPrepareOutcome {
     /// The patch applied cleanly; `candidate` is the resulting object,
     /// not yet validated/defaulted/persisted.
