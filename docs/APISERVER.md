@@ -1673,22 +1673,37 @@ used*:
    (`list.all(x, ...)`, real upstream's own `pushIterSingle` narrowed to
    list-only, named honestly — see that module's own doc comment for the
    real scope). **`cel_ext::cost_walk` is the actual `cost()`
-   AST-walking dispatcher itself, started**: real upstream's own
-   `(*coster).cost` (`checker/cost.go`), structural node kinds landed so
-   far (`Literal`/`Ident`/`Select`/`List`/`Map`/`Struct` — a presence
-   test's own real `presenceTestCost` vs. an ordinary select's
-   `selectAndIdentCost` distinction ported exactly). **Not yet landed**:
-   `Call` (real upstream's own `costCall`/`functionCost` — the big
-   per-builtin-function cost table: string traversal, regex, list
-   containment, equality, logical or/and, conditional, each their own
-   real formula, everything else a flat `+1`) and `Comprehension`
+   AST-walking dispatcher itself**: real upstream's own `(*coster).cost`
+   (`checker/cost.go`), every structural node kind
+   (`Literal`/`Ident`/`Select`/`List`/`Map`/`Struct` — a presence test's
+   own real `presenceTestCost` vs. an ordinary select's
+   `selectAndIdentCost` distinction ported exactly), plus `Call` for a
+   deliberately scoped real subset. **Real finding that shaped `Call`'s
+   own scope, confirmed directly in the vendored crate source**: this
+   crate's parser has no type checker at all, so `a + b` compiles to the
+   identical `Call{func_name: "_+_"}` node whether `a`/`b` are numbers,
+   strings, or lists — real upstream's own type-specialized overloads
+   (`add_string`/`add_list`, O(n), vs. plain numeric `+`, O(1)) genuinely
+   can't be told apart at this AST level, and the same ambiguity hits
+   `==`/`!=`/`<`/`>`/`<=`/`>=`. **Asked explicitly which way to resolve
+   this, the answer was: treat every ambiguous operator as the cheap
+   O(1) case** (real upstream's own fallback for a genuinely-unrecognized
+   function) — a deliberate choice, not an oversight, to avoid
+   over-rejecting a purely-numeric rule at CRD-acceptance time. What
+   *is* real and type-unambiguous without a type checker — a named
+   method call whose function name only ever applies to a string in
+   real CEL's own standard library — gets real upstream's own exact
+   formula: `matches`/`contains`/`startsWith`/`endsWith`, each scaled by
+   a real schema-derived `SizeEstimate` via `decl_type`/`path`'s own
+   machinery (`cel_ext::cost_walk::Coster`, the stateful walker this
+   needs — a bare `cost()` free function remains for callers with no
+   schema at all). Everything else not named falls to real upstream's
+   own O(1) default too. **Not yet landed**: `Comprehension`
    (`costComprehension` — the loop-cost multiplication, `range size ×
    per-iteration cost`, the piece that actually makes a pathological
-   `list.all(...)` rule's real worst case visible) — both fall back to
-   `CostEstimate::unknown()` for now rather than under-costing at zero,
-   each its own real follow-up slice with source already fully read and
-   ready to port. Wiring a final result into CRD acceptance is separate,
-   later work too.
+   `list.all(...)` rule's real worst case visible), still returning
+   `CostEstimate::unknown()` rather than under-costing at zero. Wiring a
+   final result into CRD acceptance is separate, later work too.
 4. Wire into Group K: `x-kubernetes-validations` evaluated in
    `server::rest::create`/`update`/`patch_persist`'s CRD branch, after
    pruning and required/type validation (`apiextensions::

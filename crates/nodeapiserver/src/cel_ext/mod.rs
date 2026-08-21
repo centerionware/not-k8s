@@ -14,10 +14,15 @@
 //! lookup; `path` — resolves a CEL expression's own `Select`/`Ident`
 //! chain into the field-path `estimate_size` consumes; `cost_walk` — the
 //! actual `cost()` AST-walking dispatcher, real upstream's own
-//! `(*coster).cost`, structural node kinds only so far
-//! (`Literal`/`Ident`/`Select`/`List`/`Map`/`Struct` — `Call`/
-//! `Comprehension` still return `unknown`, see that module's own doc
-//! comment for the real remaining scope)) — see `docs/APISERVER.md`'s own
+//! `(*coster).cost`/`costCall`/`functionCost`: every structural node
+//! kind, plus `Call` for the real, unambiguous string functions
+//! (`matches`/`contains`/`startsWith`/`endsWith`) and the real O(1)
+//! default for everything else (including every operator this crate's
+//! type-checker-free AST can't type-specialize — `+`/`==`/`<`/etc., a
+//! deliberate choice, not an oversight, see that module's own doc
+//! comment). `Comprehension` still returns `unknown`, its own real
+//! follow-up slice (the loop-cost multiplication).) — see
+//! `docs/APISERVER.md`'s own
 //! `cel_ext` section (right after Group K) for the real, verified full
 //! plan: real upstream's own budget numbers
 //! (`RuntimeCELCostBudget`/`PerCallLimit`/`CheckFrequency`, ..., fetched
