@@ -3,24 +3,22 @@
 //! `bootstrap-release.sh` (`NOTK8S_*_PREBUILT` env vars, `--layout=`,
 //! tagged vs. latest release resolution).
 //!
-//! **Scope cut, deliberate:** `Source::Compile` (version-stamp + `cargo
-//! build` per `components.rs`'s table, honoring `Config::layout`) is real.
-//! `Source::Release` (resolve `Config::release_tag` against GitHub Releases,
-//! download the matching asset) is **not yet ported** -- asset-name
-//! matching across arch x profile x layout is its own chunk of work, queued
-//! next. `nodelet-build.sh`'s low-RAM-host LTO/`CARGO_BUILD_JOBS=1`
-//! fallback is also not yet ported here; a from-source build on a
-//! constrained host should set those env vars itself until it is (see
-//! `CLAUDE.md`'s "Memory-constrained build hosts").
+//! Both `Source::Compile` (version-stamp + `cargo build` per
+//! `components.rs`'s table, honoring `Config::layout`) and `Source::Release`
+//! (resolve `Config::release_tag` against GitHub Releases, download the
+//! matching asset) are real. `nodelet-build.sh`'s low-RAM-host LTO/
+//! `CARGO_BUILD_JOBS=1` fallback is not yet ported into `Source::Compile`;
+//! a from-source build on a constrained host should set those env vars
+//! itself until it is (see `CLAUDE.md`'s "Memory-constrained build hosts").
 
 use anyhow::{Context, Result};
 
 use crate::components::COMPONENTS;
 use crate::config::{Config, Layout, Source};
 
-/// This repo's own GitHub coordinates -- used only to fetch `VERSION` off
-/// the `version` branch (`stamp_version_from_release_branch`) and, once
-/// ported, to resolve release assets.
+/// This repo's own GitHub coordinates -- used to fetch `VERSION` off the
+/// `version` branch (`stamp_version_from_release_branch`) and to resolve
+/// release assets (`download_release`).
 const REPO: &str = "centerionware/not-k8s";
 
 pub fn run() -> Result<()> {
@@ -30,10 +28,7 @@ pub fn run() -> Result<()> {
 pub fn run_with(cfg: &Config) -> Result<()> {
     match cfg.source {
         Source::Compile => build_from_source(cfg),
-        Source::Release => anyhow::bail!(
-            "nodebootstrap::fetch's Source::Release path is not yet ported -- see this module's \
-             doc comment. Use Source::Compile (the default) until then."
-        ),
+        Source::Release => download_release(cfg),
     }
 }
 
@@ -58,6 +53,99 @@ fn build_from_source(cfg: &Config) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Real upstream release asset names, confirmed against this repo's own
+/// published releases (`gh api repos/centerionware/not-k8s/releases/latest`):
+/// `<bin>-<version-without-v>-linux-<arch>-<profile>`, e.g.
+/// `nodelet-0.6.2-linux-x86_64-release`. `<arch>` matches `Config::arch()`'s
+/// own `uname -m` vocabulary directly (`x86_64`/`aarch64`/`armv7l`) -- no
+/// translation table needed here, unlike `k8s_dl_arch`/`cni_go_arch`
+/// elsewhere in this crate, because this repo's own release matrix already
+/// uses that vocabulary (`release.yml`'s own `matrix.arch`).
+///
+/// Always fetches the `release` profile, never `debug` -- same as
+/// `bootstrap-release.sh`'s `download_release_binary`, which this replaces;
+/// a real device install has no use for an unoptimized, unstripped binary.
+fn download_release(cfg: &Config) -> Result<()> {
+    let tag = resolve_release_tag(cfg.release_tag.as_deref())?;
+    let version = tag.strip_prefix('v').unwrap_or(&tag);
+    let assets = list_release_assets(&tag)?;
+    let arch = cfg.arch();
+
+    let wanted: Vec<&str> = match cfg.layout {
+        Layout::Split => COMPONENTS.iter().map(|c| c.name).collect(),
+        Layout::Combined => vec!["notk8s"],
+    };
+
+    let dest_dir = cfg.toolchain_dir().join("bin");
+    std::fs::create_dir_all(&dest_dir).context("creating toolchain bin dir")?;
+
+    for bin in wanted {
+        let asset_name = format!("{bin}-{version}-linux-{arch}-release");
+        let url = assets.get(asset_name.as_str()).with_context(|| {
+            format!(
+                "release {tag} has no asset named '{asset_name}' -- check \
+                 https://github.com/{REPO}/releases/tag/{tag} for what's actually attached"
+            )
+        })?;
+        let dest = dest_dir.join(bin);
+        tracing::info!(asset = asset_name, "downloading release asset");
+        crate::pkg::fetch_url(url, &dest).with_context(|| format!("fetching {asset_name}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
+                .with_context(|| format!("making {} executable", dest.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// `None` -> resolve `/releases/latest`; `Some(t)` -> use `t` as given,
+/// prefixed with `v` if it doesn't already have one (accepts both
+/// `NODEBOOTSTRAP_RELEASE_TAG=1.2.3` and `=v1.2.3`).
+fn resolve_release_tag(tag: Option<&str>) -> Result<String> {
+    if let Some(t) = tag {
+        return Ok(if t.starts_with('v') { t.to_string() } else { format!("v{t}") });
+    }
+    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    let body = github_api_get(&url)?;
+    body.get("tag_name")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .with_context(|| format!("no tag_name in the response from {url}"))
+}
+
+/// Maps asset name -> `browser_download_url` for every asset on `tag`'s
+/// release.
+fn list_release_assets(tag: &str) -> Result<std::collections::HashMap<String, String>> {
+    let url = format!("https://api.github.com/repos/{REPO}/releases/tags/{tag}");
+    let body = github_api_get(&url)?;
+    let assets = body.get("assets").and_then(|v| v.as_array()).with_context(|| format!("no assets array in the response from {url}"))?;
+    let mut map = std::collections::HashMap::new();
+    for asset in assets {
+        if let (Some(name), Some(download_url)) =
+            (asset.get("name").and_then(|v| v.as_str()), asset.get("browser_download_url").and_then(|v| v.as_str()))
+        {
+            map.insert(name.to_string(), download_url.to_string());
+        }
+    }
+    Ok(map)
+}
+
+/// GitHub's REST API requires a `User-Agent` header (returns `403` without
+/// one) -- the one thing `pkg::fetch_url`'s plain GET doesn't set, so this
+/// stays a small local helper rather than a `pkg.rs` addition every other
+/// caller would carry for no reason.
+fn github_api_get(url: &str) -> Result<serde_json::Value> {
+    let response = ureq::get(url)
+        .set("User-Agent", "not-k8s-nodebootstrap")
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .with_context(|| format!("GET {url}"))?;
+    let body = response.into_string().with_context(|| format!("reading response body from {url}"))?;
+    serde_json::from_str(&body).with_context(|| format!("parsing JSON from {url}"))
 }
 
 fn cargo_build(repo_root: &std::path::Path, extra_args: &[&str]) -> Result<()> {
@@ -164,5 +252,53 @@ mod tests {
     fn stamp_version_returns_none_when_no_version_field_exists() {
         let toml = "[workspace]\nmembers = [\"a\"]\n";
         assert!(stamp_version(toml, "1.2.3").is_none());
+    }
+
+    #[test]
+    fn resolve_release_tag_adds_v_prefix_only_when_missing() {
+        assert_eq!(resolve_release_tag(Some("1.2.3")).unwrap(), "v1.2.3");
+        assert_eq!(resolve_release_tag(Some("v1.2.3")).unwrap(), "v1.2.3");
+    }
+
+    #[test]
+    fn asset_name_matches_this_repos_real_release_convention() {
+        // Confirmed live against `gh api repos/centerionware/not-k8s/
+        // releases/latest`: e.g. "nodelet-0.6.2-linux-x86_64-release".
+        let bin = "nodelet";
+        let version = "0.6.2";
+        let arch = "x86_64";
+        let asset_name = format!("{bin}-{version}-linux-{arch}-release");
+        assert_eq!(asset_name, "nodelet-0.6.2-linux-x86_64-release");
+    }
+
+    #[test]
+    fn list_release_assets_parses_a_real_shaped_response() {
+        // Trimmed shape of a real `GET /repos/{repo}/releases/tags/{tag}`
+        // response -- only the fields list_release_assets reads.
+        let body = r#"{
+            "tag_name": "v0.6.2",
+            "assets": [
+                {
+                    "name": "nodelet-0.6.2-linux-x86_64-release",
+                    "browser_download_url": "https://github.com/centerionware/not-k8s/releases/download/v0.6.2/nodelet-0.6.2-linux-x86_64-release"
+                },
+                {
+                    "name": "deploy.tar.gz",
+                    "browser_download_url": "https://github.com/centerionware/not-k8s/releases/download/v0.6.2/deploy.tar.gz"
+                }
+            ]
+        }"#;
+        let parsed: serde_json::Value = serde_json::from_str(body).expect("valid JSON");
+        let assets: std::collections::HashMap<String, String> = parsed["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| (a["name"].as_str().unwrap().to_string(), a["browser_download_url"].as_str().unwrap().to_string()))
+            .collect();
+        assert_eq!(
+            assets.get("nodelet-0.6.2-linux-x86_64-release").unwrap(),
+            "https://github.com/centerionware/not-k8s/releases/download/v0.6.2/nodelet-0.6.2-linux-x86_64-release"
+        );
+        assert!(assets.contains_key("deploy.tar.gz"));
     }
 }

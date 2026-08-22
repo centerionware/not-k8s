@@ -177,7 +177,7 @@ comment for the specifics and what's queued next:
 | `toolchain.rs` | ✅ real (rust, protoc: package manager -> official prebuilt) | ❌ not ported: gcc/go/protoc-from-source, musl.cc |
 | `containerd.rs` | ✅ real (package manager -> official prebuilt; config.toml + this project's 3 required patches; starts via its own distro unit or `service_mgr.rs`) | ❌ not ported: from-source containerd/runc build |
 | `cni.rs` | ✅ real (plugin binaries + flannel binary + CNI conf: package manager -> official prebuilt; starts `flanneld` via `service_mgr.rs` + a vendored `run-flanneld.sh` wrapper -- see `vendor/README.md`) | ❌ not ported: from-source builds |
-| `fetch.rs` | ✅ real for `Source::Compile` (version-stamp + `cargo build` per layout) | ❌ not ported: `Source::Release` (GitHub Releases asset matching) |
+| `fetch.rs` | ✅ real for both `Source::Compile` (version-stamp + `cargo build` per layout) and `Source::Release` (GitHub Releases API resolution + asset download, confirmed against this repo's own real published release naming) | n/a |
 | `targets/upstream.rs` | ✅ real (binary fetch, full flag-set construction, and starts all three via `service_mgr.rs`, with a best-effort `/readyz` wait between apiserver and the other two) | n/a |
 | `components.rs` | ✅ real (static table, mirrors `components.sh`) | n/a |
 | `service_reconciler.rs` | ✅ real (thin verify -- second "kube-apiserver already does this" finding, same shape as `rbac.rs`) | n/a |

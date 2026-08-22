@@ -40,14 +40,15 @@ base64 = "0.22"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 rustls = { workspace = true }
 rustls-pemfile = "2"
-
-[dev-dependencies]
+# GitHub Releases API responses (fetch.rs's Source::Release path) --
+# parsed as serde_json::Value, not a derived struct: this crate only reads
+# two fields (tag_name, assets[].{name,browser_download_url}) out of a
+# much larger response, and a Value walk is less code than a struct that
+# has to `#[serde(default)]` every field it doesn't use.
 serde_json = { workspace = true }
 
-# Not yet used by any non-test module -- added back as each real group
-# lands: serde/serde_json for real (rbac.rs's/manifests.rs's K8s object
-# literals), thiserror (once error variants need it), chrono (cert validity
-# windows in pki.rs). kubeconfig.rs deliberately hand-templates its YAML
-# rather than pulling in serde_yaml -- the kubeconfig schema is small and
-# fixed, and templating avoids a struct that has to track upstream's own
-# clientcmd/api types.
+# Not yet used by any module -- added back as each real group lands:
+# serde/thiserror (once needed), chrono (cert validity windows in pki.rs).
+# kubeconfig.rs deliberately hand-templates its YAML rather than pulling in
+# serde_yaml -- the kubeconfig schema is small and fixed, and templating
+# avoids a struct that has to track upstream's own clientcmd/api types.
