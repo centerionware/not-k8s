@@ -46,28 +46,30 @@
 //! identity `nodescheduler` already authenticates as -- not a broader
 //! grant.
 //!
-//! **Finding #3 (2026-08-22, found live running `nodecontroller`):** real
-//! upstream `kube-controller-manager` normally runs each of its ~30
-//! control loops as its own narrowly-scoped `system:serviceaccount:
-//! kube-system:<controller-name>` identity (via `--use-service-account-
-//! credentials=true`, which `targets/upstream.rs` sets) -- each with its
-//! own tightly-scoped `system:controller:<name>` bootstrap ClusterRole.
-//! `nodecontroller` doesn't do that impersonation dance; every one of its
-//! controllers runs as the single blanket `system:kube-controller-manager`
-//! identity, whose own built-in bootstrap role was never meant to be
-//! broad enough for that (real upstream barely uses it directly). Found
-//! live: `configmaps` creation (the root-ca-cert-publisher controller)
-//! 403s under that identity. This is a real architecture gap in
-//! `nodecontroller` itself (adopting real per-controller SA impersonation
-//! is the correct long-term fix, tracked as follow-up, not this crate's
-//! job to invent here) -- `nodebootstrap` bridges it pragmatically by
-//! binding `system:kube-controller-manager` to `cluster-admin` outright,
-//! rather than enumerating every one of ~30 controllers' exact
-//! permissions one 403 at a time. **This is not least-privilege and is
-//! known to be too broad** -- acceptable for now because `nodecontroller`
-//! is the only thing authenticating as this identity, but a real
-//! narrowing (or `nodecontroller` growing per-controller impersonation)
-//! should replace it before this is considered production-hardened.
+//! **Finding #3 (2026-08-22, found live running `nodecontroller`), fixed
+//! properly, not bridged:** real upstream `kube-controller-manager`
+//! normally runs each of its control loops as its own narrowly-scoped
+//! `system:serviceaccount:kube-system:<controller-name>` identity (via
+//! `--use-service-account-credentials=true`, which `targets/upstream.rs`
+//! sets) -- each with its own tightly-scoped `system:controller:<name>`
+//! bootstrap ClusterRole. `nodecontroller` didn't do that impersonation
+//! dance; every one of its controllers ran as the single blanket
+//! `system:kube-controller-manager` identity, whose own built-in
+//! bootstrap role was never meant to be broad enough for that (real
+//! upstream barely uses it directly). Found live: `configmaps` creation
+//! (the root-ca-cert-publisher controller) 403'd under that identity --
+//! recorded as `docs/E2E_FINDINGS.md` finding 22.
+//!
+//! **Fixed in `nodecontroller` itself** (`crates/nodecontroller/src/
+//! lib.rs`'s `impersonated_client`): it now builds one impersonated client
+//! per controller, matching upstream's own identity-per-controller model.
+//! This module's job shrinks accordingly, from "grant everything" to
+//! granting exactly the `impersonate` verb the base identity needs to
+//! *become* those narrower identities -- RBAC then authorizes each
+//! controller's actual requests as whichever `system:serviceaccount:
+//! kube-system:<name>` it impersonated, against that identity's own
+//! already-existing `system:controller:<name>` bootstrap role. No
+//! `cluster-admin` binding remains.
 
 use anyhow::{Context, Result};
 
@@ -101,14 +103,82 @@ subjects:
   name: system:kube-scheduler
   apiGroup: rbac.authorization.k8s.io
 ---
+# Lets system:kube-controller-manager become exactly the ServiceAccount
+# identities nodecontroller's own impersonated_client() names -- see
+# crates/nodecontroller/src/lib.rs's upstream_controller_sa() for the
+# authoritative list this must stay in sync with. A namespaced Role (not a
+# ClusterRole) because every one of those SAs lives in kube-system --
+# resourceNames on a namespaced "serviceaccounts" resource only ever
+# matches within the Role's own namespace, so this can't be tricked into
+# impersonating a same-named SA elsewhere.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nodebootstrap:nodecontroller-impersonate-sa
+  namespace: kube-system
+rules:
+- apiGroups: [""]
+  resources: ["serviceaccounts"]
+  verbs: ["impersonate"]
+  resourceNames:
+    - node-controller
+    - service-account-controller
+    - namespace-controller
+    - endpointslice-controller
+    - resourcequota-controller
+    - replicaset-controller
+    - deployment-controller
+    - daemonset-controller
+    - statefulset-controller
+    - generic-garbage-collector
+    - job-controller
+    - cronjob-controller
+    - ttl-after-finished-controller
+    - attachdetach-controller
+    - persistent-volume-binder
+    - pv-protection-controller
+    - root-ca-cert-publisher
+    - resourceclaim-controller
+    - certificate-controller
+    - disruption-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nodebootstrap:nodecontroller-impersonate-sa
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nodebootstrap:nodecontroller-impersonate-sa
+subjects:
+- kind: User
+  name: system:kube-controller-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+# The two Impersonate-Group values impersonated_client() sends alongside
+# every Impersonate-User -- groups are cluster-scoped, so this is a
+# ClusterRole even though the SA impersonation above is namespaced.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nodebootstrap:nodecontroller-impersonate-groups
+rules:
+- apiGroups: [""]
+  resources: ["groups"]
+  verbs: ["impersonate"]
+  resourceNames:
+    - system:serviceaccounts
+    - system:serviceaccounts:kube-system
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: nodebootstrap:nodecontroller-cluster-admin
+  name: nodebootstrap:nodecontroller-impersonate-groups
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: cluster-admin
+  name: nodebootstrap:nodecontroller-impersonate-groups
 subjects:
 - kind: User
   name: system:kube-controller-manager
