@@ -1936,17 +1936,32 @@ used*:
    and `authorizer` — are not bound; no rule this crate can currently
    evaluate references them.
 
-   Still **not yet wired to anything real**: any of this actually running
-   against a real `ValidatingAdmissionPolicy`/`ValidatingAdmissionPolicy
-   Binding` remains not-yet-started — this crate still has no CRUD/
-   `paramRef` resolution wiring for either object, only confirmed
-   generic-REST round trips (this group's own point 5, above). Every real
-   decision primitive `server::listener` would need to actually enforce a
-   `ValidatingAdmissionPolicy` on a real request now exists standalone,
-   `match_conditions` through `policy_decode`/`build_eval_vars` — what's
-   left is wiring (fetching the real policy/binding objects from storage
-   including `paramRef` resolution, and a real call site in
-   `server::listener`), not missing primitives.
+   **The decision side is now complete**: `PolicyOutcome::is_denial`
+   (folds `MatchConditionsError` back into a real denial, unlike
+   `denies()` — safe unconditionally, since `evaluate` only ever produces
+   that variant when `failurePolicy` is already `Fail`) /
+   `denial_message` (what to actually report) and the standalone
+   `validation_actions_deny` (the real `ValidatingAdmissionPolicyBinding.
+   spec.validationActions` gate — `"Deny"` only; `"Warn"`/`"Audit"` are a
+   named, honest gap, this crate having no warning-header/audit-event
+   plumbing to report them through yet).
+
+   Every real decision primitive `server::listener` would need to
+   actually enforce a `ValidatingAdmissionPolicy` on a real request now
+   exists standalone and is unit-tested — `match_conditions` through
+   `validating_admission_policy`'s own `is_denial`/`validation_actions_deny`.
+   **Deliberately not wired into `server::listener` this session**: real
+   CRUD/`paramRef` resolution for `ValidatingAdmissionPolicy`/
+   `ValidatingAdmissionPolicyBinding` and the actual call site both remain
+   not-yet-started, and — named explicitly, not silently skipped — that
+   wiring touches the live `CREATE`/`UPDATE`/`DELETE` path for every
+   resource kind this crate serves, which this project's own merge
+   protocol requires proving against a real running binary
+   (`deploy/lib/test/cases/*.sh`, a real cluster) before it can honestly
+   be called done. That infrastructure wasn't available this session;
+   landing it blind would be exactly the "assumed correct from reading
+   the spec" mistake `docs/E2E_FINDINGS.md` exists to catch, not a
+   missing-primitive gap.
 6. Kubernetes' own CEL extension library (string/list helpers beyond
    base CEL, `isSorted`, quantity parsing, ...) and type-checking a rule
    against its declared schema at CRD-acceptance time (catching a rule
