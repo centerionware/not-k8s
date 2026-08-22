@@ -14,6 +14,7 @@ pub mod components;
 pub mod fetch;
 pub mod kubeconfig;
 pub mod manifests;
+pub mod pkg;
 pub mod pki;
 pub mod rbac;
 pub mod service_reconciler;

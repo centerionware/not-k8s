@@ -99,6 +99,38 @@ impl Config {
     pub fn cluster_domain(&self) -> String {
         std::env::var("NODEBOOTSTRAP_CLUSTER_DOMAIN").unwrap_or_else(|_| "cluster.local".to_string())
     }
+
+    /// Where a fetched-but-not-packaged toolchain (rustup, an official
+    /// protoc/Go release) gets unpacked and symlinked from -- same role as
+    /// `bootstrap-source.sh`'s `TOOLCHAIN_DIR`. `<dir>/bin` belongs on
+    /// `PATH` ahead of the system one, same as the shell version.
+    pub fn toolchain_dir(&self) -> std::path::PathBuf {
+        std::env::var("NODEBOOTSTRAP_TOOLCHAIN_DIR")
+            .unwrap_or_else(|_| "/var/lib/nodebootstrap/toolchain".to_string())
+            .into()
+    }
+
+    /// Scratch download/extract dir -- same role as `bootstrap-source.sh`'s
+    /// `SRC_DIR`.
+    pub fn src_dir(&self) -> std::path::PathBuf {
+        std::env::var("NODEBOOTSTRAP_SRC_DIR")
+            .unwrap_or_else(|_| "/var/lib/nodebootstrap/src".to_string())
+            .into()
+    }
+
+    /// Host architecture, normalized to the same vocabulary
+    /// `deploy/lib/common.sh`'s `$ARCH` uses (`x86_64`, `aarch64`,
+    /// `armv7l`, ...) -- read from `uname -m` once, not re-shelled per
+    /// caller.
+    pub fn arch(&self) -> String {
+        std::env::var("NODEBOOTSTRAP_ARCH").unwrap_or_else(|_| {
+            std::process::Command::new("uname")
+                .arg("-m")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|_| "unknown".to_string())
+        })
+    }
     pub fn from_env() -> Result<Self> {
         let flag = |name: &str| std::env::var(name).is_ok_and(|v| v == "1" || v == "true");
         let cni_provider = match std::env::var("NODEBOOTSTRAP_CNI").as_deref() {
