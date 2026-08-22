@@ -157,3 +157,29 @@ Standard `CLAUDE.md` merge protocol applies, group by group, same as
 `deploy/bootstrap-source.sh`/`bootstrap-release.sh` and the shell libs they
 call are deleted once Phase 1 lands and CI/CD has cut over — not kept as a
 parallel fallback path.
+
+## Implementation status (updated as it lands)
+
+All of Phase 1's modules have real logic now, each with an explicit,
+documented scope cut rather than a silent gap -- see each module's own doc
+comment for the specifics and what's queued next:
+
+| Module | Primary path | Deepest fallback tier(s) |
+|---|---|---|
+| `pki.rs` | ✅ real (CA + static client certs, `rcgen`) | n/a -- no fallback tier, this is new code |
+| `kubeconfig.rs` | ✅ real | n/a |
+| `rbac.rs` | ✅ real (thin verify -- see the finding in its doc comment) | n/a |
+| `manifests.rs` | ✅ real (CoreDNS only -- flannel corrected out of scope, see its doc comment) | n/a |
+| `toolchain.rs` | ✅ real (rust, protoc: package manager -> official prebuilt) | ❌ not ported: gcc/go/protoc-from-source, musl.cc |
+| `containerd.rs` | ✅ real (package manager -> official prebuilt; config.toml + this project's 3 required patches; systemd start/restart) | ❌ not ported: from-source containerd/runc build; OpenRC/non-systemd service writer |
+| `cni.rs` | ✅ real (plugin binaries + flannel binary + CNI conf: package manager -> official prebuilt) | ❌ not ported: from-source builds; starting `flanneld` itself (needs a live kubeconfig + the service writer) |
+| `fetch.rs` | ✅ real for `Source::Compile` (version-stamp + `cargo build` per layout) | ❌ not ported: `Source::Release` (GitHub Releases asset matching) |
+| `targets/upstream.rs` | ✅ real (binary fetch + full flag-set construction, unit-tested) | ❌ not ported: starting the three binaries as supervised services (service writer, same gap as `containerd.rs`/`cni.rs`) |
+| `components.rs` | ✅ real (static table, mirrors `components.sh`) | n/a |
+| `service_reconciler.rs` | ❌ still a scaffold stub | -- |
+
+**The recurring gap across five modules is one thing, not five:** a
+service-supervision writer (systemd unit + OpenRC equivalent, matching
+`deploy/lib/service-mgr.sh`'s `install_supervised_service`). Porting that
+once unblocks actually starting containerd, flanneld, and the three
+upstream control-plane binaries — the next PR to prioritize.
