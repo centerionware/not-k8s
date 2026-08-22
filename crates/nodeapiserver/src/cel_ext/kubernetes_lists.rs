@@ -3,11 +3,12 @@
 //! directly) — `docs/APISERVER.md`'s own Group K point 6 ("Kubernetes'
 //! own CEL extension library ... `isSorted` ..."), named there as
 //! deliberately deferred until a first working CEL path existed.
-//! `isSorted`/`min`/`max`/`indexOf`/`lastIndexOf`/`sum` are landed;
-//! `includes` (needs a `This<Value>` receiver that isn't necessarily a
-//! list — real upstream's own doc comment: `'model-a'.includes('model-a')`
-//! also works on a bare string) is separate, not-yet-started work, named
-//! honestly rather than silently folded in as "done".
+//! Every real function real upstream's own library declares —
+//! `isSorted`/`min`/`max`/`indexOf`/`lastIndexOf`/`sum`/`includes` — is
+//! now landed. Real upstream's own separate `quantity`/`ip`/`cidr`/
+//! `url`/`semver`/`format`/`regex`/`authz` libraries remain separate,
+//! not-yet-started work, named in `docs/APISERVER.md`'s own Group K
+//! point 6, not silently folded in as "done".
 //!
 //! Every function here follows the same shape: a pure, directly-testable
 //! core taking `&[Value]` (plus whatever extra argument the real function
@@ -149,6 +150,27 @@ pub fn sum_binding(This(list): This<Arc<Vec<Value>>>) -> Result<Value, Execution
     sum(&list)
 }
 
+/// Real upstream's own real dual behavior (`includes(target, arg)`): a
+/// list target does a real membership scan (the same equality
+/// [`index_of`]/[`last_index_of`] already use); anything else falls back
+/// to a plain equality check against `arg` itself — real upstream's own
+/// doc-comment example, `'model-a'.includes('model-a')` → `true`, is
+/// exactly this fallback, not a list operation at all. Takes `&Value`
+/// rather than `&[Value]` (unlike every other function in this module)
+/// because the receiver genuinely isn't always a list — the real reason
+/// this one function needed its own `This<Value>` binding shape instead
+/// of reusing `This<Arc<Vec<Value>>>`.
+pub fn includes(target: &Value, arg: &Value) -> bool {
+    match target {
+        Value::List(list) => list.iter().any(|v| v == arg),
+        other => other == arg,
+    }
+}
+
+pub fn includes_binding(This(target): This<Value>, arg: Value) -> bool {
+    includes(&target, &arg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +293,25 @@ mod tests {
     fn sum_of_a_genuinely_unsupported_pair_is_a_real_error_not_a_silent_no_op() {
         let list = [Value::String(Arc::new("a".to_string())), Value::Int(1)];
         assert!(sum(&list).is_err());
+    }
+
+    #[test]
+    fn includes_on_a_real_list_does_a_real_membership_scan() {
+        let list = Value::List(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        assert!(includes(&list, &Value::Int(2)));
+        assert!(!includes(&list, &Value::Int(4)));
+    }
+
+    #[test]
+    fn includes_on_a_non_list_falls_back_to_a_real_equality_check() {
+        let s = Value::String(Arc::new("model-a".to_string()));
+        assert!(includes(&s, &Value::String(Arc::new("model-a".to_string()))));
+        assert!(!includes(&s, &Value::String(Arc::new("model-b".to_string()))));
+    }
+
+    #[test]
+    fn includes_on_an_empty_list_is_false() {
+        let list = Value::List(Arc::new(vec![]));
+        assert!(!includes(&list, &Value::Int(1)));
     }
 }
