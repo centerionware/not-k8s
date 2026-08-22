@@ -104,12 +104,16 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
 }
 
 /// Called last in `run_all()`, alongside `ensure_nodelet` (same ordering
-/// reasoning). A caller should skip this entirely when
-/// `NODEBOOTSTRAP_PROXY=none` (this project's Service routing may be
-/// something else -- Cilium, a real kube-proxy -- or nothing); `run_all()`
-/// doesn't check that yet -- tracked alongside the other not-yet-wired
-/// skip flags.
+/// reasoning). Skipped entirely when `NODEBOOTSTRAP_PROXY=none` (this
+/// project's Service routing may be something else -- Cilium, a real
+/// kube-proxy -- or nothing), same as every other skip flag being checked
+/// inside its own module's entry point rather than at `run_all()`'s call
+/// site.
 pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
+    if cfg.skip_nodeproxy {
+        tracing::info!("NODEBOOTSTRAP_PROXY=none -- skipping nodeproxy");
+        return Ok(());
+    }
     let bin = binary_path(cfg, "nodeproxy");
     anyhow::ensure!(bin.exists(), "no nodeproxy binary at {} -- run `nodebootstrap fetch` first", bin.display());
     let kubeconfig = admin_kubeconfig(cfg);

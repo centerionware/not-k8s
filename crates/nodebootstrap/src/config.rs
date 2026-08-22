@@ -58,6 +58,12 @@ pub struct Config {
     pub skip_rbac: bool,
     pub skip_service_reconciler: bool,
     pub skip_manifests: bool,
+    /// Mirrors `bootstrap-source.sh`'s `--proxy=none` -- skip installing
+    /// `nodeproxy` entirely (bring-your-own Service/ClusterIP routing, or
+    /// isolating a nodelet/apiserver/datastore bug from nftables churn).
+    /// `NODEBOOTSTRAP_PROXY=none` to disable; any other value (default
+    /// `nodeproxy`) installs it as normal.
+    pub skip_nodeproxy: bool,
 }
 
 impl Config {
@@ -189,6 +195,7 @@ impl Config {
             skip_rbac: flag("NODEBOOTSTRAP_SKIP_RBAC"),
             skip_service_reconciler: flag("NODEBOOTSTRAP_SKIP_SERVICE_RECONCILER"),
             skip_manifests: flag("NODEBOOTSTRAP_SKIP_MANIFESTS"),
+            skip_nodeproxy: std::env::var("NODEBOOTSTRAP_PROXY").as_deref() == Ok("none"),
         })
     }
 }
