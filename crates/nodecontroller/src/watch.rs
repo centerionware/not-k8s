@@ -311,12 +311,42 @@ where
     }
 }
 
+/// The identity every shared/dedup'd read in this file actually connects
+/// as -- real upstream `kube-controller-manager` backs its shared informer
+/// factory with the base client (`system:kube-controller-manager`'s own
+/// built-in bootstrap role, which is deliberately broad on reads: it's
+/// what the shared informers run as), not any single controller's
+/// narrowly-scoped per-SA impersonated identity. Set once, early, by
+/// `lib.rs::run()` before any controller starts. Every function below
+/// still takes its own `client: &Client` parameter for source
+/// compatibility with every existing call site (~20 controller modules)
+/// but deliberately ignores it in favor of this one -- see
+/// `docs/E2E_FINDINGS.md` finding 22's follow-up for why: a per-controller
+/// impersonated client doesn't mean anything for a *shared* watch anyway
+/// (`SharedWatch`'s `OnceLock` means only the first caller's client
+/// argument would ever have mattered, which is racy and not what any
+/// caller intends), and real upstream's own per-controller bootstrap
+/// roles (e.g. `system:controller:node-controller`) confirm reads like
+/// this were never meant to be covered by them -- `node-controller`'s own
+/// role has no `coordination.k8s.io` `leases` rule at all, despite
+/// `node-lifecycle-controller` needing to watch them.
+static BASE_CLIENT: OnceLock<Client> = OnceLock::new();
+
+/// Called once by `lib.rs::run()`, before any controller starts.
+pub fn set_base_client(client: Client) {
+    let _ = BASE_CLIENT.set(client);
+}
+
+fn base_client() -> Client {
+    BASE_CLIENT.get().expect("watch::set_base_client() must be called before any watch starts").clone()
+}
+
 macro_rules! shared_watch {
     ($name:ident, $static_name:ident, $resource:ty) => {
-        pub fn $name(client: &Client) -> BoxStream<'static, watcher::Result<Event<$resource>>> {
+        pub fn $name(_client: &Client) -> BoxStream<'static, watcher::Result<Event<$resource>>> {
             static $static_name: OnceLock<Arc<SharedWatch<$resource>>> = OnceLock::new();
             $static_name
-                .get_or_init(|| SharedWatch::new(Api::all(client.clone())))
+                .get_or_init(|| SharedWatch::new(Api::all(base_client())))
                 .subscribe()
         }
     };
@@ -324,8 +354,8 @@ macro_rules! shared_watch {
 
 shared_watch!(watch_nodes, SHARED_NODES, Node);
 
-pub fn watch_node_leases(client: &Client) -> BoxStream<'static, watcher::Result<Event<Lease>>> {
-    let api: Api<Lease> = Api::namespaced(client.clone(), NODE_LEASE_NAMESPACE);
+pub fn watch_node_leases(_client: &Client) -> BoxStream<'static, watcher::Result<Event<Lease>>> {
+    let api: Api<Lease> = Api::namespaced(base_client(), NODE_LEASE_NAMESPACE);
     watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
@@ -366,11 +396,11 @@ shared_watch!(watch_certificate_signing_requests, SHARED_CSRS, CertificateSignin
 shared_watch!(watch_pod_disruption_budgets, SHARED_PDBS, PodDisruptionBudget);
 
 pub fn watch_resource_claim_templates(
-    client: &Client,
+    _client: &Client,
 ) -> BoxStream<'static, watcher::Result<Event<DynamicObject>>> {
     let gvk = GroupVersionKind::gvk("resource.k8s.io", "v1", "ResourceClaimTemplate");
     let resource = ApiResource::from_gvk(&gvk);
-    let api: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
+    let api: Api<DynamicObject> = Api::all_with(base_client(), &resource);
     watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
