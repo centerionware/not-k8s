@@ -79,8 +79,8 @@
 //! **Group K point 6 started**: `kubernetes_lists` is this crate's real
 //! Kubernetes CEL extension library, `k8s.io/apiserver/pkg/cel/library/
 //! lists.go`'s own `kubernetes.lists` library (fetched and read
-//! directly) — `isSorted`/`min`/`max`/`indexOf`/`lastIndexOf` are landed;
-//! `sum`/`includes` are separate, not-yet-started work, named honestly
+//! directly) — `isSorted`/`min`/`max`/`indexOf`/`lastIndexOf`/`sum` are
+//! landed; `includes` is separate, not-yet-started work, named honestly
 //! rather than silently folded in (see that module's own doc comment for
 //! why). `register_kubernetes_extensions` wires every one of them onto
 //! every `Context` this module builds via `cel::Context::add_function`
@@ -193,6 +193,7 @@ fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("max", kubernetes_lists::max_binding);
     ctx.add_function("indexOf", kubernetes_lists::index_of_binding);
     ctx.add_function("lastIndexOf", kubernetes_lists::last_index_of_binding);
+    ctx.add_function("sum", kubernetes_lists::sum_binding);
 }
 
 pub fn eval_bool_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<bool, Error> {
@@ -458,6 +459,7 @@ mod tests {
         assert_eq!(eval_bool_with_vars("[3, 1, 2].max() == 3", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("[1, 2, 2, 3].indexOf(2) == 1", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("[1, 2, 2, 3].lastIndexOf(2) == 2", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("[1, 2, 3].sum() == 6", &[]).unwrap(), true);
     }
 
     #[test]

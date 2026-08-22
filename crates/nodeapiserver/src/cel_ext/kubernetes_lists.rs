@@ -3,13 +3,11 @@
 //! directly) — `docs/APISERVER.md`'s own Group K point 6 ("Kubernetes'
 //! own CEL extension library ... `isSorted` ..."), named there as
 //! deliberately deferred until a first working CEL path existed.
-//! `isSorted`/`min`/`max`/`indexOf`/`lastIndexOf` are landed; `sum`
-//! (needs `Value`'s own `Add` semantics, not yet confirmed against the
-//! real `cel` crate) and `includes` (needs a `This<Value>` receiver that
-//! isn't necessarily a list — real upstream's own doc comment: `'model-a'
-//! .includes('model-a')` also works on a bare string) are separate,
-//! not-yet-started work, named honestly rather than silently folded in
-//! as "done".
+//! `isSorted`/`min`/`max`/`indexOf`/`lastIndexOf`/`sum` are landed;
+//! `includes` (needs a `This<Value>` receiver that isn't necessarily a
+//! list — real upstream's own doc comment: `'model-a'.includes('model-a')`
+//! also works on a bare string) is separate, not-yet-started work, named
+//! honestly rather than silently folded in as "done".
 //!
 //! Every function here follows the same shape: a pure, directly-testable
 //! core taking `&[Value]` (plus whatever extra argument the real function
@@ -122,6 +120,35 @@ pub fn last_index_of_binding(This(list): This<Arc<Vec<Value>>>, item: Value) -> 
     last_index_of(&list, &item)
 }
 
+/// Real upstream's own real fold (`sum(init)`'s own `Adder`-trait
+/// accumulation): sums every element via `Value`'s own real `Add`
+/// (`impl Add<Value> for Value { type Output = Result<Value,
+/// ExecutionError>; }`, confirmed directly against the published
+/// `cel` crate docs before writing this — not assumed) — a genuinely
+/// unsupported pair (e.g. summing a string) surfaces `Value::add`'s own
+/// real `ExecutionError`, not a silent no-op. **Named, honest
+/// divergence**: real upstream picks the empty-list zero value from its
+/// own compile-time overload (`int`/`uint`/`double`/`duration`, each with
+/// its own real zero); this crate's own binding has no type checker to
+/// know which was intended, so an empty list always sums to
+/// [`Value::Int`]`(0)` — a real, incorrect answer for a
+/// duration-typed empty sum specifically (`Value::Int(0) != Value::
+/// Duration(0)`), not just a cosmetic difference.
+pub fn sum(list: &[Value]) -> Result<Value, ExecutionError> {
+    let mut acc: Option<Value> = None;
+    for item in list {
+        acc = Some(match acc {
+            None => item.clone(),
+            Some(running) => (running + item.clone())?,
+        });
+    }
+    Ok(acc.unwrap_or(Value::Int(0)))
+}
+
+pub fn sum_binding(This(list): This<Arc<Vec<Value>>>) -> Result<Value, ExecutionError> {
+    sum(&list)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +248,28 @@ mod tests {
     #[test]
     fn index_of_on_an_empty_list_is_negative_one() {
         assert_eq!(index_of(&[], &Value::Int(1)), -1);
+    }
+
+    #[test]
+    fn sum_adds_every_real_element() {
+        let list = [Value::Int(1), Value::Int(2), Value::Int(3)];
+        assert_eq!(sum(&list).unwrap(), Value::Int(6));
+    }
+
+    #[test]
+    fn sum_of_an_empty_list_defaults_to_int_zero() {
+        assert_eq!(sum(&[]).unwrap(), Value::Int(0));
+    }
+
+    #[test]
+    fn sum_works_on_floats_too() {
+        let list = [Value::Float(1.5), Value::Float(2.5)];
+        assert_eq!(sum(&list).unwrap(), Value::Float(4.0));
+    }
+
+    #[test]
+    fn sum_of_a_genuinely_unsupported_pair_is_a_real_error_not_a_silent_no_op() {
+        let list = [Value::String(Arc::new("a".to_string())), Value::Int(1)];
+        assert!(sum(&list).is_err());
     }
 }
