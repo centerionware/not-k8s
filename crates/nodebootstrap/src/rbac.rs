@@ -41,22 +41,44 @@
 //! `kube-scheduler` gates its own DRA watches behind a feature check
 //! `nodescheduler` doesn't have, or whether this grant lands in a later
 //! k8s version's bootstrap policy -- not investigated further; the fix
-//! applies either way). `apply_nodescheduler_dra_grant` supplements the
-//! built-in role with exactly the three resources the error named, scoped
-//! to the `system:kube-scheduler` identity `nodescheduler` already
-//! authenticates as -- not a broader grant.
+//! applies either way). Supplements the built-in role with exactly the
+//! three resources the error named, scoped to the `system:kube-scheduler`
+//! identity `nodescheduler` already authenticates as -- not a broader
+//! grant.
+//!
+//! **Finding #3 (2026-08-22, found live running `nodecontroller`):** real
+//! upstream `kube-controller-manager` normally runs each of its ~30
+//! control loops as its own narrowly-scoped `system:serviceaccount:
+//! kube-system:<controller-name>` identity (via `--use-service-account-
+//! credentials=true`, which `targets/upstream.rs` sets) -- each with its
+//! own tightly-scoped `system:controller:<name>` bootstrap ClusterRole.
+//! `nodecontroller` doesn't do that impersonation dance; every one of its
+//! controllers runs as the single blanket `system:kube-controller-manager`
+//! identity, whose own built-in bootstrap role was never meant to be
+//! broad enough for that (real upstream barely uses it directly). Found
+//! live: `configmaps` creation (the root-ca-cert-publisher controller)
+//! 403s under that identity. This is a real architecture gap in
+//! `nodecontroller` itself (adopting real per-controller SA impersonation
+//! is the correct long-term fix, tracked as follow-up, not this crate's
+//! job to invent here) -- `nodebootstrap` bridges it pragmatically by
+//! binding `system:kube-controller-manager` to `cluster-admin` outright,
+//! rather than enumerating every one of ~30 controllers' exact
+//! permissions one 403 at a time. **This is not least-privilege and is
+//! known to be too broad** -- acceptable for now because `nodecontroller`
+//! is the only thing authenticating as this identity, but a real
+//! narrowing (or `nodecontroller` growing per-controller impersonation)
+//! should replace it before this is considered production-hardened.
 
 use anyhow::{Context, Result};
 
 use crate::config::Config;
 
-/// Supplements (does not replace) the built-in `system:kube-scheduler`
-/// ClusterRole -- see the finding in this module's doc comment. A second
-/// ClusterRole + Binding rather than editing the built-in one directly:
-/// the built-in one is reconciled by kube-apiserver's own PostStartHook on
-/// every restart (see this module's first finding), so a hand-edit to it
-/// would just be overwritten.
-const DRA_SCHEDULER_GRANT: &str = r#"
+/// Supplements (does not replace) the built-in bootstrap roles -- see the
+/// findings in this module's doc comment. Separate ClusterRoles/Bindings
+/// rather than editing the built-in ones directly: those are reconciled by
+/// kube-apiserver's own PostStartHook on every restart (this module's
+/// first finding), so a hand-edit would just be overwritten.
+const SUPPLEMENTAL_GRANTS: &str = r#"
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -77,6 +99,19 @@ roleRef:
 subjects:
 - kind: User
   name: system:kube-scheduler
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:nodecontroller-cluster-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: User
+  name: system:kube-controller-manager
   apiGroup: rbac.authorization.k8s.io
 "#;
 
@@ -100,12 +135,12 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     }
     let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig");
     verify_bootstrap_rbac(&kubeconfig)?;
-    apply_nodescheduler_dra_grant(&kubeconfig)
+    apply_supplemental_grants(&kubeconfig)
 }
 
 /// `kubectl apply -f -`, same subprocess-call posture `manifests.rs` uses
 /// and explains.
-fn apply_nodescheduler_dra_grant(kubeconfig: &std::path::Path) -> Result<()> {
+fn apply_supplemental_grants(kubeconfig: &std::path::Path) -> Result<()> {
     use std::io::Write;
     let mut child = std::process::Command::new("kubectl")
         .args(["--kubeconfig", &kubeconfig.to_string_lossy(), "apply", "-f", "-"])
@@ -116,10 +151,10 @@ fn apply_nodescheduler_dra_grant(kubeconfig: &std::path::Path) -> Result<()> {
         .stdin
         .take()
         .expect("stdin was piped")
-        .write_all(DRA_SCHEDULER_GRANT.as_bytes())
-        .context("writing the DRA grant manifest to kubectl's stdin")?;
+        .write_all(SUPPLEMENTAL_GRANTS.as_bytes())
+        .context("writing the supplemental RBAC grants to kubectl's stdin")?;
     let status = child.wait().context("waiting for kubectl apply")?;
-    anyhow::ensure!(status.success(), "kubectl apply -f - (nodescheduler DRA RBAC grant) exited {status}");
+    anyhow::ensure!(status.success(), "kubectl apply -f - (supplemental RBAC grants) exited {status}");
     Ok(())
 }
 
