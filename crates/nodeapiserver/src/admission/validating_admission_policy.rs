@@ -80,6 +80,57 @@ impl PolicyOutcome {
     pub fn denies(&self) -> bool {
         matches!(self, PolicyOutcome::Decided(decisions) if policy_validations::any_deny(decisions))
     }
+
+    /// The real "should a caller actually reject this request" question,
+    /// folding [`PolicyOutcome::MatchConditionsError`] back in — unlike
+    /// [`PolicyOutcome::denies`], since a real caller enforcing this
+    /// policy needs both real outcomes treated as a denial. Safe to
+    /// unconditionally include `MatchConditionsError` here (unlike
+    /// `denies`, which deliberately excludes it): [`evaluate`] only ever
+    /// produces that variant when `failurePolicy` is already `Fail` (an
+    /// `Ignore` policy's own matching error becomes `NotApplicable`
+    /// instead, matching real upstream's own real `matchConditions`
+    /// semantics — see [`MatchResult::Ignored`]'s own real "skip this
+    /// policy" meaning).
+    ///
+    /// Real upstream's own remaining condition — a real caller must still
+    /// gate this on the binding's own `validationActions` containing
+    /// `"Deny"` (`"Warn"`/`"Audit"` alone must not reject the request) —
+    /// is deliberately **not** folded in here: `PolicyOutcome` only knows
+    /// about one policy's own decision, not which binding produced it or
+    /// what that binding's own `validationActions` said. [`validation_actions_deny`]
+    /// is the separate, real primitive for that half.
+    pub fn is_denial(&self) -> bool {
+        self.denies() || matches!(self, PolicyOutcome::MatchConditionsError { .. })
+    }
+
+    /// The real message a caller should report for a denial — the first
+    /// real `Deny` decision's own message for `Decided`, or every
+    /// `matchConditions` error joined together for `MatchConditionsError`.
+    /// `None` for `NotApplicable` and for a `Decided` outcome that doesn't
+    /// actually deny (nothing to report).
+    pub fn denial_message(&self) -> Option<String> {
+        match self {
+            PolicyOutcome::NotApplicable => None,
+            PolicyOutcome::MatchConditionsError { errors } => Some(errors.join("; ")),
+            PolicyOutcome::Decided(decisions) => decisions.iter().find(|d| d.action == policy_validations::Action::Deny).and_then(|d| d.message.clone()),
+        }
+    }
+}
+
+/// Real upstream's own `ValidatingAdmissionPolicyBinding.spec.
+/// validationActions` gate: a real validation/`matchConditions` failure
+/// only actually rejects the request if the binding's own declared
+/// actions include `"Deny"` — `"Warn"`/`"Audit"` alone report the failure
+/// without blocking it. **Named, honest gap**: this crate has no real
+/// `Warn`/`Audit` reporting of its own yet (no HTTP warning-header
+/// plumbing, no audit-event pipeline wired to this — Group M's own
+/// still-started audit work); a caller using this today can only really
+/// act on `Deny`, so a validation failure under `Warn`-only or
+/// `Audit`-only actions is, for now, indistinguishable from one that
+/// never happened at all.
+pub fn validation_actions_deny(actions: &[&str]) -> bool {
+    actions.iter().any(|a| *a == "Deny")
 }
 
 /// Real upstream's own real order: `matchConstraints` (resource rules,
@@ -222,5 +273,50 @@ mod tests {
             PolicyOutcome::Decided(decisions) => assert_eq!(decisions[0].message.as_deref(), Some("replicas must be positive")),
             other => panic!("expected Decided, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn is_denial_folds_a_match_conditions_error_back_in_unlike_denies() {
+        let outcome = PolicyOutcome::MatchConditionsError { errors: vec!["boom".to_string()] };
+        assert!(!outcome.denies(), "denies() deliberately excludes MatchConditionsError");
+        assert!(outcome.is_denial(), "is_denial() deliberately folds it back in");
+    }
+
+    #[test]
+    fn is_denial_is_false_for_not_applicable_and_a_clean_admit() {
+        assert!(!PolicyOutcome::NotApplicable.is_denial());
+        let admit = PolicyOutcome::Decided(vec![Decision { action: policy_validations::Action::Admit, is_error: false, message: None, reason: None }]);
+        assert!(!admit.is_denial());
+    }
+
+    #[test]
+    fn denial_message_reports_the_first_real_deny_for_a_decided_outcome() {
+        let outcome = PolicyOutcome::Decided(vec![
+            Decision { action: policy_validations::Action::Admit, is_error: false, message: None, reason: None },
+            Decision { action: policy_validations::Action::Deny, is_error: false, message: Some("replicas must be positive".to_string()), reason: Some("Invalid".to_string()) },
+        ]);
+        assert_eq!(outcome.denial_message().as_deref(), Some("replicas must be positive"));
+    }
+
+    #[test]
+    fn denial_message_joins_every_match_conditions_error() {
+        let outcome = PolicyOutcome::MatchConditionsError { errors: vec!["broken: parse error".to_string(), "also-broken: runtime error".to_string()] };
+        assert_eq!(outcome.denial_message().as_deref(), Some("broken: parse error; also-broken: runtime error"));
+    }
+
+    #[test]
+    fn denial_message_is_none_for_not_applicable_and_a_clean_admit() {
+        assert_eq!(PolicyOutcome::NotApplicable.denial_message(), None);
+        let admit = PolicyOutcome::Decided(vec![Decision { action: policy_validations::Action::Admit, is_error: false, message: None, reason: None }]);
+        assert_eq!(admit.denial_message(), None);
+    }
+
+    #[test]
+    fn validation_actions_deny_requires_the_real_deny_action_by_name() {
+        assert!(validation_actions_deny(&["Deny"]));
+        assert!(validation_actions_deny(&["Audit", "Deny"]));
+        assert!(!validation_actions_deny(&["Warn"]));
+        assert!(!validation_actions_deny(&["Audit"]));
+        assert!(!validation_actions_deny(&[]));
     }
 }
