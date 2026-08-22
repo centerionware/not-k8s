@@ -30,10 +30,13 @@ x509-parser = "0.16"
 pem = "3"
 base64 = "0.22"
 
-# Not yet used by any module -- added back as each real group lands:
-# serde/serde_json (rbac.rs's/manifests.rs's K8s object literals),
-# thiserror (once error variants need it), chrono (cert validity windows
-# in pki.rs). kubeconfig.rs deliberately hand-templates its YAML rather
-# than pulling in serde_yaml -- the kubeconfig schema is small and fixed,
-# and templating avoids a struct that has to track upstream's own
+[dev-dependencies]
+serde_json = { workspace = true }
+
+# Not yet used by any non-test module -- added back as each real group
+# lands: serde/serde_json for real (rbac.rs's/manifests.rs's K8s object
+# literals), thiserror (once error variants need it), chrono (cert validity
+# windows in pki.rs). kubeconfig.rs deliberately hand-templates its YAML
+# rather than pulling in serde_yaml -- the kubeconfig schema is small and
+# fixed, and templating avoids a struct that has to track upstream's own
 # clientcmd/api types.

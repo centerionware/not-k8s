@@ -39,9 +39,6 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-fn command_present(bin: &str) -> bool {
-    std::process::Command::new("sh").arg("-c").arg(format!("command -v {bin}")).status().map(|s| s.success()).unwrap_or(false)
-}
 
 /// See `container-runtime.sh`'s `ensure_cgroups_mounted` header comment for
 /// the full story (Alpine/OpenRC doesn't mount `/sys/fs/cgroup` by default,
@@ -62,19 +59,19 @@ fn ensure_cgroups_mounted() {
 }
 
 fn ensure_binaries(cfg: &Config) -> Result<()> {
-    if command_present("containerd") && command_present("runc") {
+    if crate::pkg::command_exists("containerd") && crate::pkg::command_exists("runc") {
         tracing::info!("containerd + runc already present");
         return Ok(());
     }
     let names =
         PkgNames { apt: "containerd runc", dnf: "containerd runc", pacman: "containerd runc", apk: "containerd runc", zypper: "containerd runc", xbps: "containerd runc" };
     let _ = pkg_install("containerd/runc", &names);
-    if command_present("containerd") && command_present("runc") {
+    if crate::pkg::command_exists("containerd") && crate::pkg::command_exists("runc") {
         return Ok(());
     }
     fetch_prebuilt(cfg)?;
     anyhow::ensure!(
-        command_present("containerd") && command_present("runc"),
+        crate::pkg::command_exists("containerd") && crate::pkg::command_exists("runc"),
         "no containerd/runc after the package manager and official-prebuilt tiers -- the \
          from-source fallback (build_containerd_runc_from_source) is not yet ported here"
     );
@@ -98,7 +95,7 @@ fn fetch_prebuilt(cfg: &Config) -> Result<()> {
     std::fs::create_dir_all(toolchain_dir.join("bin")).context("creating toolchain bin dir")?;
 
     if let Some(c_arch) = containerd_arch {
-        if !command_present("containerd") {
+        if !crate::pkg::command_exists("containerd") {
             const VERSION: &str = "1.7.23";
             let tarball = src_dir.join("containerd.tar.gz");
             tracing::info!(arch = c_arch, "fetching official containerd release");
@@ -120,7 +117,7 @@ fn fetch_prebuilt(cfg: &Config) -> Result<()> {
         }
     }
     if let Some(r_arch) = runc_arch {
-        if !command_present("runc") {
+        if !crate::pkg::command_exists("runc") {
             const VERSION: &str = "1.1.14";
             let dest = toolchain_dir.join("bin/runc");
             tracing::info!(arch = r_arch, "fetching official runc release");
@@ -216,7 +213,7 @@ fn containerd_running() -> bool {
 }
 
 fn systemd_available() -> bool {
-    command_present("systemctl")
+    crate::pkg::command_exists("systemctl")
 }
 
 fn ensure_running(needs_restart: bool) -> Result<()> {

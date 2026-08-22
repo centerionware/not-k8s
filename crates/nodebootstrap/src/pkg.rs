@@ -55,7 +55,7 @@ pub struct PkgNames<'a> {
     pub xbps: &'a str,
 }
 
-fn command_exists(bin: &str) -> bool {
+pub fn command_exists(bin: &str) -> bool {
     std::process::Command::new("sh")
         .arg("-c")
         .arg(format!("command -v {bin}"))
