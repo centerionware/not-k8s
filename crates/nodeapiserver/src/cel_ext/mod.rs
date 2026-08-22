@@ -76,17 +76,17 @@
 //! Named `cel_ext`, not `cel` — see the module-map note in `lib.rs` for why
 //! (this crate also depends on the external `cel` crate).
 //!
-//! **Group K point 6 started**: `kubernetes_lists::is_sorted`/
-//! `is_sorted_binding` is this crate's first real Kubernetes CEL
-//! extension function (`list.isSorted()`, `k8s.io/apiserver/pkg/cel/
-//! library/lists.go`'s own `kubernetes.lists` library, fetched and read
-//! directly) — `register_kubernetes_extensions` wires it onto every
-//! `Context` this module builds via `cel::Context::add_function`
+//! **Group K point 6 started**: `kubernetes_lists` is this crate's real
+//! Kubernetes CEL extension library, `k8s.io/apiserver/pkg/cel/library/
+//! lists.go`'s own `kubernetes.lists` library (fetched and read
+//! directly) — `isSorted`/`min`/`max`/`indexOf`/`lastIndexOf` are landed;
+//! `sum`/`includes` are separate, not-yet-started work, named honestly
+//! rather than silently folded in (see that module's own doc comment for
+//! why). `register_kubernetes_extensions` wires every one of them onto
+//! every `Context` this module builds via `cel::Context::add_function`
 //! (`cel-rust`'s own real custom-function registration API, confirmed
-//! against that crate's own `example/src/functions.rs`, which the
-//! published docs don't render). Real upstream's own library also has
-//! `sum`/`min`/`max`/`indexOf`/`lastIndexOf`/`includes` — separate,
-//! not-yet-started work, named honestly rather than silently folded in.
+//! against that crate's own `example/src/functions.rs`/`cel/src/
+//! functions.rs`, which the published docs don't render).
 //!
 //! # The `cel` crate, and getting its API right
 //!
@@ -189,6 +189,10 @@ pub fn eval_bool(expr: &str, self_value: &Value, old_self_value: Option<&Value>)
 /// evaluated through.
 fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("isSorted", kubernetes_lists::is_sorted_binding);
+    ctx.add_function("min", kubernetes_lists::min_binding);
+    ctx.add_function("max", kubernetes_lists::max_binding);
+    ctx.add_function("indexOf", kubernetes_lists::index_of_binding);
+    ctx.add_function("lastIndexOf", kubernetes_lists::last_index_of_binding);
 }
 
 pub fn eval_bool_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<bool, Error> {
@@ -450,6 +454,15 @@ mod tests {
         // expression can actually call it by name.
         assert_eq!(eval_bool_with_vars("[1, 2, 3].isSorted()", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("[3, 2, 1].isSorted()", &[]).unwrap(), false);
+        assert_eq!(eval_bool_with_vars("[3, 1, 2].min() == 1", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("[3, 1, 2].max() == 3", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("[1, 2, 2, 3].indexOf(2) == 1", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("[1, 2, 2, 3].lastIndexOf(2) == 2", &[]).unwrap(), true);
+    }
+
+    #[test]
+    fn min_on_a_real_empty_list_is_a_real_execution_error_not_a_panic() {
+        assert!(eval_bool_with_vars("[].min() == 0", &[]).is_err());
     }
 
     #[test]

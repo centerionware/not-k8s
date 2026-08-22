@@ -1,24 +1,35 @@
 //! Real upstream's own `kubernetes.lists` CEL extension library
 //! (`k8s.io/apiserver/pkg/cel/library/lists.go`, fetched and read
-//! directly) — this crate's first entry in `docs/APISERVER.md`'s own
-//! Group K point 6 ("Kubernetes' own CEL extension library ... `isSorted`
-//! ..."), named there as deliberately deferred until a first working CEL
-//! path existed. Scoped to `isSorted()` only for this landing: real
-//! upstream's own library also has `sum`/`min`/`max`/`indexOf`/
-//! `lastIndexOf`/`includes` — separate, not-yet-started work, named
-//! honestly rather than silently folded in as "done".
+//! directly) — `docs/APISERVER.md`'s own Group K point 6 ("Kubernetes'
+//! own CEL extension library ... `isSorted` ..."), named there as
+//! deliberately deferred until a first working CEL path existed.
+//! `isSorted`/`min`/`max`/`indexOf`/`lastIndexOf` are landed; `sum`
+//! (needs `Value`'s own `Add` semantics, not yet confirmed against the
+//! real `cel` crate) and `includes` (needs a `This<Value>` receiver that
+//! isn't necessarily a list — real upstream's own doc comment: `'model-a'
+//! .includes('model-a')` also works on a bare string) are separate,
+//! not-yet-started work, named honestly rather than silently folded in
+//! as "done".
 //!
-//! [`is_sorted`] is the pure, directly-testable core; [`is_sorted_binding`]
-//! is the thin adapter `cel_ext::register_kubernetes_extensions` registers
-//! onto a real [`cel::Context`] via `Context::add_function` — the `This`
-//! extractor (`cel::extractors::This`, confirmed against `cel-rust`'s own
-//! `example/src/functions.rs`, not assumed from the published docs alone,
-//! which don't render this module) is cel-rust's own real convention for
-//! a member-call's receiver (`<list>.isSorted()` calls `isSorted` with the
-//! list itself as `This`).
+//! Every function here follows the same shape: a pure, directly-testable
+//! core taking `&[Value]` (plus whatever extra argument the real function
+//! needs), and a thin `_binding` adapter `cel_ext::
+//! register_kubernetes_extensions` registers onto a real [`cel::Context`]
+//! via `Context::add_function`. The `This`/`FunctionContext` shapes
+//! (`cel::extractors::This`, `cel::FunctionContext`) are confirmed
+//! against `cel-rust`'s own real source
+//! (`example/src/functions.rs`/`cel/src/functions.rs`'s own
+//! `contains`/`string`/`size` — none of this is rendered by the published
+//! docs, which only expose the crate's own generated API reference, not
+//! its example/internal modules) rather than assumed: `This<Arc<Vec<
+//! Value>>>` is the real member-call receiver for a list, `&FunctionContext`
+//! as an additional argument gives a real function access to `ftx.error(...)`
+//! for a genuine CEL execution error (real upstream's own `min`/`max`
+//! erroring on an empty list, ported exactly).
 
 use cel::extractors::This;
-use cel::Value;
+use cel::{ExecutionError, FunctionContext, Value};
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 /// Real upstream's own real semantics, doc-comment examples confirmed
@@ -42,6 +53,73 @@ pub fn is_sorted(list: &[Value]) -> bool {
 /// `This` extractor's real meaning.
 pub fn is_sorted_binding(This(list): This<Arc<Vec<Value>>>) -> bool {
     is_sorted(&list)
+}
+
+/// Real upstream's own real scan (`cmp("min", types.IntOne)`): keeps the
+/// running minimum, replacing it only on a real "current is greater than
+/// next" comparison. **Named, honest divergence, same shape as
+/// [`is_sorted`]'s own**: real upstream's own `Compare` returning an
+/// error for an incomparable pair silently leaves the running result
+/// unchanged (it never actually happens in real usage, since real
+/// upstream's own compile-time overloads already fix every element to
+/// one comparable type); this crate's own `partial_cmp` returning `None`
+/// gets the same "leave it unchanged" treatment for the same reason —
+/// not a real error path, just what naturally falls out of "no match
+/// means don't replace".
+pub fn min(list: &[Value]) -> Result<Value, &'static str> {
+    scan(list, Ordering::Greater).ok_or("min() called on an empty list")
+}
+
+/// [`min`]'s own mirror — keeps the running maximum, replacing it only on
+/// a real "current is less than next" comparison.
+pub fn max(list: &[Value]) -> Result<Value, &'static str> {
+    scan(list, Ordering::Less).ok_or("max() called on an empty list")
+}
+
+/// The shared real scan [`min`]/[`max`] are both built from — `replace_on`
+/// is the real `Ordering` (`result.partial_cmp(next)`) that means "next
+/// should become the new running result".
+fn scan(list: &[Value], replace_on: Ordering) -> Option<Value> {
+    let mut result: Option<&Value> = None;
+    for item in list {
+        result = Some(match result {
+            None => item,
+            Some(current) => if current.partial_cmp(item) == Some(replace_on) { item } else { current },
+        });
+    }
+    result.cloned()
+}
+
+/// Real upstream's own real linear scan (`Equal`, CEL's own equality —
+/// this crate's `Value::eq`), returning the first matching index or `-1`
+/// when the item isn't found at all.
+pub fn index_of(list: &[Value], item: &Value) -> i64 {
+    list.iter().position(|v| v == item).map(|i| i as i64).unwrap_or(-1)
+}
+
+/// [`index_of`]'s own mirror — the *last* matching index.
+pub fn last_index_of(list: &[Value], item: &Value) -> i64 {
+    list.iter().rposition(|v| v == item).map(|i| i as i64).unwrap_or(-1)
+}
+
+/// The real CEL bindings — `ftx.error(...)` is this crate's own real
+/// route to a genuine `ExecutionError::FunctionError`, matching real
+/// upstream's own `min`/`max` erroring on an empty list rather than
+/// returning some placeholder value.
+pub fn min_binding(ftx: &FunctionContext, This(list): This<Arc<Vec<Value>>>) -> Result<Value, ExecutionError> {
+    min(&list).map_err(|e| ftx.error(e))
+}
+
+pub fn max_binding(ftx: &FunctionContext, This(list): This<Arc<Vec<Value>>>) -> Result<Value, ExecutionError> {
+    max(&list).map_err(|e| ftx.error(e))
+}
+
+pub fn index_of_binding(This(list): This<Arc<Vec<Value>>>, item: Value) -> i64 {
+    index_of(&list, &item)
+}
+
+pub fn last_index_of_binding(This(list): This<Arc<Vec<Value>>>, item: Value) -> i64 {
+    last_index_of(&list, &item)
 }
 
 #[cfg(test)]
@@ -92,5 +170,56 @@ mod tests {
     #[test]
     fn an_incomparable_pair_counts_as_not_sorted_rather_than_erroring() {
         assert!(!is_sorted(&[Value::Int(1), Value::String(Arc::new("x".to_string()))]));
+    }
+
+    #[test]
+    fn min_and_max_find_the_real_extremes() {
+        let list = [Value::Int(3), Value::Int(1), Value::Int(2)];
+        assert_eq!(min(&list).unwrap(), Value::Int(1));
+        assert_eq!(max(&list).unwrap(), Value::Int(3));
+    }
+
+    #[test]
+    fn min_and_max_on_a_single_element_list_return_that_element() {
+        let list = [Value::Int(5)];
+        assert_eq!(min(&list).unwrap(), Value::Int(5));
+        assert_eq!(max(&list).unwrap(), Value::Int(5));
+    }
+
+    #[test]
+    fn min_and_max_on_an_empty_list_are_real_errors() {
+        assert!(min(&[]).is_err());
+        assert!(max(&[]).is_err());
+    }
+
+    #[test]
+    fn min_and_max_work_on_strings_too() {
+        let list = [Value::String(Arc::new("b".to_string())), Value::String(Arc::new("a".to_string())), Value::String(Arc::new("c".to_string()))];
+        assert_eq!(min(&list).unwrap(), Value::String(Arc::new("a".to_string())));
+        assert_eq!(max(&list).unwrap(), Value::String(Arc::new("c".to_string())));
+    }
+
+    #[test]
+    fn index_of_finds_the_first_real_match() {
+        let list = [Value::Int(1), Value::Int(2), Value::Int(2), Value::Int(3)];
+        assert_eq!(index_of(&list, &Value::Int(2)), 1);
+    }
+
+    #[test]
+    fn last_index_of_finds_the_last_real_match() {
+        let list = [Value::Int(1), Value::Int(2), Value::Int(2), Value::Int(3)];
+        assert_eq!(last_index_of(&list, &Value::Int(2)), 2);
+    }
+
+    #[test]
+    fn index_of_and_last_index_of_return_negative_one_when_not_found() {
+        let list = [Value::Int(1), Value::Int(2)];
+        assert_eq!(index_of(&list, &Value::Int(9)), -1);
+        assert_eq!(last_index_of(&list, &Value::Int(9)), -1);
+    }
+
+    #[test]
+    fn index_of_on_an_empty_list_is_negative_one() {
+        assert_eq!(index_of(&[], &Value::Int(1)), -1);
     }
 }
