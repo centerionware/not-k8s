@@ -26,10 +26,89 @@ pub fn run() -> Result<()> {
 }
 
 pub fn run_with(cfg: &Config) -> Result<()> {
+    if try_prebuilt(cfg)? {
+        return Ok(());
+    }
     match cfg.source {
         Source::Compile => build_from_source(cfg),
         Source::Release => download_release(cfg),
     }
+}
+
+/// Checks `NOTK8S_COMBINED_PREBUILT`/`NOTK8S_<COMPONENT>_PREBUILT` before
+/// ever touching `cfg.source` -- same precedence
+/// `nodelet-build.sh`'s `build_nodelet()` documents at its own top ("checks
+/// $NOTK8S_COMBINED_PREBUILT before ever touching $SOURCE"). This is the
+/// prebuilt seam `CLAUDE.md`'s merge protocol and `release.yml`'s e2e stage
+/// both depend on: a binary built once in CI gets staged into every shard
+/// (or a local device under test) without a second compile.
+///
+/// Returns `Ok(true)` when a prebuilt was staged (the caller should not
+/// also compile/download), `Ok(false)` when none of these env vars were
+/// set at all.
+fn try_prebuilt(cfg: &Config) -> Result<bool> {
+    let dest_dir = cfg.toolchain_dir().join("bin");
+
+    if let Ok(combined) = std::env::var("NOTK8S_COMBINED_PREBUILT") {
+        anyhow::ensure!(
+            matches!(cfg.layout, Layout::Combined),
+            "NOTK8S_COMBINED_PREBUILT is set (a single binary containing every component), but \
+             this run's layout is 'split' (NOTK8S_BUILD_LAYOUT). Set NOTK8S_BUILD_LAYOUT=combined \
+             to install it as intended, or supply the per-component prebuilts \
+             (NOTK8S_NODELET_PREBUILT/...) instead."
+        );
+        std::fs::create_dir_all(&dest_dir).context("creating toolchain bin dir")?;
+        let dest = dest_dir.join("notk8s");
+        install_prebuilt(&combined, &dest)?;
+        for component in COMPONENTS {
+            let link = dest_dir.join(component.name);
+            let _ = std::fs::remove_file(&link);
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&dest, &link).with_context(|| format!("symlinking {}", link.display()))?;
+        }
+        return Ok(true);
+    }
+
+    let supplied: Vec<(&'static crate::components::ComponentSpec, String)> =
+        COMPONENTS.iter().filter_map(|c| std::env::var(c.prebuilt_env).ok().map(|path| (c, path))).collect();
+    if supplied.is_empty() {
+        return Ok(false);
+    }
+    anyhow::ensure!(
+        matches!(cfg.layout, Layout::Split),
+        "per-component prebuilt binaries were supplied (NOTK8S_*_PREBUILT), but this run's layout \
+         is 'combined' (NOTK8S_BUILD_LAYOUT). A combined binary has to be built/fetched as one -- \
+         set NOTK8S_COMBINED_PREBUILT instead, or drop NOTK8S_BUILD_LAYOUT=combined to install the \
+         per-component binaries you already have."
+    );
+    anyhow::ensure!(
+        supplied.len() == COMPONENTS.len(),
+        "only {}/{} components had a NOTK8S_*_PREBUILT set ({}) -- mixing prebuilt and \
+         from-source/from-release components isn't supported (a partial set is far more likely to \
+         be an oversight than a request). Set every component's prebuilt env var, or set \
+         NOTK8S_COMBINED_PREBUILT for a single binary containing everything.",
+        supplied.len(),
+        COMPONENTS.len(),
+        supplied.iter().map(|(c, _)| c.name).collect::<Vec<_>>().join(", ")
+    );
+    std::fs::create_dir_all(&dest_dir).context("creating toolchain bin dir")?;
+    for (component, path) in &supplied {
+        install_prebuilt(path, &dest_dir.join(component.name))?;
+    }
+    Ok(true)
+}
+
+fn install_prebuilt(src: &str, dest: &std::path::Path) -> Result<()> {
+    anyhow::ensure!(std::path::Path::new(src).is_file(), "prebuilt binary path doesn't exist or isn't a file: {src}");
+    std::fs::copy(src, dest).with_context(|| format!("staging prebuilt {src} to {}", dest.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("making {} executable", dest.display()))?;
+    }
+    tracing::info!(src, dest = %dest.display(), "staged prebuilt binary");
+    Ok(())
 }
 
 fn build_from_source(cfg: &Config) -> Result<()> {
