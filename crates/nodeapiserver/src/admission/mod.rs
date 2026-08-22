@@ -121,10 +121,14 @@
 //! this request": real upstream's own `resourceRules`/
 //! `excludeResourceRules` matching (`rules.Matcher`), `namespaceSelector`/
 //! `objectSelector` matching (reusing `cacher::selector`'s own label
-//! matcher), and `request` CEL variable construction
-//! (`CreateAdmissionRequest`). See that module's own doc comment for the
-//! named, honest gaps (`Rule.Scope` not matched, `kind`/`userInfo` not yet
-//! populated) and for why it's the same "not yet wired to anything real"
+//! matcher), `request` CEL variable construction
+//! (`CreateAdmissionRequest`), and the real `object`/`oldObject`/
+//! `request`/`params` variable set assembly (`build_eval_vars`) —
+//! `object`/`oldObject`/`params` bind to a real CEL `null`, not an absent
+//! variable, when the caller has none. See that module's own doc comment
+//! for the named, honest gaps (`Rule.Scope` not matched, `kind`/`userInfo`
+//! not yet populated, `namespaceObject`/`variables`/`authorizer` not
+//! bound) and for why it's the same "not yet wired to anything real"
 //! standalone primitive `match_conditions` itself still is.
 //!
 //! `policy_validations` — the actual `spec.validations[]` decision: real
@@ -173,13 +177,14 @@
 //! `MutatingAdmissionPolicy` themselves as actual enforcement (both need
 //! `spec.paramRef` resolution and real CRUD/storage wiring — every real
 //! decision primitive `server::listener` would need now exists
-//! standalone, `match_conditions` through `policy_decode` above, but
-//! nothing calls any of them from an actual admission request yet —
-//! `object`/`oldObject`/`params` variable construction from a real
-//! request body, fetching the real `ValidatingAdmissionPolicy`/
-//! `ValidatingAdmissionPolicyBinding` objects a request should be
-//! evaluated against (including `paramRef` resolution), and a real call
-//! site in `server::listener` are the remaining pieces).
+//! standalone, `match_conditions` through `policy_decode` above
+//! (`policy_matching::build_eval_vars` is the real `object`/`oldObject`/
+//! `params` variable assembly itself), but nothing calls any of them from
+//! an actual admission request yet — fetching the real
+//! `ValidatingAdmissionPolicy`/`ValidatingAdmissionPolicyBinding` objects
+//! a request should be evaluated against (including `paramRef`
+//! resolution) and a real call site in `server::listener` are the
+//! remaining pieces).
 
 pub mod attributes;
 pub mod default_storage_class;
