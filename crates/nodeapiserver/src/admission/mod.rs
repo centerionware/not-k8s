@@ -127,6 +127,20 @@
 //! populated) and for why it's the same "not yet wired to anything real"
 //! standalone primitive `match_conditions` itself still is.
 //!
+//! `policy_validations` — the actual `spec.validations[]` decision: real
+//! upstream's own `validator.Validate`, given an already-bound variable
+//! set, evaluates every validation (no short-circuit, unlike
+//! `match_conditions`) and produces a real `Admit`/`Deny` decision per
+//! rule with the same message-resolution order real upstream uses
+//! (`messageExpression` if valid, else the rule's own `message`, else a
+//! generic `"failed expression: ..."`) and the same `failurePolicy`-
+//! governed handling of a compile/evaluation error. See that module's
+//! own doc comment for the exact real scope and the two new
+//! `cel_ext::eval_string_with_vars`/`eval_string_with_vars_and_deadline`
+//! primitives it's built on (`messageExpression` is CEL evaluating to a
+//! `string`, not a `bool` — the first real use of a non-boolean CEL
+//! result in this crate).
+//!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
 //! other built-in plugin, `ResourceQuota`'s own non-pod evaluators/scope
 //! matching/persisted usage counter (above), a generic plugin-chain/
@@ -135,10 +149,13 @@
 //! admission webhooks themselves, and `ValidatingAdmissionPolicy`/
 //! `MutatingAdmissionPolicy` themselves as actual enforcement (both need
 //! `spec.paramRef` resolution and real CRUD/storage wiring — the request-
-//! matching and CEL-evaluation primitives they'd run on, `match_conditions`
-//! and `policy_matching` above plus `apiextensions::cel_evaluate`'s own
-//! `eval_bool_with_vars`-based evaluation, all now exist standalone but
-//! nothing calls them from an actual admission request yet).
+//! matching and CEL-evaluation primitives they'd run on, `match_conditions`,
+//! `policy_matching`, and `policy_validations` above plus
+//! `apiextensions::cel_evaluate`'s own `eval_bool_with_vars`-based
+//! evaluation, all now exist standalone but nothing calls them from an
+//! actual admission request yet — `object`/`oldObject`/`params` variable
+//! construction from a real request body is the remaining piece before
+//! any of this can be wired into `server::listener`).
 
 pub mod attributes;
 pub mod default_storage_class;
@@ -148,5 +165,6 @@ pub mod match_conditions;
 pub mod namespace_lifecycle;
 pub mod pod_security;
 pub mod policy_matching;
+pub mod policy_validations;
 pub mod resource_quota;
 pub mod service_account;
