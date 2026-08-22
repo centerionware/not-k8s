@@ -96,8 +96,12 @@ crates/nodebootstrap/
                              #   not (confirmed: setup-control-plane.sh has
                              #   zero manual RBAC-object calls today). This
                              #   module is a thin smoke-check instead.
-    service_reconciler.rs   # the `kubernetes` default Service + endpoint
-                             #   reconciler
+    service_reconciler.rs   # **finding, 2026-08-22, same shape as rbac.rs's**:
+                             #   real kube-apiserver reconciles the
+                             #   `kubernetes` Service/Endpoints itself,
+                             #   unconditionally, via its own
+                             #   bootstrap-controller PostStartHook. This
+                             #   module is a thin verify, not a reconciler.
     manifests.rs             # CoreDNS only, applied via the generated
                               #   kubeconfig once the apiserver is up.
                               #   Flannel is NOT a manifest in this project
@@ -176,7 +180,7 @@ comment for the specifics and what's queued next:
 | `fetch.rs` | ✅ real for `Source::Compile` (version-stamp + `cargo build` per layout) | ❌ not ported: `Source::Release` (GitHub Releases asset matching) |
 | `targets/upstream.rs` | ✅ real (binary fetch + full flag-set construction, unit-tested) | ❌ not ported: starting the three binaries as supervised services (service writer, same gap as `containerd.rs`/`cni.rs`) |
 | `components.rs` | ✅ real (static table, mirrors `components.sh`) | n/a |
-| `service_reconciler.rs` | ❌ still a scaffold stub | -- |
+| `service_reconciler.rs` | ✅ real (thin verify -- second "kube-apiserver already does this" finding, same shape as `rbac.rs`) | n/a |
 
 **The recurring gap across five modules is one thing, not five:** a
 service-supervision writer (systemd unit + OpenRC equivalent, matching
