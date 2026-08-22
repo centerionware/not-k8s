@@ -67,12 +67,23 @@ use std::collections::BTreeMap;
 /// `resourceRules`/`excludeResourceRules` both use. `resources` follows
 /// real upstream's own `"resource"`/`"resource/subresource"`/`"*"`/`"*/*"`
 /// grammar (`split_resource` below).
+///
+/// Two lifetimes, not one: `'a` is how long the four slices themselves
+/// live, `'b` is how long the `&str` data they point at lives — deliberately
+/// decoupled so `admission::policy_decode`'s own `DecodedResourceRule` can
+/// hand out a `ResourceRule` borrowing its *own* backing `Vec<&'b str>`
+/// storage (lifetime `'a`, tied to that one borrow) while the `&str`
+/// values inside still point directly at the original decoded
+/// `serde_json::Value` (lifetime `'b`, outliving `'a`) — a single shared
+/// lifetime would force every caller to keep that intermediate `Vec`
+/// storage alive exactly as long as the original JSON, which a decode
+/// step has no reason to require.
 #[derive(Debug, Clone, Copy)]
-pub struct ResourceRule<'a> {
-    pub operations: &'a [&'a str],
-    pub api_groups: &'a [&'a str],
-    pub api_versions: &'a [&'a str],
-    pub resources: &'a [&'a str],
+pub struct ResourceRule<'a, 'b> {
+    pub operations: &'a [&'b str],
+    pub api_groups: &'a [&'b str],
+    pub api_versions: &'a [&'b str],
+    pub resources: &'a [&'b str],
 }
 
 /// Real upstream's own `Matcher.Matches` minus the `scope()` check (see
