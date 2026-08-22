@@ -28,8 +28,12 @@ rcgen = { version = "0.13", features = ["x509-parser"] }
 p256 = { version = "0.13", features = ["pem", "pkcs8"] }
 x509-parser = "0.16"
 pem = "3"
+base64 = "0.22"
 
 # Not yet used by any module -- added back as each real group lands:
 # serde/serde_json (rbac.rs's/manifests.rs's K8s object literals),
-# serde_yaml (kubeconfig.rs), thiserror (once error variants need it),
-# chrono (cert validity windows in pki.rs).
+# thiserror (once error variants need it), chrono (cert validity windows
+# in pki.rs). kubeconfig.rs deliberately hand-templates its YAML rather
+# than pulling in serde_yaml -- the kubeconfig schema is small and fixed,
+# and templating avoids a struct that has to track upstream's own
+# clientcmd/api types.

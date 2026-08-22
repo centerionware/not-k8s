@@ -80,16 +80,31 @@ crates/nodebootstrap/
     components.rs          # per-component skip flags, mirrors
                             #   deploy/lib/components.sh's table so the Rust
                             #   and shell sides don't drift — see "Migration"
-    pki/                  # CA, serving cert, SA signing keypair, per-
-                           #   component client certs (Group O's PKI half)
+    pki.rs                # CA, serving cert, SA signing keypair, static
+                           #   control-plane client certs (Group O's PKI
+                           #   half). Per-node certs are NOT here -- that's
+                           #   nodecontroller's existing CSR-signing flow,
+                           #   fed by the CA this module mints.
     kubeconfig.rs          # kubeconfig emission for kubectl and every
                             #   in-cluster component
-    rbac/                  # the ~90 system: ClusterRoles/ClusterRoleBindings
-                            #   from upstream bootstrappolicy
+    rbac.rs                 # **finding, 2026-08-22**: does NOT need to
+                             #   vendor/hand-build the ~90 system: Cluster-
+                             #   Roles/Bindings -- kube-apiserver's own
+                             #   `rbac/bootstrap-roles` PostStartHook
+                             #   creates and reconciles them whenever
+                             #   --authorization-mode includes RBAC, k3s or
+                             #   not (confirmed: setup-control-plane.sh has
+                             #   zero manual RBAC-object calls today). This
+                             #   module is a thin smoke-check instead.
     service_reconciler.rs   # the `kubernetes` default Service + endpoint
                              #   reconciler
-    manifests/               # CoreDNS + flannel manifests, applied via the
-                              #   generated kubeconfig once the apiserver is up
+    manifests.rs             # CoreDNS only, applied via the generated
+                              #   kubeconfig once the apiserver is up.
+                              #   Flannel is NOT a manifest in this project
+                              #   (it's cni.rs's host-level flanneld daemon,
+                              #   same as today's cni.sh) -- corrected as of
+                              #   this finding, the tree above previously
+                              #   said otherwise.
     targets/
       upstream.rs             # installs/runs kube-apiserver + kube-
                                #   controller-manager + kube-scheduler
@@ -124,8 +139,8 @@ Standard `CLAUDE.md` merge protocol applies, group by group, same as
 
 1. **Phase 1 (mergeable to `main` independently of `nodeapiserver`):**
    `toolchain.rs`, `containerd.rs`, `cni.rs`, `fetch.rs`, `components.rs`,
-   `targets/upstream.rs`, `pki/`, `kubeconfig.rs`, `rbac/`,
-   `service_reconciler.rs`, `manifests/`. Each is its own branch/PR, own
+   `targets/upstream.rs`, `pki.rs`, `kubeconfig.rs`, `rbac.rs`,
+   `service_reconciler.rs`, `manifests.rs`. Each is its own branch/PR, own
    e2e case, own gate — no long-lived integration branch needed for this
    phase since nothing here depends on unfinished `nodeapiserver` code.
    CI/CD (`build.yml`/`e2e.yml`/`release.yml`) cuts over to invoking

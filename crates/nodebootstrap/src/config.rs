@@ -61,6 +61,44 @@ pub struct Config {
 }
 
 impl Config {
+    /// Where `pki.rs` writes cert/key PEMs and `kubeconfig.rs` reads them
+    /// back from -- one shared path so the two modules can't drift, since
+    /// each subcommand (`nodebootstrap pki` / `nodebootstrap kubeconfig`)
+    /// is independently invokable and re-reads disk state rather than
+    /// passing an in-memory value between steps.
+    pub fn pki_dir(&self) -> std::path::PathBuf {
+        std::env::var("NODEBOOTSTRAP_PKI_DIR")
+            .unwrap_or_else(|_| "/var/lib/nodebootstrap/pki".to_string())
+            .into()
+    }
+
+    pub fn kubeconfig_dir(&self) -> std::path::PathBuf {
+        std::env::var("NODEBOOTSTRAP_KUBECONFIG_DIR")
+            .unwrap_or_else(|_| "/etc/nodebootstrap".to_string())
+            .into()
+    }
+
+    /// The apiserver address kubeconfigs point at. Defaults to real
+    /// upstream `kube-apiserver`'s own default bind port (6443) on
+    /// localhost -- correct once `targets::upstream` runs it there;
+    /// overridable for anything else (a remote apiserver, a throwaway-rig
+    /// test instance on a scratch port).
+    pub fn apiserver_server(&self) -> String {
+        std::env::var("NODEBOOTSTRAP_APISERVER_SERVER")
+            .unwrap_or_else(|_| "https://127.0.0.1:6443".to_string())
+    }
+
+    /// CoreDNS's own ClusterIP. Default matches `deploy/lib/
+    /// upstream-kube-apiserver.sh`'s `SERVICE_CIDR=10.43.0.0/16` default --
+    /// `.10` is the conventional k8s/k3s "tenth address in the service
+    /// CIDR" slot for cluster DNS.
+    pub fn cluster_dns_ip(&self) -> String {
+        std::env::var("NODEBOOTSTRAP_CLUSTER_DNS_IP").unwrap_or_else(|_| "10.43.0.10".to_string())
+    }
+
+    pub fn cluster_domain(&self) -> String {
+        std::env::var("NODEBOOTSTRAP_CLUSTER_DOMAIN").unwrap_or_else(|_| "cluster.local".to_string())
+    }
     pub fn from_env() -> Result<Self> {
         let flag = |name: &str| std::env::var(name).is_ok_and(|v| v == "1" || v == "true");
         let cni_provider = match std::env::var("NODEBOOTSTRAP_CNI").as_deref() {
