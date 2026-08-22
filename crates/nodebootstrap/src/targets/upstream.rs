@@ -231,15 +231,14 @@ fn apiserver_args(spec: &TargetSpec) -> Vec<String> {
         // resource.k8s.io/v1 (DRA) unconditionally on startup -- GA as of
         // K8S_VERSION's 1.34 (see that constant's own comment for the full
         // story: 1.33 doesn't serve this group/version at all, no flag
-        // fixes that). `--feature-gates=DynamicResourceAllocation=...` is
-        // deliberately NOT passed here: a feature gate for an
-        // already-GA'd feature can be a locked/removed name a newer
-        // apiserver refuses to start with at all -- a much worse failure
-        // than the 404 this is working around. `api/all=true` is a safe,
-        // generic "make sure every served group/version is on" net that
-        // doesn't reference a feature-gate name that might not exist
-        // anymore.
-        "--runtime-config=api/all=true".to_string(),
+        // fixes that), so no extra flag is needed here at all: a GA API is
+        // served by default. `--runtime-config=api/all=true` was tried
+        // here first and removed (found live): it turns on every alpha/
+        // experimental API group unconditionally, and one of them broke
+        // the `rbac/bootstrap-roles` PostStartHook `rbac.rs` depends on
+        // entirely -- readyz went from "ready" to permanently failing
+        // that hook. Enabling only what's actually needed, not "everything
+        // just in case", is the real lesson.
         "--v=1".to_string(),
     ]
 }
