@@ -22,6 +22,16 @@ fn main() -> Result<()> {
         .with(fmt::layer().with_target(false))
         .init();
 
+    // rustls 0.23 needs a process-wide CryptoProvider installed once
+    // before any TLS use (`targets/upstream.rs`'s readyz check builds a
+    // rustls::ClientConfig directly); without this it panics on first use
+    // rather than picking one automatically, even with only the "ring"
+    // feature enabled -- confirmed for real (round 1 of this crate's own
+    // e2e workflow, panicked mid-run with exactly this message).
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("a rustls CryptoProvider was already installed (unexpected -- this is the only place nodebootstrap installs one)"))?;
+
     let cmd = std::env::args().nth(1);
     match cmd.as_deref() {
         Some("toolchain") => nodebootstrap::toolchain::run(),
