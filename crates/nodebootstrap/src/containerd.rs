@@ -1,15 +1,14 @@
 //! containerd + runc install/verify — replaces
 //! `deploy/lib/container-runtime.sh`.
 //!
-//! **Scope cut, deliberate:** ports cgroup-mount verification, the
-//! presence/package-manager/official-prebuilt tiers, `config.toml`
-//! generation and the three patches this project depends on (nested-
-//! container native snapshotter, CDI device injection, the CRI-plugin
-//! `disabled_plugins` strip from the "Known CI gotcha" in `CLAUDE.md`), and
-//! starting containerd -- via its own distro-packaged systemd unit if one
-//! exists, `service_mgr.rs` (systemd -> OpenRC -> fallback loop) otherwise.
-//! Does **not** yet port `build_containerd_runc_from_source` (the deepest
-//! fallback, Go-toolchain-gated) -- rare, slow, queued as follow-up.
+//! Ports cgroup-mount verification, the presence/package-manager/official-
+//! prebuilt/from-source tiers (the last needs `toolchain::ensure_go`),
+//! `config.toml` generation and the three patches this project depends on
+//! (nested-container native snapshotter, CDI device injection, the
+//! CRI-plugin `disabled_plugins` strip from the "Known CI gotcha" in
+//! `CLAUDE.md`), and starting containerd -- via its own distro-packaged
+//! systemd unit if one exists, `service_mgr.rs` (systemd -> OpenRC ->
+//! fallback loop) otherwise.
 
 use anyhow::{Context, Result};
 
@@ -67,11 +66,86 @@ fn ensure_binaries(cfg: &Config) -> Result<()> {
         return Ok(());
     }
     fetch_prebuilt(cfg)?;
+    if crate::pkg::command_exists("containerd") && crate::pkg::command_exists("runc") {
+        return Ok(());
+    }
+    build_from_source(cfg)
+}
+
+/// Deepest fallback: build both from source. Needs Go and `git`.
+fn build_from_source(cfg: &Config) -> Result<()> {
+    tracing::warn!("no prebuilt containerd/runc for this arch -- building both from source (needs Go)");
+    crate::toolchain::ensure_go(cfg).context("containerd/runc's from-source build needs Go")?;
+    if !crate::pkg::command_exists("git") {
+        let names = PkgNames { apt: "git", dnf: "git", pacman: "git", apk: "git", zypper: "git", xbps: "git" };
+        let _ = pkg_install("git", &names);
+    }
+    anyhow::ensure!(crate::pkg::command_exists("git"), "need git to fetch containerd/runc source and couldn't get it");
+
+    let src_dir = cfg.src_dir();
+    let toolchain_bin = cfg.toolchain_dir().join("bin");
+    std::fs::create_dir_all(&toolchain_bin).context("creating toolchain bin dir")?;
+
+    if !crate::pkg::command_exists("runc") {
+        const RUNC_TAG: &str = "v1.1.14";
+        let runc_dir = src_dir.join("runc");
+        if !runc_dir.is_dir() {
+            git_clone_shallow("https://github.com/opencontainers/runc.git", RUNC_TAG, &runc_dir)?;
+        }
+        run_in("make", &[], &runc_dir)?;
+        install_binary(&runc_dir.join("runc"), &toolchain_bin.join("runc"))?;
+        crate::toolchain::put_toolchain_bin_on_path(cfg);
+    }
+    if !crate::pkg::command_exists("containerd") {
+        const CONTAINERD_TAG: &str = "v1.7.23";
+        let containerd_dir = src_dir.join("containerd");
+        if !containerd_dir.is_dir() {
+            git_clone_shallow("https://github.com/containerd/containerd.git", CONTAINERD_TAG, &containerd_dir)?;
+        }
+        run_in("make", &[], &containerd_dir)?;
+        install_binary(&containerd_dir.join("bin/containerd"), &toolchain_bin.join("containerd"))?;
+        let shim = containerd_dir.join("bin/containerd-shim-runc-v2");
+        if shim.exists() {
+            install_binary(&shim, &toolchain_bin.join("containerd-shim-runc-v2"))?;
+        }
+        crate::toolchain::put_toolchain_bin_on_path(cfg);
+    }
+
     anyhow::ensure!(
         crate::pkg::command_exists("containerd") && crate::pkg::command_exists("runc"),
-        "no containerd/runc after the package manager and official-prebuilt tiers -- the \
-         from-source fallback (build_containerd_runc_from_source) is not yet ported here"
+        "containerd/runc source build did not produce usable binaries"
     );
+    Ok(())
+}
+
+fn git_clone_shallow(url: &str, tag: &str, dest: &std::path::Path) -> Result<()> {
+    let status = std::process::Command::new("git")
+        .args(["clone", "--depth", "1", "--branch", tag, url])
+        .arg(dest)
+        .status()
+        .with_context(|| format!("cloning {url}"))?;
+    anyhow::ensure!(status.success(), "git clone {url} failed");
+    Ok(())
+}
+
+fn run_in(program: &str, args: &[&str], cwd: &std::path::Path) -> Result<()> {
+    let status = std::process::Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .status()
+        .with_context(|| format!("running {program} {} in {}", args.join(" "), cwd.display()))?;
+    anyhow::ensure!(status.success(), "{program} {} failed in {}", args.join(" "), cwd.display());
+    Ok(())
+}
+
+fn install_binary(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
+    std::fs::copy(src, dest).with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("making {} executable", dest.display()))?;
+    }
     Ok(())
 }
 

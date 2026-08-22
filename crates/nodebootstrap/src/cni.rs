@@ -1,10 +1,10 @@
 //! CNI setup — replaces `deploy/lib/cni.sh` + `deploy/run-flanneld.sh`.
 //!
-//! **Scope cut, deliberate:** ports the plugin-binary/config-file half
-//! faithfully (`ensure_cni_base_plugins`, `ensure_flannel_binaries`,
-//! `write_flannel_cni_conf` -- package manager -> official prebuilt tiers,
-//! matching `toolchain.rs`/`containerd.rs`'s same two-tier cut), and now
-//! starts `flanneld` itself via `service_mgr.rs`. The net-conf.json
+//! Ports the plugin-binary/config-file logic in full (`ensure_cni_base_
+//! plugins`, `ensure_flannel_binaries`, `write_flannel_cni_conf` --
+//! package manager -> official prebuilt -> from-source, matching
+//! `toolchain.rs`/`containerd.rs`'s same tiers), and starts `flanneld`
+//! itself via `service_mgr.rs`. The net-conf.json
 //! generation + default-interface detection that has to happen on *every*
 //! `flanneld` restart, not just at install time (a `Restart=always` unit
 //! only re-runs its `ExecStart`, never this crate -- see
@@ -183,11 +183,40 @@ fn ensure_cni_base_plugins(cfg: &Config) -> Result<()> {
         }
     }
 
-    anyhow::bail!(
-        "no CNI base plugins for arch '{arch}' after the package manager and official-prebuilt \
-         tiers -- the from-source fallback (containernetworking/plugins' build_linux.sh, Go-\
-         toolchain-gated) is not yet ported here"
-    )
+    build_cni_base_plugins_from_source(cfg, bin_dir)
+}
+
+/// Deepest fallback: clone `containernetworking/plugins` and run its own
+/// `build_linux.sh`. Needs Go.
+fn build_cni_base_plugins_from_source(cfg: &Config, bin_dir: &std::path::Path) -> Result<()> {
+    tracing::warn!("no prebuilt CNI plugins for this arch -- building from source (needs Go)");
+    crate::toolchain::ensure_go(cfg).context("CNI base plugins' from-source build needs Go")?;
+    if !crate::pkg::command_exists("git") {
+        let names = PkgNames { apt: "git", dnf: "git", pacman: "git", apk: "git", zypper: "git", xbps: "git" };
+        let _ = pkg_install("git", &names);
+    }
+    let src_dir = cfg.src_dir();
+    let plugins_dir = src_dir.join("plugins");
+    if !plugins_dir.is_dir() {
+        let status = std::process::Command::new("git")
+            .args(["clone", "--depth", "1", "--branch", "v1.5.1", "https://github.com/containernetworking/plugins.git"])
+            .arg(&plugins_dir)
+            .status()
+            .context("cloning containernetworking/plugins")?;
+        anyhow::ensure!(status.success(), "git clone containernetworking/plugins failed");
+    }
+    let status = std::process::Command::new("./build_linux.sh").current_dir(&plugins_dir).status().context("running build_linux.sh")?;
+    anyhow::ensure!(status.success(), "containernetworking/plugins' build_linux.sh failed");
+
+    for entry in std::fs::read_dir(plugins_dir.join("bin")).context("reading plugins/bin")? {
+        let entry = entry?;
+        let dest = bin_dir.join(entry.file_name());
+        std::fs::copy(entry.path(), &dest).with_context(|| format!("copying {}", dest.display()))?;
+        chmod_executable(&dest);
+    }
+    anyhow::ensure!(is_executable(&bin_dir.join("bridge")), "CNI base plugin source build did not produce usable binaries");
+    tracing::info!(dir = %bin_dir.display(), "CNI base plugins built from source");
+    Ok(())
 }
 
 fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
@@ -229,11 +258,10 @@ fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
             }
         }
     }
-    anyhow::ensure!(
-        crate::pkg::command_exists("flanneld"),
-        "no flanneld for arch '{arch}' after the package manager and official-prebuilt tiers -- \
-         the from-source fallback is not yet ported here"
-    );
+    if !crate::pkg::command_exists("flanneld") {
+        build_flanneld_from_source(cfg, &toolchain_bin)?;
+    }
+    anyhow::ensure!(crate::pkg::command_exists("flanneld"), "could not obtain a flanneld binary for arch '{arch}'");
 
     let cni_flannel = std::path::Path::new(CNI_BIN_DIR).join("flannel");
     if !is_executable(&cni_flannel) {
@@ -245,11 +273,65 @@ fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
             chmod_executable(&cni_flannel);
         }
     }
-    anyhow::ensure!(
-        is_executable(&cni_flannel),
-        "could not obtain the flannel CNI plugin binary for arch '{arch}' -- the from-source \
-         fallback is not yet ported here"
-    );
+    if !is_executable(&cni_flannel) {
+        build_flannel_cni_plugin_from_source(cfg, goarch, &cni_flannel)?;
+    }
+    anyhow::ensure!(is_executable(&cni_flannel), "could not obtain the flannel CNI plugin binary for arch '{arch}'");
+    Ok(())
+}
+
+/// Deepest fallback: clone `flannel-io/flannel` and `make dist/flanneld`.
+/// Needs Go.
+fn build_flanneld_from_source(cfg: &Config, toolchain_bin: &std::path::Path) -> Result<()> {
+    tracing::warn!("no prebuilt flanneld for this arch -- building from source (needs Go)");
+    crate::toolchain::ensure_go(cfg).context("flanneld's from-source build needs Go")?;
+    if !crate::pkg::command_exists("git") {
+        let names = PkgNames { apt: "git", dnf: "git", pacman: "git", apk: "git", zypper: "git", xbps: "git" };
+        let _ = pkg_install("git", &names);
+    }
+    let flannel_dir = cfg.src_dir().join("flannel");
+    if !flannel_dir.is_dir() {
+        let status = std::process::Command::new("git")
+            .args(["clone", "--depth", "1", "--branch", "v0.25.6", "https://github.com/flannel-io/flannel.git"])
+            .arg(&flannel_dir)
+            .status()
+            .context("cloning flannel-io/flannel")?;
+        anyhow::ensure!(status.success(), "git clone flannel-io/flannel failed");
+    }
+    let status =
+        std::process::Command::new("make").arg("dist/flanneld").current_dir(&flannel_dir).status().context("running make dist/flanneld")?;
+    anyhow::ensure!(status.success(), "flannel-io/flannel's make dist/flanneld failed");
+
+    let dest = toolchain_bin.join("flanneld");
+    std::fs::copy(flannel_dir.join("dist/flanneld"), &dest).with_context(|| format!("copying {}", dest.display()))?;
+    chmod_executable(&dest);
+    crate::toolchain::put_toolchain_bin_on_path(cfg);
+    tracing::info!("flanneld built from source");
+    Ok(())
+}
+
+/// Deepest fallback: clone `flannel-io/cni-plugin` and run its own
+/// `build.sh`. Needs Go.
+fn build_flannel_cni_plugin_from_source(cfg: &Config, goarch: Option<&str>, dest: &std::path::Path) -> Result<()> {
+    tracing::warn!("no prebuilt flannel CNI plugin for this arch -- building from source (needs Go)");
+    crate::toolchain::ensure_go(cfg).context("the flannel CNI plugin's from-source build needs Go")?;
+    let cni_plugin_dir = cfg.src_dir().join("cni-plugin");
+    if !cni_plugin_dir.is_dir() {
+        let status = std::process::Command::new("git")
+            .args(["clone", "--depth", "1", "--branch", "v1.6.0-flannel1", "https://github.com/flannel-io/cni-plugin.git"])
+            .arg(&cni_plugin_dir)
+            .status()
+            .context("cloning flannel-io/cni-plugin")?;
+        anyhow::ensure!(status.success(), "git clone flannel-io/cni-plugin failed");
+    }
+    let status = std::process::Command::new("./build.sh").current_dir(&cni_plugin_dir).status().context("running build.sh")?;
+    anyhow::ensure!(status.success(), "flannel-io/cni-plugin's build.sh failed");
+
+    let goarch = goarch.unwrap_or("amd64");
+    let built = cni_plugin_dir.join(format!("dist/flannel-{goarch}"));
+    std::fs::copy(&built, dest).with_context(|| format!("copying {} to {}", built.display(), dest.display()))?;
+    chmod_executable(dest);
+    tracing::info!(path = %dest.display(), "flannel CNI plugin built from source");
     Ok(())
 }
 

@@ -123,6 +123,35 @@ crates/nodebootstrap/
 only `targets/*.rs` knows how to install and start a specific apiserver/
 controller-manager/scheduler combination.
 
+## `nodebootstrap` as a `notk8s` applet, and self-replacement (noted 2026-08-22)
+
+**`nodebootstrap` is very likely a candidate to ship as an applet inside the
+combined `notk8s` binary itself** (`CLAUDE.md`'s "Two build layouts" --
+`crates/notk8s` dispatches on `argv[0]`/a `notk8s <component>` subcommand,
+one row in `deploy/lib/components.sh` + `crates/notk8s/Cargo.toml`'s
+optional-dependency table + its `APPLETS` table), not just a standalone
+installer invoked once and thrown away. Consequence worth designing for,
+not yet acted on: **a deployed `notk8s` binary needs to be able to build or
+fetch a *replacement for itself*, using the exact same `fetch.rs` logic
+that installed it in the first place** -- not a separate "self-update"
+code path. `fetch.rs`'s `Source::Compile`/`Source::Release` already do
+"produce a binary" generically per `components.rs`'s table; the only new
+piece is atomically swapping the *running* binary's own file (or its
+`bin/<component>` symlinks) for the newly built/fetched one -- safe on
+Linux because replacing a file by path doesn't affect a process already
+running off the old inode (rename-into-place, not overwrite-in-place, is
+the mechanism every self-updating Unix tool uses). Also relevant to the
+`ln -s e2e not-k8s && e2e` / `notk8s --e2e` idea raised in the same
+conversation: if `nodebootstrap` becomes an applet, the same argv[0]/flag
+dispatch `notk8s` already has for `nodelet`/`nodeproxy`/etc. is the natural
+place for a `notk8s --nodebootstrap` (or `bootstrap`) entry point too, and
+potentially an `e2e` applet wrapping the `deploy/lib/test/*.sh` harness
+this plan's "shell scripts stay until fully replaced" position already
+carves out as the one thing not migrating to Rust. Not designed further
+yet -- flagging the shape of the problem for whoever picks up the
+`notk8s`-applet-integration PR, which is downstream of Phase 1 actually
+landing on `main`.
+
 ## Testing strategy
 
 Same shape as `deploy/lib/test/cases/datastore.sh` (drives the real gRPC API
@@ -174,9 +203,9 @@ comment for the specifics and what's queued next:
 | `kubeconfig.rs` | ✅ real | n/a |
 | `rbac.rs` | ✅ real (thin verify -- see the finding in its doc comment) | n/a |
 | `manifests.rs` | ✅ real (CoreDNS only -- flannel corrected out of scope, see its doc comment) | n/a |
-| `toolchain.rs` | ✅ real (rust, protoc: package manager -> official prebuilt) | ❌ not ported: gcc/go/protoc-from-source, musl.cc |
-| `containerd.rs` | ✅ real (package manager -> official prebuilt; config.toml + this project's 3 required patches; starts via its own distro unit or `service_mgr.rs`) | ❌ not ported: from-source containerd/runc build |
-| `cni.rs` | ✅ real (plugin binaries + flannel binary + CNI conf: package manager -> official prebuilt; starts `flanneld` via `service_mgr.rs` + a vendored `run-flanneld.sh` wrapper -- see `vendor/README.md`) | ❌ not ported: from-source builds |
+| `toolchain.rs` | ✅ real, every tier (rust: package manager -> rustup; protoc: package manager -> official prebuilt -> from-source autotools build; C toolchain: package manager -> musl.cc static prebuilt -> from-source gcc+binutils build; Go: package manager -> official prebuilt -> from-source 3-stage bootstrap) | n/a |
+| `containerd.rs` | ✅ real, every tier (package manager -> official prebuilt -> from-source, needs `toolchain::ensure_go`; config.toml + this project's 3 required patches; starts via its own distro unit or `service_mgr.rs`) | n/a |
+| `cni.rs` | ✅ real, every tier (plugin binaries + flannel binary + flannel CNI plugin: package manager -> official prebuilt -> from-source, all needing `toolchain::ensure_go`; starts `flanneld` via `service_mgr.rs` + a vendored `run-flanneld.sh` wrapper -- see `vendor/README.md`) | n/a |
 | `fetch.rs` | ✅ real for both `Source::Compile` (version-stamp + `cargo build` per layout) and `Source::Release` (GitHub Releases API resolution + asset download, confirmed against this repo's own real published release naming) | n/a |
 | `targets/upstream.rs` | ✅ real (binary fetch, full flag-set construction, and starts all three via `service_mgr.rs`, with a best-effort `/readyz` wait between apiserver and the other two) | n/a |
 | `components.rs` | ✅ real (static table, mirrors `components.sh`) | n/a |
