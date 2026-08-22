@@ -214,6 +214,15 @@ fn apiserver_args(spec: &TargetSpec) -> Vec<String> {
         "--enable-admission-plugins=NodeRestriction".to_string(),
         "--allow-privileged=true".to_string(),
         "--anonymous-auth=false".to_string(),
+        // nodescheduler (this project's own, already built on main) watches
+        // resource.k8s.io (DRA) unconditionally on startup. Found live: on
+        // v1.33.13 with neither of these, that API group isn't served at
+        // all (404, not 403 -- a different failure than rbac.rs's DRA-grant
+        // finding, hit right after fixing that one). `api/all=true` is
+        // blunt but sidesteps having to track the exact beta/alpha version
+        // string resource.k8s.io ships as on this particular patch release.
+        "--feature-gates=DynamicResourceAllocation=true".to_string(),
+        "--runtime-config=api/all=true".to_string(),
         "--v=1".to_string(),
     ]
 }
