@@ -33,20 +33,22 @@ use anyhow::Result;
 ///
 /// `services::ensure_nodestore` runs before `targets` -- `targets/
 /// upstream.rs` orders `kube-apiserver.service` `After=nodestore.service`,
-/// so nodestore has to actually be installed and enabled first. `cni`
-/// deliberately runs **after** `targets`, not before: `flanneld`'s
-/// kube-subnet-mgr mode needs a live kubeconfig pointed at a reachable
-/// apiserver, same ordering constraint `cni.sh`'s own `start_flanneld`
-/// comment documents ("flanneld needs a KUBECONFIG (control plane must be
-/// up first)"). `targets::run_with` itself runs after `pki`/`kubeconfig`
-/// (it needs the minted PKI to start the apiserver trusting it) and before
-/// `rbac`/`service_reconciler`/`manifests` (all three need a reachable
-/// apiserver to apply against). `nodelet`/`nodeproxy` run last, after
-/// containerd/CNI/the apiserver are all up -- same order
-/// `bootstrap-source.sh` uses today. `nodescheduler`/`nodecontroller` are
-/// deliberately **not** called here -- see `services.rs`'s own doc comment
-/// on why (they'd race the upstream `kube-scheduler`/`kube-controller-
-/// manager` `targets::run_with` just started).
+/// so nodestore has to actually be installed and enabled first.
+/// `nodescheduler`/`nodecontroller` run right after `targets` -- they
+/// *are* this project's kube-scheduler/kube-controller-manager
+/// replacements (`targets/upstream.rs` only installs `kube-apiserver` now;
+/// see that module's and `services.rs`'s doc comments), so they take the
+/// slot the upstream binaries used to occupy. `cni` deliberately runs
+/// **after** those, not before: `flanneld`'s kube-subnet-mgr mode needs a
+/// live kubeconfig pointed at a reachable apiserver, same ordering
+/// constraint `cni.sh`'s own `start_flanneld` comment documents
+/// ("flanneld needs a KUBECONFIG (control plane must be up first)").
+/// `targets::run_with` itself runs after `pki`/`kubeconfig` (it needs the
+/// minted PKI to start the apiserver trusting it) and before `rbac`/
+/// `service_reconciler`/`manifests` (all three need a reachable apiserver
+/// to apply against). `nodelet`/`nodeproxy` run last, after containerd/
+/// CNI/the apiserver/scheduler/controller-manager are all up -- same
+/// order `bootstrap-source.sh` uses today.
 pub fn run_all() -> Result<()> {
     let cfg = config::Config::from_env()?;
     toolchain::run_with(&cfg)?;
@@ -56,6 +58,8 @@ pub fn run_all() -> Result<()> {
     kubeconfig::run_with(&cfg)?;
     services::ensure_nodestore(&cfg)?;
     targets::run_with(&cfg)?;
+    services::ensure_nodescheduler(&cfg)?;
+    services::ensure_nodecontroller(&cfg)?;
     cni::run_with(&cfg)?;
     rbac::run_with(&cfg)?;
     service_reconciler::run_with(&cfg)?;

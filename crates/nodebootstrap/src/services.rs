@@ -1,37 +1,33 @@
-//! Installs this project's own components -- `nodestore`, `nodelet`,
-//! `nodeproxy`, and (opt-in, not yet wired into `run_all`) `nodescheduler`/
-//! `nodecontroller` -- as real, persistent, auto-restarting services via
-//! `service_mgr.rs`. Replaces `deploy/lib/{nodestore,nodelet,nodeproxy,
-//! nodescheduler,nodecontroller}-service.sh`.
+//! Installs this project's own components -- `nodestore`, `nodescheduler`,
+//! `nodecontroller`, `nodelet`, `nodeproxy` -- as real, persistent,
+//! auto-restarting services via `service_mgr.rs`. Replaces
+//! `deploy/lib/{nodestore,nodelet,nodeproxy,nodescheduler,
+//! nodecontroller}-service.sh`.
 //!
 //! **Binary location**: every one of `fetch.rs`'s two paths
 //! (`Source::Compile`/`Source::Release`) now stages its output at
 //! `Config::toolchain_dir()/bin/<component-name>` -- one canonical
 //! location this module looks in regardless of how the binary got there.
 //!
-//! **Credentials**: every component here uses the same `admin.kubeconfig`
-//! `kubeconfig.rs` already writes -- matching current production behavior
-//! exactly (`bootstrap-source.sh` points `nodelet`/`nodeproxy`/
-//! `nodescheduler`/`nodecontroller` at the same admin/cluster-admin
-//! kubeconfig today; there is no existing per-component RBAC restriction
-//! to preserve or regress). Tightening this to per-component identities
-//! (a real `system:node:<name>` cert for `nodelet` via `nodecontroller`'s
-//! own CSR-signing flow, dedicated certs for the others) would be a new
-//! improvement over current behavior, not something this port owes --
-//! tracked as follow-up, not a gap introduced here.
+//! **`nodescheduler`/`nodecontroller` are the default, not upstream's
+//! binaries** (decided 2026-08-22, user direction): `targets/upstream.rs`
+//! installs only `kube-apiserver` now, specifically because these two
+//! already exist and are already built on `main` -- there is no reason to
+//! run the upstream `kube-scheduler`/`kube-controller-manager` binaries
+//! they exist to replace. They use the `kube-scheduler.kubeconfig`/
+//! `kube-controller-manager.kubeconfig` `pki.rs`/`kubeconfig.rs` already
+//! mint for exactly those two identities (`system:kube-scheduler`/
+//! `system:kube-controller-manager`) -- not `admin.kubeconfig`, unlike
+//! `nodelet`/`nodeproxy` below.
 //!
-//! **`nodescheduler`/`nodecontroller` are not wired into `run_all`.**
-//! `targets/upstream.rs` currently installs real upstream `kube-scheduler`/
-//! `kube-controller-manager` unconditionally -- running this project's own
-//! replacements *at the same time* would be two schedulers/controller-
-//! managers racing over the same objects, exactly the failure `CLAUDE.md`
-//! warns `components.sh`'s `want_nodescheduler`/`want_nodecontroller`
-//! guards against. Wiring the swap (skip the upstream binary when
-//! `NODEBOOTSTRAP_SCHEDULER=nodescheduler`/`NODEBOOTSTRAP_CONTROLLER_
-//! MANAGER=nodecontroller` is set) is real follow-up work in
-//! `targets/upstream.rs`, not this module -- `ensure_nodescheduler`/
-//! `ensure_nodecontroller` are real and callable, just not auto-invoked
-//! yet.
+//! **`nodelet`/`nodeproxy` use `admin.kubeconfig`** -- matching current
+//! production behavior exactly (`bootstrap-source.sh` points them at the
+//! same admin/cluster-admin kubeconfig today; there is no existing
+//! per-component RBAC restriction to preserve or regress here).
+//! Tightening this to a real `system:node:<name>` cert for `nodelet` via
+//! `nodecontroller`'s own CSR-signing flow would be a new improvement over
+//! current behavior, not something this port owes -- tracked as
+//! follow-up, not a gap introduced here.
 
 use anyhow::{Context, Result};
 
@@ -46,13 +42,16 @@ fn admin_kubeconfig(cfg: &Config) -> String {
     cfg.kubeconfig_dir().join("admin.kubeconfig").to_string_lossy().to_string()
 }
 
-/// The three components `run_all()` wires in by default, in the same
-/// order it does (nodestore first -- see this module's doc comment on
-/// ordering; nodelet/nodeproxy last). Does **not** include
-/// `nodescheduler`/`nodecontroller` -- opt-in only, see this module's doc
-/// comment.
+/// Every component this module owns, in the same order `run_all()` calls
+/// them in directly (not through this function -- `run_all()` interleaves
+/// `nodescheduler`/`nodecontroller` with `targets`/`cni`/`rbac`/etc., so it
+/// calls each `ensure_*` itself rather than going through this bundle).
+/// This is the convenience entry point for the `nodebootstrap services`
+/// subcommand, run standalone.
 pub fn run_with(cfg: &Config) -> Result<()> {
     ensure_nodestore(cfg)?;
+    ensure_nodescheduler(cfg)?;
+    ensure_nodecontroller(cfg)?;
     ensure_nodelet(cfg)?;
     ensure_nodeproxy(cfg)?;
     Ok(())
@@ -82,10 +81,10 @@ pub fn ensure_nodestore(cfg: &Config) -> Result<()> {
     .context("installing nodestore as a supervised service")
 }
 
-/// Not yet called from `run_all()` -- `nodelet` additionally needs
-/// containerd/CNI (`containerd.rs`/`cni.rs`) and a reachable apiserver
-/// (`targets::run_with`) to be meaningfully useful, so a caller wires this
-/// in after those, same ordering `bootstrap-source.sh` uses today.
+/// Called last in `run_all()`, after containerd/CNI (`containerd.rs`/
+/// `cni.rs`) and a reachable apiserver (`targets::run_with`) -- `nodelet`
+/// needs both to be meaningfully useful, same ordering `bootstrap-
+/// source.sh` uses today.
 pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
     let bin = binary_path(cfg, "nodelet");
     anyhow::ensure!(bin.exists(), "no nodelet binary at {} -- run `nodebootstrap fetch` first", bin.display());
@@ -104,10 +103,12 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
     .context("installing nodelet as a supervised service")
 }
 
-/// Not yet called from `run_all()` -- see `ensure_nodelet`'s doc comment;
-/// same ordering applies. Skipped entirely by a caller when
+/// Called last in `run_all()`, alongside `ensure_nodelet` (same ordering
+/// reasoning). A caller should skip this entirely when
 /// `NODEBOOTSTRAP_PROXY=none` (this project's Service routing may be
-/// something else -- Cilium, a real kube-proxy -- or nothing).
+/// something else -- Cilium, a real kube-proxy -- or nothing); `run_all()`
+/// doesn't check that yet -- tracked alongside the other not-yet-wired
+/// skip flags.
 pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
     let bin = binary_path(cfg, "nodeproxy");
     anyhow::ensure!(bin.exists(), "no nodeproxy binary at {} -- run `nodebootstrap fetch` first", bin.display());
@@ -127,13 +128,15 @@ pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
     .context("installing nodeproxy as a supervised service")
 }
 
-/// Real, callable, but **not** wired into `run_all()` -- see this module's
-/// doc comment on why (races with `targets/upstream.rs`'s unconditional
-/// upstream `kube-scheduler` until that module learns to skip it).
+/// Wired into `run_all()` right after `targets::run_with` -- replaces
+/// upstream `kube-scheduler` outright (see this module's doc comment).
+/// Uses `kube-scheduler.kubeconfig`, not `admin.kubeconfig`: `pki.rs`
+/// already minted the `system:kube-scheduler` identity for exactly this
+/// purpose.
 pub fn ensure_nodescheduler(cfg: &Config) -> Result<()> {
     let bin = binary_path(cfg, "nodescheduler");
     anyhow::ensure!(bin.exists(), "no nodescheduler binary at {} -- run `nodebootstrap fetch` first", bin.display());
-    let kubeconfig = admin_kubeconfig(cfg);
+    let kubeconfig = cfg.kubeconfig_dir().join("kube-scheduler.kubeconfig").to_string_lossy().to_string();
     service_mgr::install(
         cfg,
         &SupervisedService {
@@ -147,13 +150,23 @@ pub fn ensure_nodescheduler(cfg: &Config) -> Result<()> {
     .context("installing nodescheduler as a supervised service")
 }
 
-/// Real, callable, but **not** wired into `run_all()` -- see this module's
-/// doc comment (same reasoning as `ensure_nodescheduler`, against upstream
-/// `kube-controller-manager`).
+/// Wired into `run_all()` right after `targets::run_with` -- replaces
+/// upstream `kube-controller-manager` outright (see this module's doc
+/// comment). Uses `kube-controller-manager.kubeconfig`, not
+/// `admin.kubeconfig`: `pki.rs` already minted the `system:kube-
+/// controller-manager` identity for exactly this purpose.
 pub fn ensure_nodecontroller(cfg: &Config) -> Result<()> {
     let bin = binary_path(cfg, "nodecontroller");
     anyhow::ensure!(bin.exists(), "no nodecontroller binary at {} -- run `nodebootstrap fetch` first", bin.display());
-    let kubeconfig = admin_kubeconfig(cfg);
+    let kubeconfig = cfg.kubeconfig_dir().join("kube-controller-manager.kubeconfig").to_string_lossy().to_string();
+    // nodecontroller's own certificatesigningrequest-signing-controller
+    // otherwise searches a fixed list of well-known CA paths (k3s's, ...)
+    // that don't include pki.rs's own -- point it at the real cluster CA
+    // explicitly so CSR signing actually works, not just silently disabled
+    // with a warning (nodecontroller's own load_signing_ca() behavior when
+    // no candidate is found).
+    let ca_cert = cfg.pki_dir().join("ca.crt").to_string_lossy().to_string();
+    let ca_key = cfg.pki_dir().join("ca.key").to_string_lossy().to_string();
     service_mgr::install(
         cfg,
         &SupervisedService {
@@ -161,7 +174,11 @@ pub fn ensure_nodecontroller(cfg: &Config) -> Result<()> {
             description: "nodecontroller -- not-k8s controller manager (kube-controller-manager replacement)",
             exec_cmd: &bin.to_string_lossy(),
             after: Some("kube-apiserver.service"),
-            env: &[("KUBECONFIG", &kubeconfig)],
+            env: &[
+                ("KUBECONFIG", &kubeconfig),
+                ("NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH", &ca_cert),
+                ("NODECONTROLLER_CSR_SIGNING_CA_KEY_PATH", &ca_key),
+            ],
         },
     )
     .context("installing nodecontroller as a supervised service")

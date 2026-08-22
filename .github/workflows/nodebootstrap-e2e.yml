@@ -37,12 +37,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-toolchain
 
-      - name: cargo build (nodestore, nodelet, nodeproxy, nodebootstrap, debug)
+      - name: cargo build (nodestore, nodelet, nodeproxy, nodescheduler, nodecontroller, nodebootstrap, debug)
         run: |
           set -e
           cargo build -p nodestore
           cargo build -p nodelet
           cargo build -p nodeproxy
+          cargo build -p nodescheduler
+          cargo build -p nodecontroller
           cargo build -p nodebootstrap
 
       - name: Stage binaries where nodebootstrap's services.rs expects them
@@ -50,7 +52,7 @@ jobs:
           set -e
           dest=/var/lib/nodebootstrap/toolchain/bin
           sudo mkdir -p "$dest"
-          for bin in nodestore nodelet nodeproxy; do
+          for bin in nodestore nodelet nodeproxy nodescheduler nodecontroller; do
             sudo install -m0755 "target/debug/$bin" "$dest/$bin"
           done
 
@@ -85,11 +87,20 @@ jobs:
       - name: nodebootstrap kubeconfig (real kubeconfig emission)
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap kubeconfig
 
-      - name: nodebootstrap targets (fetches + starts real upstream kube-apiserver/kube-controller-manager/kube-scheduler)
+      - name: nodebootstrap targets (fetches + starts real upstream kube-apiserver)
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap targets
 
       - name: Real kubectl against the real apiserver
         run: sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get --raw=/readyz
+
+      - name: nodebootstrap nodescheduler + nodecontroller (this project's own, not upstream's)
+        run: |
+          set -e
+          sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap nodescheduler
+          sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap nodecontroller
+          sleep 3
+          sudo systemctl is-active --quiet nodescheduler || { sudo journalctl -u nodescheduler -n 100 --no-pager; exit 1; }
+          sudo systemctl is-active --quiet nodecontroller || { sudo journalctl -u nodecontroller -n 100 --no-pager; exit 1; }
 
       - name: nodebootstrap rbac (verifies kube-apiserver self-bootstrapped RBAC)
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap rbac
@@ -124,10 +135,25 @@ jobs:
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get nodes -o wide
           [ "$status" = "Ready" ] || { echo "node never reached Ready"; exit 1; }
 
+      - name: Real pod through nodescheduler + nodelet (mock runtime) end to end
+        run: |
+          set -e
+          sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig run smoke-test --image=does-not-matter --restart=Never
+          for _ in $(seq 1 30); do
+            phase="$(sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get pod smoke-test -o jsonpath='{.status.phase}' 2>/dev/null)"
+            node="$(sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get pod smoke-test -o jsonpath='{.spec.nodeName}' 2>/dev/null)"
+            [ -n "$node" ] && [ "$phase" = "Running" ] && break
+            sleep 2
+          done
+          sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get pod smoke-test -o wide
+          [ -n "$node" ] || { echo "pod was never scheduled to a node (nodescheduler)"; exit 1; }
+          [ "$phase" = "Running" ] || { echo "pod never reached Running (nodelet)"; exit 1; }
+
       - name: Dump logs on failure
         if: failure()
         run: |
-          for svc in nodestore kube-apiserver kube-controller-manager kube-scheduler nodelet nodeproxy; do
+          for svc in nodestore kube-apiserver nodescheduler nodecontroller nodelet nodeproxy; do
             echo "== journalctl -u $svc =="
             sudo journalctl -u "$svc" -n 100 --no-pager || true
           done
+          sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig describe pod smoke-test 2>/dev/null || true

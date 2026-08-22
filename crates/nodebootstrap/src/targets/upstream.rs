@@ -1,21 +1,24 @@
-//! Installs real upstream `kube-apiserver` + `kube-controller-manager` +
-//! `kube-scheduler` against `nodestore`, wired up with the PKI `pki.rs`
-//! minted (not k3s's) -- `main`'s default target.
+//! Installs real upstream `kube-apiserver` against `nodestore`, wired up
+//! with the PKI `pki.rs` minted (not k3s's) -- `main`'s default target for
+//! the one piece not yet replaced by `nodeapiserver`.
 //!
-//! Replaces `deploy/lib/upstream-kube-apiserver.sh` /
-//! `upstream-kube-controller-manager.sh` / `upstream-kube-scheduler.sh` --
-//! but where those scripts deliberately *borrow* k3s's already-generated
-//! PKI (see `upstream-kube-apiserver.sh`'s header comment: nothing else
-//! minted one), this target starts from `pki.rs`'s own output instead, so
-//! there is no k3s in the loop at all.
+//! Replaces `deploy/lib/upstream-kube-apiserver.sh` -- but where that
+//! script deliberately *borrows* k3s's already-generated PKI (see its
+//! header comment: nothing else minted one), this target starts from
+//! `pki.rs`'s own output instead, so there is no k3s in the loop at all.
 //!
-//! Fetches the three binaries, builds their real flag sets, and starts each
-//! as a `service_mgr.rs`-supervised service (systemd -> OpenRC -> fallback
-//! loop, same as `containerd.rs`). `kube-controller-manager` and
-//! `kube-scheduler` are ordered `After=`/`depend()` on `kube-apiserver`
-//! (matching real Kubernetes' own startup order expectation: both dial the
-//! apiserver on their own retry loop, so this is a readiness nicety, not a
-//! hard requirement, same as upstream's own docs describe).
+//! **`kube-controller-manager`/`kube-scheduler` are deliberately NOT
+//! installed here** (decided 2026-08-22, user direction -- overriding this
+//! module's earlier "measure against real upstream" framing, which
+//! `upstream-kube-controller-manager.sh`/`upstream-kube-scheduler.sh`
+//! still do for that purpose). `nodecontroller`/`nodescheduler` already
+//! exist and are already built on `main` -- there is no reason to run the
+//! upstream binaries they exist to replace. `services.rs`'s
+//! `ensure_nodecontroller`/`ensure_nodescheduler` fill that role instead,
+//! wired into `run_all()` right after this module's `kube-apiserver`
+//! install, using the `kube-controller-manager.kubeconfig`/`kube-
+//! scheduler.kubeconfig` `pki.rs`/`kubeconfig.rs` already mint for exactly
+//! those two identities.
 
 use anyhow::{Context, Result};
 
@@ -32,15 +35,11 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     let arch = k8s_dl_arch(&cfg.arch()).with_context(|| format!("unsupported arch for upstream binaries: {}", cfg.arch()))?;
     let bin_dir = cfg.toolchain_dir().join("bin");
     std::fs::create_dir_all(&bin_dir).context("creating toolchain bin dir")?;
-
-    for bin in ["kube-apiserver", "kube-controller-manager", "kube-scheduler"] {
-        fetch_binary(bin, arch, &bin_dir)?;
-    }
+    fetch_binary("kube-apiserver", arch, &bin_dir)?;
 
     let advertise_address = detect_advertise_address();
     let spec = TargetSpec {
         pki_dir: cfg.pki_dir(),
-        kubeconfig_dir: cfg.kubeconfig_dir(),
         etcd_pki_dir: nodestore_client_pki_dir(),
         etcd_servers: nodestore_etcd_servers(),
         advertise_address,
@@ -61,57 +60,19 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     .context("installing kube-apiserver as a supervised service")?;
 
     wait_for_readyz(&spec);
-
-    let cm_exec = format!(
-        "{} {}",
-        bin_dir.join("kube-controller-manager").display(),
-        controller_manager_args(&spec).join(" ")
-    );
-    service_mgr::install(
-        cfg,
-        &SupervisedService {
-            name: "kube-controller-manager",
-            description: "Real upstream kube-controller-manager (not-k8s, no k3s)",
-            exec_cmd: &cm_exec,
-            after: Some("kube-apiserver.service"),
-            env: &[],
-        },
-    )
-    .context("installing kube-controller-manager as a supervised service")?;
-
-    let sched_exec = format!("{} {}", bin_dir.join("kube-scheduler").display(), scheduler_args(&spec).join(" "));
-    service_mgr::install(
-        cfg,
-        &SupervisedService {
-            name: "kube-scheduler",
-            description: "Real upstream kube-scheduler (not-k8s, no k3s)",
-            exec_cmd: &sched_exec,
-            after: Some("kube-apiserver.service"),
-            env: &[],
-        },
-    )
-    .context("installing kube-scheduler as a supervised service")?;
-
     Ok(())
 }
 
-/// Best-effort: polls `/readyz` with the admin client cert (`--anonymous-
-/// auth=false` above means an anonymous request gets a real 401, not a
-/// "not ready yet" -- same reasoning `upstream-kube-apiserver.sh`'s own
-/// wait loop documents). Not a hard failure on timeout -- `kube-controller-
-/// manager`/`kube-scheduler` retry connecting to the apiserver on their own
-/// regardless, so this is a readiness nicety for clearer logs, not a
-/// correctness requirement.
 /// A real Rust TLS client (`ureq` + a `rustls::ClientConfig` trusting only
 /// `pki.rs`'s own CA), not a `curl` subprocess. Deliberately checks "did
 /// the apiserver answer at all" rather than "did `/readyz` return 200":
 /// `--anonymous-auth=false` (set in `apiserver_args`) means an
 /// unauthenticated request gets a real `401`, not a connection failure --
 /// which is already proof the apiserver is up and terminating TLS
-/// correctly. Presenting the admin client cert to get an authenticated
-/// `200` instead would need `rustls::ClientConfig::with_client_auth_cert`
-/// on top of this; not worth the extra complexity for a best-effort,
-/// non-fatal readiness nicety (see this function's caller).
+/// correctly. Not a hard failure on timeout -- `nodecontroller`/
+/// `nodescheduler` (started right after this, by `run_all()`) retry
+/// connecting to the apiserver on their own regardless, so this is a
+/// readiness nicety for clearer logs, not a correctness requirement.
 fn wait_for_readyz(spec: &TargetSpec) {
     let agent = match trusting_agent(&spec.pki_dir.join("ca.crt")) {
         Ok(agent) => agent,
@@ -219,11 +180,6 @@ fn detect_advertise_address() -> String {
 
 struct TargetSpec {
     pki_dir: std::path::PathBuf,
-    /// Where `kubeconfig::write_all` wrote the static kubeconfigs -- a
-    /// separate dir from `pki_dir` (see `Config::kubeconfig_dir`), so
-    /// `kube-controller-manager`/`kube-scheduler`'s `--kubeconfig` flags
-    /// must be built from this, not `pki_dir`.
-    kubeconfig_dir: std::path::PathBuf,
     etcd_pki_dir: std::path::PathBuf,
     etcd_servers: String,
     advertise_address: String,
@@ -262,26 +218,6 @@ fn apiserver_args(spec: &TargetSpec) -> Vec<String> {
     ]
 }
 
-fn controller_manager_args(spec: &TargetSpec) -> Vec<String> {
-    let pki = |name: &str| spec.pki_dir.join(name).display().to_string();
-    vec![
-        format!("--kubeconfig={}", spec.kubeconfig_dir.join("kube-controller-manager.kubeconfig").display()),
-        format!("--service-account-private-key-file={}", pki("sa.key")),
-        format!("--cluster-signing-cert-file={}", pki("ca.crt")),
-        format!("--cluster-signing-key-file={}", pki("ca.key")),
-        format!("--root-ca-file={}", pki("ca.crt")),
-        format!("--service-cluster-ip-range={}", spec.service_cidr),
-        "--use-service-account-credentials=true".to_string(),
-        "--allocate-node-cidrs=true".to_string(),
-        "--cluster-cidr=10.42.0.0/16".to_string(),
-        "--v=1".to_string(),
-    ]
-}
-
-fn scheduler_args(spec: &TargetSpec) -> Vec<String> {
-    vec![format!("--kubeconfig={}", spec.kubeconfig_dir.join("kube-scheduler.kubeconfig").display()), "--v=1".to_string()]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,7 +225,6 @@ mod tests {
     fn test_spec() -> TargetSpec {
         TargetSpec {
             pki_dir: "/var/lib/nodebootstrap/pki".into(),
-            kubeconfig_dir: "/etc/nodebootstrap".into(),
             etcd_pki_dir: "/var/lib/nodestore/pki/client".into(),
             etcd_servers: "https://127.0.0.1:2379".to_string(),
             advertise_address: "10.42.0.1".to_string(),
@@ -304,13 +239,5 @@ mod tests {
         assert!(args.iter().any(|a| a == "--client-ca-file=/var/lib/nodebootstrap/pki/ca.crt"));
         assert!(args.iter().any(|a| a == "--authorization-mode=Node,RBAC"));
         assert!(!args.iter().any(|a| a.contains("bundle")));
-    }
-
-    #[test]
-    fn controller_manager_and_scheduler_point_at_their_own_kubeconfigs() {
-        let cm = controller_manager_args(&test_spec());
-        assert!(cm.iter().any(|a| a == "--kubeconfig=/etc/nodebootstrap/kube-controller-manager.kubeconfig"));
-        let sched = scheduler_args(&test_spec());
-        assert!(sched.iter().any(|a| a == "--kubeconfig=/etc/nodebootstrap/kube-scheduler.kubeconfig"));
     }
 }
