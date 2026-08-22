@@ -117,18 +117,28 @@
 //! why it's "not yet wired to anything real" (neither webhooks nor
 //! `ValidatingAdmissionPolicy` exist in this crate at all yet).
 //!
+//! `policy_matching` — the other half of "does this policy even apply to
+//! this request": real upstream's own `resourceRules`/
+//! `excludeResourceRules` matching (`rules.Matcher`), `namespaceSelector`/
+//! `objectSelector` matching (reusing `cacher::selector`'s own label
+//! matcher), and `request` CEL variable construction
+//! (`CreateAdmissionRequest`). See that module's own doc comment for the
+//! named, honest gaps (`Rule.Scope` not matched, `kind`/`userInfo` not yet
+//! populated) and for why it's the same "not yet wired to anything real"
+//! standalone primitive `match_conditions` itself still is.
+//!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
 //! other built-in plugin, `ResourceQuota`'s own non-pod evaluators/scope
 //! matching/persisted usage counter (above), a generic plugin-chain/
 //! registry abstraction to run more than one plugin without
 //! `server::listener` hand-calling each by name, mutating/validating
 //! admission webhooks themselves, and `ValidatingAdmissionPolicy`/
-//! `MutatingAdmissionPolicy` themselves (both need real matching against
-//! `resourceRules`/`namespaceSelector`/`objectSelector` and real
-//! `object`/`oldObject`/`request`/`params` CEL variable construction
-//! from an actual admission request — `match_conditions`'s own doc
-//! comment names this precisely; `cel_ext::eval_bool_with_vars` is the
-//! primitive either would bind those variables through).
+//! `MutatingAdmissionPolicy` themselves as actual enforcement (both need
+//! `spec.paramRef` resolution and real CRUD/storage wiring — the request-
+//! matching and CEL-evaluation primitives they'd run on, `match_conditions`
+//! and `policy_matching` above plus `apiextensions::cel_evaluate`'s own
+//! `eval_bool_with_vars`-based evaluation, all now exist standalone but
+//! nothing calls them from an actual admission request yet).
 
 pub mod attributes;
 pub mod default_storage_class;
@@ -137,5 +147,6 @@ pub mod limit_ranger;
 pub mod match_conditions;
 pub mod namespace_lifecycle;
 pub mod pod_security;
+pub mod policy_matching;
 pub mod resource_quota;
 pub mod service_account;
