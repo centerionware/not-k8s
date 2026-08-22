@@ -3,13 +3,17 @@
 //! `deploy/lib/common.sh` (`detect_pkg_mgr`/`pkg_install`/`fetch`).
 //!
 //! **Scope cut, deliberate:** ports the primary path (detect a package
-//! manager, `install`) and the plain `curl`/`wget` fetch. Does **not** yet
-//! port `common.sh`'s apt alternate-mirror retry-on-timeout logic
-//! (`_apt_run`/`_apt_alternate_sources`) or the `pkg_installs.log`
-//! uninstall-tracking file `deploy/lib/uninstall.sh` reads -- both are real
-//! and both are next, not dropped. Shelling out to `curl`/`wget` rather
-//! than adding an HTTP client crate matches every other module in this
-//! one-shot CLI (`rbac.rs`/`manifests.rs` do the same for `kubectl`).
+//! manager, `install`). Does **not** yet port `common.sh`'s apt
+//! alternate-mirror retry-on-timeout logic (`_apt_run`/
+//! `_apt_alternate_sources`) or the `pkg_installs.log` uninstall-tracking
+//! file `deploy/lib/uninstall.sh` reads -- both are real and both are next,
+//! not dropped.
+//!
+//! `fetch_url` is a real Rust HTTP client (`ureq`, rustls-backed), not a
+//! `curl`/`wget` subprocess -- unlike `rbac.rs`/`manifests.rs` shelling out
+//! to `kubectl` (a deliberate choice explained in those modules: `kubectl`
+//! *is* the client, not a stand-in for one this crate could write itself),
+//! a plain HTTPS GET is exactly what a Rust HTTP client is for.
 
 use anyhow::{Context, Result};
 
@@ -123,28 +127,30 @@ fn is_root() -> bool {
         .unwrap_or(false)
 }
 
-/// `curl -fsSL --retry 3 -o dest url`, falling back to `wget -q -O dest
-/// url` -- same two-tool fallback as `common.sh`'s `fetch()`.
+/// A real HTTP client (`ureq`, rustls + webpki-roots), not a `curl`/`wget`
+/// subprocess -- replaces `common.sh`'s `fetch()`, but no longer depends on
+/// either tool being present on the host at all. Retries transient
+/// failures up to 3 times (same retry count `curl --retry 3` gave the shell
+/// version), with a short backoff between attempts.
 pub fn fetch_url(url: &str, dest: &std::path::Path) -> Result<()> {
-    if command_exists("curl") {
-        let status = std::process::Command::new("curl")
-            .args(["-fsSL", "--retry", "3", "-o"])
-            .arg(dest)
-            .arg(url)
-            .status()
-            .context("running curl")?;
-        anyhow::ensure!(status.success(), "curl failed fetching {url}");
-        return Ok(());
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match ureq::get(url).call() {
+            Ok(response) => {
+                let mut reader = response.into_reader();
+                let mut file =
+                    std::fs::File::create(dest).with_context(|| format!("creating {}", dest.display()))?;
+                std::io::copy(&mut reader, &mut file)
+                    .with_context(|| format!("writing response body to {}", dest.display()))?;
+                return Ok(());
+            }
+            Err(e) if attempt < MAX_ATTEMPTS => {
+                tracing::warn!(url, attempt, error = %e, "fetch attempt failed, retrying");
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            Err(e) => return Err(e).with_context(|| format!("fetching {url} (after {MAX_ATTEMPTS} attempts)")),
+        }
     }
-    if command_exists("wget") {
-        let status = std::process::Command::new("wget")
-            .args(["-q", "-O"])
-            .arg(dest)
-            .arg(url)
-            .status()
-            .context("running wget")?;
-        anyhow::ensure!(status.success(), "wget failed fetching {url}");
-        return Ok(());
-    }
-    anyhow::bail!("neither curl nor wget is available -- cannot fetch {url}")
 }

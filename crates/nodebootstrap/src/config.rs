@@ -118,6 +118,19 @@ impl Config {
             .into()
     }
 
+    /// Where `service_mgr.rs`'s fallback tier writes its supervisor
+    /// scripts and pid files -- same role as `bootstrap-source.sh`'s
+    /// `WORK_DIR`.
+    pub fn work_dir(&self) -> std::path::PathBuf {
+        std::env::var("NODEBOOTSTRAP_WORK_DIR").unwrap_or_else(|_| "/var/lib/nodebootstrap/work".to_string()).into()
+    }
+
+    /// Where a fallback-tier supervised service's stdout/stderr goes --
+    /// same role as `bootstrap-source.sh`'s `LOG_DIR`.
+    pub fn log_dir(&self) -> std::path::PathBuf {
+        std::env::var("NODEBOOTSTRAP_LOG_DIR").unwrap_or_else(|_| "/var/log/nodebootstrap".to_string()).into()
+    }
+
     /// Host architecture, normalized to the same vocabulary
     /// `deploy/lib/common.sh`'s `$ARCH` uses (`x86_64`, `aarch64`,
     /// `armv7l`, ...) -- read from `uname -m` once, not re-shelled per

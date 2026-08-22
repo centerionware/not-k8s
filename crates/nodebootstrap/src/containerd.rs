@@ -6,13 +6,10 @@
 //! generation and the three patches this project depends on (nested-
 //! container native snapshotter, CDI device injection, the CRI-plugin
 //! `disabled_plugins` strip from the "Known CI gotcha" in `CLAUDE.md`), and
-//! starting containerd via systemd when present. Does **not** yet port:
-//! `build_containerd_runc_from_source` (the deepest fallback,
-//! Go-toolchain-gated), or a from-scratch OpenRC/no-systemd service unit
-//! writer (`install_supervised_service` in `deploy/lib/service-mgr.sh`) --
-//! both queued as follow-up. On a host with neither systemd nor an
-//! existing containerd, this bails with a clear message rather than
-//! silently doing nothing.
+//! starting containerd -- via its own distro-packaged systemd unit if one
+//! exists, `service_mgr.rs` (systemd -> OpenRC -> fallback loop) otherwise.
+//! Does **not** yet port `build_containerd_runc_from_source` (the deepest
+//! fallback, Go-toolchain-gated) -- rare, slow, queued as follow-up.
 
 use anyhow::{Context, Result};
 
@@ -35,7 +32,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     ensure_binaries(cfg)?;
     let wrote_fresh_config = ensure_config()?;
     let removed_disabled_cri = strip_disabled_cri()?;
-    ensure_running(wrote_fresh_config || removed_disabled_cri)?;
+    ensure_running(cfg, wrote_fresh_config || removed_disabled_cri)?;
     Ok(())
 }
 
@@ -212,35 +209,49 @@ fn containerd_running() -> bool {
     std::path::Path::new(SOCKET_PATH).exists()
 }
 
-fn systemd_available() -> bool {
+/// A distro-packaged containerd almost certainly already shipped its own
+/// systemd unit (likely better-tuned -- cgroup delegation, OOM score --
+/// than anything worth generating) -- use that instead of
+/// `service_mgr.rs`'s generic writer, same as `container-runtime.sh`'s own
+/// comment on this. Only meaningful on systemd; OpenRC/fallback hosts never
+/// have a pre-existing containerd unit for this crate to have not written
+/// itself, so they always go through `service_mgr::install`.
+fn has_existing_systemd_unit() -> bool {
     crate::pkg::command_exists("systemctl")
-}
-
-fn ensure_running(needs_restart: bool) -> Result<()> {
-    anyhow::ensure!(
-        systemd_available(),
-        "no systemd on this host and no OpenRC/plain-supervisor service writer ported yet -- \
-         start containerd yourself (containerd --config {CONFIG_PATH}) and re-run, or wait for \
-         the service-mgr.rs port"
-    );
-
-    if needs_restart && containerd_running() {
-        tracing::info!("restarting containerd to pick up the config change");
-        run_systemctl(&["restart", "containerd.service"])?;
-    } else if !containerd_running() {
-        let has_unit = std::process::Command::new("systemctl")
+        && std::process::Command::new("systemctl")
             .args(["list-unit-files", "containerd.service"])
             .status()
             .map(|s| s.success())
-            .unwrap_or(false);
-        if has_unit {
+            .unwrap_or(false)
+}
+
+fn ensure_running(cfg: &Config, needs_restart: bool) -> Result<()> {
+    if needs_restart && containerd_running() && crate::pkg::command_exists("systemctl") {
+        tracing::info!("restarting containerd to pick up the config change");
+        run_systemctl(&["restart", "containerd.service"])?;
+    } else if !containerd_running() {
+        if has_existing_systemd_unit() {
             tracing::info!("containerd has an existing systemd unit -- enabling and starting it");
             run_systemctl(&["enable", "--now", "containerd.service"])?;
         } else {
-            anyhow::bail!(
-                "containerd has no existing systemd unit and this crate doesn't generate one yet \
-                 -- the service-mgr.rs port handles this next"
-            );
+            let containerd_bin = std::process::Command::new("sh")
+                .arg("-c")
+                .arg("command -v containerd")
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty())
+                .context("resolving containerd's absolute path")?;
+            crate::service_mgr::install(
+                cfg,
+                &crate::service_mgr::SupervisedService {
+                    name: "containerd",
+                    description: "containerd container runtime (installed by not-k8s)",
+                    exec_cmd: &format!("{containerd_bin} --config {CONFIG_PATH}"),
+                    after: None,
+                    env: &[],
+                },
+            )?;
         }
     }
 

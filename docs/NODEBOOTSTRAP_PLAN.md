@@ -175,15 +175,26 @@ comment for the specifics and what's queued next:
 | `rbac.rs` | ✅ real (thin verify -- see the finding in its doc comment) | n/a |
 | `manifests.rs` | ✅ real (CoreDNS only -- flannel corrected out of scope, see its doc comment) | n/a |
 | `toolchain.rs` | ✅ real (rust, protoc: package manager -> official prebuilt) | ❌ not ported: gcc/go/protoc-from-source, musl.cc |
-| `containerd.rs` | ✅ real (package manager -> official prebuilt; config.toml + this project's 3 required patches; systemd start/restart) | ❌ not ported: from-source containerd/runc build; OpenRC/non-systemd service writer |
-| `cni.rs` | ✅ real (plugin binaries + flannel binary + CNI conf: package manager -> official prebuilt) | ❌ not ported: from-source builds; starting `flanneld` itself (needs a live kubeconfig + the service writer) |
+| `containerd.rs` | ✅ real (package manager -> official prebuilt; config.toml + this project's 3 required patches; starts via its own distro unit or `service_mgr.rs`) | ❌ not ported: from-source containerd/runc build |
+| `cni.rs` | ✅ real (plugin binaries + flannel binary + CNI conf: package manager -> official prebuilt) | ❌ not ported: from-source builds; starting `flanneld` itself (needs `run-flanneld.sh`'s net-conf.json + interface-detection logic ported too, not just `service_mgr.rs`) |
 | `fetch.rs` | ✅ real for `Source::Compile` (version-stamp + `cargo build` per layout) | ❌ not ported: `Source::Release` (GitHub Releases asset matching) |
-| `targets/upstream.rs` | ✅ real (binary fetch + full flag-set construction, unit-tested) | ❌ not ported: starting the three binaries as supervised services (service writer, same gap as `containerd.rs`/`cni.rs`) |
+| `targets/upstream.rs` | ✅ real (binary fetch, full flag-set construction, and starts all three via `service_mgr.rs`, with a best-effort `/readyz` wait between apiserver and the other two) | n/a |
 | `components.rs` | ✅ real (static table, mirrors `components.sh`) | n/a |
 | `service_reconciler.rs` | ✅ real (thin verify -- second "kube-apiserver already does this" finding, same shape as `rbac.rs`) | n/a |
+| `service_mgr.rs` | ✅ real, all three tiers (systemd -> OpenRC -> self-restart loop + cron `@reboot`), unit-tested. Wired into `containerd.rs` already. | n/a |
 
-**The recurring gap across five modules is one thing, not five:** a
-service-supervision writer (systemd unit + OpenRC equivalent, matching
-`deploy/lib/service-mgr.sh`'s `install_supervised_service`). Porting that
-once unblocks actually starting containerd, flanneld, and the three
-upstream control-plane binaries — the next PR to prioritize.
+**HTTP fetch is a real Rust client, not `curl`/`wget` subprocesses**
+(decided 2026-08-22, user direction): `pkg::fetch_url` (every binary/
+release download in `toolchain.rs`/`containerd.rs`/`cni.rs`/`fetch.rs`/
+`targets/upstream.rs`) and `targets/upstream.rs`'s readyz wait both use
+`ureq` (sync, rustls-backed, no OpenSSL/native-tls) instead of shelling out.
+`kubectl` subprocess calls (`rbac.rs`/`manifests.rs`/`service_reconciler.rs`)
+are unaffected -- `kubectl` *is* the client there, not a stand-in for an
+HTTP GET this crate could trivially do itself.
+
+**The service-supervision writer (`service_mgr.rs`) is done and wired into
+both `containerd.rs` and `targets/upstream.rs`.** The one remaining caller
+is `cni.rs`: it needs `run-flanneld.sh`'s net-conf.json + interface-
+detection logic ported before it can call `service_mgr::install` for
+`flanneld` — genuinely separate work (ECMP route parsing), not another
+`service_mgr.rs`-shaped gap.

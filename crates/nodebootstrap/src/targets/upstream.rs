@@ -9,16 +9,18 @@
 //! minted one), this target starts from `pki.rs`'s own output instead, so
 //! there is no k3s in the loop at all.
 //!
-//! **Scope cut, deliberate:** fetches the three binaries and builds their
-//! real flag sets (both real logic, unit-tested below). Does **not** yet
-//! generate and start a supervised service for any of them -- same
-//! `service-mgr.rs` gap `containerd.rs`/`cni.rs` already defer to. `run_with`
-//! fetches the binaries, prints the flags it would run each with, and
-//! bails rather than silently pretending the cluster is up.
+//! Fetches the three binaries, builds their real flag sets, and starts each
+//! as a `service_mgr.rs`-supervised service (systemd -> OpenRC -> fallback
+//! loop, same as `containerd.rs`). `kube-controller-manager` and
+//! `kube-scheduler` are ordered `After=`/`depend()` on `kube-apiserver`
+//! (matching real Kubernetes' own startup order expectation: both dial the
+//! apiserver on their own retry loop, so this is a readiness nicety, not a
+//! hard requirement, same as upstream's own docs describe).
 
 use anyhow::{Context, Result};
 
 use crate::config::Config;
+use crate::service_mgr::{self, SupervisedService};
 
 /// Pinned to the same `v1.33` line the vendored CoreDNS manifest and this
 /// workspace's `k8s-openapi` feature are pinned to (`vendor/README.md`).
@@ -45,20 +47,110 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         service_cidr: "10.43.0.0/16".to_string(),
         service_account_issuer: "https://kubernetes.default.svc.cluster.local".to_string(),
     };
-    let apiserver_args = apiserver_args(&spec);
-    let cm_args = controller_manager_args(&spec);
-    let sched_args = scheduler_args(&spec);
-
-    anyhow::bail!(
-        "nodebootstrap::targets::upstream fetched the binaries into {} but does not yet start \
-         them as supervised services (service-mgr.rs gap -- see this module's doc comment). \
-         Flags that would be used:\nkube-apiserver {}\nkube-controller-manager {}\n\
-         kube-scheduler {}",
-        bin_dir.display(),
-        apiserver_args.join(" "),
-        cm_args.join(" "),
-        sched_args.join(" "),
+    let apiserver_exec = format!("{} {}", bin_dir.join("kube-apiserver").display(), apiserver_args(&spec).join(" "));
+    service_mgr::install(
+        cfg,
+        &SupervisedService {
+            name: "kube-apiserver",
+            description: "Real upstream kube-apiserver (not-k8s, no k3s)",
+            exec_cmd: &apiserver_exec,
+            after: Some("nodestore.service"),
+            env: &[],
+        },
     )
+    .context("installing kube-apiserver as a supervised service")?;
+
+    wait_for_readyz(&spec);
+
+    let cm_exec = format!(
+        "{} {}",
+        bin_dir.join("kube-controller-manager").display(),
+        controller_manager_args(&spec).join(" ")
+    );
+    service_mgr::install(
+        cfg,
+        &SupervisedService {
+            name: "kube-controller-manager",
+            description: "Real upstream kube-controller-manager (not-k8s, no k3s)",
+            exec_cmd: &cm_exec,
+            after: Some("kube-apiserver.service"),
+            env: &[],
+        },
+    )
+    .context("installing kube-controller-manager as a supervised service")?;
+
+    let sched_exec = format!("{} {}", bin_dir.join("kube-scheduler").display(), scheduler_args(&spec).join(" "));
+    service_mgr::install(
+        cfg,
+        &SupervisedService {
+            name: "kube-scheduler",
+            description: "Real upstream kube-scheduler (not-k8s, no k3s)",
+            exec_cmd: &sched_exec,
+            after: Some("kube-apiserver.service"),
+            env: &[],
+        },
+    )
+    .context("installing kube-scheduler as a supervised service")?;
+
+    Ok(())
+}
+
+/// Best-effort: polls `/readyz` with the admin client cert (`--anonymous-
+/// auth=false` above means an anonymous request gets a real 401, not a
+/// "not ready yet" -- same reasoning `upstream-kube-apiserver.sh`'s own
+/// wait loop documents). Not a hard failure on timeout -- `kube-controller-
+/// manager`/`kube-scheduler` retry connecting to the apiserver on their own
+/// regardless, so this is a readiness nicety for clearer logs, not a
+/// correctness requirement.
+/// A real Rust TLS client (`ureq` + a `rustls::ClientConfig` trusting only
+/// `pki.rs`'s own CA), not a `curl` subprocess. Deliberately checks "did
+/// the apiserver answer at all" rather than "did `/readyz` return 200":
+/// `--anonymous-auth=false` (set in `apiserver_args`) means an
+/// unauthenticated request gets a real `401`, not a connection failure --
+/// which is already proof the apiserver is up and terminating TLS
+/// correctly. Presenting the admin client cert to get an authenticated
+/// `200` instead would need `rustls::ClientConfig::with_client_auth_cert`
+/// on top of this; not worth the extra complexity for a best-effort,
+/// non-fatal readiness nicety (see this function's caller).
+fn wait_for_readyz(spec: &TargetSpec) {
+    let agent = match trusting_agent(&spec.pki_dir.join("ca.crt")) {
+        Ok(agent) => agent,
+        Err(e) => {
+            tracing::warn!(error = ?e, "couldn't build a TLS client trusting the cluster CA -- skipping the readyz wait");
+            return;
+        }
+    };
+    tracing::info!("waiting for kube-apiserver to answer /readyz...");
+    for _ in 0..30 {
+        match agent.get("https://127.0.0.1:6443/readyz").call() {
+            // Any real HTTP response -- including the 401 an anonymous
+            // request gets -- means the apiserver is up. `ureq::Error::Status`
+            // covers non-2xx responses; `Ok` covers 2xx.
+            Ok(_) | Err(ureq::Error::Status(_, _)) => {
+                tracing::info!("kube-apiserver is answering requests");
+                return;
+            }
+            Err(_) => {} // connection-level failure -- keep waiting
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    tracing::warn!(
+        "kube-apiserver never answered /readyz within 60s -- check: journalctl -u kube-apiserver \
+         -n 50 (or the fallback tier's log under Config::log_dir)"
+    );
+}
+
+/// Builds a `ureq::Agent` whose TLS trust root is exactly `ca_pem_path` --
+/// nothing else, not the system CA store -- since the only thing this
+/// agent ever talks to is our own freshly-minted apiserver on loopback.
+fn trusting_agent(ca_pem_path: &std::path::Path) -> Result<ureq::Agent> {
+    let ca_pem = std::fs::read(ca_pem_path).with_context(|| format!("reading {}", ca_pem_path.display()))?;
+    let mut root_store = rustls::RootCertStore::empty();
+    for cert in rustls_pemfile::certs(&mut ca_pem.as_slice()) {
+        root_store.add(cert.context("parsing CA cert PEM")?).context("adding CA cert to the trust root")?;
+    }
+    let config = rustls::ClientConfig::builder().with_root_certificates(root_store).with_no_client_auth();
+    Ok(ureq::AgentBuilder::new().tls_config(std::sync::Arc::new(config)).build())
 }
 
 fn k8s_dl_arch(arch: &str) -> Option<&'static str> {

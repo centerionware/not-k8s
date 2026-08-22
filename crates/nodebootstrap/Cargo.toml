@@ -30,6 +30,17 @@ x509-parser = "0.16"
 pem = "3"
 base64 = "0.22"
 
+# HTTP fetch (pkg.rs::fetch_url, targets/upstream.rs's readyz check) is a
+# real Rust client, not a `curl`/`wget` subprocess -- `ureq` because it's
+# synchronous (this crate has no tokio runtime and shouldn't need one for a
+# handful of one-shot GETs) and its "tls" feature is rustls-backed (via
+# `rustls`, workspace-pinned at 0.23 same as the cri-gated components),
+# not OpenSSL/native-tls. `rustls-pemfile` parses the CA PEM `pki.rs` mints
+# into the `rustls::RootCertStore` the readyz check trusts.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+rustls = { workspace = true }
+rustls-pemfile = "2"
+
 [dev-dependencies]
 serde_json = { workspace = true }
 
