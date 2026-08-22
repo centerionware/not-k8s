@@ -176,7 +176,7 @@ comment for the specifics and what's queued next:
 | `manifests.rs` | ✅ real (CoreDNS only -- flannel corrected out of scope, see its doc comment) | n/a |
 | `toolchain.rs` | ✅ real (rust, protoc: package manager -> official prebuilt) | ❌ not ported: gcc/go/protoc-from-source, musl.cc |
 | `containerd.rs` | ✅ real (package manager -> official prebuilt; config.toml + this project's 3 required patches; starts via its own distro unit or `service_mgr.rs`) | ❌ not ported: from-source containerd/runc build |
-| `cni.rs` | ✅ real (plugin binaries + flannel binary + CNI conf: package manager -> official prebuilt) | ❌ not ported: from-source builds; starting `flanneld` itself (needs `run-flanneld.sh`'s net-conf.json + interface-detection logic ported too, not just `service_mgr.rs`) |
+| `cni.rs` | ✅ real (plugin binaries + flannel binary + CNI conf: package manager -> official prebuilt; starts `flanneld` via `service_mgr.rs` + a vendored `run-flanneld.sh` wrapper -- see `vendor/README.md`) | ❌ not ported: from-source builds |
 | `fetch.rs` | ✅ real for `Source::Compile` (version-stamp + `cargo build` per layout) | ❌ not ported: `Source::Release` (GitHub Releases asset matching) |
 | `targets/upstream.rs` | ✅ real (binary fetch, full flag-set construction, and starts all three via `service_mgr.rs`, with a best-effort `/readyz` wait between apiserver and the other two) | n/a |
 | `components.rs` | ✅ real (static table, mirrors `components.sh`) | n/a |
@@ -193,8 +193,9 @@ are unaffected -- `kubectl` *is* the client there, not a stand-in for an
 HTTP GET this crate could trivially do itself.
 
 **The service-supervision writer (`service_mgr.rs`) is done and wired into
-both `containerd.rs` and `targets/upstream.rs`.** The one remaining caller
-is `cni.rs`: it needs `run-flanneld.sh`'s net-conf.json + interface-
-detection logic ported before it can call `service_mgr::install` for
-`flanneld` — genuinely separate work (ECMP route parsing), not another
-`service_mgr.rs`-shaped gap.
+`containerd.rs`, `targets/upstream.rs`, and `cni.rs`.** All three of
+Phase 1's "start it as a service" gaps are closed. `cni.rs` gets there via
+a vendored `run-flanneld.sh` wrapper rather than a Rust reimplementation of
+its net-conf.json + ECMP-aware interface-detection logic — see
+`vendor/README.md`'s entry for why that stays a shell script `service_mgr.rs`
+points at, not Rust code this crate would have to keep running itself.

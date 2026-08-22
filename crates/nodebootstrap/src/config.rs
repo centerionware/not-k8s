@@ -100,6 +100,23 @@ impl Config {
         std::env::var("NODEBOOTSTRAP_CLUSTER_DOMAIN").unwrap_or_else(|_| "cluster.local".to_string())
     }
 
+    /// `ipv4` | `ipv6` | `dual` -- passed straight through to `flanneld`
+    /// (`cni.rs`) as `IP_FAMILY`. Matches `run-flanneld.sh`'s own default.
+    pub fn ip_family(&self) -> String {
+        std::env::var("NODEBOOTSTRAP_IP_FAMILY").unwrap_or_else(|_| "ipv4".to_string())
+    }
+
+    /// Matches `targets/upstream.rs`'s `--cluster-cidr` default -- the pod
+    /// network flannel and `kube-controller-manager`'s node-CIDR allocator
+    /// must agree on.
+    pub fn ipv4_cluster_cidr(&self) -> String {
+        std::env::var("NODEBOOTSTRAP_IPV4_CLUSTER_CIDR").unwrap_or_else(|_| "10.42.0.0/16".to_string())
+    }
+
+    pub fn ipv6_cluster_cidr(&self) -> String {
+        std::env::var("NODEBOOTSTRAP_IPV6_CLUSTER_CIDR").unwrap_or_else(|_| "fd00:42::/56".to_string())
+    }
+
     /// Where a fetched-but-not-packaged toolchain (rustup, an official
     /// protoc/Go release) gets unpacked and symlinked from -- same role as
     /// `bootstrap-source.sh`'s `TOOLCHAIN_DIR`. `<dir>/bin` belongs on

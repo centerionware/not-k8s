@@ -1,25 +1,39 @@
-//! CNI setup — replaces `deploy/lib/cni.sh`.
+//! CNI setup — replaces `deploy/lib/cni.sh` + `deploy/run-flanneld.sh`.
 //!
-//! **Scope cut, deliberate:** ports the plugin-binary and config-file half
+//! **Scope cut, deliberate:** ports the plugin-binary/config-file half
 //! faithfully (`ensure_cni_base_plugins`, `ensure_flannel_binaries`,
 //! `write_flannel_cni_conf` -- package manager -> official prebuilt tiers,
-//! matching `toolchain.rs`/`containerd.rs`'s same two-tier cut). Does
-//! **not** yet start `flanneld` as a supervised service
-//! (`cni.sh`'s `start_flanneld`/`wait_for_flannel_subnet`) -- that depends
-//! on `deploy/run-flanneld.sh` and the not-yet-ported
-//! `install_supervised_service` (`deploy/lib/service-mgr.sh`), and
-//! `flanneld` here needs a live kubeconfig anyway (its kube-subnet-mgr mode
-//! reads Node PodCIDR from the apiserver), which only exists after
-//! `targets::run_with` has started one. Queued as follow-up once
-//! `targets/upstream.rs` and `service-mgr.rs` both land.
+//! matching `toolchain.rs`/`containerd.rs`'s same two-tier cut), and now
+//! starts `flanneld` itself via `service_mgr.rs`. The net-conf.json
+//! generation + default-interface detection that has to happen on *every*
+//! `flanneld` restart, not just at install time (a `Restart=always` unit
+//! only re-runs its `ExecStart`, never this crate -- see
+//! `vendor/run-flanneld.sh`'s own header comment for the real incident that
+//! taught this) stays a **vendored shell wrapper** (`vendor/run-
+//! flanneld.sh`, copied verbatim from `deploy/run-flanneld.sh`) that
+//! `service_mgr.rs` points `ExecStart`/`command_args` at, rather than
+//! reimplemented as Rust nodebootstrap itself would have to keep running
+//! persistently to redo. Only reachable once `targets::run_with` has
+//! started an apiserver `flanneld`'s kube-subnet-mgr mode can actually
+//! reach -- `run_all()`'s ordering (`cni` after `targets`) is what
+//! guarantees that.
 
 use anyhow::{Context, Result};
 
 use crate::config::Config;
 use crate::pkg::{fetch_url, pkg_install, PkgNames};
+use crate::service_mgr::{self, SupervisedService};
 
 const CNI_BIN_DIR: &str = "/opt/cni/bin";
 const CNI_CONF_DIR: &str = "/etc/cni/net.d";
+
+/// Copied verbatim from `deploy/run-flanneld.sh` -- see that file and this
+/// module's doc comment for why it stays a shell script rather than being
+/// reimplemented in Rust. Vendored under this crate (not `include_str!`'d
+/// from `deploy/` directly) so it survives `deploy/`'s shell libs being
+/// deleted once Phase 1 fully cuts over (`docs/NODEBOOTSTRAP_PLAN.md`'s
+/// phasing section).
+const RUN_FLANNELD_SH: &str = include_str!("../vendor/run-flanneld.sh");
 
 pub fn run() -> Result<()> {
     run_with(&Config::from_env()?)
@@ -40,12 +54,60 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     ensure_cni_base_plugins(cfg)?;
     ensure_flannel_binaries(cfg)?;
     write_flannel_cni_conf(std::path::Path::new(CNI_CONF_DIR))?;
-    tracing::warn!(
-        "flannel plugin binaries + CNI conf are in place, but starting flanneld itself is not yet \
-         ported (needs a live kubeconfig and the OpenRC/systemd service writer -- see this \
-         module's doc comment); start it manually for now, same as deploy/run-flanneld.sh does"
-    );
-    Ok(())
+    start_flanneld(cfg)
+}
+
+fn start_flanneld(cfg: &Config) -> Result<()> {
+    let wrapper = cfg.work_dir().join("run-flanneld.sh");
+    std::fs::create_dir_all(cfg.work_dir()).context("creating work dir")?;
+    std::fs::write(&wrapper, RUN_FLANNELD_SH).with_context(|| format!("writing {}", wrapper.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+            .context("making run-flanneld.sh executable")?;
+    }
+
+    // Absolute path, not a bare command name -- systemd/OpenRC services get
+    // a fresh, minimal PATH that won't include wherever ensure_flannel_
+    // binaries put a fetched binary. Confirmed for real against exactly
+    // this binary by cni.sh's own comment.
+    let flanneld_bin = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("command -v flanneld")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .context("resolving flanneld's absolute path")?;
+
+    let wrapper_exec = wrapper.to_string_lossy().to_string();
+    let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig").to_string_lossy().to_string();
+    let node_name = std::env::var("NODELET_NODE_NAME").unwrap_or_else(|_| {
+        std::process::Command::new("uname").arg("-n").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+    });
+    let ip_family = cfg.ip_family();
+    let ipv4_cidr = cfg.ipv4_cluster_cidr();
+    let ipv6_cidr = cfg.ipv6_cluster_cidr();
+
+    service_mgr::install(
+        cfg,
+        &SupervisedService {
+            name: "flanneld",
+            description: "flanneld -- CNI overlay network daemon for not-k8s",
+            exec_cmd: &wrapper_exec,
+            after: Some("kube-apiserver.service"),
+            env: &[
+                ("NODE_NAME", &node_name),
+                ("FLANNELD_BIN", &flanneld_bin),
+                ("KUBECONFIG", &kubeconfig),
+                ("IP_FAMILY", &ip_family),
+                ("IPV4_CLUSTER_CIDR", &ipv4_cidr),
+                ("IPV6_CLUSTER_CIDR", &ipv6_cidr),
+            ],
+        },
+    )
+    .context("installing flanneld as a supervised service")
 }
 
 fn cni_go_arch(arch: &str) -> Option<&'static str> {
