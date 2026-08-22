@@ -42,6 +42,38 @@ fn admin_kubeconfig(cfg: &Config) -> String {
     cfg.kubeconfig_dir().join("admin.kubeconfig").to_string_lossy().to_string()
 }
 
+/// Forwards every `<prefix>_*` env var already set in nodebootstrap's own
+/// process environment into the installed unit, plus `RUST_LOG` if set --
+/// same `<PREFIX>_*` convention `nodescheduler-service.sh`'s/
+/// `nodecontroller-service.sh`'s/`nodestore-service.sh`'s own
+/// `*_env_lines()` functions use (`compgen -v | grep '^<PREFIX>_'`).
+/// `RUST_LOG` forwarding itself only existed in the scheduler/controller
+/// shell versions (`nodestore-service.sh` never had it); added here for
+/// all three callers of this helper for consistency -- a superset of the
+/// old behavior, not a regression, since a caller not setting `RUST_LOG`
+/// is unaffected. Without this helper, a caller (an operator's shell, or a
+/// CI workflow) exporting e.g. `NODECONTROLLER_DISABLED_CONTROLLERS` or
+/// `RUST_LOG=nodescheduler=debug` before invoking `nodebootstrap` would see
+/// it silently dropped -- `SupervisedService.env` is otherwise a fixed list
+/// each `ensure_*` builds itself, with no passthrough of its own.
+///
+/// `nodelet`/`nodeproxy` deliberately don't call this: their shell
+/// equivalents (`nodelet-service.sh`/`nodeproxy-service.sh`) never forwarded
+/// a `NODELET_*`/`NODEPROXY_*` prefix or `RUST_LOG` either, so not adding it
+/// here isn't a regression -- only `nodestore`/`nodescheduler`/
+/// `nodecontroller` had this in the shell version.
+fn forwarded_env(prefix: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> =
+        std::env::vars().filter(|(k, v)| k.starts_with(prefix) && !v.is_empty()).collect();
+    out.sort();
+    if let Ok(rust_log) = std::env::var("RUST_LOG") {
+        if !rust_log.is_empty() {
+            out.push(("RUST_LOG".to_string(), rust_log));
+        }
+    }
+    out
+}
+
 /// Every component this module owns, in the same order `run_all()` calls
 /// them in directly (not through this function -- `run_all()` interleaves
 /// `nodescheduler`/`nodecontroller` with `targets`/`cni`/`rbac`/etc., so it
@@ -68,6 +100,17 @@ pub fn ensure_nodestore(cfg: &Config) -> Result<()> {
 
     let listen = std::env::var("NODESTORE_LISTEN").unwrap_or_else(|_| "127.0.0.1:2379".to_string());
     let data_dir = std::env::var("NODESTORE_DATA_DIR").unwrap_or_else(|_| "/var/lib/nodestore".to_string());
+    let forwarded = forwarded_env("NODESTORE_");
+    let mut env: Vec<(&str, &str)> = vec![("NODESTORE_LISTEN", &listen), ("NODESTORE_DATA_DIR", &data_dir)];
+    for (k, v) in &forwarded {
+        // NODESTORE_LISTEN/NODESTORE_DATA_DIR are already set above with
+        // their own defaults applied -- skip re-adding them verbatim so
+        // the unit doesn't carry two Environment= lines for the same name.
+        if k == "NODESTORE_LISTEN" || k == "NODESTORE_DATA_DIR" {
+            continue;
+        }
+        env.push((k.as_str(), v.as_str()));
+    }
     service_mgr::install(
         cfg,
         &SupervisedService {
@@ -75,7 +118,7 @@ pub fn ensure_nodestore(cfg: &Config) -> Result<()> {
             description: "nodestore -- not-k8s datastore (etcd v3 API over sqlite)",
             exec_cmd: &bin.to_string_lossy(),
             after: None, // nodestore is what other units order *after*, not the reverse
-            env: &[("NODESTORE_LISTEN", &listen), ("NODESTORE_DATA_DIR", &data_dir)],
+            env: &env,
         },
     )
     .context("installing nodestore as a supervised service")
@@ -141,6 +184,11 @@ pub fn ensure_nodescheduler(cfg: &Config) -> Result<()> {
     let bin = binary_path(cfg, "nodescheduler");
     anyhow::ensure!(bin.exists(), "no nodescheduler binary at {} -- run `nodebootstrap fetch` first", bin.display());
     let kubeconfig = cfg.kubeconfig_dir().join("kube-scheduler.kubeconfig").to_string_lossy().to_string();
+    let forwarded = forwarded_env("NODESCHEDULER_");
+    let mut env: Vec<(&str, &str)> = vec![("KUBECONFIG", &kubeconfig)];
+    for (k, v) in &forwarded {
+        env.push((k.as_str(), v.as_str()));
+    }
     service_mgr::install(
         cfg,
         &SupervisedService {
@@ -148,7 +196,7 @@ pub fn ensure_nodescheduler(cfg: &Config) -> Result<()> {
             description: "nodescheduler -- not-k8s scheduler (kube-scheduler replacement)",
             exec_cmd: &bin.to_string_lossy(),
             after: Some("kube-apiserver.service"),
-            env: &[("KUBECONFIG", &kubeconfig)],
+            env: &env,
         },
     )
     .context("installing nodescheduler as a supervised service")
@@ -171,6 +219,24 @@ pub fn ensure_nodecontroller(cfg: &Config) -> Result<()> {
     // no candidate is found).
     let ca_cert = cfg.pki_dir().join("ca.crt").to_string_lossy().to_string();
     let ca_key = cfg.pki_dir().join("ca.key").to_string_lossy().to_string();
+    let forwarded = forwarded_env("NODECONTROLLER_");
+    let mut env: Vec<(&str, &str)> = vec![
+        ("KUBECONFIG", &kubeconfig),
+        ("NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH", &ca_cert),
+        ("NODECONTROLLER_CSR_SIGNING_CA_KEY_PATH", &ca_key),
+    ];
+    for (k, v) in &forwarded {
+        // Already set above with this crate's own CA paths -- an operator
+        // overriding them via the environment isn't a case this needs to
+        // support (nodebootstrap's own CA is always the correct one for a
+        // cluster it just bootstrapped), so skip re-adding a duplicate
+        // Environment= line rather than let a stray external
+        // NODECONTROLLER_CSR_SIGNING_CA_*_PATH silently win.
+        if k == "NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH" || k == "NODECONTROLLER_CSR_SIGNING_CA_KEY_PATH" {
+            continue;
+        }
+        env.push((k.as_str(), v.as_str()));
+    }
     service_mgr::install(
         cfg,
         &SupervisedService {
@@ -178,11 +244,7 @@ pub fn ensure_nodecontroller(cfg: &Config) -> Result<()> {
             description: "nodecontroller -- not-k8s controller manager (kube-controller-manager replacement)",
             exec_cmd: &bin.to_string_lossy(),
             after: Some("kube-apiserver.service"),
-            env: &[
-                ("KUBECONFIG", &kubeconfig),
-                ("NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH", &ca_cert),
-                ("NODECONTROLLER_CSR_SIGNING_CA_KEY_PATH", &ca_key),
-            ],
+            env: &env,
         },
     )
     .context("installing nodecontroller as a supervised service")
