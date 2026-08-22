@@ -154,7 +154,13 @@
 //! real per-policy outcome (`NotApplicable`, a real `matchConditions`
 //! evaluation error, or the per-rule `Decided` result). Still no I/O of
 //! its own — same standalone-primitive posture as everything else in
-//! this arc.
+//! this arc. `PolicyOutcome::is_denial`/`denial_message` and the
+//! standalone `validation_actions_deny` round out the decision side: the
+//! real "should a caller actually reject this request" question,
+//! gated on a `ValidatingAdmissionPolicyBinding`'s own
+//! `validationActions` (`"Deny"` only — `"Warn"`/`"Audit"` are a named,
+//! honest gap, this crate having no warning-header/audit-event plumbing
+//! to report them through yet).
 //!
 //! `policy_decode` — decodes a real `ValidatingAdmissionPolicy` object's
 //! own `spec` (wire JSON, field names verified against the vendored
@@ -177,14 +183,28 @@
 //! `MutatingAdmissionPolicy` themselves as actual enforcement (both need
 //! `spec.paramRef` resolution and real CRUD/storage wiring — every real
 //! decision primitive `server::listener` would need now exists
-//! standalone, `match_conditions` through `policy_decode` above
-//! (`policy_matching::build_eval_vars` is the real `object`/`oldObject`/
-//! `params` variable assembly itself), but nothing calls any of them from
-//! an actual admission request yet — fetching the real
+//! standalone, `match_conditions` through `validating_admission_policy`
+//! above (`policy_matching::build_eval_vars` is the real `object`/
+//! `oldObject`/`params` variable assembly itself; `PolicyOutcome::
+//! is_denial`/`validation_actions_deny` are the real enforcement-decision
+//! side), but nothing calls any of them from an actual admission request
+//! yet.
+//!
+//! **Deliberately not wired into `server::listener` this session**: doing
+//! so touches the live `CREATE`/`UPDATE`/`DELETE` path for every resource
+//! kind this crate serves — real, high-blast-radius surface — and this
+//! project's own merge protocol (`CLAUDE.md`) requires a behavioral
+//! change like this to be proven against a real running binary
+//! (`deploy/lib/test/cases/*.sh`, a real cluster, real `sudo`/root
+//! access) before it can honestly be called done, not just unit-tested.
+//! That infrastructure wasn't available this session — landing the wiring
+//! blind, with no way to verify it against a real request, would violate
+//! the same "verified against real infrastructure, not assumed correct"
+//! discipline `docs/E2E_FINDINGS.md` exists to enforce. Fetching the real
 //! `ValidatingAdmissionPolicy`/`ValidatingAdmissionPolicyBinding` objects
 //! a request should be evaluated against (including `paramRef`
-//! resolution) and a real call site in `server::listener` are the
-//! remaining pieces).
+//! resolution) and the real call site in `server::listener` remain the
+//! next real work, once that verification is possible.
 
 pub mod attributes;
 pub mod default_storage_class;
