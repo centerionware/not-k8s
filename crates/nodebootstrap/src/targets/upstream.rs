@@ -25,11 +25,24 @@ use anyhow::{Context, Result};
 use crate::config::Config;
 use crate::service_mgr::{self, SupervisedService};
 
-/// Pinned to the same `v1.33` line the vendored CoreDNS manifest and this
-/// workspace's `k8s-openapi` feature are pinned to (`vendor/README.md`).
-/// Unlike `upstream-kube-apiserver.sh`, this is **not** derived from a
-/// running k3s's own version at all -- there is no k3s to ask.
-const K8S_VERSION: &str = "v1.33.13";
+/// **Bumped off `v1.33` to `v1.34` (2026-08-22), found live**:
+/// `nodescheduler`'s DRA cache (`crates/nodescheduler/src/cache/dra.rs`)
+/// hardcodes `resource.k8s.io/v1` -- the GA path DRA only reached in
+/// Kubernetes 1.34 (same finding `APISERVER_PLAN.md`'s k8s-openapi
+/// `v1_33` -> `v1_34` bump note records: "resource.k8s.io/v1 now exists
+/// and is typed"). On real `v1.33.13`, that group/version genuinely isn't
+/// served at all -- no `--feature-gates`/`--runtime-config` combination
+/// makes a GA API exist in a release that predates it; that's a
+/// build-time compiled fact of the binary, not a config toggle. `1.34`
+/// makes `nodescheduler`'s already-hardcoded expectation correct instead
+/// of trying to make an older server pretend otherwise.
+/// `vendor/README.md`'s CoreDNS pin note (matching this workspace's
+/// `k8s-openapi` `v1_33` feature) is now cosmetically stale -- CoreDNS
+/// itself has no real version-compatibility requirement here, so left
+/// alone rather than re-vendored for a purely cosmetic mismatch. Unlike
+/// `upstream-kube-apiserver.sh`, this is **not** derived from a running
+/// k3s's own version at all -- there is no k3s to ask.
+const K8S_VERSION: &str = "v1.34.11";
 
 pub fn run_with(cfg: &Config) -> Result<()> {
     let arch = k8s_dl_arch(&cfg.arch()).with_context(|| format!("unsupported arch for upstream binaries: {}", cfg.arch()))?;
@@ -215,13 +228,17 @@ fn apiserver_args(spec: &TargetSpec) -> Vec<String> {
         "--allow-privileged=true".to_string(),
         "--anonymous-auth=false".to_string(),
         // nodescheduler (this project's own, already built on main) watches
-        // resource.k8s.io (DRA) unconditionally on startup. Found live: on
-        // v1.33.13 with neither of these, that API group isn't served at
-        // all (404, not 403 -- a different failure than rbac.rs's DRA-grant
-        // finding, hit right after fixing that one). `api/all=true` is
-        // blunt but sidesteps having to track the exact beta/alpha version
-        // string resource.k8s.io ships as on this particular patch release.
-        "--feature-gates=DynamicResourceAllocation=true".to_string(),
+        // resource.k8s.io/v1 (DRA) unconditionally on startup -- GA as of
+        // K8S_VERSION's 1.34 (see that constant's own comment for the full
+        // story: 1.33 doesn't serve this group/version at all, no flag
+        // fixes that). `--feature-gates=DynamicResourceAllocation=...` is
+        // deliberately NOT passed here: a feature gate for an
+        // already-GA'd feature can be a locked/removed name a newer
+        // apiserver refuses to start with at all -- a much worse failure
+        // than the 404 this is working around. `api/all=true` is a safe,
+        // generic "make sure every served group/version is on" net that
+        // doesn't reference a feature-gate name that might not exist
+        // anymore.
         "--runtime-config=api/all=true".to_string(),
         "--v=1".to_string(),
     ]
