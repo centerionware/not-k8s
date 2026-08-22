@@ -123,6 +123,12 @@ pub enum Error {
     /// authoring mistake, not silently coerced.
     #[error("the CEL expression evaluated to {0:?}, not a bool -- x-kubernetes-validations rules must be boolean")]
     NotBool(CelValue),
+    /// [`eval_string_with_vars`]'s own real requirement — real upstream's
+    /// own `messageExpression` (and `auditAnnotations[].valueExpression`)
+    /// must evaluate to a CEL `string`; anything else is a real,
+    /// reportable authoring mistake, not silently stringified.
+    #[error("the CEL expression evaluated to {0:?}, not a string -- messageExpression must be a string")]
+    NotString(CelValue),
     /// [`eval_bool_with_deadline`]'s own real cost-budget enforcement —
     /// see that function's own doc comment for exactly what this does
     /// and doesn't guarantee.
@@ -225,6 +231,41 @@ pub fn eval_bool_with_vars_and_deadline(expr: &str, vars: &[(&'static str, &Valu
         // matching `mpsc::Sender::send`'s own documented behavior for a
         // disconnected receiver.
         let _ = tx.send(eval_bool_with_vars(&expr, &borrowed));
+    });
+    rx.recv_timeout(deadline).unwrap_or(Err(Error::DeadlineExceeded))
+}
+
+/// Real upstream's own `messageExpression`/`auditAnnotations[].
+/// valueExpression` shape: same compile-bind-execute sequence as
+/// [`eval_bool_with_vars`], except the CEL expression must evaluate to a
+/// `string` rather than a `bool` — real upstream's own `ValidatingAdmission
+/// Policy` uses this to let a denial message be composed from the request
+/// (`k8s.io/apiserver/pkg/admission/plugin/policy/validating/validator.go`'s
+/// own `Validate`, fetched and read directly, is where this crate's
+/// `admission::policy_validations` module borrows the real message-
+/// resolution order from).
+pub fn eval_string_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<String, Error> {
+    let program = Program::compile(expr)?;
+    let mut ctx = Context::default();
+    for (name, value) in vars.iter().copied() {
+        ctx.add_variable(name, value.clone()).map_err(|_| Error::Bind { name })?;
+    }
+    match program.execute(&ctx)? {
+        CelValue::String(s) => Ok((*s).clone()),
+        other => Err(Error::NotString(other)),
+    }
+}
+
+/// [`eval_string_with_vars`] under the same real wall-clock deadline stand-in
+/// [`eval_bool_with_vars_and_deadline`] already uses — see that function's
+/// own doc comment for the real, named limitation this shares.
+pub fn eval_string_with_vars_and_deadline(expr: &str, vars: &[(&'static str, &Value)], deadline: std::time::Duration) -> Result<String, Error> {
+    let expr = expr.to_string();
+    let owned_vars: Vec<(&'static str, Value)> = vars.iter().map(|(name, value)| (*name, (*value).clone())).collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let borrowed: Vec<(&'static str, &Value)> = owned_vars.iter().map(|(name, value)| (*name, value)).collect();
+        let _ = tx.send(eval_string_with_vars(&expr, &borrowed));
     });
     rx.recv_timeout(deadline).unwrap_or(Err(Error::DeadlineExceeded))
 }
@@ -352,5 +393,26 @@ mod tests {
         let object = json!({"name": "x"});
         let result = eval_bool_with_vars_and_deadline("object.name == 'x'", &[("object", &object)], std::time::Duration::from_secs(5));
         assert_eq!(result.unwrap(), true);
+    }
+
+    #[test]
+    fn eval_string_with_vars_returns_the_real_string_result() {
+        let object = json!({"name": "widget"});
+        let result = eval_string_with_vars("'must not be named ' + object.name", &[("object", &object)]);
+        assert_eq!(result.unwrap(), "must not be named widget");
+    }
+
+    #[test]
+    fn eval_string_with_vars_reports_a_non_string_result_as_a_real_error() {
+        let object = json!({"replicas": 3});
+        let result = eval_string_with_vars("object.replicas", &[("object", &object)]);
+        assert!(matches!(result, Err(Error::NotString(_))), "expected Error::NotString, got {result:?}");
+    }
+
+    #[test]
+    fn eval_string_with_vars_and_deadline_binds_the_same_arbitrary_variable_set() {
+        let object = json!({"name": "x"});
+        let result = eval_string_with_vars_and_deadline("object.name", &[("object", &object)], std::time::Duration::from_secs(5));
+        assert_eq!(result.unwrap(), "x");
     }
 }
