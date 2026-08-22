@@ -1,0 +1,101 @@
+name: nodebootstrap e2e (real infra)
+
+# Runs nodebootstrap for real against a real Ubuntu VM -- not this repo's
+# own bash test-e2e.sh harness (that assumes an already-bootstrapped
+# cluster; nodebootstrap doesn't have one to join yet), and not a mock.
+# Same "throwaway rig" philosophy deploy/lib/test/cases/datastore.sh already
+# uses for nodestore: boot a scratch nodestore, drive everything else with
+# real subprocess calls and real kubectl, never the running cluster's own.
+#
+# This is the "run it for real" gate docs/NODEBOOTSTRAP_PLAN.md's testing
+# strategy section describes, ahead of the case file that will eventually
+# live in deploy/lib/test/cases/*.sh once nodebootstrap replaces the shell
+# bootstrap entirely. Manual dispatch, not on every push -- this installs
+# real systemd services and downloads real upstream Kubernetes binaries,
+# the same reasons e2e.yml/release.yml aren't push-triggered either.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: cargo build (nodestore + nodebootstrap, debug)
+        run: |
+          set -e
+          cargo build -p nodestore
+          cargo build -p nodebootstrap
+
+      - name: Ensure kubectl is available
+        run: |
+          set -e
+          if ! command -v kubectl &>/dev/null; then
+            ver=v1.33.13
+            curl -fsSL -o kubectl "https://dl.k8s.io/release/${ver}/bin/linux/amd64/kubectl"
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/kubectl
+          fi
+          kubectl version --client
+
+      - name: Start nodestore (throwaway scratch instance, not installed as a service)
+        run: |
+          set -e
+          sudo mkdir -p /var/lib/nodestore
+          sudo chown "$(id -u):$(id -g)" /var/lib/nodestore
+          nohup ./target/debug/nodestore >/tmp/nodestore.log 2>&1 &
+          echo $! > /tmp/nodestore.pid
+          for _ in $(seq 1 30); do
+            [ -s /var/lib/nodestore/pki/client/ca.crt ] && break
+            sleep 1
+          done
+          if [ ! -s /var/lib/nodestore/pki/client/ca.crt ]; then
+            echo "nodestore never wrote its client PKI within 30s"
+            cat /tmp/nodestore.log
+            exit 1
+          fi
+
+      - name: nodebootstrap pki (real CA + cert issuance)
+        run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap pki
+
+      - name: nodebootstrap kubeconfig (real kubeconfig emission)
+        run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap kubeconfig
+
+      - name: nodebootstrap targets (fetches + starts real upstream kube-apiserver/kube-controller-manager/kube-scheduler)
+        run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap targets
+
+      - name: Real kubectl against the real apiserver
+        run: sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get --raw=/readyz
+
+      - name: nodebootstrap rbac (verifies kube-apiserver self-bootstrapped RBAC)
+        run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap rbac
+
+      - name: nodebootstrap service-reconciler (verifies the kubernetes Service)
+        run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap service-reconciler
+
+      - name: nodebootstrap manifests (applies the real CoreDNS manifest)
+        run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap manifests
+
+      - name: Verify CoreDNS objects were actually created
+        run: |
+          set -e
+          sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get deployment coredns -n kube-system
+          sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get service kube-dns -n kube-system
+          sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get configmap coredns -n kube-system
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "== nodestore log =="
+          cat /tmp/nodestore.log || true
+          for svc in kube-apiserver kube-controller-manager kube-scheduler; do
+            echo "== journalctl -u $svc =="
+            sudo journalctl -u "$svc" -n 100 --no-pager || true
+          done
