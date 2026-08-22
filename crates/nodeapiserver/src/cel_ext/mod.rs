@@ -76,6 +76,18 @@
 //! Named `cel_ext`, not `cel` — see the module-map note in `lib.rs` for why
 //! (this crate also depends on the external `cel` crate).
 //!
+//! **Group K point 6 started**: `kubernetes_lists::is_sorted`/
+//! `is_sorted_binding` is this crate's first real Kubernetes CEL
+//! extension function (`list.isSorted()`, `k8s.io/apiserver/pkg/cel/
+//! library/lists.go`'s own `kubernetes.lists` library, fetched and read
+//! directly) — `register_kubernetes_extensions` wires it onto every
+//! `Context` this module builds via `cel::Context::add_function`
+//! (`cel-rust`'s own real custom-function registration API, confirmed
+//! against that crate's own `example/src/functions.rs`, which the
+//! published docs don't render). Real upstream's own library also has
+//! `sum`/`min`/`max`/`indexOf`/`lastIndexOf`/`includes` — separate,
+//! not-yet-started work, named honestly rather than silently folded in.
+//!
 //! # The `cel` crate, and getting its API right
 //!
 //! `crates/nodescheduler` already depends on `cel` for a real, live,
@@ -98,6 +110,7 @@ pub mod budget;
 pub mod cost;
 pub mod cost_walk;
 pub mod decl_type;
+pub mod kubernetes_lists;
 pub mod path;
 
 use cel::{Context, Program, Value as CelValue};
@@ -168,9 +181,20 @@ pub fn eval_bool(expr: &str, self_value: &Value, old_self_value: Option<&Value>)
 /// `params`, not `self`/`oldSelf`) — this is the shared primitive both
 /// real variable-naming conventions this crate supports are built from,
 /// rather than a second copy of the same compile-bind-execute sequence.
+/// Registers this crate's own real Kubernetes CEL extension functions
+/// (currently just [`kubernetes_lists::is_sorted_binding`] — see that
+/// module's own doc comment for the named, honest scope) onto a fresh
+/// [`Context`] — called by every real entry point below so a rule can
+/// use them regardless of which variable-naming convention it's
+/// evaluated through.
+fn register_kubernetes_extensions(ctx: &mut Context) {
+    ctx.add_function("isSorted", kubernetes_lists::is_sorted_binding);
+}
+
 pub fn eval_bool_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<bool, Error> {
     let program = Program::compile(expr)?;
     let mut ctx = Context::default();
+    register_kubernetes_extensions(&mut ctx);
     for (name, value) in vars.iter().copied() {
         ctx.add_variable(name, value.clone()).map_err(|_| Error::Bind { name })?;
     }
@@ -247,6 +271,7 @@ pub fn eval_bool_with_vars_and_deadline(expr: &str, vars: &[(&'static str, &Valu
 pub fn eval_string_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<String, Error> {
     let program = Program::compile(expr)?;
     let mut ctx = Context::default();
+    register_kubernetes_extensions(&mut ctx);
     for (name, value) in vars.iter().copied() {
         ctx.add_variable(name, value.clone()).map_err(|_| Error::Bind { name })?;
     }
@@ -414,5 +439,22 @@ mod tests {
         let object = json!({"name": "x"});
         let result = eval_string_with_vars_and_deadline("object.name", &[("object", &object)], std::time::Duration::from_secs(5));
         assert_eq!(result.unwrap(), "x");
+    }
+
+    #[test]
+    fn kubernetes_extensions_are_registered_and_reachable_from_a_real_expression() {
+        // A real live round trip through the actual cel::Context, not
+        // just kubernetes_lists::is_sorted's own pure unit tests --
+        // proves register_kubernetes_extensions really wires the
+        // function through Context::add_function and a real CEL
+        // expression can actually call it by name.
+        assert_eq!(eval_bool_with_vars("[1, 2, 3].isSorted()", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("[3, 2, 1].isSorted()", &[]).unwrap(), false);
+    }
+
+    #[test]
+    fn kubernetes_extensions_are_reachable_through_the_object_variable_too() {
+        let object = json!({"values": [1, 2, 3]});
+        assert_eq!(eval_bool("self.values.isSorted()", &object, None).unwrap(), true);
     }
 }
