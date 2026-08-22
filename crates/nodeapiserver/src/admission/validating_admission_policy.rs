@@ -29,14 +29,24 @@ use std::collections::BTreeMap;
 /// established pattern: [`super::match_conditions::MatchCondition`] and
 /// [`super::policy_validations::Validation`] are the same shape of
 /// borrowed view, not owned structs).
+///
+/// Two lifetimes for the same reason [`ResourceRule`] itself has two —
+/// `'a` is how long this struct's own slices live, `'b` is how long the
+/// `&str`/`Value` data underneath them lives. `admission::policy_decode`'s
+/// `DecodedPolicy` is the real caller this shape exists for: its own
+/// `resource_rules()`/`exclude_resource_rules()` hand back a freshly
+/// built `Vec<ResourceRule<'_, 'b>>` borrowing `DecodedPolicy`'s own
+/// backing storage (`'a`, tied to that one call), while every `&str`
+/// inside still points directly at the original decoded
+/// `serde_json::Value` (`'b`).
 #[derive(Debug, Clone, Copy)]
-pub struct PolicyDefinition<'a> {
-    pub resource_rules: &'a [ResourceRule<'a>],
-    pub exclude_resource_rules: &'a [ResourceRule<'a>],
-    pub namespace_selector: Option<&'a Value>,
-    pub object_selector: Option<&'a Value>,
-    pub match_conditions: &'a [MatchCondition<'a>],
-    pub validations: &'a [Validation<'a>],
+pub struct PolicyDefinition<'a, 'b> {
+    pub resource_rules: &'a [ResourceRule<'a, 'b>],
+    pub exclude_resource_rules: &'a [ResourceRule<'a, 'b>],
+    pub namespace_selector: Option<&'b Value>,
+    pub object_selector: Option<&'b Value>,
+    pub match_conditions: &'a [MatchCondition<'b>],
+    pub validations: &'a [Validation<'b>],
     pub failure_policy: FailurePolicy,
 }
 
@@ -121,7 +131,7 @@ mod tests {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
-    fn base_policy<'a>(resource_rules: &'a [ResourceRule<'a>], validations: &'a [Validation<'a>]) -> PolicyDefinition<'a> {
+    fn base_policy<'a>(resource_rules: &'a [ResourceRule<'a, 'a>], validations: &'a [Validation<'a>]) -> PolicyDefinition<'a, 'a> {
         PolicyDefinition { resource_rules, exclude_resource_rules: &[], namespace_selector: None, object_selector: None, match_conditions: &[], validations, failure_policy: FailurePolicy::Fail }
     }
 
