@@ -1995,10 +1995,29 @@ used*:
    rejection, and `sum` of an empty list always answers `Value::Int(0)`
    regardless of which real element type was actually intended (a real,
    incorrect answer specifically for a duration-typed empty sum, not just
-   cosmetic). Real upstream's own separate `quantity`/`ip`/`cidr`/`url`/
-   `semver`/`format`/`regex`/`authz` libraries remain separate,
-   not-yet-started work. Type-checking a rule against its declared schema
-   at
+   cosmetic).
+
+   **`kubernetes.quantity` also started**: `cel_ext::kubernetes_quantity::
+   is_quantity`/`is_quantity_binding` is `isQuantity(<string>)`, real
+   upstream's own `k8s.io/apiserver/pkg/cel/library/quantity.go`, fetched
+   and read directly — `isQuantity(s)` is real upstream's own real
+   definition (`true` iff `quantity(s)` wouldn't itself error), so this
+   reuses `scheme::quantity::Quantity::parse` — Group G's own already-
+   landed quantity port, the same parser `admission::limit_ranger`'s
+   min/max/ratio comparisons are already built on — rather than a second,
+   potentially-diverging parser. **Deliberately not attempted this
+   session**: the real `quantity(<string>) <Quantity>` constructor and its
+   opaque `Quantity` CEL type's own member functions (`isInteger`/
+   `asInteger`/`asApproximateFloat`/`sign`/`add`/`sub`/`isLessThan`/
+   `isGreaterThan`/`compareTo`) — registering a genuine opaque CEL value
+   (`cel::Value::Opaque`, the `cel::objects::Opaque` trait) is a real,
+   bigger, riskier lift than `kubernetes_lists`' own member-call bindings
+   needed, and deserves its own dedicated session rather than a rushed
+   first attempt bundled in here.
+
+   Real upstream's own separate `ip`/`cidr`/`url`/`semver`/`format`/
+   `regex`/`authz` libraries remain separate, not-yet-started work.
+   Type-checking a rule against its declared schema at
    CRD-acceptance time (catching a rule that references a field the
    schema doesn't have, or compares incompatible types) is also still not
    started — named honestly as a later phase rather than silently out of
