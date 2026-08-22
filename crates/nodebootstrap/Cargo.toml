@@ -1,0 +1,35 @@
+[package]
+name = "nodebootstrap"
+description = "Cluster bootstrap: toolchain/containerd/CNI setup, build-or-fetch, and PKI/RBAC/kubeconfig -- replaces bootstrap-source.sh/bootstrap-release.sh. See docs/NODEBOOTSTRAP_PLAN.md."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "nodebootstrap"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nodebootstrap"
+path = "src/main.rs"
+
+# PKI generation (CA, serving cert, SA signing keypair, per-component client
+# certs) reuses nodecontroller's already-vetted stack rather than picking a
+# second one: rcgen for issuance, p256 for the SEC1<->PKCS#8 conversion an
+# upstream-style EC CA key needs, x509-parser to read a CSR's subject back
+# out, pem for envelope handling. See nodecontroller/Cargo.toml's own
+# comment for why these four specifically.
+[dependencies]
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rcgen = { version = "0.13", features = ["x509-parser"] }
+p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+x509-parser = "0.16"
+pem = "3"
+
+# Not yet used by any module -- added back as each real group lands:
+# serde/serde_json (rbac.rs's/manifests.rs's K8s object literals),
+# serde_yaml (kubeconfig.rs), thiserror (once error variants need it),
+# chrono (cert validity windows in pki.rs).
