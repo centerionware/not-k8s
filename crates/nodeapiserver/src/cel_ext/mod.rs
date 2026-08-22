@@ -76,11 +76,15 @@
 //! Named `cel_ext`, not `cel` — see the module-map note in `lib.rs` for why
 //! (this crate also depends on the external `cel` crate).
 //!
-//! **Group K point 6 started**: `kubernetes_lists` is this crate's real
-//! Kubernetes CEL extension library, `k8s.io/apiserver/pkg/cel/library/
-//! lists.go`'s own `kubernetes.lists` library (fetched and read
-//! directly) — every function it declares (`isSorted`/`min`/`max`/
-//! `indexOf`/`lastIndexOf`/`sum`/`includes`) is now landed.
+//! **Group K point 6 started**: `kubernetes_lists` is real upstream's own
+//! `kubernetes.lists` library (`k8s.io/apiserver/pkg/cel/library/
+//! lists.go`, fetched and read directly) — every function it declares
+//! (`isSorted`/`min`/`max`/`indexOf`/`lastIndexOf`/`sum`/`includes`) is
+//! now landed. `kubernetes_quantity` is real upstream's own `kubernetes.
+//! quantity` library (`.../library/quantity.go`), scoped to `isQuantity`
+//! only so far — see that module's own doc comment for why the real
+//! opaque `Quantity` CEL type (`quantity()`'s own constructor plus its
+//! member functions) is separate, not-yet-started work.
 //! `register_kubernetes_extensions` wires every one of them onto
 //! every `Context` this module builds via `cel::Context::add_function`
 //! (`cel-rust`'s own real custom-function registration API, confirmed
@@ -110,6 +114,7 @@ pub mod cost;
 pub mod cost_walk;
 pub mod decl_type;
 pub mod kubernetes_lists;
+pub mod kubernetes_quantity;
 pub mod path;
 
 use cel::{Context, Program, Value as CelValue};
@@ -194,6 +199,7 @@ fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("lastIndexOf", kubernetes_lists::last_index_of_binding);
     ctx.add_function("sum", kubernetes_lists::sum_binding);
     ctx.add_function("includes", kubernetes_lists::includes_binding);
+    ctx.add_function("isQuantity", kubernetes_quantity::is_quantity_binding);
 }
 
 pub fn eval_bool_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<bool, Error> {
@@ -462,6 +468,8 @@ mod tests {
         assert_eq!(eval_bool_with_vars("[1, 2, 3].sum() == 6", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("[1, 2, 3].includes(2)", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("'model-a'.includes('model-a')", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("isQuantity('1.5G')", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("isQuantity('Three')", &[]).unwrap(), false);
     }
 
     #[test]
