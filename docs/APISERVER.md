@@ -1965,8 +1965,8 @@ used*:
 6. Kubernetes' own CEL extension library — **started**: `cel_ext::
    kubernetes_lists` is real upstream's own `kubernetes.lists` library
    (`k8s.io/apiserver/pkg/cel/library/lists.go`, fetched and read
-   directly) — `isSorted`/`min`/`max`/`indexOf`/`lastIndexOf` all landed,
-   wired onto every real `cel::Context` this crate builds via
+   directly) — `isSorted`/`min`/`max`/`indexOf`/`lastIndexOf`/`sum` all
+   landed, wired onto every real `cel::Context` this crate builds via
    `cel_ext::register_kubernetes_extensions` (`cel::Context::
    add_function`, cel-rust's own real custom-function registration API —
    confirmed against that crate's own `example/src/functions.rs`/`cel/
@@ -1975,18 +1975,25 @@ used*:
    (not just each function's own pure unit tests) prove real CEL
    expressions can actually call each of them by name, including `min()`
    on a real empty list producing a real `ExecutionError`, not a panic or
-   a silent default. **Named, honest divergence**: real upstream
-   restricts every one of these functions at CEL-compile time to a single
-   comparable/equatable element type per call; this crate's own bindings
-   have no type checker to enforce that — `isSorted`/`min`/`max` treat a
-   genuinely incomparable adjacent pair as "no match" (skipped rather
-   than erroring) instead of real upstream's own compile-time rejection.
-   Real upstream's own library also has `sum`/`includes` (list helpers),
-   plus separate `quantity`/`ip`/`cidr`/`url`/`semver`/`format`/`regex`/
-   `authz` libraries — all separate, not-yet-started work (`sum` needs
-   `Value`'s own `Add` semantics confirmed against the real crate first;
-   `includes` needs a `This<Value>` receiver that isn't necessarily a
-   list). Type-checking a rule against its declared schema at
+   a silent default. `sum` is built on `Value`'s own real `Add`
+   (`impl Add<Value> for Value { type Output = Result<Value,
+   ExecutionError>; }`, confirmed against the published `cel` crate docs
+   directly — a genuinely unsupported pair surfaces a real
+   `ExecutionError` from `Value::add` itself, not a silent no-op).
+   **Named, honest divergences**: real upstream restricts every one of
+   these functions at CEL-compile time to a single comparable/equatable/
+   summable element type per call; this crate's own bindings have no type
+   checker to enforce that — `isSorted`/`min`/`max` treat a genuinely
+   incomparable adjacent pair as "no match" (skipped rather than
+   erroring) instead of real upstream's own compile-time rejection, and
+   `sum` of an empty list always answers `Value::Int(0)` regardless of
+   which real element type was actually intended (a real, incorrect
+   answer specifically for a duration-typed empty sum, not just
+   cosmetic). `includes` (needs a `This<Value>` receiver that isn't
+   necessarily a list) is the one remaining gap in this library, plus
+   real upstream's own separate `quantity`/`ip`/`cidr`/`url`/`semver`/
+   `format`/`regex`/`authz` libraries — all separate, not-yet-started
+   work. Type-checking a rule against its declared schema at
    CRD-acceptance time (catching a rule that references a field the
    schema doesn't have, or compares incompatible types) is also still not
    started — named honestly as a later phase rather than silently out of
