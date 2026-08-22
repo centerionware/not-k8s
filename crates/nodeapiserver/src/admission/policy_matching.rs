@@ -1,9 +1,5 @@
 //! `ValidatingAdmissionPolicy`'s own `spec.matchConstraints` matching
-//! engine — real upstream's own `matchesResourceRules`/`namespaceSelector`/
-//! `objectSelector` decision from
-//! `k8s.io/apiserver/pkg/admission/plugin/policy/matching`
-//! (`matcher.go`'s `Matcher.DefinitionMatches`, fetched and read directly),
-//! the second real primitive [`super::match_conditions`]'s own doc comment
+//! engine — the second real primitive [`super::match_conditions`]'s own doc comment
 //! named as still-not-started: whether a request even reaches a policy's
 //! `spec.matchConditions`/`spec.validations` at all. Same "land the
 //! primitive first" discipline as `match_conditions` — this module has no
@@ -19,7 +15,8 @@
 //!
 //! 1. [`resource_rule_matches`] / [`matches_resource_rules`] — real
 //!    upstream's own `rules.Matcher` (`k8s.io/apiserver/pkg/admission/
-//!    plugin/webhook/rules/rules.go`), the same `NamedRuleWithOperations`
+//!    plugin/webhook/predicates/rules/rules.go`, fetched and read
+//!    directly), the same `NamedRuleWithOperations`
 //!    shape both webhooks and `ValidatingAdmissionPolicy` share for
 //!    `resourceRules`/`excludeResourceRules`. **Named, honest gap**: real
 //!    upstream's own `Rule.Scope` (`Namespaced`/`Cluster`/`*`) is not
@@ -40,8 +37,8 @@
 //!    (`None`) matches everything, real upstream's own default.
 //! 3. [`RequestVariable`] / [`build_request_object`] — real upstream's own
 //!    `admission.Attributes` → CEL `request` variable construction
-//!    (`k8s.io/apiserver/pkg/admission/plugin/cel/interfaces.go`'s
-//!    `CreateAdmissionRequest`), the actual `request` binding
+//!    (`k8s.io/apiserver/pkg/admission/plugin/cel/condition.go`'s
+//!    `CreateAdmissionRequest`, fetched and read directly), the actual `request` binding
 //!    `match_conditions`'s own doc comment named as still not built. Scoped
 //!    to the fields this crate can honestly populate from
 //!    [`super::attributes::Attributes`] today: **not populated** —
@@ -91,10 +88,11 @@ fn wildcard_matches(values: &[&str], actual: &str) -> bool {
 
 /// Real upstream's own `resource()`: each declared entry splits into its
 /// own resource/subresource halves, and each half matches independently —
-/// `"pods/*"` matches every subresource of `pods`, `"*/status"` matches
-/// every resource's `status` subresource, `"*/*"` matches any subresource
-/// of anything (but, matching real upstream exactly, **not** the bare
-/// top-level resource itself — `"*/*"` never matches `subresource == ""`).
+/// `"pods/*"` matches every subresource of `pods`, **including the bare
+/// resource itself** (`subresource == ""` is itself a value `"*"` matches,
+/// real upstream draws no special exception for it), `"*/status"` matches
+/// every resource's `status` subresource, and `"*/*"` matches anything at
+/// all — bare resource included.
 fn resource_matches(resources: &[&str], resource: &str, subresource: &str) -> bool {
     resources.iter().any(|r| {
         let (res, sub) = split_resource(r);
@@ -263,18 +261,18 @@ mod tests {
     }
 
     #[test]
-    fn a_wildcard_subresource_entry_matches_any_subresource_but_not_the_bare_resource() {
+    fn a_wildcard_subresource_entry_matches_any_subresource_and_the_bare_resource_too() {
         let rule = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["pods/*"] };
         assert!(resource_rule_matches(&rule, "UPDATE", "", "v1", "pods", "status"));
         assert!(resource_rule_matches(&rule, "UPDATE", "", "v1", "pods", "scale"));
-        assert!(!resource_rule_matches(&rule, "UPDATE", "", "v1", "pods", ""), "*'s own wildcard subresource must never match the bare resource itself");
+        assert!(resource_rule_matches(&rule, "UPDATE", "", "v1", "pods", ""), "real upstream's own resource() draws no exception for the bare resource — \"*\" matches subresource==\"\" like any other value");
     }
 
     #[test]
-    fn double_wildcard_matches_any_resource_any_subresource_but_never_bare() {
+    fn double_wildcard_matches_any_resource_any_subresource_bare_included() {
         let rule = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*/*"] };
         assert!(resource_rule_matches(&rule, "UPDATE", "apps", "v1", "deployments", "status"));
-        assert!(!resource_rule_matches(&rule, "UPDATE", "apps", "v1", "deployments", ""));
+        assert!(resource_rule_matches(&rule, "UPDATE", "apps", "v1", "deployments", ""));
     }
 
     #[test]
