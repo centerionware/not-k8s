@@ -1903,6 +1903,24 @@ used*:
    caller must handle the two differently), or `Decided` (the real
    per-`validations[]`-rule outcome).
 
+   **A real `ValidatingAdmissionPolicy` object now decodes into a usable
+   `PolicyDefinition` too**: `admission::policy_decode` — field names
+   verified directly against the vendored OpenAPI schema (not assumed
+   from memory), tolerant of a missing/malformed field the same way
+   `cacher::selector::object_labels` already is. `ResourceRule`/
+   `PolicyDefinition` both gained a second lifetime parameter to make this
+   possible without an unsafe self-referential struct — see that module's
+   own doc comment for the real two-step shape (`DecodedPolicy::
+   resource_rules()`/`exclude_resource_rules()` hand back a freshly built
+   `Vec` a caller binds to a local, rather than one method returning a
+   fully-assembled `PolicyDefinition`) and why a single-call shape can't
+   express it safely. A live end-to-end test
+   (`policy_decode::tests::a_real_policy_document_decodes_and_evaluates_
+   end_to_end`) decodes a real JSON policy document, evaluates it through
+   `validating_admission_policy::evaluate`, and confirms `matchConditions`,
+   `matchConstraints`, and `validations` all compose correctly together —
+   not just each primitive tested in isolation.
+
    Still **not yet wired to anything real**: constructing the real
    `object`/`oldObject`/`params` CEL variables from an actual admission
    request and any of this actually running against a real
@@ -1911,11 +1929,11 @@ used*:
    resolution wiring for either object, only confirmed generic-REST
    round trips (this group's own point 5, above). Every real decision
    primitive `server::listener` would need to actually enforce a
-   `ValidatingAdmissionPolicy` on a real request now exists standalone
-   (`match_conditions` through `validating_admission_policy`) — what's
-   left is wiring (real request-body variable construction, fetching the
-   real policy/binding objects from storage, and a real call site in
-   `server::listener`), not missing primitives.
+   `ValidatingAdmissionPolicy` on a real request now exists standalone,
+   `match_conditions` through `policy_decode` — what's left is wiring
+   (real request-body variable construction, fetching the real
+   policy/binding objects from storage including `paramRef` resolution,
+   and a real call site in `server::listener`), not missing primitives.
 6. Kubernetes' own CEL extension library (string/list helpers beyond
    base CEL, `isSorted`, quantity parsing, ...) and type-checking a rule
    against its declared schema at CRD-acceptance time (catching a rule
