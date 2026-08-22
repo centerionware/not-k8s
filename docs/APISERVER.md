@@ -1963,28 +1963,34 @@ used*:
    the spec" mistake `docs/E2E_FINDINGS.md` exists to catch, not a
    missing-primitive gap.
 6. Kubernetes' own CEL extension library — **started**: `cel_ext::
-   kubernetes_lists::is_sorted`/`is_sorted_binding` is `list.isSorted()`,
-   real upstream's own `kubernetes.lists` library
+   kubernetes_lists` is real upstream's own `kubernetes.lists` library
    (`k8s.io/apiserver/pkg/cel/library/lists.go`, fetched and read
-   directly), wired onto every real `cel::Context` this crate builds via
+   directly) — `isSorted`/`min`/`max`/`indexOf`/`lastIndexOf` all landed,
+   wired onto every real `cel::Context` this crate builds via
    `cel_ext::register_kubernetes_extensions` (`cel::Context::
    add_function`, cel-rust's own real custom-function registration API —
-   confirmed against that crate's own `example/src/functions.rs`, which
-   the published docs don't render). A live round trip through a real
-   `cel::Context` (not just `is_sorted`'s own pure unit tests) proves a
-   real CEL expression can actually call it by name. **Named, honest
-   divergence**: real upstream restricts this function at CEL-compile
-   time to a single comparable element type per call; this crate's own
-   binding has no type checker to enforce that, so a genuinely
-   incomparable adjacent pair is treated as "not sorted" rather than
-   rejected at compile time. Real upstream's own library also has
-   `sum`/`min`/`max`/`indexOf`/`lastIndexOf`/`includes` (list helpers),
+   confirmed against that crate's own `example/src/functions.rs`/`cel/
+   src/functions.rs` (`contains`/`string`/`size`), which the published
+   docs don't render). Live round trips through a real `cel::Context`
+   (not just each function's own pure unit tests) prove real CEL
+   expressions can actually call each of them by name, including `min()`
+   on a real empty list producing a real `ExecutionError`, not a panic or
+   a silent default. **Named, honest divergence**: real upstream
+   restricts every one of these functions at CEL-compile time to a single
+   comparable/equatable element type per call; this crate's own bindings
+   have no type checker to enforce that — `isSorted`/`min`/`max` treat a
+   genuinely incomparable adjacent pair as "no match" (skipped rather
+   than erroring) instead of real upstream's own compile-time rejection.
+   Real upstream's own library also has `sum`/`includes` (list helpers),
    plus separate `quantity`/`ip`/`cidr`/`url`/`semver`/`format`/`regex`/
-   `authz` libraries — all separate, not-yet-started work. Type-checking
-   a rule against its declared schema at CRD-acceptance time (catching a
-   rule that references a field the schema doesn't have, or compares
-   incompatible types) is also still not started — named honestly as a
-   later phase rather than silently out of scope.
+   `authz` libraries — all separate, not-yet-started work (`sum` needs
+   `Value`'s own `Add` semantics confirmed against the real crate first;
+   `includes` needs a `This<Value>` receiver that isn't necessarily a
+   list). Type-checking a rule against its declared schema at
+   CRD-acceptance time (catching a rule that references a field the
+   schema doesn't have, or compares incompatible types) is also still not
+   started — named honestly as a later phase rather than silently out of
+   scope.
 
 **L. Aggregation layer** — **all four phases done.**
 `k8s.io/kube-aggregator`'s own `APIService` mechanism
