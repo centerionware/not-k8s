@@ -26,13 +26,59 @@
 //! on -- e.g. any not-k8s-component-specific bindings that aren't already
 //! covered by the built-in `system:kube-controller-manager`/
 //! `system:kube-scheduler`/`system:node` identities `pki.rs` already issues
-//! certs for. None identified yet; revisit once `nodescheduler`/
-//! `nodecontroller` are actually run against a `nodebootstrap`-bootstrapped
-//! cluster and something is denied that shouldn't be.
+//! certs for.
+//!
+//! **Finding #2 (2026-08-22, found live running `nodescheduler` against
+//! this exact stack):** `system:kube-scheduler`'s built-in bootstrap
+//! ClusterRole on `v1.33.13` does **not** grant `get`/`list`/`watch` on
+//! `resource.k8s.io`'s `deviceclasses`/`resourceslices`/`resourceclaims`
+//! (DRA). `nodescheduler` watches those unconditionally on startup;
+//! without this grant its reflector 403s in a tight retry loop and never
+//! reaches the pod watch at all -- pods stay `Pending` forever with no
+//! error surfaced anywhere near the actual cause. This is a real gap in
+//! what this module verified is "enough" RBAC, not something upstream's
+//! own `kube-scheduler` would hit the same way (unclear whether real
+//! `kube-scheduler` gates its own DRA watches behind a feature check
+//! `nodescheduler` doesn't have, or whether this grant lands in a later
+//! k8s version's bootstrap policy -- not investigated further; the fix
+//! applies either way). `apply_nodescheduler_dra_grant` supplements the
+//! built-in role with exactly the three resources the error named, scoped
+//! to the `system:kube-scheduler` identity `nodescheduler` already
+//! authenticates as -- not a broader grant.
 
 use anyhow::{Context, Result};
 
 use crate::config::Config;
+
+/// Supplements (does not replace) the built-in `system:kube-scheduler`
+/// ClusterRole -- see the finding in this module's doc comment. A second
+/// ClusterRole + Binding rather than editing the built-in one directly:
+/// the built-in one is reconciled by kube-apiserver's own PostStartHook on
+/// every restart (see this module's first finding), so a hand-edit to it
+/// would just be overwritten.
+const DRA_SCHEDULER_GRANT: &str = r#"
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nodebootstrap:nodescheduler-dra
+rules:
+- apiGroups: ["resource.k8s.io"]
+  resources: ["deviceclasses", "resourceclaims", "resourceslices"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:nodescheduler-dra
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nodebootstrap:nodescheduler-dra
+subjects:
+- kind: User
+  name: system:kube-scheduler
+  apiGroup: rbac.authorization.k8s.io
+"#;
 
 /// A handful of the ~90 bootstrap `system:` ClusterRoles that must exist if
 /// the PostStartHook ran at all -- not the full list (that would just be
@@ -53,7 +99,28 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         return Ok(());
     }
     let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig");
-    verify_bootstrap_rbac(&kubeconfig)
+    verify_bootstrap_rbac(&kubeconfig)?;
+    apply_nodescheduler_dra_grant(&kubeconfig)
+}
+
+/// `kubectl apply -f -`, same subprocess-call posture `manifests.rs` uses
+/// and explains.
+fn apply_nodescheduler_dra_grant(kubeconfig: &std::path::Path) -> Result<()> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("kubectl")
+        .args(["--kubeconfig", &kubeconfig.to_string_lossy(), "apply", "-f", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .context("spawning kubectl apply")?;
+    child
+        .stdin
+        .take()
+        .expect("stdin was piped")
+        .write_all(DRA_SCHEDULER_GRANT.as_bytes())
+        .context("writing the DRA grant manifest to kubectl's stdin")?;
+    let status = child.wait().context("waiting for kubectl apply")?;
+    anyhow::ensure!(status.success(), "kubectl apply -f - (nodescheduler DRA RBAC grant) exited {status}");
+    Ok(())
 }
 
 /// Shells out to `kubectl get clusterrole <name>` for each sentinel role

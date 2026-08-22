@@ -44,11 +44,15 @@ use anyhow::Result;
 /// constraint `cni.sh`'s own `start_flanneld` comment documents
 /// ("flanneld needs a KUBECONFIG (control plane must be up first)").
 /// `targets::run_with` itself runs after `pki`/`kubeconfig` (it needs the
-/// minted PKI to start the apiserver trusting it) and before `rbac`/
-/// `service_reconciler`/`manifests` (all three need a reachable apiserver
-/// to apply against). `nodelet`/`nodeproxy` run last, after containerd/
-/// CNI/the apiserver/scheduler/controller-manager are all up -- same
-/// order `bootstrap-source.sh` uses today.
+/// minted PKI to start the apiserver trusting it) and before
+/// `service_reconciler`/`manifests` (both need a reachable apiserver to
+/// apply against). **`rbac` runs before `nodescheduler`, not after** --
+/// its `apply_nodescheduler_dra_grant` (see `rbac.rs`'s second finding)
+/// has to land before `nodescheduler` starts watching `resource.k8s.io`,
+/// or its reflector 403s in a retry loop before ever reaching the pod
+/// watch. `nodelet`/`nodeproxy` run last, after containerd/CNI/the
+/// apiserver/scheduler/controller-manager are all up -- same order
+/// `bootstrap-source.sh` uses today.
 pub fn run_all() -> Result<()> {
     let cfg = config::Config::from_env()?;
     toolchain::run_with(&cfg)?;
@@ -58,10 +62,10 @@ pub fn run_all() -> Result<()> {
     kubeconfig::run_with(&cfg)?;
     services::ensure_nodestore(&cfg)?;
     targets::run_with(&cfg)?;
+    rbac::run_with(&cfg)?;
     services::ensure_nodescheduler(&cfg)?;
     services::ensure_nodecontroller(&cfg)?;
     cni::run_with(&cfg)?;
-    rbac::run_with(&cfg)?;
     service_reconciler::run_with(&cfg)?;
     manifests::run_with(&cfg)?;
     services::ensure_nodelet(&cfg)?;

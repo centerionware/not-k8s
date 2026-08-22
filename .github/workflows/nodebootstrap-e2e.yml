@@ -93,6 +93,9 @@ jobs:
       - name: Real kubectl against the real apiserver
         run: sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get --raw=/readyz
 
+      - name: nodebootstrap rbac (verifies bootstrap RBAC + applies the nodescheduler DRA grant)
+        run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap rbac
+
       - name: nodebootstrap nodescheduler + nodecontroller (this project's own, not upstream's)
         run: |
           set -e
@@ -101,9 +104,6 @@ jobs:
           sleep 3
           sudo systemctl is-active --quiet nodescheduler || { sudo journalctl -u nodescheduler -n 100 --no-pager; exit 1; }
           sudo systemctl is-active --quiet nodecontroller || { sudo journalctl -u nodecontroller -n 100 --no-pager; exit 1; }
-
-      - name: nodebootstrap rbac (verifies kube-apiserver self-bootstrapped RBAC)
-        run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap rbac
 
       - name: nodebootstrap service-reconciler (verifies the kubernetes Service)
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap service-reconciler
