@@ -1869,14 +1869,36 @@ used*:
    read directly) for the `request` variable — `kind`'s own `kind` field
    and `userInfo` are named, honest gaps there too (`Attributes` carries
    `resource`, not the object's `Kind` string, and no real authenticated
-   identity is threaded down to the admission layer yet). Still **not
-   yet wired to anything real**: constructing the real `object`/
-   `oldObject`/`params` CEL variables from an actual admission request
-   and any of this actually running against a real
+   identity is threaded down to the admission layer yet).
+
+   **The actual `spec.validations[]` Admit/Deny decision is also now
+   landed**: `admission::policy_validations` — real upstream's own
+   `validator.Validate` (`k8s.io/apiserver/pkg/admission/plugin/policy/
+   validating/validator.go`, fetched and read directly), given an
+   already-bound variable set, evaluates every validation (no
+   short-circuit, unlike `match_conditions` — real upstream reports every
+   violation, not just the first) with real upstream's own exact
+   message-resolution order (`messageExpression` if it evaluates to a
+   non-empty, single-line, ≤5KiB string; else the rule's own `message`;
+   else a generic `"failed expression: ..."`) and the same
+   `failurePolicy`-governed handling of a compile/evaluation error
+   (`Fail` denies, `Ignore` admits, either way marked as a real error, not
+   a real `false` result). Built on two new primitives,
+   `cel_ext::eval_string_with_vars`/`eval_string_with_vars_and_deadline`
+   — this crate's first real use of a non-boolean CEL result, since
+   `messageExpression` evaluates to a `string`.
+
+   Still **not yet wired to anything real**: constructing the real
+   `object`/`oldObject`/`params` CEL variables from an actual admission
+   request and any of this actually running against a real
    `ValidatingAdmissionPolicy`/`ValidatingAdmissionPolicyBinding` both
    remain not-yet-started — this crate still has no CRUD/`paramRef`
    resolution wiring for either object, only confirmed generic-REST
-   round trips (this group's own point 5, above).
+   round trips (this group's own point 5, above). Every real primitive
+   `server::listener` would need to actually enforce a
+   `ValidatingAdmissionPolicy` on a real request now exists standalone
+   (`match_conditions`, `policy_matching`, `policy_validations`) — what's
+   left is wiring, not missing primitives.
 6. Kubernetes' own CEL extension library (string/list helpers beyond
    base CEL, `isSorted`, quantity parsing, ...) and type-checking a rule
    against its declared schema at CRD-acceptance time (catching a rule
