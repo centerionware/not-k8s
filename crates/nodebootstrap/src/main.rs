@@ -47,10 +47,39 @@ fn main() -> Result<()> {
         Some("rbac") => nodebootstrap::rbac::run(),
         Some("service-reconciler") => nodebootstrap::service_reconciler::run(),
         Some("manifests") => nodebootstrap::manifests::run(),
+        // services: nodestore + nodelet + nodeproxy, the three run_all()
+        // wires in by default. nodescheduler/nodecontroller are separate,
+        // opt-in subcommands -- see services.rs's doc comment on why
+        // they're not part of the "services" bundle.
+        Some("services") => {
+            let cfg = nodebootstrap::config::Config::from_env()?;
+            nodebootstrap::services::run_with(&cfg)
+        }
+        Some("nodestore") => {
+            let cfg = nodebootstrap::config::Config::from_env()?;
+            nodebootstrap::services::ensure_nodestore(&cfg)
+        }
+        Some("nodelet") => {
+            let cfg = nodebootstrap::config::Config::from_env()?;
+            nodebootstrap::services::ensure_nodelet(&cfg)
+        }
+        Some("nodeproxy") => {
+            let cfg = nodebootstrap::config::Config::from_env()?;
+            nodebootstrap::services::ensure_nodeproxy(&cfg)
+        }
+        Some("nodescheduler") => {
+            let cfg = nodebootstrap::config::Config::from_env()?;
+            nodebootstrap::services::ensure_nodescheduler(&cfg)
+        }
+        Some("nodecontroller") => {
+            let cfg = nodebootstrap::config::Config::from_env()?;
+            nodebootstrap::services::ensure_nodecontroller(&cfg)
+        }
         Some("all") | None => nodebootstrap::run_all(),
         Some(other) => bail!(
             "unknown subcommand '{other}' — one of: toolchain, containerd, cni, fetch, pki, \
-             kubeconfig, targets, rbac, service-reconciler, manifests, all"
+             kubeconfig, targets, rbac, service-reconciler, manifests, services, nodestore, \
+             nodelet, nodeproxy, nodescheduler, nodecontroller, all"
         ),
     }
 }

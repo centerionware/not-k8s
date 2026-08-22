@@ -173,7 +173,9 @@ Standard `CLAUDE.md` merge protocol applies, group by group, same as
 1. **Phase 1 (mergeable to `main` independently of `nodeapiserver`):**
    `toolchain.rs`, `containerd.rs`, `cni.rs`, `fetch.rs`, `components.rs`,
    `targets/upstream.rs`, `pki.rs`, `kubeconfig.rs`, `rbac.rs`,
-   `service_reconciler.rs`, `manifests.rs`. Each is its own branch/PR, own
+   `service_reconciler.rs`, `manifests.rs`, `service_mgr.rs`, `services.rs`
+   (this project's own `nodestore`/`nodelet`/`nodeproxy` as real services).
+   Each is its own branch/PR, own
    e2e case, own gate — no long-lived integration branch needed for this
    phase since nothing here depends on unfinished `nodeapiserver` code.
    CI/CD (`build.yml`/`e2e.yml`/`release.yml`) cuts over to invoking
@@ -210,7 +212,8 @@ comment for the specifics and what's queued next:
 | `targets/upstream.rs` | ✅ real (binary fetch, full flag-set construction, and starts all three via `service_mgr.rs`, with a best-effort `/readyz` wait between apiserver and the other two) | n/a |
 | `components.rs` | ✅ real (static table, mirrors `components.sh`) | n/a |
 | `service_reconciler.rs` | ✅ real (thin verify -- second "kube-apiserver already does this" finding, same shape as `rbac.rs`) | n/a |
-| `service_mgr.rs` | ✅ real, all three tiers (systemd -> OpenRC -> self-restart loop + cron `@reboot`), unit-tested. Wired into `containerd.rs` already. | n/a |
+| `service_mgr.rs` | ✅ real, all three tiers (systemd -> OpenRC -> self-restart loop + cron `@reboot`), unit-tested. Wired into `containerd.rs`, `targets/upstream.rs`, `cni.rs`, and `services.rs`. | n/a |
+| `services.rs` | ✅ real for `nodestore`/`nodelet`/`nodeproxy` (wired into `run_all()`); `nodescheduler`/`nodecontroller` are real and callable but **not** wired in yet -- would race `targets/upstream.rs`'s unconditional upstream `kube-scheduler`/`kube-controller-manager` until that module learns to skip them | ❌ not ported: per-component identities (all five currently share `admin.kubeconfig`, matching current `bootstrap-source.sh` behavior exactly -- not a regression, but not tightened either) |
 
 **HTTP fetch is a real Rust client, not `curl`/`wget` subprocesses**
 (decided 2026-08-22, user direction): `pkg::fetch_url` (every binary/

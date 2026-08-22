@@ -36,10 +36,33 @@ fn build_from_source(cfg: &Config) -> Result<()> {
     let repo_root = find_repo_root().context("locating the not-k8s repo root (walking up from CWD for a Cargo.toml with [workspace])")?;
     stamp_version_from_release_branch(&repo_root)?;
 
+    let dest_dir = cfg.toolchain_dir().join("bin");
+    std::fs::create_dir_all(&dest_dir).context("creating toolchain bin dir")?;
+    let target_release = repo_root.join("target/release");
+
+    // Stages every built binary into Config::toolchain_dir()/bin -- the one
+    // canonical location `services.rs`'s installers look for a component
+    // binary, regardless of whether it got there via a from-source build or
+    // download_release() below. Mirrors bootstrap-source.sh's own
+    // "copy to bin/, don't leave it in target/" step.
+    let stage = |bin: &str| -> Result<()> {
+        let src = target_release.join(bin);
+        let dest = dest_dir.join(bin);
+        std::fs::copy(&src, &dest).with_context(|| format!("staging {} to {}", src.display(), dest.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
+                .with_context(|| format!("making {} executable", dest.display()))?;
+        }
+        Ok(())
+    };
+
     match cfg.layout {
         Layout::Split => {
             for component in COMPONENTS {
                 cargo_build(&repo_root, &["-p", component.cargo_package])?;
+                stage(component.name)?;
             }
         }
         Layout::Combined => {
@@ -50,6 +73,19 @@ fn build_from_source(cfg: &Config) -> Result<()> {
             // ships regardless of what an individual device wants (same
             // caveat components.sh's want_* predicates document).
             cargo_build(&repo_root, &["-p", "notk8s"])?;
+            stage("notk8s")?;
+            // The combined binary dispatches on argv[0] -- a symlink per
+            // component name is what makes `bin/nodelet` (etc.) work
+            // identically to the split layout for every downstream caller
+            // (service installers included), same as bootstrap-source.sh's
+            // own combined-layout install step.
+            for component in COMPONENTS {
+                let link = dest_dir.join(component.name);
+                let _ = std::fs::remove_file(&link);
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(dest_dir.join("notk8s"), &link)
+                    .with_context(|| format!("symlinking {}", link.display()))?;
+            }
         }
     }
     Ok(())
@@ -97,6 +133,20 @@ fn download_release(cfg: &Config) -> Result<()> {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
                 .with_context(|| format!("making {} executable", dest.display()))?;
+        }
+    }
+
+    // Combined layout: symlink every component name to the one downloaded
+    // `notk8s` binary, same as build_from_source() does for a from-source
+    // combined build -- `services.rs`'s installers look for a component by
+    // name in this same dir regardless of layout or source.
+    if matches!(cfg.layout, Layout::Combined) {
+        for component in COMPONENTS {
+            let link = dest_dir.join(component.name);
+            let _ = std::fs::remove_file(&link);
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(dest_dir.join("notk8s"), &link)
+                .with_context(|| format!("symlinking {}", link.display()))?;
         }
     }
     Ok(())
