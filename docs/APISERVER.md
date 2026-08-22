@@ -1921,19 +1921,32 @@ used*:
    `matchConstraints`, and `validations` all compose correctly together —
    not just each primitive tested in isolation.
 
-   Still **not yet wired to anything real**: constructing the real
-   `object`/`oldObject`/`params` CEL variables from an actual admission
-   request and any of this actually running against a real
-   `ValidatingAdmissionPolicy`/`ValidatingAdmissionPolicyBinding` both
-   remain not-yet-started — this crate still has no CRUD/`paramRef`
-   resolution wiring for either object, only confirmed generic-REST
-   round trips (this group's own point 5, above). Every real decision
-   primitive `server::listener` would need to actually enforce a
+   **The real `object`/`oldObject`/`request`/`params` variable assembly is
+   also now landed**: `policy_matching::build_eval_vars` — binds
+   `object`/`oldObject`/`params` to a real CEL `null` (not an absent
+   variable) when the caller has none, matching real upstream's own real
+   behavior (`object` is `null` on `DELETE`, `oldObject` is `null` on
+   `CREATE`, `params` is `null` with no `paramKind`/`paramRef`) — verified
+   live rather than assumed: a dedicated test binds `serde_json::
+   Value::Null` through `cel_ext::eval_bool_with_vars` and confirms an
+   expression like `oldObject == null` actually evaluates rather than
+   erroring on an undefined variable. **Named, honest gap**: real
+   upstream's own three other real variables — `namespaceObject`
+   (`spec.validations` only), `variables` (composed `spec.variables`),
+   and `authorizer` — are not bound; no rule this crate can currently
+   evaluate references them.
+
+   Still **not yet wired to anything real**: any of this actually running
+   against a real `ValidatingAdmissionPolicy`/`ValidatingAdmissionPolicy
+   Binding` remains not-yet-started — this crate still has no CRUD/
+   `paramRef` resolution wiring for either object, only confirmed
+   generic-REST round trips (this group's own point 5, above). Every real
+   decision primitive `server::listener` would need to actually enforce a
    `ValidatingAdmissionPolicy` on a real request now exists standalone,
-   `match_conditions` through `policy_decode` — what's left is wiring
-   (real request-body variable construction, fetching the real
-   policy/binding objects from storage including `paramRef` resolution,
-   and a real call site in `server::listener`), not missing primitives.
+   `match_conditions` through `policy_decode`/`build_eval_vars` — what's
+   left is wiring (fetching the real policy/binding objects from storage
+   including `paramRef` resolution, and a real call site in
+   `server::listener`), not missing primitives.
 6. Kubernetes' own CEL extension library (string/list helpers beyond
    base CEL, `isSorted`, quantity parsing, ...) and type-checking a rule
    against its declared schema at CRD-acceptance time (catching a rule
