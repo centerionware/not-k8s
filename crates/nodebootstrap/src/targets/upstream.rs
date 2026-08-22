@@ -59,6 +59,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         service_cidr: "10.43.0.0/16".to_string(),
         service_account_issuer: "https://kubernetes.default.svc.cluster.local".to_string(),
     };
+    wait_for_nodestore(&spec.etcd_servers)?;
     let apiserver_exec = format!("{} {}", bin_dir.join("kube-apiserver").display(), apiserver_args(&spec).join(" "));
     service_mgr::install(
         cfg,
@@ -74,6 +75,39 @@ pub fn run_with(cfg: &Config) -> Result<()> {
 
     wait_for_readyz(&spec);
     Ok(())
+}
+
+/// A **hard** wait, not best-effort like `wait_for_readyz` below: unlike a
+/// slow apiserver (which retries its own etcd connection internally and
+/// recovers), kube-apiserver's `rbac/bootstrap-roles` PostStartHook does
+/// not retry on its own initial failure. Found live, not guessed: a real
+/// e2e run failed with `poststarthook/rbac/bootstrap-roles failed: reason
+/// withheld` on `/readyz`, and `journalctl -u kube-apiserver` showed
+/// exactly why --
+///
+/// ```text
+/// grpc: addrConn.createTransport failed to connect to {Addr: "127.0.0.1:2379"...}
+/// Err: connection error: desc = "transport: authentication handshake failed: context canceled"
+/// ```
+///
+/// `service_mgr.rs`'s `after: Some("nodestore.service")` (systemd
+/// ordering) only guarantees nodestore's *unit* started before
+/// kube-apiserver's does -- not that its gRPC/TLS listener is actually
+/// accepting connections yet. A plain TCP connect is enough to prove that
+/// (it doesn't need to complete a real etcd v3 handshake, just prove the
+/// listener is bound and accepting) and is far cheaper than parsing
+/// nodestore's own readiness signal out of its logs.
+fn wait_for_nodestore(etcd_servers: &str) -> Result<()> {
+    let addr = etcd_servers.trim_start_matches("https://").trim_start_matches("http://");
+    tracing::info!(addr, "waiting for nodestore to accept connections...");
+    for _ in 0..30 {
+        if std::net::TcpStream::connect(addr).is_ok() {
+            tracing::info!("nodestore is accepting connections");
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    anyhow::bail!("nodestore never started accepting connections at {addr} within 30s -- check: journalctl -u nodestore")
 }
 
 /// A real Rust TLS client (`ureq` + a `rustls::ClientConfig` trusting only
