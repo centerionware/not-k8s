@@ -128,7 +128,7 @@ rules:
     - resourcequota-controller
     - replicaset-controller
     - deployment-controller
-    - daemonset-controller
+    - daemon-set-controller
     - statefulset-controller
     - generic-garbage-collector
     - job-controller
@@ -138,7 +138,7 @@ rules:
     - persistent-volume-binder
     - pv-protection-controller
     - root-ca-cert-publisher
-    - resourceclaim-controller
+    - resource-claim-controller
     - certificate-controller
     - disruption-controller
 ---
