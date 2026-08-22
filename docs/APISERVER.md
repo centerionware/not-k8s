@@ -1888,17 +1888,34 @@ used*:
    — this crate's first real use of a non-boolean CEL result, since
    `messageExpression` evaluates to a `string`.
 
+   **The real per-policy decision that composes all three is also now
+   landed**: `admission::validating_admission_policy::evaluate` — real
+   upstream's own real order (`matchConstraints` → `matchConditions` →
+   `validations`, each stage only narrowing further, matching
+   `validator.Validate`'s own real shape), given one policy's own
+   borrowed field view (`PolicyDefinition`) and an already-bound variable
+   set. Returns `NotApplicable` (constraints/conditions excluded it — a
+   real `matchConditions` `false` and real upstream's own `Ignore`-policy
+   "skip this policy" outcome both collapse to this, matching
+   `MatchResult::matches()`'s own real collapsing), a real
+   `MatchConditionsError` (a `matchConditions` evaluation error under
+   `failurePolicy: Fail`, kept distinct from a validation denial since a
+   caller must handle the two differently), or `Decided` (the real
+   per-`validations[]`-rule outcome).
+
    Still **not yet wired to anything real**: constructing the real
    `object`/`oldObject`/`params` CEL variables from an actual admission
    request and any of this actually running against a real
    `ValidatingAdmissionPolicy`/`ValidatingAdmissionPolicyBinding` both
    remain not-yet-started — this crate still has no CRUD/`paramRef`
    resolution wiring for either object, only confirmed generic-REST
-   round trips (this group's own point 5, above). Every real primitive
-   `server::listener` would need to actually enforce a
+   round trips (this group's own point 5, above). Every real decision
+   primitive `server::listener` would need to actually enforce a
    `ValidatingAdmissionPolicy` on a real request now exists standalone
-   (`match_conditions`, `policy_matching`, `policy_validations`) — what's
-   left is wiring, not missing primitives.
+   (`match_conditions` through `validating_admission_policy`) — what's
+   left is wiring (real request-body variable construction, fetching the
+   real policy/binding objects from storage, and a real call site in
+   `server::listener`), not missing primitives.
 6. Kubernetes' own CEL extension library (string/list helpers beyond
    base CEL, `isSorted`, quantity parsing, ...) and type-checking a rule
    against its declared schema at CRD-acceptance time (catching a rule
