@@ -1179,3 +1179,57 @@ already ships on `main` and was running with the broken blanket-identity
 model described above regardless of which bootstrap path fronts it. Not
 independently re-run against this repo's k3s-based e2e suite as part of
 this change — see the PR this finding shipped with for which gates did run.
+
+### 23. Not a nodebootstrap bug: `nodebootstrap-e2e.yml`'s own CI never
+exercised the real CRI/containerd/CNI path, only the mock runtime
+
+**Severity: real gap in the e2e workflow's coverage, not in nodebootstrap
+itself -- found live scoping the `e2e.yml`/`release.yml` cutover.**
+
+`crates/nodebootstrap/src/containerd.rs` and `cni.rs` were marked "✅ real,
+every tier" in `docs/NODEBOOTSTRAP_PLAN.md`'s status table from reading
+the code -- but `nodebootstrap-e2e.yml` (the workflow that produced that
+confidence) installed `nodelet` without `NODELET_RUNTIME=cri` (so it
+silently ran the mock runtime) and never called `nodebootstrap
+containerd`/`cni` at all. The smoke test's `--image=does-not-matter` only
+ever "worked" because nothing real was pulling or running it. This is
+exactly the gap this whole methodology exists to catch, caught against
+its own tooling this time.
+
+**Fixed**: `nodelet` now builds `--features cri` (a superset of mock --
+`NODELET_RUNTIME` still selects which at runtime), the workflow now runs
+`nodebootstrap containerd` and `nodebootstrap cni` for real, installs
+`nodelet` with `NODELET_RUNTIME=cri`, and the smoke test runs
+`registry.k8s.io/pause:3.9` (a real image, actually pulled and run by
+containerd) with a `crictl pods`/`ps` dump proving it.
+
+**Real bug found immediately by turning this on**: the new "verify
+flanneld wrote a subnet lease" check failed on the first real run --
+`flanneld`'s kube-subnet-mgr mode needs the Node *object* to exist before
+it can patch backend data onto it (`Failed to get node for backend data:
+nodes "runnervm76f27" not found`, then `timeout contacting kube-api`
+after ~30s), and at the point `nodebootstrap cni` runs, `nodelet` (which
+creates that Node object on registration) hasn't run yet -- it's ordered
+several steps later, matching `lib.rs::run_all()`'s own documented
+ordering (`cni` runs right after `nodescheduler`/`nodecontroller`, before
+`nodelet`/`nodeproxy`).
+
+**Turned out not to be an ordering bug**: `deploy/bootstrap-source.sh`
+has exactly the same gap (`ensure_cni` at line 437, `run_and_verify`
+which installs nodelet at line 441 -- CNI before nodelet there too), and
+it works in production because `flanneld.service` carries
+`Restart=always`/`RestartSec=5s` (`service_mgr.rs`) -- the first attempt
+genuinely fails, but it keeps retrying every 5s and succeeds once nodelet
+registers the node moments later. The real bug was in the *new
+verification step itself*: it asserted `/run/flannel/subnet.env` existed
+immediately after installing `cni`, before `nodelet` had run at all --
+an assertion neither the shell version nor `nodebootstrap` ever made.
+Fixed by moving that check to after node registration/Ready (where a
+real subnet lease can actually be expected), not by reordering
+`run_all()` or `cni.sh`, which were both already correct.
+
+**The pattern worth keeping**: turning on a supposedly-passing e2e gate
+found a real gap in the gate itself within one dispatch. The fix a
+plausible-looking failure suggests first (reorder the bootstrap) was the
+wrong one; reading the actual error against the actual retry semantics
+(`Restart=always`) found the real one (fix the check's timing) instead.
