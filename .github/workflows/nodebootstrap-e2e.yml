@@ -169,3 +169,6 @@ jobs:
             sudo journalctl -u "$svc" -n 100 --no-pager || true
           done
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig describe pod smoke-test 2>/dev/null || true
+          echo "== real system:controller:* bootstrap ClusterRoles (ground truth for nodecontroller's SA mapping) =="
+          sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get clusterrole -o name | grep '^clusterrole.rbac.authorization.k8s.io/system:controller:' \
+            | xargs -I{} sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get {} -o yaml
