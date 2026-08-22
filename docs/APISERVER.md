@@ -2235,20 +2235,33 @@ subresources remain entirely unstarted, though they'd reuse the same
 `client_tls`/`http_client` primitives.
 
 **O. Cluster bootstrap — the k3s replacement half** — **not started, and
-deliberately not `nodeapiserver`'s own code** (decided 2026-08-21, before
-any of it was written): cluster PKI generation (CA, serving cert, SA
-signing keypair, per-component client certs, kubeconfig emission), the
-~90 `system:` ClusterRoles/Bindings from upstream's `bootstrappolicy`,
-the `kubernetes` default Service + endpoint reconciler, and CoreDNS +
-flannel manifests moved into `deploy/` don't belong inside the API
-server binary itself — real upstream doesn't put this logic in
+deliberately not `nodeapiserver`'s own code.** The 2026-08-21 entry below is
+**superseded by `docs/NODEBOOTSTRAP_PLAN.md` (2026-08-22)** — read that
+first. Summary of what changed: the crate is `nodebootstrap`, not
+`clusterbootstrap`; its scope grew to also absorb the shell bootstrap
+tooling (toolchain/containerd/CNI/build-or-fetch/layout, replacing
+`bootstrap-source.sh`/`bootstrap-release.sh`); and — the part that actually
+unblocks this group without waiting on `nodeapiserver` — it drops k3s
+entirely and is tested against **real upstream `kube-apiserver`/
+`kube-controller-manager`/`kube-scheduler`** instead, merging to `main` on
+its own gates now. `nodeapiserver` becomes a second `nodebootstrap` target
+(`targets/nodeapiserver.rs`) added on this branch once the binary exists,
+and only becomes the default once this component's own acceptance criteria
+below are met. Original 2026-08-21 rationale, still true of the pieces it
+named (decided before any of it was written): cluster PKI generation (CA,
+serving cert, SA signing keypair, per-component client certs, kubeconfig
+emission), the ~90 `system:` ClusterRoles/Bindings from upstream's
+`bootstrappolicy`, the `kubernetes` default Service + endpoint reconciler,
+and CoreDNS + flannel manifests moved into `deploy/` don't belong inside the
+API server binary itself — real upstream doesn't put this logic in
 `kube-apiserver` either (it's spread across cluster-provisioning tooling
 outside the binary). This build's equivalent is its own separate crate/
-component — a `clusterbootstrap` app, forked into its own long-lived
-integration branch the same way `nodeapiserver` itself was, following
+component — a `nodebootstrap` app, forked into its own branch (`main`-
+mergeable for Phase 1, integration-branch-only for the `nodeapiserver`-
+dependent Phase 2 — see the plan doc), following
 the established component pattern (`deploy/lib/components.sh`'s table +
 a `notk8s` applet — `components.sh:6` and `deploy/measure.sh:98` already
-name `nodeapiserver` in anticipation, `clusterbootstrap` needs the same
+name `nodeapiserver` in anticipation, `nodebootstrap` needs the same
 treatment when its own branch starts). `deploy/setup-control-plane.sh`
 still needs rewriting to stop installing k3s entirely once both
 `nodeapiserver` and `clusterbootstrap` exist — that wiring is
