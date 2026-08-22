@@ -10,7 +10,7 @@
 //! and an object with these labels, match this policy's own declared
 //! `matchConstraints`?
 //!
-//! Three real upstream pieces, ported separately since each is independently
+//! Four real upstream pieces, ported separately since each is independently
 //! testable and real upstream itself keeps them as separate functions:
 //!
 //! 1. [`resource_rule_matches`] / [`matches_resource_rules`] — real
@@ -49,6 +49,17 @@
 //!    wired at the handler-chain level above admission) — both named here
 //!    rather than silently defaulted to a value that would look real but
 //!    isn't.
+//! 4. [`build_eval_vars`] — the real `object`/`oldObject`/`request`/
+//!    `params` variable set `match_conditions`/`policy_validations` both
+//!    expect their own `vars` slice to already carry, assembled from
+//!    already-decoded JSON. `object`/`oldObject`/`params` bind to a real
+//!    CEL `null` (not an absent variable) when the caller has none —
+//!    real upstream's own real behavior, verified live by binding
+//!    `Value::Null` through the exact same generic
+//!    `cel_ext::eval_bool_with_vars` this whole arc already uses. **Named,
+//!    honest gap**: `namespaceObject`/`variables`/`authorizer` — real
+//!    upstream's own three other real variables — are not bound; see this
+//!    function's own doc comment.
 //!
 //! **Not yet wired to anything real**, same posture `match_conditions`
 //! itself still carries: this crate has no `ValidatingAdmissionPolicy`/
@@ -223,6 +234,41 @@ pub fn build_request_object(r: &RequestVariable) -> Value {
     })
 }
 
+/// Real upstream's own `null` for a JSON value this crate's own generic
+/// `serde_json::Value -> cel::Value` binding (`cel_ext::eval_bool_with_vars`'s
+/// own `ctx.add_variable(name, value.clone())`) already handles the same
+/// way it handles every other `Value` variant — used as the real bound
+/// value for `object`/`oldObject`/`params` when the caller has none to
+/// give, rather than leaving the CEL variable unbound (see
+/// [`build_eval_vars`]'s own doc comment for why that distinction is
+/// real, not cosmetic).
+const NULL: Value = Value::Null;
+
+/// Real upstream's own real `object`/`oldObject`/`request`/`params` CEL
+/// variable set (`match_conditions`'s own doc comment names this as the
+/// binding `admission::match_conditions`/`policy_validations` both expect
+/// their `vars` slice to already carry) — assembled from already-decoded
+/// JSON, not itself doing any decoding.
+///
+/// `object`/`oldObject`/`params` bind to a real CEL `null`
+/// ([`NULL`]), not an *absent* variable, when the caller passes `None` —
+/// matching real upstream's own real behavior: `object` is genuinely
+/// `null` on `DELETE`, `oldObject` is genuinely `null` on `CREATE`, and
+/// `params` is genuinely `null` when a policy declares no `paramKind` (or
+/// a binding declares no `paramRef`) — an expression like `oldObject ==
+/// null` is real, valid, and meant to evaluate `true` on `CREATE`, not
+/// fail with an undefined-variable error.
+///
+/// **Named, honest gap**: real upstream's own additional real variables —
+/// `namespaceObject` (`spec.validations` only, not `matchConditions`),
+/// `variables` (composed `spec.variables`), and `authorizer` (a
+/// CEL-callable authorization check) — are not bound here. No rule this
+/// crate can currently evaluate references them; real support is
+/// separate, not-yet-started work.
+pub fn build_eval_vars<'a>(object: Option<&'a Value>, old_object: Option<&'a Value>, request: &'a Value, params: Option<&'a Value>) -> Vec<(&'static str, &'a Value)> {
+    vec![("object", object.unwrap_or(&NULL)), ("oldObject", old_object.unwrap_or(&NULL)), ("request", request), ("params", params.unwrap_or(&NULL))]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +406,42 @@ mod tests {
         let obj = build_request_object(&r);
         assert_eq!(obj["subResource"], json!("status"));
         assert_eq!(obj["requestSubResource"], json!("status"));
+    }
+
+    #[test]
+    fn build_eval_vars_binds_every_given_value_under_its_own_real_name() {
+        let object = json!({"replicas": 3});
+        let old_object = json!({"replicas": 1});
+        let request = json!({"operation": "UPDATE"});
+        let params = json!({"max": 5});
+        let vars = build_eval_vars(Some(&object), Some(&old_object), &request, Some(&params));
+        let names: Vec<&str> = vars.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, vec!["object", "oldObject", "request", "params"]);
+        assert_eq!(vars[0].1, &object);
+        assert_eq!(vars[1].1, &old_object);
+        assert_eq!(vars[2].1, &request);
+        assert_eq!(vars[3].1, &params);
+    }
+
+    #[test]
+    fn build_eval_vars_binds_a_real_cel_null_not_an_absent_variable_when_object_is_none() {
+        let request = json!({"operation": "DELETE"});
+        let old_object = json!({"replicas": 1});
+        let vars = build_eval_vars(None, Some(&old_object), &request, None);
+        // A real expression comparing the absent variables to `null` must
+        // actually evaluate, not fail with an undefined-variable error --
+        // proving these are bound to a real CEL null, not omitted.
+        assert_eq!(crate::cel_ext::eval_bool_with_vars("object == null", &vars).unwrap(), true);
+        assert_eq!(crate::cel_ext::eval_bool_with_vars("params == null", &vars).unwrap(), true);
+        assert_eq!(crate::cel_ext::eval_bool_with_vars("oldObject.replicas == 1", &vars).unwrap(), true);
+    }
+
+    #[test]
+    fn build_eval_vars_binds_a_real_cel_null_for_old_object_on_create() {
+        let object = json!({"replicas": 1});
+        let request = json!({"operation": "CREATE"});
+        let vars = build_eval_vars(Some(&object), None, &request, None);
+        assert_eq!(crate::cel_ext::eval_bool_with_vars("oldObject == null", &vars).unwrap(), true);
+        assert_eq!(crate::cel_ext::eval_bool_with_vars("object.replicas == 1", &vars).unwrap(), true);
     }
 }
