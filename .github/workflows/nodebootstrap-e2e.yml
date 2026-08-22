@@ -134,6 +134,18 @@ jobs:
           done
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get nodes -o wide
           [ "$status" = "Ready" ] || { echo "node never reached Ready"; exit 1; }
+          # Ready in .status.conditions and the node.kubernetes.io/not-ready
+          # taint actually being removed are two different reconciliations
+          # (the Ready condition is nodelet's own heartbeat; the taint is
+          # nodecontroller's node-lifecycle-controller reacting to it) --
+          # found live: nodescheduler correctly refused to schedule onto a
+          # node that still carried the taint seconds after Ready flipped
+          # true. Wait for the taint to actually be gone, not just Ready.
+          for _ in $(seq 1 30); do
+            taints="$(sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get nodes -o jsonpath='{.items[0].spec.taints}' 2>/dev/null)"
+            case "$taints" in *not-ready*) sleep 2 ;; *) break ;; esac
+          done
+          sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get nodes -o jsonpath='{.items[0].spec.taints}'; echo
 
       - name: Real pod through nodescheduler + nodelet (mock runtime) end to end
         run: |
