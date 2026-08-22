@@ -4,19 +4,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-`not-k8s` replaces the node side of Kubernetes with two lean event-driven Rust
-binaries — `nodelet` (kubelet, the node agent) and `nodeproxy` (kube-proxy:
-Service/ClusterIP/NodePort routing via nftables) — while keeping a real
-(stripped) k3s control plane for 1:1 `kubectl`/CRD compatibility. The two are
-separate binaries and separate services with no ordering between them, for the
-same reason kubelet and kube-proxy are separate upstream: a node can swap in
-Cilium or a real kube-proxy, or run none at all
-(`bootstrap-source.sh --proxy=none`), without touching the node agent. The pitch: kubelet's idle cost (PLEG polling,
-cAdvisor housekeeping, per-component watch caches, iptables sync) lives almost
-entirely on the node side, not the apiserver — replace only that, keep
-everything else real. Goal is genuine kubelet feature parity (not a
-single-node-only toy), verified against `docs/GAP_CLOSURE.md`'s live checklist,
-not claimed from the design doc alone.
+**The thesis, current as of 2026-08-22 (`docs/NODEBOOTSTRAP_PLAN.md`): `not-k8s`
+owns every component of a Kubernetes cluster except the apiserver binary
+itself, and even that is a transitional exception, not a permanent one.**
+`nodelet` (kubelet), `nodeproxy` (kube-proxy: Service/ClusterIP/NodePort
+routing via nftables), `nodescheduler` (kube-scheduler), `nodecontroller`
+(kube-controller-manager), `nodestore` (etcd, replacing kine) and
+`nodebootstrap` (cluster PKI/RBAC/kubeconfig/bootstrap, replacing k3s's job)
+are all lean, event-driven Rust — no k3s anywhere in this stack, going
+forward. The one piece still not our own code is the apiserver process
+itself: `main` runs a real, unmodified upstream `kube-apiserver` binary
+(wired up by `nodebootstrap`, not by k3s), and `crates/nodeapiserver`
+(`docs/APISERVER_PLAN.md`) is the in-progress work to replace that too, at
+which point `not-k8s` is a from-scratch Kubernetes distribution with zero
+upstream Go binaries anywhere in it. **k3s is not a permanent part of this
+architecture and every doc/script that still frames it as "the control
+plane we keep" is describing a transitional state being actively removed,
+not the destination** — if you're about to write or repeat that framing,
+check `docs/NODEBOOTSTRAP_PLAN.md`'s status first.
+
+Each node component is its own binary/service with no ordering between the
+independent ones, for the same reason kubelet and kube-proxy are separate
+upstream: a node can swap in Cilium or a real kube-proxy, or run none at all
+(`--proxy=none`), without touching the node agent. The pitch: idle cost
+(kubelet's PLEG polling/cAdvisor housekeeping/per-component watch caches,
+kube-scheduler's backoff-queue ticks, kube-controller-manager's per-resource
+resync loops) lives almost entirely in code this project can rewrite as
+event-driven Rust — replace it, keep behavior real. Goal is genuine feature
+parity per component (not a single-node-only toy), verified against
+`docs/GAP_CLOSURE.md`'s live checklist, not claimed from a design doc alone.
 
 Read `docs/ARCHITECTURE.md` (design rationale), `docs/GAP_CLOSURE.md`
 (feature-by-feature parity status — what's ✅/🟡/❌ and why), and
@@ -120,6 +136,14 @@ Run a single test: `cargo test -p nodelet --features cri <test_name_substring>`
 (cargo's own substring matching — no special harness).
 
 ## Running the real thing
+
+**This section describes the current shell-script bootstrap, which still
+installs k3s — that is the transitional state `crates/nodebootstrap`
+(`docs/NODEBOOTSTRAP_PLAN.md`) is replacing, not the destination described
+in "What this project is" above.** Once its Phase 1 lands and CI/CD cuts
+over, this whole section is replaced by `nodebootstrap` invocations against
+a real upstream `kube-apiserver`, and `bootstrap-source.sh`/
+`bootstrap-release.sh` are deleted, not kept as a fallback.
 
 ```bash
 ./deploy/bootstrap-source.sh --with-cri     # build from source, install everything
