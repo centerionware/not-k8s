@@ -426,7 +426,8 @@ mod tests {
     #[test]
     fn build_eval_vars_binds_a_real_cel_null_not_an_absent_variable_when_object_is_none() {
         let request = json!({"operation": "DELETE"});
-        let vars = build_eval_vars(None, Some(&json!({"replicas": 1})), &request, None);
+        let old_object = json!({"replicas": 1});
+        let vars = build_eval_vars(None, Some(&old_object), &request, None);
         // A real expression comparing the absent variables to `null` must
         // actually evaluate, not fail with an undefined-variable error --
         // proving these are bound to a real CEL null, not omitted.
