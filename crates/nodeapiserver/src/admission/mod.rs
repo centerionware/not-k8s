@@ -152,6 +152,18 @@
 //! its own — same standalone-primitive posture as everything else in
 //! this arc.
 //!
+//! `policy_decode` — decodes a real `ValidatingAdmissionPolicy` object's
+//! own `spec` (wire JSON, field names verified against the vendored
+//! OpenAPI schema) into `validating_admission_policy::PolicyDefinition`'s
+//! own borrowed view. `DecodedPolicy::decode` takes one real policy
+//! object; `DecodedPolicy::resource_rules`/`exclude_resource_rules` hand
+//! back a freshly built `Vec<policy_matching::ResourceRule>` a caller
+//! binds to a local before assembling a `PolicyDefinition` from it (see
+//! that module's own doc comment for why — a real self-referential-struct
+//! shape no single method could return by value). The last real gap
+//! before a caller has actual decoded policy data to evaluate, instead of
+//! hand-built test fixtures.
+//!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
 //! other built-in plugin, `ResourceQuota`'s own non-pod evaluators/scope
 //! matching/persisted usage counter (above), a generic plugin-chain/
@@ -161,13 +173,13 @@
 //! `MutatingAdmissionPolicy` themselves as actual enforcement (both need
 //! `spec.paramRef` resolution and real CRUD/storage wiring — every real
 //! decision primitive `server::listener` would need now exists
-//! standalone, `match_conditions` through `validating_admission_policy`
-//! above, but nothing calls any of them from an actual admission request
-//! yet — `object`/`oldObject`/`params` variable construction from a real
-//! request body, and fetching the real `ValidatingAdmissionPolicy`/
+//! standalone, `match_conditions` through `policy_decode` above, but
+//! nothing calls any of them from an actual admission request yet —
+//! `object`/`oldObject`/`params` variable construction from a real
+//! request body, fetching the real `ValidatingAdmissionPolicy`/
 //! `ValidatingAdmissionPolicyBinding` objects a request should be
-//! evaluated against, are the remaining pieces before any of this can be
-//! wired into `server::listener`).
+//! evaluated against (including `paramRef` resolution), and a real call
+//! site in `server::listener` are the remaining pieces).
 
 pub mod attributes;
 pub mod default_storage_class;
@@ -176,6 +188,7 @@ pub mod limit_ranger;
 pub mod match_conditions;
 pub mod namespace_lifecycle;
 pub mod pod_security;
+pub mod policy_decode;
 pub mod policy_matching;
 pub mod policy_validations;
 pub mod resource_quota;
