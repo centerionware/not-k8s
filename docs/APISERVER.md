@@ -1850,12 +1850,33 @@ used*:
    set (`object`/`oldObject`/`request`/`params`, not just `self`/
    `oldSelf`) — landed in the same PR, `eval_bool`/`eval_bool_with_deadline`
    now thin wrappers around it, behavior unchanged. **Not yet wired to
-   anything real**: this is the standalone primitive; constructing the
-   real `object`/`oldObject`/`request`/`params` CEL variables from an
-   actual admission request, and the separate `resourceRules`/
-   `namespaceSelector`/`objectSelector` matching engine
-   `ValidatingAdmissionPolicy`/webhooks both also need, remain real,
-   separate, not-yet-started work.
+   anything real**: this is the standalone primitive.
+
+   **The `resourceRules`/`namespaceSelector`/`objectSelector` matching
+   engine and `request` CEL variable construction are also now landed**,
+   same standalone-primitive posture: `admission::policy_matching` — real
+   upstream's own `rules.Matcher` (`k8s.io/apiserver/pkg/admission/
+   plugin/webhook/predicates/rules/rules.go`, fetched and read directly)
+   for `resourceRules`/`excludeResourceRules` (a request matches when it
+   matches any `resourceRules` entry and no `excludeResourceRules` entry;
+   `Rule.Scope` is a named, honest gap — not matched, since this crate's
+   admission call sites don't carry a reliable namespaced-vs-cluster
+   signal yet), `metav1.LabelSelectorAsSelector`'s own conversion for
+   `namespaceSelector`/`objectSelector` (reusing `cacher::selector`'s
+   already-landed label matcher rather than reimplementing it), and
+   `CreateAdmissionRequest`'s own JSON shape
+   (`k8s.io/apiserver/pkg/admission/plugin/cel/condition.go`, fetched and
+   read directly) for the `request` variable — `kind`'s own `kind` field
+   and `userInfo` are named, honest gaps there too (`Attributes` carries
+   `resource`, not the object's `Kind` string, and no real authenticated
+   identity is threaded down to the admission layer yet). Still **not
+   yet wired to anything real**: constructing the real `object`/
+   `oldObject`/`params` CEL variables from an actual admission request
+   and any of this actually running against a real
+   `ValidatingAdmissionPolicy`/`ValidatingAdmissionPolicyBinding` both
+   remain not-yet-started — this crate still has no CRUD/`paramRef`
+   resolution wiring for either object, only confirmed generic-REST
+   round trips (this group's own point 5, above).
 6. Kubernetes' own CEL extension library (string/list helpers beyond
    base CEL, `isSorted`, quantity parsing, ...) and type-checking a rule
    against its declared schema at CRD-acceptance time (catching a rule
