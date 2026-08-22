@@ -1072,3 +1072,110 @@ comment claimed and what the code did. The comments were not stale — they
 were written at the same time, and were simply wrong about the library or
 about the value beneath them. Re-reading code against its own documentation
 found as many real bugs here as running it did.
+
+### 22. Fixed: `nodecontroller` had no per-controller ServiceAccount
+impersonation — every controller ran as one over-privileged identity
+
+**Severity: real gap, now fixed in `nodecontroller` itself.**
+
+Found live bootstrapping a cluster against a real upstream apiserver
+(2026-08-22, in a separate branch prototyping a from-source, non-k3s
+bootstrap path): `nodecontroller` was started with
+`--use-service-account-credentials=true` (the same flag real
+`kube-controller-manager` takes) and its own kubeconfig. Its
+`root-ca-cert-publisher` controller immediately 403'd trying to create
+`ConfigMap`s:
+
+```text
+failed to create kube-root-ca.crt ConfigMap namespace=kube-public
+error=... "configmaps is forbidden: User \"system:kube-controller-manager\"
+cannot create resource \"configmaps\"..."
+```
+
+**Root cause**: real upstream `kube-controller-manager`, when given
+`--use-service-account-credentials=true`, does not run its ~30 controllers
+under its own client identity at all. It uses that identity only to create
+and hand out a narrowly-scoped `system:serviceaccount:kube-system:
+<controller-name>` token per controller (e.g. `root-ca-cert-publisher`,
+`node-controller`, `namespace-controller`), each bound to its own tightly
+scoped `system:controller:<name>` bootstrap `ClusterRole` — this is exactly
+why the flag exists, and exactly why upstream's own bootstrap policy keeps
+`system:kube-controller-manager`'s own role deliberately narrow (mostly
+leader-election machinery, not workload permissions).
+
+`grep`ing `crates/nodecontroller/src/` for `use_service_account_credentials`,
+`impersonat`, or `system:controller:` returned **nothing** — not present
+anywhere, including `config.rs`'s own CLI/env surface. Every controller
+shared one client, authenticated once as whatever identity the process's
+own kubeconfig carried. On this repo's own k3s-based bootstrap
+(`deploy/lib/run.sh`), that identity is `/etc/rancher/k3s/k3s.yaml` —
+cluster-admin — so the gap was masked here: cluster-admin can do anything
+any controller needs, so nothing ever 403'd. It only surfaced against a
+real upstream apiserver bootstrapped with `nodecontroller` running as a
+narrowly-scoped identity instead, which is the architecture
+`--use-service-account-credentials=true` claims to implement.
+
+**Suspected same-cause, not directly confirmed before the fix**: the
+`node.kubernetes.io/not-ready` taint on a freshly-registered Node not
+clearing in time for `nodescheduler` to bind a pod to it —
+`node-lifecycle-controller` needs to patch `Node.spec.taints`, and if that
+403'd under the same blanket identity, silently (no test asserted on this
+specific call succeeding), the pod would stay `Pending` forever with
+nothing pointing at why.
+
+**Fixed properly, in `nodecontroller` itself**: `crates/nodecontroller/src/lib.rs`
+gained `upstream_controller_sa()` (mapping each of this crate's ~20
+controllers to the real upstream `system:serviceaccount:kube-system:<name>`
+identity it corresponds to) and `impersonated_client()` (builds a
+`kube::Client` per controller carrying `Impersonate-User`/
+`Impersonate-Group` headers for that identity, via `kube::Config`'s
+`headers` field). `run()` now builds one impersonated client per
+controller instead of `client.clone()`-ing a single shared one. On a
+cluster-admin-backed kubeconfig (this repo's k3s bootstrap today) this
+needs no additional RBAC — cluster-admin can already impersonate any
+identity; a bootstrap that authenticates `nodecontroller` as a
+narrower identity instead (as a from-source, non-k3s bootstrap path will)
+additionally needs an `impersonate` grant scoped to the SA/group names
+`impersonated_client()` actually uses, so that RBAC then authorizes each
+controller's real requests against that narrower identity's own existing
+`system:controller:<name>` bootstrap role, the same as real upstream.
+
+**Two wrong mappings found and fixed one round later**
+(`daemonset-controller`/`resourceclaim-controller` instead of the real
+`daemon-set-controller`/`resource-claim-controller` — confirmed by dumping
+a live cluster's actual `system:controller:*` ClusterRoles rather than
+trusting memory a second time).
+
+**Bigger architectural point, found the same round**: per-controller
+impersonation covers **writes**, not reads. Real upstream's own
+`createClientBuilders()` (`cmd/kube-controller-manager/app/
+controllermanager.go`) builds two client builders — a `rootClientBuilder`
+(base identity, backs the shared informer factory nearly every controller
+reads through) and a `clientBuilder` (per-controller impersonation, used
+for each controller's own writes). Confirmed against a live dump:
+`system:controller:node-controller`'s real rules have no
+`coordination.k8s.io` `leases` permission at all, despite
+`node-lifecycle-controller` needing to watch node leases — that read was
+never meant to come from the per-controller identity.
+
+`nodecontroller`'s own `SharedWatch` (`watch.rs`) already deduplicates
+reads across controllers via one watch per resource type (a `OnceLock`
+per type) — which made the first version of this fix doubly wrong for
+shared reads specifically: only the *first* controller to reach a given
+`OnceLock::get_or_init` actually determined which identity's permissions
+that shared watch ran under, for every controller subscribed to it,
+non-deterministically depending on task scheduling. Fixed by giving
+`watch.rs` its own explicit base-identity client
+(`set_base_client`/`base_client()`), set once in `lib.rs::run()` before
+any controller starts — every shared/dedup'd read now always uses the
+base identity, matching upstream's real split, and no longer depends on
+which controller happens to start first.
+
+**Verification**: proven end to end (real per-controller impersonation,
+real RBAC-scoped identities, a real pod scheduled and Running) against a
+from-source, non-k3s bootstrap prototype's own CI. That prototype crate
+isn't merged yet; this fix landed on its own because `nodecontroller`
+already ships on `main` and was running with the broken blanket-identity
+model described above regardless of which bootstrap path fronts it. Not
+independently re-run against this repo's k3s-based e2e suite as part of
+this change — see the PR this finding shipped with for which gates did run.
