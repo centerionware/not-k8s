@@ -141,6 +141,17 @@
 //! `string`, not a `bool` — the first real use of a non-boolean CEL
 //! result in this crate).
 //!
+//! `validating_admission_policy` — the single real per-policy decision
+//! that composes the three primitives above in real upstream's own real
+//! order (`spec.matchConstraints` → `spec.matchConditions` →
+//! `spec.validations`, each stage only narrowing further): given a
+//! [`validating_admission_policy::PolicyDefinition`]'s borrowed view of
+//! one policy's own fields and an already-bound variable set, returns the
+//! real per-policy outcome (`NotApplicable`, a real `matchConditions`
+//! evaluation error, or the per-rule `Decided` result). Still no I/O of
+//! its own — same standalone-primitive posture as everything else in
+//! this arc.
+//!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
 //! other built-in plugin, `ResourceQuota`'s own non-pod evaluators/scope
 //! matching/persisted usage counter (above), a generic plugin-chain/
@@ -148,14 +159,15 @@
 //! `server::listener` hand-calling each by name, mutating/validating
 //! admission webhooks themselves, and `ValidatingAdmissionPolicy`/
 //! `MutatingAdmissionPolicy` themselves as actual enforcement (both need
-//! `spec.paramRef` resolution and real CRUD/storage wiring — the request-
-//! matching and CEL-evaluation primitives they'd run on, `match_conditions`,
-//! `policy_matching`, and `policy_validations` above plus
-//! `apiextensions::cel_evaluate`'s own `eval_bool_with_vars`-based
-//! evaluation, all now exist standalone but nothing calls them from an
-//! actual admission request yet — `object`/`oldObject`/`params` variable
-//! construction from a real request body is the remaining piece before
-//! any of this can be wired into `server::listener`).
+//! `spec.paramRef` resolution and real CRUD/storage wiring — every real
+//! decision primitive `server::listener` would need now exists
+//! standalone, `match_conditions` through `validating_admission_policy`
+//! above, but nothing calls any of them from an actual admission request
+//! yet — `object`/`oldObject`/`params` variable construction from a real
+//! request body, and fetching the real `ValidatingAdmissionPolicy`/
+//! `ValidatingAdmissionPolicyBinding` objects a request should be
+//! evaluated against, are the remaining pieces before any of this can be
+//! wired into `server::listener`).
 
 pub mod attributes;
 pub mod default_storage_class;
@@ -168,3 +180,4 @@ pub mod policy_matching;
 pub mod policy_validations;
 pub mod resource_quota;
 pub mod service_account;
+pub mod validating_admission_policy;
