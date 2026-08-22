@@ -1,0 +1,54 @@
+[package]
+name = "nodebootstrap"
+description = "Cluster bootstrap: toolchain/containerd/CNI setup, build-or-fetch, and PKI/RBAC/kubeconfig -- replaces bootstrap-source.sh/bootstrap-release.sh. See docs/NODEBOOTSTRAP_PLAN.md."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "nodebootstrap"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nodebootstrap"
+path = "src/main.rs"
+
+# PKI generation (CA, serving cert, SA signing keypair, per-component client
+# certs) reuses nodecontroller's already-vetted stack rather than picking a
+# second one: rcgen for issuance, p256 for the SEC1<->PKCS#8 conversion an
+# upstream-style EC CA key needs, x509-parser to read a CSR's subject back
+# out, pem for envelope handling. See nodecontroller/Cargo.toml's own
+# comment for why these four specifically.
+[dependencies]
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rcgen = { version = "0.13", features = ["x509-parser"] }
+p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+x509-parser = "0.16"
+pem = "3"
+base64 = "0.22"
+
+# HTTP fetch (pkg.rs::fetch_url, targets/upstream.rs's readyz check) is a
+# real Rust client, not a `curl`/`wget` subprocess -- `ureq` because it's
+# synchronous (this crate has no tokio runtime and shouldn't need one for a
+# handful of one-shot GETs) and its "tls" feature is rustls-backed (via
+# `rustls`, workspace-pinned at 0.23 same as the cri-gated components),
+# not OpenSSL/native-tls. `rustls-pemfile` parses the CA PEM `pki.rs` mints
+# into the `rustls::RootCertStore` the readyz check trusts.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+rustls = { workspace = true }
+rustls-pemfile = "2"
+# GitHub Releases API responses (fetch.rs's Source::Release path) --
+# parsed as serde_json::Value, not a derived struct: this crate only reads
+# two fields (tag_name, assets[].{name,browser_download_url}) out of a
+# much larger response, and a Value walk is less code than a struct that
+# has to `#[serde(default)]` every field it doesn't use.
+serde_json = { workspace = true }
+
+# Not yet used by any module -- added back as each real group lands:
+# serde/thiserror (once needed), chrono (cert validity windows in pki.rs).
+# kubeconfig.rs deliberately hand-templates its YAML rather than pulling in
+# serde_yaml -- the kubeconfig schema is small and fixed, and templating
+# avoids a struct that has to track upstream's own clientcmd/api types.

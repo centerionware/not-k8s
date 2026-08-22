@@ -1,0 +1,354 @@
+//! Build-from-source vs. fetch-a-release, and layout selection — replaces
+//! the prebuilt/layout logic spread across `bootstrap-source.sh` and
+//! `bootstrap-release.sh` (`NOTK8S_*_PREBUILT` env vars, `--layout=`,
+//! tagged vs. latest release resolution).
+//!
+//! Both `Source::Compile` (version-stamp + `cargo build` per
+//! `components.rs`'s table, honoring `Config::layout`) and `Source::Release`
+//! (resolve `Config::release_tag` against GitHub Releases, download the
+//! matching asset) are real. `nodelet-build.sh`'s low-RAM-host LTO/
+//! `CARGO_BUILD_JOBS=1` fallback is not yet ported into `Source::Compile`;
+//! a from-source build on a constrained host should set those env vars
+//! itself until it is (see `CLAUDE.md`'s "Memory-constrained build hosts").
+
+use anyhow::{Context, Result};
+
+use crate::components::COMPONENTS;
+use crate::config::{Config, Layout, Source};
+
+/// This repo's own GitHub coordinates -- used to fetch `VERSION` off the
+/// `version` branch (`stamp_version_from_release_branch`) and to resolve
+/// release assets (`download_release`).
+const REPO: &str = "centerionware/not-k8s";
+
+pub fn run() -> Result<()> {
+    run_with(&Config::from_env()?)
+}
+
+pub fn run_with(cfg: &Config) -> Result<()> {
+    match cfg.source {
+        Source::Compile => build_from_source(cfg),
+        Source::Release => download_release(cfg),
+    }
+}
+
+fn build_from_source(cfg: &Config) -> Result<()> {
+    let repo_root = find_repo_root().context("locating the not-k8s repo root (walking up from CWD for a Cargo.toml with [workspace])")?;
+    stamp_version_from_release_branch(&repo_root)?;
+
+    let dest_dir = cfg.toolchain_dir().join("bin");
+    std::fs::create_dir_all(&dest_dir).context("creating toolchain bin dir")?;
+    let target_release = repo_root.join("target/release");
+
+    // Stages every built binary into Config::toolchain_dir()/bin -- the one
+    // canonical location `services.rs`'s installers look for a component
+    // binary, regardless of whether it got there via a from-source build or
+    // download_release() below. Mirrors bootstrap-source.sh's own
+    // "copy to bin/, don't leave it in target/" step.
+    let stage = |bin: &str| -> Result<()> {
+        let src = target_release.join(bin);
+        let dest = dest_dir.join(bin);
+        std::fs::copy(&src, &dest).with_context(|| format!("staging {} to {}", src.display(), dest.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
+                .with_context(|| format!("making {} executable", dest.display()))?;
+        }
+        Ok(())
+    };
+
+    match cfg.layout {
+        Layout::Split => {
+            for component in COMPONENTS {
+                cargo_build(&repo_root, &["-p", component.cargo_package])?;
+                stage(component.name)?;
+            }
+        }
+        Layout::Combined => {
+            // crates/notk8s links every component crate behind its own
+            // Cargo feature (see CLAUDE.md's "Two build layouts") --
+            // building it with no explicit -F takes its default features,
+            // which is every component, matching what a release build
+            // ships regardless of what an individual device wants (same
+            // caveat components.sh's want_* predicates document).
+            cargo_build(&repo_root, &["-p", "notk8s"])?;
+            stage("notk8s")?;
+            // The combined binary dispatches on argv[0] -- a symlink per
+            // component name is what makes `bin/nodelet` (etc.) work
+            // identically to the split layout for every downstream caller
+            // (service installers included), same as bootstrap-source.sh's
+            // own combined-layout install step.
+            for component in COMPONENTS {
+                let link = dest_dir.join(component.name);
+                let _ = std::fs::remove_file(&link);
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(dest_dir.join("notk8s"), &link)
+                    .with_context(|| format!("symlinking {}", link.display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Real upstream release asset names, confirmed against this repo's own
+/// published releases (`gh api repos/centerionware/not-k8s/releases/latest`):
+/// `<bin>-<version-without-v>-linux-<arch>-<profile>`, e.g.
+/// `nodelet-0.6.2-linux-x86_64-release`. `<arch>` matches `Config::arch()`'s
+/// own `uname -m` vocabulary directly (`x86_64`/`aarch64`/`armv7l`) -- no
+/// translation table needed here, unlike `k8s_dl_arch`/`cni_go_arch`
+/// elsewhere in this crate, because this repo's own release matrix already
+/// uses that vocabulary (`release.yml`'s own `matrix.arch`).
+///
+/// Always fetches the `release` profile, never `debug` -- same as
+/// `bootstrap-release.sh`'s `download_release_binary`, which this replaces;
+/// a real device install has no use for an unoptimized, unstripped binary.
+fn download_release(cfg: &Config) -> Result<()> {
+    let tag = resolve_release_tag(cfg.release_tag.as_deref())?;
+    let version = tag.strip_prefix('v').unwrap_or(&tag);
+    let assets = list_release_assets(&tag)?;
+    let arch = cfg.arch();
+
+    let wanted: Vec<&str> = match cfg.layout {
+        Layout::Split => COMPONENTS.iter().map(|c| c.name).collect(),
+        Layout::Combined => vec!["notk8s"],
+    };
+
+    let dest_dir = cfg.toolchain_dir().join("bin");
+    std::fs::create_dir_all(&dest_dir).context("creating toolchain bin dir")?;
+
+    for bin in wanted {
+        let asset_name = format!("{bin}-{version}-linux-{arch}-release");
+        let url = assets.get(asset_name.as_str()).with_context(|| {
+            format!(
+                "release {tag} has no asset named '{asset_name}' -- check \
+                 https://github.com/{REPO}/releases/tag/{tag} for what's actually attached"
+            )
+        })?;
+        let dest = dest_dir.join(bin);
+        tracing::info!(asset = asset_name, "downloading release asset");
+        crate::pkg::fetch_url(url, &dest).with_context(|| format!("fetching {asset_name}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
+                .with_context(|| format!("making {} executable", dest.display()))?;
+        }
+    }
+
+    // Combined layout: symlink every component name to the one downloaded
+    // `notk8s` binary, same as build_from_source() does for a from-source
+    // combined build -- `services.rs`'s installers look for a component by
+    // name in this same dir regardless of layout or source.
+    if matches!(cfg.layout, Layout::Combined) {
+        for component in COMPONENTS {
+            let link = dest_dir.join(component.name);
+            let _ = std::fs::remove_file(&link);
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(dest_dir.join("notk8s"), &link)
+                .with_context(|| format!("symlinking {}", link.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// `None` -> resolve `/releases/latest`; `Some(t)` -> use `t` as given,
+/// prefixed with `v` if it doesn't already have one (accepts both
+/// `NODEBOOTSTRAP_RELEASE_TAG=1.2.3` and `=v1.2.3`).
+fn resolve_release_tag(tag: Option<&str>) -> Result<String> {
+    if let Some(t) = tag {
+        return Ok(if t.starts_with('v') { t.to_string() } else { format!("v{t}") });
+    }
+    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    let body = github_api_get(&url)?;
+    body.get("tag_name")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .with_context(|| format!("no tag_name in the response from {url}"))
+}
+
+/// Maps asset name -> `browser_download_url` for every asset on `tag`'s
+/// release.
+fn list_release_assets(tag: &str) -> Result<std::collections::HashMap<String, String>> {
+    let url = format!("https://api.github.com/repos/{REPO}/releases/tags/{tag}");
+    let body = github_api_get(&url)?;
+    let assets = body.get("assets").and_then(|v| v.as_array()).with_context(|| format!("no assets array in the response from {url}"))?;
+    let mut map = std::collections::HashMap::new();
+    for asset in assets {
+        if let (Some(name), Some(download_url)) =
+            (asset.get("name").and_then(|v| v.as_str()), asset.get("browser_download_url").and_then(|v| v.as_str()))
+        {
+            map.insert(name.to_string(), download_url.to_string());
+        }
+    }
+    Ok(map)
+}
+
+/// GitHub's REST API requires a `User-Agent` header (returns `403` without
+/// one) -- the one thing `pkg::fetch_url`'s plain GET doesn't set, so this
+/// stays a small local helper rather than a `pkg.rs` addition every other
+/// caller would carry for no reason.
+fn github_api_get(url: &str) -> Result<serde_json::Value> {
+    let response = ureq::get(url)
+        .set("User-Agent", "not-k8s-nodebootstrap")
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .with_context(|| format!("GET {url}"))?;
+    let body = response.into_string().with_context(|| format!("reading response body from {url}"))?;
+    serde_json::from_str(&body).with_context(|| format!("parsing JSON from {url}"))
+}
+
+fn cargo_build(repo_root: &std::path::Path, extra_args: &[&str]) -> Result<()> {
+    tracing::info!(args = ?extra_args, "cargo build");
+    let status = std::process::Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .args(extra_args)
+        .current_dir(repo_root)
+        .status()
+        .context("running cargo build")?;
+    anyhow::ensure!(status.success(), "cargo build {} failed", extra_args.join(" "));
+    Ok(())
+}
+
+/// Walks up from the current directory looking for a `Cargo.toml` whose
+/// first bytes declare `[workspace]` -- this crate's own workspace root,
+/// same file `docs/NODEBOOTSTRAP_PLAN.md`'s tree calls out. Doesn't shell
+/// out to `cargo locate-project` because that requires cargo to already be
+/// on PATH, which `toolchain::ensure_rust` may not have finished ensuring
+/// yet at the point `fetch` needs this.
+fn find_repo_root() -> Result<std::path::PathBuf> {
+    let mut dir = std::env::current_dir().context("reading CWD")?;
+    loop {
+        let candidate = dir.join("Cargo.toml");
+        if let Ok(contents) = std::fs::read_to_string(&candidate) {
+            if contents.contains("[workspace]") {
+                return Ok(dir);
+            }
+        }
+        if !dir.pop() {
+            anyhow::bail!(
+                "no workspace Cargo.toml found walking up from {} -- run nodebootstrap from \
+                 inside a not-k8s checkout, or set NODEBOOTSTRAP_REPO_ROOT",
+                std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default()
+            );
+        }
+    }
+}
+
+/// Reads `VERSION` off the `version` branch (over plain HTTPS -- `git`/`gh`
+/// aren't assumed present on a bootstrap target) and stamps it into the
+/// workspace `Cargo.toml`'s `[workspace.package] version` field, so a
+/// from-source build reports the same version a release binary would carry
+/// instead of the placeholder every crate inherits from that field today.
+/// Read-only against the `version` branch -- bumping it stays
+/// `version-bump.sh`'s job, run only by `release.yml`'s `publish-release`
+/// stage.
+fn stamp_version_from_release_branch(repo_root: &std::path::Path) -> Result<()> {
+    let url = format!("https://raw.githubusercontent.com/{REPO}/version/VERSION");
+    let dest = std::env::temp_dir().join("nodebootstrap-VERSION");
+    crate::pkg::fetch_url(&url, &dest).context("fetching VERSION off the version branch")?;
+    let version = std::fs::read_to_string(&dest).context("reading fetched VERSION file")?;
+    let version = version.trim();
+    anyhow::ensure!(
+        version.split('.').count() == 3 && version.split('.').all(|p| p.parse::<u32>().is_ok()),
+        "VERSION file off the version branch doesn't look like MAJOR.MINOR.PATCH: '{version}'"
+    );
+
+    let cargo_toml_path = repo_root.join("Cargo.toml");
+    let cargo_toml = std::fs::read_to_string(&cargo_toml_path).context("reading workspace Cargo.toml")?;
+    let stamped = stamp_version(&cargo_toml, version)
+        .with_context(|| format!("no [workspace.package] version field found in {}", cargo_toml_path.display()))?;
+    std::fs::write(&cargo_toml_path, stamped).context("writing stamped Cargo.toml")?;
+    tracing::info!(version, "stamped workspace version from the version branch");
+    Ok(())
+}
+
+/// Replaces the first `version = "..."` line's value with `new_version`.
+/// The workspace `Cargo.toml`'s only `version = "..."` line lives under
+/// `[workspace.package]` (confirmed against this repo's own file), so a
+/// plain first-match replace is correct here without a TOML parser.
+fn stamp_version(cargo_toml: &str, new_version: &str) -> Option<String> {
+    let mut replaced = false;
+    let out: String = cargo_toml
+        .lines()
+        .map(|line| {
+            if !replaced && line.trim_start().starts_with("version") && line.contains('=') {
+                replaced = true;
+                format!("version = \"{new_version}\"")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    replaced.then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stamp_version_replaces_only_the_workspace_package_version() {
+        let toml = "[workspace]\nmembers = [\"a\"]\n\n[workspace.package]\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+        let stamped = stamp_version(toml, "1.2.3").expect("found a version field");
+        assert!(stamped.contains("version = \"1.2.3\""));
+        assert!(!stamped.contains("0.1.0"));
+        assert!(stamped.contains("edition = \"2021\""));
+    }
+
+    #[test]
+    fn stamp_version_returns_none_when_no_version_field_exists() {
+        let toml = "[workspace]\nmembers = [\"a\"]\n";
+        assert!(stamp_version(toml, "1.2.3").is_none());
+    }
+
+    #[test]
+    fn resolve_release_tag_adds_v_prefix_only_when_missing() {
+        assert_eq!(resolve_release_tag(Some("1.2.3")).unwrap(), "v1.2.3");
+        assert_eq!(resolve_release_tag(Some("v1.2.3")).unwrap(), "v1.2.3");
+    }
+
+    #[test]
+    fn asset_name_matches_this_repos_real_release_convention() {
+        // Confirmed live against `gh api repos/centerionware/not-k8s/
+        // releases/latest`: e.g. "nodelet-0.6.2-linux-x86_64-release".
+        let bin = "nodelet";
+        let version = "0.6.2";
+        let arch = "x86_64";
+        let asset_name = format!("{bin}-{version}-linux-{arch}-release");
+        assert_eq!(asset_name, "nodelet-0.6.2-linux-x86_64-release");
+    }
+
+    #[test]
+    fn list_release_assets_parses_a_real_shaped_response() {
+        // Trimmed shape of a real `GET /repos/{repo}/releases/tags/{tag}`
+        // response -- only the fields list_release_assets reads.
+        let body = r#"{
+            "tag_name": "v0.6.2",
+            "assets": [
+                {
+                    "name": "nodelet-0.6.2-linux-x86_64-release",
+                    "browser_download_url": "https://github.com/centerionware/not-k8s/releases/download/v0.6.2/nodelet-0.6.2-linux-x86_64-release"
+                },
+                {
+                    "name": "deploy.tar.gz",
+                    "browser_download_url": "https://github.com/centerionware/not-k8s/releases/download/v0.6.2/deploy.tar.gz"
+                }
+            ]
+        }"#;
+        let parsed: serde_json::Value = serde_json::from_str(body).expect("valid JSON");
+        let assets: std::collections::HashMap<String, String> = parsed["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| (a["name"].as_str().unwrap().to_string(), a["browser_download_url"].as_str().unwrap().to_string()))
+            .collect();
+        assert_eq!(
+            assets.get("nodelet-0.6.2-linux-x86_64-release").unwrap(),
+            "https://github.com/centerionware/not-k8s/releases/download/v0.6.2/nodelet-0.6.2-linux-x86_64-release"
+        );
+        assert!(assets.contains_key("deploy.tar.gz"));
+    }
+}
