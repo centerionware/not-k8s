@@ -22,6 +22,22 @@ name: nodebootstrap e2e (real infra)
 # instead of services.rs's service-installation logic. fetch.rs's own
 # correctness is unit-tested; this workflow's job is the parts that need
 # real infra, not a slow rebuild of what unit tests already cover.
+#
+# **Real CRI/containerd/CNI, not the mock runtime** (added 2026-08-22,
+# found live: this workflow originally installed nodelet without
+# NODELET_RUNTIME=cri and never called `nodebootstrap containerd`/`cni`
+# at all -- the smoke test's `--image=does-not-matter` only "worked"
+# because nothing real was pulling or running it. containerd.rs/cni.rs
+# were marked done in NODEBOOTSTRAP_PLAN.md's status table from reading
+# the code, not from a real run -- exactly the gap this project's whole
+# E2E_FINDINGS.md methodology exists to catch). nodelet is built with
+# `--features cri` (a superset of mock -- NODELET_RUNTIME still selects
+# which at runtime) and this workflow now runs `nodebootstrap containerd`
+# + `nodebootstrap cni` for real, with a real image in the smoke test.
+# This has to be green before e2e.yml/release.yml can be cut over from
+# bootstrap-source.sh to nodebootstrap -- those need the real CRI path,
+# and until this run proves it, nodebootstrap's own containerd/CNI
+# modules are unverified against real infra.
 
 on:
   workflow_dispatch:
@@ -32,16 +48,16 @@ permissions:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-toolchain
 
-      - name: cargo build (nodestore, nodelet, nodeproxy, nodescheduler, nodecontroller, nodebootstrap, debug)
+      - name: cargo build (nodestore, nodelet [cri], nodeproxy, nodescheduler, nodecontroller, nodebootstrap, debug)
         run: |
           set -e
           cargo build -p nodestore
-          cargo build -p nodelet
+          cargo build --features cri -p nodelet
           cargo build -p nodeproxy
           cargo build -p nodescheduler
           cargo build -p nodecontroller
@@ -66,6 +82,16 @@ jobs:
             sudo mv kubectl /usr/local/bin/kubectl
           fi
           kubectl version --client
+
+      - name: nodebootstrap containerd (real containerd install + config, independent of the cluster)
+        run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap containerd
+
+      - name: Verify containerd is actually up and CRI-capable
+        run: |
+          set -e
+          sudo systemctl is-active --quiet containerd || { sudo journalctl -u containerd -n 100 --no-pager; exit 1; }
+          sudo ctr version
+          sudo crictl version || true
 
       - name: nodebootstrap nodestore (real service install)
         run: |
@@ -105,6 +131,26 @@ jobs:
           sudo systemctl is-active --quiet nodescheduler || { sudo journalctl -u nodescheduler -n 100 --no-pager; exit 1; }
           sudo systemctl is-active --quiet nodecontroller || { sudo journalctl -u nodecontroller -n 100 --no-pager; exit 1; }
 
+      - name: nodebootstrap cni (real flannel + CNI plugin binaries, real flanneld)
+        # Ordered here, not earlier: flanneld's kube-subnet-mgr mode needs a
+        # live kubeconfig pointed at a reachable apiserver -- same ordering
+        # constraint lib.rs's own run_all() documents (cni runs after
+        # nodescheduler/nodecontroller, before nodelet/nodeproxy).
+        #
+        # **Not verified as up here** (found live 2026-08-22): flanneld's
+        # kube-subnet-mgr mode also needs the Node *object* to exist, which
+        # only nodelet creates on registration -- several steps below, not
+        # yet at this point. The first attempt genuinely fails
+        # ("Failed to get node for backend data: nodes ... not found",
+        # then "timeout contacting kube-api" after ~30s) -- this is not a
+        # bug in the ordering itself (bootstrap-source.sh's own
+        # ensure_cni/run_and_verify call order has exactly the same gap,
+        # deploy/bootstrap-source.sh:437,441) but Restart=always/
+        # RestartSec=5s means it keeps retrying and succeeds once nodelet
+        # registers the node. Verifying the subnet lease has to happen
+        # after that point, not immediately after this step.
+        run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap cni
+
       - name: nodebootstrap service-reconciler (verifies the kubernetes Service)
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap service-reconciler
 
@@ -118,10 +164,10 @@ jobs:
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get service kube-dns -n kube-system
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get configmap coredns -n kube-system
 
-      - name: nodebootstrap nodelet + nodeproxy (real service install, mock runtime)
+      - name: nodebootstrap nodelet + nodeproxy (real service install, real CRI runtime)
         run: |
           set -e
-          sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap nodelet
+          sudo -E env "PATH=$PATH" NODELET_RUNTIME=cri ./target/debug/nodebootstrap nodelet
           sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap nodeproxy
 
       - name: Verify the node actually registered and went Ready
@@ -147,11 +193,32 @@ jobs:
           done
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get nodes -o jsonpath='{.items[0].spec.taints}'; echo
 
-      - name: Real pod through nodescheduler + nodelet (mock runtime) end to end
+      - name: Verify flanneld actually wrote a subnet lease
+        # Moved here (not right after the "nodebootstrap cni" step) --
+        # flanneld's kube-subnet-mgr mode can't succeed until the Node
+        # object above exists, so this is the earliest point a real
+        # subnet.env can be expected. See the "nodebootstrap cni" step's
+        # own comment for the full story.
         run: |
           set -e
-          sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig run smoke-test --image=does-not-matter --restart=Never
           for _ in $(seq 1 30); do
+            [ -s /run/flannel/subnet.env ] && break
+            sleep 2
+          done
+          [ -s /run/flannel/subnet.env ] || { echo "flanneld never wrote /run/flannel/subnet.env"; sudo journalctl -u flanneld -n 100 --no-pager || true; exit 1; }
+          cat /run/flannel/subnet.env
+
+      - name: Real pod through nodescheduler + nodelet + real containerd end to end
+        # A real image, actually pulled and run by containerd through
+        # nodelet's CRI runtime -- --image=does-not-matter (this step's
+        # previous form) only ever "worked" under the mock runtime, where
+        # nothing real pulls or runs anything. registry.k8s.io/pause is the
+        # smallest realistic real-world image (kubelet's own sandbox image,
+        # always public, no registry auth needed).
+        run: |
+          set -e
+          sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig run smoke-test --image=registry.k8s.io/pause:3.9 --restart=Never
+          for _ in $(seq 1 60); do
             phase="$(sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get pod smoke-test -o jsonpath='{.status.phase}' 2>/dev/null)"
             node="$(sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get pod smoke-test -o jsonpath='{.spec.nodeName}' 2>/dev/null)"
             [ -n "$node" ] && [ "$phase" = "Running" ] && break
@@ -159,16 +226,25 @@ jobs:
           done
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get pod smoke-test -o wide
           [ -n "$node" ] || { echo "pod was never scheduled to a node (nodescheduler)"; exit 1; }
-          [ "$phase" = "Running" ] || { echo "pod never reached Running (nodelet)"; exit 1; }
+          [ "$phase" = "Running" ] || { echo "pod never reached Running (nodelet + real containerd)"; exit 1; }
+          # Prove containerd, not the mock runtime, actually ran this --
+          # a real sandbox + container should exist in containerd's own
+          # CRI namespace. Best-effort: crictl isn't installed by
+          # nodebootstrap itself, so this is diagnostic only, not the
+          # pass/fail signal (that's the Running check above).
+          sudo crictl pods || true
+          sudo crictl ps -a || true
 
       - name: Dump logs on failure
         if: failure()
         run: |
-          for svc in nodestore kube-apiserver nodescheduler nodecontroller nodelet nodeproxy; do
+          for svc in containerd flanneld nodestore kube-apiserver nodescheduler nodecontroller nodelet nodeproxy; do
             echo "== journalctl -u $svc =="
             sudo journalctl -u "$svc" -n 100 --no-pager || true
           done
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig describe pod smoke-test 2>/dev/null || true
+          sudo crictl pods 2>/dev/null || true
+          sudo crictl ps -a 2>/dev/null || true
           echo "== real system:controller:* bootstrap ClusterRoles (ground truth for nodecontroller's SA mapping) =="
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get clusterrole -o name | grep '^clusterrole.rbac.authorization.k8s.io/system:controller:' \
             | xargs -I{} sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get {} -o yaml
