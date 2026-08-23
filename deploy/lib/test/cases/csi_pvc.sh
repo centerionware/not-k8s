@@ -13,13 +13,8 @@ _skip_or_fail_dynamic_pvc() {
     # real provisioner, but do not let a broken nodecontroller path report a
     # green run merely because the harness treats skips as success.
     local custom_controller=0
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl is-active --quiet nodecontroller.service 2>/dev/null \
-            && systemctl show k3s.service -p ExecStart --value 2>/dev/null \
-                | grep -q -- '--disable-controller-manager' \
-            && custom_controller=1
-    elif pgrep -x nodecontroller >/dev/null 2>&1 \
-        && ps -eo args= 2>/dev/null | grep -q '[k]3s.*--disable-controller-manager'; then
+    if test_component_running nodecontroller \
+        && test_controller_manager_is_exclusive; then
         custom_controller=1
     fi
     if (( custom_controller )); then

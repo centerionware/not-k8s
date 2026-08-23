@@ -101,7 +101,13 @@ pub fn ensure_nodestore(cfg: &Config) -> Result<()> {
     let listen = std::env::var("NODESTORE_LISTEN").unwrap_or_else(|_| "127.0.0.1:2379".to_string());
     let data_dir = std::env::var("NODESTORE_DATA_DIR").unwrap_or_else(|_| "/var/lib/nodestore".to_string());
     let forwarded = forwarded_env("NODESTORE_");
-    let mut env: Vec<(&str, &str)> = vec![("NODESTORE_LISTEN", &listen), ("NODESTORE_DATA_DIR", &data_dir)];
+    let binary = bin.to_string_lossy().to_string();
+    let mut env: Vec<(&str, &str)> = vec![
+        ("NODESTORE_LISTEN", &listen),
+        ("NODESTORE_DATA_DIR", &data_dir),
+        ("NOTK8S_COMPONENT", "nodestore"),
+        ("NOTK8S_COMPONENT_BINARY", &binary),
+    ];
     for (k, v) in &forwarded {
         // NODESTORE_LISTEN/NODESTORE_DATA_DIR are already set above with
         // their own defaults applied -- skip re-adding them verbatim so
@@ -140,11 +146,14 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
     let server_cert_dir = cfg.nodelet_server_cert_dir().to_string_lossy().to_string();
     let client_ca_file = std::env::var("NODELET_CLIENT_CA_FILE")
         .unwrap_or_else(|_| cfg.pki_dir().join("ca.crt").to_string_lossy().to_string());
+    let binary = bin.to_string_lossy().to_string();
     let env = [
         ("KUBECONFIG", kubeconfig.as_str()),
         ("NODELET_RUNTIME", runtime.as_str()),
         ("NODELET_SERVER_CERT_DIR", server_cert_dir.as_str()),
         ("NODELET_CLIENT_CA_FILE", client_ca_file.as_str()),
+        ("NOTK8S_COMPONENT", "nodelet"),
+        ("NOTK8S_COMPONENT_BINARY", binary.as_str()),
     ];
     service_mgr::install(
         cfg,
@@ -175,6 +184,7 @@ pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
     let kubeconfig = admin_kubeconfig(cfg);
     let ip_family = cfg.ip_family();
     let lb_method = std::env::var("NODEBOOTSTRAP_LB_METHOD").unwrap_or_else(|_| "round-robin".to_string());
+    let binary = bin.to_string_lossy().to_string();
     service_mgr::install(
         cfg,
         &SupervisedService {
@@ -182,7 +192,13 @@ pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
             description: "nodeproxy -- not-k8s Service routing (kube-proxy replacement)",
             exec_cmd: &bin.to_string_lossy(),
             after: Some("kube-apiserver.service"),
-            env: &[("KUBECONFIG", &kubeconfig), ("NODEPROXY_IP_FAMILY", &ip_family), ("NODEPROXY_LB_METHOD", &lb_method)],
+            env: &[
+                ("KUBECONFIG", &kubeconfig),
+                ("NODEPROXY_IP_FAMILY", &ip_family),
+                ("NODEPROXY_LB_METHOD", &lb_method),
+                ("NOTK8S_COMPONENT", "nodeproxy"),
+                ("NOTK8S_COMPONENT_BINARY", binary.as_str()),
+            ],
         },
     )
     .context("installing nodeproxy as a supervised service")
@@ -197,8 +213,13 @@ pub fn ensure_nodescheduler(cfg: &Config) -> Result<()> {
     let bin = binary_path(cfg, "nodescheduler");
     anyhow::ensure!(bin.exists(), "no nodescheduler binary at {} -- run `nodebootstrap fetch` first", bin.display());
     let kubeconfig = cfg.kubeconfig_dir().join("kube-scheduler.kubeconfig").to_string_lossy().to_string();
+    let binary = bin.to_string_lossy().to_string();
     let forwarded = forwarded_env("NODESCHEDULER_");
-    let mut env: Vec<(&str, &str)> = vec![("KUBECONFIG", &kubeconfig)];
+    let mut env: Vec<(&str, &str)> = vec![
+        ("KUBECONFIG", &kubeconfig),
+        ("NOTK8S_COMPONENT", "nodescheduler"),
+        ("NOTK8S_COMPONENT_BINARY", &binary),
+    ];
     for (k, v) in &forwarded {
         env.push((k.as_str(), v.as_str()));
     }
@@ -232,11 +253,14 @@ pub fn ensure_nodecontroller(cfg: &Config) -> Result<()> {
     // no candidate is found).
     let ca_cert = cfg.pki_dir().join("ca.crt").to_string_lossy().to_string();
     let ca_key = cfg.pki_dir().join("ca.key").to_string_lossy().to_string();
+    let binary = bin.to_string_lossy().to_string();
     let forwarded = forwarded_env("NODECONTROLLER_");
     let mut env: Vec<(&str, &str)> = vec![
         ("KUBECONFIG", &kubeconfig),
         ("NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH", &ca_cert),
         ("NODECONTROLLER_CSR_SIGNING_CA_KEY_PATH", &ca_key),
+        ("NOTK8S_COMPONENT", "nodecontroller"),
+        ("NOTK8S_COMPONENT_BINARY", &binary),
     ];
     for (k, v) in &forwarded {
         // Already set above with this crate's own CA paths -- an operator

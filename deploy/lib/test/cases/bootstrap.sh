@@ -25,11 +25,9 @@
 
 test_tls_bootstrap_issues_a_real_client_certificate() {
     if ! command -v kubectl >/dev/null 2>&1; then skip_test "needs kubectl"; fi
-    local nodelet_bin="$REPO_ROOT/bin/nodelet"
-    [[ -x "$nodelet_bin" ]] || nodelet_bin="$REPO_ROOT/target/release/nodelet"
-    if [[ ! -x "$nodelet_bin" ]]; then
-        skip_test "no nodelet binary found at $REPO_ROOT/bin/nodelet or $REPO_ROOT/target/release/nodelet"
-    fi
+    local nodelet_bin
+    nodelet_bin="$(test_component_binary nodelet || true)"
+    [[ -x "$nodelet_bin" ]] || skip_test "no nodelet binary found in the active nodelet.service or checkout build paths"
 
     # Deliberately NOT `local` below, despite being set inside this
     # function: they're read from bootstrap_test_cleanup(), which runs as

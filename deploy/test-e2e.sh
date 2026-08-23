@@ -89,6 +89,8 @@ source "$TEST_LIB_DIR/nodelet_env.sh"
 source "$TEST_LIB_DIR/nodeproxy_env.sh"
 # shellcheck source=lib/test/nodescheduler_env.sh
 source "$TEST_LIB_DIR/nodescheduler_env.sh"
+# shellcheck source=lib/test/component_discovery.sh
+source "$TEST_LIB_DIR/component_discovery.sh"
 
 # Registration is pure shell: case files only define functions and call
 # register_test.  Let CI perform that cheap part without a cluster so its

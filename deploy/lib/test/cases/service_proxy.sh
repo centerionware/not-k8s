@@ -429,7 +429,10 @@ test_nodeproxy_runs_as_its_own_service_separate_from_nodelet() {
     ordering="$(printf '%s\n' "$unit" | grep -E '^(After|Before|Wants|Requires|Requisite|BindsTo|PartOf)=' || true)"
     assert_not_empty "$ordering" "nodeproxy.service must declare some ordering (it needs k3s)"
     assert_not_contains "$ordering" "nodelet" "nodeproxy.service must not order against nodelet.service — they're independent components"
-    assert_contains "$unit" "run-nodeproxy.sh" "nodeproxy.service ExecStart"
+    local exec_line
+    exec_line="$(printf '%s\n' "$unit" | grep '^ExecStart=' || true)"
+    assert_not_empty "$exec_line" "nodeproxy.service must declare ExecStart"
+    assert_contains "$exec_line" "nodeproxy" "nodeproxy.service ExecStart"
 }
 
 # ── Traffic originated inside a pod ───────────────────────────────────

@@ -31,8 +31,10 @@ _apiserver_is_serving() {
 
 test_the_node_still_reconciles_pods_after_an_apiserver_restart() {
     if ! node_uses_cri_runtime; then skip_test "needs the cri runtime — the mock one never talks to a real apiserver"; fi
-    command -v systemctl >/dev/null 2>&1 || skip_test "needs systemd to restart k3s"
-    systemctl list-unit-files k3s.service >/dev/null 2>&1 || skip_test "no k3s.service on this host to restart"
+    command -v systemctl >/dev/null 2>&1 || skip_test "needs systemd to restart the apiserver"
+    local apiserver_unit
+    apiserver_unit="$(test_control_plane_unit || true)"
+    [[ -n "$apiserver_unit" ]] || skip_test "no kube-apiserver.service or k3s.service on this host to restart"
 
     local name="watch-recovery-check"
     delete_pod_if_exists "$name"
@@ -40,8 +42,8 @@ test_the_node_still_reconciles_pods_after_an_apiserver_restart() {
     # Restart the control plane out from under the running node agent. This
     # is the exact event that wedged it: the watches are live, then every
     # attempt to re-establish them fails for several seconds.
-    sudo systemctl restart k3s \
-        || die "could not restart k3s — this test cannot exercise anything without doing so"
+    sudo systemctl restart "$apiserver_unit" \
+        || die "could not restart $apiserver_unit — this test cannot exercise anything without doing so"
 
     local waited=0
     until _apiserver_is_serving; do
