@@ -144,6 +144,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - uses: ./.github/actions/setup-toolchain
+
       - name: Build and deploy not-k8s (real containerd/CRI runtime)
         # Exercise nodebootstrap itself. The combined path is the normal
         # release layout; the split branch uses the same prebuilt seam without
