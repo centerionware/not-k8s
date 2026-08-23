@@ -224,11 +224,14 @@ impl DevicePlugins {
         for id in device_ids {
             owners.insert((resource_name.to_string(), id.clone()), pod_key.to_string());
         }
-        // Allocation itself changes the Pod status surface: the next status
-        // build must include allocatedResourcesStatus even if the CRI event
-        // stream emits no event for a successful Create/StartContainer.
-        // Health transitions use this same channel later; enqueueing once at
-        // ownership time closes the initial Healthy-status race as well.
+    }
+
+    /// Ask the pod controller to publish a status snapshot after a runtime
+    /// transition that does not necessarily produce a CRI event. This is
+    /// intentionally separate from `record_owner()`: allocation ownership is
+    /// recorded before the container starts, while the status snapshot must
+    /// not race that record or it can observe no allocated resources at all.
+    pub fn notify_pod_status(&self, pod_key: &str) {
         let _ = self.notify.send(pod_key.to_string());
     }
 

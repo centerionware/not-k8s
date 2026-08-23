@@ -692,6 +692,15 @@ impl CriRuntime {
             self.release_container_devices(sandbox_id, &container.name).await;
             return Err(e).context("starting container");
         }
+        // Device allocation changes the Pod status surface, but a successful
+        // Create/StartContainer sequence is not guaranteed to emit a CRI
+        // event. Notify only after the allocation checkpoint and the running
+        // container are both in place, so the status read cannot race either
+        // the in-memory allocation record or the container lifecycle.
+        if !allocated_devices.is_empty() {
+            self.device_plugins
+                .notify_pod_status(&crate::runtime::pod_key(&id.namespace, &id.name));
+        }
 
         // ContainerStatus.user (round 90; found in round 89's re-audit):
         // fetched exactly once here, right after start, never again for
