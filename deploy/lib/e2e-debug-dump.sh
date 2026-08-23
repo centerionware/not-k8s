@@ -132,7 +132,13 @@ kubectl get clusterrolebindings -o yaml 2>&1 | grep -B5 -A15 'name: replicaset-c
 echo ""
 echo "── kubectl auth can-i, as the impersonated identity itself ──"
 kubectl auth can-i patch replicasets/status --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system 2>&1
-kubectl auth can-i patch replicasets/status --as=system:serviceaccount:kube-system:replicaset-controller --as-group=system:serviceaccounts --as-group=system:serviceaccounts:kube-system -n kube-system 2>&1
+kubectl auth can-i update replicasets/status --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system 2>&1
+kubectl auth can-i patch endpointslices --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system 2>&1
+kubectl auth can-i update endpointslices --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system 2>&1
+
+echo ""
+echo "── system:controller:endpointslice-controller ClusterRole (ground truth) ──"
+kubectl get clusterrole system:controller:endpointslice-controller -o yaml 2>&1 || echo "(missing)"
 
 echo "=========================================="
 echo "e2e-debug-dump: end"
