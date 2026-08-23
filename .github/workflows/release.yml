@@ -11,7 +11,7 @@ name: Release pipeline
 # drop events, releases are now started by hand: push/merge to main as
 # before, then trigger this workflow explicitly (`gh workflow run
 # release.yml` or the Actions tab's "Run workflow" button). Still needs
-# real sudo + a real k3s/containerd cluster for the e2e stage, so this
+# real sudo, upstream kube-apiserver, and containerd for the e2e stage, so this
 # stays independent of `pull_request` for the same reason as before: PRs
 # get CodeRabbit's automated review only (.coderabbit.yaml).
 on:
@@ -45,6 +45,7 @@ jobs:
           # The combined single-binary layout (crates/notk8s) links all of
           # the above into one executable. The release E2E path below uses
           # this combined artifact as its default deployment binary.
+          cargo build -p nodebootstrap
           cargo build --features cri -p notk8s
       # Upload the combined binary once and download it in each e2e shard.
       # This keeps the release gate on the same single-binary path the
@@ -79,6 +80,7 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p nodescheduler
           sudo -E env "PATH=$PATH" cargo test -p node-leaderelection
           sudo -E env "PATH=$PATH" cargo test -p nodecontroller
+          sudo -E env "PATH=$PATH" cargo test -p nodebootstrap
           sudo -E env "PATH=$PATH" cargo test -p notk8s
 
   # ── Stage 2: full e2e suite, real CSI + DRA reference drivers ─────────
@@ -122,7 +124,7 @@ jobs:
             needs_drivers: false
     runs-on: ubuntu-latest
     # Keep the release gate aligned with the standalone e2e workflow.  The
-    # custom controller-manager path is slower than k3s's bundled one under
+    # custom controller-manager path is slower under under
     # the full CSI/DRA workload and can exceed forty minutes on a shard.
     timeout-minutes: 60
     steps:
@@ -134,22 +136,12 @@ jobs:
           path: dist-bin
 
       - name: Build and deploy not-k8s (real containerd/CRI runtime)
-        # NOTK8S_COMBINED_PREBUILT is the complete release binary: every
-        # enabled component is an applet selected through its bin/<component>
-        # symlink, and every shard installs this exact binary without a
-        # toolchain or per-component rebuild.
-        #
-        # The release gate deliberately uses every not-k8s replacement. k3s
-        # supplies only the apiserver; nodestore replaces kine,
-        # nodescheduler replaces kube-scheduler, nodecontroller replaces
-        # kube-controller-manager, and nodeproxy/nodelet replace the node
-        # side. Isolation against bundled k3s components belongs in a
-        # targeted e2e.yml dispatch, not in the release gate.
-        env:
-          NOTK8S_COMBINED_PREBUILT: ${{ github.workspace }}/dist-bin/notk8s
+        # The combined binary invokes the complete Rust bootstrap flow directly.
+        # It stages its own executable, so this exercises the same self-contained
+        # path users get from the published `notk8s` asset.
         run: |
-          chmod +x "$NOTK8S_COMBINED_PREBUILT"
-          sudo -E ./deploy/bootstrap-source.sh --with-cri \
+          chmod +x dist-bin/notk8s
+          sudo -E ./dist-bin/notk8s nodebootstrap --with-cri \
             --layout=combined \
             --proxy=nodeproxy \
             --datastore=nodestore \
@@ -162,7 +154,7 @@ jobs:
         # but EVERY shard's own test-run step still needs this
         # regardless of whether it installs the reference drivers.
         env:
-          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
         run: sudo chmod 644 "$KUBECONFIG"
 
       - name: Install misc e2e prerequisites (hugepages, grpcurl)
@@ -173,7 +165,7 @@ jobs:
       - name: Install reference CSI + DRA drivers
         if: matrix.needs_drivers
         env:
-          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
         run: |
           # A real containerd/nodelet on a healthy runner brings the
           # reference drivers up in well under a minute (round 121's own
@@ -185,7 +177,7 @@ jobs:
 
       - name: Run this shard's e2e tests (${{ matrix.shard }}/5)
         env:
-          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
           TEST_CSI_STORAGE_CLASS: csi-hostpath-sc
           TEST_CSI_ATTACH_STORAGE_CLASS: csi-hostpath-sc
           TEST_CSI_INLINE_DRIVER: hostpath.csi.k8s.io
@@ -416,6 +408,8 @@ jobs:
           # shellcheck disable=SC2086
           cargo build --features cri -p notk8s $TARGET_FLAG
           # shellcheck disable=SC2086
+          cargo build -p nodebootstrap $TARGET_FLAG
+          cargo build --release -p nodebootstrap $TARGET_FLAG
           cargo build --release --features cri -p notk8s $TARGET_FLAG
 
       - name: Stage binaries for upload
@@ -432,7 +426,7 @@ jobs:
           # in this shell. `notk8s` (the combined layout, not a component
           # in that table) is appended literally.
           mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
-          BINS+=(notk8s)
+          BINS+=(nodebootstrap notk8s)
           for bin in "${BINS[@]}"; do
             cp "$SRC_DIR/debug/$bin" "dist/$bin-linux-${{ matrix.arch }}-debug"
             cp "$SRC_DIR/release/$bin" "dist/$bin-linux-${{ matrix.arch }}-release"
@@ -508,7 +502,7 @@ jobs:
           # the "Stage binaries for upload" step's own comment for why this
           # isn't `source`d instead.
           mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
-          BINS+=(notk8s)
+          BINS+=(nodebootstrap notk8s)
           cd dist
           for bin in "${BINS[@]}"; do
             for f in "$bin"-linux-*-debug "$bin"-linux-*-release; do
@@ -523,8 +517,8 @@ jobs:
         run: bash deploy/lib/changelog.sh "v${{ steps.version.outputs.version }}" > changelog.md
 
       - name: Append the asset guide
-        # A release carries three binaries per arch/profile now (nodelet,
-        # nodeproxy, notk8s), which is a genuine "which one do I want?"
+        # A release carries the split runtime binaries, a standalone
+        # nodebootstrap installer, and the combined notk8s binary, which is a genuine "which one do I want?"
         # question rather than a naming detail — document the combined
         # default and the explicit split opt-in in the release body.
         run: |
@@ -581,7 +575,7 @@ jobs:
           # component table — see the "Stage binaries for upload" step's
           # comment for why this greps the table instead of sourcing it.
           mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
-          BINS+=(notk8s)
+          BINS+=(nodebootstrap notk8s)
           # nullglob so a component with no built artifact contributes
           # nothing instead of a literal unexpanded pattern, which
           # `gh release create` would then try to upload as a filename and

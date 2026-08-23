@@ -330,6 +330,11 @@ jobs:
                 echo "crates/nodecontroller not present on this ref — skipping it."
               fi
             fi
+            if [[ -d crates/nodebootstrap ]]; then
+              # Standalone installer; the combined binary also exposes it as the bootstrap applet.
+              # shellcheck disable=SC2086
+              cargo build $1 -p nodebootstrap $TARGET_FLAG
+            fi
             # The combined layout: one binary containing every component
             # (crates/notk8s), for a device that would rather not pay for a
             # second copy of the shared dependency tree.
@@ -363,7 +368,7 @@ jobs:
           # in this shell. `notk8s` (the combined layout, not a component
           # in that table) is appended literally.
           mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
-          BINS+=(notk8s)
+          BINS+=(nodebootstrap notk8s)
           for profile in debug release; do
             [[ -d "$SRC_DIR/$profile" ]] || continue
             for bin in "${BINS[@]}"; do

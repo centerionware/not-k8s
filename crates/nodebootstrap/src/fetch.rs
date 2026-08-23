@@ -7,9 +7,8 @@
 //! `components.rs`'s table, honoring `Config::layout`) and `Source::Release`
 //! (resolve `Config::release_tag` against GitHub Releases, download the
 //! matching asset) are real. `nodelet-build.sh`'s low-RAM-host LTO/
-//! `CARGO_BUILD_JOBS=1` fallback is not yet ported into `Source::Compile`;
-//! a from-source build on a constrained host should set those env vars
-//! itself until it is (see `CLAUDE.md`'s "Memory-constrained build hosts").
+//! `CARGO_BUILD_JOBS=1` fallback used by the shell builder is also applied
+//! here so a device can rebuild itself without exhausting its memory.
 
 use anyhow::{Context, Result};
 
@@ -35,6 +34,15 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     }
 }
 
+/// Whether the current process supplied a prebuilt binary seam. This is
+/// checked before toolchain setup so prebuilt CI/device installs do not
+/// require Rust or protoc.
+pub fn has_prebuilt() -> bool {
+    std::env::var_os("NOTK8S_COMBINED_PREBUILT").is_some()
+        || std::env::var_os("NODEBOOTSTRAP_COMBINED_SELF").is_some()
+        || COMPONENTS.iter().any(|component| std::env::var_os(component.prebuilt_env).is_some())
+}
+
 /// Checks `NOTK8S_COMBINED_PREBUILT`/`NOTK8S_<COMPONENT>_PREBUILT` before
 /// ever touching `cfg.source` -- same precedence
 /// `nodelet-build.sh`'s `build_nodelet()` documents at its own top ("checks
@@ -49,7 +57,9 @@ pub fn run_with(cfg: &Config) -> Result<()> {
 fn try_prebuilt(cfg: &Config) -> Result<bool> {
     let dest_dir = cfg.toolchain_dir().join("bin");
 
-    if let Ok(combined) = std::env::var("NOTK8S_COMBINED_PREBUILT") {
+    let combined = std::env::var("NOTK8S_COMBINED_PREBUILT")
+        .or_else(|_| std::env::var("NODEBOOTSTRAP_COMBINED_SELF"));
+    if let Ok(combined) = combined {
         anyhow::ensure!(
             matches!(cfg.layout, Layout::Combined),
             "NOTK8S_COMBINED_PREBUILT is set (a single binary containing every component), but \
@@ -137,27 +147,18 @@ fn build_from_source(cfg: &Config) -> Result<()> {
         Ok(())
     };
 
-    match cfg.layout {
-        Layout::Split => {
-            for component in COMPONENTS {
-                cargo_build(&repo_root, &["-p", component.cargo_package])?;
-                stage(component.name)?;
-            }
+    if matches!(cfg.layout, Layout::Split | Layout::Both) {
+        for component in COMPONENTS {
+            cargo_build(cfg, &repo_root, &["-p", component.cargo_package])?;
+            stage(component.name)?;
         }
-        Layout::Combined => {
-            // crates/notk8s links every component crate behind its own
-            // Cargo feature (see CLAUDE.md's "Two build layouts") --
-            // building it with no explicit -F takes its default features,
-            // which is every component, matching what a release build
-            // ships regardless of what an individual device wants (same
-            // caveat components.sh's want_* predicates document).
-            cargo_build(&repo_root, &["-p", "notk8s"])?;
-            stage("notk8s")?;
-            // The combined binary dispatches on argv[0] -- a symlink per
-            // component name is what makes `bin/nodelet` (etc.) work
-            // identically to the split layout for every downstream caller
-            // (service installers included), same as bootstrap-source.sh's
-            // own combined-layout install step.
+    }
+    if matches!(cfg.layout, Layout::Combined | Layout::Both) {
+        cargo_build(cfg, &repo_root, &["-p", "notk8s"])?;
+        stage("notk8s")?;
+        // `both` leaves the split binaries installed and keeps the combined
+        // binary alongside them for comparison/packaging.
+        if matches!(cfg.layout, Layout::Combined) {
             for component in COMPONENTS {
                 let link = dest_dir.join(component.name);
                 let _ = std::fs::remove_file(&link);
@@ -167,6 +168,8 @@ fn build_from_source(cfg: &Config) -> Result<()> {
             }
         }
     }
+    cargo_build(cfg, &repo_root, &["-p", "nodebootstrap"])?;
+    stage("nodebootstrap")?;
     Ok(())
 }
 
@@ -188,10 +191,16 @@ fn download_release(cfg: &Config) -> Result<()> {
     let assets = list_release_assets(&tag)?;
     let arch = cfg.arch();
 
-    let wanted: Vec<&str> = match cfg.layout {
+    let mut wanted: Vec<&str> = match cfg.layout {
         Layout::Split => COMPONENTS.iter().map(|c| c.name).collect(),
         Layout::Combined => vec!["notk8s"],
+        Layout::Both => {
+            let mut bins: Vec<&str> = COMPONENTS.iter().map(|c| c.name).collect();
+            bins.push("notk8s");
+            bins
+        },
     };
+    wanted.push("nodebootstrap");
 
     let dest_dir = cfg.toolchain_dir().join("bin");
     std::fs::create_dir_all(&dest_dir).context("creating toolchain bin dir")?;
@@ -277,17 +286,30 @@ fn github_api_get(url: &str) -> Result<serde_json::Value> {
     serde_json::from_str(&body).with_context(|| format!("parsing JSON from {url}"))
 }
 
-fn cargo_build(repo_root: &std::path::Path, extra_args: &[&str]) -> Result<()> {
-    tracing::info!(args = ?extra_args, "cargo build");
-    let status = std::process::Command::new("cargo")
-        .arg("build")
-        .arg("--release")
-        .args(extra_args)
-        .current_dir(repo_root)
-        .status()
-        .context("running cargo build")?;
+fn cargo_build(cfg: &Config, repo_root: &std::path::Path, extra_args: &[&str]) -> Result<()> {
+    let package = extra_args.iter().position(|arg| *arg == "-p").and_then(|index| extra_args.get(index + 1)).copied();
+    tracing::info!(args = ?extra_args, with_cri = cfg.with_cri, "cargo build");
+    let mut command = std::process::Command::new("cargo");
+    command.arg("build").arg("--release").args(extra_args);
+    if cfg.with_cri && matches!(package, Some("nodelet" | "notk8s")) {
+        command.args(["--features", "cri"]);
+    }
+    if low_memory_host() {
+        command.env("CARGO_BUILD_JOBS", "1");
+        command.env("CARGO_PROFILE_RELEASE_LTO", "thin");
+        command.env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "16");
+        tracing::info!("low-memory host detected; using a serialized thin-LTO release build");
+    }
+    let status = command.current_dir(repo_root).status().context("running cargo build")?;
     anyhow::ensure!(status.success(), "cargo build {} failed", extra_args.join(" "));
     Ok(())
+}
+
+fn low_memory_host() -> bool {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|contents| contents.lines().find_map(|line| line.strip_prefix("MemTotal:")?.split_whitespace().next()?.parse::<u64>().ok()))
+        .is_some_and(|kilobytes| kilobytes < 4 * 1024 * 1024)
 }
 
 /// Walks up from the current directory looking for a `Cargo.toml` whose
@@ -297,6 +319,11 @@ fn cargo_build(repo_root: &std::path::Path, extra_args: &[&str]) -> Result<()> {
 /// on PATH, which `toolchain::ensure_rust` may not have finished ensuring
 /// yet at the point `fetch` needs this.
 fn find_repo_root() -> Result<std::path::PathBuf> {
+    if let Ok(root) = std::env::var("NODEBOOTSTRAP_REPO_ROOT") {
+        let path = std::path::PathBuf::from(root);
+        anyhow::ensure!(path.join("Cargo.toml").is_file(), "NODEBOOTSTRAP_REPO_ROOT does not contain Cargo.toml: {}", path.display());
+        return Ok(path);
+    }
     let mut dir = std::env::current_dir().context("reading CWD")?;
     loop {
         let candidate = dir.join("Cargo.toml");

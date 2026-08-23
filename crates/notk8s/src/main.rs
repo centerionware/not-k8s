@@ -64,7 +64,9 @@ const APPLETS: &[Applet] = &[
     #[cfg(feature = "nodescheduler")]
     Applet { name: "nodescheduler", summary: "scheduler (kube-scheduler's job): pod placement, event-driven queue" },
     #[cfg(feature = "nodecontroller")]
-    Applet { name: "nodecontroller", summary: "controller manager (kube-controller-manager's job): node lifecycle, workload controllers, GC" },
+    Applet { name: "nodecontroller", summary: "controller manager replacement: node lifecycle, workload controllers, GC" },
+    #[cfg(feature = "nodebootstrap")]
+    Applet { name: "nodebootstrap", summary: "full cluster bootstrap and update installer" },
 ];
 
 struct Applet {
@@ -72,9 +74,17 @@ struct Applet {
     summary: &'static str,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let argv: Vec<String> = std::env::args().collect();
+    #[cfg(feature = "nodebootstrap")]
+    if let Some(result) = nodebootstrap::run_embedded_from_argv(&argv) {
+        return result;
+    }
+    run_async(argv)
+}
+
+#[tokio::main]
+async fn run_async(argv: Vec<String>) -> Result<()> {
     let arg0 = argv
         .first()
         .map(|a| a.rsplit('/').next().unwrap_or(a).to_string())
@@ -82,14 +92,11 @@ async fn main() -> Result<()> {
 
     // argv[0] first (symlink/hardlink install), then an explicit subcommand.
     let applet = if is_applet(&arg0) {
-        arg0.clone()
+        arg0
     } else {
         match argv.get(1).map(String::as_str) {
             Some(name) if is_applet(name) => name.to_string(),
             Some("components") => {
-                // Machine-readable: one component per line, so the build
-                // system and e2e tests can assert what a binary actually
-                // contains instead of inferring it from how it was built.
                 for a in APPLETS {
                     println!("{}", a.name);
                 }
@@ -105,7 +112,7 @@ async fn main() -> Result<()> {
             }
             Some(other) => {
                 print_usage();
-                bail!("unknown component '{other}'");
+                bail!("unknown component {other}");
             }
         }
     };
@@ -184,6 +191,10 @@ mod tests {
         assert!(is_applet("nodescheduler"));
         #[cfg(feature = "nodecontroller")]
         assert!(is_applet("nodecontroller"));
+        #[cfg(feature = "nodebootstrap")]
+        assert!(is_applet("nodebootstrap"));
+        #[cfg(feature = "nodebootstrap")]
+        assert!(nodebootstrap::embedded_args(&["notk8s".into(), "bootstrap".into(), "--help".into()]).is_some());
     }
 
     #[test]

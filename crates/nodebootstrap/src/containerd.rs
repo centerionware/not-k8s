@@ -291,17 +291,24 @@ fn containerd_running() -> bool {
 /// have a pre-existing containerd unit for this crate to have not written
 /// itself, so they always go through `service_mgr::install`.
 fn has_existing_systemd_unit() -> bool {
-    crate::pkg::command_exists("systemctl")
-        && std::process::Command::new("systemctl")
-            .args(["list-unit-files", "containerd.service"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+    if !crate::pkg::command_exists("systemctl") {
+        return false;
+    }
+    std::process::Command::new("systemctl")
+        .args(["list-unit-files", "containerd.service"])
+        .output()
+        .map(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .any(|line| line.split_whitespace().next() == Some("containerd.service"))
+        })
+        .unwrap_or(false)
 }
 
 fn ensure_running(cfg: &Config, needs_restart: bool) -> Result<()> {
-    if needs_restart && containerd_running() && crate::pkg::command_exists("systemctl") {
-        tracing::info!("restarting containerd to pick up the config change");
+    if containerd_running() && crate::pkg::command_exists("systemctl") && has_existing_systemd_unit() {
+        tracing::info!(config_changed = needs_restart, "restarting containerd during bootstrap update");
         run_systemctl(&["restart", "containerd.service"])?;
     } else if !containerd_running() {
         if has_existing_systemd_unit() {
