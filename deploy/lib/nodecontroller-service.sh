@@ -209,3 +209,130 @@ remove_nodecontroller_service() {
     # nodeproxy-service.sh for the recycled-PID trap this avoids.
     rm -f "$WORK_DIR/nodecontroller.pid" "$NODECONTROLLER_SUPERVISOR_SCRIPT"
 }
+
+# Every `system:serviceaccount:kube-system:<name>` identity
+# nodecontroller's own impersonated_client() names (crates/nodecontroller/
+# src/lib.rs's upstream_controller_sa()) -- must stay in sync with that list
+# and with crates/nodebootstrap/src/rbac.rs's CONTROLLER_SA_NAMES, its own
+# copy of the same list for the nodebootstrap deploy path.
+NODECONTROLLER_SA_NAMES=(
+    node-controller service-account-controller namespace-controller
+    endpointslice-controller resourcequota-controller replicaset-controller
+    deployment-controller daemon-set-controller statefulset-controller
+    generic-garbage-collector job-controller cronjob-controller
+    ttl-after-finished-controller attachdetach-controller
+    persistent-volume-binder pv-protection-controller root-ca-cert-publisher
+    resource-claim-controller certificate-controller disruption-controller
+)
+
+# `sa apiGroup resource` triples -- see crates/nodebootstrap/src/rbac.rs's
+# CONTROLLER_PATCH_GRANTS (Finding #4) for the authoritative source and the
+# full story of how this was found: real bootstrap `system:controller:
+# <name>` ClusterRoles grant `update` on `*/status` (and a few main
+# resources like `endpointslices`), never `patch` -- confirmed live with
+# `kubectl auth can-i patch replicasets/status --as=system:serviceaccount:
+# kube-system:replicaset-controller` (no) vs `... can-i update ...` (yes) --
+# because real upstream kube-controller-manager writes those with a full
+# status Update(), never a JSON merge patch. nodecontroller uses
+# Patch::Merge/patch_status() throughout, which is what every one of these
+# writes actually 403'd on. Must stay in sync with rbac.rs's own copy of
+# this table.
+NODECONTROLLER_PATCH_GRANTS=(
+    "cronjob-controller batch cronjobs/status"
+    "certificate-controller certificates.k8s.io certificatesigningrequests/status"
+    "daemon-set-controller apps daemonsets/status"
+    "endpointslice-controller discovery.k8s.io endpointslices"
+    "disruption-controller policy poddisruptionbudgets/status"
+    "node-controller '' nodes"
+    "resource-claim-controller '' pods/status"
+    "persistent-volume-binder '' persistentvolumes"
+    "persistent-volume-binder '' persistentvolumes/status"
+    "persistent-volume-binder '' persistentvolumeclaims"
+    "persistent-volume-binder '' persistentvolumeclaims/status"
+    "replicaset-controller apps replicasets/status"
+    "deployment-controller apps replicasets"
+    "deployment-controller apps deployments/status"
+    "root-ca-cert-publisher '' configmaps"
+    "job-controller batch jobs/status"
+    "job-controller batch jobs"
+    "resourcequota-controller '' resourcequotas/status"
+    "statefulset-controller apps statefulsets/status"
+    "pv-protection-controller '' persistentvolumes"
+    "pv-protection-controller '' persistentvolumeclaims"
+)
+
+# Grants nodecontroller's impersonated per-controller identities the RBAC
+# this stack actually needs to run them, applied every time nodecontroller
+# is (re)started so a re-run always ends up with the current set.
+#
+# Two supplements (docs/E2E_FINDINGS.md-style, see crates/nodebootstrap/src/
+# rbac.rs's Finding #4 for the full story):
+#   1. Bind each impersonated SA to the real, already-existing
+#      `system:controller:<name>` ClusterRole by name (not re-deriving its
+#      rules), belt-and-suspenders in case that binding is ever actually
+#      missing on some future apiserver packaging -- this wasn't the real
+#      gap here, but it's harmless to also have.
+#   2. The real fix: grant exactly the `patch` verb, on exactly the
+#      resources/subresources each controller's own code is observed to
+#      `.patch()`/`.patch_status()` (NODECONTROLLER_PATCH_GRANTS above),
+#      since the real bootstrap roles only ever grant `update` there and
+#      nodecontroller writes with PATCH throughout.
+apply_nodecontroller_rbac() {
+    local name manifest=""
+    for name in "${NODECONTROLLER_SA_NAMES[@]}"; do
+        manifest+="---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: not-k8s:controller-sa-${name}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:controller:${name}
+subjects:
+- kind: ServiceAccount
+  name: ${name}
+  namespace: kube-system
+"
+    done
+
+    local sa group resource entry
+    for name in "${NODECONTROLLER_SA_NAMES[@]}"; do
+        local rules=""
+        for entry in "${NODECONTROLLER_PATCH_GRANTS[@]}"; do
+            # shellcheck disable=SC2086 # deliberately word-split: "sa group resource"
+            set -- $entry
+            sa="$1" group="$2" resource="$3"
+            [[ "$sa" == "$name" ]] || continue
+            [[ "$group" == "''" ]] && group=""
+            rules+="- apiGroups: [\"${group}\"]
+  resources: [\"${resource}\"]
+  verbs: [\"patch\"]
+"
+        done
+        [[ -n "$rules" ]] || continue
+        manifest+="---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: not-k8s:controller-patch-${name}
+rules:
+${rules}---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: not-k8s:controller-patch-${name}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: not-k8s:controller-patch-${name}
+subjects:
+- kind: ServiceAccount
+  name: ${name}
+  namespace: kube-system
+"
+    done
+
+    echo "$manifest" | kubectl apply -f - \
+        || die "applying nodecontroller's supplemental system:controller:* RBAC bindings failed"
+}

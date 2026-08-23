@@ -114,6 +114,32 @@ echo ""
 echo "── containerd.service ──"
 sudo systemctl status containerd.service --no-pager -l 2>&1 || echo "(containerd.service not found/not running)"
 
+# Ground truth for nodecontroller's impersonated-SA writes (crates/
+# nodebootstrap/src/rbac.rs's Finding #4): confirms whether the real
+# system:controller:<name> ClusterRole this stack's k3s-embedded apiserver
+# is supposed to seed actually exists, and whether the impersonated SA
+# identity can really use it -- rather than inferring it from a 403
+# message alone.
+echo ""
+echo "── system:controller:replicaset-controller ClusterRole (ground truth) ──"
+kubectl get clusterrole system:controller:replicaset-controller -o yaml 2>&1 || echo "(missing)"
+
+echo ""
+echo "── clusterrolebindings naming replicaset-controller (real + supplemental) ──"
+kubectl get clusterrolebindings -o yaml 2>&1 | grep -B5 -A15 'name: replicaset-controller\|controller-sa-replicaset-controller' \
+    || echo "(none found)"
+
+echo ""
+echo "── kubectl auth can-i, as the impersonated identity itself ──"
+kubectl auth can-i patch replicasets/status --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system 2>&1
+kubectl auth can-i update replicasets/status --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system 2>&1
+kubectl auth can-i patch endpointslices --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system 2>&1
+kubectl auth can-i update endpointslices --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system 2>&1
+
+echo ""
+echo "── system:controller:endpointslice-controller ClusterRole (ground truth) ──"
+kubectl get clusterrole system:controller:endpointslice-controller -o yaml 2>&1 || echo "(missing)"
+
 echo "=========================================="
 echo "e2e-debug-dump: end"
 echo "=========================================="

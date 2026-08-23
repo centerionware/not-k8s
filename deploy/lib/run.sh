@@ -80,6 +80,11 @@ run_and_verify() {
     # runtime-dependent ones.
     if want_nodecontroller; then
         log "Starting nodecontroller (node lifecycle/podCIDR/GC; k3s's own kube-controller-manager is disabled)..."
+        # Must land before the service starts firing impersonated writes —
+        # see nodecontroller-service.sh's apply_nodecontroller_rbac() doc
+        # comment (nodebootstrap/src/rbac.rs's Finding #4) for why this is
+        # needed at all.
+        apply_nodecontroller_rbac
         install_nodecontroller_service
     else
         remove_nodecontroller_service
