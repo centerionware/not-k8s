@@ -26,6 +26,7 @@ use crate::service_mgr::{self, SupervisedService};
 
 const CNI_BIN_DIR: &str = "/opt/cni/bin";
 const CNI_CONF_DIR: &str = "/etc/cni/net.d";
+const FLANNEL_SUBNET_ENV: &str = "/run/flannel/subnet.env";
 
 /// Copied verbatim from `deploy/run-flanneld.sh` -- see that file and this
 /// module's doc comment for why it stays a shell script rather than being
@@ -108,6 +109,27 @@ fn start_flanneld(cfg: &Config) -> Result<()> {
         },
     )
     .context("installing flanneld as a supervised service")
+}
+
+/// `service_mgr::install()` only proves that flanneld's supervisor started;
+/// kube-subnet-mgr cannot write its lease until nodelet has registered the
+/// Node object. Call this after nodelet starts, before reporting bootstrap
+/// complete or allowing CRI pods to run.
+pub fn wait_for_flannel_subnet(cfg: &Config) -> Result<()> {
+    if cfg.cni_provider.as_deref() != Some("flannel") {
+        return Ok(());
+    }
+    tracing::info!(path = FLANNEL_SUBNET_ENV, "waiting for flannel to allocate this node a pod subnet...");
+    for _ in 0..15 {
+        if std::fs::metadata(FLANNEL_SUBNET_ENV).map(|m| m.is_file() && m.len() > 0).unwrap_or(false) {
+            tracing::info!(path = FLANNEL_SUBNET_ENV, "flannel pod subnet is ready");
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    anyhow::bail!(
+        "flanneld never wrote {FLANNEL_SUBNET_ENV} within 30s -- check: journalctl -u flanneld -n 100"
+    )
 }
 
 fn cni_go_arch(arch: &str) -> Option<&'static str> {

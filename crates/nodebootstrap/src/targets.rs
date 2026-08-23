@@ -25,3 +25,12 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         Target::Upstream => upstream::run_with(cfg),
     }
 }
+
+/// Complete the target-specific post-nodelet handoff, if this target needs
+/// one. Keeping the dispatch here preserves the target seam for the future
+/// nodeapiserver implementation.
+pub fn enable_nodelet_proxy(cfg: &Config) -> Result<()> {
+    match cfg.target {
+        Target::Upstream => upstream::enable_nodelet_proxy(cfg),
+    }
+}

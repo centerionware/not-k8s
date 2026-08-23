@@ -87,6 +87,19 @@ impl Config {
             .into()
     }
 
+    /// Nodelet's kubelet-style HTTPS server writes its self-signed serving
+    /// certificate here. The apiserver needs this path as its
+    /// `--kubelet-certificate-authority` once nodelet has started.
+    pub fn nodelet_server_cert_dir(&self) -> std::path::PathBuf {
+        std::env::var("NODELET_SERVER_CERT_DIR")
+            .unwrap_or_else(|_| "/var/lib/nodelet/pki".to_string())
+            .into()
+    }
+
+    pub fn nodelet_server_ca_path(&self) -> std::path::PathBuf {
+        self.nodelet_server_cert_dir().join("server-ca.pem")
+    }
+
     /// The apiserver address kubeconfigs point at. Defaults to real
     /// upstream `kube-apiserver`'s own default bind port (6443) on
     /// localhost -- correct once `targets::upstream` runs it there;
