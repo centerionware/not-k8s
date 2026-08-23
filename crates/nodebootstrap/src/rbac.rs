@@ -70,17 +70,96 @@
 //! kube-system:<name>` it impersonated, against that identity's own
 //! already-existing `system:controller:<name>` bootstrap role. No
 //! `cluster-admin` binding remains.
+//!
+//! **Finding #4 (2026-08-23, found live in `release.yml`'s e2e against the
+//! still-current k3s-based bootstrap path):** "already-existing" above was
+//! an unverified assumption, and it doesn't hold everywhere. Every one of
+//! nodecontroller's impersonated writes 403'd -- `replicasets/status`,
+//! `endpointslices`, everything -- because the `system:controller:<name>`
+//! *ClusterRoleBindings* (not the ClusterRoles, which the apiserver does
+//! create) that upstream expects to bind each `system:serviceaccount:
+//! kube-system:<name>` to its matching bootstrap role are not reliably
+//! present under this stack the way they are on a plain upstream
+//! `kube-apiserver` -- `SENTINEL_CLUSTER_ROLES` above never actually probed
+//! one of the narrow `system:controller:*` names, only generic ones, so
+//! this gap shipped invisibly. Every status-reporting e2e test
+//! (Deployment/ReplicaSet/DaemonSet/StatefulSet/CronJob/Job/PDB) failed the
+//! same way: pods ran fine, the owning controller's own status patch never
+//! landed. Fixed the same way the DRA gap above was: supplement, don't
+//! duplicate -- bind each impersonated SA to the real, already-existing
+//! `system:controller:<name>` ClusterRole (by name, not by re-deriving its
+//! rules) under a binding name of this module's own, so it applies whether
+//! or not upstream's own binding also exists.
 
 use anyhow::{Context, Result};
 
 use crate::config::Config;
+
+/// Every `system:serviceaccount:kube-system:<name>` identity
+/// `impersonated_client()` (`crates/nodecontroller/src/lib.rs`'s
+/// `upstream_controller_sa()`) can become. Single source of truth for both
+/// the impersonate `Role` below and the `system:controller:<name>` binding
+/// supplement (Finding #4) -- previously two hand-kept-in-sync lists, now
+/// one.
+const CONTROLLER_SA_NAMES: &[&str] = &[
+    "node-controller",
+    "service-account-controller",
+    "namespace-controller",
+    "endpointslice-controller",
+    "resourcequota-controller",
+    "replicaset-controller",
+    "deployment-controller",
+    "daemon-set-controller",
+    "statefulset-controller",
+    "generic-garbage-collector",
+    "job-controller",
+    "cronjob-controller",
+    "ttl-after-finished-controller",
+    "attachdetach-controller",
+    "persistent-volume-binder",
+    "pv-protection-controller",
+    "root-ca-cert-publisher",
+    "resource-claim-controller",
+    "certificate-controller",
+    "disruption-controller",
+];
 
 /// Supplements (does not replace) the built-in bootstrap roles -- see the
 /// findings in this module's doc comment. Separate ClusterRoles/Bindings
 /// rather than editing the built-in ones directly: those are reconciled by
 /// kube-apiserver's own PostStartHook on every restart (this module's
 /// first finding), so a hand-edit would just be overwritten.
-const SUPPLEMENTAL_GRANTS: &str = r#"
+fn supplemental_grants() -> String {
+    let sa_resource_names: String =
+        CONTROLLER_SA_NAMES.iter().map(|n| format!("    - {n}\n")).collect();
+    // Finding #4: bind each impersonated SA to the real, already-existing
+    // `system:controller:<name>` ClusterRole by name -- not re-deriving its
+    // rules -- under a binding name of this module's own, so this applies
+    // whether or not upstream's own `system:controller:<name>` binding is
+    // actually present.
+    let controller_bindings: String = CONTROLLER_SA_NAMES
+        .iter()
+        .map(|n| {
+            format!(
+                r#"---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:controller-sa-{n}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:controller:{n}
+subjects:
+- kind: ServiceAccount
+  name: {n}
+  namespace: kube-system
+"#
+            )
+        })
+        .collect();
+    format!(
+        r#"
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -106,11 +185,12 @@ subjects:
 # Lets system:kube-controller-manager become exactly the ServiceAccount
 # identities nodecontroller's own impersonated_client() names -- see
 # crates/nodecontroller/src/lib.rs's upstream_controller_sa() for the
-# authoritative list this must stay in sync with. A namespaced Role (not a
-# ClusterRole) because every one of those SAs lives in kube-system --
-# resourceNames on a namespaced "serviceaccounts" resource only ever
-# matches within the Role's own namespace, so this can't be tricked into
-# impersonating a same-named SA elsewhere.
+# authoritative list this must stay in sync with (CONTROLLER_SA_NAMES,
+# this module's own single source of truth for that same list). A
+# namespaced Role (not a ClusterRole) because every one of those SAs lives
+# in kube-system -- resourceNames on a namespaced "serviceaccounts"
+# resource only ever matches within the Role's own namespace, so this
+# can't be tricked into impersonating a same-named SA elsewhere.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -121,27 +201,7 @@ rules:
   resources: ["serviceaccounts"]
   verbs: ["impersonate"]
   resourceNames:
-    - node-controller
-    - service-account-controller
-    - namespace-controller
-    - endpointslice-controller
-    - resourcequota-controller
-    - replicaset-controller
-    - deployment-controller
-    - daemon-set-controller
-    - statefulset-controller
-    - generic-garbage-collector
-    - job-controller
-    - cronjob-controller
-    - ttl-after-finished-controller
-    - attachdetach-controller
-    - persistent-volume-binder
-    - pv-protection-controller
-    - root-ca-cert-publisher
-    - resource-claim-controller
-    - certificate-controller
-    - disruption-controller
----
+{sa_resource_names}---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -183,7 +243,9 @@ subjects:
 - kind: User
   name: system:kube-controller-manager
   apiGroup: rbac.authorization.k8s.io
-"#;
+{controller_bindings}"#
+    )
+}
 
 /// A handful of the ~90 bootstrap `system:` ClusterRoles that must exist if
 /// the PostStartHook ran at all -- not the full list (that would just be
@@ -191,8 +253,18 @@ subjects:
 /// doc comment explains is unnecessary), just enough to catch "RBAC wasn't
 /// actually enabled" or "the apiserver never became ready" with a clear
 /// error instead of a mysterious later 403.
-const SENTINEL_CLUSTER_ROLES: &[&str] =
-    &["cluster-admin", "system:node", "system:discovery", "system:kube-scheduler"];
+/// `system:controller:replicaset-controller` added by Finding #4: the
+/// generic names below all existed even while every `system:controller:*`
+/// ClusterRoleBinding this crate depends on for Finding #4 was silently
+/// absent, so they alone don't catch that gap. This one is a stand-in for
+/// the whole `system:controller:*` family this crate relies on.
+const SENTINEL_CLUSTER_ROLES: &[&str] = &[
+    "cluster-admin",
+    "system:node",
+    "system:discovery",
+    "system:kube-scheduler",
+    "system:controller:replicaset-controller",
+];
 
 pub fn run() -> Result<()> {
     run_with(&Config::from_env()?)
@@ -221,7 +293,7 @@ fn apply_supplemental_grants(kubeconfig: &std::path::Path) -> Result<()> {
         .stdin
         .take()
         .expect("stdin was piped")
-        .write_all(SUPPLEMENTAL_GRANTS.as_bytes())
+        .write_all(supplemental_grants().as_bytes())
         .context("writing the supplemental RBAC grants to kubectl's stdin")?;
     let status = child.wait().context("waiting for kubectl apply")?;
     anyhow::ensure!(status.success(), "kubectl apply -f - (supplemental RBAC grants) exited {status}");

@@ -209,3 +209,59 @@ remove_nodecontroller_service() {
     # nodeproxy-service.sh for the recycled-PID trap this avoids.
     rm -f "$WORK_DIR/nodecontroller.pid" "$NODECONTROLLER_SUPERVISOR_SCRIPT"
 }
+
+# Every `system:serviceaccount:kube-system:<name>` identity
+# nodecontroller's own impersonated_client() names (crates/nodecontroller/
+# src/lib.rs's upstream_controller_sa()) -- must stay in sync with that list
+# and with crates/nodebootstrap/src/rbac.rs's CONTROLLER_SA_NAMES, its own
+# copy of the same list for the nodebootstrap deploy path.
+NODECONTROLLER_SA_NAMES=(
+    node-controller service-account-controller namespace-controller
+    endpointslice-controller resourcequota-controller replicaset-controller
+    deployment-controller daemon-set-controller statefulset-controller
+    generic-garbage-collector job-controller cronjob-controller
+    ttl-after-finished-controller attachdetach-controller
+    persistent-volume-binder pv-protection-controller root-ca-cert-publisher
+    resource-claim-controller certificate-controller disruption-controller
+)
+
+# Grants nodecontroller's impersonated per-controller identities the RBAC
+# this stack actually needs to run them, applied every time nodecontroller
+# is (re)started so a re-run always ends up with the current set.
+#
+# Found live (docs/E2E_FINDINGS.md-style, see crates/nodebootstrap/src/
+# rbac.rs's Finding #4 for the full story): the real `system:controller:
+# <name>` ClusterRoleBindings upstream expects to already bind each of
+# these ServiceAccounts to its matching bootstrap ClusterRole are not
+# reliably present on this stack's k3s-embedded apiserver the way they are
+# on a plain upstream kube-apiserver. Every impersonated write 403'd as a
+# result -- ReplicaSet/Deployment/DaemonSet/StatefulSet/CronJob/Job status
+# patches, EndpointSlice writes, all of it -- while the pods underneath
+# kept running fine, which is what made every status-reporting e2e test
+# time out instead of erroring immediately.
+#
+# Supplements, doesn't replace: binds each SA to the real, already-existing
+# `system:controller:<name>` ClusterRole by name (not re-deriving its
+# rules) under a binding name of this deploy's own, so it applies whether
+# or not upstream's own binding is also present.
+apply_nodecontroller_rbac() {
+    local name manifest=""
+    for name in "${NODECONTROLLER_SA_NAMES[@]}"; do
+        manifest+="---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: not-k8s:controller-sa-${name}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:controller:${name}
+subjects:
+- kind: ServiceAccount
+  name: ${name}
+  namespace: kube-system
+"
+    done
+    echo "$manifest" | kubectl apply -f - \
+        || die "applying nodecontroller's supplemental system:controller:* RBAC bindings failed"
+}
