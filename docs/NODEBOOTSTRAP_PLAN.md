@@ -24,18 +24,17 @@ Decided 2026-08-22, replacing that entry:
    Group O's original scope.
 2. **Drop k3s from `nodebootstrap` entirely.** The crate never installs or
    configures k3s. Its own PKI/RBAC/kubeconfig generation is tested against
-   a **real upstream `kube-apiserver` + `kube-controller-manager` +
-   `kube-scheduler`** (the exact binaries `upstream-kube-apiserver.sh` and
-   its siblings already fetch — see below), not against k3s and not against
-   `nodeapiserver`. This is what breaks the chicken-and-egg problem: the
+   a **real upstream `kube-apiserver`** plus this projects own
+   `nodescheduler` and `nodecontroller` services, not against k3s and not
+   against `nodeapiserver`. This is what breaks the chicken-and-egg problem: the
    bootstrap artifacts (CA, certs, kubeconfig, RBAC objects, Service
    reconciler) can be proven correct against a real, spec-compliant
    apiserver **today**, independent of how far `nodeapiserver` itself has
    gotten, and that proof merges to `main` now.
 3. **The apiserver binary `nodebootstrap` points at is a config choice**,
-   not a hardcoded target. `main` gets `nodebootstrap` defaulting to
-   upstream `kube-apiserver`/`kube-controller-manager`/`kube-scheduler`
-   (real binaries, real upstream Kubernetes, no k3s) as the interim control
+   not a hardcoded target. `main` gets `nodebootstrap` defaulting to the upstream
+   `kube-apiserver` binary, while this project supplies the scheduler and
+   controller-manager services as the interim control
    plane. The `nodeapiserver` integration branch then adds `nodeapiserver`
    itself as a second target and, once its own arc is complete per
    `APISERVER_PLAN.md`'s acceptance criteria, flips the default — same PKI/
@@ -110,8 +109,9 @@ crates/nodebootstrap/
                               #   this finding, the tree above previously
                               #   said otherwise.
     targets/
-      upstream.rs             # installs/runs kube-apiserver + kube-
-                               #   controller-manager + kube-scheduler
+      upstream.rs             # installs/runs the upstream
+                               #   kube-apiserver only; this project
+                               #   supplies scheduler/controller services
                                #   against nodestore (main's default)
       nodeapiserver.rs         # added on the nodeapiserver branch once that
                                 #   binary exists; becomes the default once
@@ -120,37 +120,29 @@ crates/nodebootstrap/
 
 `targets/` is the seam that makes point 3 above real: everything above it
 (PKI, RBAC, kubeconfig, Service reconciler, manifests) is target-agnostic;
-only `targets/*.rs` knows how to install and start a specific apiserver/
-controller-manager/scheduler combination.
+only `targets/*.rs` knows how to install and start a specific apiserver
+target.  Scheduler and controller services remain this projects own units.
 
-## `nodebootstrap` as a `notk8s` applet, and self-replacement (noted 2026-08-22)
+## `nodebootstrap` as a `notk8s` applet and self-replacement
 
-**`nodebootstrap` is very likely a candidate to ship as an applet inside the
-combined `notk8s` binary itself** (`CLAUDE.md`'s "Two build layouts" --
-`crates/notk8s` dispatches on `argv[0]`/a `notk8s <component>` subcommand,
-one row in `deploy/lib/components.sh` + `crates/notk8s/Cargo.toml`'s
-optional-dependency table + its `APPLETS` table), not just a standalone
-installer invoked once and thrown away. Consequence worth designing for,
-not yet acted on: **a deployed `notk8s` binary needs to be able to build or
-fetch a *replacement for itself*, using the exact same `fetch.rs` logic
-that installed it in the first place** -- not a separate "self-update"
-code path. `fetch.rs`'s `Source::Compile`/`Source::Release` already do
-"produce a binary" generically per `components.rs`'s table; the only new
-piece is atomically swapping the *running* binary's own file (or its
-`bin/<component>` symlinks) for the newly built/fetched one -- safe on
-Linux because replacing a file by path doesn't affect a process already
-running off the old inode (rename-into-place, not overwrite-in-place, is
-the mechanism every self-updating Unix tool uses). Also relevant to the
-`ln -s e2e not-k8s && e2e` / `notk8s --e2e` idea raised in the same
-conversation: if `nodebootstrap` becomes an applet, the same argv[0]/flag
-dispatch `notk8s` already has for `nodelet`/`nodeproxy`/etc. is the natural
-place for a `notk8s --nodebootstrap` (or `bootstrap`) entry point too, and
-potentially an `e2e` applet wrapping the `deploy/lib/test/*.sh` harness
-this plan's "shell scripts stay until fully replaced" position already
-carves out as the one thing not migrating to Rust. Not designed further
-yet -- flagging the shape of the problem for whoever picks up the
-`notk8s`-applet-integration PR, which is downstream of Phase 1 actually
-landing on `main`.
+`nodebootstrap` is now shipped in both forms: the release pipeline publishes a
+standalone installer binary, and the combined `notk8s` binary includes it as
+the `nodebootstrap` applet plus the `bootstrap` alias.  The normal install is:
+
+```bash
+wget https://github.com/centerionware/not-k8s/releases/download/v0.7.0/notk8s-0.7.0-linux-aarch64-release
+chmod +x notk8s-0.7.0-linux-aarch64-release
+ln -s ./notk8s-0.7.0-linux-aarch64-release bootstrap
+./bootstrap --with-cri
+```
+
+The default command runs the complete bootstrap flow.  CRI is enabled by
+default; `--without-cri` skips containerd and CNI and selects nodelet mock
+runtime.  `--from-source` uses the same fetched toolchain fallbacks as the
+former source script and can rebuild the installed binaries.  `--update` (or
+`--release`) fetches release assets, and every installed service is restarted
+when its unit is refreshed.  The combined applet stages its own executable,
+so an already-installed release can rebuild or update itself.
 
 ## Testing strategy
 
@@ -158,8 +150,8 @@ Same shape as `deploy/lib/test/cases/datastore.sh` (drives the real gRPC API
 against a throwaway `nodestore`) and `APISERVER_PLAN.md`'s "getting signal
 earlier" rig: a case file in `deploy/lib/test/cases/*.sh` that runs
 `nodebootstrap` end to end — generate PKI, mint kubeconfig, install RBAC,
-stand up `nodestore` + upstream `kube-apiserver`/`kube-controller-manager`/
-`kube-scheduler` on scratch ports/data dirs — then drives it with real
+stand up `nodestore` plus the upstream
+`kube-apiserver` and this projects `nodescheduler`/`nodecontroller` services — then drives it with real
 `kubectl`: can a ServiceAccount token authenticate, does RBAC actually gate
 what it says it gates, does the `kubernetes` Service resolve, is discovery
 correct. This is real signal against a real apiserver, not a mock, and it
@@ -208,7 +200,8 @@ comment for the specifics and what's queued next:
 | `toolchain.rs` | ✅ real, every tier (rust: package manager -> rustup; protoc: package manager -> official prebuilt -> from-source autotools build; C toolchain: package manager -> musl.cc static prebuilt -> from-source gcc+binutils build; Go: package manager -> official prebuilt -> from-source 3-stage bootstrap) | n/a |
 | `containerd.rs` | ✅ real, every tier (package manager -> official prebuilt -> from-source, needs `toolchain::ensure_go`; config.toml + this project's 3 required patches; starts via its own distro unit or `service_mgr.rs`) | n/a |
 | `cni.rs` | ✅ real, every tier (plugin binaries + flannel binary + flannel CNI plugin: package manager -> official prebuilt -> from-source, all needing `toolchain::ensure_go`; starts `flanneld` via `service_mgr.rs` + a vendored `run-flanneld.sh` wrapper -- see `vendor/README.md`) | n/a |
-| `fetch.rs` | ✅ real for `Source::Compile` (version-stamp + `cargo build` per layout), `Source::Release` (GitHub Releases API resolution + asset download, confirmed against this repo's own real published release naming), and the prebuilt seam (`NOTK8S_COMBINED_PREBUILT` / per-component `NOTK8S_*_PREBUILT`, checked before `cfg.source` -- same precedence `nodelet-build.sh`'s `build_nodelet()` documents; added 2026-08-22 so `release.yml`'s e2e stage can stage one compiled artifact into 5 shards instead of recompiling per shard) | n/a |
+| `fetch.rs` | ✅ real for source/release/prebuilt selection, including the
+   standalone and combined CLI paths (version-stamp + `cargo build` per layout), `Source::Release` (GitHub Releases API resolution + asset download, confirmed against this repo's own real published release naming), and the prebuilt seam (`NOTK8S_COMBINED_PREBUILT` / per-component `NOTK8S_*_PREBUILT`, checked before `cfg.source` -- same precedence `nodelet-build.sh`'s `build_nodelet()` documents; added 2026-08-22 so `release.yml`'s e2e stage can stage one compiled artifact into 5 shards instead of recompiling per shard) | n/a |
 | `targets/upstream.rs` | ✅ real -- **installs only `kube-apiserver`** now (2026-08-22, user direction: `nodescheduler`/`nodecontroller` are the scheduler/controller-manager, not upstream's binaries -- see `services.rs`), binary fetch + full flag-set construction + `service_mgr.rs` + a best-effort `/readyz` wait. **`K8S_VERSION` bumped `v1.33.13` -> `v1.34.11`**: `nodescheduler` hardcodes `resource.k8s.io/v1`, GA only from 1.34. `--runtime-config=api/all=true` was tried as a hedge and **removed** after it broke `rbac/bootstrap-roles` (`rbac.rs`'s whole finding depends on that PostStartHook succeeding). **`wait_for_nodestore`**: a real startup race found live -- `service_mgr.rs`'s `After=nodestore.service` only guarantees the unit started, not that its gRPC/TLS listener is accepting connections yet, and `rbac/bootstrap-roles` doesn't retry its own initial etcd connection failure. A hard TCP-connect wait before installing kube-apiserver closes it | n/a |
 | `components.rs` | ✅ real (static table, mirrors `components.sh`) | n/a |
 | `service_reconciler.rs` | ✅ real (thin verify -- second "kube-apiserver already does this" finding, same shape as `rbac.rs`) | n/a |

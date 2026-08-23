@@ -9,8 +9,8 @@
 //! they're only needed on-demand, by whichever from-source fallback
 //! actually needs a C compiler or Go (`containerd.rs`'s/`cni.rs`'s
 //! from-source tiers, and `build_go_from_source`/`build_protoc_from_source`
-//! here). `CARGO_BUILD_JOBS=1` / low-RAM LTO fallback protection
-//! (`nodelet-build.sh`'s job, not this file's) is unaffected either way.
+//! here). The low-memory Cargo fallback is applied by fetch.rs to the actual
+//! build; this module only ensures the tools are available.
 
 use anyhow::{Context, Result};
 

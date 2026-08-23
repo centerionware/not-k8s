@@ -108,7 +108,8 @@ fn install_systemd(svc: &SupervisedService) -> Result<()> {
     let path = format!("/etc/systemd/system/{}.service", svc.name);
     std::fs::write(&path, systemd_unit(svc)).with_context(|| format!("writing {path}"))?;
     run_ok("systemctl", &["daemon-reload"])?;
-    run_ok("systemctl", &["enable", "--now", &format!("{}.service", svc.name)])?;
+    run_ok("systemctl", &["enable", &format!("{}.service", svc.name)])?;
+    run_ok("systemctl", &["restart", &format!("{}.service", svc.name)])?;
     std::thread::sleep(std::time::Duration::from_secs(2));
     if !run_ok("systemctl", &["is-active", "--quiet", &format!("{}.service", svc.name)]).unwrap_or(false) {
         tracing::warn!(name = svc.name, "service didn't come up cleanly -- check: journalctl -u {} -n 50", svc.name);
@@ -151,7 +152,9 @@ fn install_openrc(svc: &SupervisedService) -> Result<()> {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).with_context(|| format!("making {path} executable"))?;
     }
     let _ = std::process::Command::new("rc-update").args(["add", svc.name, "default"]).status();
-    run_ok("rc-service", &[svc.name, "start"])?;
+    if !run_ok("rc-service", &[svc.name, "restart"])? {
+        run_ok("rc-service", &[svc.name, "start"])?;
+    }
     std::thread::sleep(std::time::Duration::from_secs(2));
     let status_ok = std::process::Command::new("rc-service")
         .args([svc.name, "status"])
@@ -196,6 +199,13 @@ fn install_fallback(cfg: &Config, svc: &SupervisedService) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&supervisor, std::fs::Permissions::from_mode(0o755))
             .context("making the supervisor script executable")?;
+    }
+
+    let pid_path = work_dir.join(format!("{}.pid", svc.name));
+    if let Ok(pid) = std::fs::read_to_string(&pid_path) {
+        if let Ok(pid) = pid.trim().parse::<i32>() {
+            let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+        }
     }
 
     let log_path = cfg.log_dir().join(format!("{}.log", svc.name));

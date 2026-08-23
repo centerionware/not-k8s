@@ -5,7 +5,7 @@ name: E2E tests
 # release stages). This workflow is for on-demand debugging: rerun just
 # the e2e suite (optionally filtered to one test) without waiting on the
 # rest of the pipeline. Builds a full not-k8s cluster from source
-# (deploy/bootstrap-source.sh --with-cri: k3s control plane, real
+# (nodebootstrap applet: upstream kube-apiserver, real
 # containerd/runc, nodelet built with the cri feature) on the runner
 # itself, installs the same reference CSI + DRA drivers release.yml's e2e
 # stage does (deploy/lib/e2e-full-setup.sh) so CSI/DRA-gated tests
@@ -27,7 +27,7 @@ on:
         type: choice
         options: [split, combined]
       scheduler:
-        description: 'Which scheduler places pods: nodescheduler (the not-k8s scheduler, which also passes --disable-scheduler to k3s) or none (k3s bundled kube-scheduler, for isolation only). Full-suite runs use nodescheduler.'
+        description: 'Which scheduler places pods: nodescheduler (the not-k8s scheduler) or none (unsupported by the full bootstrap path). Full-suite runs use nodescheduler.'
         required: false
         default: nodescheduler
         type: choice
@@ -38,7 +38,7 @@ on:
         default: false
         type: boolean
       controller_manager:
-        description: 'Which controller manager runs the suite: nodecontroller (the not-k8s controller manager, which also passes --disable-controller-manager to k3s) or none (k3s bundled kube-controller-manager, for isolation only). Full-suite runs use nodecontroller.'
+        description: 'Which controller manager runs the suite: nodecontroller (the not-k8s controller manager) or none (unsupported by the full bootstrap path). Full-suite runs use nodecontroller.'
         required: false
         default: nodecontroller
         type: choice
@@ -50,7 +50,7 @@ on:
         type: choice
         options: [nodeproxy, none]
       datastore:
-        description: 'Which control-plane datastore to use: nodestore (the default stronger path) or none (k3s bundled kine, useful for isolating controller/API behavior from nodestore).'
+        description: 'Which control-plane datastore to use: nodestore (the required datastore for the upstream apiserver target).'
         required: false
         default: nodestore
         type: choice
@@ -145,56 +145,35 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build and deploy not-k8s (real containerd/CRI runtime)
-        # Debug profile: this stage only needs a correct binary, not an
-        # optimized one — see release.yml's own e2e job for why.
-        #
-        # The `layout` input is how the combined single-binary layout gets
-        # a real end-to-end run: deployed that way, bin/nodelet and
-        # bin/nodeproxy are symlinks into one multi-call binary, and the
-        # entire suite below becomes a test of whether that is genuinely
-        # indistinguishable from the split layout it was written against.
-        # release.yml's own e2e stage stays on split — the default is what
-        # gates a release; this is the on-demand check of the other one.
-        #
-        # DATASTORE=nodestore does more than build the binary, and this
-        # comment used to claim otherwise: bootstrap-source.sh installs
-        # nodestore as a service and points k3s at it with
-        # --datastore-endpoint, so the whole suite below runs against a
-        # control plane whose storage is nodestore rather than k3s's bundled
-        # kine. That is deliberate and is the stronger coverage — every test
-        # here becomes an assertion that a real apiserver works on it — but it
-        # does mean a failure anywhere in this suite can be a datastore
-        # failure, not only a nodelet one.
-        #
-        # datastore.sh and datastore_apiserver.sh are unaffected either way:
-        # they run their own throwaway instances on scratch paths and ports
-        # rather than touching the cluster's own storage.
-        #
-        # Set DATASTORE=none to run this suite against bundled kine instead,
-        # which is what isolates a nodelet regression from a datastore one.
-        #
-        # The default E2E stack uses every not-k8s replacement. k3s supplies
-        # only the apiserver; its bundled scheduler and controller manager are
-        # disabled by bootstrap-source.sh when these values are selected.
-        # This makes an unfiltered run test the shipped stack rather than
-        # silently substituting k3s implementations for components this
-        # project owns.
-        #
-        # Set scheduler=none or controller_manager=none only for an explicit
-        # isolation run against the bundled k3s implementation.
+        # Exercise nodebootstrap itself. The combined path is the normal
+        # release layout; the split branch uses the same prebuilt seam without
+        # invoking the deprecated shell bootstrap entry point.
         env:
-          NOTK8S_BUILD_PROFILE: debug
-          NOTK8S_BUILD_LAYOUT: ${{ inputs.layout || 'combined' }}
-          DATASTORE: ${{ inputs.datastore || 'nodestore' }}
-          SCHEDULER: ${{ inputs.scheduler || 'nodescheduler' }}
-          CONTROLLER_MANAGER: ${{ inputs.controller_manager || 'nodecontroller' }}
-          NODECONTROLLER_DISABLED_CONTROLLERS: ${{ inputs.nodecontroller_disabled_controllers || '' }}
-          # Picked up by nodescheduler-service.sh's env forwarding — only
-          # written into the installed unit when non-empty, so leaving
-          # debug_scheduler_log off reproduces exactly today's behaviour
-          # (run-nodescheduler.sh's own RUST_LOG=info default applies).
-          RUST_LOG: ${{ inputs.debug_scheduler_log && 'nodescheduler=debug' || '' }}
-        run: sudo -E ./deploy/bootstrap-source.sh --with-cri --proxy=${{ inputs.proxy || 'nodeproxy' }}
+          LAYOUT: ${{ inputs.layout }}
+          PROXY: ${{ inputs.proxy }}
+          NODECONTROLLER_DISABLED_CONTROLLERS: ${{ inputs.nodecontroller_disabled_controllers }}
+        run: |
+          set -e
+          cargo build --features cri -p notk8s
+          if [[ -z "$LAYOUT" || "$LAYOUT" == combined ]]; then
+            sudo -E ./target/debug/notk8s nodebootstrap --with-cri --layout=combined --proxy="$PROXY" \
+              --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller
+          else
+            cargo build --features cri -p nodelet
+            cargo build -p nodeproxy
+            cargo build -p nodestore
+            cargo build -p nodescheduler
+            cargo build -p nodecontroller
+            cargo build -p nodebootstrap
+            sudo -E env \
+              NOTK8S_NODELET_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodelet" \
+              NOTK8S_NODEPROXY_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodeproxy" \
+              NOTK8S_NODESTORE_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodestore" \
+              NOTK8S_NODESCHEDULER_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodescheduler" \
+              NOTK8S_NODECONTROLLER_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodecontroller" \
+              ./target/debug/nodebootstrap --with-cri --layout=split --proxy="$PROXY" \
+                --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller
+          fi
 
       - name: Install misc e2e prerequisites (hugepages, grpcurl)
         # Round 124: split out of e2e-full-setup.sh — these aren't
@@ -205,13 +184,13 @@ jobs:
         # Every shard needs this, including the ones that skip the driver
         # install below — same split release.yml already makes.
         env:
-          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
         run: sudo chmod 644 "$KUBECONFIG"
 
       - name: Install reference CSI + DRA drivers
         if: matrix.needs_drivers
         env:
-          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
         run: |
           # See release.yml's own e2e job for why this has an external
           # ceiling well below the drivers' own internal ~5min timeout.
@@ -220,7 +199,7 @@ jobs:
       - name: Run this shard's e2e tests (${{ matrix.shard }}/5)
         id: e2e
         env:
-          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
           TEST_CSI_STORAGE_CLASS: csi-hostpath-sc
           TEST_CSI_ATTACH_STORAGE_CLASS: csi-hostpath-sc
           TEST_CSI_INLINE_DRIVER: hostpath.csi.k8s.io

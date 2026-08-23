@@ -64,7 +64,9 @@ const APPLETS: &[Applet] = &[
     #[cfg(feature = "nodescheduler")]
     Applet { name: "nodescheduler", summary: "scheduler (kube-scheduler's job): pod placement, event-driven queue" },
     #[cfg(feature = "nodecontroller")]
-    Applet { name: "nodecontroller", summary: "controller manager (kube-controller-manager's job): node lifecycle, workload controllers, GC" },
+    Applet { name: "nodecontroller", summary: "controller manager replacement: node lifecycle, workload controllers, GC" },
+    #[cfg(feature = "nodebootstrap")]
+    Applet { name: "nodebootstrap", summary: "full cluster bootstrap and update installer" },
 ];
 
 struct Applet {
@@ -81,15 +83,12 @@ async fn main() -> Result<()> {
         .unwrap_or_default();
 
     // argv[0] first (symlink/hardlink install), then an explicit subcommand.
-    let applet = if is_applet(&arg0) {
-        arg0.clone()
+    let (applet, app_args) = if is_applet(&arg0) {
+        (canonical_applet(&arg0), argv[1..].to_vec())
     } else {
         match argv.get(1).map(String::as_str) {
-            Some(name) if is_applet(name) => name.to_string(),
+            Some(name) if is_applet(name) => (canonical_applet(name), argv[2..].to_vec()),
             Some("components") => {
-                // Machine-readable: one component per line, so the build
-                // system and e2e tests can assert what a binary actually
-                // contains instead of inferring it from how it was built.
                 for a in APPLETS {
                     println!("{}", a.name);
                 }
@@ -105,7 +104,7 @@ async fn main() -> Result<()> {
             }
             Some(other) => {
                 print_usage();
-                bail!("unknown component '{other}'");
+                bail!("unknown component {other}");
             }
         }
     };
@@ -118,14 +117,22 @@ async fn main() -> Result<()> {
         .with(fmt::layer().with_target(false))
         .init();
 
-    run_applet(&applet).await
+    run_applet(&applet, &app_args).await
 }
 
 fn is_applet(name: &str) -> bool {
-    APPLETS.iter().any(|a| a.name == name)
+    (cfg!(feature = "nodebootstrap") && name == "bootstrap") || APPLETS.iter().any(|a| a.name == name)
 }
 
-async fn run_applet(name: &str) -> Result<()> {
+fn canonical_applet(name: &str) -> String {
+    if name == "bootstrap" {
+        "nodebootstrap".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+async fn run_applet(name: &str, args: &[String]) -> Result<()> {
     match name {
         #[cfg(feature = "nodelet")]
         "nodelet" => nodelet::app::run().await,
@@ -137,6 +144,8 @@ async fn run_applet(name: &str) -> Result<()> {
         "nodescheduler" => nodescheduler::run().await,
         #[cfg(feature = "nodecontroller")]
         "nodecontroller" => nodecontroller::run().await,
+        #[cfg(feature = "nodebootstrap")]
+        "nodebootstrap" => nodebootstrap::run_embedded(args),
         // Unreachable via main() — is_applet() gates every path here — but
         // cheaper to answer honestly than to unwrap.
         other => bail!("component '{other}' was not built into this binary (see `notk8s components`)"),
@@ -184,6 +193,10 @@ mod tests {
         assert!(is_applet("nodescheduler"));
         #[cfg(feature = "nodecontroller")]
         assert!(is_applet("nodecontroller"));
+        #[cfg(feature = "nodebootstrap")]
+        assert!(is_applet("nodebootstrap"));
+        #[cfg(feature = "nodebootstrap")]
+        assert!(is_applet("bootstrap"));
     }
 
     #[test]

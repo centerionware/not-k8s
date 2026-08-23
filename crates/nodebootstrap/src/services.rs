@@ -129,10 +129,14 @@ pub fn ensure_nodestore(cfg: &Config) -> Result<()> {
 /// needs both to be meaningfully useful, same ordering `bootstrap-
 /// source.sh` uses today.
 pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
+    if cfg.skip_nodelet {
+        tracing::info!("NODEBOOTSTRAP_SKIP_NODELET=1 -- skipping nodelet");
+        return Ok(());
+    }
     let bin = binary_path(cfg, "nodelet");
     anyhow::ensure!(bin.exists(), "no nodelet binary at {} -- run `nodebootstrap fetch` first", bin.display());
     let kubeconfig = admin_kubeconfig(cfg);
-    let runtime = std::env::var("NODELET_RUNTIME").unwrap_or_else(|_| "mock".to_string());
+    let runtime = cfg.nodelet_runtime();
     service_mgr::install(
         cfg,
         &SupervisedService {

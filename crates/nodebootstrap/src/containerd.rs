@@ -300,8 +300,8 @@ fn has_existing_systemd_unit() -> bool {
 }
 
 fn ensure_running(cfg: &Config, needs_restart: bool) -> Result<()> {
-    if needs_restart && containerd_running() && crate::pkg::command_exists("systemctl") {
-        tracing::info!("restarting containerd to pick up the config change");
+    if containerd_running() && crate::pkg::command_exists("systemctl") && has_existing_systemd_unit() {
+        tracing::info!(config_changed = needs_restart, "restarting containerd during bootstrap update");
         run_systemctl(&["restart", "containerd.service"])?;
     } else if !containerd_running() {
         if has_existing_systemd_unit() {

@@ -1,11 +1,7 @@
 //! Env-var configuration, matching the other components' style (`nodelet`'s
-//! `config.rs`, `nodeproxy`'s, etc.): everything comes from `NOTK8S_*` /
-//! `NODEBOOTSTRAP_*` env vars with sane defaults, no CLI flag parser. The
-//! shell entry points this crate replaces already set these same
-//! environment variables today (`bootstrap-source.sh`'s `--skip-*` flags,
-//! `PROXY=`, `DATASTORE=`, `SCHEDULER=`, layout selection, ...) — mapping
-//! onto the same names here is what makes the cutover a drop-in rather than
-//! a second config surface operators have to learn.
+//! `config.rs`, `nodeproxy`'s, etc.). The public binary also translates its
+//! installer flags into these variables, so a deployment can be driven either
+//! by `./bootstrap --with-cri` or by an already-supervised subcommand.
 
 use anyhow::Result;
 
@@ -26,6 +22,7 @@ pub enum Source {
 pub enum Layout {
     Combined,
     Split,
+    Both,
 }
 
 /// Which apiserver/controller-manager/scheduler combination `targets/`
@@ -43,8 +40,13 @@ pub enum Target {
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Real containerd/CRI is the supported deployment default. `false` is
+    /// retained for fast mock-runtime development and explicitly means that
+    /// containerd/CNI setup is skipped.
+    pub with_cri: bool,
     pub skip_toolchain: bool,
     pub skip_containerd: bool,
+    pub skip_control_plane: bool,
     /// `None` skips CNI setup entirely (bring-your-own — Cilium etc.).
     /// `Some("flannel")` is the only provider this crate installs itself.
     pub cni_provider: Option<String>,
@@ -64,6 +66,7 @@ pub struct Config {
     /// `NODEBOOTSTRAP_PROXY=none` to disable; any other value (default
     /// `nodeproxy`) installs it as normal.
     pub skip_nodeproxy: bool,
+    pub skip_nodelet: bool,
 }
 
 impl Config {
@@ -167,6 +170,12 @@ impl Config {
                 .unwrap_or_else(|_| "unknown".to_string())
         })
     }
+    pub fn nodelet_runtime(&self) -> String {
+        std::env::var("NODELET_RUNTIME").unwrap_or_else(|_| {
+            if self.with_cri { "cri" } else { "mock" }.to_string()
+        })
+    }
+
     pub fn from_env() -> Result<Self> {
         let flag = |name: &str| std::env::var(name).is_ok_and(|v| v == "1" || v == "true");
         let cni_provider = match std::env::var("NODEBOOTSTRAP_CNI").as_deref() {
@@ -176,15 +185,20 @@ impl Config {
         };
         let source = match std::env::var("NODEBOOTSTRAP_SOURCE").as_deref() {
             Ok("release") => Source::Release,
-            _ => Source::Compile,
+            Ok("compile") => Source::Compile,
+            _ if workspace_checkout_present() => Source::Compile,
+            _ => Source::Release,
         };
         let layout = match std::env::var("NOTK8S_BUILD_LAYOUT").as_deref() {
             Ok("split") => Layout::Split,
+            Ok("both") => Layout::Both,
             _ => Layout::Combined,
         };
         Ok(Config {
+            with_cri: !matches!(std::env::var("NODEBOOTSTRAP_WITH_CRI").as_deref(), Ok("0" | "false")),
             skip_toolchain: flag("NODEBOOTSTRAP_SKIP_TOOLCHAIN"),
             skip_containerd: flag("NODEBOOTSTRAP_SKIP_CONTAINERD"),
+            skip_control_plane: flag("NODEBOOTSTRAP_SKIP_CONTROL_PLANE"),
             cni_provider,
             source,
             layout,
@@ -196,6 +210,24 @@ impl Config {
             skip_service_reconciler: flag("NODEBOOTSTRAP_SKIP_SERVICE_RECONCILER"),
             skip_manifests: flag("NODEBOOTSTRAP_SKIP_MANIFESTS"),
             skip_nodeproxy: std::env::var("NODEBOOTSTRAP_PROXY").as_deref() == Ok("none"),
+            skip_nodelet: flag("NODEBOOTSTRAP_SKIP_NODELET"),
         })
+    }
+}
+
+fn workspace_checkout_present() -> bool {
+    if let Ok(root) = std::env::var("NODEBOOTSTRAP_REPO_ROOT") {
+        return std::path::Path::new(&root).join("Cargo.toml").is_file();
+    }
+
+    let Ok(mut dir) = std::env::current_dir() else { return false };
+    loop {
+        let candidate = dir.join("Cargo.toml");
+        if std::fs::read_to_string(&candidate).is_ok_and(|contents| contents.contains("[workspace]")) {
+            return true;
+        }
+        if !dir.pop() {
+            return false;
+        }
     }
 }
