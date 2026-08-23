@@ -60,6 +60,9 @@ pub struct IssuedCert {
 pub struct ClusterPki {
     pub ca: IssuedCert,
     pub apiserver_serving: IssuedCert,
+    /// Client identity the apiserver presents when proxying exec/logs/
+    /// attach/port-forward requests to nodelet.
+    pub kube_apiserver_client: IssuedCert,
     /// Private key used by `--service-account-signing-key-file`; the public
     /// half (derived from the same keypair) is `--service-account-key-file`.
     pub sa_signing: IssuedCert,
@@ -111,6 +114,8 @@ pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
         &[std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), spec.service_ip],
     )
     .context("issuing apiserver serving cert")?;
+    let kube_apiserver_client = issue_client_cert(&ca_cert, &ca_key, "system:kube-apiserver", &[])
+        .context("issuing kube-apiserver client cert")?;
 
     let sa_signing = generate_sa_signing_keypair().context("generating ServiceAccount signing keypair")?;
 
@@ -130,6 +135,7 @@ pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
     Ok(ClusterPki {
         ca,
         apiserver_serving,
+        kube_apiserver_client,
         sa_signing,
         kube_controller_manager,
         kube_scheduler,
@@ -237,6 +243,8 @@ impl ClusterPki {
         write("ca.key", &self.ca.key_pem)?;
         write("apiserver.crt", &self.apiserver_serving.cert_pem)?;
         write("apiserver.key", &self.apiserver_serving.key_pem)?;
+        write("kube-apiserver.crt", &self.kube_apiserver_client.cert_pem)?;
+        write("kube-apiserver.key", &self.kube_apiserver_client.key_pem)?;
         write("sa.pub", &self.sa_signing.cert_pem)?;
         write("sa.key", &self.sa_signing.key_pem)?;
         write("kube-controller-manager.crt", &self.kube_controller_manager.cert_pem)?;
@@ -263,6 +271,7 @@ mod tests {
         // proving this crate's CA is a drop-in for that code path.
         for issued in [
             &pki.apiserver_serving,
+            &pki.kube_apiserver_client,
             &pki.kube_controller_manager,
             &pki.kube_scheduler,
             &pki.cluster_admin,

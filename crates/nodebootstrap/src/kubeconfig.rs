@@ -52,6 +52,7 @@ fn read_pki_from_dir(dir: &std::path::Path) -> Result<ClusterPki> {
     Ok(ClusterPki {
         ca: pair("ca.crt", "ca.key")?,
         apiserver_serving: pair("apiserver.crt", "apiserver.key")?,
+        kube_apiserver_client: pair("kube-apiserver.crt", "kube-apiserver.key")?,
         sa_signing: pair("sa.pub", "sa.key")?,
         kube_controller_manager: pair("kube-controller-manager.crt", "kube-controller-manager.key")?,
         kube_scheduler: pair("kube-scheduler.crt", "kube-scheduler.key")?,

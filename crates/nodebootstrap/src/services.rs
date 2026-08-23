@@ -137,6 +137,15 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
     anyhow::ensure!(bin.exists(), "no nodelet binary at {} -- run `nodebootstrap fetch` first", bin.display());
     let kubeconfig = admin_kubeconfig(cfg);
     let runtime = cfg.nodelet_runtime();
+    let server_cert_dir = cfg.nodelet_server_cert_dir().to_string_lossy().to_string();
+    let client_ca_file = std::env::var("NODELET_CLIENT_CA_FILE")
+        .unwrap_or_else(|_| cfg.pki_dir().join("ca.crt").to_string_lossy().to_string());
+    let env = [
+        ("KUBECONFIG", kubeconfig.as_str()),
+        ("NODELET_RUNTIME", runtime.as_str()),
+        ("NODELET_SERVER_CERT_DIR", server_cert_dir.as_str()),
+        ("NODELET_CLIENT_CA_FILE", client_ca_file.as_str()),
+    ];
     service_mgr::install(
         cfg,
         &SupervisedService {
@@ -144,7 +153,7 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
             description: "nodelet -- not-k8s node agent (kubelet replacement)",
             exec_cmd: &bin.to_string_lossy(),
             after: Some("kube-apiserver.service"),
-            env: &[("KUBECONFIG", &kubeconfig), ("NODELET_RUNTIME", &runtime)],
+            env: &env,
         },
     )
     .context("installing nodelet as a supervised service")

@@ -25,7 +25,8 @@ use anyhow::{bail, Context, Result};
 
 /// Runs every phase in dependency order: toolchain -> containerd -> fetch
 /// -> pki -> kubeconfig -> targets (install/start the apiserver) -> cni ->
-/// rbac -> service-reconciler -> manifests. This is what
+/// rbac -> service-reconciler -> manifests -> nodelet TLS/CNI readiness.
+/// This is what
 /// `bootstrap-source.sh`/`bootstrap-release.sh` do today as one script;
 /// here it's one function calling each module's `run_with()` in turn so any
 /// individual step stays independently testable and independently
@@ -80,6 +81,10 @@ pub fn run_all() -> Result<()> {
 
     if !cfg.skip_nodelet {
         services::ensure_nodelet(&cfg)?;
+        if !cfg.skip_control_plane && cfg.with_cri {
+            targets::enable_nodelet_proxy(&cfg)?;
+            cni::wait_for_flannel_subnet(&cfg)?;
+        }
     }
     services::ensure_nodeproxy(&cfg)?;
     Ok(())

@@ -50,17 +50,65 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     std::fs::create_dir_all(&bin_dir).context("creating toolchain bin dir")?;
     fetch_binary("kube-apiserver", arch, &bin_dir)?;
 
-    let advertise_address = detect_advertise_address();
-    let spec = TargetSpec {
+    let spec = target_spec(cfg);
+    wait_for_nodestore(&spec.etcd_servers)?;
+    install_apiserver(cfg, &spec, &bin_dir, None)?;
+
+    wait_for_readyz(&spec);
+    Ok(())
+}
+
+/// Nodelet creates its self-signed serving CA on first startup. Once that
+/// file exists, replace the initial apiserver unit with the full kubelet
+/// proxy configuration and restart it. This is the same two-phase handoff
+/// as deploy/lib/control-plane.sh's `enable_kubelet_certificate_authority_trust`.
+pub fn enable_nodelet_proxy(cfg: &Config) -> Result<()> {
+    if !cfg.with_cri || cfg.skip_nodelet {
+        return Ok(());
+    }
+    let cert_path = cfg.nodelet_server_ca_path();
+    tracing::info!(path = %cert_path.display(), "waiting for nodelet's kubelet-style server CA");
+    for _ in 0..15 {
+        if std::fs::metadata(&cert_path).map(|m| m.is_file() && m.len() > 0).unwrap_or(false) {
+            let bin_dir = cfg.toolchain_dir().join("bin");
+            let bin = bin_dir.join("kube-apiserver");
+            anyhow::ensure!(bin.exists(), "no kube-apiserver binary at {}", bin.display());
+            let spec = target_spec(cfg);
+            install_apiserver(cfg, &spec, &bin_dir, Some(&cert_path))?;
+            wait_for_readyz(&spec);
+            tracing::info!(path = %cert_path.display(), "kube-apiserver now trusts nodelet's kubelet-style server CA");
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    anyhow::bail!(
+        "nodelet never wrote {} within 30s -- kubelet proxying (exec/logs/attach/port-forward) cannot be configured",
+        cert_path.display()
+    )
+}
+
+fn target_spec(cfg: &Config) -> TargetSpec {
+    TargetSpec {
         pki_dir: cfg.pki_dir(),
         etcd_pki_dir: nodestore_client_pki_dir(),
         etcd_servers: nodestore_etcd_servers(),
-        advertise_address,
+        advertise_address: detect_advertise_address(),
         service_cidr: "10.43.0.0/16".to_string(),
         service_account_issuer: "https://kubernetes.default.svc.cluster.local".to_string(),
-    };
-    wait_for_nodestore(&spec.etcd_servers)?;
-    let apiserver_exec = format!("{} {}", bin_dir.join("kube-apiserver").display(), apiserver_args(&spec).join(" "));
+    }
+}
+
+fn install_apiserver(
+    cfg: &Config,
+    spec: &TargetSpec,
+    bin_dir: &std::path::Path,
+    nodelet_ca: Option<&std::path::Path>,
+) -> Result<()> {
+    let apiserver_exec = format!(
+        "{} {}",
+        bin_dir.join("kube-apiserver").display(),
+        apiserver_args(spec, nodelet_ca).join(" ")
+    );
     service_mgr::install(
         cfg,
         &SupervisedService {
@@ -71,10 +119,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
             env: &[],
         },
     )
-    .context("installing kube-apiserver as a supervised service")?;
-
-    wait_for_readyz(&spec);
-    Ok(())
+    .context("installing kube-apiserver as a supervised service")
 }
 
 /// A **hard** wait, not best-effort like `wait_for_readyz` below: unlike a
@@ -234,10 +279,10 @@ struct TargetSpec {
     service_account_issuer: String,
 }
 
-fn apiserver_args(spec: &TargetSpec) -> Vec<String> {
+fn apiserver_args(spec: &TargetSpec, nodelet_ca: Option<&std::path::Path>) -> Vec<String> {
     let pki = |name: &str| spec.pki_dir.join(name).display().to_string();
     let etcd = |name: &str| spec.etcd_pki_dir.join(name).display().to_string();
-    vec![
+    let mut args = vec![
         format!("--etcd-servers={}", spec.etcd_servers),
         format!("--etcd-cafile={}", etcd("ca.crt")),
         format!("--etcd-certfile={}", etcd("client.crt")),
@@ -248,11 +293,11 @@ fn apiserver_args(spec: &TargetSpec) -> Vec<String> {
         format!("--tls-cert-file={}", pki("apiserver.crt")),
         format!("--tls-private-key-file={}", pki("apiserver.key")),
         // The CA that issued every client cert (admin/kube-controller-
-        // manager/kube-scheduler) IS the client CA here -- unlike
-        // upstream-kube-apiserver.sh's k3s-borrowed setup, pki.rs issues
-        // every client cert off one CA, so there's no two-CA bundle to
-        // build (see that script's comment on why it needed one).
+        // manager/kube-scheduler/kube-apiserver) IS the client CA here.
         format!("--client-ca-file={}", pki("ca.crt")),
+        format!("--kubelet-client-certificate={}", pki("kube-apiserver.crt")),
+        format!("--kubelet-client-key={}", pki("kube-apiserver.key")),
+        "--kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP".to_string(),
         format!("--service-account-key-file={}", pki("sa.pub")),
         format!("--service-account-signing-key-file={}", pki("sa.key")),
         format!("--service-account-issuer={}", spec.service_account_issuer),
@@ -261,20 +306,15 @@ fn apiserver_args(spec: &TargetSpec) -> Vec<String> {
         "--enable-admission-plugins=NodeRestriction".to_string(),
         "--allow-privileged=true".to_string(),
         "--anonymous-auth=false".to_string(),
-        // nodescheduler (this project's own, already built on main) watches
-        // resource.k8s.io/v1 (DRA) unconditionally on startup -- GA as of
-        // K8S_VERSION's 1.34 (see that constant's own comment for the full
-        // story: 1.33 doesn't serve this group/version at all, no flag
-        // fixes that), so no extra flag is needed here at all: a GA API is
-        // served by default. `--runtime-config=api/all=true` was tried
-        // here first and removed (found live): it turns on every alpha/
-        // experimental API group unconditionally, and one of them broke
-        // the `rbac/bootstrap-roles` PostStartHook `rbac.rs` depends on
-        // entirely -- readyz went from "ready" to permanently failing
-        // that hook. Enabling only what's actually needed, not "everything
-        // just in case", is the real lesson.
+        // The reference DRA driver's admission policy relies on the node
+        // name enrichment carried by projected ServiceAccount tokens.
+        "--feature-gates=ServiceAccountTokenPodNodeInfo=true".to_string(),
         "--v=1".to_string(),
-    ]
+    ];
+    if let Some(path) = nodelet_ca {
+        args.push(format!("--kubelet-certificate-authority={}", path.display()));
+    }
+    args
 }
 
 #[cfg(test)]
@@ -294,9 +334,19 @@ mod tests {
 
     #[test]
     fn apiserver_args_reference_a_single_client_ca_not_a_two_ca_bundle() {
-        let args = apiserver_args(&test_spec());
+        let args = apiserver_args(&test_spec(), None);
         assert!(args.iter().any(|a| a == "--client-ca-file=/var/lib/nodebootstrap/pki/ca.crt"));
         assert!(args.iter().any(|a| a == "--authorization-mode=Node,RBAC"));
         assert!(!args.iter().any(|a| a.contains("bundle")));
+    }
+
+    #[test]
+    fn apiserver_args_include_nodelet_proxy_identity_and_dra_token_enrichment() {
+        let args = apiserver_args(&test_spec(), Some(std::path::Path::new("/var/lib/nodelet/pki/server-ca.pem")));
+        assert!(args.iter().any(|a| a == "--kubelet-client-certificate=/var/lib/nodebootstrap/pki/kube-apiserver.crt"));
+        assert!(args.iter().any(|a| a == "--kubelet-client-key=/var/lib/nodebootstrap/pki/kube-apiserver.key"));
+        assert!(args.iter().any(|a| a == "--kubelet-certificate-authority=/var/lib/nodelet/pki/server-ca.pem"));
+        assert!(args.iter().any(|a| a == "--kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP"));
+        assert!(args.iter().any(|a| a == "--feature-gates=ServiceAccountTokenPodNodeInfo=true"));
     }
 }
